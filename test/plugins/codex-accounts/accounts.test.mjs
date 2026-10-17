@@ -167,8 +167,14 @@ test('the panel shows only managed accounts, with a selection and removal action
   };
   const view = await panel(accounts, 'w', read), cards = view.items.filter(i => i.type === 'card'); takes(view);
   assert.deepEqual(cards.map(c => c.title), ['work', 'home']);
-  // Each account by the manager's identity for it, the same on every machine: Coda's group view shows it once.
-  assert.deepEqual(cards.map(c => c.identity), ['codex-account:w', 'codex-account:h']);
+  // Without an email who it is is not known: no identity for Coda's group view to merge on.
+  assert.deepEqual(cards.map(c => c.identity), [undefined, undefined]);
+  // With one, who and which workspace (the manager's identity, the workspace's account ID hashed), as the Codex panel
+  // says the same login: one person in one workspace, the same on every machine.
+  const named = (await panel([{ alias: 'Me@Example.com', identity: '6941a40c68883449343dbf6ec558673ef50f456eead61cb4fa7ea9c519ee63aa', plan: 'pro' }], null, read)).items.find(i => i.type === 'card');
+  assert.equal(named.identity, 'codex:4f8c8f70fdb1a82f325caca6fccb78690831f66027018f748a0c7141a6d929a3');
+  const colleague = (await panel([{ alias: 'colleague@example.com', identity: '6941a40c68883449343dbf6ec558673ef50f456eead61cb4fa7ea9c519ee63aa', plan: 'pro' }], null, read)).items.find(i => i.type === 'card');
+  assert.notEqual(colleague.identity, named.identity);
   assert.equal(cards[0].items[0].label, '已选择'); assert.equal(cards[0].items[0].disabled, true);
   assert.ok(cards.every(c => c.items.some(i => i.action === 'remove')));
   assert.ok(cards[0].items.some(i => i.action === 'reset' && i.args.creditId === 'c1'));

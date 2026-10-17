@@ -42,8 +42,8 @@ const limits = { rateLimits: { primary: { usedPercent: 36, windowDurationMins: 3
 
 test('the Codex panel shows the login with what is left, and offers the full reset that expires first, named in its question', async () => {
   const { items } = await panel(server({ 'account/read': signedIn, 'account/rateLimits/read': limits }));
-  // The workspace the login uses, as a hash of its account ID, which Coda's group view compares across machines.
-  assert.deepEqual(items, [{ type: 'card', title: 'me@example.com', subtitle: 'pro', identity: 'codex-account:6941a40c68883449343dbf6ec558673ef50f456eead61cb4fa7ea9c519ee63aa', items: [
+  // Who signed in and in which workspace, as a hash, which Coda's group view compares across machines.
+  assert.deepEqual(items, [{ type: 'card', title: 'me@example.com', subtitle: 'pro', identity: 'codex:4f8c8f70fdb1a82f325caca6fccb78690831f66027018f748a0c7141a6d929a3', items: [
     { type: 'button', label: '使用完全重置', action: 'reset', args: { creditId: 'first' },
       confirm: '使用 me@example.com 的完全重置？\n用最早到期的那一次（2026/10/20 9:00 到期，UTC+8）。成功后消耗 1 次，无法撤销。' },
     { type: 'meter', label: '5 小时', value: '剩余 64%', fraction: 0.64, time: new Date(early * 1000).toISOString(), timeLabel: '重置' },
@@ -63,6 +63,9 @@ test('one email in two workspaces is two identities, each with its own quota; a 
   const business = (await panel(server({ 'account/read': { ...signedIn, workspaceRouting: { chatgptAccountId: 'ws-business' } }, 'account/rateLimits/read': left(90) }))).items[0];
   assert.equal(personal.title, business.title);
   assert.notEqual(personal.identity, business.identity);
+  // Two members of one workspace are two people, each with their own quota.
+  const colleague = (await panel(server({ 'account/read': { ...signedIn, account: { ...signedIn.account, email: 'colleague@example.com' } }, 'account/rateLimits/read': left(90) }))).items[0];
+  assert.notEqual(personal.identity, colleague.identity);
   const unsaid = (await panel(server({ 'account/read': { account: signedIn.account }, 'account/rateLimits/read': left(10) }))).items[0];
   assert.equal(unsaid.identity, undefined);
 });

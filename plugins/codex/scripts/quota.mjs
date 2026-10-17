@@ -5,11 +5,15 @@ import { createHash } from 'node:crypto';
 
 const CARD_ITEMS = 20;
 const line = (value, max = 80) => typeof value === 'string' ? [...value.replace(/\s+/g, ' ').trim()].slice(0, max).join('') : '';
-// The account a card shows, compared across machines by Coda's group view (its panel cards' `identity`): the ChatGPT
-// workspace the login uses (one email may sign in to several, each with its own quota), as a hash of its account ID, the
-// same one codex-account keeps for it. None where Codex does not say which.
-const identity = workspace => typeof workspace === 'string' && workspace
-  ? { identity: `codex-account:${createHash('sha256').update(workspace).digest('hex')}` } : {};
+// The account a card shows, compared across machines by Coda's group view (its panel cards' `identity`): who signed in
+// and in which ChatGPT workspace, as the quota is one person's in one workspace (one email may sign in to several, and a
+// workspace has many members). A hash of the email and of the workspace's account ID hashed as codex-account keeps it;
+// none where Codex does not say both.
+const hash = text => createHash('sha256').update(text).digest('hex');
+const identity = (account, workspace) => {
+  const email = line(account.email, 320).toLowerCase();
+  return email && typeof workspace === 'string' && workspace ? { identity: `codex:${hash(`${email}\n${hash(workspace)}`)}` } : {};
+};
 const unixTime = value => typeof value === 'number' && Number.isFinite(new Date(value * 1000).getTime()) ? new Date(value * 1000).toISOString() : null;
 // A credit's expiry as the clients write times (UTC+8), here because a figure's value is text.
 export function utc8(seconds) {
@@ -57,7 +61,7 @@ export function card(account, result, workspace) {
       confirm: `使用 ${line(name, 60)} 的完全重置？\n用最早到期的那一次（${first.expiresAt == null ? '不会过期' : `${utc8(first.expiresAt)} 到期，UTC+8`}）。成功后消耗 1 次，无法撤销。` });
   }
   if (!items.length) items.push({ type: 'error', text: '暂时无法获取额度：Codex 没有给出额度窗口' });
-  return { type: 'card', title: name, ...(line(account.planType) ? { subtitle: line(account.planType) } : {}), ...identity(workspace), items: items.slice(0, CARD_ITEMS) };
+  return { type: 'card', title: name, ...(line(account.planType) ? { subtitle: line(account.planType) } : {}), ...identity(account, workspace), items: items.slice(0, CARD_ITEMS) };
 }
 
 // The panel: nothing without a login (it is then offered under「添加资源」), a card for one. Quota Codex cannot read stays
@@ -71,7 +75,7 @@ export async function panel(server) {
   let result;
   try { result = await server.request('account/rateLimits/read'); }
   catch (error) {
-    return { items: [{ type: 'card', title: line(account.email) || '本机登录', ...(line(account.planType) ? { subtitle: line(account.planType) } : {}), ...identity(workspace),
+    return { items: [{ type: 'card', title: line(account.email) || '本机登录', ...(line(account.planType) ? { subtitle: line(account.planType) } : {}), ...identity(account, workspace),
       items: [{ type: 'error', text: `暂时无法获取额度：${error.message}` }] }] };
   }
   return { items: [card(account, result, workspace)] };

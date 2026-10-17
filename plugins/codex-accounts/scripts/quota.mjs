@@ -1,4 +1,5 @@
 // One card per managed account, including the login imported on first use. Pure rendering, with no credential access.
+import { createHash } from 'node:crypto';
 
 const CARD_ITEMS = 20, ACCOUNTS = 40, BYTES = 60 * 1024;
 const line = (value, max = 80) => typeof value === 'string' ? [...value.replace(/\s+/g, ' ').trim()].slice(0, max).join('') : '';
@@ -53,9 +54,11 @@ export function card(account, chosen, { result, error }) {
     }
     if (!items.length) items.push({ type: 'error', text: '暂时无法获取额度：Codex 没有给出额度窗口' });
   }
-  // The same account on another machine has the same identity (a hash of its ChatGPT account ID): Coda's group view
-  // shows it once.
-  return { type: 'card', title: name, ...(line(account.plan) ? { subtitle: line(account.plan) } : {}), identity: `codex-account:${account.identity}`,
+  // Who it is and in which workspace, as the Codex panel says it (the manager's identity is the workspace's account ID
+  // hashed): Coda's group view shows the same one once. None when its email is not known.
+  const email = account.alias.includes('@') ? account.alias.trim().toLowerCase() : '';
+  return { type: 'card', title: name, ...(line(account.plan) ? { subtitle: line(account.plan) } : {}),
+    ...(email ? { identity: `codex:${createHash('sha256').update(`${email}\n${account.identity}`).digest('hex')}` } : {}),
     items: [...buttons, ...items].slice(0, CARD_ITEMS) };
 }
 
