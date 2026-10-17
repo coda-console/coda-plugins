@@ -3,7 +3,8 @@
 export function panel(limits) {
   if (!limits.known()) return { items: [] };
   const windows = limits.quota();
-  return { items: [{ type: 'card', title: 'Claude SDK', items: windows.length
+  // The account the windows are of, compared across machines by Coda's group view.
+  return { items: [{ type: 'card', title: 'Claude SDK', ...(limits.account ? { identity: `claude:${limits.account}` } : {}), items: windows.length
     ? windows.map(w => ({ type: 'meter', label: w.label, value: `剩余 ${w.remainingPercent}%`, fraction: w.remainingPercent / 100, time: w.resetsAt, timeLabel: '重置' }))
     // Past its reset a window is not known, neither full nor empty: what was used since is not seen from here.
     : [{ type: 'error', text: '额度记录已过期，会话再运行后更新' }] }] };

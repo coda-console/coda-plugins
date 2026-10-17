@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 // What the「Grok」panel shows (docs/plugins.md「内置插件：Grok」): who is signed in and the plan's coding credits, as the
 // CLI itself answers them (`_x.ai/auth/check_subscription`, `_x.ai/auth/info`, `_x.ai/billing`: what its `/usage` reads).
 const line = (value, max = 80) => typeof value === 'string' ? [...value.replace(/\s+/g, ' ').trim()].slice(0, max).join('') : '';
@@ -8,7 +10,10 @@ const instant = value => typeof value === 'string' && Number.isFinite(Date.parse
 export function account(subscription, info) {
   if (subscription?.authenticated === false) return null;
   if (subscription?.authenticated !== true || !subscription.meta) throw new Error('Grok 没有说明登录状态');
-  return { name: [line(info?.firstName), line(info?.lastName)].filter(Boolean).join(' '), plan: line(subscription.meta.subscription_tier) };
+  const email = typeof info?.email === 'string' ? info.email.trim().toLowerCase() : '';
+  // The account compared across machines by Coda's group view, as a hash of the email: the email itself stays here.
+  return { name: [line(info?.firstName), line(info?.lastName)].filter(Boolean).join(' '), plan: line(subscription.meta.subscription_tier),
+    ...(email ? { id: createHash('sha256').update(email).digest('hex').slice(0, 32) } : {}) };
 }
 // The share of the plan's allowance left this period (an absent share is zero used, as protobuf JSON leaves zeros out),
 // and pay-as-you-go spending once a cap is set. A prepaid balance is money, not a share, and is not shown.
@@ -36,6 +41,6 @@ export function panel([subscription, info, billing]) {
   const who = account(subscription, info);
   if (!who) return { items: [] };
   const meters = windows(billing);
-  return { items: [{ type: 'card', title: who.name || 'Grok', ...(who.plan ? { subtitle: who.plan } : {}),
+  return { items: [{ type: 'card', title: who.name || 'Grok', ...(who.plan ? { subtitle: who.plan } : {}), ...(who.id ? { identity: `grok:${who.id}` } : {}),
     items: meters.length ? meters : [{ type: 'error', text: '暂时无法获取额度：Grok 没有给出额度' }] }] };
 }

@@ -141,6 +141,6 @@ export const BUILTIN_COMMANDS = { 'host-sim': 'host' };
 export const ITEM_TYPES = ['card', 'meter', 'stat', 'markdown', 'button', 'error'];
 export const OUTPUT_LIMIT = 64 * 1024;
 export const ARGS_LIMIT = 4 * 1024;
-export const ITEM_LIMITS = { items: 50, cardItems: 20, label: 80, markdown: 4000, error: 500, confirm: 200 };
+export const ITEM_LIMITS = { items: 50, cardItems: 20, label: 80, identity: 200, markdown: 4000, error: 500, confirm: 200 };
 // A reading is stopped past this (docs/plugins.md「面板」).
 export const PANEL_READ_LIMIT = 30_000;

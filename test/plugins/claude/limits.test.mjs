@@ -8,7 +8,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { panelItems } from '../../../check/panel.mjs';
-import { ClaudeSessionLimits } from '../../../plugins/claude/agent/limits.mjs';
+import { ClaudeSessionLimits, accountHash } from '../../../plugins/claude/agent/limits.mjs';
 import { panel } from '../../../plugins/claude/scripts/quota.mjs';
 import { declaredPanel } from '../command.mjs';
 
@@ -120,4 +120,20 @@ test('the「Claude」panel shows what the sessions reported, says when it all ha
   assert.deepEqual(panelItems(JSON.stringify({ items }), declared), ['card', 'meter', 'meter'], 'a reading Coda takes');
   now = Date.parse('2026-10-13T00:00:00Z');
   assert.deepEqual(panel(limits()).items[0].items, [{ type: 'error', text: '额度记录已过期，会话再运行后更新' }]);
+});
+
+test('the account a session starts as names the card, as a hash; another account starts the windows afresh', async t => {
+  const dir = await root(t), path = join(dir, 'limits.json'), declared = declaredPanel('claude');
+  const limits = () => new ClaudeSessionLimits({ path, now: () => NOW });
+  limits().observe(event);
+  assert.equal(panel(limits()).items[0].identity, undefined, 'no session said yet: the card is this machine\'s alone');
+  limits().noteAccount(' Me@Example.com ');
+  const { items } = panel(limits());
+  assert.equal(items[0].identity, `claude:${accountHash('me@example.com')}`);
+  assert.ok(!(await readFile(path, 'utf8')).includes('example.com'), 'the email itself is not kept');
+  assert.deepEqual(panelItems(JSON.stringify({ items }), declared), ['card', 'meter', 'meter'], 'a reading Coda takes');
+  limits().observe(event);
+  assert.equal(limits().quota().length, 2, 'windows reported after it are kept with it');
+  limits().noteAccount('other@example.com');
+  assert.equal(limits().known(), false, 'what was reported of the other account is not this one\'s');
 });

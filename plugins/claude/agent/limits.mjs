@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 
 // The quota of the account Claude sessions run as, read from what the sessions themselves report. A setup token has no
@@ -19,9 +20,13 @@ function reported(info) {
 // The latest each window was reported at, kept across restarts: events come only as a window moves, so a backend that
 // started just now would otherwise show nothing until one does. A window past its reset is no longer known, not full:
 // what was used since is not seen from here.
+// The account they run as is kept beside them, as a hash of its email (`account`): what Coda's group view compares across
+// machines, the email itself staying here. A session reports it as it starts (session.mjs); none where Claude runs on an
+// API key or a cloud provider, or the login does not say.
+export const accountHash = email => createHash('sha256').update(email.trim().toLowerCase()).digest('hex').slice(0, 32);
 export class ClaudeSessionLimits {
   constructor({ path = null, now = Date.now } = {}) {
-    this.path = path; this.now = now; this.windows = new Map(); this.stamp = null;
+    this.path = path; this.now = now; this.windows = new Map(); this.account = null; this.stamp = null;
     this.read();
   }
   read() {
@@ -29,8 +34,12 @@ export class ClaudeSessionLimits {
     let stamp;
     try { stamp = statSync(this.path).mtimeMs; } catch { return; }
     if (stamp === this.stamp) return;
-    this.stamp = stamp; this.windows = new Map();
-    try { for (const [key, w] of Object.entries(JSON.parse(readFileSync(this.path, 'utf8')).windows)) this.take(key, w?.utilization, w?.resetsAt); }
+    this.stamp = stamp; this.windows = new Map(); this.account = null;
+    try {
+      const saved = JSON.parse(readFileSync(this.path, 'utf8'));
+      for (const [key, w] of Object.entries(saved.windows)) this.take(key, w?.utilization, w?.resetsAt);
+      if (typeof saved.account === 'string' && /^[0-9a-f]{32}$/.test(saved.account)) this.account = saved.account;
+    }
     catch { /* Not readable now: read again when it next changes. */ this.stamp = null; }
   }
   known() { this.read(); return this.windows.size > 0; }
@@ -40,6 +49,16 @@ export class ClaudeSessionLimits {
     if (was?.resetsAt === resetsAt && used(was.utilization) === used(utilization)) return false;
     this.windows.set(key, { utilization, resetsAt });
     return true;
+  }
+  // The account a session started as: kept when it is another one than before, which starts its windows afresh.
+  noteAccount(email) {
+    if (typeof email !== 'string' || !email.trim()) return;
+    const account = accountHash(email);
+    if (account === this.account) return;
+    // Another account's windows say nothing of this one.
+    if (this.account) this.windows = new Map();
+    this.account = account;
+    this.save();
   }
   observe(info) {
     let changed = false;
@@ -51,7 +70,7 @@ export class ClaudeSessionLimits {
     try {
       // Every Claude session writes it: a temporary file of each writer's own.
       const temp = `${this.path}.${process.pid}.tmp`;
-      writeFileSync(temp, JSON.stringify({ version: 1, windows: Object.fromEntries(this.windows) }), { mode: 0o600 });
+      writeFileSync(temp, JSON.stringify({ version: 1, windows: Object.fromEntries(this.windows), ...(this.account ? { account: this.account } : {}) }), { mode: 0o600 });
       renameSync(temp, this.path);
     } catch { /* Not written: the next window that moves writes again. */ }
   }

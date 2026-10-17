@@ -8,7 +8,8 @@ const instant = value => typeof value === 'string' && Number.isFinite(Date.parse
 export function account(data) {
   if (data?.kind === 'error' && data.status === 401) return null;
   if (data?.kind !== 'ok' || !data.userInfo) throw new Error('Kimi 没有说明是谁登录的');
-  return { name: line(data.userInfo.nickname), plan: line(data.userInfo.userLevelName) };
+  const id = typeof data.userInfo.userId === 'string' || typeof data.userInfo.userId === 'number' ? line(String(data.userInfo.userId), 120) : '';
+  return { name: line(data.userInfo.nickname), plan: line(data.userInfo.userLevelName), ...(id ? { id } : {}) };
 }
 // The windows the plan has (5 hours, 7 days, monthly; those it has not are skipped), then the booster balance. Bars of what
 // is left; a used ratio unknown draws none.
@@ -32,5 +33,7 @@ export function windows(data) {
 }
 export function card(who, usage) {
   const items = usage.error ? [{ type: 'error', text: `暂时无法获取额度：${usage.error}` }] : windows(usage.data) ?? [{ type: 'error', text: '暂时无法获取额度：Kimi 没有给出额度' }];
-  return { type: 'card', title: who.name || 'Kimi', ...(who.plan ? { subtitle: who.plan } : {}), items: items.length ? items : [{ type: 'error', text: '暂时无法获取额度：Kimi 没有给出额度' }] };
+  // The account, compared across machines by Coda's group view: its user ID, which the card does not show.
+  return { type: 'card', title: who.name || 'Kimi', ...(who.plan ? { subtitle: who.plan } : {}), ...(who.id ? { identity: `kimi:${who.id}` } : {}),
+    items: items.length ? items : [{ type: 'error', text: '暂时无法获取额度：Kimi 没有给出额度' }] };
 }

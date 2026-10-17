@@ -167,6 +167,8 @@ test('the panel shows only managed accounts, with a selection and removal action
   };
   const view = await panel(accounts, 'w', read), cards = view.items.filter(i => i.type === 'card'); takes(view);
   assert.deepEqual(cards.map(c => c.title), ['work', 'home']);
+  // Each account by the manager's identity for it, the same on every machine: Coda's group view shows it once.
+  assert.deepEqual(cards.map(c => c.identity), ['codex-account:w', 'codex-account:h']);
   assert.equal(cards[0].items[0].label, '已选择'); assert.equal(cards[0].items[0].disabled, true);
   assert.ok(cards.every(c => c.items.some(i => i.action === 'remove')));
   assert.ok(cards[0].items.some(i => i.action === 'reset' && i.args.creditId === 'c1'));

@@ -34,7 +34,9 @@ test('Grok credits read as its own /usage shows them: bars of what is left', () 
   assert.deepEqual(windows({}), []);
   // The name given to xAI and the plan, never the email; none when no one is signed in.
   const subscription = { authenticated: true, meta: { email: 'me@example.com', subscription_tier: 'SuperGrok' } };
-  assert.deepEqual(account(subscription, { email: 'me@example.com', firstName: 'Lea', lastName: null }), { name: 'Lea', plan: 'SuperGrok' });
+  // The account Coda's group view compares across machines is a hash of the email, never the email.
+  assert.deepEqual(account(subscription, { email: ' Me@example.com', firstName: 'Lea', lastName: null }), { name: 'Lea', plan: 'SuperGrok', id: '8c2a47d3bdb8d3096a6479f53eac3b72' });
+  assert.deepEqual(account(subscription, { firstName: 'Lea' }), { name: 'Lea', plan: 'SuperGrok' });
   assert.equal(account({ authenticated: false }, {}), null);
   assert.throws(() => account({}, {}), /没有说明登录状态/, 'a passing fault is not a sign-out');
   const { items } = panel([subscription, { firstName: null }, {}]);
@@ -73,7 +75,7 @@ process.stdin.on('data', chunk => {
 test('who is signed in and the credits are asked of one Grok, in order, and a CLI that does not answer fails the reading', async t => {
   const m = await machine(t);
   const ask = (mode, extra = {}) => grokAsk(['_x.ai/auth/check_subscription', '_x.ai/auth/info', '_x.ai/billing'], { binary: m.binary, env: { ...process.env, FAKE_GROK: mode }, ...extra });
-  assert.deepEqual(panel(await ask('')).items[0], { type: 'card', title: 'Lea', subtitle: 'SuperGrok',
+  assert.deepEqual(panel(await ask('')).items[0], { type: 'card', title: 'Lea', subtitle: 'SuperGrok', identity: 'grok:8c2a47d3bdb8d3096a6479f53eac3b72',
     items: [{ type: 'meter', label: '7 天', value: '剩余 75%', fraction: 0.75, time: '2026-10-06T11:48:35.000Z', timeLabel: '重置' }] });
   // The name is asked for once the subscription check, which may fill it in, has answered.
   assert.equal(panel(await ask('late-name')).items[0].title, 'Lea');

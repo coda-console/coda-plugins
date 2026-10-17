@@ -146,6 +146,10 @@ export class ClaudeSession {
         .finally(() => clearTimeout(timer));
       if (this.phase !== 'starting') throw failure('Claude 会话在初始化时结束', -32001);
       this.models = claudeModels(initialization.models); this.commands = initialization.commands ?? [];
+      // Who the session runs as, for the「Claude」panel (limits.mjs): the windows it reports are that account's.
+      if (this.env.CODA_PLUGIN_STATE && initialization.account?.email) {
+        new ClaudeSessionLimits({ path: join(this.env.CODA_PLUGIN_STATE, 'limits.json') }).noteAccount(initialization.account.email);
+      }
       this.current.model = this.models[0]?.id;
       this.phase = 'running';
       return { ...(resume ? {} : { sessionId: this.sessionId }), configOptions: this.options() };

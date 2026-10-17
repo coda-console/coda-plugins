@@ -27,9 +27,10 @@ function item(raw, where, actions, inCard) {
   check(!(inCard && raw.type === 'card'), `${where}：卡片里不能再放卡片`);
   switch (raw.type) {
     case 'card':
-      keys(raw, ['type', 'title', 'subtitle', 'items'], where);
+      keys(raw, ['type', 'title', 'subtitle', 'identity', 'items'], where);
       check(Array.isArray(raw.items) && raw.items.length <= L.cardItems, `${where} 的 items 须为不超过 ${L.cardItems} 项的数组`);
       text(raw.title, L.label, `${where} 的 title`); text(raw.subtitle, L.label, `${where} 的 subtitle`, { need: false });
+      text(raw.identity, L.identity, `${where} 的 identity`, { need: false });
       return [raw.type, ...raw.items.flatMap((r, i) => item(r, `${where}.items[${i}]`, actions, true))];
     case 'meter':
       keys(raw, ['type', 'label', 'value', 'fraction', 'note', 'time', 'timeLabel'], where);

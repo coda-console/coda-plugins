@@ -3,6 +3,9 @@
 
 const CARD_ITEMS = 20;
 const line = (value, max = 80) => typeof value === 'string' ? [...value.replace(/\s+/g, ' ').trim()].slice(0, max).join('') : '';
+// The account a card shows, compared across machines by Coda's group view (its panel cards' `identity`): the ChatGPT
+// account's email, which this login's card also shows.
+const identity = account => line(account.email, 180) ? { identity: `codex:${line(account.email, 180).toLowerCase()}` } : {};
 const unixTime = value => typeof value === 'number' && Number.isFinite(new Date(value * 1000).getTime()) ? new Date(value * 1000).toISOString() : null;
 // A credit's expiry as the clients write times (UTC+8), here because a figure's value is text.
 export function utc8(seconds) {
@@ -50,7 +53,7 @@ export function card(account, result) {
       confirm: `使用 ${line(name, 60)} 的完全重置？\n用最早到期的那一次（${first.expiresAt == null ? '不会过期' : `${utc8(first.expiresAt)} 到期，UTC+8`}）。成功后消耗 1 次，无法撤销。` });
   }
   if (!items.length) items.push({ type: 'error', text: '暂时无法获取额度：Codex 没有给出额度窗口' });
-  return { type: 'card', title: name, ...(line(account.planType) ? { subtitle: line(account.planType) } : {}), items: items.slice(0, CARD_ITEMS) };
+  return { type: 'card', title: name, ...(line(account.planType) ? { subtitle: line(account.planType) } : {}), ...identity(account), items: items.slice(0, CARD_ITEMS) };
 }
 
 // The panel: nothing without a login (it is then offered under「添加资源」), a card for one. Quota Codex cannot read stays
@@ -63,7 +66,7 @@ export async function panel(server) {
   let result;
   try { result = await server.request('account/rateLimits/read'); }
   catch (error) {
-    return { items: [{ type: 'card', title: line(account.email) || '本机登录', ...(line(account.planType) ? { subtitle: line(account.planType) } : {}),
+    return { items: [{ type: 'card', title: line(account.email) || '本机登录', ...(line(account.planType) ? { subtitle: line(account.planType) } : {}), ...identity(account),
       items: [{ type: 'error', text: `暂时无法获取额度：${error.message}` }] }] };
   }
   return { items: [card(account, result)] };

@@ -42,7 +42,8 @@ const limits = { rateLimits: { primary: { usedPercent: 36, windowDurationMins: 3
 
 test('the Codex panel shows the login with what is left, and offers the full reset that expires first, named in its question', async () => {
   const { items } = await panel(server({ 'account/read': signedIn, 'account/rateLimits/read': limits }));
-  assert.deepEqual(items, [{ type: 'card', title: 'me@example.com', subtitle: 'pro', items: [
+  // The account by its email, which Coda's group view compares across machines.
+  assert.deepEqual(items, [{ type: 'card', title: 'me@example.com', subtitle: 'pro', identity: 'codex:me@example.com', items: [
     { type: 'button', label: '使用完全重置', action: 'reset', args: { creditId: 'first' },
       confirm: '使用 me@example.com 的完全重置？\n用最早到期的那一次（2026/10/20 9:00 到期，UTC+8）。成功后消耗 1 次，无法撤销。' },
     { type: 'meter', label: '5 小时', value: '剩余 64%', fraction: 0.64, time: new Date(early * 1000).toISOString(), timeLabel: '重置' },

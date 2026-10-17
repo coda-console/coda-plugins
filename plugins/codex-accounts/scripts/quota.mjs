@@ -53,7 +53,10 @@ export function card(account, chosen, { result, error }) {
     }
     if (!items.length) items.push({ type: 'error', text: '暂时无法获取额度：Codex 没有给出额度窗口' });
   }
-  return { type: 'card', title: name, ...(line(account.plan) ? { subtitle: line(account.plan) } : {}), items: [...buttons, ...items].slice(0, CARD_ITEMS) };
+  // The same account on another machine has the same identity (a hash of its ChatGPT account ID): Coda's group view
+  // shows it once.
+  return { type: 'card', title: name, ...(line(account.plan) ? { subtitle: line(account.plan) } : {}), identity: `codex-account:${account.identity}`,
+    items: [...buttons, ...items].slice(0, CARD_ITEMS) };
 }
 
 // Empty on a new machine: Coda offers this panel's signIn under「添加资源」. Existing accounts can be added to or signed
