@@ -29,7 +29,7 @@ const server = answers => ({ asked: [], async request(method, params) {
   if (answer instanceof Error) throw answer;
   return typeof answer === 'function' ? answer(params) : answer;
 } });
-const signedIn = { account: { type: 'chatgpt', email: 'me@example.com', planType: 'pro' }, requiresOpenaiAuth: true };
+const signedIn = { account: { type: 'chatgpt', email: 'me@example.com', planType: 'pro' }, workspaceRouting: { chatgptAccountId: 'ws-personal' }, requiresOpenaiAuth: true };
 // 2026-10-20 01:00 and 2026-11-02 01:00 UTC.
 const [early, late] = [Date.UTC(2026, 9, 20, 1) / 1000, Date.UTC(2026, 10, 2, 1) / 1000];
 const limits = { rateLimits: { primary: { usedPercent: 36, windowDurationMins: 300, resetsAt: early }, secondary: { usedPercent: null, windowDurationMins: 10080 } },
@@ -42,8 +42,8 @@ const limits = { rateLimits: { primary: { usedPercent: 36, windowDurationMins: 3
 
 test('the Codex panel shows the login with what is left, and offers the full reset that expires first, named in its question', async () => {
   const { items } = await panel(server({ 'account/read': signedIn, 'account/rateLimits/read': limits }));
-  // The account by its email, which Coda's group view compares across machines.
-  assert.deepEqual(items, [{ type: 'card', title: 'me@example.com', subtitle: 'pro', identity: 'codex:me@example.com', items: [
+  // The workspace the login uses, as a hash of its account ID, which Coda's group view compares across machines.
+  assert.deepEqual(items, [{ type: 'card', title: 'me@example.com', subtitle: 'pro', identity: 'codex-account:6941a40c68883449343dbf6ec558673ef50f456eead61cb4fa7ea9c519ee63aa', items: [
     { type: 'button', label: '使用完全重置', action: 'reset', args: { creditId: 'first' },
       confirm: '使用 me@example.com 的完全重置？\n用最早到期的那一次（2026/10/20 9:00 到期，UTC+8）。成功后消耗 1 次，无法撤销。' },
     { type: 'meter', label: '5 小时', value: '剩余 64%', fraction: 0.64, time: new Date(early * 1000).toISOString(), timeLabel: '重置' },
@@ -55,6 +55,16 @@ test('the Codex panel shows the login with what is left, and offers the full res
     { type: 'stat', label: '第 3 次', value: '不会过期' },
   ] }]);
   assert.deepEqual(takes({ items }), ['card', 'button', 'meter', 'meter', 'stat', 'stat', 'stat', 'stat'], 'a reading Coda takes');
+});
+
+test('one email in two workspaces is two identities, each with its own quota; a login whose workspace is not said names none', async () => {
+  const left = used => ({ rateLimits: { primary: { usedPercent: used, windowDurationMins: 300 } } });
+  const personal = (await panel(server({ 'account/read': signedIn, 'account/rateLimits/read': left(10) }))).items[0];
+  const business = (await panel(server({ 'account/read': { ...signedIn, workspaceRouting: { chatgptAccountId: 'ws-business' } }, 'account/rateLimits/read': left(90) }))).items[0];
+  assert.equal(personal.title, business.title);
+  assert.notEqual(personal.identity, business.identity);
+  const unsaid = (await panel(server({ 'account/read': { account: signedIn.account }, 'account/rateLimits/read': left(10) }))).items[0];
+  assert.equal(unsaid.identity, undefined);
 });
 
 test('the Codex panel is empty without a login, and says so when the quota cannot be read or there is none to read', async () => {
