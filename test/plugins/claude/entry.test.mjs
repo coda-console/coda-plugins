@@ -16,7 +16,7 @@ import { OTHER } from '../../../plugins/claude/agent/questions.mjs';
 import { nextRun } from '../../../plugins/claude/agent/waits.mjs';
 import { sdkEnvironment } from '../../../plugins/claude/agent/auth.mjs';
 import { SessionTitle } from '../../../plugins/claude/agent/titles.mjs';
-import { ClaudeSessionLimits } from '../../../plugins/claude/agent/limits.mjs';
+import { ClaudeSessionLimits, accountHash } from '../../../plugins/claude/agent/limits.mjs';
 import { fixtureSdk, queries } from './fixture-sdk.mjs';
 import { substituted } from '../substitute.mjs';
 
@@ -502,6 +502,29 @@ test('the plan windows a session reports go to the limits file in the plugin\'s 
     five_hour: { utilization: 0.11, resetsAt: 4102444800 - 86400 }, seven_day: { utilization: 0.91, resetsAt: 4102444800 } });
   assert.ok(!c.out.slice(before).some(m => JSON.stringify(m).includes('rate_limit')));
   assert.equal(new ClaudeSessionLimits({ path, now: () => 0 }).quota().length, 3);
+});
+
+test('a session files what it reports under the account it started as, and an older one of another account files nothing', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'coda-claude-account-')), path = join(dir, 'limits.json');
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  // The SDK as it starts a session signed in as `email`.
+  const as = email => {
+    const base = fixtureSdk();
+    return { ...base, query: options => {
+      const q = base.query(options), start = q.initializationResult.bind(q);
+      q.initializationResult = async () => ({ ...(await start()), account: email ? { email } : {} });
+      return q;
+    } };
+  };
+  const a = await setup(t, { env: { CODA_PLUGIN_STATE: dir }, sdk: as('A@example.com') }); await a.open();
+  await a.prompt('rate-limit');
+  assert.equal(JSON.parse(await readFile(path, 'utf8')).account, accountHash('a@example.com'));
+  const b = await setup(t, { env: { CODA_PLUGIN_STATE: dir }, sdk: as('b@example.com') }); await b.open();
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), { version: 1, windows: {}, account: accountHash('b@example.com') });
+  await a.prompt('rate-limit');
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')).windows, {}, 'what A\'s session reports is not B\'s');
+  const unknown = await setup(t, { env: { CODA_PLUGIN_STATE: dir }, sdk: as(null) }); await unknown.open();
+  assert.equal(JSON.parse(await readFile(path, 'utf8')).account, undefined, 'a session that does not say who it is names no one');
 });
 
 test('the entry speaks ACP over standard input and output with the SDK it is given, and ends with its input or a signal', { timeout: 20000 }, async t => {

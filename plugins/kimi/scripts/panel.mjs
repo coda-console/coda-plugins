@@ -23,7 +23,9 @@ try { seen = JSON.parse(readFileSync(seenFile, 'utf8')); } catch {}
 const known = seen?.changed === changed;
 try {
   const [usage, info] = await kimiWeb(['/api/v1/oauth/usage', ...(known ? [] : ['/api/v1/oauth/userinfo'])], { binary, home });
-  let who = known ? seen.account : seen?.account ?? { name: '', plan: '' };
+  // The login changed and who it is could not be asked: the last name and plan stand in, but not the last ID, which is
+  // the other login's and would name this one's quota as that account's.
+  let who = known ? seen.account : { name: seen?.account?.name ?? '', plan: seen?.account?.plan ?? '' };
   if (!known) {
     try {
       if (info.error) throw new Error(info.error);

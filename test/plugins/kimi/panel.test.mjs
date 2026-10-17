@@ -111,9 +111,12 @@ test('the panel shows the login and its quota, asks who it is once per state of 
   await read();
   assert.equal((await m.requests()).filter(r => r.url === '/api/v1/oauth/userinfo').length, 1, 'not asked again while the login stays as it was');
   const touch = async offset => utimes(file, new Date(), new Date(Date.now() + offset));
-  // Kimi not saying who it is keeps the account seen last; a login it refuses shows nothing.
+  // Kimi not saying who it is keeps the name seen last, but not the identity: the login changed, and the quota is of
+  // whoever it is now. A login it refuses shows nothing.
   await m.setMode('nameless'); await touch(5000);
-  assert.equal((await read())[0].title, '登月者0448');
+  const nameless = (await read())[0];
+  assert.equal(nameless.title, '登月者0448');
+  assert.equal(nameless.identity, undefined);
   await m.setMode('expired'); await touch(10000);
   assert.deepEqual((await read())[0].items, [{ type: 'error', text: '暂时无法获取额度：Kimi 没有给出额度' }]);
   await m.setMode('signed-out'); await touch(15000);

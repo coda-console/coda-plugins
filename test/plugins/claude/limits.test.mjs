@@ -122,18 +122,29 @@ test('the「Claude」panel shows what the sessions reported, says when it all ha
   assert.deepEqual(panel(limits()).items[0].items, [{ type: 'error', text: '额度记录已过期，会话再运行后更新' }]);
 });
 
-test('the account a session starts as names the card, as a hash; another account starts the windows afresh', async t => {
+test('the account the latest session starts as names the card, as a hash; what another account reports is not its', async t => {
   const dir = await root(t), path = join(dir, 'limits.json'), declared = declaredPanel('claude');
   const limits = () => new ClaudeSessionLimits({ path, now: () => NOW });
+  const a = accountHash(' Me@Example.com '), b = accountHash('other@example.com');
   limits().observe(event);
-  assert.equal(panel(limits()).items[0].identity, undefined, 'no session said yet: the card is this machine\'s alone');
-  limits().noteAccount(' Me@Example.com ');
+  assert.equal(panel(limits()).items[0].identity, undefined, 'no session said who it is: the card is this machine\'s alone');
+  limits().startedAs(a);
+  assert.equal(limits().known(), false, 'what was reported before is not known to be this account\'s');
+  limits().observe(event, a);
   const { items } = panel(limits());
   assert.equal(items[0].identity, `claude:${accountHash('me@example.com')}`);
   assert.ok(!(await readFile(path, 'utf8')).includes('example.com'), 'the email itself is not kept');
   assert.deepEqual(panelItems(JSON.stringify({ items }), declared), ['card', 'meter', 'meter'], 'a reading Coda takes');
+  // Another account's session starts while one of the first is still running: what the older one reports is not B's.
+  limits().startedAs(b);
+  limits().observe(event, a);
+  assert.equal(limits().known(), false);
+  limits().observe({ rateLimitType: 'five_hour', utilization: 0.2, resetsAt: at('2026-10-08T03:00:00Z') }, b);
+  assert.deepEqual(panel(limits()).items[0].items.map(i => i.value), ['剩余 80%']);
+  assert.equal(panel(limits()).items[0].identity, `claude:${b}`);
+  // A session that cannot say who it is names no one, and its windows are not filed under the account before.
+  limits().startedAs(null);
   limits().observe(event);
-  assert.equal(limits().quota().length, 2, 'windows reported after it are kept with it');
-  limits().noteAccount('other@example.com');
-  assert.equal(limits().known(), false, 'what was reported of the other account is not this one\'s');
+  assert.equal(panel(limits()).items[0].identity, undefined);
+  assert.equal(limits().quota().length, 2);
 });

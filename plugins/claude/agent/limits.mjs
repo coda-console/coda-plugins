@@ -20,9 +20,9 @@ function reported(info) {
 // The latest each window was reported at, kept across restarts: events come only as a window moves, so a backend that
 // started just now would otherwise show nothing until one does. A window past its reset is no longer known, not full:
 // what was used since is not seen from here.
-// The account they run as is kept beside them, as a hash of its email (`account`): what Coda's group view compares across
-// machines, the email itself staying here. A session reports it as it starts (session.mjs); none where Claude runs on an
-// API key or a cloud provider, or the login does not say.
+// The account they are of is kept beside them, as a hash of its email (`account`): what Coda's group view compares across
+// machines, the email itself staying here. The file is the account the latest session started as (session.mjs); none
+// where Claude runs on an API key or a cloud provider, or the login does not say.
 export const accountHash = email => createHash('sha256').update(email.trim().toLowerCase()).digest('hex').slice(0, 32);
 export class ClaudeSessionLimits {
   constructor({ path = null, now = Date.now } = {}) {
@@ -50,17 +50,17 @@ export class ClaudeSessionLimits {
     this.windows.set(key, { utilization, resetsAt });
     return true;
   }
-  // The account a session started as: kept when it is another one than before, which starts its windows afresh.
-  noteAccount(email) {
-    if (typeof email !== 'string' || !email.trim()) return;
-    const account = accountHash(email);
+  // The account a session started as, a hash or null when it is not known: from then on the file is that one's. Another
+  // than before starts the windows afresh, as another account's say nothing of it; an unknown one names none.
+  startedAs(account) {
     if (account === this.account) return;
-    // Another account's windows say nothing of this one.
-    if (this.account) this.windows = new Map();
-    this.account = account;
+    this.windows = new Map(); this.account = account;
     this.save();
   }
-  observe(info) {
+  // What a session reports, as of the account it started as: one that started as another (still running from before a
+  // switch) says nothing of the account the file is now.
+  observe(info, account = null) {
+    if (account !== this.account) return;
     let changed = false;
     for (const [key, w] of reported(info)) changed = this.take(key, w?.utilization, w?.resetsAt) || changed;
     if (changed) this.save();

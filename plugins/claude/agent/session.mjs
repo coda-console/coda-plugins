@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 import { realpath, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { agent, PROTOCOL_VERSION, RequestError } from '@agentclientprotocol/sdk';
-import { ClaudeSessionLimits } from './limits.mjs';
+import { ClaudeSessionLimits, accountHash } from './limits.mjs';
 import { sdkEnvironment } from './auth.mjs';
 import { SessionTitle } from './titles.mjs';
 import { MODEL_EFFORT, MODES, claudeModels, configOptions, reportedModel } from './models.mjs';
@@ -146,10 +146,11 @@ export class ClaudeSession {
         .finally(() => clearTimeout(timer));
       if (this.phase !== 'starting') throw failure('Claude 会话在初始化时结束', -32001);
       this.models = claudeModels(initialization.models); this.commands = initialization.commands ?? [];
-      // Who the session runs as, for the「Claude」panel (limits.mjs): the windows it reports are that account's.
-      if (this.env.CODA_PLUGIN_STATE && initialization.account?.email) {
-        new ClaudeSessionLimits({ path: join(this.env.CODA_PLUGIN_STATE, 'limits.json') }).noteAccount(initialization.account.email);
-      }
+      // Who the session runs as, for the「Claude」panel (limits.mjs): the windows it reports are that account's, and
+      // only while the panel is of that account.
+      const email = initialization.account?.email;
+      this.account = typeof email === 'string' && email.trim() ? accountHash(email) : null;
+      if (this.env.CODA_PLUGIN_STATE) new ClaudeSessionLimits({ path: join(this.env.CODA_PLUGIN_STATE, 'limits.json') }).startedAs(this.account);
       this.current.model = this.models[0]?.id;
       this.phase = 'running';
       return { ...(resume ? {} : { sessionId: this.sessionId }), configOptions: this.options() };
@@ -248,7 +249,7 @@ export class ClaudeSession {
       case 'assistant': return this.assistant(m, parent);
       case 'user': return this.toolResults(m, parent);
       case 'result': return this.result(m);
-      case 'rate_limit_event': if (this.env.CODA_PLUGIN_STATE) new ClaudeSessionLimits({ path: join(this.env.CODA_PLUGIN_STATE, 'limits.json') }).observe(m.rate_limit_info);
+      case 'rate_limit_event': if (this.env.CODA_PLUGIN_STATE) new ClaudeSessionLimits({ path: join(this.env.CODA_PLUGIN_STATE, 'limits.json') }).observe(m.rate_limit_info, this.account ?? null);
     }
   }
   system(m) {
