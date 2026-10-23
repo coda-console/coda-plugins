@@ -3,7 +3,7 @@
   "id": "magpie",
   "displayName": "Magpie",
   "description": "Magpie：把这台机器上的 Magpie 网关（127.0.0.1:3425）作为模型服务提供给 Pi 等插件选用，不用填地址和 Key；安装时没有 Magpie 就装上，并让网关常驻。",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "contributes": {
     "configuration": {
       "title": "Magpie",
@@ -35,6 +35,14 @@
         "title": "Magpie · Anthropic",
         "api": "anthropic-messages",
         "url": "http://127.0.0.1:3425"
+      }
+    ],
+    "panels": [
+      {
+        "id": "quotas",
+        "title": "Magpie 额度",
+        "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/quotas.mjs\"",
+        "maxAge": "PT1M"
       }
     ],
     "setup": {

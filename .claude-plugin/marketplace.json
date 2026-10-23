@@ -16,7 +16,7 @@
       "name": "magpie",
       "displayName": "Magpie",
       "description": "把这台机器上的 Magpie 网关作为模型服务提供给 Pi 等插件选用，不用填地址和 Key；安装时没有 Magpie 就装上，并让网关常驻。",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "category": "模型与账号",
       "tags": ["model-provider", "gateway"],
       "source": "./plugins/magpie"
