@@ -73,6 +73,27 @@ test('past thirty hangs a minute they are counted, and the count written as the 
   assert.equal(log.read().find(e => e.kind === 'dropped').count, 5);
 });
 
+test('a hang still waiting when the page\'s summary lets it go has its end written all the same', async t => {
+  const waiting = socket(1);
+  let rows = [waiting];
+  const { made, log, after } = recorder(t, { table: () => rows });
+  await made.refresh();
+  await made.sample(); after(1000);
+  // Each minute 29 more hang, and those of the minute before end: past 300 hangs, the one still waiting is the oldest.
+  for (let minute = 0; minute < 11; minute++) {
+    rows = [waiting, ...Array.from({ length: 29 }, (_, i) => socket(1000 + minute * 100 + i))];
+    await made.sample(); after(3000); await made.sample(); after(57_000);
+  }
+  const first = log.read().find(e => e.kind === 'hang');
+  assert.equal(first.local, '192.168.31.120:1');
+  assert.equal(log.read().filter(e => e.kind === 'hang').length, 320);
+  await made.probeAll();
+  assert.equal(made.summary.hangs.has(first.id), false, 'let go of by the summary');
+  rows = [];
+  await made.sample();
+  assert.deepEqual(log.read().filter(e => e.kind === 'hang-end' && e.id === first.id).map(e => e.outcome), ['gone']);
+});
+
 test('the count of a minute past the bound is written though nothing hangs after it', async t => {
   let rows = Array.from({ length: 35 }, (_, i) => socket(7000 + i));
   const { made, log, after } = recorder(t, { table: () => rows });

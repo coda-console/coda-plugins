@@ -18,6 +18,8 @@ export class Recorder {
     ifaceOf = ip => interfaceOf(ip), mihomo = { tunDevice, connectionFrom }, sampleMs = SAMPLE, probeMs = PROBE, listen = () => {} }) {
     Object.assign(this, { log, settings, now, readSockets, settleSocket, command, request, ifaceOf, mihomo, sampleMs, probeMs, listen });
     this.tracker = new Tracker(); this.summary = new Summary(); this.current = {}; this.tun = null; this.pruned = null; this.unwritten = [];
+    // The hangs written that have not ended: their ends are written whatever the page's summary keeps.
+    this.open = new Set();
     this.status = { supported: true, mihomo: 'off', tun: null, unwritten: null, since: now() };
     this.timers = new Set(); this.stopped = false; this.minute = { start: 0, written: 0, dropped: 0 };
   }
@@ -25,10 +27,10 @@ export class Recorder {
     this.prune();
     // A hang the last recorder had not seen end, any the log keeps: what became of it while nothing recorded is not known,
     // and said so. Then the page's week.
-    const open = new Map();
-    for (const e of this.log.read({ kinds: ['hang', 'hang-end'] })) if (e.kind === 'hang') open.set(e.id, e); else open.delete(e.id);
+    const unended = new Map();
+    for (const e of this.log.read({ kinds: ['hang', 'hang-end'] })) if (e.kind === 'hang') unended.set(e.id, e); else unended.delete(e.id);
     for (const event of this.log.read({ from: this.now() - WEEK })) this.summary.add(event);
-    for (const hang of open.values()) this.write({ kind: 'hang-end', id: hang.id, at: this.now(), outcome: 'unknown' });
+    for (const hang of unended.values()) this.write({ kind: 'hang-end', id: hang.id, at: this.now(), outcome: 'unknown' });
     await this.refresh();
     this.loop(() => this.sample(), this.sampleMs);
     this.loop(() => this.probeAll(), this.probeMs);
@@ -107,9 +109,10 @@ export class Recorder {
     for (const hang of began) {
       if (this.minute.written >= HANGS_A_MINUTE) { this.minute.dropped++; continue; }
       this.minute.written++;
+      this.open.add(hang.id);
       this.write(await this.describe(hang, now));
     }
-    for (const end of ended) if (this.summary.hangs.has(end.id)) this.write({ kind: 'hang-end', id: end.id, at: end.at, outcome: end.outcome });
+    for (const end of ended) if (this.open.delete(end.id)) this.write({ kind: 'hang-end', id: end.id, at: end.at, outcome: end.outcome });
   }
   // A hang as it is written: its process and what it was started with, both ends whole and the interface it goes out of,
   // whether that is mihomo's TUN, and whether mihomo took it.
