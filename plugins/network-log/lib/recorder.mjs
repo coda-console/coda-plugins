@@ -23,9 +23,12 @@ export class Recorder {
   }
   async start() {
     this.prune();
+    // A hang the last recorder had not seen end, any the log keeps: what became of it while nothing recorded is not known,
+    // and said so. Then the page's week.
+    const open = new Map();
+    for (const e of this.log.read({ kinds: ['hang', 'hang-end'] })) if (e.kind === 'hang') open.set(e.id, e); else open.delete(e.id);
     for (const event of this.log.read({ from: this.now() - WEEK })) this.summary.add(event);
-    // A hang the last recorder had not seen end: what became of it while nothing recorded is not known, and said so.
-    for (const hang of this.summary.hangList()) if (!hang.end) this.write({ kind: 'hang-end', id: hang.id, at: this.now(), outcome: 'unknown' });
+    for (const hang of open.values()) this.write({ kind: 'hang-end', id: hang.id, at: this.now(), outcome: 'unknown' });
     await this.refresh();
     this.loop(() => this.sample(), this.sampleMs);
     this.loop(() => this.probeAll(), this.probeMs);

@@ -1,7 +1,7 @@
 // The 网络记录 plugin's recorder, its table, probes and mihomo stood in for, on a clock moved by hand: what it writes of a
 // connection that hangs and how it ends, how it bounds a flood of them, its probes, and a system it cannot read.
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -102,12 +102,25 @@ test('a hang the last recorder did not see end is written as ended without knowi
   assert.equal(log.read().filter(e => e.kind === 'hang-end').length, 2);
 });
 
+test('a hang left open by a recorder stopped longer than the page\'s week is ended without knowing how, as it starts again', async t => {
+  const { made, log, at } = recorder(t);
+  log.append({ kind: 'hang', id: 'old', at: at() - 8 * 86_400_000, process: 'git-remote-http', local: '192.168.31.120:1', remote: '20.205.243.166:443' });
+  await made.start();
+  made.stop();
+  assert.deepEqual(log.read().filter(e => e.kind === 'hang-end').map(e => [e.id, e.outcome, e.at]), [['old', 'unknown', at()]]);
+  assert.equal(made.summary.hangs.has('old'), false, 'past the page\'s week');
+});
+
 test('what the log does not take (the disk full) waits in turn, is shown meanwhile, and is written once the log takes it', async t => {
   let rows = [socket(9001), socket(9002)];
   const { made, log, after } = recorder(t, { table: () => rows });
-  const append = log.append.bind(log);
+  // A full disk takes part of a line, then refuses.
   let full = false;
-  log.append = event => { if (full) throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' }); append(event); };
+  log.appendFile = (file, text) => {
+    if (!full) return appendFileSync(file, text);
+    appendFileSync(file, text.slice(0, 20));
+    throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' });
+  };
   await made.refresh();
   await made.sample(); after(3000); await made.sample();
   assert.equal(log.read().filter(e => e.kind === 'hang').length, 2);

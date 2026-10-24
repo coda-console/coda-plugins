@@ -1,7 +1,7 @@
 // The 网络记录 plugin's log and its command `network-log`, run as Coda runs a plugin's command from its manifest (`sh -c`,
 // the arguments after it, the plugin's state directory in CODA_PLUGIN_STATE), over a log the test writes.
 import assert from 'node:assert/strict';
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -24,6 +24,28 @@ test('the log: a file a day, a while read across days, a broken line left out, t
   assert.deepEqual(log.read({ from: start + day, to: start + 2 * day }).map(e => e.n), [1, 2]);
   log.prune(start + 3 * day);
   assert.deepEqual(readdirSync(dir).sort(), [`${dayOf(start + 2 * day)}.jsonl`, `${dayOf(start + 3 * day)}.jsonl`]);
+});
+
+test('a write that failed partway leaves no broken line: the file is cut back to its last whole line before the next', t => {
+  const dir = join(state(t), 'log'), at = Date.parse('2026-10-24T03:00:00+08:00');
+  let failing = false;
+  const log = new Log(dir, { appendFile: (file, text) => {
+    if (!failing) return appendFileSync(file, text);
+    failing = false;
+    appendFileSync(file, text.slice(0, 20));
+    throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' });
+  } });
+  log.append({ kind: 'hang', id: 'a', at });
+  failing = true;
+  assert.throws(() => log.append({ kind: 'hang-end', id: 'a', at: at + 1000, outcome: 'gone' }), e => e.code === 'ENOSPC');
+  log.append({ kind: 'hang-end', id: 'a', at: at + 1000, outcome: 'gone' });
+  assert.deepEqual(log.read().map(e => e.kind), ['hang', 'hang-end']);
+  // What a process ended partway through a write left, cut back by the next to write the file.
+  const file = join(dir, `${dayOf(at)}.jsonl`);
+  writeFileSync(file, '{"kind":"probe","at":', { flag: 'a' });
+  new Log(dir).append({ kind: 'probe', at: at + 2000, target: 'GitHub', ok: true });
+  assert.deepEqual(new Log(dir).read().map(e => e.kind), ['hang', 'hang-end', 'probe']);
+  assert.ok(readFileSync(file, 'utf8').endsWith('}\n'));
 });
 
 test('network-log says what hung and which probes failed over the while, in words; --json gives the records', async t => {
