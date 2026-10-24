@@ -1,6 +1,6 @@
 // The 网络记录 page: the machines' connections that hung and their targets' probes over the while chosen, from the modules'
 // collections (Coda's docs/plugins.md「集合」), each object with its machine, a page of several machines put together.
-import { OUTCOMES, PHASES, route, seconds } from '../lib/summary.mjs';
+import { PHASES, endText, route, seconds } from '../lib/summary.mjs';
 
 const coda = window.coda;
 const root = document.getElementById('root');
@@ -55,6 +55,7 @@ function problems() {
     const who = several() ? `${machine.name}：` : '';
     if (object.supported === false) lines.push(`${who}这台的系统不支持读连接表，只做定时探测`);
     if (object.mihomo && object.mihomo !== 'ok' && object.mihomo !== 'off') lines.push(`${who}问不到 mihomo（${object.mihomo}），记不了连接有没有经过它`);
+    if (object.unwritten) lines.push(`${who}记录写不进磁盘（${object.unwritten.error}），${object.unwritten.count} 条先留在内存里，能写时补上`);
   }
   return lines.length ? h('div', { class: 'notes' }, lines.map(line => h('p', { class: 'note' }, line))) : null;
 }
@@ -66,7 +67,7 @@ function hangsSection(from, now) {
       : h('p', { class: 'empty' }, `${range.label}内没有卡住的连接`));
 }
 function hangRow(machine, hang, now) {
-  const ended = hang.end ? `${seconds(hang.end.at - hang.at)}后${OUTCOMES[hang.end.outcome] ?? hang.end.outcome}` : `还在等，已 ${seconds(now - hang.at)}`;
+  const ended = endText(hang) ?? `还在等，已 ${seconds(now - hang.at)}`;
   const tags = [hang.iface ? h('span', { class: hang.viaTun === false ? 'tag warn' : 'tag' }, `${hang.iface}${route(hang) ? ` · ${route(hang)}` : ''}`) : h('span', { class: 'tag' }, '网卡不明'),
     hang.mihomo?.taken === false ? h('span', { class: 'tag warn' }, 'mihomo 没收到') : null,
     hang.mihomo?.taken ? h('span', { class: 'tag' }, `mihomo 收到了${hang.mihomo.chains?.length ? ` · ${hang.mihomo.chains[0]}` : ''}`) : null,

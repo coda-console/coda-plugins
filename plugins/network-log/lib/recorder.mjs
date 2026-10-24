@@ -17,13 +17,15 @@ export class Recorder {
   constructor({ log, settings, now = Date.now, readSockets = sockets, settleSocket = settle, command = commandOf, request = probe,
     ifaceOf = ip => interfaceOf(ip), mihomo = { tunDevice, connectionFrom }, sampleMs = SAMPLE, probeMs = PROBE, listen = () => {} }) {
     Object.assign(this, { log, settings, now, readSockets, settleSocket, command, request, ifaceOf, mihomo, sampleMs, probeMs, listen });
-    this.tracker = new Tracker(); this.summary = new Summary(); this.current = {}; this.tun = null; this.pruned = null;
-    this.status = { supported: true, mihomo: 'off', tun: null, since: now() };
+    this.tracker = new Tracker(); this.summary = new Summary(); this.current = {}; this.tun = null; this.pruned = null; this.unwritten = [];
+    this.status = { supported: true, mihomo: 'off', tun: null, unwritten: null, since: now() };
     this.timers = new Set(); this.stopped = false; this.minute = { start: 0, written: 0, dropped: 0 };
   }
   async start() {
     this.prune();
     for (const event of this.log.read({ from: this.now() - WEEK })) this.summary.add(event);
+    // A hang the last recorder had not seen end: what became of it while nothing recorded is not known, and said so.
+    for (const hang of this.summary.hangList()) if (!hang.end) this.write({ kind: 'hang-end', id: hang.id, at: this.now(), outcome: 'unknown' });
     await this.refresh();
     this.loop(() => this.sample(), this.sampleMs);
     this.loop(() => this.probeAll(), this.probeMs);
@@ -61,10 +63,23 @@ export class Recorder {
     this.status = next;
     this.listen({ collection: 'status', id: 'recorder', object: this.status });
   }
+  // An event written to the log, then shown. One the log does not take (the disk full) waits, those after it behind it in
+  // turn, and is written as the log takes them again (`flush`, every reading); meanwhile the status says why.
   write(event) {
-    this.log.append(event);
+    this.unwritten.push(event);
+    this.flush();
     const changed = this.summary.add(event);
     if (changed) this.listen({ ...changed, object: this.summary.get(changed.collection, changed.id) });
+  }
+  flush() {
+    while (this.unwritten.length) {
+      try { this.log.append(this.unwritten[0]); } catch (e) {
+        this.setStatus({ unwritten: { count: this.unwritten.length, error: e?.code ?? e?.message ?? String(e) } });
+        return;
+      }
+      this.unwritten.shift();
+    }
+    this.setStatus({ unwritten: null });
   }
   // The files past the days kept removed, once a day.
   prune() {
@@ -79,12 +94,14 @@ export class Recorder {
   async sample() {
     const list = await this.readSockets();
     if (!list) { this.setStatus({ supported: false }); return false; }
+    if (this.unwritten.length) this.flush();
     const now = this.now(), { began, ended } = this.tracker.read(list, now);
+    // The minute past settled first: what it did not write is counted in the log whether or not more hang now.
+    if (now - this.minute.start >= 60_000) {
+      if (this.minute.dropped) this.write({ kind: 'dropped', at: now, count: this.minute.dropped });
+      this.minute = { start: now, written: 0, dropped: 0 };
+    }
     for (const hang of began) {
-      if (now - this.minute.start >= 60_000) {
-        if (this.minute.dropped) this.write({ kind: 'dropped', at: now, count: this.minute.dropped });
-        this.minute = { start: now, written: 0, dropped: 0 };
-      }
       if (this.minute.written >= HANGS_A_MINUTE) { this.minute.dropped++; continue; }
       this.minute.written++;
       this.write(await this.describe(hang, now));

@@ -50,11 +50,14 @@ export class Summary {
 
 // A probe as the summary keeps it: when, whether it reached, how far a failure got and why, and the phases' times.
 export const probeLine = e => ({ at: e.at, ok: e.ok, ...(e.status ? { status: e.status } : {}), ...(e.ok ? {} : { phase: e.phase, error: e.error }),
-  ms: e.ms, ...(e.address ? { address: e.address } : {}), ...(e.iface ? { iface: e.iface, viaTun: e.viaTun ?? null } : {}) });
+  ms: e.ms, ...(e.address ? { address: e.address } : {}), ...(e.resolved ? { resolved: e.resolved } : {}), ...(e.iface ? { iface: e.iface, viaTun: e.viaTun ?? null } : {}) });
 
 // The words for an outcome, a phase and an interface, shared by the page's and the command's text.
 export const PHASES = { dns: '解析', connect: '建连', tls: 'TLS', response: '等回应' };
 export const OUTCOMES = { connected: '连上了', gone: '放弃了' };
+// How a hang ended in words; null while it has not.
+export const endText = hang => !hang.end ? null : hang.end.outcome === 'unknown' ? '记录中断，结局未知'
+  : `${seconds(hang.end.at - hang.at)}后${OUTCOMES[hang.end.outcome] ?? hang.end.outcome}`;
 export const route = hang => hang.viaTun === true ? '经 mihomo' : hang.viaTun === false ? '没经过 mihomo' : null;
 export const seconds = ms => ms >= 10_000 ? `${Math.round(ms / 1000)} 秒` : `${(ms / 1000).toFixed(1)} 秒`;
 // A probe's phases each as long as it took: its times are kept as curl gives them, from the start (`dns`, `connect`, `tls`,

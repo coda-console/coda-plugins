@@ -4,7 +4,7 @@ import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Log } from '../lib/store.mjs';
-import { OUTCOMES, PHASES, Summary, phaseDurations, route, seconds } from '../lib/summary.mjs';
+import { PHASES, Summary, endText, phaseDurations, route, seconds } from '../lib/summary.mjs';
 
 const HELP = `用法：network-log [时间段] [内容] [--json]
   时间段：--since <时长>，如 30m、2h、3d（默认 24h）；或 --from <时刻> [--to <时刻>]，如 2026-10-24T02:00（本机时区）
@@ -48,7 +48,7 @@ export function hangText(hang, now) {
   if (hang.mihomo?.taken) how.push(`mihomo 收到了，去 ${hang.mihomo.to}${hang.mihomo.chains?.length ? `，经 ${[...hang.mihomo.chains].reverse().join(' → ')}` : ''}`);
   else if (hang.mihomo?.taken === false) how.push('mihomo 没收到这条连接');
   else if (hang.mihomo?.error) how.push(`问不到 mihomo：${hang.mihomo.error}`);
-  how.push(hang.end ? `${seconds(hang.end.at - hang.at)}后${OUTCOMES[hang.end.outcome] ?? hang.end.outcome}` : `记到 ${when(now)} 还在等（${seconds(now - hang.at)}）`);
+  how.push(endText(hang) ?? `记到 ${when(now)} 还在等（${seconds(now - hang.at)}）`);
   return [`  ${when(hang.at)}  ${hang.process ?? '进程不明'}${hang.pid ? `（pid ${hang.pid}）` : ''} → ${hang.remote}`, `    ${how.join('；')}`,
     ...(hang.command ? [`    ${hang.command}`] : [])].join('\n');
 }
@@ -57,7 +57,8 @@ export function probeText(probe) {
   const phases = phaseDurations(probe.ms).map(([key, took]) => `${{ dns: '解析', connect: '建连', tls: 'TLS', firstByte: '首字节' }[key]} ${ms(took)}`);
   const outcome = probe.ok ? `通（${probe.status}）` : `${PHASES[probe.phase] ?? probe.phase}阶段失败：${probe.error}`;
   const where = probe.iface ? `，网卡 ${probe.iface}${route(probe) ? `，${route(probe)}` : ''}` : '';
-  return `    ${when(probe.at)}  ${outcome}，共 ${ms(probe.ms?.total ?? 0)}${phases.length ? `（${phases.join('，')}）` : ''}${probe.address ? `，${probe.address}` : ''}${where}`;
+  const to = probe.address ? `，${probe.address}${probe.resolved ? `（解析到 ${probe.resolved}）` : ''}` : probe.resolved ? `，解析到 ${probe.resolved}` : '';
+  return `    ${when(probe.at)}  ${outcome}，共 ${ms(probe.ms?.total ?? 0)}${phases.length ? `（${phases.join('，')}）` : ''}${to}${where}`;
 }
 
 export function report(events, options, { now = Date.now(), machine = hostname() } = {}) {

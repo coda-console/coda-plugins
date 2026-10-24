@@ -50,6 +50,10 @@ test('network-log says what hung and which probes failed over the while, in word
   assert.match((await command(dir, '--probes --since 2h')).stdout, /通（200），共 420 ms（解析 3 ms，建连 2 ms，TLS 295 ms，首字节 120 ms）/);
   const lines = (await command(dir, '--json --since 2h')).stdout.trim().split('\n').map(line => JSON.parse(line));
   assert.deepEqual(lines.map(e => e.kind), ['hang', 'hang-end', 'probe', 'probe']);
+  // One whose end the recording missed (the backend restarted meanwhile) says so, not that it still waits.
+  log.append({ kind: 'hang', id: 'h2', at: now - 1_800_000, process: 'gh', pid: 9, local: '198.18.0.1:5000', remote: '198.18.0.12:443', iface: 'utun1', viaTun: true });
+  log.append({ kind: 'hang-end', id: 'h2', at: now - 1_700_000, outcome: 'unknown' });
+  assert.match((await command(dir, '--hangs --since 2h')).stdout, /网卡 utun1，经 mihomo；记录中断，结局未知/);
 });
 
 test('network-log says how it is used, and why it does not run', async t => {

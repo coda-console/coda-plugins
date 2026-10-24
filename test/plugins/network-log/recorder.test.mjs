@@ -68,9 +68,60 @@ test('past thirty hangs a minute they are counted, and the count written as the 
   assert.equal(log.read().filter(e => e.kind === 'hang').length, 30);
   rows = [socket(8000)];
   after(60_000); await made.sample(); after(3000); await made.sample();
-  // The thirty written end as the table empties; the next minute's first hang comes after the count of the five not written.
-  assert.deepEqual(log.read().map(e => e.kind).slice(30), [...Array(30).fill('hang-end'), 'dropped', 'hang']);
+  // The minute settled before the reading: the count of the five not written, the thirty written ending, the next minute's hang.
+  assert.deepEqual(log.read().map(e => e.kind).slice(30), ['dropped', ...Array(30).fill('hang-end'), 'hang']);
   assert.equal(log.read().find(e => e.kind === 'dropped').count, 5);
+});
+
+test('the count of a minute past the bound is written though nothing hangs after it', async t => {
+  let rows = Array.from({ length: 35 }, (_, i) => socket(7000 + i));
+  const { made, log, after } = recorder(t, { table: () => rows });
+  await made.refresh();
+  await made.sample(); after(3000); await made.sample();
+  rows = [];
+  after(1000); await made.sample();
+  assert.equal(log.read().filter(e => e.kind === 'dropped').length, 0, 'the minute is not over');
+  after(60_000); await made.sample();
+  assert.deepEqual(log.read().filter(e => e.kind === 'dropped').map(e => e.count), [5]);
+});
+
+test('a hang the last recorder did not see end is written as ended without knowing how, once, as it starts again', async t => {
+  const { made, log, told } = recorder(t);
+  log.append({ kind: 'hang', id: 'open', at: Date.parse('2026-10-24T02:50:00+08:00'), process: 'git-remote-http', local: '192.168.31.120:1', remote: '20.205.243.166:443' });
+  log.append({ kind: 'hang', id: 'closed', at: Date.parse('2026-10-24T02:51:00+08:00'), process: 'curl', local: '192.168.31.120:2', remote: '10.255.255.1:443' });
+  log.append({ kind: 'hang-end', id: 'closed', at: Date.parse('2026-10-24T02:51:10+08:00'), outcome: 'gone' });
+  await made.start();
+  made.stop();
+  const ends = log.read().filter(e => e.kind === 'hang-end');
+  assert.deepEqual(ends.map(e => [e.id, e.outcome]), [['closed', 'gone'], ['open', 'unknown']]);
+  assert.equal(made.summary.hangs.get('open').end.outcome, 'unknown');
+  assert.equal(told.find(c => c.id === 'open').object.end.outcome, 'unknown');
+  // Started again, it is not written again.
+  await made.start();
+  made.stop();
+  assert.equal(log.read().filter(e => e.kind === 'hang-end').length, 2);
+});
+
+test('what the log does not take (the disk full) waits in turn, is shown meanwhile, and is written once the log takes it', async t => {
+  let rows = [socket(9001), socket(9002)];
+  const { made, log, after } = recorder(t, { table: () => rows });
+  const append = log.append.bind(log);
+  let full = false;
+  log.append = event => { if (full) throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' }); append(event); };
+  await made.refresh();
+  await made.sample(); after(3000); await made.sample();
+  assert.equal(log.read().filter(e => e.kind === 'hang').length, 2);
+  // Both end while the disk is full: neither is lost, both are shown ended, the status says why.
+  full = true; rows = [];
+  after(1000); await made.sample();
+  assert.equal(log.read().filter(e => e.kind === 'hang-end').length, 0);
+  assert.deepEqual([...made.summary.hangs.values()].map(h => h.end?.outcome), ['gone', 'gone']);
+  assert.deepEqual(made.status.unwritten, { count: 2, error: 'ENOSPC' });
+  // Room again: the next reading writes them, in turn.
+  full = false;
+  after(1000); await made.sample();
+  assert.deepEqual(log.read().filter(e => e.kind === 'hang-end').map(e => e.at), [Date.parse('2026-10-24T03:00:04+08:00'), Date.parse('2026-10-24T03:00:04+08:00')]);
+  assert.equal(made.status.unwritten, null);
 });
 
 test('probes are written with the interface they went out of; a system without a table is said once, its probes go on', async t => {

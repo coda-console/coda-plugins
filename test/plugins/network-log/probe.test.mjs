@@ -43,3 +43,13 @@ test('a name is looked up by the system first: the lookup timed, the address it 
   assert.ok(result.ms.dns !== undefined && result.ms.dns <= result.ms.connect);
   assert.ok(['127.0.0.1', '::1'].includes(result.address));
 });
+
+test('of the addresses a name has, the one that took the connection is kept, the lookup\'s first beside it', async t => {
+  const port = await server(t, (req, res) => res.end('ok'));
+  const addresses = [{ address: '127.0.0.2', family: 4 }, { address: '127.0.0.1', family: 4 }];
+  const lookup = (hostname, options, callback) => options?.all ? callback(null, addresses) : callback(null, addresses[0].address, 4);
+  const result = await probe(`http://two.test:${port}/`, { lookup, timeoutMs: 5000 });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.address, '127.0.0.1');
+  assert.equal(result.resolved, '127.0.0.2');
+});
