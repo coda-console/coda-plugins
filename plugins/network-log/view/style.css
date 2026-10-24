@@ -1,0 +1,49 @@
+/* The 网络记录 page, in the App's appearance (`--coda-*`, Coda's docs/plugins.md「视图」), laid out for a phone first. */
+:root {
+  font: var(--coda-font-size, 13px)/1.45 var(--coda-font, -apple-system, system-ui, sans-serif);
+  color: var(--coda-foreground, #1d1d1f); background: transparent;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { overflow: hidden; -webkit-user-select: none; user-select: none; }
+#root { height: 100%; overflow: auto; overscroll-behavior: contain; padding-bottom: env(safe-area-inset-bottom); }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+button:focus-visible { outline: 2px solid var(--coda-accent, #0a84ff); outline-offset: 2px; border-radius: 6px; }
+.selectable { -webkit-user-select: text; user-select: text; }
+.mono { font-family: var(--coda-mono, ui-monospace, Menlo, monospace); font-size: .92em; }
+.strong { font-weight: 600; }
+.secondary { color: var(--coda-secondary, #6e6e73); }
+.warn-text { color: var(--coda-orange, #ff9500); }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.spacer { flex: 1 1 auto; }
+
+.page { max-width: 760px; margin: 0 auto; padding: 12px 16px 24px; }
+.ranges { display: flex; gap: 2px; padding: 2px; border-radius: 9px; background: var(--coda-fill, rgba(120, 120, 128, .12)); }
+.range { flex: 1 1 0; padding: 5px 0; border-radius: 7px; text-align: center; color: var(--coda-secondary, #6e6e73); }
+.range.on { background: var(--coda-background, #fff); color: var(--coda-foreground, #1d1d1f); font-weight: 600; box-shadow: 0 1px 2px rgba(0, 0, 0, .12); }
+
+.notes { margin-top: 12px; }
+.note { margin: 4px 0; color: var(--coda-orange, #ff9500); }
+section { margin-top: 20px; }
+h2 { display: flex; align-items: center; gap: 6px; margin: 0 0 8px; font-size: 1em; font-weight: 600; }
+.count { padding: 0 6px; border-radius: 8px; font-size: .85em; background: color-mix(in srgb, var(--coda-orange, #ff9500) 16%, transparent); color: var(--coda-orange, #ff9500); }
+.empty { margin: 0; color: var(--coda-secondary, #6e6e73); }
+
+.list { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--coda-separator, rgba(60, 60, 67, .18)); }
+.row { padding: 10px 0; border-bottom: 1px solid var(--coda-separator, rgba(60, 60, 67, .18)); display: flex; flex-direction: column; gap: 4px; }
+.line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.time { color: var(--coda-secondary, #6e6e73); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.machine { padding: 0 6px; border-radius: 6px; background: var(--coda-fill, rgba(120, 120, 128, .12)); white-space: nowrap; font-size: .9em; }
+.tags { display: flex; flex-wrap: wrap; gap: 4px 6px; }
+.tag { padding: 1px 7px; border-radius: 6px; font-size: .88em; background: var(--coda-fill, rgba(120, 120, 128, .12)); color: var(--coda-secondary, #6e6e73); }
+.tag.warn { background: color-mix(in srgb, var(--coda-orange, #ff9500) 14%, transparent); color: var(--coda-orange, #ff9500); }
+.command { color: var(--coda-secondary, #6e6e73); overflow-wrap: anywhere; }
+
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--coda-tertiary, #c7c7cc); }
+.dot.ok { background: var(--coda-green, #34c759); } .dot.bad { background: var(--coda-red, #ff3b30); }
+.strip { display: flex; gap: 2px; height: 10px; }
+.cell { flex: 1 1 0; border-radius: 2px; background: var(--coda-fill, rgba(120, 120, 128, .12)); }
+.cell.ok { background: color-mix(in srgb, var(--coda-green, #34c759) 70%, transparent); }
+.cell.some { background: var(--coda-orange, #ff9500); }
+.cell.bad { background: var(--coda-red, #ff3b30); }
+.failure { display: flex; gap: 8px; font-size: .92em; }

@@ -1,0 +1,84 @@
+{
+  "name": "@coda-console/network-log",
+  "id": "network-log",
+  "displayName": "网络记录",
+  "description": "只记录、不拦截：每秒看一次这台机器的连接表，把建连卡住的连接连同进程、对端、走的网卡和 mihomo 有没有收到记下来；每分钟分段探测几个常用服务。保留 30 天，一页看全空间，Agent 用 network-log 命令查。",
+  "version": "0.1.0",
+  "categories": [
+    "机器与资源"
+  ],
+  "main": "main.mjs",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "configuration": {
+      "title": "网络记录",
+      "properties": {
+        "network-log.targets": {
+          "title": "定时探测",
+          "type": "object",
+          "order": 1,
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {
+            "GitHub": "https://github.com",
+            "GitHub API": "https://api.github.com",
+            "npm": "https://registry.npmjs.org"
+          },
+          "description": "每分钟请求一次的地址，一行一个：行名是显示的名字，值是 http:// 或 https:// 地址。分段记下解析、建连、TLS 与首字节的耗时，失败时记在哪一段、系统怎么说。"
+        },
+        "network-log.hangSeconds": {
+          "title": "建连多久算卡住（秒）",
+          "type": "integer",
+          "order": 2,
+          "minimum": 1,
+          "maximum": 60,
+          "default": 3,
+          "description": "连接表里一个连接停在建连阶段（已发出、没有回应）这么久，就记一条，并记下它后来连上了还是放弃了。"
+        },
+        "network-log.mihomo": {
+          "title": "mihomo 控制接口",
+          "type": "string",
+          "order": 3,
+          "default": "http://127.0.0.1:9090",
+          "description": "这台机器有 mihomo 时，认出它的虚拟网卡，并记下卡住的连接 mihomo 有没有收到、走哪个节点；控制接口不能设 secret。没有 mihomo 或不想问，清空。"
+        }
+      }
+    },
+    "views": [
+      {
+        "id": "log",
+        "title": "网络记录",
+        "entry": "view/index.html",
+        "in": [
+          "page"
+        ],
+        "icon": "network"
+      }
+    ],
+    "commands": [
+      {
+        "name": "network-log",
+        "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/query.mjs\""
+      }
+    ],
+    "instructions": "排查连不上、超时这类网络问题时，先运行 network-log 看这台机器最近的建连卡住和探测失败（network-log --help 看用法）。"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coda-console/coda-plugins.git",
+    "directory": "plugins/network-log"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "main.mjs",
+    "lib",
+    "scripts",
+    "view"
+  ]
+}
