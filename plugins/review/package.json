@@ -120,7 +120,7 @@
         }
       }
     },
-    "instructions": "开 PR 用 gh pr create，开出即进入评审，可与验证并行；草稿 PR 执行 gh pr ready <号> 后才评审。合并要等别的 PR、升锁或一次发布的，开成草稿（gh pr create -R <仓库> --draft），说明里写明前提，前提满足后再 gh pr ready。只合并进默认分支，叠放的 PR 不会被合并。合并前的验证写成流程步骤或 GitHub 必需检查。流程正常结束只更新状态，任务与失败会送到本会话，不要轮询 PR；提前要意见（草稿也可以）用 workflow_run 手动发起 pull-request，手动评审会交回结论。"
+    "instructions": "gh pr create 开出即评审，可与验证并行；合并要等别的 PR、升锁或发布的开草稿（-R 写在 --draft 前），说明写明前提，满足后 gh pr ready。只合并进默认分支，叠放的不合。合并前的验证写成流程步骤或 GitHub 必需检查。正常结束只更新状态，任务与失败送到本会话，不要轮询 PR；提前评审用 workflow_run 发起 pull-request，结论交回会话。"
   },
   "license": "MIT",
   "repository": {
