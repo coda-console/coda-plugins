@@ -161,7 +161,10 @@ export class ClaudeWaits {
     this.report(own, 'handling', { kind: 'task', title: 'Claude 自主继续', stoppable: false });
   }
   // That turn's end: what it handled ended with it, a recurring wakeup waits for its next time.
-  finished() {
+  finished({ error, title } = {}) {
+    // Processing a successful task's result can fail. Give that failure its own activity instead of changing the task's
+    // outcome, and leave recurring wakeups scheduled. There may already be a turn-owned activity (hold).
+    if (error && !this.own.size) this.hold();
     for (const task of this.tasks.values()) if (task.state === 'handling') { this.report(task, task.final ?? 'done'); task.final = undefined; }
     for (const cron of this.crons.values()) {
       if (cron.state !== 'handling') continue;
@@ -169,7 +172,7 @@ export class ClaudeWaits {
       cron.at = nextRun(cron.schedule, this.now());
       this.report(cron, 'waiting', { at: cron.at === null ? undefined : new Date(cron.at).toISOString() });
     }
-    for (const own of this.own) this.report(own, 'done');
+    for (const own of this.own) this.report(own, error ? 'failed' : 'done', error ? { title, detail: cut(error, 4000) } : {});
     this.own.clear();
   }
   // A stop Coda asks of a wait: the task to stop when it still goes (null: none). One that ended and is yet to be taken in is

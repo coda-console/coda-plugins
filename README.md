@@ -78,6 +78,12 @@ Claude 把一轮进行中的插话标上 `priority: 'next'` 交给 Claude Code�
 这一轮被停止或失败时，还没并进去的插话随之撤掉（`interrupt` 带 `cancelQueued`），不会在之后再跑，原来的 `session/prompt` 等撤掉了才答复。
 结果最多列出 64 条它接收的消息，所以同时在途的插话最多 32 条，再多的回 `promptRequired`，由 Coda 在这一轮结束后作为下一轮发出。
 
+Claude 的额度耗尽按[执行失败](docs/agent-protocol.md#额度不足)报 `quota_exhausted`，保留上游给出的重置时间；
+只认明确的额度原因，或本轮 `rate_limit` 错误配合订阅窗口的 `rejected`，不把普通 429、登录失败或额度预警算进去。
+SDK 作为 `assistant` 消息发来的 API 错误不当成回复正文；由本轮 `result` 报告失败。
+后台结果或定时唤醒后的自主轮次没有 `session/prompt` 可回复，失败时以自己的活动卡片报 `failed` 和原因，额度耗尽的卡片标题为「额度不足」；
+唤醒它的任务保留任务自己的结果，周期定时保留下次触发。
+
 OpenCode 遇到模型服务的 429，会照 `Retry-After` 等（OpenCode 2 每次最多 15 分钟、最多 10 次），并在 ACP 里用 `session_info_update` 的
 `_meta["opencode/retry"]` 说下次什么时候重试、服务报了什么；子 Agent（OpenCode 的 `subagent`）的等待也报在等它的那一轮的会话里。
 Coda 自己对服务故障只等一分钟以内，所以一轮里 OpenCode 要等超过一分钟才重试时，入口先 `session/cancel` 停下这一轮（子 Agent 随之停下），

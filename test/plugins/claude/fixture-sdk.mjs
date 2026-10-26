@@ -57,6 +57,8 @@ export function fixtureSdk(argv = []) {
       this.entries.push({ type: 'user', text, uuid: input.uuid }); this.persist();
       this.init();
       this.system('session_state_changed', { state: 'running' });
+      // Tests place the exact SDK error/result sequence themselves, without a timer or an implicit result racing it.
+      if (text === 'manual') return;
       if (text === 'permission' || text === 'cancelled-permission') {
         const abort = text === 'cancelled-permission' ? setTimeout(() => this.controller.abort(), 200) : null;
         const answer = await this.options.canUseTool('Bash', { command: 'echo fixture' }, { signal: this.controller.signal,

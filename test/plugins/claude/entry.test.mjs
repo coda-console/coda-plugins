@@ -29,7 +29,7 @@ async function setup(t, { env = {}, sdk = fixtureSdk(), ...options } = {}) {
   const cwd = await mkdtemp(join(tmpdir(), 'coda-claude-entry-'));
   const out = [], answered = new Set();
   let inbox, next = 0;
-  const session = new ClaudeSession({ sdk, env: { ...process.env, ...env }, environment: value => ({ ...value }), ...options });
+  const session = new ClaudeSession({ sdk, env: { ...process.env, CODA_PLUGIN_STATE: cwd, ...env }, environment: value => ({ ...value }), ...options });
   session.connect({ readable: new ReadableStream({ start(controller) { inbox = controller; } }), writable: new WritableStream({ write(m) { out.push(m); } }) });
   t.after(async () => { await session.close(); await rm(cwd, { recursive: true, force: true }); });
   const send = message => inbox.enqueue({ jsonrpc: '2.0', ...message });
@@ -176,6 +176,80 @@ test('streamed text is said as it streams, and the complete message adds only wh
     { sessionUpdate: 'tool_call_update', toolCallId: 'read-1', status: 'completed', rawOutput: { file: '/x' }, content: [{ type: 'content', content: { type: 'text', text: '内容' } }] }]);
 });
 
+const quotaReason = "You've hit your session limit · resets 1am (Asia/Singapore)";
+const apiError = (error, reason, fields = {}) => ({ type: 'assistant', error, ...fields,
+  message: { id: 'api-error', model: '<synthetic>', content: [{ type: 'text', text: reason }] } });
+
+test('Claude quota failures reach ACP as quota_exhausted, retaining the reset time instead of an assistant reply', async t => {
+  for (const variant of ['assistant', 'result-only', 'rejected-window', 'no-input-id']) await t.test(variant, async t => {
+    const c = await setup(t); await c.open();
+    const pending = c.prompt('manual'); await until(() => c.query.inputId);
+    const reason = variant === 'rejected-window' ? 'Subscription window exhausted' : quotaReason;
+    if (variant !== 'result-only') await c.emit(apiError('rate_limit', reason));
+    if (variant === 'rejected-window') await c.emit({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', rateLimitType: 'five_hour' } });
+    await c.emit({ type: 'result', subtype: 'success', is_error: true, result: reason,
+      ...(variant === 'no-input-id' ? {} : { user_message_uuid: c.query.inputId }) });
+    assert.deepEqual((await pending).error, { code: -32603, message: reason, data: { _meta: { coda: { failure: { kind: 'quota_exhausted' } } } } });
+    assert.deepEqual(c.said(), []);
+  });
+});
+
+test('quota evidence belongs to its failed turn: normal prose, warnings, recovery, cancellation and child errors do not fail a prompt', async t => {
+  for (const variant of ['prose', 'warning', 'recovered', 'cancelled', 'child']) await t.test(variant, async t => {
+    const c = await setup(t); await c.open();
+    const pending = c.prompt('manual'); await until(() => c.query.inputId);
+    if (variant === 'prose') await c.emit(apiError(undefined, quotaReason));
+    if (variant === 'warning') await c.emit({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed_warning', utilization: 1 } });
+    if (variant === 'child') await c.emit(apiError('rate_limit', quotaReason, { parent_tool_use_id: 'child' }));
+    if (['recovered', 'cancelled'].includes(variant)) await c.emit(apiError('rate_limit', quotaReason),
+      { type: 'rate_limit_event', rate_limit_info: { status: 'rejected', rateLimitType: 'five_hour' } });
+    if (variant === 'recovered') await c.emit(apiError(undefined, 'Recovered'));
+    await c.emit({ type: 'result', subtype: 'success', is_error: variant === 'cancelled', result: quotaReason,
+      stop_reason: variant === 'cancelled' ? 'interrupt' : 'end_turn', user_message_uuid: c.query.inputId });
+    assert.deepEqual((await pending).result, { stopReason: variant === 'cancelled' ? 'cancelled' : 'end_turn' });
+    // Another failed turn must not inherit the earlier rejected window or API error.
+    const before = c.query.inputId, next = c.prompt('manual'); await until(() => c.query.inputId !== before);
+    await c.emit({ type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['HTTP 429 Too Many Requests'], user_message_uuid: c.query.inputId });
+    assert.equal((await next).error.data, undefined);
+  });
+});
+
+test('a quota failure in an autonomous turn is a failed activity, and the successful task it handles stays successful', async t => {
+  const c = await setup(t); await c.open();
+  await c.prompt('hello');
+  await c.emit(system('task_started', { task_id: 'completed-task', task_type: 'local_bash', is_backgrounded: true }),
+    system('task_notification', { task_id: 'completed-task', status: 'completed' }),
+    system('init', { session_id: c.sessionId }), apiError('rate_limit', quotaReason),
+    { type: 'result', subtype: 'success', is_error: true, result: quotaReason });
+  assert.deepEqual(wait(c, 'completed-task').map(w => w.state), ['waiting', 'handling', 'done']);
+  assert.deepEqual(wait(c, 'turn-1').map(w => w.state), ['handling', 'failed']);
+  assert.deepEqual(wait(c, 'turn-1').at(-1), { waitId: 'turn-1', state: 'failed', title: '额度不足', detail: quotaReason });
+  assert.deepEqual(c.said(), ['hello']);
+  // A later autonomous turn starts with no quota failure carried over.
+  await c.emit(system('init', { session_id: c.sessionId }), { type: 'result', subtype: 'success', is_error: false });
+  assert.equal(wait(c, 'turn-2').at(-1).state, 'done');
+});
+
+test('quota failure keeps its classification while queued steering is dropped', async t => {
+  const c = await setup(t); await c.open();
+  const pending = c.prompt('hold'); await until(() => c.said().includes('holding'));
+  await c.request('_session/steering', { sessionId: c.sessionId, prompt: [{ type: 'text', text: 'must not run' }] });
+  await c.emit(apiError('rate_limit', quotaReason),
+    { type: 'result', subtype: 'success', is_error: true, result: quotaReason, user_message_uuid: c.query.inputId });
+  assert.equal((await pending).error.data._meta.coda.failure.kind, 'quota_exhausted');
+  assert.ok(!c.query.entries.some(e => e.text === 'must not run'));
+  assert.deepEqual((await c.prompt('after reset')).result, { stopReason: 'end_turn' });
+});
+
+test('a failed scheduled turn has a failure card while its recurring schedule remains waiting', async t => {
+  const c = await setup(t); await c.open();
+  await c.query.stop([{ id: 'cron', schedule: '0 9 1 1 *', recurring: true, prompt: 'check' }]);
+  await c.emit(system('init', { session_id: c.sessionId }), apiError('rate_limit', quotaReason),
+    { type: 'result', subtype: 'success', is_error: true, result: quotaReason });
+  assert.deepEqual(wait(c, 'cron').map(w => w.state), ['waiting', 'handling', 'waiting']);
+  assert.deepEqual(wait(c, 'turn-1').at(-1), { waitId: 'turn-1', state: 'failed', title: '额度不足', detail: quotaReason });
+});
+
 test('a background command is waited on from its start; it ends as a turn takes in its end, or as the session goes idle', async t => {
   const c = await setup(t); await c.open();
   await c.prompt('background');
@@ -265,11 +339,11 @@ test('a turn of Claude\'s own handles what its opening message names, else the o
   assert.equal(wait(c, 'cron-1').at(-1).state, 'handling');
   await c.emit({ type: 'result', subtype: 'success', is_error: false });
   assert.equal(wait(c, 'cron-1').at(-1).state, 'done');
-  // Nothing to say what woke it: a wait of the turn's own, which ends with it; a failure is said in the turn.
+  // Nothing to say what woke it: a wait of the turn's own, which fails with the reason when that turn fails.
   await c.emit(system('init', { session_id: c.sessionId }), { type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['出错了'], uuid: 'r' });
   const own = c.waits().filter(w => w.waitId.startsWith('turn-'));
-  assert.deepEqual(own.map(({ sessionId: _, ...w }) => w), [{ waitId: 'turn-1', state: 'handling', kind: 'task', title: 'Claude 自主继续', stoppable: false }, { waitId: 'turn-1', state: 'done' }]);
-  assert.equal(c.said().at(-1), '出错了');
+  assert.deepEqual(own.map(({ sessionId: _, ...w }) => w), [{ waitId: 'turn-1', state: 'handling', kind: 'task', title: 'Claude 自主继续', stoppable: false }, { waitId: 'turn-1', state: 'failed', detail: '出错了' }]);
+  assert.ok(!c.said().includes('出错了'));
 });
 
 test('what Claude asks in a turn of its own comes after what that turn handles, so that Coda takes it in that turn', async t => {
@@ -534,7 +608,7 @@ test('the entry speaks ACP over standard input and output with the SDK it is giv
   const cwd = await mkdtemp(join(tmpdir(), 'coda-claude-stdio-'));
   t.after(() => rm(cwd, { recursive: true, force: true }));
   const run = () => {
-    const child = spawn(process.execPath, [entry], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...substituted({ '@anthropic-ai/claude-agent-sdk': fixture }) } });
+    const child = spawn(process.execPath, [entry], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, CODA_PLUGIN_STATE: cwd, ...substituted({ '@anthropic-ai/claude-agent-sdk': fixture }) } });
     t.after(() => child.kill());
     const messages = [], pending = new Map(); let stderr = '', next = 0;
     child.stderr.on('data', chunk => { stderr += chunk; });

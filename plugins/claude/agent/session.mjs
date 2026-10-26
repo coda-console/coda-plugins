@@ -10,6 +10,7 @@ import { realpath, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { agent, PROTOCOL_VERSION, RequestError } from '@agentclientprotocol/sdk';
 import { ClaudeSessionLimits, accountHash } from './limits.mjs';
+import { claudeFailure } from './errors.mjs';
 import { sdkEnvironment } from './auth.mjs';
 import { chosenServices, listedModels, serviceSettings } from './providers.mjs';
 import { SessionTitle } from './titles.mjs';
@@ -286,7 +287,7 @@ export class ClaudeSession {
     if (!prompt) return;
     // What ended before this turn ended was taken in by it.
     this.waits.settled();
-    if (error) prompt.reject(failure(error)); else prompt.resolve({ stopReason });
+    if (error) prompt.reject(error); else prompt.resolve({ stopReason });
   }
   // What is said to the session goes into what its title is made of.
   heard(content) {
@@ -358,7 +359,9 @@ export class ClaudeSession {
       case 'assistant': return this.assistant(m, parent);
       case 'user': return this.toolResults(m, parent);
       case 'result': return this.result(m);
-      case 'rate_limit_event': if (this.env.CODA_PLUGIN_STATE) new ClaudeSessionLimits({ path: join(this.env.CODA_PLUGIN_STATE, 'limits.json') }).observe(m.rate_limit_info, this.account ?? null);
+      case 'rate_limit_event':
+        this.turnLimits = m.rate_limit_info;
+        if (this.env.CODA_PLUGIN_STATE) new ClaudeSessionLimits({ path: join(this.env.CODA_PLUGIN_STATE, 'limits.json') }).observe(m.rate_limit_info, this.account ?? null);
     }
   }
   system(m) {
@@ -366,6 +369,7 @@ export class ClaudeSession {
       case 'init': {
         if (m.session_id !== this.sessionId) return;
         this.turning = true;
+        this.turnError = null; this.turnLimits = null;
         this.terminal = m.terminal_slash_commands ?? [];
         // Its effort is the one applied, the model's own included: what was chosen stays what it was. A query on the
         // service's model reports it by that service's name for it.
@@ -462,6 +466,13 @@ export class ClaudeSession {
   assistant(m, parent) {
     const sessionId = parent ?? this.sessionId, apiId = m.message?.id, blocks = this.streamed.get(apiId);
     if (parent) this.waits.model(parent, m.message?.model);
+    // API failures are synthetic assistant messages, followed by a result (even subtype "success" can be is_error).
+    // The result ends the turn and reports its failure; sending the synthetic message as prose would look like an answer.
+    // A child's error belongs to that child, never to the parent's prompt.
+    if (!parent) {
+      this.turnError = m.error ? { error: m.error, message: text(m.message?.content) } : null;
+      if (m.error) return;
+    }
     for (const block of m.message?.content ?? []) {
       if (block.type === 'tool_use') {
         this.tools.add(block.id);
@@ -499,17 +510,20 @@ export class ClaudeSession {
     const steered = ids.filter(id => this.steering.delete(id)).length > 0;
     const id = ids.find(id => this.prompts.has(id)) ?? (steered ? this.held : undefined);
     const cancelled = interrupted(m), failed = !cancelled && (m.is_error || m.subtype !== 'success');
+    const error = failed ? claudeFailure(m.errors?.length || m.result ? errorText(m) : this.turnError?.message || errorText(m),
+      { error: this.turnError?.error, limits: this.turnLimits }) : null;
+    this.turnError = null; this.turnLimits = null;
     if (id) {
-      const outcome = this.ending ?? (failed ? { failure: errorText(m) } : { stopReason: cancelled ? 'cancelled' : 'end_turn' });
+      const outcome = this.ending ?? (failed ? { failure: error } : { stopReason: cancelled ? 'cancelled' : 'end_turn' });
       if (this.ending || !this.steering.size) this.settle(id, outcome);
       else { this.held = id; if (cancelled || failed) this.dropRest(outcome); }
     } else if (this.waits.handling) {
-      // A turn of Claude's own has no reply to fail: what went wrong is said in it.
-      if (failed) this.chunk(this.sessionId, 'text', m.uuid, errorText(m));
-      this.waits.finished();
+      // A turn of Claude's own has no RPC reply to fail. End its own activity as failed with the reason, rather than
+      // saying the error as an answer and marking the work complete. The task that woke it retains its own outcome.
+      this.waits.finished(error ? { error: error.message, title: error.data?._meta?.coda?.failure?.kind === 'quota_exhausted' ? '额度不足' : undefined } : {});
     } else if (failed && this.prompts.size) {
       // A failure of the session itself names no input: none of those given can be said to have run.
-      for (const prompt of this.prompts.values()) prompt.reject(failure(errorText(m)));
+      for (const prompt of this.prompts.values()) prompt.reject(error);
       this.prompts.clear();
     }
     void this.title?.refresh(!failed && !cancelled);
