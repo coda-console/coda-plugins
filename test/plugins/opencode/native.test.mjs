@@ -325,6 +325,33 @@ for (const stop of [false, true]) test(`real OpenCode: background child remains 
   if (stop) assert.equal((await client.prompt('Moment, please.')).result?.stopReason, 'end_turn', 'stopping the child leaves the root usable');
 });
 
+for (const nextTurn of [false, true]) test(`real OpenCode: a background child's long retry cannot cancel the ${nextTurn ? 'next' : 'launching'} root prompt`,
+  { skip: !binary, timeout: 120_000 }, async t => {
+  let releaseChild, releaseRoot;
+  const childResponse = new Promise(resolve => { releaseChild = resolve; });
+  const rootResponse = new Promise(resolve => { releaseRoot = resolve; });
+  t.after(() => { releaseChild(null); releaseRoot(null); });
+  const client = await retrying(t, {
+    Delegate: n => n ? (nextTurn ? null : rootResponse) : delegate('Child, please.', true),
+    Child: () => childResponse, Moment: () => rootResponse,
+  });
+  let pending = client.prompt('Delegate, please.');
+  if (nextTurn) {
+    assert.equal((await pending).result?.stopReason, 'end_turn');
+    pending = client.prompt('Moment, please.');
+  }
+  await until(() => client.turns.includes('Child') && (nextTurn ? client.turns.includes('Moment')
+    : client.turns.filter(turn => turn === 'Delegate').length === 2), client);
+  releaseChild(900);
+  await until(() => client.updates.some(m => m.params?.update?._meta?.['opencode/retry']?.nextRetryAt), client);
+  releaseRoot(null);
+  const result = await pending;
+  assert.equal(result.error, undefined, JSON.stringify(result));
+  assert.equal(result.result?.stopReason, 'end_turn');
+  const waiting = client.updates.find(m => m.method === '_coda/wait' && m.params.state === 'waiting').params;
+  assert.ok(!client.updates.some(m => m.method === '_coda/wait' && m.params.waitId === waiting.waitId && m.params.state !== 'waiting'));
+});
+
 test('real OpenCode: a failed child reports the service error on its card',
   { skip: !binary, timeout: 120_000 }, async t => {
   const client = await retrying(t, { Delegate: n => n ? null : 'subagent', Child: () => ({ error: 'Fixture child rejected' }) });
@@ -332,6 +359,25 @@ test('real OpenCode: a failed child reports the service error on its card',
   const failed = client.updates.find(m => m.method === '_coda/wait' && m.params.state === 'failed');
   assert.ok(failed, JSON.stringify(client.updates));
   assert.match(failed.params.detail, /Fixture child rejected/);
+});
+
+test('real OpenCode: a background grandchild retry cannot cancel the root waiting for its foreground parent',
+  { skip: !binary, timeout: 120_000 }, async t => {
+  let releaseChild, releaseGrandchild;
+  const childResponse = new Promise(resolve => { releaseChild = resolve; });
+  const grandchildResponse = new Promise(resolve => { releaseGrandchild = resolve; });
+  t.after(() => { releaseChild(null); releaseGrandchild(null); });
+  const client = await retrying(t, { Delegate: n => n ? null : 'subagent',
+    Child: n => n ? childResponse : delegate('Grand, please.', true), Grand: () => grandchildResponse },
+    { experimental: { subagent_depth: 2 }, agent: { general: { permission: { subagent: 'allow' } } } });
+  const pending = client.prompt('Delegate, please.');
+  await until(() => client.turns.includes('Grand') && client.turns.filter(turn => turn === 'Child').length === 2, client);
+  releaseGrandchild(900);
+  await until(() => client.updates.some(m => m.params?.update?._meta?.['opencode/retry']?.nextRetryAt), client);
+  releaseChild(null);
+  const result = await pending;
+  assert.equal(result.error, undefined, JSON.stringify(result));
+  assert.equal(result.result?.stopReason, 'end_turn');
 });
 
 test('real OpenCode: nested native child is registered under the child that launched it',

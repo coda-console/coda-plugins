@@ -3,7 +3,7 @@
   "id": "opencode",
   "displayName": "OpenCode",
   "description": "OpenCode Agent：转发运行机的 opencode acp，接入原生子会话的状态、过程与停止，并把会话指令放进原生会话的第一轮。",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "categories": ["Agent"],
   "contributes": {
     "agents": [
