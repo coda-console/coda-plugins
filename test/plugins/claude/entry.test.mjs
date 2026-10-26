@@ -879,3 +879,69 @@ test('a message not taken yet when the turn is stopped goes with it, and the nex
   assert.ok(!c.said().includes('不用了'), 'it never ran');
   assert.equal(c.waits().filter(w => w.title === 'Claude 自主继续').length, 0);
 });
+
+// Its own turn over, the prompt waits for what was said into it (held): stopped then, or failed with some not taken yet, it
+// ends once Claude Code has dropped those. `hold-idle:` keeps the native side between the turn and the next.
+const resulted = c => until(() => c.updates().some(u => u.sessionUpdate === 'usage_update'));
+
+test('a prompt stopped between its own turn and the one for what was said into it ends, and that never runs', async t => {
+  const c = await setup(t);
+  await c.open();
+  const answered = c.prompt('hold-idle:until-end');
+  await until(() => c.said().includes('等着结束'));
+  assert.deepEqual((await steer(c, '再补一句')).result, { outcome: 'injected' });
+  await writeFile(join(c.cwd, '.end-turn'), '');
+  await resulted(c);
+  c.send({ method: 'session/cancel', params: { sessionId: c.sessionId } });
+  assert.deepEqual((await answered).result, { stopReason: 'cancelled' });
+  assert.deepEqual(c.query.interrupts, [{ cancelQueued: true }]);
+  await writeFile(join(c.cwd, '.release-idle'), '');
+  assert.deepEqual((await c.prompt('之后的一轮')).result, { stopReason: 'end_turn' });
+  assert.ok(!c.said().includes('再补一句'), 'it never ran');
+  assert.equal(c.waits().filter(w => w.title === 'Claude 自主继续').length, 0);
+});
+
+test('a prompt whose own turn failed with something said into it not taken yet fails once that is dropped, and it never runs', async t => {
+  const c = await setup(t);
+  await c.open();
+  const answered = c.prompt('hold-idle:fail-end');
+  await until(() => c.said().includes('等着结束'));
+  assert.deepEqual((await steer(c, '再补一句')).result, { outcome: 'injected' });
+  await writeFile(join(c.cwd, '.end-turn'), '');
+  assert.match((await answered).error.message, /原生这一轮失败了/);
+  assert.deepEqual(c.query.interrupts, [{ cancelQueued: true }]);
+  await writeFile(join(c.cwd, '.release-idle'), '');
+  assert.deepEqual((await c.prompt('之后的一轮')).result, { stopReason: 'end_turn' });
+  assert.ok(!c.said().includes('再补一句'), 'it never ran');
+  assert.equal(c.waits().filter(w => w.title === 'Claude 自主继续').length, 0);
+});
+
+test('no more messages go into a turn at once than its result can name: one more is Coda\'s to send as the next turn', async t => {
+  const c = await setup(t);
+  await c.open();
+  const answered = c.prompt('tool-round');
+  await until(() => c.updates().some(u => u.sessionUpdate === 'tool_call' && u.toolCallId === 'tool-round'));
+  const outcomes = [];
+  for (let i = 1; i <= 65; i++) outcomes.push((await steer(c, `第 ${i} 条`)).result);
+  assert.deepEqual(outcomes.slice(0, 32), Array(32).fill({ outcome: 'injected' }));
+  assert.deepEqual(outcomes.slice(32), Array(33).fill({ outcome: 'promptRequired', reason: 'tooManyPending' }));
+  await writeFile(join(c.cwd, '.finish-tool'), '');
+  assert.deepEqual((await answered).result, { stopReason: 'end_turn' });
+  assert.equal(c.said().filter(text => text.startsWith('插话：')).length, 32);
+});
+
+test('a prompt stopped while the turn for what was said into it is going ends with that turn, not before', async t => {
+  const c = await setup(t);
+  await c.open();
+  const answered = c.prompt('until-end');
+  await until(() => c.said().includes('等着结束'));
+  // What is said into it holds its own turn until stopped.
+  assert.deepEqual((await steer(c, 'hold')).result, { outcome: 'injected' });
+  await writeFile(join(c.cwd, '.end-turn'), '');
+  await until(() => c.said().includes('holding'));
+  c.send({ method: 'session/cancel', params: { sessionId: c.sessionId } });
+  assert.deepEqual((await answered).result, { stopReason: 'cancelled' });
+  const usage = c.out.flatMap((m, i) => m.method === 'session/update' && m.params.update.sessionUpdate === 'usage_update' ? [i] : []);
+  assert.equal(usage.length, 2, 'both turns ended');
+  assert.ok(usage[1] < c.out.findIndex(m => m.result?.stopReason === 'cancelled'), 'answered as the turn going ended');
+});

@@ -75,7 +75,8 @@ Kimi、Grok、OpenCode、Cursor 的 CLI 不接受它：入口不转给 CLI，在
 第一条是斜杠命令时留到下一条。Codex 与 Claude 另声明插话：一轮已经结束时收到的 `_session/steering` 回 `promptRequired`，不另开一轮。
 Claude 把一轮进行中的插话标上 `priority: 'next'` 交给 Claude Code，回 `injected`：Claude Code 在这一轮的下一个工具间隙把它并进去，
 不打断正在跑的工具；这一轮没再调工具就结束时，Claude Code 紧接着为它另跑一轮，入口把那一轮也算进原来的 `session/prompt`，跑完才答复。
-这一轮被停止时，还没并进去的插话随之撤掉（`interrupt` 带 `cancelQueued`），不会在停止之后再跑。
+这一轮被停止或失败时，还没并进去的插话随之撤掉（`interrupt` 带 `cancelQueued`），不会在之后再跑，原来的 `session/prompt` 等撤掉了才答复。
+结果最多列出 64 条它接收的消息，所以同时在途的插话最多 32 条，再多的回 `promptRequired`，由 Coda 在这一轮结束后作为下一轮发出。
 
 OpenCode 遇到模型服务的 429，会照 `Retry-After` 等（OpenCode 2 每次最多 15 分钟、最多 10 次），并在 ACP 里用 `session_info_update` 的
 `_meta["opencode/retry"]` 说下次什么时候重试、服务报了什么；子 Agent（OpenCode 的 `subagent`）的等待也报在等它的那一轮的会话里。

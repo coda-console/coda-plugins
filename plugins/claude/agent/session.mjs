@@ -41,6 +41,8 @@ const denied = { behavior: 'deny', message: 'Coda 没有在请求结束前给出
 // A child session's output that comes before its task, kept until the task names that session: all of it, since what streamed
 // counts as said, a message's streamed pieces as one.
 const CHUNKS = new Set(['agent_message_chunk', 'agent_thought_chunk']);
+// How many messages sent into a prompt (steer) may be waiting to be taken at once.
+const STEERING_LIMIT = 32;
 
 class InputStream {
   queue = []; wake = null; ended = false;
@@ -59,8 +61,9 @@ export class ClaudeSession {
   constructor({ sdk, env = process.env, environment = sdkEnvironment, initializationTimeoutMs = 60_000, onEnded = () => {} }) {
     Object.assign(this, { sdk, env, environment, initializationTimeoutMs, onEnded });
     this.phase = 'new'; this.input = new InputStream(); this.prompts = new Map(); this.withdrawals = new Set();
-    // The messages sent into the prompt's turn not yet taken (steer), and the prompt whose own turn ended before they were.
-    this.steering = new Set(); this.held = null;
+    // The messages sent into the prompt's turn not yet taken (steer), the prompt whose own turn ended before they were, how
+    // the prompt ends once it is ending before they are taken (dropRest), and whether a native turn is going.
+    this.steering = new Set(); this.held = null; this.ending = null; this.turning = false;
     // The model services chosen in Coda (providers.mjs), and the service's model the query runs on: null on Claude's own.
     this.services = chosenServices(env); this.serviceModel = null;
     this.models = []; this.commands = []; this.terminal = null; this.current = { mode: 'default', model: undefined, effort: null };
@@ -86,7 +89,8 @@ export class ClaudeSession {
         // While the session moves to another query there is none to interrupt: the turn waiting on the move is stopped there.
         if (this.rerouting) this.cancelling = true;
         // Messages sent into the turn and not taken yet (steer) are stopped with it: else Claude Code would run them after.
-        void this.query?.interrupt(this.steering.size ? { cancelQueued: true } : undefined).catch(() => {});
+        if (this.steering.size) this.dropRest({ stopReason: 'cancelled' });
+        else void this.query?.interrupt().catch(() => {});
       })
       .onRequest('_coda/wait/stop', params => params, ({ params }) => this.stopWait(params))
       .connect(stream);
@@ -254,13 +258,35 @@ export class ClaudeSession {
   // A message into the turn going (docs/agent-protocol.md「插话」): Claude Code takes one sent with priority `next` into the
   // turn it runs at its next tool round, and runs one the turn ended before as a turn of its own right after, which the
   // prompt waits for too (result): either way it is that prompt's. With no prompt of Coda's going, Coda sends it as the next.
+  // A result names at most 64 of the messages it took in (the SDK's user_message_uuids): few enough go in at a time that each is
+  // named; one more is Coda's to send as the next turn, as it is with no turn going.
   steer({ prompt }) {
-    if (this.phase !== 'running' || !this.prompts.size) return { outcome: 'promptRequired', reason: 'noRunningTurn' };
+    if (this.phase !== 'running' || !this.prompts.size || this.ending) return { outcome: 'promptRequired', reason: 'noRunningTurn' };
+    if (this.steering.size >= STEERING_LIMIT) return { outcome: 'promptRequired', reason: 'tooManyPending' };
     const id = randomUUID(), content = prompt.filter(block => block.type === 'text').map(block => block.text).join('\n');
     this.steering.add(id);
     this.input.push({ type: 'user', uuid: id, session_id: this.sessionId, parent_tool_use_id: null, priority: 'next', message: { role: 'user', content } });
     this.heard(content);
     return { outcome: 'injected' };
+  }
+  // What was said into the prompt and is not taken yet is not to run after it ends, stopped or failed: Claude Code drops it
+  // (cancelQueued), and the prompt ends as `outcome` once nothing of it goes on — at the drop's receipt when no native turn
+  // is going (one held, whose own turn ended), else as the turn going ends (result).
+  dropRest(outcome) {
+    this.ending = outcome;
+    void this.query?.interrupt({ cancelQueued: true }).then(receipt => {
+      for (const id of receipt?.cancelled ?? []) this.steering.delete(id);
+      if (this.held && !this.turning) this.settle(this.held, this.ending);
+    }, () => {});
+  }
+  // The prompt answered: as it ended, and with nothing of it left to take.
+  settle(id, { stopReason, failure: error }) {
+    const prompt = this.prompts.get(id);
+    this.prompts.delete(id); this.held = null; this.ending = null; this.steering.clear();
+    if (!prompt) return;
+    // What ended before this turn ended was taken in by it.
+    this.waits.settled();
+    if (error) prompt.reject(failure(error)); else prompt.resolve({ stopReason });
   }
   // What is said to the session goes into what its title is made of.
   heard(content) {
@@ -316,7 +342,7 @@ export class ClaudeSession {
   end(query, error) {
     if (this.phase === 'ended') return;
     const intended = this.phase === 'closing';
-    this.phase = 'ended'; this.input.close(); this.steering.clear(); this.held = null;
+    this.phase = 'ended'; this.input.close(); this.steering.clear(); this.held = null; this.ending = null;
     for (const withdrawn of this.withdrawals) withdrawn.abort();
     for (const { reject } of this.prompts.values()) reject(failure(error?.message ?? 'Claude 会话已结束'));
     this.prompts.clear();
@@ -339,6 +365,7 @@ export class ClaudeSession {
     switch (m.subtype) {
       case 'init': {
         if (m.session_id !== this.sessionId) return;
+        this.turning = true;
         this.terminal = m.terminal_slash_commands ?? [];
         // Its effort is the one applied, the model's own included: what was chosen stays what it was. A query on the
         // service's model reports it by that service's name for it.
@@ -464,20 +491,18 @@ export class ClaudeSession {
     const usage = m.usage ?? {}, windows = Object.values(m.modelUsage ?? {});
     this.update(this.sessionId, { sessionUpdate: 'usage_update', used: (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0),
       size: Math.max(0, ...windows.map(w => w.contextWindow ?? 0)), cost: { amount: m.total_cost_usd ?? 0, currency: 'USD' } });
+    this.turning = false;
     const ids = m.user_message_uuids ?? (m.user_message_uuid ? [m.user_message_uuid] : []);
     // A message sent into the prompt's turn (steer) is the prompt's, and so is the turn Claude Code runs it in when the prompt's
-    // own ended before taking it: the prompt is answered once none is left to take, or as its turn is stopped or fails.
+    // own ended before taking it: the prompt is answered once none is left to take. Stopped or failed with some not taken
+    // yet, it ends once those are dropped (dropRest); one ending already ends as it was to.
     const steered = ids.filter(id => this.steering.delete(id)).length > 0;
     const id = ids.find(id => this.prompts.has(id)) ?? (steered ? this.held : undefined);
     const cancelled = interrupted(m), failed = !cancelled && (m.is_error || m.subtype !== 'success');
-    if (id && this.steering.size && !cancelled && !failed) this.held = id;
-    else if (id) {
-      // Those still not taken went with a stopped turn, or run as turns of Claude's own after a failed one.
-      this.held = null; this.steering.clear();
-      const prompt = this.prompts.get(id); this.prompts.delete(id);
-      // What ended before this turn ended was taken in by it.
-      this.waits.settled();
-      if (failed) prompt.reject(failure(errorText(m))); else prompt.resolve({ stopReason: cancelled ? 'cancelled' : 'end_turn' });
+    if (id) {
+      const outcome = this.ending ?? (failed ? { failure: errorText(m) } : { stopReason: cancelled ? 'cancelled' : 'end_turn' });
+      if (this.ending || !this.steering.size) this.settle(id, outcome);
+      else { this.held = id; if (cancelled || failed) this.dropRest(outcome); }
     } else if (this.waits.handling) {
       // A turn of Claude's own has no reply to fail: what went wrong is said in it.
       if (failed) this.chunk(this.sessionId, 'text', m.uuid, errorText(m));

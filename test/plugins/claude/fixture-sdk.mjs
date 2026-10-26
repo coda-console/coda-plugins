@@ -146,8 +146,8 @@ export function fixtureSdk(argv = []) {
         this.emit({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tool-round', content: 'slept' }] } });
         this.fold();
         this.text('工具之后的回答');
-      } else if (text === 'until-end') {
-        // No tool round: the turn ends once `.end-turn` is in the checkout, whatever came meanwhile.
+      } else if (text === 'until-end' || text === 'fail-end') {
+        // No tool round: the turn ends once `.end-turn` is in the checkout, whatever came meanwhile; `fail-end` ends failed.
         this.text('等着结束');
         while (!this.closed && !existsSync(join(this.options.cwd, '.end-turn'))) await new Promise(r => setTimeout(r, 10));
         if (this.closed) return;
@@ -171,8 +171,10 @@ export function fixtureSdk(argv = []) {
       // The checker's question about the session instructions, answered from the system prompt as a model would.
       else if (text === 'What is the Coda check word?') this.text(/reply with exactly (\S+) and nothing else/.exec(this.options.systemPrompt?.append ?? '')?.[1] ?? '不知道');
       else this.text(text);
-      this.emit({ type: 'result', subtype: 'success', is_error: false, stop_reason: this.controller.signal.aborted ? 'interrupt' : 'end_turn',
-        user_message_uuid: input.uuid, user_message_uuids: [input.uuid, ...this.folded], usage: { input_tokens: 10 }, modelUsage: { [this.model]: { contextWindow: 1000 } }, total_cost_usd: 0 });
+      // As the SDK says it: at most 64 of the messages the turn took in are named.
+      this.emit({ type: 'result', ...(text === 'fail-end' ? { subtype: 'error_during_execution', is_error: true, errors: ['原生这一轮失败了'] } : { subtype: 'success', is_error: false }),
+        stop_reason: this.controller.signal.aborted ? 'interrupt' : 'end_turn', user_message_uuid: input.uuid, user_message_uuids: [input.uuid, ...this.folded].slice(0, 64),
+        usage: { input_tokens: 10 }, modelUsage: { [this.model]: { contextWindow: 1000 } }, total_cost_usd: 0 });
       if (text === 'stream' && existsSync(join(this.options.cwd, '.delay-stream-idle'))) {
         while (!this.closed && !existsSync(join(this.options.cwd, '.finish-stream-idle'))) await new Promise(r => setTimeout(r, 10));
         if (this.closed) return;
