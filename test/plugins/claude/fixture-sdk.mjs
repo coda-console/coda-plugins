@@ -21,7 +21,11 @@ export function fixtureSdk(argv = []) {
       this.effort = options.settings?.effortLevel;
       this.entries = options.resume ? JSON.parse(readFileSync(path(options.cwd, this.id))) : [];
       this.persist(); queries.set(this.id, this);
-      void (async () => { for await (const m of prompt) { if (this.closed) break; await this.respond(m); } })();
+      // What the client writes is read as it comes (`received`, all of it), and turns run one at a time: a message marked `next`
+      // that comes while one runs is taken into it at its next tool round (fold), as Claude Code does; else it runs after it.
+      this.inbox = []; this.received = [];
+      void (async () => { for await (const m of prompt) { if (this.closed) break; this.received.push(m); this.inbox.push(m); this.arrived?.(); } })();
+      void (async () => { while (!this.closed) { const m = this.inbox.shift(); if (m) await this.respond(m); else await new Promise(r => { this.arrived = r; }); } })();
     }
     persist() { writeFileSync(path(this.options.cwd, this.id), JSON.stringify(this.entries)); }
     emit(message) { this.queue.push({ session_id: this.id, uuid: randomUUID(), ...message }); this.wake?.(); }
@@ -45,7 +49,7 @@ export function fixtureSdk(argv = []) {
       return new Promise((resolve, reject) => { this.queue.push(() => this.options.hooks.Stop[0].hooks[0]({ session_id: this.id, session_crons: crons }).then(resolve, reject)); this.wake?.(); });
     }
     async respond(input) {
-      this.controller = new AbortController(); this.inputId = input.uuid;
+      this.controller = new AbortController(); this.inputId = input.uuid; this.folded = [];
       // `hold-idle:<prompt>`: the prompt as given, and the session's idle held back until `.release-idle` is in the checkout, so
       // that what happens between a turn's result and its idle (the native side not yet confirmed) can be placed exactly.
       const given = input.message.content, held = typeof given === 'string' && given.startsWith('hold-idle:');
@@ -134,6 +138,19 @@ export function fixtureSdk(argv = []) {
       } else if (text === 'cancel-scheduled') {
         await this.stop([]);
         this.text('定时检查已取消');
+      } else if (text === 'tool-round') {
+        // A tool call that goes on until `.finish-tool` is in the checkout, and the round after it.
+        this.emit({ type: 'assistant', message: { id: randomUUID(), content: [{ type: 'tool_use', id: 'tool-round', name: 'Bash', input: { command: 'sleep' } }] } });
+        while (!this.closed && !existsSync(join(this.options.cwd, '.finish-tool'))) await new Promise(r => setTimeout(r, 10));
+        if (this.closed) return;
+        this.emit({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tool-round', content: 'slept' }] } });
+        this.fold();
+        this.text('工具之后的回答');
+      } else if (text === 'until-end') {
+        // No tool round: the turn ends once `.end-turn` is in the checkout, whatever came meanwhile.
+        this.text('等着结束');
+        while (!this.closed && !existsSync(join(this.options.cwd, '.end-turn'))) await new Promise(r => setTimeout(r, 10));
+        if (this.closed) return;
       } else if (text === 'missing-tool-result') {
         this.emit({ type: 'assistant', message: { id: randomUUID(), content: [{ type: 'tool_use', id: 'orphan-tool', name: 'Bash', input: {} }] } });
         while (!this.closed && !existsSync(join(this.options.cwd, '.finish-missing-tool'))) await new Promise(r => setTimeout(r, 10));
@@ -155,7 +172,7 @@ export function fixtureSdk(argv = []) {
       else if (text === 'What is the Coda check word?') this.text(/reply with exactly (\S+) and nothing else/.exec(this.options.systemPrompt?.append ?? '')?.[1] ?? '不知道');
       else this.text(text);
       this.emit({ type: 'result', subtype: 'success', is_error: false, stop_reason: this.controller.signal.aborted ? 'interrupt' : 'end_turn',
-        user_message_uuid: input.uuid, usage: { input_tokens: 10 }, modelUsage: { [this.model]: { contextWindow: 1000 } }, total_cost_usd: 0 });
+        user_message_uuid: input.uuid, user_message_uuids: [input.uuid, ...this.folded], usage: { input_tokens: 10 }, modelUsage: { [this.model]: { contextWindow: 1000 } }, total_cost_usd: 0 });
       if (text === 'stream' && existsSync(join(this.options.cwd, '.delay-stream-idle'))) {
         while (!this.closed && !existsSync(join(this.options.cwd, '.finish-stream-idle'))) await new Promise(r => setTimeout(r, 10));
         if (this.closed) return;
@@ -228,6 +245,11 @@ export function fixtureSdk(argv = []) {
       this.emit({ type: 'result', subtype: 'success', is_error: false, stop_reason: 'end_turn', usage: {} });
       this.system('session_state_changed', { state: 'idle' });
     }
+    // The messages marked `next` that came while the turn ran, taken into it at a tool round: each said, and named by the result.
+    fold() {
+      for (const m of this.inbox.filter(m => m.priority === 'next')) { this.folded.push(m.uuid); this.text(`插话：${m.message.content}`); }
+      this.inbox = this.inbox.filter(m => m.priority !== 'next');
+    }
     text(text, id = randomUUID(), parent = null) {
       const uuid = randomUUID(); this.entries.push({ type: 'assistant', text, uuid }); this.persist();
       this.emit({ type: 'assistant', uuid, parent_tool_use_id: parent, message: { id, content: [{ type: 'text', text }] } });
@@ -235,9 +257,12 @@ export function fixtureSdk(argv = []) {
     async setModel(model) { this.model = model; }
     async setPermissionMode(mode) { this.mode = mode; }
     async applyFlagSettings(settings) { this.effort = settings.effortLevel; }
-    async interrupt() {
+    // `cancelQueued`: the messages that came and are not taken yet go too, as Claude Code cancels them (`interrupts`: each asked).
+    async interrupt(options) {
+      (this.interrupts ??= []).push(options ?? null);
       if (argv.includes('--ignore-cancel')) return new Promise(() => {});
-      this.controller.abort(); clearTimeout(this.timer); this.cancelWait?.(); return { still_queued: [] };
+      const cancelled = options?.cancelQueued ? this.inbox.splice(0).map(m => m.uuid) : [];
+      this.controller.abort(); clearTimeout(this.timer); this.cancelWait?.(); return { still_queued: this.inbox.map(m => m.uuid), ...(options?.cancelQueued ? { cancelled } : {}) };
     }
     async stopTask(id) {
       // A task that takes its time to die: the stop is asked and the task goes on, until it ends of itself.
@@ -250,7 +275,7 @@ export function fixtureSdk(argv = []) {
       this.emit({ type: 'result', subtype: 'success', is_error: false, stop_reason: 'end_turn', usage: {} });
       this.system('session_state_changed', { state: 'idle' });
     }
-    close() { this.closed = true; this.controller.abort(); clearTimeout(this.timer); this.cancelWait?.(); this.wake?.(); }
+    close() { this.closed = true; this.controller.abort(); clearTimeout(this.timer); this.cancelWait?.(); this.wake?.(); this.arrived?.(); }
   }
   return { query: options => new Query(options),
     getSessionInfo: (id, { dir }) => existsSync(path(dir, id)) ? { sessionId: id } : undefined, renameSession: async () => {} };

@@ -58,6 +58,8 @@ test('session/new lists the concrete models the SDK resolves its rows to, and se
   const c = await setup(t);
   const init = (await c.request('initialize', { protocolVersion: 1, clientCapabilities: {} })).result;
   assert.deepEqual(init.agentCapabilities, { loadSession: true, sessionCapabilities: { additionalDirectories: {}, systemPrompt: {} }, _meta: { coda: { waits: {} } } });
+  // It takes a message into the turn going (docs/agent-protocol.md「插话」).
+  assert.deepEqual(init._meta, { steering: { supported: true } });
   // The SDK it runs, by its own package version.
   assert.deepEqual(init.agentInfo, { name: 'claude-agent-sdk', version: JSON.parse(readFileSync(new URL('../../../plugins/claude/node_modules/@anthropic-ai/claude-agent-sdk/package.json', import.meta.url), 'utf8')).version });
   const opened = (await c.request('session/new', { cwd: c.cwd, mcpServers: [{ name: 'coda', command: 'node', args: ['shim.mjs'], env: [] }] })).result;
@@ -823,4 +825,57 @@ test('a query for the service\'s model that cannot even be started ends the sess
   assert.equal(ended, 1);
   const refused = await c.prompt('again');
   assert.deepEqual([refused.error?.code, started], [-32001, 2]);
+});
+
+// A message into the turn going (docs/agent-protocol.md「插话」): sent to Claude Code marked `next`, which takes it at the turn's
+// next tool round, or runs it right after a turn that ended first; either way the prompt is answered once it is taken.
+const steer = (c, text) => c.request('_session/steering', { sessionId: c.sessionId, prompt: [{ type: 'text', text }], _meta: { steering: { idleBehavior: 'promptRequired' } } });
+
+test('a message sent into the running turn is taken at its next tool round, and the turn goes on to its end', async t => {
+  const c = await setup(t);
+  await c.open();
+  const answered = c.prompt('tool-round');
+  await until(() => c.updates().some(u => u.sessionUpdate === 'tool_call' && u.toolCallId === 'tool-round'));
+  assert.deepEqual((await steer(c, '只看实现')).result, { outcome: 'injected' });
+  await until(() => c.query.received.length === 2);
+  assert.deepEqual([c.query.received[1].priority, c.query.received[1].message.content], ['next', '只看实现']);
+  await writeFile(join(c.cwd, '.finish-tool'), '');
+  assert.deepEqual((await answered).result, { stopReason: 'end_turn' });
+  assert.deepEqual(c.said().slice(-2), ['插话：只看实现', '工具之后的回答']);
+  assert.equal(c.waits().filter(w => w.title === 'Claude 自主继续').length, 0, 'no turn of Claude\'s own');
+});
+
+test('a message the turn ended before taking runs right after as a turn of its own, which the prompt waits for', async t => {
+  const c = await setup(t);
+  await c.open();
+  const answered = c.prompt('until-end');
+  await until(() => c.said().includes('等着结束'));
+  assert.deepEqual((await steer(c, '再补一句')).result, { outcome: 'injected' });
+  await writeFile(join(c.cwd, '.end-turn'), '');
+  assert.deepEqual((await answered).result, { stopReason: 'end_turn' });
+  const said = c.out.findIndex(m => m.method === 'session/update' && m.params.update.content?.text === '再补一句');
+  assert.ok(said >= 0 && said < c.out.findIndex(m => m.result?.stopReason === 'end_turn'), 'answered after the turn that took it');
+  assert.equal(c.waits().filter(w => w.title === 'Claude 自主继续').length, 0, 'that turn is the prompt\'s, not Claude\'s own');
+});
+
+test('a message sent with no prompt of Coda\'s going is handed back for Coda to send', async t => {
+  const c = await setup(t);
+  await c.open();
+  assert.deepEqual((await steer(c, '晚了')).result, { outcome: 'promptRequired', reason: 'noRunningTurn' });
+  assert.equal(c.query.received.length, 0, 'nothing goes to Claude Code');
+});
+
+test('a message not taken yet when the turn is stopped goes with it, and the next prompt is answered as usual', async t => {
+  const c = await setup(t);
+  await c.open();
+  const answered = c.prompt('hold');
+  await until(() => c.said().includes('holding'));
+  assert.deepEqual((await steer(c, '不用了')).result, { outcome: 'injected' });
+  await until(() => c.query.received.length === 2);
+  c.send({ method: 'session/cancel', params: { sessionId: c.sessionId } });
+  assert.deepEqual((await answered).result, { stopReason: 'cancelled' });
+  assert.deepEqual(c.query.interrupts, [{ cancelQueued: true }]);
+  assert.deepEqual((await c.prompt('之后的一轮')).result, { stopReason: 'end_turn' });
+  assert.ok(!c.said().includes('不用了'), 'it never ran');
+  assert.equal(c.waits().filter(w => w.title === 'Claude 自主继续').length, 0);
 });
