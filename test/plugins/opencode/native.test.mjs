@@ -196,8 +196,8 @@ for (const { api, keyed, regression } of cases)
 // the entry ends the turn with the service's reason. The service stands in by what each turn asks last (`answers`, given
 // how often that was asked before: the wait it asks for in seconds, `subagent` for a call of OpenCode's subagent tool, null
 // for an answer); what OpenCode asks without its tools (the session's title) is answered.
-async function retrying(t, answers) {
-  const root = mkdtempSync(join(tmpdir(), 'coda-opencode-retry-')), turns = [];
+async function retrying(t, answers, config = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'coda-opencode-retry-')), turns = [], updates = [];
   let agent;
   t.after(async () => { if (agent) { await agent.terminate(1000); agent.kill(); } rmSync(root, { recursive: true, force: true }); });
   mkdirSync(join(root, '.opencode/bin'), { recursive: true });
@@ -208,29 +208,38 @@ async function retrying(t, answers) {
     const body = raw ? JSON.parse(raw) : {}, messages = body.messages ?? [];
     const asked = JSON.stringify(messages.filter(m => m.role === 'user').at(-1) ?? '');
     const turn = body.stream && body.tools?.length ? Object.keys(answers).find(word => asked.includes(word)) : undefined;
-    const said = turn === undefined ? null : answers[turn](turns.filter(t => t === turn).length);
+    const occurrence = turns.filter(t => t === turn).length;
     if (turn !== undefined) turns.push(turn);
-    if (said === 'subagent') {
-      const call = { index: 0, id: 'call_subagent', type: 'function', function: { name: 'subagent',
-        arguments: JSON.stringify({ agent: 'general', description: 'Probe task', prompt: 'Child, please.' }) } };
+    const said = turn === undefined ? null : await answers[turn](occurrence, body);
+    if (said === 'subagent' || said?.tool) {
+      const call = { index: 0, id: `call_${turn}_${occurrence}`, type: 'function', function: { name: said.tool ?? 'subagent',
+        arguments: JSON.stringify(said.input ?? { agent: 'general', description: 'Probe task', prompt: 'Child, please.' }) } };
       response.setHeader('content-type', 'text/event-stream');
       for (const choice of [{ index: 0, delta: { role: 'assistant', tool_calls: [call] }, finish_reason: null }, { index: 0, delta: {}, finish_reason: 'tool_calls' }])
         response.write(`data: ${JSON.stringify({ id: 'chat_subagent', object: 'chat.completion.chunk', created: 1, model: body.model, choices: [choice] })}\n\n`);
       response.end('data: [DONE]\n\n'); return;
     }
     if (said === null) { answer(response, request.url, body); return; }
+    if (said?.error) {
+      response.writeHead(400, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ error: { message: said.error, type: 'invalid_request_error' } })); return;
+    }
     response.writeHead(429, { 'content-type': 'application/json', 'retry-after': String(said) });
     response.end(JSON.stringify({ error: { message: '用量窗口已满，明天 17:42 重置', type: 'rate_limit_error', code: null } }));
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { server.closeAllConnections(); server.close(); });
-  writeFileSync(join(root, 'opencode.json'), JSON.stringify({ $schema: 'https://opencode.ai/config.json', model: 'fixture/native', small_model: 'fixture/native', autoupdate: false,
+  writeFileSync(join(root, 'opencode.json'), JSON.stringify({ $schema: 'https://opencode.ai/config.json', model: 'fixture/native', small_model: 'fixture/native', autoupdate: false, ...config,
     provider: { fixture: { npm: '@ai-sdk/openai-compatible', options: { baseURL: `http://127.0.0.1:${server.address().port}/v1`, apiKey: 'fixture-key' },
       models: { native: { name: 'Native fixture', limit: { context: 32768, output: 4096 }, tool_call: true } } } } }));
   agent = new AgentProcess({ command: manifest.contributes.agents[0].command, cwd: root,
     env: { PATH: process.env.PATH, HOME: root, XDG_CONFIG_HOME: join(root, 'config'), XDG_DATA_HOME: join(root, 'data'),
       XDG_CACHE_HOME: join(root, 'cache'), XDG_STATE_HOME: join(root, 'state'), OPENCODE_DISABLE_DEFAULT_PLUGINS: 'true', OPENCODE_DISABLE_MODELS_FETCH: 'true',
-      CODA_NODE: process.execPath, CODA_PLUGIN_PATH: pluginDir('opencode'), CODA_PLUGIN_SETTINGS: '{}' } });
+      CODA_NODE: process.execPath, CODA_PLUGIN_PATH: pluginDir('opencode'), CODA_PLUGIN_SETTINGS: '{}' },
+    onMessage: message => {
+      updates.push(message);
+      if (message.method === 'session/request_permission') agent.respond(message.id, { outcome: { outcome: 'selected', optionId: 'once' } });
+    } });
   const request = (method, params) => agent.request(method, params, { timeout: 45_000 });
   assert.equal((await request('initialize', { protocolVersion: 1, clientCapabilities: {} })).error, undefined);
   const { sessionId } = (await request('session/new', { cwd: root, mcpServers: [] })).result;
@@ -238,7 +247,7 @@ async function retrying(t, answers) {
     const started = Date.now(), reply = await request('session/prompt', { sessionId, prompt: [{ type: 'text', text }] });
     return { ...reply, took: Date.now() - started, stderr: agent.stderr };
   };
-  return { prompt, turns };
+  return { prompt, turns, updates, request, sessionId, agent };
 }
 const STOPPED = '用量窗口已满，明天 17:42 重置\n\nOpenCode 要等约 15 分钟才会重试，这一轮先结束。';
 
@@ -266,4 +275,73 @@ test('real OpenCode: a subagent\'s wait past a minute ends the turn that runs it
   const next = await prompt('Moment, please.');
   assert.equal(next.result?.stopReason, 'end_turn', JSON.stringify(next));
   assert.deepEqual(turns, ['Delegate', 'Child', 'Moment']);
+});
+
+const delegate = (prompt, background = false) => ({ tool: 'subagent', input: { agent: 'general', description: 'Probe task', prompt, background } });
+async function until(predicate, client) {
+  for (let i = 0; i < 1000; i++) { if (predicate()) return; await delay(10); }
+  assert.fail(`Expected native event did not arrive: ${JSON.stringify(client.updates)}\n${client.agent.stderr}`);
+}
+
+test('real OpenCode: native child output, tool and permission belong to its registered session',
+  { skip: !binary, timeout: 120_000 }, async t => {
+  const client = await retrying(t, { Delegate: n => n ? null : 'subagent',
+    Child: n => n ? null : { tool: 'shell', input: { command: 'printf native-child-tool' } } }, { permission: { shell: 'ask' } });
+  const result = await client.prompt('Delegate, please.');
+  assert.equal(result.result?.stopReason, 'end_turn', JSON.stringify(result));
+  const start = client.updates.findIndex(m => m.method === '_coda/wait' && m.params.state === 'waiting');
+  assert.ok(start >= 0, JSON.stringify(client.updates));
+  const child = client.updates[start].params.childSessionId;
+  const own = client.updates.filter(m => m.params?.sessionId === child);
+  assert.ok(own.some(m => m.params.update?.sessionUpdate === 'agent_message_chunk'));
+  assert.ok(own.some(m => m.params.update?.sessionUpdate === 'tool_call' && m.params.update.name === 'shell'));
+  const permission = own.find(m => m.method === 'session/request_permission');
+  assert.ok(permission, JSON.stringify(client.updates));
+  assert.ok(own.some(m => m.params.update?.toolCallId === permission.params.toolCall.toolCallId && m.params.update.status === 'completed'));
+  assert.ok(client.updates.findIndex(m => m.params?.sessionId === child) > start);
+  const finished = client.updates.findIndex(m => m.method === '_coda/wait' && m.params.state === 'done');
+  assert.ok(finished > client.updates.findIndex(m => m.params?.sessionId === child && m.params.update?.sessionUpdate === 'agent_message_chunk'));
+  assert.ok(!client.updates.some(m => m.params?.sessionId === client.sessionId && m.params.update?._meta?.['opencode/child-session']));
+});
+
+for (const stop of [false, true]) test(`real OpenCode: background child remains registered after the parent replies and ${stop ? 'can be stopped individually' : 'finishes with its output'}`,
+  { skip: !binary, timeout: 120_000 }, async t => {
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  t.after(() => release(null));
+  const client = await retrying(t, { Delegate: n => n ? null : delegate('Child, please.', true), Child: () => held, Moment: () => null });
+  assert.equal((await client.prompt('Delegate, please.')).result?.stopReason, 'end_turn');
+  await until(() => client.turns.includes('Child'), client);
+  const waiting = client.updates.find(m => m.method === '_coda/wait' && m.params.state === 'waiting')?.params;
+  assert.ok(waiting, JSON.stringify(client.updates));
+  assert.ok(!client.updates.some(m => m.method === '_coda/wait' && ['done', 'failed', 'cancelled'].includes(m.params.state)));
+  if (stop) {
+    assert.equal(waiting.stoppable, true);
+    const reply = await client.request('_coda/wait/stop', { sessionId: client.sessionId, waitId: waiting.waitId });
+    assert.equal(reply.error, undefined, JSON.stringify(reply));
+  } else release(null);
+  await until(() => client.updates.some(m => m.method === '_coda/wait' && m.params.state === (stop ? 'cancelled' : 'done')), client);
+  if (!stop) assert.ok(client.updates.some(m => m.params?.sessionId === waiting.childSessionId && m.params.update?.content?.text === 'Fixture answer'));
+  if (stop) assert.equal((await client.prompt('Moment, please.')).result?.stopReason, 'end_turn', 'stopping the child leaves the root usable');
+});
+
+test('real OpenCode: a failed child reports the service error on its card',
+  { skip: !binary, timeout: 120_000 }, async t => {
+  const client = await retrying(t, { Delegate: n => n ? null : 'subagent', Child: () => ({ error: 'Fixture child rejected' }) });
+  await client.prompt('Delegate, please.');
+  const failed = client.updates.find(m => m.method === '_coda/wait' && m.params.state === 'failed');
+  assert.ok(failed, JSON.stringify(client.updates));
+  assert.match(failed.params.detail, /Fixture child rejected/);
+});
+
+test('real OpenCode: nested native child is registered under the child that launched it',
+  { skip: !binary, timeout: 120_000 }, async t => {
+  const client = await retrying(t, { Delegate: n => n ? null : 'subagent', Child: n => n ? null : delegate('Grand, please.'), Grand: () => null },
+    { experimental: { subagent_depth: 2 }, agent: { general: { permission: { subagent: 'allow' } } } });
+  assert.equal((await client.prompt('Delegate, please.')).result?.stopReason, 'end_turn');
+  const waiting = client.updates.filter(m => m.method === '_coda/wait' && m.params.state === 'waiting').map(m => m.params);
+  assert.equal(waiting.length, 2, JSON.stringify(client.updates));
+  assert.equal(waiting[0].sessionId, client.sessionId);
+  assert.equal(waiting[1].sessionId, waiting[0].childSessionId);
+  assert.equal(client.updates.filter(m => m.method === '_coda/wait' && m.params.state === 'done').length, 2);
 });

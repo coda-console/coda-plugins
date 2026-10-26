@@ -85,10 +85,22 @@ SDK 作为 `assistant` 消息发来的 API 错误不当成回复正文；由本�
 唤醒它的任务保留任务自己的结果，周期定时保留下次触发。
 
 OpenCode 遇到模型服务的 429，会照 `Retry-After` 等（OpenCode 2 每次最多 15 分钟、最多 10 次），并在 ACP 里用 `session_info_update` 的
-`_meta["opencode/retry"]` 说下次什么时候重试、服务报了什么；子 Agent（OpenCode 的 `subagent`）的等待也报在等它的那一轮的会话里。
-Coda 自己对服务故障只等一分钟以内，所以一轮里 OpenCode 要等超过一分钟才重试时，入口先 `session/cancel` 停下这一轮（子 Agent 随之停下），
+`_meta["opencode/retry"]` 说下次什么时候重试、服务报了什么；子 Agent（OpenCode 的 `subagent`）从子会话事件报告等待，入口仍按它所属的主会话处理。
+Coda 自己对服务故障只等一分钟以内，所以一轮里 OpenCode 要等超过一分钟才重试时，入口先 `session/cancel` 停下这一轮（前台子 Agent 随之停下），
 再把这一轮答成失败，原因是服务给的原文加上 OpenCode 要等多久；停下后 OpenCode 回的是什么都不转出。一分钟以内的等待照旧由 OpenCode 自己处理。
 不在入口里按厂商的错误文字判断额度耗尽。
+
+OpenCode 的原生子会话经 ACP 的 `opencode/child-session-updates` 能力接入（入口 `agent/children.mjs`，核对 OpenCode 2.1.4）：
+`opencode/session/child_update` 的创建与运行状态登记成 `_coda/wait`，带原生 `childSessionId`；子会话的回复、思考与工具调用各归自己的过程，
+嵌套子会话归发起它的子会话。主会话答复以后仍保留后台子会话，收到原生完成、失败、被中断事件才了结；错误原文留在卡片详情。
+审批从 OpenCode 附带的 `opencode/child-session` 元数据归到子会话，审批响应的身份不变。
+停止按钮走 `session/close`：OpenCode 的这个接口中断原生会话而不删除历史；`session/cancel` 只能取消 ACP 正在执行的 prompt，不能单独停止原生子会话。
+上游再次报告同一子会话开始执行时，用新的 `waitId` 登记同一张卡片的下一次运行。
+
+这条接口的边界也沿用 OpenCode 2.1.4：它只跟踪当前 ACP prompt 里新建的子会话，恢复历史或在后续 prompt 续用已有子会话时不补发它们的过程；
+后台子会话结束后主 Agent 自主继续的输出也不经此接口发来，所以入口不凭子会话完成事件自造 `handling` 轮次。
+原生表单提问没有子会话身份元数据，仍显示在主会话。以上需要上游补充事件；普通 Coda `spawn` 的独立会话不受这些限制。
+协议公开副本记录的是同步时的插件行为，OpenCode 当前的接入以本节为准。
 
 Kimi、Grok、OpenCode、Cursor 带设置动作（`contributes.setup`，`scripts/setup.mjs`），用户安装或更新插件时 Coda 在每台机器上运行：
 CLI 不在或运行不了就用它自己的安装程序安装，低于插件要求的版本就升级，较新的版本保留。要求的版本：Kimi 2.1.1（入口读得懂的会话文件布局）、
@@ -142,7 +154,8 @@ Claude、Codex 与 OpenCode 各有一项设置「模型服务」（`claude.model
   `/models` 没有上下文与输出上限时暂用 32768 / 4096 tokens，
   服务给出 `context_length` / `max_output_tokens` 时用它们；不根据模型名猜测图片与推理能力。
   真 CLI 的本地验证（不使用实际模型服务与登录）：`OPENCODE_TEST_BINARY=/absolute/path/to/opencode node --test test/plugins/opencode/native.test.mjs`，
-  覆盖三种接口的请求、服务与原生模型切换、进程重启后恢复，服务模型的变量模板、用户 JSONC 和 Provider 对象模板配置，以及主会话与子 Agent 里长短两种 `Retry-After`。
+  覆盖三种接口的请求、服务与原生模型切换、进程重启后恢复，服务模型的变量模板、用户 JSONC 和 Provider 对象模板配置，以及主会话与子 Agent 里长短两种 `Retry-After`；
+  原生子会话另覆盖过程与工具、审批归属、后台完成、独立停止和嵌套父子关系。模型服务全由本地 HTTP fixture 提供。
 
 ### Grok 审批模式
 

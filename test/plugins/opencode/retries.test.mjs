@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { LONG_WAIT, LongRetries } from '../../../plugins/opencode/agent/retries.mjs';
+import { CHILD_UPDATE } from '../../../plugins/opencode/agent/children.mjs';
 
 const NOW = Date.parse('2026-10-23T12:00:00Z');
 const prompt = (id, sessionId = 'ses_a') => ({ jsonrpc: '2.0', id, method: 'session/prompt', params: { sessionId, prompt: [{ type: 'text', text: 'hi' }] } });
@@ -37,6 +38,16 @@ test('a subagent\'s wait, said in the session of the turn that waits on it, stop
   waits.fromAgent(retry('ses_a', 900_000, 'Child: 用量窗口已满', { 'opencode/child-session': { id: 'ses_child', parentID: 'ses_a', depth: 1 } }));
   assert.deepEqual(cancelled, ['ses_a']);
   assert.equal(waits.fromAgent(answer(3)).error.message, 'Child: 用量窗口已满\n\nOpenCode 要等约 15 分钟才会重试，这一轮先结束。');
+});
+
+test('a child retry on the negotiated extension still ends its root prompt with the service reason', () => {
+  const { cancelled, waits } = retries();
+  waits.toAgent(prompt(3));
+  const message = { method: CHILD_UPDATE, params: { rootSessionId: 'ses_a', childSessionId: 'ses_child',
+    type: 'update', update: retry('ses_child', 900_000, 'Child service failed').params.update } };
+  assert.equal(waits.fromAgent(message), message);
+  assert.deepEqual(cancelled, ['ses_a']);
+  assert.match(waits.fromAgent(answer(3)).error.message, /^Child service failed/);
 });
 
 test('a wait of a minute or less is OpenCode\'s; so are a session with no prompt under way, a retry begun, and any other update', () => {

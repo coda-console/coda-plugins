@@ -1,11 +1,12 @@
 // A model service's wait OpenCode would sit out for longer than Coda waits. OpenCode waits as long as a provider's
 // Retry-After says, up to 15 minutes a time and ten times (its model-retry.ts), and tells an ACP client: a
 // `session_info_update` whose `_meta["opencode/retry"]` says when it tries again (`nextRetryAt`) and the service's error,
-// a subagent's (OpenCode's task) said in the session of the turn that waits on it. Coda ends a turn on an agent's failure
-// and keeps why, and retries a service's failures itself over at most a minute (docs/agent-protocol.md「服务暂不可用」);
+// a subagent's said on its child-update extension (or projected into the root without that capability). Coda ends a turn
+// on an agent's failure and keeps why, and retries a service's failures itself over at most a minute (docs/agent-protocol.md「服务暂不可用」);
 // so a wait longer than LONG_WAIT ends the turn here: the entry stops OpenCode's (`session/cancel`, which stops its
-// subagents too) and answers Coda's prompt with the service's reason, whatever OpenCode answers it with once stopped. A
-// shorter wait is OpenCode's to sit out.
+// foreground subagents too) and answers Coda's prompt with the service's reason, whatever OpenCode answers it with once
+// stopped. A shorter wait is OpenCode's to sit out.
+import { CHILD_UPDATE } from './children.mjs';
 export const LONG_WAIT = 60_000;
 const RETRY = 'opencode/retry';
 
@@ -27,6 +28,9 @@ export class LongRetries {
   fromAgent(message) {
     if (!record(message)) return message;
     if (message.method === 'session/update') { this.updated(message.params); return message; }
+    if (message.method === CHILD_UPDATE && message.params?.type === 'update') {
+      this.updated({ sessionId: message.params.rootSessionId, update: message.params.update }); return message;
+    }
     if (!('id' in message) || 'method' in message) return message;
     for (const [session, id] of this.prompts) if (id === message.id) this.prompts.delete(session);
     if (!this.ending.has(message.id)) return message;
