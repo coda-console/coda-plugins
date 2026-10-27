@@ -15,11 +15,9 @@ const identity = (account, workspace) => {
   return email && typeof workspace === 'string' && workspace ? { identity: `codex:${hash(`${email}\n${hash(workspace)}`)}` } : {};
 };
 const unixTime = value => typeof value === 'number' && Number.isFinite(new Date(value * 1000).getTime()) ? new Date(value * 1000).toISOString() : null;
-// A credit's expiry as the clients write times (UTC+8), here because a figure's value is text.
-export function utc8(seconds) {
-  const d = new Date(seconds * 1000 + 8 * 3600_000);
-  return `${d.getUTCFullYear()}/${String(d.getUTCMonth() + 1).padStart(2, '0')}/${String(d.getUTCDate()).padStart(2, '0')} ${d.getUTCHours()}:${String(d.getUTCMinutes()).padStart(2, '0')}`;
-}
+// A credit's expiry in a figure's text: a time mark, which each client writes in its own time zone (Coda's
+// docs/agent-protocol.md「文字里的时刻」).
+const mark = seconds => `<t:${unixTime(seconds)}>`;
 
 // A bar per window of each limit, of what is left. A limit's name is said only when there are several.
 export function windows(result) {
@@ -54,11 +52,11 @@ export function card(account, result, workspace) {
   const items = windows(result), resets = credits(result);
   if (resets) {
     const first = resets.listed[0];
-    const lines = resets.listed.map((c, i) => ({ type: 'stat', label: `第 ${i + 1} 次`, value: c.expiresAt == null ? '不会过期' : `${utc8(c.expiresAt)} 到期` }));
+    const lines = resets.listed.map((c, i) => ({ type: 'stat', label: `第 ${i + 1} 次`, value: c.expiresAt == null ? '不会过期' : `${mark(c.expiresAt)} 到期` }));
     const room = CARD_ITEMS - items.length - (first ? 2 : 1);
     items.push({ type: 'stat', label: '完全重置', value: `剩余 ${resets.count} 次` }, ...lines.slice(0, Math.max(0, room)));
     if (first && resets.count > 0) items.unshift({ type: 'button', label: '使用完全重置', action: 'reset', args: { creditId: first.id },
-      confirm: `使用 ${line(name, 60)} 的完全重置？\n用最早到期的那一次（${first.expiresAt == null ? '不会过期' : `${utc8(first.expiresAt)} 到期，UTC+8`}）。成功后消耗 1 次，无法撤销。` });
+      confirm: `使用 ${line(name, 60)} 的完全重置？\n用最早到期的那一次（${first.expiresAt == null ? '不会过期' : `${mark(first.expiresAt)} 到期`}）。成功后消耗 1 次，无法撤销。` });
   }
   if (!items.length) items.push({ type: 'error', text: '暂时无法获取额度：Codex 没有给出额度窗口' });
   return { type: 'card', title: name, ...(line(account.planType) ? { subtitle: line(account.planType) } : {}), ...identity(account, workspace), items: items.slice(0, CARD_ITEMS) };

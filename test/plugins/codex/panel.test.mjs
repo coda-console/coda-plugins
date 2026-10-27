@@ -45,13 +45,13 @@ test('the Codex panel shows the login with what is left, and offers the full res
   // Who signed in and in which workspace, as a hash, which Coda's group view compares across machines.
   assert.deepEqual(items, [{ type: 'card', title: 'me@example.com', subtitle: 'pro', identity: 'codex:4f8c8f70fdb1a82f325caca6fccb78690831f66027018f748a0c7141a6d929a3', items: [
     { type: 'button', label: '使用完全重置', action: 'reset', args: { creditId: 'first' },
-      confirm: '使用 me@example.com 的完全重置？\n用最早到期的那一次（2026/10/20 9:00 到期，UTC+8）。成功后消耗 1 次，无法撤销。' },
+      confirm: '使用 me@example.com 的完全重置？\n用最早到期的那一次（<t:2026-10-20T01:00:00.000Z> 到期）。成功后消耗 1 次，无法撤销。' },
     { type: 'meter', label: '5 小时', value: '剩余 64%', fraction: 0.64, time: new Date(early * 1000).toISOString(), timeLabel: '重置' },
     // Unknown stays unknown: no bar, never a zero.
     { type: 'meter', label: '7 天' },
     { type: 'stat', label: '完全重置', value: '剩余 3 次' },
-    { type: 'stat', label: '第 1 次', value: '2026/10/20 9:00 到期' },
-    { type: 'stat', label: '第 2 次', value: '2026/11/02 9:00 到期' },
+    { type: 'stat', label: '第 1 次', value: '<t:2026-10-20T01:00:00.000Z> 到期' },
+    { type: 'stat', label: '第 2 次', value: '<t:2026-11-02T01:00:00.000Z> 到期' },
     { type: 'stat', label: '第 3 次', value: '不会过期' },
   ] }]);
   assert.deepEqual(takes({ items }), ['card', 'button', 'meter', 'meter', 'stat', 'stat', 'stat', 'stat'], 'a reading Coda takes');

@@ -365,7 +365,7 @@ export class ClaudeSession {
       case 'user': return this.toolResults(m, parent);
       case 'result': return this.result(m);
       case 'rate_limit_event':
-        this.turnLimits = m.rate_limit_info;
+        this.turnLimits = this.window = m.rate_limit_info;
         if (this.env.CODA_PLUGIN_STATE) new ClaudeSessionLimits({ path: join(this.env.CODA_PLUGIN_STATE, 'limits.json') }).observe(m.rate_limit_info, this.account ?? null);
     }
   }
@@ -516,7 +516,7 @@ export class ClaudeSession {
     const id = ids.find(id => this.prompts.has(id)) ?? (steered ? this.held : undefined);
     const cancelled = interrupted(m), failed = !cancelled && (m.is_error || m.subtype !== 'success');
     const error = failed ? claudeFailure(m.errors?.length || m.result ? errorText(m) : this.turnError?.message || errorText(m),
-      { error: this.turnError?.error, limits: this.turnLimits }) : null;
+      { error: this.turnError?.error, limits: this.turnLimits, window: this.window }) : null;
     this.turnError = null; this.turnLimits = null;
     if (id) {
       const outcome = this.ending ?? (failed ? { failure: error } : { stopReason: cancelled ? 'cancelled' : 'end_turn' });

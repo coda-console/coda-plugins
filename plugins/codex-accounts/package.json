@@ -3,7 +3,7 @@
   "id": "codex-accounts",
   "displayName": "Codex 多账号",
   "description": "在 Coda 内管理 Codex 账号：自动纳入已有登录，添加与移除账号、自动续期、查看额度和使用完全重置；接管 Codex 额度面板，所选账号在会话开始和两轮之间生效。",
-  "version": "2.1.2",
+  "version": "2.1.3",
   "categories": ["模型与账号"],
   "extensionDependencies": [
     "codex"

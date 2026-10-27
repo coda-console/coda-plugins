@@ -194,6 +194,22 @@ test('Claude quota failures reach ACP as quota_exhausted, retaining the reset ti
   });
 });
 
+test('a quota failure says its reset as a time mark from the window last reported, also in a later turn and an autonomous one', async t => {
+  const c = await setup(t); await c.open();
+  const local = "You've hit your session limit · resets 5:10am (Australia/Sydney)", said = "You've hit your session limit · resets <t:2026-10-24T18:10:00.000Z>";
+  const failed = () => [apiError('rate_limit', local), { type: 'result', subtype: 'success', is_error: true, result: local, user_message_uuid: c.query.inputId }];
+  let pending = c.prompt('manual'); await until(() => c.query.inputId);
+  await c.emit({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', rateLimitType: 'five_hour', resetsAt: Date.UTC(2026, 9, 24, 18, 10) / 1000 } }, ...failed());
+  assert.equal((await pending).error.message, said);
+  // Tried again: Claude Code reports no window that has not moved.
+  const before = c.query.inputId; pending = c.prompt('manual'); await until(() => c.query.inputId !== before);
+  await c.emit(...failed());
+  assert.equal((await pending).error.message, said);
+  await c.emit(system('task_started', { task_id: 'task', task_type: 'local_bash', is_backgrounded: true }), system('task_notification', { task_id: 'task', status: 'completed' }),
+    system('init', { session_id: c.sessionId }), apiError('rate_limit', local), { type: 'result', subtype: 'success', is_error: true, result: local });
+  assert.deepEqual(wait(c, 'turn-1').at(-1), { waitId: 'turn-1', state: 'failed', title: '额度不足', detail: said });
+});
+
 test('quota evidence belongs to its failed turn: normal prose, warnings, recovery, cancellation and child errors do not fail a prompt', async t => {
   for (const variant of ['prose', 'warning', 'recovered', 'cancelled', 'child']) await t.test(variant, async t => {
     const c = await setup(t); await c.open();

@@ -4,10 +4,8 @@ import { createHash } from 'node:crypto';
 const CARD_ITEMS = 20, ACCOUNTS = 40, BYTES = 60 * 1024;
 const line = (value, max = 80) => typeof value === 'string' ? [...value.replace(/\s+/g, ' ').trim()].slice(0, max).join('') : '';
 const unixTime = value => typeof value === 'number' && Number.isFinite(new Date(value * 1000).getTime()) ? new Date(value * 1000).toISOString() : null;
-export function utc8(seconds) {
-  const d = new Date(seconds * 1000 + 8 * 3600_000);
-  return `${d.getUTCFullYear()}/${String(d.getUTCMonth() + 1).padStart(2, '0')}/${String(d.getUTCDate()).padStart(2, '0')} ${d.getUTCHours()}:${String(d.getUTCMinutes()).padStart(2, '0')}`;
-}
+// A time in a figure's text, as a mark each client writes in its own time zone (Coda's docs/agent-protocol.md「文字里的时刻」).
+const mark = seconds => `<t:${unixTime(seconds)}>`;
 export function windows(result) {
   const byID = result?.rateLimitsByLimitId ? Object.values(result.rateLimitsByLimitId) : [];
   const limits = (byID.length ? byID : [result?.rateLimits]).filter(Boolean);
@@ -47,10 +45,10 @@ export function card(account, chosen, { result, error }) {
     if (resets) {
       const first = resets.listed[0];
       if (first && resets.count > 0) buttons.push({ type: 'button', label: '使用完全重置', action: 'reset', args: { account: account.identity, creditId: first.id },
-        confirm: `使用 ${line(name, 60)} 的完全重置？\n用最早到期的那一次（${first.expiresAt == null ? '不会过期' : `${utc8(first.expiresAt)} 到期，UTC+8`}）。成功后消耗 1 次，无法撤销。` });
+        confirm: `使用 ${line(name, 60)} 的完全重置？\n用最早到期的那一次（${first.expiresAt == null ? '不会过期' : `${mark(first.expiresAt)} 到期`}）。成功后消耗 1 次，无法撤销。` });
       const room = CARD_ITEMS - buttons.length - items.length - 1;
       items.push({ type: 'stat', label: '完全重置', value: `剩余 ${resets.count} 次` },
-        ...resets.listed.slice(0, Math.max(0, room)).map((c, i) => ({ type: 'stat', label: `第 ${i + 1} 次`, value: c.expiresAt == null ? '不会过期' : `${utc8(c.expiresAt)} 到期` })));
+        ...resets.listed.slice(0, Math.max(0, room)).map((c, i) => ({ type: 'stat', label: `第 ${i + 1} 次`, value: c.expiresAt == null ? '不会过期' : `${mark(c.expiresAt)} 到期` })));
     }
     if (!items.length) items.push({ type: 'error', text: '暂时无法获取额度：Codex 没有给出额度窗口' });
   }

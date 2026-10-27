@@ -3,7 +3,7 @@
   "id": "codex",
   "displayName": "Codex",
   "description": "Codex Agent：Coda 自带的入口运行 codex-acp，报告子 Agent 与后台命令。额度与登录由账号来源插件接管；未接入账号来源时使用 Codex 自己的登录面板。",
-  "version": "1.8.2",
+  "version": "1.8.3",
   "categories": ["Agent"],
   "dependencies": {
     "@agentclientprotocol/codex-acp": "1.12.0",
