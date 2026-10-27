@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { OpenCodeShells } from '../../../plugins/opencode/agent/shells.mjs';
 import { shellEnvironment } from '../../../plugins/opencode/agent/shell-channel.mjs';
+import { providerEnvironment } from '../../../plugins/opencode/agent/providers.mjs';
 
 function fixture() {
   const messages = [], sent = [], source = {}, roots = new Set(['root', 'child']);
@@ -177,5 +178,36 @@ test('env in a plugin file path expands once before file substitution without de
   for (const source of ['{file:{env:FIRST}}', '{env:USER_PLUGINS}']) {
     assert.throws(() => shellEnvironment({ ...env, OPENCODE_CONFIG_CONTENT: `{"plugins":${source}}`,
       FIRST: '{env:PLUGINS_FILE}', USER_PLUGINS: '{file:{env:PLUGINS_FILE}}' }, '/tmp/events.sock'), SyntaxError);
+  }
+});
+
+test('root env config expands once across model services and observer injection, with files still expanded after env', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'coda-oc-root-config-')), file = join(root, 'plugins.json');
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(file, '[]');
+  const services = ['one', 'two'].map(name => ({ ref: `fixture/${name}`, title: name,
+    api: 'openai-completions', url: 'https://fixture.invalid/v1' }));
+  for (const plugins of ['["user-plugin"]', `{file:${file}}`]) {
+    const source = `{"autoupdate":false,"plugins":${plugins},"provider":{"native":{"options":` + String.raw`{
+      "apiKey":"{env:SECRET}","headers":{"x-file":"{file:/native/key}","x-literal":"\u007bfile:/native/literal}"}
+    }}}}`;
+    const original = { OPENCODE_CONFIG_CONTENT: '// supplied config\n {env:ALL_CONFIG} /* end */', ALL_CONFIG: source, SECRET: 'must-not-expand' };
+    for (const chosen of [[], services]) {
+      const provided = await providerEnvironment(original, async () => Response.json({ data: [{ id: 'model/{env:SECRET}' }] }), chosen);
+      const generated = shellEnvironment(provided, '/tmp/{env:SECRET}/events.sock');
+      const expanded = generated.OPENCODE_CONFIG_CONTENT.replace(/\{env:([^}]+)\}/g, (_, name) => generated[name] || '')
+        .replaceAll('{file:/native/key}', 'file-value');
+      const config = JSON.parse(expanded);
+      assert.equal(config.autoupdate, false);
+      assert.deepEqual(config.provider.native.options, { apiKey: '{env:SECRET}', headers: { 'x-file': 'file-value', 'x-literal': '{file:/native/literal}' } });
+      assert.equal(config.plugins.at(-1).options.socket, '/tmp/{env:SECRET}/events.sock');
+      assert.deepEqual(config.plugins.slice(0, -1), plugins.startsWith('[') ? ['user-plugin'] : []);
+      for (const { ref } of chosen) assert.ok(config.provider[`coda-${ref.replace('/', '.')}`].models['model/{env:SECRET}']);
+      assert.equal(generated.ALL_CONFIG, source);
+      assert.equal(original.OPENCODE_CONFIG_CONTENT, '// supplied config\n {env:ALL_CONFIG} /* end */');
+    }
+  }
+  for (const value of [undefined, '', '[]', 'null', '{env:SECOND}', '{"plugins":{env:SECOND}}']) {
+    assert.throws(() => shellEnvironment({ OPENCODE_CONFIG_CONTENT: '{env:ALL_CONFIG}', ALL_CONFIG: value, SECOND: '{}' }, '/tmp/events.sock'), SyntaxError);
   }
 });

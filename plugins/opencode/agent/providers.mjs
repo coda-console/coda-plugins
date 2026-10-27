@@ -75,7 +75,7 @@ export function serviceProvider(service, models) {
 // way: escaping '{' within JSON string tokens preserves their literal value without exposing an interpolation template.
 export const literalJSON = value => JSON.stringify(value).replace(/"(?:\\.|[^"\\])*"/g, token => token.replaceAll('{', '\\u007b'));
 
-export function configObject(text, envExpanded = false) {
+function configTree(text, envExpanded = false) {
   // Same-length placeholders let JSONC parse unquoted templates; offsets still refer to the untouched source. OpenCode
   // expands env once, then files, so file paths can contain env templates. Keep that whole file token together; a value
   // supplied by env cannot introduce another unquoted env template.
@@ -83,6 +83,11 @@ export function configObject(text, envExpanded = false) {
     token => token.startsWith('{') && !(envExpanded && token.startsWith('{env:')) ? `"${' '.repeat(token.length - 2)}"` : token);
   const errors = [], root = parseTree(syntax, errors, { allowTrailingComma: true });
   if (errors.length) throw new SyntaxError(`OPENCODE_CONFIG_CONTENT 不是有效的 JSONC（位置 ${errors[0].offset}）`);
+  return root;
+}
+
+export function configObject(text, envExpanded = false) {
+  const root = configTree(text, envExpanded);
   if (root?.type !== 'object') throw new SyntaxError('OPENCODE_CONFIG_CONTENT 必须是 JSONC 对象');
   // Keep raw strings/templates, but normalize JSONC for older OpenCode. Parsing and re-stringifying values would turn
   // the user's deliberately escaped \u007b into an active template.
@@ -96,15 +101,29 @@ export function configObject(text, envExpanded = false) {
   };
 }
 
-function inlineProvider(text, id, provider, env) {
-  const config = configObject(text), source = config.get('provider') ?? '{}';
+// A whole config supplied by env has already used OpenCode's single env pass. Keep edited content behind a child-only
+// root variable, so later edits (providers, then the observer) and the native CLI cannot expand its values a second time.
+export function inlineConfig(env) {
+  const text = env.OPENCODE_CONFIG_CONTENT || '{}', root = configTree(text);
+  const variable = root && /^\{env:([^}]+)\}$/.exec(text.slice(root.offset, root.offset + root.length));
+  const envExpanded = !!variable, config = configObject(variable ? env[variable[1]] || '' : text, envExpanded);
+  return { config, envExpanded, set(key, value, variables = {}) {
+    const updated = config.set(key, value);
+    if (!envExpanded) return { ...env, ...variables, OPENCODE_CONFIG_CONTENT: updated };
+    const name = `CODA_OPENCODE_CONFIG_${randomUUID().replaceAll('-', '_')}`;
+    return { ...env, ...variables, [name]: updated, OPENCODE_CONFIG_CONTENT: `{env:${name}}` };
+  } };
+}
+
+function inlineProvider(env, id, provider) {
+  const inline = inlineConfig(env), source = inline.config.get('provider') ?? '{}';
   const variable = /^\{env:([^}]+)\}$/.exec(source);
-  const value = configObject(variable ? env[variable[1]] || '' : source, !!variable).set(id, literalJSON(provider));
-  if (!variable) return { OPENCODE_CONFIG_CONTENT: config.set('provider', value) };
+  const value = configObject(variable ? env[variable[1]] || '' : source, inline.envExpanded || !!variable).set(id, literalJSON(provider));
+  if (!variable) return inline.set('provider', value);
   // Retain one env pass, followed by native file expansion. A child-only variable leaves the original variable and all
   // other config entry points unchanged, and does not recursively expand templates inside the provider object.
   const name = `CODA_OPENCODE_PROVIDER_${randomUUID().replaceAll('-', '_')}`;
-  return { [name]: value, OPENCODE_CONFIG_CONTENT: config.set('provider', `{env:${name}}`) };
+  return inline.set('provider', `{env:${name}}`, { [name]: value });
 }
 
 // The chosen services' providers by ID, each named by its service's title (groups.mjs).
@@ -116,6 +135,6 @@ export async function providerEnvironment(env = process.env, fetcher = fetch, se
     catch (error) { log(`模型服务 ${service.ref} 列不出模型：${error.message}`); return [service, []]; }
   }));
   // Invalid user configuration still fails clearly, without echoing config contents (which may include credentials).
-  return listed.filter(([, models]) => models.length).reduce((at, [service, models]) => ({ ...at,
-    ...inlineProvider(at.OPENCODE_CONFIG_CONTENT || '{}', providerId(service.ref), serviceProvider(service, models), at) }), env);
+  return listed.filter(([, models]) => models.length).reduce((at, [service, models]) =>
+    inlineProvider(at, providerId(service.ref), serviceProvider(service, models)), env);
 }

@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'jsonc-parser';
 import { readLines } from './lines.mjs';
-import { configObject, literalJSON } from './providers.mjs';
+import { configObject, inlineConfig, literalJSON } from './providers.mjs';
 
 // OpenCode substitutes files after env, trimming and JSON-string-escaping their contents (not including JSON directly).
 // Parse the completed file substitution without more templates, then quote it literally so the child cannot expand it again.
@@ -20,22 +20,21 @@ function filePlugins(file, env, cwd) {
 }
 
 export function shellEnvironment(env, socket, cwd = process.cwd()) {
-  const config = configObject(env.OPENCODE_CONFIG_CONTENT || '{}');
-  const source = config.get('plugins') ?? '[]';
+  const inline = inlineConfig(env), source = inline.config.get('plugins') ?? '[]';
   const variable = /^\{env:([^}]+)\}$/.exec(source);
   // Expand env in an original file path once, before reading it. A file template supplied by an env value has already
   // passed that stage, so templates inside the replacement must stay literal, just as in OpenCode.
-  const value = variable ? env[variable[1]] || '' : source.startsWith('{file:')
+  const value = variable ? env[variable[1]] || '' : !inline.envExpanded && source.startsWith('{file:')
     ? source.replace(/\{env:([^}]+)\}/g, (_, name) => env[name] || '') : source;
   const file = /^\{file:([^}]+)\}$/.exec(value.trim());
-  const array = file ? filePlugins(file[1], env, cwd) : configObject(`{"plugins":${value}}`, !!variable).get('plugins');
+  const array = file ? filePlugins(file[1], env, cwd) : configObject(`{"plugins":${value}}`, inline.envExpanded || !!variable).get('plugins');
   if (!array?.startsWith('[')) throw new SyntaxError('OPENCODE_CONFIG_CONTENT 的 plugins 必须是数组');
   const plugin = { package: fileURLToPath(new URL('../runtime', import.meta.url)), options: { socket } };
   const appended = `${array.slice(0, -1)}${array.length > 2 ? ',' : ''}${literalJSON(plugin)}]`;
-  if (!variable || file) return { ...env, OPENCODE_CONFIG_CONTENT: config.set('plugins', appended) };
+  if (!variable || file) return inline.set('plugins', appended);
   // Preserve OpenCode's single env interpolation pass, including literal escaped braces in existing config.
   const name = `CODA_OPENCODE_SHELL_PLUGINS_${process.pid}`;
-  return { ...env, [name]: appended, OPENCODE_CONFIG_CONTENT: config.set('plugins', `{env:${name}}`) };
+  return inline.set('plugins', `{env:${name}}`, { [name]: appended });
 }
 
 // A per-process Unix socket inside a mode-0700 temporary directory, not a listening HTTP service or a global config.

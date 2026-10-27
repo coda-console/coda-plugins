@@ -53,7 +53,7 @@ function answer(response, path, body) {
 }
 
 const cases = ['openai-completions', 'openai-responses', 'anthropic-messages'].flatMap(api => [true, false].map(keyed => ({ api, keyed })));
-cases.push(...['env', 'file', 'jsonc', 'unquoted', 'provider-template'].map(regression => ({ api: 'openai-completions', keyed: false, regression })));
+cases.push(...['env', 'file', 'jsonc', 'unquoted', 'provider-template', 'config-template'].map(regression => ({ api: 'openai-completions', keyed: false, regression })));
 for (const { api, keyed, regression } of cases)
   test(`real OpenCode: ${regression ?? api} (${keyed ? 'service key' : 'keyless'}) models, turn, native model switch and process resume`,
     { skip: !binary, timeout: 120_000 }, async t => {
@@ -115,6 +115,12 @@ for (const { api, keyed, regression } of cases)
             } } }),
             OPENCODE_CONFIG_CONTENT: '{"provider":{env:REVIEW_PROVIDER}}',
             OPENCODE_CONFIG: join(root, 'custom.jsonc'), OPENCODE_CONFIG_DIR: join(root, 'custom-dir'),
+          } : {}),
+          ...(regression === 'config-template' ? {
+            ALL_CONFIG: JSON.stringify({ autoupdate: false, provider: { fixture: { ...nativeConfig.provider.fixture, options: {
+              ...nativeConfig.provider.fixture.options, apiKey: 'config-template-key',
+              headers: { 'x-literal': '{env:OPENAI_API_KEY}', 'x-user-file': '{file:private.txt}' },
+            } } } }), OPENCODE_CONFIG_CONTENT: '{env:ALL_CONFIG}',
           } : {}),
           CODA_NODE: process.execPath, CODA_PLUGIN_PATH: pluginDir('opencode'),
           CODA_PLUGIN_SETTINGS: JSON.stringify({ 'opencode.modelProviders': ['fixture/service'] }),
@@ -183,9 +189,9 @@ for (const { api, keyed, regression } of cases)
       const native = requests.find(r => r.path === '/native/v1/chat/completions' && r.body.max_completion_tokens !== undefined);
       assert.equal(native?.body.max_completion_tokens, 1024);
     }
-    if (regression === 'provider-template') {
+    if (['provider-template', 'config-template'].includes(regression)) {
       const native = requests.find(r => r.path === '/native/v1/chat/completions');
-      assert.equal(native.headers.authorization, 'Bearer provider-template-key');
+      assert.equal(native.headers.authorization, `Bearer ${regression}-key`);
       assert.equal(native.headers['x-literal'], '{env:OPENAI_API_KEY}');
       assert.equal(native.headers['x-user-file'], 'synthetic-file-secret');
     }

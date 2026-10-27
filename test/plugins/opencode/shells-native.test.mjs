@@ -11,7 +11,7 @@ import { pluginDir } from '../plugin.mjs';
 
 const binary = process.env.OPENCODE_TEST_BINARY;
 const quote = s => `'${s.replaceAll("'", "'\\''")}'`;
-for (const scenario of ['success', 'nonzero', 'timeout', 'fast', 'cancel-handling', 'plugins-file', 'plugins-file-env'])
+for (const scenario of ['success', 'nonzero', 'timeout', 'fast', 'cancel-handling', 'plugins-file', 'plugins-file-env', 'config-env'])
 test(`real OpenCode: background shell ${scenario}, including native notification handling`,
   { skip: !binary, timeout: 30_000 }, async t => {
     const root = mkdtempSync(join(tmpdir(), 'coda-oc-shell-test-')), release = join(root, 'release');
@@ -59,6 +59,7 @@ test(`real OpenCode: background shell ${scenario}, including native notification
         ...(scenario === 'plugins-file' ? { OPENCODE_CONFIG_CONTENT: `{"plugins":{file:${pluginsFile}}}` } : {}),
         ...(scenario === 'plugins-file-env' ? { PLUGINS_FILE: pluginsFile,
           OPENCODE_CONFIG_CONTENT: '{"plugins":{file:{env:PLUGINS_FILE}}}' } : {}),
+        ...(scenario === 'config-env' ? { ALL_CONFIG: '{"autoupdate":false}', OPENCODE_CONFIG_CONTENT: '{env:ALL_CONFIG}' } : {}),
         CODA_NODE: process.execPath, CODA_PLUGIN_PATH: pluginDir('opencode'), OPENCODE_PRINT_LOGS: '1' },
       onMessage(m) {
         messages.push(m);
