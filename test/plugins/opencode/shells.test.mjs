@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { OpenCodeShells } from '../../../plugins/opencode/agent/shells.mjs';
 import { shellEnvironment } from '../../../plugins/opencode/agent/shell-channel.mjs';
 
@@ -134,4 +137,27 @@ test('native plugin injection preserves JSONC, user plugins, and one-pass templa
   const variable = /\{env:([^}]+)\}/.exec(byEnv.OPENCODE_CONFIG_CONTENT)[1];
   assert.equal(JSON.parse(byEnv[variable])[0], 'native');
   assert.throws(() => shellEnvironment({ OPENCODE_CONFIG_CONTENT: '{"plugins":false}' }, '/tmp/x'), /必须是数组/);
+});
+
+test('native plugin injection expands file-backed arrays with OpenCode file substitution semantics', t => {
+  const root = mkdtempSync(join(tmpdir(), 'coda-oc-plugins-file-')), file = join(root, 'plugins.json');
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(file, ' [/* empty plugin list */] \n');
+  for (const source of [`{file:${file}}`, '{file:plugins.json}', '{file:~/plugins.json}', '{env:USER_PLUGINS}']) {
+    const env = { HOME: root, OPENCODE_CONFIG_CONTENT: `{"plugins":${source},"other":"\\u007bfile:literal}"}`,
+      USER_PLUGINS: ` {file:${file}} ` };
+    const generated = shellEnvironment(env, '/tmp/{file:literal}/events.sock', root);
+    const parsed = JSON.parse(generated.OPENCODE_CONFIG_CONTENT);
+    assert.equal(parsed.plugins.length, 1, source);
+    assert.equal(parsed.plugins[0].options.socket, '/tmp/{file:literal}/events.sock');
+    assert.equal(parsed.other, '{file:literal}');
+    assert.match(generated.OPENCODE_CONFIG_CONTENT, /\\u007bfile:literal/);
+    assert.equal(generated.USER_PLUGINS, env.USER_PLUGINS);
+  }
+  const env = { OPENCODE_CONFIG_CONTENT: `{"plugins":{file:${file}}}` };
+  // Native files are escaped string contents, not JSON includes; templates introduced by a file get no second pass.
+  for (const content of ['["user-plugin"]', '[{file:plugins.json}]', '[{env:PLUGINS}]']) {
+    writeFileSync(file, content);
+    assert.throws(() => shellEnvironment(env, '/tmp/events.sock'), /必须是数组/);
+  }
 });

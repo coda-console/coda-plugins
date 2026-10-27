@@ -11,7 +11,7 @@ import { pluginDir } from '../plugin.mjs';
 
 const binary = process.env.OPENCODE_TEST_BINARY;
 const quote = s => `'${s.replaceAll("'", "'\\''")}'`;
-for (const scenario of ['success', 'nonzero', 'timeout', 'fast', 'cancel-handling'])
+for (const scenario of ['success', 'nonzero', 'timeout', 'fast', 'cancel-handling', 'plugins-file'])
 test(`real OpenCode: background shell ${scenario}, including native notification handling`,
   { skip: !binary, timeout: 30_000 }, async t => {
     const root = mkdtempSync(join(tmpdir(), 'coda-oc-shell-test-')), release = join(root, 'release');
@@ -47,6 +47,8 @@ test(`real OpenCode: background shell ${scenario}, including native notification
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     const url = `http://127.0.0.1:${server.address().port}/v1`;
     mkdirSync(join(root, '.opencode/bin'), { recursive: true }); symlinkSync(binary, join(root, '.opencode/bin/opencode'));
+    const pluginsFile = join(root, 'plugins.json');
+    if (scenario === 'plugins-file') writeFileSync(pluginsFile, '[]\n');
     writeFileSync(join(root, 'opencode.json'), JSON.stringify({ model: 'fixture/native', small_model: 'fixture/native',
       autoupdate: false, permission: { '*': 'allow' }, provider: { fixture: { npm: '@ai-sdk/openai-compatible',
         options: { baseURL: url, apiKey: 'none' }, models: { native: { name: 'Fixture', limit: { context: 32768, output: 4096 } } } } } }));
@@ -54,6 +56,7 @@ test(`real OpenCode: background shell ${scenario}, including native notification
     const agent = new AgentProcess({ command: manifest.contributes.agents[0].command, cwd: root,
       env: { PATH: process.env.PATH, HOME: root, XDG_CONFIG_HOME: join(root, 'config'), XDG_DATA_HOME: join(root, 'data'),
         XDG_CACHE_HOME: join(root, 'cache'), XDG_STATE_HOME: join(root, 'state'), OPENCODE_DISABLE_MODELS_FETCH: 'true',
+        ...(scenario === 'plugins-file' ? { OPENCODE_CONFIG_CONTENT: `{"plugins":{file:${pluginsFile}}}` } : {}),
         CODA_NODE: process.execPath, CODA_PLUGIN_PATH: pluginDir('opencode'), OPENCODE_PRINT_LOGS: '1' },
       onMessage(m) {
         messages.push(m);
