@@ -121,12 +121,13 @@ describe('a liar fails on the rule it breaks', () => {
   test('an honest one passes', async () => {
     const { report } = await checkPlugin(plugin(), { live: true, limits });
     assertPasses(report, ['handshake.system-prompt', 'live.instructions', 'live.turn', 'live.cancel']);
+    assert.match(report.items.find(item => item.rule === 'live.cancel').message, /stopReason cancelled/);
     assert.ok(rules(report, 'skip').includes('live.steering'), 'steering is optional');
   });
   test('one that steers answers promptRequired once its turn has ended', async () => {
     const { report } = await checkPlugin(plugin({ mode: 'steer' }), { live: true, limits });
     assertPasses(report, ['live.steering']);
-    // Its turns end as soon as they say something: the message under way finds the turn ended too.
+    // Its work is done but the prompt reply is held until steering arrives: the agent answers promptRequired.
     assert.match(report.items.findLast(item => item.rule === 'live.steering').message, /一轮进行中插话：回 promptRequired/);
   });
   test('the session instructions go with session/load too', async () => {

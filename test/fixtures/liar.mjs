@@ -1,5 +1,5 @@
 // A fake agent that gets Coda's protocol wrong on purpose, one way per run: `node liar.mjs <mode>`. Without a mode it
-// speaks it right (a plain echo), so each test shows one rule failing and nothing else.
+// speaks it right, so each test shows one rule failing and nothing else.
 import { randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
 
@@ -10,7 +10,7 @@ const say = (sessionId, text) => notify('session/update', { sessionId, update: {
 const wait = params => notify('_coda/wait', params);
 const MODEL = { id: 'model', name: '模型', category: 'model', type: 'select', currentValue: 'liar', options: [{ value: 'liar', name: '说错话' }] };
 const asked = new Map();
-let next = 0, turn = null, running = null, turns = 0, afterCancel = null, context = '';
+let next = 0, turn = null, running = null, turns = 0, afterCancel = null, afterSteer = null, context = '';
 const textOf = blocks => (blocks ?? []).filter(block => block.type === 'text').map(block => block.text).join('\n');
 // What it was told: the session instructions, from its system prompt or in front of its first input (as a relay without a
 // system prompt of its own puts them, Kimi's); the checker's first turn asks for the word in them, and it is said.
@@ -57,6 +57,7 @@ const methods = {
   },
   // Not taken once its turn has ended; or taken, as a turn of its own; or a turn of its own after saying it was not.
   '_session/steering': ({ sessionId }) => {
+    afterSteer?.(); afterSteer = null;
     if (running && mode === 'steer') return { outcome: 'injected' };
     if (mode === 'steer-started') { setImmediate(() => say(sessionId, '我自己开了一轮')); return { outcome: 'startedNewTurn' }; }
     if (mode === 'steer-own-turn') setImmediate(() => say(sessionId, '还是说一句'));
@@ -87,6 +88,15 @@ async function act(sessionId, me, first) {
   // The second turn, the one the checker stops, never ends.
   if (mode === 'ignore-cancel' && !first) await new Promise(() => {});
   say(sessionId, 'ok');
+  // Keep the honest second turn alive until it reads the cancel and the checker's barrier. A fast echo can otherwise
+  // finish before the checker sends the cancel, which is valid but does not exercise cancellation.
+  if (mode === 'honest' && !first) await new Promise(resolve => { afterCancel = resolve; });
+  // The steering turn has finished its work, but its reply is still pending when the steering message arrives. Hold that
+  // reply until the message is read so this ordering does not depend on how stdout chunks are delivered.
+  if (mode === 'steer' && turns === 2) {
+    running = null;
+    await new Promise(resolve => { afterSteer = resolve; });
+  }
   // It reads the cancel, and what comes after it: it goes on and says it ended; it waits, and says it ended; or it had done
   // all it had to and says so at once (as Codex does, its reply held back by a title).
   if (['keep-going', 'slow-end-turn', 'late-end-turn'].includes(mode) && !first) {
