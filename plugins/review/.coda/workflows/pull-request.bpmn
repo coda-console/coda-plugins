@@ -4,7 +4,8 @@
      检查：在这个提交上调用项目声明为检查的流程（coda:kind="check"），再等它在 GitHub 上的检查都有结果；有没通过的交给开 PR 的会话。
      评审：另一家 Agent 评审这个版本；要求修改交给开 PR 的会话，它不同意交给你仲裁。有新提交就从头再来。
      叠放：base 不是默认分支的不合并，等 base 改过去再接着走。
-     合并：请你批准；GitHub 没合并就交给开 PR 的会话，它推了新提交、评审通过后按你的批准合并，不再问。
+     合并：请你批准，再在这个提交上调用项目声明为合并前检查的流程（coda:kind="premerge"），都通过才合并；没通过或 GitHub 没合并就交给开 PR 的会话，
+     它推了新提交、评审通过后按你的批准合并，不再问。
      部署与发布：合并后按你勾选的，在合并提交上调用项目里声明为这一类的流程（coda:kind）。
      PR 在 GitHub 上合并或关闭，运行随之结束。也可以手动发起（传 PR 编号或地址），只评审一次。BPMN 2.0，由 Coda 执行（docs/workflows.md）。 -->
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0"
@@ -252,16 +253,16 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
     <boundaryEvent id="closed-while-stacked" name="PR 关闭" attachedToRef="stacking"><messageEventDefinition messageRef="closed" /></boundaryEvent>
     <sequenceFlow id="stacked-closed" sourceRef="closed-while-stacked" targetRef="ended" />
 
-    <!-- 合并：你批准过、之后只是 GitHub 没合并（冲突等），这个版本评审通过就按原批准合并；评审要求修改过（review.changesAt 晚于批准）就再问你。 -->
+    <!-- 合并：你批准过、之后只是合并前检查没通过或 GitHub 没合并（冲突等），这个版本评审通过就按原批准合并；评审要求修改过（review.changesAt 晚于批准）就再问你。 -->
     <subProcess id="merging" name="合并">
       <startEvent id="merging-in" />
       <sequenceFlow id="m-in" sourceRef="merging-in" targetRef="standing" />
       <exclusiveGateway id="standing" name="按原批准合并吗" default="ask" />
-      <sequenceFlow id="as-approved" sourceRef="standing" targetRef="merge">
-        <conditionExpression xsi:type="tFormalExpression">=number(merge.at) > number(review.changesAt)</conditionExpression>
+      <sequenceFlow id="as-approved" sourceRef="standing" targetRef="premerge">
+        <conditionExpression xsi:type="tFormalExpression">=number(approval.at) > number(review.changesAt)</conditionExpression>
       </sequenceFlow>
       <sequenceFlow id="ask" sourceRef="standing" targetRef="kinds" />
-      <!-- 批准卡只给项目有的部署、发布：项目在这个提交上没有这一类流程，就没有那个勾选项。 -->
+      <!-- 批准卡只给项目有的部署、发布：项目在这个提交上没有这一类流程，就没有那个勾选项；有合并前检查的才在卡上说先跑它。 -->
       <serviceTask id="kinds" name="看项目有哪些部署、发布" coda:action="workflow-kinds" />
       <sequenceFlow id="kinds-known" sourceRef="kinds" targetRef="approve" />
 
@@ -276,7 +277,7 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
 最近一次评审（提交 {{review.head}}；点「让 Agent 处理评审意见」才交给开 PR 的会话）：
 {{review.report}}
 
-「合并」以 {{vars.review.mergeMethod}} 方式合并提交 {{reviewing.head}}。GitHub 没合并（冲突、检查没过等）就交给开 PR 的会话处理，它推送的新版本评审通过后按这次的选择合并，不再问你；评审要求修改则这次批准作废。</documentation>
+「合并」以 {{vars.review.mergeMethod}} 方式合并提交 {{reviewing.head}}{{if kinds.premerge then "，先在它上面跑项目的合并前检查，都通过才合并" else ""}}。没合并成（合并前检查没通过，或 GitHub 没合并：冲突、检查没过等）就交给开 PR 的会话处理，它推送的新版本评审通过后按这次的选择合并，不再问你；评审要求修改则这次批准作废。</documentation>
         <extensionElements>
           <coda:choice id="merge" name="合并" primary="true">
             <coda:option id="deploy" name="部署" detail="调用项目里的部署流程" coda:shown="=kinds.deploy" />
@@ -296,7 +297,7 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
       <sequenceFlow id="send-it" sourceRef="how" targetRef="handed">
         <conditionExpression xsi:type="tFormalExpression">=approve.chose.send</conditionExpression>
       </sequenceFlow>
-      <sequenceFlow id="merge-it" sourceRef="how" targetRef="merge" />
+      <sequenceFlow id="merge-it" sourceRef="how" targetRef="approval" />
 
       <userTask id="handed" name="处理你交付的评审意见" coda:status="处理你交付的评审意见" coda:completeLabel="已处理并推送" coda:rejectLabel="无法处理">
         <documentation>用户要求处理 PR #{{github.event.number}} 的这份评审（提交 {{review.head}}）：
@@ -310,6 +311,40 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
       <sequenceFlow id="handled" sourceRef="handed" targetRef="merging-fixing" />
       <boundaryEvent id="not-handled" name="做不了" attachedToRef="handed"><errorEventDefinition /></boundaryEvent>
       <sequenceFlow id="back-to-approve" sourceRef="not-handled" targetRef="approve" />
+
+      <!-- 记下你批准的时刻：之后评审再要求修改（review.changesAt 更晚）这次批准才作废。 -->
+      <scriptTask id="approval" name="记下批准" coda:timeout="5" coda:checkout="false" scriptFormat="bash">
+        <extensionElements><coda:output name="at" /></extensionElements>
+        <script>echo "at=$(node -p 'Date.now()')" >> "$GITHUB_OUTPUT"</script>
+      </scriptTask>
+      <sequenceFlow id="to-premerge" sourceRef="approval" targetRef="premerge" />
+
+      <!-- 合并前检查：每个版本都跑嫌贵的验证（如后端全套），项目声明为 coda:kind="premerge"，批准后在要合并的提交上只跑一次。
+           没通过交给开 PR 的会话：推新提交就从头再来，评审通过后按原批准合并；检查本身出了问题，处理好后答复，再跑一遍。 -->
+      <serviceTask id="premerge" name="合并前检查" coda:action="run-workflows" coda:status="合并前检查">
+        <extensionElements>
+          <coda:param name="kind" value="premerge" />
+          <coda:param name="commit" value="=reviewing.head" />
+        </extensionElements>
+      </serviceTask>
+      <sequenceFlow id="premerged" sourceRef="premerge" targetRef="merge" />
+      <boundaryEvent id="premerge-broke" name="没通过" attachedToRef="premerge"><errorEventDefinition /></boundaryEvent>
+      <sequenceFlow id="premerge-to-fix" sourceRef="premerge-broke" targetRef="fix-premerge" />
+      <userTask id="fix-premerge" name="合并前检查没通过：处理后答复" coda:status="合并前检查没通过：开 PR 的会话处理中" coda:completeLabel="已处理，再跑检查" coda:rejectLabel="处理不了">
+        <documentation>用户已批准合并 PR #{{github.event.number}}（{{github.event.pull_request.html_url}}），但提交 {{reviewing.head}} 的合并前检查没通过，还没有合并。没通过的检查列在这次运行页的「调用的流程」里（运行 {{run.id}}）。
+
+请查明原因。是这次改动导致的就修改、验证并推送新版本（新版本会重新检查、评审，通过后按用户的批准合并），不必答复这个任务；检查本身出了问题（偶发、机器离线），处理好后答复 completed，合并前检查会再跑一遍。做不了就答复 rejected，在 note 里写明原因，交给用户。</documentation>
+      </userTask>
+      <sequenceFlow id="premerge-again" sourceRef="fix-premerge" targetRef="premerge" />
+      <boundaryEvent id="premerge-stuck" name="做不了" attachedToRef="fix-premerge"><errorEventDefinition /></boundaryEvent>
+      <sequenceFlow id="to-premerge-user" sourceRef="premerge-stuck" targetRef="premerge-user" />
+      <userTask id="premerge-user" name="合并前检查没通过：等你处理" coda:assignee="user" coda:handback="false" coda:status="合并前检查没通过：等你处理" coda:completeLabel="再跑检查" coda:rejectLabel="不再等">
+        <documentation>你已批准合并 PR #{{github.event.number}}（{{github.event.pull_request.html_url}}），但合并前检查没通过，开 PR 的会话处理不了，理由在这次运行的「合并前检查没通过：处理后答复」任务里；
+没通过的检查见运行页「调用的流程」。
+
+处理好后选「再跑检查」；推送新提交也会从头再来。</documentation>
+      </userTask>
+      <sequenceFlow id="premerge-again-by-user" sourceRef="premerge-user" targetRef="premerge" />
 
       <scriptTask id="close" name="关闭 PR" coda:timeout="5" coda:checkout="false" scriptFormat="bash">
         <extensionElements><coda:env name="URL" value="=github.event.pull_request.html_url" /></extensionElements>
@@ -326,7 +361,6 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
           <coda:output name="merged" />
           <coda:output name="refused" />
           <coda:output name="reason" />
-          <coda:output name="at" />
           <coda:output name="deploy" />
           <coda:output name="release" />
           <coda:output name="releaseKinds" />

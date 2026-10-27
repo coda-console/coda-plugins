@@ -5,8 +5,7 @@
 // base changed only when it next looks, which may be after the user approved. Not merged (based elsewhere, a conflict, a
 // draft, checks not passed) is no failure of the step: it is put out (`refused`, and the `reason`) for the session that
 // opened the pull request to deal with. What the user chose
-// to follow the merge is put out for the process (`deploy`, `release`, `releaseKinds`, `notify`), and when the approval
-// was acted on (`at`): it stands until a review asks for changes.
+// to follow the merge is put out for the process (`deploy`, `release`, `releaseKinds`, `notify`).
 import { spawnSync } from 'node:child_process';
 import { baseOf, json, output, summary } from './step.mjs';
 
@@ -16,7 +15,6 @@ const chosen = id => options[id] === true;
 const url = process.env.URL, head = process.env.HEAD, method = ['merge', 'rebase', 'squash'].includes(process.env.METHOD) ? process.env.METHOD : 'squash';
 const number = /\/pull\/(\d+)/.exec(url ?? '')?.[1];
 if (!number || !/^[0-9a-f]{40,64}$/.test(head ?? '')) { console.error('不知道要合并哪个 PR 的哪个提交'); process.exit(1); }
-output('at', Date.now());
 output('deploy', chosen('deploy'));
 output('release', chosen('preview') || chosen('release'));
 output('releaseKinds', ['preview', 'release'].filter(chosen).join(','));
