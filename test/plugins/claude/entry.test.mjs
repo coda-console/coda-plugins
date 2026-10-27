@@ -226,7 +226,8 @@ test('a quota failure in an autonomous turn is a failed activity, and the succes
   assert.deepEqual(wait(c, 'turn-1').at(-1), { waitId: 'turn-1', state: 'failed', title: '额度不足', detail: quotaReason });
   assert.deepEqual(c.said(), ['hello']);
   // A later autonomous turn starts with no quota failure carried over.
-  await c.emit(system('init', { session_id: c.sessionId }), { type: 'result', subtype: 'success', is_error: false });
+  await c.emit(system('init', { session_id: c.sessionId }), { type: 'assistant', message: { id: 'later', content: [{ type: 'text', text: '接着做' }] } },
+    { type: 'result', subtype: 'success', is_error: false });
   assert.equal(wait(c, 'turn-2').at(-1).state, 'done');
 });
 
@@ -357,11 +358,35 @@ test('what Claude asks in a turn of its own comes after what that turn handles, 
   assert.equal((await asking).behavior, 'deny');
 });
 
+test('a subagent\'s report handed back is that subagent\'s turn; Claude Code\'s turn for its notice after says nothing and is not told', async t => {
+  const c = await setup(t); await c.open();
+  await c.prompt('hello');
+  await c.emit(system('task_started', { task_id: 'agent-1', run_id: 'run-a', tool_use_id: 'agent-call', task_type: 'local_agent', description: '查', is_backgrounded: true }));
+  // Its report comes before its end is told: the turn it opens is the subagent's all the same, and ends it with the turn.
+  await c.emit(system('init', { session_id: c.sessionId }),
+    { type: 'user', message: { role: 'user', content: '<agent-message from="agent-1">' }, origin: { kind: 'peer', from: 'agent-1', senderTaskId: 'agent-1' } },
+    system('task_notification', { task_id: 'agent-1', status: 'completed' }),
+    { type: 'assistant', message: { id: 'read', content: [{ type: 'text', text: '子 Agent 查完了' }] } }, { type: 'result', subtype: 'success', is_error: false });
+  assert.deepEqual(wait(c, 'agent-1').map(w => w.state), ['waiting', 'handling', 'done']);
+  // The notice of its end, which reaches no model, opens a turn that says nothing: not told at all.
+  await c.emit(system('init', { session_id: c.sessionId }),
+    { type: 'user', message: { role: 'user', content: '<task-notification>' }, origin: { kind: 'task-notification', producer: 'session-task', runId: 'run-a' } },
+    { type: 'result', subtype: 'success', is_error: false });
+  assert.deepEqual(c.waits().filter(w => w.waitId.startsWith('turn-')), []);
+  assert.deepEqual(wait(c, 'agent-1').map(w => w.state), ['waiting', 'handling', 'done']);
+  // One that names nothing and says something is told as a wait of its own before what it says.
+  await c.emit(system('init', { session_id: c.sessionId }), { type: 'assistant', message: { id: 'own', content: [{ type: 'text', text: '自己接着做' }] } },
+    { type: 'result', subtype: 'success', is_error: false });
+  const told = c.out.filter(m => (m.method === '_coda/wait' && m.params.waitId === 'turn-1') || (m.method === 'session/update' && m.params.update.content?.text === '自己接着做'));
+  assert.deepEqual(told.map(m => m.params.state ?? m.params.update.sessionUpdate), ['handling', 'agent_message_chunk', 'done']);
+});
+
 test('a recurring wakeup that fires waits for its next time; several of which none is due make a turn of no known cause', async t => {
   const c = await setup(t); await c.open();
   // Neither is due now: the first of January.
   await c.query.stop([{ id: 'hourly', schedule: '0 9 1 1 *', recurring: true, prompt: '看看 CI' }, { id: 'daily', schedule: '0 10 1 1 *', recurring: true, prompt: '日报' }]);
-  await c.emit(system('init', { session_id: c.sessionId }), { type: 'result', subtype: 'success', is_error: false });
+  await c.emit(system('init', { session_id: c.sessionId }), { type: 'assistant', message: { id: 'which', content: [{ type: 'text', text: '到点了' }] } },
+    { type: 'result', subtype: 'success', is_error: false });
   assert.deepEqual(wait(c, 'turn-1').map(w => w.state), ['handling', 'done'], 'which of them fired is not told');
   assert.deepEqual(['hourly', 'daily'].map(id => wait(c, id).length), [1, 1]);
   // The one Claude says fired is handled, and waits again.

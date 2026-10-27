@@ -42,6 +42,8 @@ const denied = { behavior: 'deny', message: 'Coda 没有在请求结束前给出
 // A child session's output that comes before its task, kept until the task names that session: all of it, since what streamed
 // counts as said, a message's streamed pieces as one.
 const CHUNKS = new Set(['agent_message_chunk', 'agent_thought_chunk']);
+// What a turn says or does, as against what the session is (its settings, commands, title, usage).
+const SAYING = new Set([...CHUNKS, 'tool_call', 'tool_call_update', 'plan']);
 // How many messages sent into a prompt (steer) may be waiting to be taken at once.
 const STEERING_LIMIT = 32;
 
@@ -109,6 +111,8 @@ export class ClaudeSession {
       else early.push(update);
       return;
     }
+    // What a turn of Claude's own says comes after what it handles (`claim`).
+    if (sessionId === this.sessionId && SAYING.has(update.sessionUpdate)) this.waits.claim();
     this.notify('session/update', { sessionId, update });
   }
   registered(sessionId) {
@@ -306,13 +310,14 @@ export class ClaudeSession {
     this.begin();
     // A subagent's request is in its session.
     const sessionId = this.waits.childSession(context.agentID) ?? this.sessionId;
+    if (sessionId === this.sessionId) this.waits.claim();
     return toolName === 'AskUserQuestion'
       ? this.ask('elicitation/create', questionForm({ sessionId, toolCallId: context.toolUseID, input }), signal, { behavior: 'deny', message: '问答已失效' })
       : this.ask('session/request_permission', permissionRequest({ sessionId, toolName, input, context }), signal, denied);
   }
   elicitation(request, { signal }) {
     if (!['starting', 'running'].includes(this.phase)) return Promise.resolve({ action: 'cancel' });
-    this.begin();
+    this.begin(); this.waits.claim();
     return this.ask('elicitation/create', elicitationForm({ sessionId: this.sessionId, request }), signal, { action: 'cancel' });
   }
   // Asked of Coda until it answers; withdrawn (`$/cancel_request`) once the SDK no longer waits for the answer.
@@ -517,7 +522,7 @@ export class ClaudeSession {
       const outcome = this.ending ?? (failed ? { failure: error } : { stopReason: cancelled ? 'cancelled' : 'end_turn' });
       if (this.ending || !this.steering.size) this.settle(id, outcome);
       else { this.held = id; if (cancelled || failed) this.dropRest(outcome); }
-    } else if (this.waits.handling) {
+    } else if (this.waits.handling || this.waits.unclaimed) {
       // A turn of Claude's own has no RPC reply to fail. End its own activity as failed with the reason, rather than
       // saying the error as an answer and marking the work complete. The task that woke it retains its own outcome.
       this.waits.finished(error ? { error: error.message, title: error.data?._meta?.coda?.failure?.kind === 'quota_exhausted' ? '额度不足' : undefined } : {});

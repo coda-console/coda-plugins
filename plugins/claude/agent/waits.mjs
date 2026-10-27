@@ -4,7 +4,8 @@
 // What a subagent launches (`parent_task_id`) is told in that subagent's session, once a wait has told Coda that session.
 // A task that ends while no turn goes will wake Claude for its result: until a turn takes it up, or the session says idle,
 // it is still waited on. A turn Claude begins on its own handles what woke it (`takeUp`): what its opening message names,
-// else the tasks that ended, else the one wakeup due, else a wait of the turn's own; what it handles ends with that turn.
+// else the tasks that ended, else the one wakeup due, else a wait of the turn's own, told only once the turn says or asks
+// something (`claim`); what it handles ends with that turn.
 const FINAL = { completed: 'done', failed: 'failed', killed: 'cancelled', stopped: 'cancelled', ended: 'done' };
 const open = state => state === 'waiting' || state === 'handling';
 const cut = (value, limit) => typeof value === 'string' && value ? value.slice(0, limit) : undefined;
@@ -146,6 +147,8 @@ export class ClaudeWaits {
     let handled = [];
     if (origin?.kind === 'task-notification') handled = origin.subkind === 'scheduled-trigger' ? crons.filter(cron => cron.prompt && cron.prompt === text)
       : [...this.tasks.values()].filter(task => origin.runId && task.runId === origin.runId && open(task.state));
+    // A subagent's report handed back (SubagentHandback) is that subagent's, though its end may not be told yet.
+    if (origin?.kind === 'peer') handled = [...this.tasks.values()].filter(task => origin.senderTaskId && task.taskId === origin.senderTaskId && open(task.state));
     if (!handled.length) handled = pending.sort((a, b) => a.endedAt - b.endedAt);
     if (!handled.length) {
       // Which came due is not told: the one due, or else the only one there is.
@@ -153,8 +156,11 @@ export class ClaudeWaits {
       if ((due.length || crons.length) === 1) handled = due.length ? due : crons;
     }
     if (handled.length) for (const wait of handled) this.report(wait, 'handling');
-    else this.hold();
+    // Nothing it names: told as a wait of its own once it says or asks something. One that says nothing is not told at all,
+    // as Claude Code's turn for the notice of a subagent whose report an earlier turn took in, which reaches no model.
+    else this.unclaimed = true;
   }
+  claim() { if (this.unclaimed) { this.unclaimed = false; this.hold(); } }
   hold() {
     const own = { waitId: `turn-${++this.turns}` };
     this.own.add(own);
@@ -164,6 +170,7 @@ export class ClaudeWaits {
   finished({ error, title } = {}) {
     // Processing a successful task's result can fail. Give that failure its own activity instead of changing the task's
     // outcome, and leave recurring wakeups scheduled. There may already be a turn-owned activity (hold).
+    this.unclaimed = false;
     if (error && !this.own.size) this.hold();
     for (const task of this.tasks.values()) if (task.state === 'handling') { this.report(task, task.final ?? 'done'); task.final = undefined; }
     for (const cron of this.crons.values()) {
