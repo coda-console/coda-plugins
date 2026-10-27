@@ -1187,6 +1187,53 @@ test('a turn of Claude\'s own under way when Coda asks the session compacted sta
   assert.deepEqual(c.compactions(), ['in_progress', 'completed']);
 });
 
+test('a compaction dropped with what waits behind a turn of Claude\'s own is answered as not done, and the next can be asked', async t => {
+  const c = await compactable(t);
+  await c.prompt('hello');
+  await c.emit(system('task_started', { task_id: 'bg-q', run_id: 'run-q', task_type: 'local_bash', description: '后台', is_backgrounded: true }),
+    system('task_notification', { task_id: 'bg-q', status: 'completed' }));
+  // Claude Code's turn for it is under way: what it says is not read yet, and what is given waits behind it.
+  const release = c.query.hold(), resume = c.query.pause();
+  c.query.init();
+  c.query.emit({ type: 'user', message: { role: 'user', content: '<task-notification>' }, origin: { kind: 'task-notification', runId: 'run-q' } });
+  const asked = c.ask();
+  await until(() => c.query.received.some(m => m.message.content === '/compact'));
+  const queued = c.prompt('stopped');
+  await until(() => c.query.received.length === 3);
+  c.send({ method: 'session/cancel', params: { sessionId: c.sessionId } });
+  assert.deepEqual((await queued).result, { stopReason: 'cancelled' });
+  // Answered, rather than waited for for good.
+  assert.deepEqual((await Promise.race([asked, delay(3000).then(() => ({ result: '没有答复' }))])).result, { compacted: false, reason: '压缩被取消' });
+  c.query.emit({ type: 'result', subtype: 'success', is_error: false, stop_reason: 'interrupt' });
+  release(); resume();
+  await until(() => wait(c, 'bg-q').at(-1).state === 'done');
+  assert.equal(c.session.compacting, null);
+  assert.deepEqual((await c.ask()).result, { compacted: true, before: 180000, after: 9000 });
+});
+
+test('what a turn of Claude\'s own says of compacting, before the compaction\'s turn, is not the compaction\'s answer', async t => {
+  const c = await compactable(t);
+  await c.prompt('hello');
+  await c.emit(system('task_started', { task_id: 'bg-f', run_id: 'run-f', task_type: 'local_bash', description: '后台', is_backgrounded: true }),
+    system('task_notification', { task_id: 'bg-f', status: 'completed' }));
+  // That turn's own compacting fails, and a command's output in it is said once the turn ends.
+  const release = c.query.hold();
+  c.query.init();
+  c.query.emit({ type: 'user', message: { role: 'user', content: '<task-notification>' }, origin: { kind: 'task-notification', runId: 'run-f' } });
+  c.query.system('status', { status: 'compacting' });
+  c.query.system('status', { status: null, compact_result: 'failed', compact_error: '自动压缩失败' });
+  c.query.emit({ type: 'assistant', message: { id: 'own-f', content: [{ type: 'text', text: '后台结果看过了' }] } });
+  c.query.system('local_command_output', { content: '那一轮的输出' });
+  c.query.emit({ type: 'result', subtype: 'success', is_error: false });
+  const asked = c.ask();
+  await until(() => c.query.received.some(m => m.message.content === '/compact'));
+  release();
+  assert.deepEqual((await asked).result, { compacted: true, before: 180000, after: 9000 });
+  assert.deepEqual(c.compactions(), ['in_progress', 'failed', 'in_progress', 'completed']);
+  assert.deepEqual(wait(c, 'bg-f').map(w => w.state), ['waiting', 'handling', 'done']);
+  assert.deepEqual(c.said(), ['hello', '后台结果看过了', '那一轮的输出']);
+});
+
 test('a session that cannot compact now, or whose compaction fails or compacts nothing, says why', async t => {
   await t.test('a turn going', async t => {
     const c = await compactable(t);

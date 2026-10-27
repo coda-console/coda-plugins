@@ -25,10 +25,12 @@ export function fixtureSdk(argv = []) {
       // that comes while one runs is taken into it at its next tool round (fold), as Claude Code does; else it runs after it.
       this.inbox = []; this.received = [];
       void (async () => { for await (const m of prompt) { if (this.closed) break; this.received.push(m); this.inbox.push(m); this.arrived?.(); } })();
-      void (async () => { while (!this.closed) { const m = this.inbox.shift(); if (m) await this.respond(m); else await new Promise(r => { this.arrived = r; }); } })();
+      void (async () => { while (!this.closed) { const m = this.paused ? undefined : this.inbox.shift(); if (m) await this.respond(m); else await new Promise(r => { this.arrived = r; }); } })();
     }
     persist() { writeFileSync(path(this.options.cwd, this.id), JSON.stringify(this.entries)); }
     emit(message) { this.queue.push({ session_id: this.id, uuid: randomUUID(), ...message }); this.wake?.(); }
+    // What is given is not taken until the test lets it (the function returned), as while a turn of Claude Code's own goes on.
+    pause() { this.paused = true; return () => { this.paused = false; this.arrived?.(); }; }
     // What it says from now on is not read until the test lets it (the function returned): said, as the entry has not read it yet.
     hold() { let release; const held = new Promise(r => { release = r; }); this.queue.push(() => held); this.wake?.(); return release; }
     system(subtype, payload = {}) { this.emit({ type: 'system', subtype, ...payload }); }
