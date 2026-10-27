@@ -12,5 +12,11 @@ export function devices() {
     throw new Error(`读不了设备登记 ${file}：${error.message}`);
   }
   if (!Array.isArray(list)) throw new Error(`设备登记 ${file} 须为设备数组`);
+  // A device is held by the group of its name: one device under two names would be held twice, one name twice either device.
+  for (const key of ['id', 'udid']) {
+    const values = list.map(d => d?.[key]).filter(Boolean);
+    const twice = [...new Set(values.filter((value, i) => values.indexOf(value) !== i))];
+    if (twice.length) throw new Error(`设备登记 ${file} 里 ${key} 重复：${twice.join('、')}`);
+  }
   return list;
 }

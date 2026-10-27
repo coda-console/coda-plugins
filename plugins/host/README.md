@@ -49,7 +49,7 @@
 
 **设置**：`host.capacity`「名额数」，1–8，默认 1；`host.cleanSchedule`「清点模拟器的周期」，ISO 8601 重复间隔，默认 `R/P1D`（每天一次）。
 插件以 `contributes.groups` 声明组 `host` 的容量就是 `host.capacity`，所以项目流程的步骤写 `coda:group="host"`
-也按这个容量排；步骤里看到 `CODA_GROUPS` 含 `host` 时，`host-sim` 同样视作已占着名额（`run` 直接执行、`check` 通过，`bind` 只记进本实例的 `simulators`，由定时清点删除）。`run` 直接执行的命令带上 `HOST_SIM_LEASE=coda-group:host`，所以「没有 `HOST_SIM_LEASE` 就经 `host-sim run` 重新执行自己」的项目脚本在步骤里多走一次就照常往下，不会反复调用自己。已占着名额只说构建与模拟器，测试机的设备名另由[测试机插件](../testbed/README.md)借用：在构建名额里用设备名调用，同样交给测试机插件，只借给正在做那台设备任务的会话。
+也按这个容量排；步骤里看到 `CODA_GROUPS` 含 `host` 时，`host-sim` 同样视作已占着名额（`run` 直接执行、`check` 通过，`bind` 只记进本实例的 `simulators`，由定时清点删除）。`run` 直接执行的命令带上 `HOST_SIM_LEASE=coda-group:host`，所以只看有没有 `HOST_SIM_LEASE` 的项目脚本在步骤里多走一次就照常往下，不会反复调用自己。项目脚本判断自己在不在名额里应问 `host-sim check`（Skill `host-slots`）：测试机上执行的命令也带 `HOST_SIM_LEASE`，占的却不是构建名额。已占着名额只说构建与模拟器，测试机的设备名另由[测试机插件](../testbed/README.md)借用：在构建名额里用设备名调用，同样交给测试机插件，只借给正在做那台设备任务的会话。
 
 **扩展点** `kinds`：`host-sim` 遇到 `build`、`simulator` 之外的 `--kind`，把整条命令交给接在这里的第一个命令（按插件 ID 排），参数原样附在后面；
 那条命令以接上它的插件的 `CODA_PLUGIN_PATH`、`CODA_PLUGIN_STATE` 运行，退出码就是 `host-sim` 的。没有插件接上时拒绝，提示装测试机插件。

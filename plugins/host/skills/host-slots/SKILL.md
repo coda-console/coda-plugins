@@ -32,11 +32,13 @@ description: 宿主资源插件的名额怎么用：会话里用 run-held 执行
 
 - `host-sim run --kind build|simulator -- <命令> [参数…]`：已在名额里（持锁执行的命令带 `HOST_SIM_LEASE`，占着组 `host` 的步骤带 `CODA_GROUPS`）就直接执行，
   执行的命令带上 `HOST_SIM_LEASE`；在会话里不在名额中调用时拒绝（退出码 2），提示改用 `run-held`。
-- 常见写法：脚本开头没有 `HOST_SIM_LEASE` 就经 `host-sim run` 重新执行自己，这样在会话里整条交给 `run-held`、在步骤里写 `coda:group="host"` 都能跑：
+- 常见写法：脚本开头用 `host-sim check` 看是否已在名额里，不在就经 `host-sim run` 重新执行自己，这样在会话里整条交给 `run-held`、在步骤里写 `coda:group="host"` 都能跑：
 
   ```sh
-  if [ -z "${HOST_SIM_LEASE:-}" ]; then exec host-sim run --kind build -- bash "$0" "$@"; fi
+  host-sim check --kind build 2>/dev/null || exec host-sim run --kind build -- bash "$0" "$@"
   ```
+
+  不要只看 `HOST_SIM_LEASE` 是否为空：测试机上执行的命令也带它（`coda-run:<设备名>`），那占的是测试机，不是构建名额。
 
 - `host-sim check --kind build|simulator`：在名额里退出码 0。
 - `host-sim bind <udid>`：登记命令建的模拟器；持锁执行在命令结束时删掉它，被强杀留下的由定时「清点模拟器」删除。

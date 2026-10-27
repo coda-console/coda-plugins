@@ -71,6 +71,14 @@ test('找测试机 gives the registered device\'s name, UDID and note; one not r
   assert.equal(none.code, 1); assert.match(none.stderr, /一台也没有登记/);
   const list = await step(t, 'device', { CODA_PLUGIN_STATE: registered(t, '{}'), DEVICE: phone.id });
   assert.equal(list.code, 1); assert.match(list.stderr, /须为设备数组/);
+  // One device under two names would be held by two groups at once: the registration is refused whichever is asked for.
+  const twice = registered(t, [phone, { ...phone, id: 'iphone-b' }]);
+  for (const name of [phone.id, 'iphone-b']) {
+    const found = await step(t, 'device', { CODA_PLUGIN_STATE: twice, DEVICE: name });
+    assert.equal(found.code, 1); assert.match(found.stderr, /udid 重复：TEST-IPHONE/);
+  }
+  const named = await step(t, 'device', { CODA_PLUGIN_STATE: registered(t, [phone, { ...phone, udid: 'OTHER' }]), DEVICE: phone.id });
+  assert.equal(named.code, 1); assert.match(named.stderr, /id 重复：iphone-testbed/);
 });
 
 test('切黑屏 launches the black screen app over devicectl, or runs the device\'s own line from the setting, its UDID in UDID', async t => {
@@ -83,6 +91,18 @@ test('切黑屏 launches the black screen app over devicectl, or runs the device
   assert.match(launched.stdout, /xcrun devicectl device process launch --terminate-existing --device TEST-IPHONE com\.leavan\.blackscreen/);
   const own = await black({ COMMANDS: JSON.stringify({ [phone.id]: 'echo "own $UDID"', other: 'exit 9' }) });
   assert.deepEqual([own.code, own.stdout], [0, '切黑屏：echo "own $UDID"\nown TEST-IPHONE\n']);
+});
+
+test('the black screen build takes a build slot through host-sim: a command on a test device is not in one', async t => {
+  const tools = temporary(t);
+  writeFileSync(join(tools, 'host-sim'), `#!/bin/sh\nexec "${process.execPath}" "${join(pluginDir('host'), 'scripts/host-sim.mjs')}" "$@"\n`, { mode: 0o755 });
+  const build = extra => run('sh "$CODA_PLUGIN_PATH/blackscreen/build.sh" out profile', env({ CODA_THREAD_ID: 'thread', HOME: tools,
+    PATH: `${tools}:${process.env.PATH}`, ...extra }));
+  const device = await build({ HOST_SIM_LEASE: `coda-run:${phone.id}` });
+  assert.equal(device.code, 2); assert.match(device.stderr, /run-held/);
+  // In a slot it goes on to build: here it stops at the provisioning profile, there being none.
+  const slot = await build({ HOST_SIM_LEASE: 'coda-run:build' });
+  assert.equal(slot.code, 1); assert.match(slot.stderr, /找不到描述文件：profile/);
 });
 
 // The testbed's host-sim, as the host plugin's host-sim hands a device kind to what is plugged into its point `kinds`.

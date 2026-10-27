@@ -4,7 +4,8 @@
 # Team 取自描述文件。在 Coda 会话里交给持锁执行（run-held）运行，或在占着组 host 的流程步骤里：它经 host-sim 占构建名额。
 set -eu
 [ $# -eq 2 ] || { echo "用法：$0 <输出目录> <描述文件名>" >&2; exit 2; }
-if [ -z "${HOST_SIM_LEASE:-}" ]; then
+# 已在构建名额里才直接编译；测试机上执行的命令也带 HOST_SIM_LEASE，但占的不是构建名额，所以问 host-sim。
+if ! host-sim check --kind build 2>/dev/null; then
   exec host-sim run --kind build -- sh "$(cd "$(dirname "$0")" && pwd)/$(basename "$0")" "$@"
 fi
 # blackscreen.mjs 默认打开的就是这个 Bundle ID。
