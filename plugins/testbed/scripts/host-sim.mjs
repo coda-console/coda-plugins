@@ -4,7 +4,7 @@
 // and runs it in the session's directory, with its environment. Inside that command (`HOST_SIM_LEASE=coda-run:<设备名>`),
 // or in a step whose run holds the device's group (`CODA_GROUPS` names device:<设备名>), it runs at once.
 import { spawn } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { constants as system, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -25,14 +25,17 @@ if (command === 'run' && (held || thread)) {
   // Already inside a command on the device (a project script calling itself again): it is this one's.
   if (held) follow(argv, { ...session(), HOST_SIM_LEASE: lease || `coda-group:${group}` });
   else {
-    // What to run, where and with what, for 在测试机上执行 to read: kept until it has run, however late that is.
+    // What to run, where and with what, for 在测试机上执行 to read: kept while the run may still read it. coda-run ending
+    // with any status but 75 (Coda's docs/workflows.md「从命令行调用」) says the run is over or never started — the device
+    // not lent, say —, so it goes then; let go of (75, or a signal), the run goes on and reads it however late that is.
     const env = session();
     delete env.HOST_SIM_LEASE; delete env.HOST_SIM_DEVICES;
     const dir = join(process.env.TMPDIR || tmpdir(), 'coda-host-sim');
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     const spec = join(dir, `${randomUUID()}.json`);
     writeFileSync(spec, JSON.stringify({ argv, cwd: process.cwd(), env, kind }), { mode: 0o600 });
-    follow(['coda-run', 'run-on-device', `spec=${spec}`, `device=${kind}`, `label=${argv.join(' ').slice(0, 200)}`], session());
+    follow(['coda-run', 'run-on-device', `spec=${spec}`, `device=${kind}`, `label=${argv.join(' ').slice(0, 200)}`], session(),
+      code => { if (code !== null && code !== 75) rmSync(spec, { force: true }); });
   }
 } else if (command === 'check' && held) {
   process.stderr.write(`host-sim：在借到的测试机 ${kind} 上\n`);
@@ -47,10 +50,11 @@ if (command === 'run' && (held || thread)) {
 }
 
 // Runs it in the foreground, ending as it ends; a signal to this process goes on to it (coda-run then lets the run go on).
-function follow([program, ...rest], env) {
+// `ended` is told its exit code first: 127 when it could not be started, null when a signal ended it.
+function follow([program, ...rest], env, ended = () => {}) {
   const child = spawn(program, rest, { stdio: 'inherit', env });
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, () => child.kill(signal));
-  child.on('error', error => fail(error.message, 127));
-  child.on('close', (code, signal) => process.exit(code ?? 128 + (system.signals[signal] ?? 0)));
+  child.on('error', error => { ended(127); fail(error.message, 127); });
+  child.on('close', (code, signal) => { ended(code); process.exit(code ?? 128 + (system.signals[signal] ?? 0)); });
 }
 function fail(message, code) { process.stderr.write(`host-sim：${message}\n`); process.exit(code); }

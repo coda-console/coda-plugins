@@ -113,7 +113,7 @@ const hostSim = (args, extra) => run(`${hostCommand} ${args}`, env({ ...extra, C
 test('a session\'s host-sim for a device hands the command to run-on-device with what to run, where and with what', async t => {
   const tools = temporary(t), log = join(tools, 'coda-run.log');
   // coda-run, standing in for Coda's: what it was asked, and the command the spec says, as run-on-device would read it.
-  writeFileSync(join(tools, 'coda-run'), `#!/bin/sh\nprintf '%s\\n' "$@" > "${log}"\ncp "\${2#spec=}" "${tools}/spec.json"\nexit 6\n`, { mode: 0o755 });
+  writeFileSync(join(tools, 'coda-run'), `#!/bin/sh\nprintf '%s\\n' "$@" > "${log}"\ncp "\${2#spec=}" "${tools}/spec.json"\nexit "\${STATUS:-6}"\n`, { mode: 0o755 });
   const temp = join(tools, 'tmp');
   mkdirSync(temp);
   const asked = await hostSim(`run --kind ${phone.id} -- xcrun devicectl list`, { CODA_THREAD_ID: 'thread', HOST_SIM_DEVICES: 'stale', TMPDIR: temp, PATH: `${tools}:${process.env.PATH}` });
@@ -125,6 +125,15 @@ test('a session\'s host-sim for a device hands the command to run-on-device with
   const handed = JSON.parse(readFileSync(join(tools, 'spec.json'), 'utf8'));
   assert.deepEqual([handed.argv, handed.kind, handed.env.HOST_SIM_DEVICES, handed.env.CODA_PLUGIN_PATH], [['xcrun', 'devicectl', 'list'], phone.id, undefined, undefined]);
   assert.equal(handed.env.CODA_THREAD_ID, 'thread');
+  // The spec, the session's environment in it, goes once the run is over or never started (the device not lent: 1);
+  // coda-run letting go (75) leaves the run going on, to read it later.
+  const left = async status => {
+    const ended = await hostSim(`run --kind ${phone.id} -- true`, { CODA_THREAD_ID: 'thread', STATUS: String(status), TMPDIR: temp, PATH: `${tools}:${process.env.PATH}` });
+    assert.equal(ended.code, status);
+    return readdirSync(join(temp, 'coda-host-sim'));
+  };
+  assert.deepEqual([await left(6), await left(1)], [[], []]);
+  assert.equal((await left(75)).length, 1);
 });
 
 test('inside a command on the device, or a step holding its group, host-sim runs at once; elsewhere it says how to get the device', async () => {
