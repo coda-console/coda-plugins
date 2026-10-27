@@ -143,9 +143,10 @@ test('native plugin injection expands file-backed arrays with OpenCode file subs
   const root = mkdtempSync(join(tmpdir(), 'coda-oc-plugins-file-')), file = join(root, 'plugins.json');
   t.after(() => rmSync(root, { recursive: true, force: true }));
   writeFileSync(file, ' [/* empty plugin list */] \n');
-  for (const source of [`{file:${file}}`, '{file:plugins.json}', '{file:~/plugins.json}', '{env:USER_PLUGINS}']) {
+  for (const source of [`{file:${file}}`, '{file:plugins.json}', '{file:~/plugins.json}', '{env:USER_PLUGINS}',
+    '{file:{env:PLUGINS_FILE}}', '{file:{env:PLUGINS_DIR}/{env:PLUGINS_NAME}}']) {
     const env = { HOME: root, OPENCODE_CONFIG_CONTENT: `{"plugins":${source},"other":"\\u007bfile:literal}"}`,
-      USER_PLUGINS: ` {file:${file}} ` };
+      USER_PLUGINS: ` {file:${file}} `, PLUGINS_FILE: file, PLUGINS_DIR: root, PLUGINS_NAME: 'plugins.json' };
     const generated = shellEnvironment(env, '/tmp/{file:literal}/events.sock', root);
     const parsed = JSON.parse(generated.OPENCODE_CONFIG_CONTENT);
     assert.equal(parsed.plugins.length, 1, source);
@@ -159,5 +160,22 @@ test('native plugin injection expands file-backed arrays with OpenCode file subs
   for (const content of ['["user-plugin"]', '[{file:plugins.json}]', '[{env:PLUGINS}]']) {
     writeFileSync(file, content);
     assert.throws(() => shellEnvironment(env, '/tmp/events.sock'), /必须是数组/);
+  }
+});
+
+test('env in a plugin file path expands once before file substitution without decoding literal escapes', t => {
+  const root = mkdtempSync(join(tmpdir(), 'coda-oc-plugins-path-')), file = join(root, 'plugins"\\name.json');
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(file, '[]');
+  const env = { OPENCODE_CONFIG_CONTENT: '{"plugins":{file:{env:PLUGINS_FILE}},"other":"\\u007benv:PLUGINS_FILE}"}',
+    PLUGINS_FILE: file };
+  const generated = shellEnvironment(env, '/tmp/events.sock');
+  assert.equal(JSON.parse(generated.OPENCODE_CONFIG_CONTENT).plugins.length, 1);
+  assert.match(generated.OPENCODE_CONFIG_CONTENT, /\\u007benv:PLUGINS_FILE/);
+  assert.equal(generated.PLUGINS_FILE, file);
+  assert.equal(env.OPENCODE_CONFIG_CONTENT, '{"plugins":{file:{env:PLUGINS_FILE}},"other":"\\u007benv:PLUGINS_FILE}"}');
+  for (const source of ['{file:{env:FIRST}}', '{env:USER_PLUGINS}']) {
+    assert.throws(() => shellEnvironment({ ...env, OPENCODE_CONFIG_CONTENT: `{"plugins":${source}}`,
+      FIRST: '{env:PLUGINS_FILE}', USER_PLUGINS: '{file:{env:PLUGINS_FILE}}' }, '/tmp/events.sock'), SyntaxError);
   }
 });

@@ -77,8 +77,9 @@ export const literalJSON = value => JSON.stringify(value).replace(/"(?:\\.|[^"\\
 
 export function configObject(text, envExpanded = false) {
   // Same-length placeholders let JSONC parse unquoted templates; offsets still refer to the untouched source. OpenCode
-  // expands env once, then files, so a value supplied by env cannot introduce another unquoted env template.
-  const syntax = text.replace(/"(?:\\.|[^"\\])*"|\/\/[^\r\n]*|\/\*[\s\S]*?\*\/|\{(?:env|file):[^}]+\}/g,
+  // expands env once, then files, so file paths can contain env templates. Keep that whole file token together; a value
+  // supplied by env cannot introduce another unquoted env template.
+  const syntax = text.replace(/"(?:\\.|[^"\\])*"|\/\/[^\r\n]*|\/\*[\s\S]*?\*\/|\{env:[^}]+\}|\{file:(?:\{env:[^}]+\}|[^}])+\}/g,
     token => token.startsWith('{') && !(envExpanded && token.startsWith('{env:')) ? `"${' '.repeat(token.length - 2)}"` : token);
   const errors = [], root = parseTree(syntax, errors, { allowTrailingComma: true });
   if (errors.length) throw new SyntaxError(`OPENCODE_CONFIG_CONTENT 不是有效的 JSONC（位置 ${errors[0].offset}）`);

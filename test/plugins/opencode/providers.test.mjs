@@ -144,19 +144,23 @@ test('unquoted user templates survive merging as typed values while service temp
       "context": {env:CONTEXT}, "output": {env:OUTPUT},
     }, }, }, }, },
     "experimental": { "values": [{env:OUTPUT}, {file:/not-read/by-the-merge},], },
+    "plugins": {file:{env:PLUGINS_FILE}},
     "instructions": ["quoted {env:OUTPUT}", "\u007benv:OUTPUT}",],
   }`;
   const env = await providerEnvironment({ ...provided(), OPENCODE_CONFIG_CONTENT: source },
     async () => Response.json({ data: [{ id: 'vendor/{env:OUTPUT}' }] }));
   assert.ok(env.OPENCODE_CONFIG_CONTENT.includes('"autoupdate":{env:FLAG}'));
   assert.ok(env.OPENCODE_CONFIG_CONTENT.includes('"output":{env:OUTPUT}'));
+  assert.ok(env.OPENCODE_CONFIG_CONTENT.includes('"plugins":{file:{env:PLUGINS_FILE}}'));
   // Expansion belongs to OpenCode. Test with synthetic values, including a file that does not exist and must not be read
   // here. The generated provider's template must not be caught by the very same substitutions.
   const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT.replaceAll('{env:FLAG}', 'false').replaceAll('{env:CONTEXT}', '65536')
-    .replaceAll('{env:OUTPUT}', '1024').replaceAll('{file:/not-read/by-the-merge}', '3'));
+    .replaceAll('{env:OUTPUT}', '1024').replaceAll('{env:PLUGINS_FILE}', '/not-read/plugins.json')
+    .replaceAll('{file:/not-read/by-the-merge}', '3').replaceAll('{file:/not-read/plugins.json}', '[]'));
   assert.equal(config.autoupdate, false);
   assert.deepEqual(config.provider.native.models.own.limit, { context: 65536, output: 1024 });
   assert.deepEqual(config.experimental.values, [1024, 3]);
+  assert.deepEqual(config.plugins, []);
   assert.deepEqual(config.instructions, ['quoted 1024', '{env:OUTPUT}']);
   assert.ok(config.provider['coda-magpie.openai'].models['vendor/{env:OUTPUT}']);
 });

@@ -23,7 +23,10 @@ export function shellEnvironment(env, socket, cwd = process.cwd()) {
   const config = configObject(env.OPENCODE_CONFIG_CONTENT || '{}');
   const source = config.get('plugins') ?? '[]';
   const variable = /^\{env:([^}]+)\}$/.exec(source);
-  const value = variable ? env[variable[1]] || '' : source;
+  // Expand env in an original file path once, before reading it. A file template supplied by an env value has already
+  // passed that stage, so templates inside the replacement must stay literal, just as in OpenCode.
+  const value = variable ? env[variable[1]] || '' : source.startsWith('{file:')
+    ? source.replace(/\{env:([^}]+)\}/g, (_, name) => env[name] || '') : source;
   const file = /^\{file:([^}]+)\}$/.exec(value.trim());
   const array = file ? filePlugins(file[1], env, cwd) : configObject(`{"plugins":${value}}`, !!variable).get('plugins');
   if (!array?.startsWith('[')) throw new SyntaxError('OPENCODE_CONFIG_CONTENT 的 plugins 必须是数组');
