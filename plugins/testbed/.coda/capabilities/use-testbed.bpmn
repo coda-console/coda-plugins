@@ -1,0 +1,159 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 使用测试机（README.md）：测试机的唯一入口。先从本机的设备登记查出这台设备，再排进它的组 device:<设备名>，
+     按需装上 App，把任务交给调用的会话；会话做任务期间，它用 host-sim run --kind <设备> 的命令（能力 run-on-device）借用这个组。
+     任务答复、装包或任务出错、运行被取消，都先等借去的命令停完、再切黑屏，然后放开；切不过去就请用户处理，处理之前一直占着。
+     能力：只被调用（workflow_run 或 callActivity），结果交给调用者。 -->
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:coda="https://coda.pub/schema/bpmn/1.0" id="use-testbed-definitions" targetNamespace="https://coda.pub/plugins/testbed">
+  <message id="cancel" name="workflow.cancel" />
+  <process id="use-testbed" name="使用测试机" isExecutable="true" coda:title="{{inputs.device}}：{{inputs.task}}">
+    <extensionElements>
+      <coda:input name="device" required="true" description="设备名：它所在 Mac 的测试机插件登记的 id，如 iphone-testbed" />
+      <coda:input name="instructions" required="true" description="要会话在测试机上做什么、做完怎么答复（写进交给会话的任务）" />
+      <coda:input name="task" default="在测试机上验证" description="交给会话的任务名" />
+      <coda:input name="app" description="先装到测试机的 App（.app 或 .ipa 的绝对路径）；不填就不装" />
+    </extensionElements>
+    <startEvent id="start" />
+    <sequenceFlow id="to-find" sourceRef="start" targetRef="find" />
+    <!-- 这台 Mac 登记了哪台设备叫这个名字：显示名、UDID 与给会话的说明。没有登记就到此为止，不排队。 -->
+    <scriptTask id="find" name="找测试机" coda:checkout="false" coda:timeout="1" coda:status="找测试机 {{inputs.device}}" scriptFormat="bash">
+      <extensionElements>
+        <coda:env name="DEVICE" value="=inputs.device" />
+        <coda:output name="name" />
+        <coda:output name="udid" />
+        <coda:output name="note" />
+      </extensionElements>
+      <script>node "$CODA_PLUGIN_PATH/scripts/device.mjs"</script>
+    </scriptTask>
+    <sequenceFlow id="to-testbed" sourceRef="find" targetRef="testbed" />
+
+    <!-- 占着测试机的这一段：离开它就放开，所以切黑屏在里面。 -->
+    <subProcess id="testbed" name="占用测试机">
+      <startEvent id="testbed-start" />
+      <sequenceFlow id="to-hold" sourceRef="testbed-start" targetRef="hold" />
+      <serviceTask id="hold" name="等测试机" coda:action="hold-group" coda:status="等测试机 {{find.name}}">
+        <extensionElements>
+          <coda:param name="group" value="device:{{inputs.device}}" />
+          <coda:param name="capacity" value="1" />
+          <!-- 每次使用都排队：做着上一次任务的会话再发起一次，也排在它后面，不借它的。 -->
+          <coda:param name="borrow" value="no" />
+        </extensionElements>
+      </serviceTask>
+      <sequenceFlow id="to-has-app" sourceRef="hold" targetRef="has-app" />
+      <exclusiveGateway id="has-app" default="no-app" />
+      <sequenceFlow id="with-app" sourceRef="has-app" targetRef="install">
+        <conditionExpression xsi:type="tFormalExpression">=inputs.app</conditionExpression>
+      </sequenceFlow>
+      <sequenceFlow id="no-app" sourceRef="has-app" targetRef="task" />
+      <scriptTask id="install" name="装 App" coda:checkout="false" coda:timeout="15" coda:status="把 App 装到 {{find.name}}" scriptFormat="bash">
+        <extensionElements>
+          <coda:env name="UDID" value="=find.udid" />
+          <coda:env name="APP" value="=inputs.app" />
+        </extensionElements>
+        <script>xcrun devicectl device install app --device "$UDID" "$APP"</script>
+      </scriptTask>
+      <sequenceFlow id="installed" sourceRef="install" targetRef="task" />
+      <userTask id="task" name="=inputs.task" coda:status="{{find.name}} 交给会话使用">
+        <documentation>{{inputs.instructions}}
+
+测试机 {{find.name}}（设备名 {{inputs.device}}，UDID {{find.udid}}）由这个任务占着，直到答复：本会话（含子 Agent）用 host-sim run --kind {{inputs.device}} -- &lt;命令&gt; 操作它，命令结束不会交出设备。答复之后还在执行的命令随之停下，测试机切黑屏，再交给下一位。
+
+{{find.note}}</documentation>
+      </userTask>
+      <sequenceFlow id="used" sourceRef="task" targetRef="black" />
+
+      <!-- 装包或任务出错、运行被取消：同样先切黑屏，再让运行以原来的原因结束。 -->
+      <boundaryEvent id="install-cancelled" attachedToRef="install"><messageEventDefinition messageRef="cancel" /></boundaryEvent>
+      <boundaryEvent id="install-failed" attachedToRef="install"><errorEventDefinition /></boundaryEvent>
+      <boundaryEvent id="task-cancelled" attachedToRef="task"><messageEventDefinition messageRef="cancel" /></boundaryEvent>
+      <boundaryEvent id="task-failed" attachedToRef="task"><errorEventDefinition /></boundaryEvent>
+      <sequenceFlow id="install-cancelled-black" sourceRef="install-cancelled" targetRef="black-stop" />
+      <sequenceFlow id="install-failed-black" sourceRef="install-failed" targetRef="black-stop" />
+      <sequenceFlow id="task-cancelled-black" sourceRef="task-cancelled" targetRef="black-stop" />
+      <sequenceFlow id="task-failed-black" sourceRef="task-failed" targetRef="black-stop" />
+
+      <scriptTask id="black" name="切黑屏" coda:checkout="false" coda:timeout="2" coda:status="{{find.name}} 切黑屏" scriptFormat="bash">
+        <extensionElements>
+          <coda:env name="DEVICE" value="=inputs.device" />
+          <coda:env name="UDID" value="=find.udid" />
+          <coda:env name="COMMANDS" value="=vars.testbed.blackscreen" />
+        </extensionElements>
+        <script>node "$CODA_PLUGIN_PATH/scripts/blackscreen.mjs"</script>
+      </scriptTask>
+      <sequenceFlow id="blacked" sourceRef="black" targetRef="done" />
+      <!-- 切黑屏时被取消：照样切完；运行随后以「已取消」结束。 -->
+      <boundaryEvent id="black-cancelled" attachedToRef="black" cancelActivity="false"><messageEventDefinition messageRef="cancel" /></boundaryEvent>
+      <sequenceFlow id="black-noted" sourceRef="black-cancelled" targetRef="noted" />
+      <endEvent id="noted" />
+      <boundaryEvent id="black-failed" attachedToRef="black"><errorEventDefinition /></boundaryEvent>
+      <sequenceFlow id="ask-black" sourceRef="black-failed" targetRef="black-trouble" />
+      <userTask id="black-trouble" name="测试机切黑屏失败" coda:assignee="user" coda:handback="false" coda:status="{{find.name}} 切黑屏失败，等你处理">
+        <documentation>测试机 {{find.name}}（{{inputs.device}}）用完后没能切黑屏，原因见运行页「切黑屏」这一步的日志。在你处理之前，它不会交给下一位。
+
+检查设备连接、黑屏 App 或插件设置「切黑屏命令」后选「重试」；已经手动处理好了就选「我处理好了，放锁」。</documentation>
+        <extensionElements>
+          <coda:choice id="retry" name="重试" />
+          <coda:choice id="release" name="我处理好了，放锁" />
+        </extensionElements>
+      </userTask>
+      <sequenceFlow id="black-answered" sourceRef="black-trouble" targetRef="black-again" />
+      <exclusiveGateway id="black-again" default="black-released" />
+      <sequenceFlow id="black-retry" sourceRef="black-again" targetRef="black">
+        <conditionExpression xsi:type="tFormalExpression">=black-trouble.chose.retry</conditionExpression>
+      </sequenceFlow>
+      <sequenceFlow id="black-released" sourceRef="black-again" targetRef="done" />
+      <endEvent id="done">
+        <extensionElements><coda:output name="stopped" value="false" /></extensionElements>
+      </endEvent>
+
+      <scriptTask id="black-stop" name="切黑屏（没有做完）" coda:checkout="false" coda:timeout="2" coda:status="{{find.name}} 切黑屏" scriptFormat="bash">
+        <extensionElements>
+          <coda:env name="DEVICE" value="=inputs.device" />
+          <coda:env name="UDID" value="=find.udid" />
+          <coda:env name="COMMANDS" value="=vars.testbed.blackscreen" />
+        </extensionElements>
+        <script>node "$CODA_PLUGIN_PATH/scripts/blackscreen.mjs"</script>
+      </scriptTask>
+      <sequenceFlow id="stop-blacked" sourceRef="black-stop" targetRef="stopped" />
+      <boundaryEvent id="black-stop-cancelled" attachedToRef="black-stop" cancelActivity="false"><messageEventDefinition messageRef="cancel" /></boundaryEvent>
+      <sequenceFlow id="black-stop-noted" sourceRef="black-stop-cancelled" targetRef="stop-noted" />
+      <endEvent id="stop-noted" />
+      <boundaryEvent id="black-stop-failed" attachedToRef="black-stop"><errorEventDefinition /></boundaryEvent>
+      <sequenceFlow id="ask-black-stop" sourceRef="black-stop-failed" targetRef="black-stop-trouble" />
+      <userTask id="black-stop-trouble" name="测试机切黑屏失败" coda:assignee="user" coda:handback="false" coda:status="{{find.name}} 切黑屏失败，等你处理">
+        <documentation>测试机 {{find.name}}（{{inputs.device}}）没能切黑屏，原因见运行页「切黑屏（没有做完）」这一步的日志。在你处理之前，它不会交给下一位。
+
+检查设备连接、黑屏 App 或插件设置「切黑屏命令」后选「重试」；已经手动处理好了就选「我处理好了，放锁」。</documentation>
+        <extensionElements>
+          <coda:choice id="retry" name="重试" />
+          <coda:choice id="release" name="我处理好了，放锁" />
+        </extensionElements>
+      </userTask>
+      <sequenceFlow id="black-stop-answered" sourceRef="black-stop-trouble" targetRef="black-stop-again" />
+      <exclusiveGateway id="black-stop-again" default="black-stop-released" />
+      <sequenceFlow id="black-stop-retry" sourceRef="black-stop-again" targetRef="black-stop">
+        <conditionExpression xsi:type="tFormalExpression">=black-stop-trouble.chose.retry</conditionExpression>
+      </sequenceFlow>
+      <sequenceFlow id="black-stop-released" sourceRef="black-stop-again" targetRef="stopped" />
+      <endEvent id="stopped">
+        <extensionElements><coda:output name="stopped" value="true" /></extensionElements>
+      </endEvent>
+    </subProcess>
+
+    <!-- 放开之后：做完了把任务的答复交给调用者；没做完（出错、被取消）就以原来的原因结束。 -->
+    <sequenceFlow id="to-how" sourceRef="testbed" targetRef="how" />
+    <exclusiveGateway id="how" default="to-end" />
+    <sequenceFlow id="to-not-done" sourceRef="how" targetRef="not-done">
+      <conditionExpression xsi:type="tFormalExpression">=testbed.stopped</conditionExpression>
+    </sequenceFlow>
+    <sequenceFlow id="to-end" sourceRef="how" targetRef="end" />
+    <endEvent id="end">
+      <extensionElements>
+        <coda:output name="result" value="=task.result" />
+        <coda:output name="note" value="=task.note" />
+        <coda:output name="choice" value="=task.choice" />
+      </extensionElements>
+    </endEvent>
+    <endEvent id="not-done" name="没有做完"><errorEventDefinition /></endEvent>
+  </process>
+</definitions>

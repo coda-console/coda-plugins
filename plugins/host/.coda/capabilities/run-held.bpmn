@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 持锁执行（README.md）：会话的 Agent 用 workflow_run 交来的命令。排进这台 Mac 的名额组 host（容量是本插件为它声明的设置
+     host.capacity），排到后在给定的目录里、带项目的环境执行，结束（含被取消）时删掉命令用 host-sim bind 登记的模拟器，再放开名额。
+     命令的退出码作为输出 exit_code。能力：只被调用，结果交给调用者；原生子 Agent 不能发起（coda:subagents="false"）。 -->
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:coda="https://coda.pub/schema/bpmn/1.0" id="run-held-definitions" targetNamespace="https://coda.pub/plugins/host">
+  <process id="run-held" name="持锁执行" isExecutable="true" coda:title="=inputs.command" coda:inline="true" coda:subagents="false">
+    <extensionElements>
+      <coda:input name="command" required="true" description="要占着名额执行的命令，由 $SHELL -c 执行，如 bash scripts/build-ios.sh" />
+      <coda:input name="cwd" required="true" description="在哪个目录执行：绝对路径，一般是你的工作目录" />
+      <coda:input name="what" default="构建" description="排的是什么名额，写进状态行：构建或模拟器" />
+    </extensionElements>
+    <startEvent id="start" />
+    <sequenceFlow id="to-held" sourceRef="start" targetRef="held" />
+    <!-- 占着名额的这一段：命令结束、收尾做完，离开它就放开。 -->
+    <subProcess id="held" name="占用名额">
+      <startEvent id="held-start" />
+      <sequenceFlow id="to-hold" sourceRef="held-start" targetRef="hold" />
+      <serviceTask id="hold" name="等名额" coda:action="hold-group" coda:status="排队等{{inputs.what}}名额">
+        <extensionElements>
+          <coda:param name="group" value="host" />
+        </extensionElements>
+      </serviceTask>
+      <sequenceFlow id="to-run" sourceRef="hold" targetRef="command" />
+      <!-- exec：取消时整组收到 TERM，执行器等这个进程退出；它先等命令结束、删掉模拟器再退出，不被外层 shell 的退出带走。 -->
+      <scriptTask id="command" name="执行" coda:checkout="false" coda:timeout="600" coda:status="执行中：{{inputs.command}}" scriptFormat="bash">
+        <extensionElements>
+          <coda:env name="HELD_COMMAND" value="=inputs.command" />
+          <coda:env name="HELD_CWD" value="=inputs.cwd" />
+          <coda:env name="HELD_WHAT" value="=inputs.what" />
+          <coda:output name="exit_code" />
+        </extensionElements>
+        <script>exec node "$CODA_PLUGIN_PATH/scripts/run-held.mjs"</script>
+      </scriptTask>
+      <sequenceFlow id="ran" sourceRef="command" targetRef="held-end" />
+      <endEvent id="held-end" />
+    </subProcess>
+    <sequenceFlow id="to-end" sourceRef="held" targetRef="end" />
+    <endEvent id="end" />
+  </process>
+</definitions>

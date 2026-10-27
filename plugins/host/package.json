@@ -1,0 +1,78 @@
+{
+  "name": "@coda-console/host",
+  "id": "host",
+  "displayName": "宿主资源",
+  "description": "Apple 模拟器、Xcode 构建和项目要求排队的命令共用这个后端实例的一组名额：会话的 Agent 用 workflow_run 调用持锁执行把命令交来，排到名额后在给定目录里执行，结束时删掉它登记的模拟器；定时清点被强杀的命令留下的。",
+  "version": "1.1.0",
+  "categories": [
+    "机器与资源"
+  ],
+  "contributes": {
+    "panels": [
+      {
+        "id": "slots",
+        "title": "构建与模拟器名额",
+        "command": "node \"$CODA_PLUGIN_PATH/scripts/panel.mjs\""
+      }
+    ],
+    "capabilities": [
+      "run-held"
+    ],
+    "groups": [
+      {
+        "name": "host",
+        "capacity": "host.capacity"
+      }
+    ],
+    "commands": [
+      {
+        "name": "host-sim",
+        "command": "\"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/host-sim.mjs\""
+      }
+    ],
+    "extensionPoints": {
+      "kinds": {
+        "description": "host-sim 的其他 --kind（如测试机的设备名）：host-sim 把整条命令交给接在这里的第一个命令，参数原样附在后面"
+      }
+    },
+    "instructions": "Xcode 构建、用 Apple 模拟器的命令和会调用 host-sim 的项目脚本不要直接跑，用 workflow_run 执行：workflow 为 run-held，inputs 给 command 与 cwd（绝对路径），用模拟器另给 what 为 模拟器；排队与执行由 Coda 管。原生子 Agent 不能申请，要并行就用 spawn 派子会话。别的命令直接执行，除非项目说明要求排队。",
+    "configuration": {
+      "title": "宿主资源",
+      "properties": {
+        "host.capacity": {
+          "title": "名额数",
+          "type": "integer",
+          "order": 1,
+          "minimum": 1,
+          "maximum": 8,
+          "default": 1,
+          "description": "这个后端实例同时运行几条占名额的命令（模拟器、Xcode 构建和项目要求排队的命令）；同一台 Mac 上的每个实例各有一组名额。"
+        },
+        "host.cleanSchedule": {
+          "title": "清点模拟器的周期",
+          "type": "string",
+          "order": 2,
+          "default": "R/P1D",
+          "description": "多久清点一次：等名额全部空出后，删掉本实例登记过、还没删的模拟器（被强杀的命令留下的）。ISO 8601 重复间隔，R/P1D 是每天一次，从 Coda 第一次登记这个周期起算；最短 5 分钟。"
+        }
+      }
+    },
+    "skills": [
+      "skills/host-slots"
+    ]
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coda-console/coda-plugins.git",
+    "directory": "plugins/host"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    ".coda",
+    "scripts",
+    "skills"
+  ]
+}

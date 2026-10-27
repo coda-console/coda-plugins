@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 在测试机上执行（README.md）：会话的 host-sim 为测试机交来的命令。测试机只借不排：它借的是
+     use-testbed 交给这个会话的任务所占的组 device:<设备名>，会话没在做那台设备的任务就立刻拒绝。借到后在会话的目录里、带会话的环境执行；
+     任务答复、出错或被取消时，还在执行的命令随之停下，测试机等它停完才切黑屏。命令的退出码作为输出 exit_code，交给 host-sim。
+     能力：只被调用，结果交给调用者。 -->
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:coda="https://coda.pub/schema/bpmn/1.0" id="run-on-device-definitions" targetNamespace="https://coda.pub/plugins/testbed">
+  <process id="run-on-device" name="在测试机上执行" isExecutable="true" coda:title="{{inputs.device}}：{{inputs.label}}">
+    <extensionElements>
+      <coda:input name="spec" required="true" description="host-sim 写下的命令说明（JSON 文件的绝对路径：命令、目录、环境）" />
+      <coda:input name="device" required="true" description="设备名，如 iphone-testbed" />
+      <coda:input name="label" default="在测试机上执行" description="运行的标题：这条命令" />
+    </extensionElements>
+    <startEvent id="start" />
+    <sequenceFlow id="to-borrow" sourceRef="start" targetRef="borrow" />
+    <serviceTask id="borrow" name="借测试机" coda:action="hold-group" coda:status="借测试机 {{inputs.device}}">
+      <extensionElements>
+        <coda:param name="group" value="device:{{inputs.device}}" />
+        <coda:param name="capacity" value="1" />
+        <coda:param name="borrow" value="only" />
+      </extensionElements>
+    </serviceTask>
+    <sequenceFlow id="to-run" sourceRef="borrow" targetRef="command" />
+    <!-- exec：取消时整组收到 TERM，执行器等这个进程退出；它等命令结束再退出。 -->
+    <scriptTask id="command" name="执行" coda:checkout="false" coda:timeout="600" coda:status="在 {{inputs.device}} 上执行：{{inputs.label}}" scriptFormat="bash">
+      <extensionElements>
+        <coda:env name="SPEC" value="=inputs.spec" />
+        <coda:output name="exit_code" />
+      </extensionElements>
+      <script>exec node "$CODA_PLUGIN_PATH/scripts/run-on-device.mjs"</script>
+    </scriptTask>
+    <sequenceFlow id="ran" sourceRef="command" targetRef="end" />
+    <endEvent id="end" />
+  </process>
+</definitions>

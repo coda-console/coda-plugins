@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 清点模拟器（README.md）：按插件设置的周期，占满这个实例的名额组 host（排到时没有别人占着，
+     期间也不放人进来），删掉本实例登记过、还没删的模拟器，再放开。持锁执行在命令结束时已删掉它登记的，这里兜的是被强杀的命令
+     和流程步骤留下的。只有这个实例自己的正式后端真正删除。名额是整个实例的，到点只跑一次（coda:scope="machine"，登记在启用宿主资源插件的
+     一个项目里）。BPMN 2.0，由 Coda 执行。 -->
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="clean-simulators-definitions" targetNamespace="https://coda.pub/plugins/host">
+  <process id="clean-simulators" name="清点模拟器" isExecutable="true" coda:title="清点模拟器">
+    <startEvent id="due" name="到点" coda:scope="machine">
+      <timerEventDefinition>
+        <timeCycle xsi:type="tFormalExpression">=vars.host.cleanSchedule</timeCycle>
+      </timerEventDefinition>
+    </startEvent>
+    <sequenceFlow id="to-held" sourceRef="due" targetRef="held" />
+    <!-- 占满名额的这一段：清点做完，离开它就放开。 -->
+    <subProcess id="held" name="占满名额">
+      <startEvent id="held-start" />
+      <sequenceFlow id="to-hold" sourceRef="held-start" targetRef="hold" />
+      <serviceTask id="hold" name="等名额全部空出" coda:action="hold-group" coda:status="等名额全部空出">
+        <extensionElements>
+          <coda:param name="group" value="host" />
+          <coda:param name="exclusive" value="true" />
+        </extensionElements>
+      </serviceTask>
+      <sequenceFlow id="to-clean" sourceRef="hold" targetRef="clean" />
+      <scriptTask id="clean" name="删除模拟器" coda:checkout="false" coda:timeout="10" coda:status="正在删除本实例登记的模拟器" scriptFormat="bash">
+        <script>node "$CODA_PLUGIN_PATH/scripts/clean-simulators.mjs"</script>
+      </scriptTask>
+      <sequenceFlow id="cleaned" sourceRef="clean" targetRef="held-end" />
+      <endEvent id="held-end" />
+    </subProcess>
+    <sequenceFlow id="to-end" sourceRef="held" targetRef="end" />
+    <endEvent id="end" />
+  </process>
+</definitions>

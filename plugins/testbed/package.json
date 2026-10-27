@@ -1,0 +1,65 @@
+{
+  "name": "@coda-console/testbed",
+  "id": "testbed",
+  "displayName": "测试机",
+  "description": "长插在 Mac 上的 iPhone、iPad 测试机只经这里使用：排到后按需装上 App，把任务交给会话在真机上操作；会话的 host-sim 命令借用它，任务结束时随之停下；任务结束、出错或取消时先切黑屏再交给下一位，切不过去就请你处理。",
+  "version": "1.1.0",
+  "categories": [
+    "机器与资源"
+  ],
+  "extensionDependencies": [
+    "host"
+  ],
+  "contributes": {
+    "panels": [
+      {
+        "id": "devices",
+        "title": "测试机",
+        "command": "node \"$CODA_PLUGIN_PATH/scripts/panel.mjs\""
+      }
+    ],
+    "capabilities": [
+      "use-testbed",
+      "run-on-device"
+    ],
+    "extensions": {
+      "host/kinds": {
+        "command": "\"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/host-sim.mjs\""
+      }
+    },
+    "instructions": "要在 iPhone/iPad 测试机上操作或验证：调用 workflow_run，workflow 为 use-testbed，inputs 给 device（设备名，如 iphone-testbed）和 instructions；先装 App 就再给 app（.app 的绝对路径）。拿到任务后用 host-sim run --kind <设备名> 操作，做完用 workflow_task 答复。",
+    "configuration": {
+      "title": "测试机",
+      "properties": {
+        "testbed.blackscreen": {
+          "title": "切黑屏命令",
+          "type": "object",
+          "order": 1,
+          "description": "每台测试机用完、交给下一位之前怎么切黑屏。默认用 devicectl 在设备上打开黑屏 App（com.leavan.blackscreen）；某台要换做法就加一行：左边是设备名（它所在 Mac 的测试机插件登记的 id），右边是在那台 Mac 上执行的命令（sh，设备的 UDID 在 $UDID）。失败时请你处理后再交出设备。",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        }
+      }
+    },
+    "skills": [
+      "skills/testbed"
+    ]
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coda-console/coda-plugins.git",
+    "directory": "plugins/testbed"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    ".coda",
+    "scripts",
+    "blackscreen",
+    "skills"
+  ]
+}
