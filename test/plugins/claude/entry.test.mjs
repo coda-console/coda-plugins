@@ -1149,6 +1149,44 @@ test('asked by Coda, a session compacts in a turn of no one\'s that says nothing
   assert.deepEqual(c.said(), ['hello', 'again', 'after']);
 });
 
+test('a prompt stopped while it waits behind a compaction is dropped with it, and never runs', async t => {
+  const c = await compactable(t);
+  await c.prompt('hello');
+  c.query.compactHeld = true;
+  const asked = c.ask();
+  await until(() => c.compactions().length === 1);
+  const queued = c.prompt('stopped');
+  await until(() => c.query.received.length === 3);
+  c.send({ method: 'session/cancel', params: { sessionId: c.sessionId } });
+  assert.deepEqual((await queued).result, { stopReason: 'cancelled' });
+  assert.deepEqual((await asked).result, { compacted: false, reason: '压缩被停止' });
+  assert.deepEqual(c.query.interrupts.at(-1), { cancelQueued: true });
+  assert.ok(!c.query.entries.some(e => e.text === 'stopped'), 'the prompt never ran');
+  assert.deepEqual((await c.prompt('next')).result, { stopReason: 'end_turn' });
+  assert.deepEqual(c.said(), ['hello', 'next']);
+});
+
+test('a turn of Claude\'s own under way when Coda asks the session compacted stays its own; the compaction is the turn that names its input', async t => {
+  const c = await compactable(t);
+  await c.prompt('hello');
+  // A background command ended, and Claude Code's turn for it is under way: what it says is not read yet when Coda asks.
+  await c.emit(system('task_started', { task_id: 'bg-own', run_id: 'run-own', task_type: 'local_bash', description: '后台', is_backgrounded: true }),
+    system('task_notification', { task_id: 'bg-own', status: 'completed' }));
+  const release = c.query.hold();
+  c.query.init();
+  c.query.emit({ type: 'user', message: { role: 'user', content: '<task-notification>' }, origin: { kind: 'task-notification', runId: 'run-own' } });
+  c.query.emit({ type: 'assistant', message: { id: 'own-turn', content: [{ type: 'text', text: '后台结果看过了' }] } });
+  c.query.emit({ type: 'result', subtype: 'success', is_error: false });
+  const asked = c.ask();
+  await until(() => c.query.received.some(m => m.message.content === '/compact'));
+  release();
+  assert.deepEqual((await asked).result, { compacted: true, before: 180000, after: 9000 });
+  assert.deepEqual(wait(c, 'bg-own').map(w => w.state), ['waiting', 'handling', 'done']);
+  assert.ok(!c.waits().some(w => w.waitId.startsWith('turn-')), 'no turn of no cause');
+  assert.deepEqual(c.said(), ['hello', '后台结果看过了']);
+  assert.deepEqual(c.compactions(), ['in_progress', 'completed']);
+});
+
 test('a session that cannot compact now, or whose compaction fails or compacts nothing, says why', async t => {
   await t.test('a turn going', async t => {
     const c = await compactable(t);

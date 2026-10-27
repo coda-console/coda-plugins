@@ -29,6 +29,8 @@ export function fixtureSdk(argv = []) {
     }
     persist() { writeFileSync(path(this.options.cwd, this.id), JSON.stringify(this.entries)); }
     emit(message) { this.queue.push({ session_id: this.id, uuid: randomUUID(), ...message }); this.wake?.(); }
+    // What it says from now on is not read until the test lets it (the function returned): said, as the entry has not read it yet.
+    hold() { let release; const held = new Promise(r => { release = r; }); this.queue.push(() => held); this.wake?.(); return release; }
     system(subtype, payload = {}) { this.emit({ type: 'system', subtype, ...payload }); }
     // Like the real SDK, every turn opens with a root init, including turns a finished task wakes.
     init() {
@@ -172,15 +174,18 @@ export function fixtureSdk(argv = []) {
       } else if (text === '/compact') {
         // As Claude Code compacts: a status while it goes, the boundary with what it left, and what the command says; when a test
         // says so, the status that it failed (`compactFails`), or only what the command says, compacting nothing (`compactSays`);
-        // `compactHeld`: it goes on until the test lets it.
+        // `compactHeld`: it goes on until the test lets it, or it is interrupted.
         if (this.compactSays) this.system('local_command_output', { content: this.compactSays });
         else if (this.compactFails) { this.system('status', { status: 'compacting' }); this.system('status', { status: null, compact_result: 'failed', compact_error: 'API Error' }); }
         else {
           this.system('status', { status: 'compacting' });
-          while (this.compactHeld && !this.closed) await new Promise(r => setTimeout(r, 10));
-          this.system('compact_boundary', { compact_metadata: { trigger: 'manual', pre_tokens: 180000, post_tokens: 9000 } });
-          this.system('status', { status: null, compact_result: 'success' });
-          this.system('local_command_output', { content: 'Compacted' });
+          while (this.compactHeld && !this.closed && !this.controller.signal.aborted) await new Promise(r => setTimeout(r, 10));
+          if (this.controller.signal.aborted) this.system('status', { status: null, compact_result: 'failed', compact_error: 'Compaction interrupted' });
+          else {
+            this.system('compact_boundary', { compact_metadata: { trigger: 'manual', pre_tokens: 180000, post_tokens: 9000 } });
+            this.system('status', { status: null, compact_result: 'success' });
+            this.system('local_command_output', { content: 'Compacted' });
+          }
         }
       } else if (text === 'history') this.text(this.entries.filter(e => e.type === 'user').map(e => e.text).join('|'));
       // The checker's question about the session instructions, answered from the system prompt as a model would.
