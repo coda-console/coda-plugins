@@ -133,6 +133,7 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
           <coda:output name="line" />
           <coda:output name="findings" />
           <coda:output name="report" />
+          <coda:output name="rules" />
           <coda:output name="files" />
           <coda:output name="pr" />
           <coda:output name="head" />
@@ -170,11 +171,16 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
       <sequenceFlow id="released" sourceRef="limit-how" targetRef="released-at-limit" />
 
       <userTask id="fix" name="处理评审意见" coda:status="评审要求修改：处理评审意见" coda:completeLabel="已修改并推送" coda:rejectLabel="不同意评审意见">
-        <documentation>交叉评审要求修改 PR {{review.pr}}，阻塞级别及以上的问题如下（本任务只处理这些问题）：
+        <documentation>交叉评审要求修改 PR {{review.pr}}，阻塞级别（{{vars.review.blockingSeverity}}）及以上的问题如下（本任务只处理这些问题）：
 
 {{review.findings}}
 
-请独立核实。成立的就修改、验证并推送新版本（新版本会自动重新评审），然后用 completed 答复。不同意的，用 rejected 答复并在 note 里写明理由，交给用户仲裁；用户维持评审意见时这个任务会再交给你。</documentation>
+评审方依据的规则如下，与交给它的原文相同：
+
+{{review.rules}}
+
+请照这些规则独立核实：没有可达的触发路径的、属于规则说不报的、按严重程度的定义其实低于阻塞级别的，都不算成立。
+成立的就修改、验证并推送新版本（新版本会自动重新评审），然后用 completed 答复。不同意的，用 rejected 答复，在 note 里写明理由和依据的规则，交给用户仲裁；用户维持评审意见时这个任务会再交给你。</documentation>
       </userTask>
       <sequenceFlow id="fixed" sourceRef="fix" targetRef="fixing" />
       <boundaryEvent id="disputed" name="不同意" attachedToRef="fix"><errorEventDefinition /></boundaryEvent>
