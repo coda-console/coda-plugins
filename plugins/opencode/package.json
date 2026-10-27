@@ -2,8 +2,8 @@
   "name": "@coda-console/opencode",
   "id": "opencode",
   "displayName": "OpenCode",
-  "description": "OpenCode Agent：转发运行机的 opencode acp，接入原生子会话的状态、过程与停止，并把会话指令放进原生会话的第一轮。",
-  "version": "2.1.1",
+  "description": "OpenCode Agent：接入原生子会话的状态、过程与停止，跟踪后台命令，并送入会话指令。",
+  "version": "2.2.0",
   "categories": ["Agent"],
   "contributes": {
     "agents": [
@@ -64,7 +64,8 @@
   "files": [
     "agent",
     "scripts",
-    "icons"
+    "icons",
+    "runtime"
   ],
   "dependencies": {
     "jsonc-parser": "3.3.1"

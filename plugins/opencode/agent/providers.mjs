@@ -73,9 +73,9 @@ export function serviceProvider(service, models) {
 
 // OpenCode expands {env:...} and {file:...} on the config text BEFORE parsing JSON. Only the generated data is quoted this
 // way: escaping '{' within JSON string tokens preserves their literal value without exposing an interpolation template.
-const literalJSON = value => JSON.stringify(value).replace(/"(?:\\.|[^"\\])*"/g, token => token.replaceAll('{', '\\u007b'));
+export const literalJSON = value => JSON.stringify(value).replace(/"(?:\\.|[^"\\])*"/g, token => token.replaceAll('{', '\\u007b'));
 
-function configObject(text, envExpanded = false) {
+export function configObject(text, envExpanded = false) {
   // Same-length placeholders let JSONC parse unquoted templates; offsets still refer to the untouched source. OpenCode
   // expands env once, then files, so a value supplied by env cannot introduce another unquoted env template.
   const syntax = text.replace(/"(?:\\.|[^"\\])*"|\/\/[^\r\n]*|\/\*[\s\S]*?\*\/|\{(?:env|file):[^}]+\}/g,

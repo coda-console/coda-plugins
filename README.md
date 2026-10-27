@@ -104,6 +104,19 @@ OpenCode 的原生子会话经 ACP 的 `opencode/child-session-updates` 能力�
 原生表单提问没有子会话身份元数据，仍显示在主会话。以上需要上游补充事件；普通 Coda `spawn` 的独立会话不受这些限制。
 协议公开副本记录的是同步时的插件行为，OpenCode 当前的接入以本节为准。
 
+OpenCode 的后台 shell 命令由随插件带的原生观察器 `runtime/server.mjs` 接入（OpenCode 2.1.4 的公开插件 API）：
+入口只在这个进程的 `OPENCODE_CONFIG_CONTENT.plugins` 里追加观察器，保留已有插件和配置，不写运行机的配置文件。
+观察器通过私有临时目录中的 Unix socket 交回 shell 的创建、退出、结果通知的投递与原生执行结束事件；不轮询进程、日志或数据库。
+后台工具返回前先确认 `_coda/wait` 已登记，带启动工具的 `toolCallId` 和原生输出文件，子会话起的命令归子会话。
+工具返回 `running` 不等于命令结束；主 prompt 结束也不关闭任务。命令退出后，等原生结果通知被处理，才按退出码、超时或停止事实了结。
+轮外接手结果时报告 `handling`，处理失败显示失败原因；停止这次自主处理走原生插件的 `session.interrupt`，等原生中断事件才结束，并保留 ACP 会话供下一轮继续。
+观察器被 OpenCode 配置禁止加载或事件连接断开时，卡片明确显示结果未确认，不伪造成功。
+
+这部分仍有上游边界：公开插件 API 没有独立取消 shell 的操作，因此运行中的命令不显示单独停止按钮；
+原生自动续跑的正文、工具、审批和提问仍未由 ACP 转来，观察器只补足活动状态，不自行拼装另一套对话协议。
+任务的结果文件可查看原始命令输出。有限的后台实验应直接用 `background: true`，不要再套 `nohup … &`：
+原生生命周期对应外层 shell，不能据此断言已经脱离它的后代进程也完成。观察器在 shell 工具说明里补充了这一点。
+
 Kimi、Grok、OpenCode、Cursor 带设置动作（`contributes.setup`，`scripts/setup.mjs`），用户安装或更新插件时 Coda 在每台机器上运行：
 CLI 不在或运行不了就用它自己的安装程序安装，低于插件要求的版本就升级，较新的版本保留。要求的版本：Kimi 2.1.1（入口读得懂的会话文件布局）、
 Grok 1.0.52（审批模式通知核对过的版本）、OpenCode 2.1.4（入口核对过的版本；OpenCode 1 遇到模型服务的 `Retry-After` 会一声不响地等，多久都等，见下文。用 OpenCode 2 自己的安装程序 `https://opencode.ai/v2/install`，装在同一个 `~/.opencode/bin`，OpenCode 1 的会话由它按原 ID 接过去）；Cursor 没有已知的下限，能运行就行（它自己会更新）。
