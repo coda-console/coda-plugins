@@ -41,10 +41,11 @@ const interrupted = m => ['interrupt', 'cancelled'].includes(m.stop_reason) || [
 const errorText = m => (m.errors?.length ? m.errors : [m.result || m.subtype]).join('\n');
 // The inputs a result names as taken in by its turn.
 const takenIn = m => m.user_message_uuids ?? (m.user_message_uuid ? [m.user_message_uuid] : []);
-// What a turn says of itself in conversation: what Claude says, its tools' results, what it was woken by. A compaction says
-// none of it, so that while one goes only these tell that a turn of Claude's own has begun.
-const conversing = m => ['assistant', 'stream_event'].includes(m.type)
-  || (m.type === 'user' && (!!m.origin || (Array.isArray(m.message?.content) && m.message.content.some(block => block?.type === 'tool_result'))));
+// What a turn of the main thread says of itself in conversation: what Claude says, its tools' results, what it was woken by.
+// A compaction says none of it, nor does a subagent going on beside it, so that while one goes only these tell that a turn of
+// Claude's own has begun.
+const conversing = m => !m.parent_tool_use_id && (['assistant', 'stream_event'].includes(m.type)
+  || (m.type === 'user' && (!!m.origin || (Array.isArray(m.message?.content) && m.message.content.some(block => block?.type === 'tool_result')))));
 const failure = (message, code = -32603) => new RequestError(code, message);
 const denied = { behavior: 'deny', message: 'Coda 没有在请求结束前给出审批' };
 // A child session's output that comes before its task, kept until the task names that session: all of it, since what streamed
@@ -354,7 +355,8 @@ export class ClaudeSession {
 
   permission(toolName, input, { signal, ...context }) {
     if (!['starting', 'running'].includes(this.phase)) return Promise.resolve(denied);
-    this.begin();
+    // A subagent's request opens no turn of Claude's own while a compaction Coda asked for goes (receive).
+    if (!this.compacting || !context.agentID) this.begin();
     // A subagent's request is in its session.
     const sessionId = this.waits.childSession(context.agentID) ?? this.sessionId;
     if (sessionId === this.sessionId) this.waits.claim();

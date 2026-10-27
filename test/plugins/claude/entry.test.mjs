@@ -1234,6 +1234,30 @@ test('what a turn of Claude\'s own says of compacting, before the compaction\'s 
   assert.deepEqual(c.said(), ['hello', '后台结果看过了', '那一轮的输出']);
 });
 
+test('a subagent going on while the session compacts opens no turn of Claude\'s own: nothing is left waiting after it', async t => {
+  const c = await compactable(t);
+  await c.prompt('hello');
+  await c.emit(system('task_started', { task_id: 'sub-1', tool_use_id: 'tool-sub', task_type: 'local_agent', description: '子 Agent', is_backgrounded: true }));
+  c.query.compactHeld = true;
+  const asked = c.ask();
+  await until(() => c.compactions().length === 1);
+  // What it says, and what it asks, while the compaction goes.
+  c.query.emit({ type: 'assistant', parent_tool_use_id: 'tool-sub', message: { id: 'sub-said', content: [{ type: 'text', text: '子 Agent 进展' }] } });
+  const permitted = c.query.options.canUseTool('Bash', { command: 'ls' }, { signal: new AbortController().signal, agentID: 'sub-1', toolUseID: 'sub-tool' });
+  const request = await c.asked('session/request_permission');
+  assert.equal(request.params.sessionId, 'tool-sub');
+  c.answer(request.id, { outcome: { outcome: 'selected', optionId: 'allow-once' } });
+  assert.equal((await permitted).behavior, 'allow');
+  c.query.compactHeld = false;
+  assert.deepEqual((await asked).result, { compacted: true, before: 180000, after: 9000 });
+  assert.ok(!c.session.waits.unclaimed, 'no turn of Claude\'s own left to claim');
+  assert.deepEqual(c.said('tool-sub'), ['子 Agent 进展']);
+  // Nothing of a turn of no cause: the next compaction is taken, and a prompt after it is only that prompt.
+  assert.deepEqual((await c.ask()).result, { compacted: true, before: 180000, after: 9000 });
+  assert.deepEqual((await c.prompt('after')).result, { stopReason: 'end_turn' });
+  assert.ok(!c.waits().some(w => w.waitId.startsWith('turn-')), 'no turn of no cause');
+});
+
 test('a session that cannot compact now, or whose compaction fails or compacts nothing, says why', async t => {
   await t.test('a turn going', async t => {
     const c = await compactable(t);
