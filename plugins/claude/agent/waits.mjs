@@ -24,6 +24,11 @@ export class ClaudeWaits {
   get handling() { return this.own.size > 0 || [...this.tasks.values(), ...this.crons.values()].some(w => w.state === 'handling'); }
   // Whether anything is still waited on: what ends with the Claude process that runs it.
   get pending() { return this.own.size > 0 || [...this.tasks.values(), ...this.crons.values()].some(w => open(w.state)); }
+  // Whether Claude is to be woken by `until`: for a task that ended and is not yet taken up, or a wakeup due by then.
+  wakes(until) {
+    return [...this.tasks.values()].some(task => task.final !== undefined && task.state === 'waiting')
+      || [...this.crons.values()].some(cron => open(cron.state) && cron.at !== null && cron.at <= until);
+  }
   report(wait, state, fields = {}) {
     wait.state = state;
     const params = { waitId: wait.waitId, state, ...Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined)) };

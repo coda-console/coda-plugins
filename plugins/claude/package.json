@@ -3,7 +3,7 @@
   "id": "claude",
   "displayName": "Claude",
   "description": "Claude SDK Agent：Coda 基于 Claude Agent SDK 写的 ACP 入口，一个进程一个 SDK 会话；资源页的「Claude」面板显示会话报告的额度，可从 Coda 登录。",
-  "version": "1.6.4",
+  "version": "1.7.0",
   "categories": ["Agent"],
   "dependencies": {
     "@agentclientprotocol/sdk": "1.4.0",
@@ -46,6 +46,13 @@
           "title": "模型服务",
           "order": 1,
           "description": "勾选插件提供的模型服务（如 Magpie），每个服务各成一组，它列出的模型和 Claude 自己的模型一起出现在会话的模型里；选中哪个服务的模型，那个会话就走那个服务，Claude 自己的模型照旧。只列 Anthropic 接口（anthropic-messages）的服务。"
+        },
+        "claude.idleCompaction": {
+          "type": "boolean",
+          "title": "缓存过期前压缩",
+          "order": 2,
+          "default": false,
+          "description": "会话停下后还要接着用时（在 Coda 里置顶了，或还在等你、等流程或子会话、等后台命令、子 Agent 与定时唤醒），在一小时的提示词缓存过期前（最后一次请求模型约 54 分钟后）压缩一次上下文，同 /compact：回来接着做时只需重新缓存摘要，不必按原价重新缓存整段对话。由插件的生命周期流程「Claude 缓存过期前压缩」按会话计时，到时请 Claude 压缩；缓存是一小时的、上下文超过 15 万 token、额度没有接近上限时 Claude 才压，每次做了什么、为什么没做都记在那条流程的运行里。"
         }
       }
     },
@@ -73,6 +80,7 @@
     "access": "public"
   },
   "files": [
+    ".coda",
     "agent",
     "scripts",
     "icons"

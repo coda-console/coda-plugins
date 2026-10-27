@@ -18,6 +18,7 @@ import { sdkEnvironment } from '../../../plugins/claude/agent/auth.mjs';
 import { serviceSettings } from '../../../plugins/claude/agent/providers.mjs';
 import { SessionTitle } from '../../../plugins/claude/agent/titles.mjs';
 import { ClaudeSessionLimits, accountHash } from '../../../plugins/claude/agent/limits.mjs';
+import { MIN_CONTEXT } from '../../../plugins/claude/agent/compaction.mjs';
 import { fixtureSdk, queries } from './fixture-sdk.mjs';
 import { substituted } from '../substitute.mjs';
 
@@ -35,8 +36,8 @@ async function setup(t, { env = {}, sdk = fixtureSdk(), ...options } = {}) {
   const send = message => inbox.enqueue({ jsonrpc: '2.0', ...message });
   const request = (method, params) => { const id = `coda-${++next}`; send({ id, method, params }); return until(() => out.find(m => m.id === id && !m.method)); };
   const c = { cwd, out, session, send, request,
-    open: async (params = {}) => {
-      await request('initialize', { protocolVersion: 1, clientCapabilities: {} });
+    open: async (params = {}, clientCapabilities = {}) => {
+      await request('initialize', { protocolVersion: 1, clientCapabilities });
       const opened = (await request('session/new', { cwd, mcpServers: [], ...params })).result;
       c.sessionId = opened.sessionId; c.query = queries.get(opened.sessionId);
       return opened;
@@ -57,7 +58,7 @@ const wait = (c, waitId) => c.waits().filter(w => w.waitId === waitId).map(({ se
 test('session/new lists the concrete models the SDK resolves its rows to, and settings go to the SDK as chosen', async t => {
   const c = await setup(t);
   const init = (await c.request('initialize', { protocolVersion: 1, clientCapabilities: {} })).result;
-  assert.deepEqual(init.agentCapabilities, { loadSession: true, sessionCapabilities: { additionalDirectories: {}, systemPrompt: {} }, _meta: { coda: { waits: {} } } });
+  assert.deepEqual(init.agentCapabilities, { loadSession: true, sessionCapabilities: { additionalDirectories: {}, systemPrompt: {} }, _meta: { coda: { waits: {}, compact: {} } } });
   // It takes a message into the turn going (docs/agent-protocol.md「插话」).
   assert.deepEqual(init._meta, { steering: { supported: true } });
   // The SDK it runs, by its own package version.
@@ -141,7 +142,10 @@ test('session/load resumes the native session it names, and one that is not ther
 test('a prompt is answered by the result that names its input: ended, cancelled, or failed with what went wrong', async t => {
   const c = await setup(t); await c.open();
   assert.deepEqual((await c.prompt('hello')).result, { stopReason: 'end_turn' });
-  assert.deepEqual(c.updates().find(u => u.sessionUpdate === 'usage_update'), { sessionUpdate: 'usage_update', used: 10, size: 1000, cost: { amount: 0, currency: 'USD' } });
+  // With it, when the turn's cache was last used (compaction.mjs).
+  const { _meta, ...usage } = c.updates().find(u => u.sessionUpdate === 'usage_update');
+  assert.deepEqual(usage, { sessionUpdate: 'usage_update', used: 10, size: 1000, cost: { amount: 0, currency: 'USD' } });
+  assert.ok(!Number.isNaN(Date.parse(_meta.coda.lastRequestAt)));
   const held = c.prompt('hold');
   await until(() => c.said().includes('holding'));
   c.send({ method: 'session/cancel', params: { sessionId: c.sessionId } });
@@ -1087,4 +1091,114 @@ test('a prompt stopped while the turn for what was said into it is going ends wi
   const usage = c.out.flatMap((m, i) => m.method === 'session/update' && m.params.update.sessionUpdate === 'usage_update' ? [i] : []);
   assert.equal(usage.length, 2, 'both turns ended');
   assert.ok(usage[1] < c.out.findIndex(m => m.result?.stopReason === 'cancelled'), 'answered as the turn going ended');
+});
+
+// Compaction before the cache expires (compaction.mjs), as Coda asks it (`_coda/session/compact`): a clock moved by hand, and
+// what a response of the main thread says of its context and its cache — over the least worth compacting, written for an hour.
+const HOUR_CACHE = { input_tokens: 2, cache_read_input_tokens: MIN_CONTEXT + 20000, cache_creation_input_tokens: 3000,
+  cache_creation: { ephemeral_1h_input_tokens: 3000, ephemeral_5m_input_tokens: 0 } };
+const MINUTE = 60_000, iso = time => new Date(time).toISOString();
+async function idleSession(t, { usage = HOUR_CACHE } = {}) {
+  const time = { at: Date.now(), now: () => time.at };
+  const c = await setup(t, { now: time.now });
+  await c.open();
+  c.query.usage = usage;
+  // Coda asks the session compacted `after` its last turn's last request (the clock does not move while a turn runs).
+  return Object.assign(c, { time, ask: async (after = 54 * MINUTE, sessionId = c.sessionId) => {
+    if (after !== null) time.at = c.session.idle.turn + after;
+    return c.request('_coda/session/compact', { sessionId });
+  }, compactions: () => c.updates().filter(u => u.sessionUpdate === 'compaction_update').map(u => u.status) });
+}
+
+test('asked by Coda as the hour of its cache is running out, a session compacts in a turn of no one\'s that says nothing, and answers how much', async t => {
+  const c = await idleSession(t);
+  await c.prompt('hello');
+  // Each turn tells Coda when its cache was last used, which is what the lifecycle process times from.
+  const told = () => c.updates().filter(u => u.sessionUpdate === 'usage_update').map(u => u._meta?.coda?.lastRequestAt);
+  assert.deepEqual(told(), [iso(c.session.idle.turn)]);
+  assert.deepEqual((await c.ask()).result, { compacted: true, before: 180000, after: 9000 });
+  assert.deepEqual(told(), [iso(c.session.idle.turn), iso(c.session.idle.turn)], 'the compaction\'s turn is not one of the session\'s');
+  assert.deepEqual(c.query.received.map(m => m.message.content), ['hello', '/compact']);
+  assert.deepEqual(c.compactions(), ['in_progress', 'completed']);
+  assert.deepEqual(c.said(), ['hello']);
+  assert.deepEqual(c.waits(), []);
+  // A turn is compacted once.
+  assert.deepEqual((await c.ask(55 * MINUTE)).result, { compacted: false, reason: '这一轮之后已经压缩过' });
+  // A prompt that comes while it compacts runs after it, and is answered by its own turn.
+  await c.prompt('again');
+  c.query.compactHeld = true;
+  const asked = c.ask();
+  await until(() => c.compactions().length === 3);
+  const after = c.prompt('after');
+  await until(() => c.query.received.length === 5);
+  c.query.compactHeld = false;
+  assert.deepEqual((await asked).result, { compacted: true, before: 180000, after: 9000 });
+  assert.deepEqual((await after).result, { stopReason: 'end_turn' });
+  assert.deepEqual(c.query.received.map(m => m.message.content), ['hello', '/compact', 'again', '/compact', 'after']);
+  assert.deepEqual(c.said(), ['hello', 'again', 'after']);
+});
+
+test('a session not to compact now answers why, and when it would be time', async t => {
+  const refused = async (c, after) => { const { result } = await c.ask(after); assert.equal(result.compacted, false); assert.equal(c.session.compacting, null); return result; };
+  await t.test('before its cache is near its end: when it will be', async t => {
+    const c = await idleSession(t);
+    await c.prompt('hello');
+    const turn = c.session.idle.turn;
+    assert.deepEqual(await refused(c, 30 * MINUTE), { compacted: false, dueAt: iso(turn + 54 * MINUTE),
+      reason: `缓存最后一次用在 <t:${iso(turn)}>，<t:${iso(turn + 54 * MINUTE)}> 才快过期` });
+  });
+  await t.test('its cache about to expire, or gone', async t => {
+    const c = await idleSession(t);
+    await c.prompt('hello');
+    const turn = c.session.idle.turn;
+    assert.deepEqual(await refused(c, 58 * MINUTE), { compacted: false, reason: `缓存最后一次用在 <t:${iso(turn)}>，到 <t:${iso(turn + 60 * MINUTE)}> 就过期，来不及压缩` });
+  });
+  for (const [name, usage, reason] of [
+    ['a cache of five minutes', { ...HOUR_CACHE, cache_creation: { ephemeral_1h_input_tokens: 0, ephemeral_5m_input_tokens: 3000 } }, '缓存是 5 分钟的，早已过期'],
+    ['too little context', { ...HOUR_CACHE, cache_read_input_tokens: 9000 }, `上下文 12002 token，不到 ${MIN_CONTEXT}，不值得压缩`]])
+    await t.test(name, async t => {
+      const c = await idleSession(t, { usage });
+      await c.prompt('hello');
+      assert.deepEqual(await refused(c), { compacted: false, reason });
+    });
+  await t.test('no turn yet', async t => {
+    const c = await idleSession(t);
+    assert.deepEqual(await refused(c, null), { compacted: false, reason: '会话还没有结束过一轮' });
+  });
+  await t.test('the plan\'s limits near', async t => {
+    const c = await idleSession(t);
+    await c.prompt('rate-limit');
+    assert.deepEqual(await refused(c), { compacted: false, reason: '额度接近上限' });
+  });
+  await t.test('a turn going', async t => {
+    const c = await idleSession(t);
+    await c.prompt('hello');
+    const held = c.prompt('hold'); await until(() => c.said().includes('holding'));
+    assert.deepEqual(await refused(c), { compacted: false, reason: '会话正在进行一轮' });
+    c.send({ method: 'session/cancel', params: { sessionId: c.sessionId } }); await held;
+  });
+  await t.test('a wakeup of its own due before the cache expires', async t => {
+    const c = await idleSession(t);
+    await c.prompt('hello');
+    c.time.at = c.session.idle.turn + 54 * MINUTE;
+    await c.query.stop([{ id: 'soon', schedule: '* * * * *', recurring: true, prompt: 'check' }]);
+    assert.deepEqual(await refused(c), { compacted: false, reason: '缓存过期前 Claude 会被唤醒，那一轮会用上缓存' });
+  });
+  await t.test('a compaction that fails, or compacts nothing, says so; the turn is not asked again', async t => {
+    const c = await idleSession(t);
+    c.query.compactFails = true;
+    await c.prompt('hello');
+    assert.deepEqual((await c.ask()).result, { compacted: false, reason: 'API Error' });
+    assert.deepEqual(c.compactions(), ['in_progress', 'failed']);
+    assert.deepEqual((await c.ask(55 * MINUTE)).result, { compacted: false, reason: '这一轮之后已经压缩过' });
+    Object.assign(c.query, { compactFails: false, compactSays: 'Not enough messages to compact.' });
+    await c.prompt('again');
+    assert.deepEqual((await c.ask()).result, { compacted: false, reason: 'Not enough messages to compact.' });
+    assert.deepEqual(c.said(), ['hello', 'again']);
+  });
+  await t.test('another session', async t => {
+    const c = await idleSession(t);
+    await c.prompt('hello');
+    assert.equal((await c.ask(undefined, 'other')).error.code, -32602);
+  });
 });

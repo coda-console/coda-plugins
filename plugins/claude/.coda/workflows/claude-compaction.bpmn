@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Claude 缓存过期前压缩（设置 claude.idleCompaction）：只跟随 Claude SDK 的会话，一个会话一条运行。
+     会话停下后还要接着用（置顶了，或还在等你、等 Coda 跑的流程与子会话、等它自己的后台任务、子 Agent 与定时），
+     就在 Agent 主线程最后一次请求模型（缓存最后一次被用到，Agent 报来的 lastRequestAt）54 分钟后请它压缩一次上下文（compact-session），
+     趁一小时的提示词缓存还热时做摘要。
+     值不值得压（缓存是不是一小时的、上下文够不够大、额度紧不紧、离它最后一次请求多久）由 Agent 判断并回答，回答记在这一步的结果里；
+     Agent 说还没到时候（dueAt）就等到那时再请一次。同一轮只请一次：compact.lastRequestAt 是请求时的上一轮，事实里的变了才再计时。
+     流程只读会话事实、只请 Agent 压缩，不改会话自己的状态，不发布阶段。 -->
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:coda="https://coda.pub/schema/bpmn/1.0" id="claude-compaction-definitions" targetNamespace="https://coda.pub/plugins/claude">
+  <message id="opened" name="session.opened" />
+  <message id="facts" name="session.facts" />
+  <process id="claude-compaction" name="Claude 缓存过期前压缩" isExecutable="true" coda:dispatch="false" coda:agents="claude-sdk">
+    <startEvent id="start" name="会话打开"><messageEventDefinition messageRef="opened" /></startEvent>
+    <sequenceFlow id="start-pick" sourceRef="start" targetRef="pick" />
+
+    <!-- 第一个成立的条件生效，所以顺序就是优先级。 -->
+    <exclusiveGateway id="pick" name="会话现在怎样" default="pick-idle" />
+    <sequenceFlow id="pick-end" sourceRef="pick" targetRef="end">
+      <conditionExpression xsi:type="tFormalExpression">=facts != null and facts.archived</conditionExpression>
+    </sequenceFlow>
+    <!-- 打开了设置、进程在、没在跑一轮、Agent 报过最后一次请求，且还要接着用：才计时。 -->
+    <sequenceFlow id="pick-later" sourceRef="pick" targetRef="later">
+      <conditionExpression xsi:type="tFormalExpression">=facts != null and vars.claude.idleCompaction and facts.live and not(facts.busy) and facts.lastRequestAt != null
+        and (facts.pinned or facts.input or facts.waitsForSystem or facts.background or facts.scheduled)
+        and compact != null and compact.lastRequestAt = facts.lastRequestAt and compact.dueAt != null</conditionExpression>
+    </sequenceFlow>
+    <sequenceFlow id="pick-due" sourceRef="pick" targetRef="waiting">
+      <conditionExpression xsi:type="tFormalExpression">=facts != null and vars.claude.idleCompaction and facts.live and not(facts.busy) and facts.lastRequestAt != null
+        and (facts.pinned or facts.input or facts.waitsForSystem or facts.background or facts.scheduled)
+        and not(compact != null and compact.lastRequestAt = facts.lastRequestAt)</conditionExpression>
+    </sequenceFlow>
+    <sequenceFlow id="pick-idle" sourceRef="pick" targetRef="idle" />
+
+    <!-- 不计时：等事实变了再看。 -->
+    <receiveTask id="idle" name="等会话的事实" messageRef="facts" />
+    <sequenceFlow id="idle-pick" sourceRef="idle" targetRef="pick" />
+
+    <!-- 最后一次请求 54 分钟后请 Agent 压缩；期间事实变了就回去重看，最后一次请求没变时期限不变。 -->
+    <receiveTask id="waiting" name="等缓存快过期" messageRef="facts" />
+    <sequenceFlow id="waiting-pick" sourceRef="waiting" targetRef="pick" />
+    <boundaryEvent id="due" name="缓存快过期了" attachedToRef="waiting">
+      <timerEventDefinition><timeDuration xsi:type="tFormalExpression">{{facts.lastRequestAt}}/PT54M</timeDuration></timerEventDefinition>
+    </boundaryEvent>
+    <sequenceFlow id="due-compact" sourceRef="due" targetRef="compact" />
+
+    <!-- Agent 说还没到时候：到它说的时刻再请一次。 -->
+    <receiveTask id="later" name="等 Agent 说的时刻" messageRef="facts" />
+    <sequenceFlow id="later-pick" sourceRef="later" targetRef="pick" />
+    <boundaryEvent id="later-due" name="到了 Agent 说的时刻" attachedToRef="later">
+      <timerEventDefinition><timeDate xsi:type="tFormalExpression">{{compact.dueAt}}</timeDate></timerEventDefinition>
+    </boundaryEvent>
+    <sequenceFlow id="later-compact" sourceRef="later-due" targetRef="compact" />
+
+    <serviceTask id="compact" name="请 Agent 压缩" coda:action="compact-session" />
+    <sequenceFlow id="compact-pick" sourceRef="compact" targetRef="pick" />
+
+    <endEvent id="end" name="会话已归档" />
+  </process>
+</definitions>

@@ -169,6 +169,19 @@ export function fixtureSdk(argv = []) {
       else if (text === '/commands') {
         this.system('commands_changed', { commands: [...commands, { name: 'terminal-only', description: 'local terminal command' },
           { name: 'new-skill', description: 'New skill', argumentHint: 'argument' }] });
+      } else if (text === '/compact') {
+        // As Claude Code compacts: a status while it goes, the boundary with what it left, and what the command says; when a test
+        // says so, the status that it failed (`compactFails`), or only what the command says, compacting nothing (`compactSays`);
+        // `compactHeld`: it goes on until the test lets it.
+        if (this.compactSays) this.system('local_command_output', { content: this.compactSays });
+        else if (this.compactFails) { this.system('status', { status: 'compacting' }); this.system('status', { status: null, compact_result: 'failed', compact_error: 'API Error' }); }
+        else {
+          this.system('status', { status: 'compacting' });
+          while (this.compactHeld && !this.closed) await new Promise(r => setTimeout(r, 10));
+          this.system('compact_boundary', { compact_metadata: { trigger: 'manual', pre_tokens: 180000, post_tokens: 9000 } });
+          this.system('status', { status: null, compact_result: 'success' });
+          this.system('local_command_output', { content: 'Compacted' });
+        }
       } else if (text === 'history') this.text(this.entries.filter(e => e.type === 'user').map(e => e.text).join('|'));
       // The checker's question about the session instructions, answered from the system prompt as a model would.
       else if (text === 'What is the Coda check word?') this.text(/reply with exactly (\S+) and nothing else/.exec(this.options.systemPrompt?.append ?? '')?.[1] ?? '不知道');
@@ -254,9 +267,10 @@ export function fixtureSdk(argv = []) {
       for (const m of this.inbox.filter(m => m.priority === 'next')) { this.folded.push(m.uuid); this.text(`插话：${m.message.content}`); }
       this.inbox = this.inbox.filter(m => m.priority !== 'next');
     }
+    // `usage`, when a test sets it: what each response of the main thread says it carried and wrote to the cache.
     text(text, id = randomUUID(), parent = null) {
       const uuid = randomUUID(); this.entries.push({ type: 'assistant', text, uuid }); this.persist();
-      this.emit({ type: 'assistant', uuid, parent_tool_use_id: parent, message: { id, content: [{ type: 'text', text }] } });
+      this.emit({ type: 'assistant', uuid, parent_tool_use_id: parent, message: { id, content: [{ type: 'text', text }], ...(this.usage && !parent ? { usage: this.usage } : {}) } });
     }
     async setModel(model) { this.model = model; }
     async setPermissionMode(mode) { this.mode = mode; }
