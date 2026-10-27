@@ -1,9 +1,9 @@
 <!--
   副本：由 scripts/sync-protocol.mjs 从 Coda 主仓库的 docs/agent-protocol.md 同步，不要直接改；改协议先改 Coda 的正文，再同步。
-  coda-commit: a52459b1f950957923a6e187075ba981263279f4
+  coda-commit: 70381176e5cecd353fefe3674d7fdf25cf51abab
   acp-protocol-version: 1
   acp-sdk: 1.4.0
-  body-sha256: 37e84e31342136728ed205443144e927b58343c5c36c7ff6262652bc76d2e37d
+  body-sha256: 8c53a0d3bf7697f6dc24d1ae596bc1d952382d9292827911cadd5b85ea9c9996
 -->
 # Agent 接入协议
 
@@ -86,7 +86,8 @@ Coda 的 MCP 服务器只提供工具，不带 `instructions`。
 ## 插话
 
 用户在一轮进行中「立即插话」时，支持插话的 Agent 把这条消息加进正在进行的一轮，不打断它；不支持的，Coda 停止这一轮，
-在它结束后把消息作为下一轮送出（会话行为契约）。插话用生态里已有的 `_session/steering` 扩展：
+在它结束后把消息作为下一轮送出（会话行为契约）。父会话给正为它跑一轮的子会话发消息（`send`）时同样插话；
+不支持的 Agent，这条消息只排到这一轮结束，Coda 不为它停止（工具面）。插话用生态里已有的 `_session/steering` 扩展：
 
 - **声明**：`initialize` 结果顶层的 `_meta.steering.supported: true`（与 `agentCapabilities` 并列，沿用上游的写法）。声明了就要支持下面的 `promptRequired`。
 - **请求**：`_session/steering`，参数 `{sessionId, prompt, _meta: {steering: {idleBehavior: "promptRequired"}}}`。`prompt` 与 `session/prompt` 的一样（Coda 只发一个文本块，附件写成路径）。
@@ -114,12 +115,12 @@ Coda 的 MCP 服务器只提供工具，不带 `instructions`。
 HTTP 429 或上游的认证错误分类判断。真正的认证失败仍沿用 ACP `auth_required`，不得报为额度不足。
 
 ```json
-{"jsonrpc":"2.0","id":"prompt-1","error":{"code":-32603,"message":"当前用量窗口的额度已耗尽","data":{"_meta":{"coda":{"failure":{"kind":"quota_exhausted"}}}}}}
+{"jsonrpc":"2.0","id":"prompt-1","error":{"code":-32603,"message":"当前用量窗口的额度已耗尽，<t:2026-10-24T18:10:00.000Z> 重置","data":{"_meta":{"coda":{"failure":{"kind":"quota_exhausted"}}}}}}
 ```
 
 Coda 按该类别显示「额度不足」，保留完整原因，不安排自动重试；这个类别不要求 `input`，即使带了也不进入服务故障重试。
 插件以普通执行错误返回（例如 -32603），不得把额度耗尽伪装成要求重新登录的 -32000。
-恢复条件（等待窗口重置、补充额度等）由插件放在原因中；上游没有给出确切恢复时间时，不推算时间。
+恢复条件（等待窗口重置、补充额度等）由插件放在原因中，重置时刻按[文字里的时刻](#文字里的时刻)写；上游没有给出确切恢复时间时，不推算时间。
 
 ### 服务暂不可用
 
@@ -136,10 +137,23 @@ Coda 按该类别显示「额度不足」，保留完整原因，不安排自动
 
 输入是否被接收或执行是否已结束无法确定时，不带此标记。错误文字始终放在标准 `error.message`；其他 ACP 客户端可以忽略扩展。
 Agent 自己仍在重连或重试时，不得提前返回本次 `session/prompt` 的失败；Coda 只在失败回执后安排重试。
+Agent 自己的重试要等一分钟以上（比 Coda 的退避更久，例如服务的 `Retry-After` 指向用量窗口重置）时，不得一直等而不报告：
+停下原生执行后以失败结束本轮，在原因中写明服务给出的恢复条件；不带 `service_unavailable`，因为 Coda 的退避等不到恢复；
+上游明确说明额度耗尽时，按[额度不足](#额度不足)报告。
 
 Coda 统一按 15、30、60 秒退避，每次执行最多重试三次，沿用原生会话、执行设置、原输入与轮次身份，
 每次 ACP 请求使用新 ID。等待中保持执行状态，可随时停止；斜杠命令不自动重试。次数耗尽或遇到未标记错误时结束并保留最后原因。
 退避只在当前执行期间保留，后端重启或连接中断即结束等待；已发出的请求、整机中断沿用现有会话接管和恢复规则。
+
+## 文字里的时刻
+
+Agent 交给 Coda、给人看的文字里，具体的时刻写成 `<t:ISO 8601>`，如 `<t:2026-10-24T18:10:00.000Z>`：日期、时分秒与时区（`Z` 或 `+08:00`）都要有，
+JavaScript 的 `toISOString()` 就是这个写法。不要自己写成本地时间：Agent 所在机器的时区与看的人未必相同。
+Coda 存的就是这段文字，两端客户端显示时按看的那台设备的时区写出（如 `2026/10/25 02:10`）；文字被拼进交回父会话的结果时标记跟着走，
+父会话的 Agent 读到的是 ISO 时间。读不出时间的标记原样显示。
+
+用于失败原因（`error.message`）与[活动报告](#_codawait)的 `title`、`detail`；面板里的文字同样这样写（插件：面板）。
+不确切的时间（「一小时左右」）照常写字，不加标记。
 
 ## Agent 活动
 
@@ -169,7 +183,7 @@ Agent 发给 Coda 的通知（没有 `id`，不回复），和 `session/update` 
 | `state` | 是 | `waiting`、`handling`、`done`、`failed`、`cancelled`，见下 |
 | `kind` | 否 | `task`（默认）、`subagent`、`timer`，或别的词（按 `task` 算）；第一次报告时定下，之后可以省略，改了也按第一次的算 |
 | `title` | 否 | 给人看的名字，至多 500 字 |
-| `detail` | 否 | 说明：任务在做什么，定时按什么计划触发；至多 4000 字 |
+| `detail` | 否 | 说明：任务在做什么，定时按什么计划触发；至多 4000 字。其中的时刻按[文字里的时刻](#文字里的时刻)写 |
 | `stoppable` | 否 | Coda 能不能经 [`_coda/wait/stop`](#_codawaitstop) 停它，默认不能 |
 | `childSessionId` | `subagent` 知道时带 | 子 Agent 自己的会话。从此这个会话的 `session/update`、审批与提问也收，记为这个子 Agent 的。不带时子 Agent 照样登记，但 Coda 不认得它的会话：那个会话发来的 `session/update`、`_coda/wait` 丢弃，审批与提问拒绝，委派清单里这一项点开没有过程，也不能照[规则](#规则)第 5 条继续同一个子 Agent |
 | `model` | 否 | 子 Agent 的实际模型 |
