@@ -381,6 +381,25 @@ test('a subagent\'s report handed back is that subagent\'s turn; Claude Code\'s 
   assert.deepEqual(told.map(m => m.params.state ?? m.params.update.sessionUpdate), ['handling', 'agent_message_chunk', 'done']);
 });
 
+test('a subagent\'s word of how it goes is its turn, not its end: it goes on, can be stopped, and ends as its end is told', async t => {
+  const c = await setup(t); await c.open();
+  await c.prompt('hello');
+  const says = id => [system('init', { session_id: c.sessionId }),
+    { type: 'user', message: { role: 'user', content: `<agent-message from="${id}">` }, origin: { kind: 'peer', from: id, senderTaskId: id } },
+    { type: 'assistant', message: { id: `heard-${id}`, content: [{ type: 'text', text: '收到进展' }] } }, { type: 'result', subtype: 'success', is_error: false }];
+  for (const id of ['agent-1', 'agent-2'])
+    await c.emit(system('task_started', { task_id: id, run_id: `run-${id}`, tool_use_id: `${id}-call`, task_type: 'local_agent', description: id, is_backgrounded: true }), ...says(id));
+  for (const id of ['agent-1', 'agent-2'])
+    assert.deepEqual(wait(c, id).map(w => w.state), ['waiting', 'handling', 'waiting'], `${id} still runs after the turn its message opened`);
+  // One fails later; the turn its notice opens takes that in.
+  await c.emit(system('task_notification', { task_id: 'agent-1', status: 'failed' }), system('init', { session_id: c.sessionId }),
+    { type: 'user', message: { role: 'user', content: '<task-notification>' }, origin: { kind: 'task-notification', runId: 'run-agent-1' } },
+    { type: 'result', subtype: 'success', is_error: false });
+  assert.deepEqual(wait(c, 'agent-1').map(w => w.state), ['waiting', 'handling', 'waiting', 'handling', 'failed']);
+  // The other is still there to be stopped.
+  assert.deepEqual((await c.request('_coda/wait/stop', { sessionId: c.sessionId, waitId: 'agent-2' })).result, {});
+});
+
 test('a recurring wakeup that fires waits for its next time; several of which none is due make a turn of no known cause', async t => {
   const c = await setup(t); await c.open();
   // Neither is due now: the first of January.

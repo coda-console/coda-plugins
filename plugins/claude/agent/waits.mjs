@@ -147,8 +147,12 @@ export class ClaudeWaits {
     let handled = [];
     if (origin?.kind === 'task-notification') handled = origin.subkind === 'scheduled-trigger' ? crons.filter(cron => cron.prompt && cron.prompt === text)
       : [...this.tasks.values()].filter(task => origin.runId && task.runId === origin.runId && open(task.state));
-    // A subagent's report handed back (SubagentHandback) is that subagent's, though its end may not be told yet.
-    if (origin?.kind === 'peer') handled = [...this.tasks.values()].filter(task => origin.senderTaskId && task.taskId === origin.senderTaskId && open(task.state));
+    // A message a subagent sent (SendMessage: its report handed back, or word of how it goes) is that subagent's. Taken up for
+    // what it said, not for its end (`messaged`): the subagent ends as its end is told, not with this turn.
+    if (origin?.kind === 'peer') {
+      handled = [...this.tasks.values()].filter(task => origin.senderTaskId && task.taskId === origin.senderTaskId && open(task.state));
+      for (const task of handled) task.messaged = true;
+    }
     if (!handled.length) handled = pending.sort((a, b) => a.endedAt - b.endedAt);
     if (!handled.length) {
       // Which came due is not told: the one due, or else the only one there is.
@@ -172,7 +176,12 @@ export class ClaudeWaits {
     // outcome, and leave recurring wakeups scheduled. There may already be a turn-owned activity (hold).
     this.unclaimed = false;
     if (error && !this.own.size) this.hold();
-    for (const task of this.tasks.values()) if (task.state === 'handling') { this.report(task, task.final ?? 'done'); task.final = undefined; }
+    for (const task of this.tasks.values()) {
+      if (task.state !== 'handling') continue;
+      const messaged = task.messaged; task.messaged = false;
+      if (messaged && task.final === undefined) { this.report(task, 'waiting'); continue; }
+      this.report(task, task.final ?? 'done'); task.final = undefined;
+    }
     for (const cron of this.crons.values()) {
       if (cron.state !== 'handling') continue;
       if (cron.final !== undefined || !cron.recurring) { this.report(cron, 'done'); continue; }
