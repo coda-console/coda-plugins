@@ -144,24 +144,24 @@ export class ClaudeWaits {
   takeUp({ origin, text } = {}) {
     const pending = [...this.tasks.values()].filter(task => task.final !== undefined && task.state === 'waiting');
     const crons = [...this.crons.values()].filter(cron => open(cron.state));
-    let handled = [];
-    if (origin?.kind === 'task-notification') handled = origin.subkind === 'scheduled-trigger' ? crons.filter(cron => cron.prompt && cron.prompt === text)
-      : [...this.tasks.values()].filter(task => origin.runId && task.runId === origin.runId && open(task.state));
-    // A message a subagent sent (SendMessage: its report handed back, or word of how it goes) is that subagent's. Taken up for
-    // what it said, not for its end (`messaged`): the subagent ends as its end is told, not with this turn.
-    if (origin?.kind === 'peer') {
-      handled = [...this.tasks.values()].filter(task => origin.senderTaskId && task.taskId === origin.senderTaskId && open(task.state));
-      for (const task of handled) task.messaged = true;
-    }
-    if (!handled.length) handled = pending.sort((a, b) => a.endedAt - b.endedAt);
-    if (!handled.length) {
+    // What its opening message names: the wakeup that fired, the run a notice is of, the subagent a message is from.
+    const named = origin?.kind === 'task-notification' ? origin.subkind === 'scheduled-trigger' ? crons.filter(cron => cron.prompt && cron.prompt === text)
+      : [...this.tasks.values()].filter(task => origin.runId && task.runId === origin.runId)
+      : origin?.kind === 'peer' ? [...this.tasks.values()].filter(task => origin.senderTaskId && task.taskId === origin.senderTaskId) : [];
+    // Handled means ended (Coda places its card there and lets it be stopped no more): a subagent's message is the report it
+    // handed back only once it has ended; one still running says how it goes (SendMessage).
+    let handled = origin?.kind === 'peer' ? named.filter(task => pending.includes(task)) : named.filter(wait => open(wait.state));
+    // One that names nothing known is taken for what else ended, else the one wakeup due. One that names what was taken in
+    // already (Claude Code's turn for the notice of a subagent whose report an earlier turn read) or what still runs is not.
+    if (!named.length) handled = pending.sort((a, b) => a.endedAt - b.endedAt);
+    if (!named.length && !handled.length) {
       // Which came due is not told: the one due, or else the only one there is.
       const due = crons.filter(cron => cron.at !== null && cron.at <= this.now() + 60_000);
       if ((due.length || crons.length) === 1) handled = due.length ? due : crons;
     }
     if (handled.length) for (const wait of handled) this.report(wait, 'handling');
-    // Nothing it names: told as a wait of its own once it says or asks something. One that says nothing is not told at all,
-    // as Claude Code's turn for the notice of a subagent whose report an earlier turn took in, which reaches no model.
+    // Nothing to take up: told as a wait of its own once it says or asks something. One that says nothing is not told at
+    // all, as that turn for a notice, which reaches no model.
     else this.unclaimed = true;
   }
   claim() { if (this.unclaimed) { this.unclaimed = false; this.hold(); } }
@@ -176,12 +176,7 @@ export class ClaudeWaits {
     // outcome, and leave recurring wakeups scheduled. There may already be a turn-owned activity (hold).
     this.unclaimed = false;
     if (error && !this.own.size) this.hold();
-    for (const task of this.tasks.values()) {
-      if (task.state !== 'handling') continue;
-      const messaged = task.messaged; task.messaged = false;
-      if (messaged && task.final === undefined) { this.report(task, 'waiting'); continue; }
-      this.report(task, task.final ?? 'done'); task.final = undefined;
-    }
+    for (const task of this.tasks.values()) if (task.state === 'handling') { this.report(task, task.final ?? 'done'); task.final = undefined; }
     for (const cron of this.crons.values()) {
       if (cron.state !== 'handling') continue;
       if (cron.final !== undefined || !cron.recurring) { this.report(cron, 'done'); continue; }

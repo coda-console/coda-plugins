@@ -358,30 +358,39 @@ test('what Claude asks in a turn of its own comes after what that turn handles, 
   assert.equal((await asking).behavior, 'deny');
 });
 
-test('a subagent\'s report handed back is that subagent\'s turn; Claude Code\'s turn for its notice after says nothing and is not told', async t => {
+test('the report a subagent that ended hands back is its turn; Claude Code\'s turn for its notice after says nothing and is not told', async t => {
   const c = await setup(t); await c.open();
   await c.prompt('hello');
-  await c.emit(system('task_started', { task_id: 'agent-1', run_id: 'run-a', tool_use_id: 'agent-call', task_type: 'local_agent', description: '查', is_backgrounded: true }));
-  // Its report comes before its end is told: the turn it opens is the subagent's all the same, and ends it with the turn.
-  await c.emit(system('init', { session_id: c.sessionId }),
-    { type: 'user', message: { role: 'user', content: '<agent-message from="agent-1">' }, origin: { kind: 'peer', from: 'agent-1', senderTaskId: 'agent-1' } },
-    system('task_notification', { task_id: 'agent-1', status: 'completed' }),
-    { type: 'assistant', message: { id: 'read', content: [{ type: 'text', text: '子 Agent 查完了' }] } }, { type: 'result', subtype: 'success', is_error: false });
-  assert.deepEqual(wait(c, 'agent-1').map(w => w.state), ['waiting', 'handling', 'done']);
-  // The notice of its end, which reaches no model, opens a turn that says nothing: not told at all.
-  await c.emit(system('init', { session_id: c.sessionId }),
-    { type: 'user', message: { role: 'user', content: '<task-notification>' }, origin: { kind: 'task-notification', producer: 'session-task', runId: 'run-a' } },
-    { type: 'result', subtype: 'success', is_error: false });
+  const report = id => [system('init', { session_id: c.sessionId }),
+    { type: 'user', message: { role: 'user', content: `<agent-message from="${id}">` }, origin: { kind: 'peer', from: id, senderTaskId: id } }];
+  const notice = run => [system('init', { session_id: c.sessionId }),
+    { type: 'user', message: { role: 'user', content: '<task-notification>' }, origin: { kind: 'task-notification', producer: 'session-task', runId: run } },
+    { type: 'result', subtype: 'success', is_error: false }];
+  const reads = (id, text) => [{ type: 'assistant', message: { id, content: [{ type: 'text', text }] } }, { type: 'result', subtype: 'success', is_error: false }];
+  for (const [id, run] of [['agent-1', 'run-a'], ['agent-2', 'run-b'], ['agent-3', 'run-c']])
+    await c.emit(system('task_started', { task_id: id, run_id: run, tool_use_id: `${id}-call`, task_type: 'local_agent', description: id, is_backgrounded: true }));
+  // Two end; the report of the second opens a turn, which is the second's alone.
+  await c.emit(system('task_notification', { task_id: 'agent-1', status: 'completed' }), system('task_notification', { task_id: 'agent-2', status: 'completed' }),
+    ...report('agent-2'), ...reads('read-2', '第二个查完了'));
+  assert.deepEqual(['agent-1', 'agent-2'].map(id => wait(c, id).map(w => w.state)), [['waiting'], ['waiting', 'handling', 'done']]);
+  // The notice of its end, which reaches no model, opens a turn that says nothing: not told at all, nor taken for the first.
+  await c.emit(...notice('run-b'));
   assert.deepEqual(c.waits().filter(w => w.waitId.startsWith('turn-')), []);
+  assert.deepEqual(['agent-1', 'agent-2'].map(id => wait(c, id).map(w => w.state)), [['waiting'], ['waiting', 'handling', 'done']]);
+  await c.emit(...report('agent-1'), ...reads('read-1', '第一个查完了'), ...notice('run-a'));
   assert.deepEqual(wait(c, 'agent-1').map(w => w.state), ['waiting', 'handling', 'done']);
-  // One that names nothing and says something is told as a wait of its own before what it says.
-  await c.emit(system('init', { session_id: c.sessionId }), { type: 'assistant', message: { id: 'own', content: [{ type: 'text', text: '自己接着做' }] } },
-    { type: 'result', subtype: 'success', is_error: false });
-  const told = c.out.filter(m => (m.method === '_coda/wait' && m.params.waitId === 'turn-1') || (m.method === 'session/update' && m.params.update.content?.text === '自己接着做'));
+  assert.deepEqual(c.waits().filter(w => w.waitId.startsWith('turn-')), []);
+  // A report that comes before its end is told names nothing ended: a turn of Claude's own, told before what it says, in
+  // which the end told then is taken in.
+  await c.emit(...report('agent-3'), { type: 'assistant', message: { id: 'read-3', content: [{ type: 'text', text: '第三个查完了' }] } },
+    system('task_notification', { task_id: 'agent-3', status: 'completed' }), { type: 'result', subtype: 'success', is_error: false }, ...notice('run-c'));
+  const told = c.out.filter(m => (m.method === '_coda/wait' && m.params.waitId === 'turn-1') || (m.method === 'session/update' && m.params.update.content?.text === '第三个查完了'));
   assert.deepEqual(told.map(m => m.params.state ?? m.params.update.sessionUpdate), ['handling', 'agent_message_chunk', 'done']);
+  assert.deepEqual(wait(c, 'agent-3').map(w => w.state), ['waiting', 'done']);
+  assert.equal(c.waits().filter(w => w.waitId.startsWith('turn-') && w.state === 'handling').length, 1, 'its notice after is not told either');
 });
 
-test('a subagent\'s word of how it goes is its turn, not its end: it goes on, can be stopped, and ends as its end is told', async t => {
+test('a subagent that says how it goes while it runs is not handled: it goes on, can be stopped, and ends as its end is told', async t => {
   const c = await setup(t); await c.open();
   await c.prompt('hello');
   const says = id => [system('init', { session_id: c.sessionId }),
@@ -389,13 +398,13 @@ test('a subagent\'s word of how it goes is its turn, not its end: it goes on, ca
     { type: 'assistant', message: { id: `heard-${id}`, content: [{ type: 'text', text: '收到进展' }] } }, { type: 'result', subtype: 'success', is_error: false }];
   for (const id of ['agent-1', 'agent-2'])
     await c.emit(system('task_started', { task_id: id, run_id: `run-${id}`, tool_use_id: `${id}-call`, task_type: 'local_agent', description: id, is_backgrounded: true }), ...says(id));
-  for (const id of ['agent-1', 'agent-2'])
-    assert.deepEqual(wait(c, id).map(w => w.state), ['waiting', 'handling', 'waiting'], `${id} still runs after the turn its message opened`);
+  for (const id of ['agent-1', 'agent-2']) assert.deepEqual(wait(c, id).map(w => w.state), ['waiting'], `${id} still runs`);
+  assert.deepEqual(['turn-1', 'turn-2'].map(id => wait(c, id).map(w => w.state)), [['handling', 'done'], ['handling', 'done']], 'each message a turn of Claude\'s own');
   // One fails later; the turn its notice opens takes that in.
   await c.emit(system('task_notification', { task_id: 'agent-1', status: 'failed' }), system('init', { session_id: c.sessionId }),
     { type: 'user', message: { role: 'user', content: '<task-notification>' }, origin: { kind: 'task-notification', runId: 'run-agent-1' } },
     { type: 'result', subtype: 'success', is_error: false });
-  assert.deepEqual(wait(c, 'agent-1').map(w => w.state), ['waiting', 'handling', 'waiting', 'handling', 'failed']);
+  assert.deepEqual(wait(c, 'agent-1').map(w => w.state), ['waiting', 'handling', 'failed']);
   // The other is still there to be stopped.
   assert.deepEqual((await c.request('_coda/wait/stop', { sessionId: c.sessionId, waitId: 'agent-2' })).result, {});
 });
