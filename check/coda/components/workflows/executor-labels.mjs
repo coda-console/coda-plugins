@@ -1,7 +1,8 @@
 // What a step needs of where it runs, written as labels (`coda:runsOn`, GitHub's runs-on; components/workflows/workflow-executors.mjs).
 import { requireCondition as check } from '../../domain/errors.mjs';
 
-const LABEL = /^[a-z0-9][a-z0-9._-]{0,39}$/;
+// One label: what a machine lists of itself is held to it too (workflow-executors.mjs).
+export const LABEL = /^[a-z0-9][a-z0-9._-]{0,39}$/;
 // Labels as one set: each as written, once, in order — the key a binding is kept under. `code`: what is wrong when they
 // are not labels (a workflow's, or a request's).
 export function executorLabels(value, where, code = 'invalid_input') {
