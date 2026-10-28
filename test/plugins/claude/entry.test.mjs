@@ -1149,6 +1149,21 @@ test('asked by Coda, a session compacts in a turn of no one\'s that says nothing
   assert.deepEqual(c.said(), ['hello', 'again', 'after']);
 });
 
+test('compaction status and boundary finish one entry in either order; the next compaction gets its own', async t => {
+  for (const compactBoundaryFirst of [false, true]) await t.test(compactBoundaryFirst ? 'boundary first' : 'status first', async t => {
+    const c = await compactable(t);
+    c.query.compactBoundaryFirst = compactBoundaryFirst;
+    await c.prompt('hello');
+    for (let i = 0; i < 2; i++) assert.deepEqual((await c.ask()).result, { compacted: true, before: 180000, after: 9000 });
+    const updates = c.updates().filter(u => u.sessionUpdate === 'compaction_update');
+    assert.deepEqual(updates.map(u => u.status), ['in_progress', 'completed', 'in_progress', 'completed']);
+    assert.equal(updates[0].compactionId, updates[1].compactionId);
+    assert.equal(updates[2].compactionId, updates[3].compactionId);
+    assert.notEqual(updates[0].compactionId, updates[2].compactionId);
+    assert.equal(c.told().at(-1).contextTokens, 9000);
+  });
+});
+
 test('a prompt stopped while it waits behind a compaction is dropped with it, and never runs', async t => {
   const c = await compactable(t);
   await c.prompt('hello');

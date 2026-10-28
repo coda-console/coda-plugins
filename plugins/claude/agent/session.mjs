@@ -452,7 +452,8 @@ export class ClaudeSession {
           this.update(this.sessionId, { sessionUpdate: 'config_option_update', configOptions: this.options() });
         }
         if (m.status === 'compacting' && !this.compaction?.active) this.compaction = { id: m.uuid ?? randomUUID(), active: true };
-        if (m.status === 'compacting' || m.subtype === 'compact_boundary' || this.compaction?.active) {
+        // Success is the boundary: the status can finish first, before the boundary carrying the same compaction arrives.
+        if (m.status === 'compacting' || m.subtype === 'compact_boundary' || (this.compaction?.active && m.compact_result === 'failed')) {
           this.compaction ??= { id: m.uuid ?? randomUUID(), active: false };
           this.compaction.active = m.status === 'compacting';
           this.update(this.sessionId, { sessionUpdate: 'compaction_update', compactionId: this.compaction.id,

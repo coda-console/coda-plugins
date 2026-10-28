@@ -184,8 +184,10 @@ export function fixtureSdk(argv = []) {
           while (this.compactHeld && !this.closed && !this.controller.signal.aborted) await new Promise(r => setTimeout(r, 10));
           if (this.controller.signal.aborted) this.system('status', { status: null, compact_result: 'failed', compact_error: 'Compaction interrupted' });
           else {
+            // The status can finish before the boundary arrives; exercise the reverse order too.
+            if (!this.compactBoundaryFirst) this.system('status', { status: null, compact_result: 'success' });
             this.system('compact_boundary', { compact_metadata: { trigger: 'manual', pre_tokens: 180000, post_tokens: 9000 } });
-            this.system('status', { status: null, compact_result: 'success' });
+            if (this.compactBoundaryFirst) this.system('status', { status: null, compact_result: 'success' });
             this.system('local_command_output', { content: 'Compacted' });
           }
         }
