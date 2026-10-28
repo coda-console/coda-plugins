@@ -1,5 +1,5 @@
 {
-  "commit": "457eb34a3c054a076cfe070e8890f1b235faeaaf",
+  "commit": "5bb59836859d68669f40031b171ad654d99ab153",
   "packages": {
     "@0dep/piso": "5.2.0",
     "@agentclientprotocol/sdk": "1.4.0",
@@ -23,7 +23,7 @@
     "check/coda/resources/plugins/resources/panels/panels.mjs": "aee040febb37fd6eebaf1a1da5b3299d2b6a9dfc982e649d9a628291af298179",
     "check/coda/resources/plugins/resources/panels/rules.mjs": "c024c5ede7c1516877128aa6d6796fbe5fd0e14642741b0745481bb1c5ca41d3",
     "check/coda/resources/plugins/resources/panels/sign-in.mjs": "1271a24e33b1b882a1fb9bee03b8e240db8b9bee1b5208f0e1c84499cfb1be7e",
-    "check/coda/builtin.json": "a26287e18e07f645c7fcbe85a384d8931c8b9142e03b053e7dd9715b8d0cd153",
+    "check/coda/builtin.json": "2b19c654aec9652470cacdaf1b4a9f128d1e34aa76974e8643e29c462fdfb8cf",
     "docs/agent-protocol.md": "6e276c583917ae1f238fb9b51d52acb499b3b16a865497081821dbcc183f240c"
   }
 }
