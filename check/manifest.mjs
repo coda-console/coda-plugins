@@ -11,7 +11,7 @@ import { basename, join, relative, sep } from 'node:path';
 import { inflateSync } from 'node:zlib';
 import shipped from './coda/builtin.json' with { type: 'json' };
 import { choosesModelProviders, pluginEnv, readPlugin, resolveSettings } from './coda/components/plugins/plugin-rules.mjs';
-import { candidate, candidates, manifestId, manifestProblem, npmPackages, repoAddress, sameSource, sourcePath, treeProblem } from './coda/components/plugins/plugin-source-rules.mjs';
+import { candidate, candidates, catalogAfter, manifestId, manifestProblem, npmPackages, repoAddress, sameSource, sourcePath, treeProblem } from './coda/components/plugins/plugin-source-rules.mjs';
 import { panelEntries } from './coda/resources/plugins/resources/panels/rules.mjs';
 
 // The plugins Coda ships, by ID. Their files are Coda's, not here: none has a directory on this machine, and what Coda gives
@@ -76,15 +76,20 @@ const contributing = manifest => !!manifest && typeof manifest === 'object' && !
 // What a directory is as a plugin, as Coda's inspect says it (`found`: `{ plugin }` and why it cannot be installed, or only
 // why), with the rule the first refusal is said under. `plugin` is read even where Coda stopped before it, for the levels
 // after this one; `lock` is the package-lock.json a commit would hold (null without one, undefined when it does not parse).
+// A file system's error reading it (a file where Coda reads a directory, say) is no problem of the directory's own to Coda:
+// it fails Coda's reading of the whole repository (`broken`).
 function inspect(dir, files, source) {
-  let plugin = null, manifest = null, unread = null;
+  let plugin = null, manifest = null, unread = null, broken = false;
   try { plugin = readPlugin(dir, source); manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')); }
-  catch (e) { if (e.code !== 'invalid_plugin') throw e; unread = e.message; }
+  catch (e) {
+    if (e.code !== 'invalid_plugin' && !e.syscall) throw e;
+    unread = e.code === 'invalid_plugin' ? e.message : `读不了：${e.message}`; broken = !!e.syscall && e.code !== 'ENOENT';
+  }
   let lock = null;
   if (files.some(f => f.name === 'package-lock.json' && !f.missing)) try { lock = JSON.parse(readFileSync(join(dir, 'package-lock.json'), 'utf8')); } catch { lock = undefined; }
   const tree = treeProblem(files);
   if (tree) return { found: { problem: tree }, rule: 'source.files', plugin, lock };
-  if (unread) return { found: { problem: unread }, rule: 'manifest.read', plugin, lock };
+  if (unread) return { found: { problem: unread }, rule: 'manifest.read', plugin, lock, broken };
   const npm = manifestProblem(manifest, lock);
   plugin = { ...plugin, npm: npmPackages(manifest, lock) };
   return { found: { plugin, problem: npm }, rule: npm ? 'source.npm' : null, plugin, lock };
@@ -97,9 +102,10 @@ function located(path) {
   try { sourcePath(path); } catch { return { problem: `目录名 ${path} 只能用字母、数字和「._-」`, rule: 'source.segment' }; }
   return null;
 }
-// The other plugins of the same commit, by ID → `{ path, plugin }`: those that read, as Coda's readSource finds them.
+// The other plugins of the same commit, by ID → `{ path, plugin }`: those that read, as Coda's readSource finds them; and
+// those whose reading fails Coda's reading of the whole repository (`broken`: path → why).
 function siblingsOf(repo, own) {
-  const found = new Map();
+  const found = new Map(), broken = new Map();
   for (const path of candidates(repo.files.filter(f => !f.missing).map(f => f.name))) {
     if (path === own) continue;
     const dir = join(repo.at, path);
@@ -107,10 +113,11 @@ function siblingsOf(repo, own) {
     try { manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')); } catch {}
     if (!contributing(manifest)) continue;
     try { sourcePath(path); } catch { continue; }
-    const { found: { plugin, problem } } = inspect(dir, within(repo.files, path), { kind: 'git', repo: repo.repo, path, ref: '', commit: repo.commit });
-    if (plugin && !problem) found.set(plugin.id, { path, plugin });
+    const read = inspect(dir, within(repo.files, path), { kind: 'git', repo: repo.repo, path, ref: '', commit: repo.commit });
+    if (read.broken) broken.set(path, read.found.problem);
+    else if (read.plugin && !read.found.problem) found.set(read.plugin.id, { path, plugin: read.plugin });
   }
-  return found;
+  return { found, broken };
 }
 
 // iOS draws an icon's PDF at 96 points and only ever scales it down: a smaller page comes out as a dot (Coda's own icons are
@@ -147,7 +154,8 @@ export function checkManifest(dir, say) {
     && ((b.source.package && b.source.package === manifest.name) || sameSource(b.source, { repo: repo.repo, path })));
   const source = { kind: 'git', repo: own?.source.repo ?? repo.repo, path: own?.source.path ?? path, ref: '', commit: repo.commit };
 
-  const where = located(path), read = inspect(dir, files, source), siblings = siblingsOf(repo, path);
+  const where = located(path), read = inspect(dir, files, source), { found: siblings, broken } = siblingsOf(repo, path);
+  for (const [at, why] of broken) say.fail('source.read', `同一仓库的 ${at} ${why}：Coda 读这个仓库时整个出错，这个插件也装不了`);
   const judged = candidate({ path, manifest, ...(where ? { problem: where.problem } : read.found), fallback: basename(path || repo.repo).replace(/\.git$/, '') },
     { catalog, installed, builtin }, siblings);
   const refused = judged.problem ? where?.rule ?? read.rule ?? 'source.catalog' : null;
@@ -203,11 +211,15 @@ export function checkManifest(dir, say) {
     say.pass('manifest.panels', `面板 ${panel.id}「${panel.title}」：动作 ${Object.keys(panel.actions).join('、') || '无'}${panel.signIn ? '，可从 Coda 登录' : ''}`);
   }
 
-  // What its processes are given (pluginEnv), on this machine: of the plugins it depends on, the directory of one of the same
-  // commit, as the one Coda would install with it, or the built-in one's source kept here; one Coda has nowhere (it refuses
-  // the plugin for it) is not named.
-  const local = new Map([...catalog, ...[...siblings].map(([id, at]) => [id, at.plugin])]);
-  const given = new Map([...local, [plugin.id, { ...plugin, dependencies: plugin.dependencies.filter(d => local.has(d)) }]]);
+  // What its processes are given (pluginEnv), on this machine: the plugins it depends on as Coda picks them (catalogAfter:
+  // the one the machine has, else the one of the same commit installed with it). One Coda ships has its directory in Coda,
+  // not here, unless this repository keeps its source (sameSource as Coda's), which stands in for it; one Coda has nowhere
+  // (it refuses the plugin for it) is not named.
+  const kept = id => { const at = siblings.get(id), shipped = builtin.get(id);
+    return at && shipped && sameSource(shipped.source, { repo: repo.repo, path: at.path }) ? at.plugin.dir : undefined; };
+  const local = catalogAfter(plugin, { catalog, siblings });
+  const given = new Map([...[...local].map(([id, each]) => [id, each.dir ? each : { ...each, dir: kept(id) }]),
+    [plugin.id, { ...plugin, dependencies: plugin.dependencies.filter(d => local.has(d)) }]]);
   const dependencies = Object.fromEntries(plugin.dependencies.flatMap(d => given.get(d)?.dir ? [[d, given.get(d).dir]] : []));
   if (plugin.dependencies.length) {
     const absent = plugin.dependencies.filter(d => !dependencies[d]);

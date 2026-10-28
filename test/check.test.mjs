@@ -363,13 +363,15 @@ describe('manifests Coda does not take', () => {
     assertPasses(report, ['manifest.commands', 'manifest.groups']);
   });
   // Of the plugins it depends on, one of the same repository is there (as Coda installs it along); one Coda ships has its
-  // directory in Coda, not here.
+  // directory in Coda, not here, even with a plugin of its ID from another source beside it: Coda picks its own.
   test("a panel's command gets what Coda gives a plugin's processes, and the directories of the plugins it depends on beside it", async () => {
     const top = mkdtempSync(join(tmpdir(), 'coda-plugin-check-deps-')), dir = join(top, 'reader');
     temps.push(top);
     execFileSync('git', ['init', '-q', top]);
     mkdirSync(join(top, 'base'));
     writeFileSync(join(top, 'base/package.json'), JSON.stringify({ name: '@acme/base', id: 'base', version: '1.0.0', contributes: {} }));
+    mkdirSync(join(top, 'github'));
+    writeFileSync(join(top, 'github/package.json'), JSON.stringify({ name: 'github', version: '1.0.0', contributes: {} }));
     mkdirSync(dir);
     const seen = join(top, 'seen.json');
     writeFileSync(join(dir, 'panel.mjs'), `import { writeFileSync } from 'node:fs';
@@ -391,6 +393,20 @@ describe('manifests Coda does not take', () => {
       assert.deepEqual(JSON.parse(readFileSync(seen, 'utf8')), { dependencies: { base: realpathSync(join(top, 'base')) }, settings: { 'reader.size': 3 },
         groups: [], node: process.execPath, thread: null });
     } finally { for (const [key, value] of Object.entries(before)) if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+  });
+  // A file system's error reading another plugin of the repository fails Coda's reading of the whole repository: said, not thrown.
+  test('another plugin of the repository that cannot be read', async () => {
+    const top = mkdtempSync(join(tmpdir(), 'coda-plugin-check-broken-'));
+    temps.push(top);
+    execFileSync('git', ['init', '-q', top]);
+    mkdirSync(join(top, 'reader'));
+    writeFileSync(join(top, 'reader/package.json'), JSON.stringify({ name: 'reader', version: '1.0.0', contributes: {} }));
+    mkdirSync(join(top, 'other/.coda'), { recursive: true });
+    writeFileSync(join(top, 'other/package.json'), JSON.stringify({ name: 'other', version: '1.0.0', contributes: {} }));
+    writeFileSync(join(top, 'other/.coda/workflows'), '');
+    const { report } = await checkPlugin(join(top, 'reader'), { manifestOnly: true });
+    assert.deepEqual(failed(report), ['source.read']);
+    assert.match(report.failures[0].message, /同一仓库的 other 读不了：.*ENOTDIR.*Coda 读这个仓库时整个出错/);
   });
   test('a panel whose output Coda cannot read', async () => {
     const dir = plugin({ files: { 'panel.mjs': `console.log(JSON.stringify({ items: [{ type: 'meter', label: '用量', fraction: 1.5 }] }))` },
