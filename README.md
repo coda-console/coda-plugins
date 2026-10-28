@@ -21,7 +21,7 @@ plugins/review/          PR 生命流程：会话开的 PR 先跑项目的检查
 plugins/testbed/         测试机：长插在 Mac 上的 iPhone、iPad 只经 use-testbed 使用，排到后装 App、交给会话操作、用完切黑屏；依赖宿主资源
 templates/agent/         最小的 Agent 插件：手写 ACP 的回声 Agent，演示会话指令、插话、Agent 活动与自主轮次
 templates/panel/         最小的面板插件：一张卡片、一条进度条、一个按钮
-bin/、check/             契约检查（仓库根的 package.json 就是它，@coda-console/plugin-check）
+bin/、check/             契约检查（仓库根的 package.json 就是它，@coda-console/plugin-check）；check/coda/ 是 Coda 同步来的规则副本，不要手改
 test/                    检查包的测试；test/plugins/ 是各插件的测试（插件目录里只放运行要用的文件）
 docs/agent-protocol.md   Coda 接入协议正文的公开副本
 .coda/workflows/         本仓库自己的流程：sync-coda 等新版本发到 npm，再给 Coda 开升级依赖的 PR
@@ -295,7 +295,7 @@ Coda 根上的同一条 overrides 由 `sync-coda` 一起改（npm 只认根的�
 **清单**（`package.json`）
 
 - `name` 是包名；另写 `id` 时以它为 Coda 插件 ID，否则以 `name` 为 ID。ID 只能用小写字母、数字和 `-`，以字母开头，至多 40 个字符。
-  本仓库的包名是 `@coda-console/<id>`，设置名与 Agent ID 仍使用原来的插件 ID。可以与 Coda 内置插件同名；从其他来源替换时，须先在目标机器卸载内置插件。检查器不读取机器的安装状态，同名占用由 Coda 在读取来源和安装时检查。
+  本仓库的包名是 `@coda-console/<id>`，设置名与 Agent ID 仍使用原来的插件 ID。可以与 Coda 内置插件同名；从其他来源替换时，须先在目标机器卸载内置插件。契约检查照刚装好的 Coda 读：与它默认装着的内置插件同名、又不是那个插件的同一来源的，判不通过。
 - `displayName`、`description`、`version` 显示在安装确认与插件页。
 - `contributes` 只能有 Coda 认识的贡献：`agents`、`panels`、`configuration`、`capabilities`、`instructions`、`extensionPoints`、`extensions`、`groups`、`commands`、`services`、`setup`；读不懂的键一律报错，不会被悄悄忽略。
 - `setup` 是插件的设置动作：`{ "command": "…" }`，一行、不超过 4000 字（与面板命令同样的规则），没有别的键。
@@ -379,9 +379,10 @@ gh workflow run publish.yml --repo coda-console/coda-plugins --ref main
 
 ## 契约检查
 
-扮演 Coda 去读一个插件目录：清单照 Coda 的规则读，Agent 照 Coda 的样子启动、说 Coda 说的话，面板照 Coda 的样子读一次。
-**权威校验仍是 Coda 的「读取来源」**（「从仓库添加…」里的读取）：检查包的规则抄自 Coda，抄的是哪个提交写在 `check/coda.mjs`，两边不一致时以 Coda 为准；
-`contributes` 里检查不认识的键（写错的，或 Coda 新加、这里还没抄过来的）只提醒，不判失败。
+扮演 Coda 去读一个插件目录：清单用 Coda 自己的代码读，Agent 照 Coda 的样子启动、说 Coda 说的话，面板由 Coda 的资源插件模块读一次。
+规则只在 Coda 里写：`check/coda/` 是 Coda 代码的原样副本（见[契约副本](#契约副本)），检查包手写的只有怎样扮演 Coda、怎样判。
+清单照「从仓库添加…」的顺序读，Coda 在第一处拒绝就停，检查也只报这一处；扮演的是一台刚装好的 Coda（只有它自带与默认装的插件），
+装进别的 Coda 时版本或已装的插件不同，以那台的读取为准。
 
 ```sh
 npm ci
@@ -393,8 +394,8 @@ npx github:coda-console/coda-plugins#<提交> <插件目录>
 
 | 级 | 要不要登录 | 查什么 |
 | --- | --- | --- |
-| 清单（总是） | 不要 | `package.json` 读得懂、ID 合法且不与内置的撞（本仓库 `plugins/<id>` 里的内置插件除外）；每个 Agent 字段齐全、`command` 一行、图标是不超过 32 KiB 的 PDF；面板、组与命令的声明，Agent、组与命令不与内置插件的撞；从仓库安装的限制，带 npm 依赖要有对得上的 `package-lock.json` |
-| 握手（默认） | 不要 | `sh -c` 启动 `command`（环境照 Coda 给插件进程的：`CODA_NODE`、`CODA_PLUGIN_PATH`、临时的 `CODA_PLUGIN_STATE`、设置默认值的 `CODA_PLUGIN_SETTINGS`，依赖的插件在旁边目录里时给 `CODA_PLUGIN_DEPENDENCIES`），发与 Coda 相同的 `initialize`，要求 `protocolVersion` 为 1、声明会话指令（`sessionCapabilities.systemPrompt`，没声明算失败）；`session/new` 带会话指令，给出会话与当前模型，回 -32000 记为未登录、跳过后面的检查（不算失败）；像 Coda 一样对进程组发 SIGTERM，5 秒内要退出（超过 0.8 秒提醒）；另起一个进程，关掉标准输入后 5 秒内不退出只提醒。面板读一次，输出合格式 |
+| 清单（总是） | 不要 | Coda 读仓库的顺序：目录扫得到、名字合规；目录里无符号链接与子模块、不超过 10 MiB（`treeProblem`）；`readPlugin` 读得成插件；带 npm 依赖要有对得上的 `package-lock.json`（`manifestProblem`）；与刚装好的 Coda 的插件不冲突、要一起装的找得到（`candidate`：默认装着的内置插件的 ID、别的插件声明的 Agent、组、扩展点等）。本仓库 `plugins/<id>` 里的内置插件按内置插件的同一来源读（新版本可以盖过它）。另有只提醒的：分类、版本、图标页面太小、旧的 Agent ID `claude`、没提交的文件。面板声明由资源插件的 `panelEntries` 读 |
+| 握手（默认） | 不要 | `sh -c` 启动 `command`（环境是 Coda 的 `pluginEnv` 给的：`CODA_NODE`、`CODA_PLUGIN_PATH`、临时的 `CODA_PLUGIN_STATE`、设置默认值的 `CODA_PLUGIN_SETTINGS`；依赖的插件在同一仓库里时 `CODA_PLUGIN_DEPENDENCIES` 给它的目录，Coda 自带的不在这里、不给），发与 Coda 相同的 `initialize`，要求 `protocolVersion` 为 1、声明会话指令（`sessionCapabilities.systemPrompt`，没声明算失败）；`session/new` 带会话指令，给出会话与当前模型，回 -32000 记为未登录、跳过后面的检查（不算失败）；像 Coda 一样对进程组发 SIGTERM，5 秒内要退出（超过 0.8 秒提醒）；另起一个进程，关掉标准输入后 5 秒内不退出只提醒。面板由 Coda 资源插件的 `Panels` 读一次（30 秒），输出合格式 |
 | 一轮（`--live`） | 要 | 第一轮问会话指令里的检查词（一个随机词），回复里要有它；再发一轮提示词（默认「只回复 ok」）收到 `stopReason`；每条 `session/update` 过 ACP SDK 的 schema；`_coda/wait` 按 Coda 的 `validWait` 与协议的规则核对（子 Agent 不带 `childSessionId`、定时不带 `at` 只提醒）；审批与提问一律回拒绝，在一轮之外发来的算失败；再发一轮并 `session/cancel`，30 秒内要结束，读到取消后还在做事或拖过 5 秒才答复却不回 `cancelled` 算失败（见下）；有自主轮次的也取消一次；声明插话的，一轮结束后插话要回 `promptRequired` 且不自己另开一轮，一轮进行中插话要回 `injected` 或 `promptRequired`（`injected` 的那一轮照常回 `stopReason`）；声明 `loadSession` 的，新开进程 `session/load`（同样带会话指令）要成功，随后在新进程里再跑一轮也要收到 `stopReason` |
 
 **取消后的 `stopReason` 怎么判**：检查发 `session/cancel` 时紧跟一个只会得到 -32601 的探测请求（`_codaCheck/barrier`）。Agent 按顺序读，
@@ -414,16 +415,18 @@ npx github:coda-console/coda-plugins#<提交> <插件目录>
 - run: npx --yes github:coda-console/coda-plugins#<提交> . --live
 ```
 
-## 协议正文的副本
+## 契约副本
 
-Coda 主仓库不公开，所以 `docs/agent-protocol.md` 是它 `docs/agent-protocol.md` 的副本，由脚本从检查包规则所抄的那个提交同步，不要直接改：
+Coda 主仓库不公开。它的插件规则（读清单、读面板、插件进程的环境、ACP 与 `_coda/wait` 的约定等，按 Coda `backend/src/` 下的路径放在 `check/coda/`）、
+它自带的插件（`check/coda/builtin.json`）与协议正文 `docs/agent-protocol.md` 都是 Coda 的原样副本，由 Coda 的部署流程 `sync-plugin-check`
+（脚本 `scripts/plugin-contract.mjs`）同步：它在分支 `sync/coda` 上给这里开 PR。**不要手改**；规则要改先改 Coda。
+`check/coda/contract.json` 记着同步自哪个提交、每个文件的 sha256 和副本用到的包的版本，CI 用它核对：
 
 ```sh
-node scripts/sync-protocol.mjs --coda <Coda 仓库目录>   # 同步（看着像私有信息的内容会让它停下）
-node scripts/sync-protocol.mjs --check                  # CI：副本声明的 Coda 提交、ACP 协议版本、SDK 版本与检查包一致，正文没被手改
+node scripts/check-contract.mjs   # 每个文件与 Coda 同步的一致，check/coda/ 没有别的文件，依赖版本与 Coda 相同
 ```
 
-Coda 改协议时，同一个改动也给这里开 PR：先改 `check/` 里抄来的规则和 `CODA_COMMIT`，再同步副本。
+这里手写的只有扮演 Coda 的部分（`check/*.mjs`）：照 Coda 的样子启动 Agent、说 Coda 说的话，以及怎样判、怎样说。
 
 ## 开发
 
@@ -434,7 +437,7 @@ npm test                                   # node --test 'test/**/*.test.mjs'：
 node bin/check.mjs templates/agent --live --prompt "wait 看看自主轮次"
 ```
 
-检查包唯一的依赖是 `@agentclientprotocol/sdk`，版本与 Coda 后端相同（1.4.0）；`zod` 是它的 peer 依赖。
+检查包的依赖是契约副本用到的包，版本与 Coda 后端相同（`check/coda/contract.json` 的 `packages`：`@agentclientprotocol/sdk`、`yaml`、`@0dep/piso`）；`zod` 是 SDK 的 peer 依赖。
 `test/plugins/` 的测试从插件目录自己的 `node_modules` 找依赖，没装就报错提示先跑 `install-plugins.mjs`；
 `test/plugins/contract.test.mjs` 用假的对端（Claude 的假 SDK、Codex 的假 app-server、充当 `kimi acp` 的假 Agent）对真实入口跑检查包的三级，不用登录。
 CI 先装各插件的依赖再跑全部测试，`plugins/*` 只查清单：真实的握手与一轮要各家的 CLI 与登录，不在 CI 跑。

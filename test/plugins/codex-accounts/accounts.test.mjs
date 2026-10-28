@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { panelItems } from '../../../check/panel.mjs';
+import { panelTypes } from '../../../check/panel.mjs';
 import { identity, list, tokens, selection, choose, remove, saveLogin } from '../../../plugins/codex-accounts/scripts/manager.mjs';
 import { panel } from '../../../plugins/codex-accounts/scripts/quota.mjs';
 import { AccountSource } from '../../../plugins/codex/agent/account-source.mjs';
@@ -24,7 +24,7 @@ const auth = (account, exp = Date.now() / 1000 + 3600) => ({ auth_mode: 'chatgpt
   access_token: jwt({ exp, 'https://api.openai.com/auth': { chatgpt_account_id: account, chatgpt_plan_type: 'pro' } }),
   id_token: jwt({ email: `${account}@example.com` }), refresh_token: `PRIVATE-REFRESH-${account}`, account_id: account,
 } });
-const takes = value => panelItems(JSON.stringify(value), declared);
+const takes = value => panelTypes(JSON.stringify(value), declared);
 async function until(fn) { for (let i = 0; i < 1000; i++) { if (await fn()) return; await delay(10); } throw Error('timed out'); }
 async function setup(t) {
   const dir = await realpath(await mkdtemp(join(tmpdir(), 'coda-owned-accounts-'))), state = join(dir, 'state'), native = join(dir, 'native'), log = join(dir, 'events.jsonl');

@@ -3,7 +3,8 @@
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import pkg from '../package.json' with { type: 'json' };
-import { ACP_PROTOCOL_VERSION, CODA_COMMIT } from '../check/coda.mjs';
+import { ACP_PROTOCOL_VERSION } from '../check/agent.mjs';
+import contract from '../check/coda/contract.json' with { type: 'json' };
 import { checkPlugin } from '../check/index.mjs';
 import { format } from '../check/report.mjs';
 
@@ -33,6 +34,6 @@ for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => process.exi
 const dir = resolve(positionals[0]);
 const { report, plugin } = await checkPlugin(dir, { agent: values.agent ?? null, manifestOnly: !!values.manifest, live: !!values.live, prompt: values.prompt });
 const shown = positionals[0];
-console.log(format(report, { title: `coda-plugin-check ${pkg.version} · 插件 ${plugin?.id ?? '?'}（${shown}）· 规则抄自 Coda ${CODA_COMMIT.slice(0, 7)} · ACP 协议版本 ${ACP_PROTOCOL_VERSION}` }));
-console.log('权威校验仍是 Coda 的「读取来源」：提交后在「设置 › 插件 › 从仓库添加…」填仓库地址（或本机仓库的绝对路径）读一次，以它为准。');
+console.log(format(report, { title: `coda-plugin-check ${pkg.version} · 插件 ${plugin?.id ?? '?'}（${shown}）· 规则是 Coda ${contract.commit.slice(0, 7)} 的代码 · ACP 协议版本 ${ACP_PROTOCOL_VERSION}` }));
+console.log('清单照一台刚装好的 Coda 读（只有它自带与默认装的插件）；装进别的 Coda 时，版本或已装的插件不同，以那台「设置 › 插件 › 从仓库添加…」的读取为准。');
 process.exit(report.ok ? 0 : 1);

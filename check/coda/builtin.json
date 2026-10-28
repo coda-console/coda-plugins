@@ -1,0 +1,1273 @@
+[
+  {
+    "id": "approve-command",
+    "displayName": "批准执行",
+    "description": "Agent 自己跑不了、或要你明确点头（例如改生产环境）的命令，在会话里出一张卡片，写着理由、目录和完整命令；你点「执行」后由 Coda 在本机执行，结果交回 Agent。",
+    "version": "1.0.0",
+    "category": "工作流程",
+    "source": {
+      "kind": "builtin"
+    },
+    "dir": "src/resources/plugins/approve-command",
+    "title": "批准执行",
+    "properties": {},
+    "workflows": [],
+    "capabilities": [
+      "approve-command"
+    ],
+    "services": [],
+    "groups": [],
+    "commands": [],
+    "gitCredentials": [],
+    "endpoints": [],
+    "views": [],
+    "agents": [],
+    "dependencies": [],
+    "extensionPoints": {},
+    "extensions": [],
+    "instructions": "权限受阻时，先走原生权限升级或审批（如 Codex 的 require_escalated）。原生机制不可用、仍受权限阻拦或需用户明确授权时，才调用 workflow_run，workflow 为 approve-command，inputs 给 command、cwd（绝对路径）、reason（一行）。用户批准后由 Coda 执行，结果随调用或稍后送达；用户明确拒绝后不换方式重试。"
+  },
+  {
+    "id": "changes",
+    "displayName": "变更",
+    "description": "会话旁的「变更」页：新建工作树的会话从起点到现在改了哪些文件、每个文件改了什么（Mac 会话侧栏、iPhone 会话菜单）；Mac 输入框上方写着改了几个文件、多少行，点开就是这一页。",
+    "version": "1.0.0",
+    "category": "工作流程",
+    "source": {
+      "kind": "builtin"
+    },
+    "dir": "src/resources/plugins/changes",
+    "title": "变更",
+    "properties": {},
+    "main": "main.mjs",
+    "workflows": [],
+    "capabilities": [],
+    "services": [],
+    "groups": [],
+    "commands": [],
+    "gitCredentials": [],
+    "endpoints": [],
+    "views": [
+      {
+        "id": "changes",
+        "title": "变更",
+        "entry": "view/index.html",
+        "in": [
+          "side"
+        ],
+        "icon": "plus.forwardslash.minus",
+        "readout": "changes",
+        "checkout": "worktree"
+      }
+    ],
+    "agents": [],
+    "dependencies": [],
+    "extensionPoints": {},
+    "extensions": []
+  },
+  {
+    "id": "cliproxy",
+    "displayName": "CLIProxy",
+    "description": "在资源页显示这台机器上 CLIProxy 里 Antigravity 登录的额度；填了地址和 Key 时，把 CLIProxy 作为模型服务提供给 Pi 等插件选用。",
+    "version": "1.2.0",
+    "category": "模型与账号",
+    "source": {
+      "kind": "builtin"
+    },
+    "dir": "src/resources/plugins/cliproxy",
+    "title": "CLIProxy",
+    "properties": {
+      "cliproxy.url": {
+        "type": "string",
+        "format": "coda-model-url",
+        "description": "CLIProxy 的 OpenAI 兼容地址，如本机的 http://127.0.0.1:8317/v1；留空就不作为模型服务提供",
+        "title": "地址",
+        "order": 1,
+        "modelKey": "cliproxy.key"
+      },
+      "cliproxy.key": {
+        "type": "string",
+        "description": "CLIProxy 配置里 api-keys 中的一个",
+        "title": "Key",
+        "order": 2,
+        "writeOnly": true
+      }
+    },
+    "workflows": [],
+    "capabilities": [],
+    "services": [],
+    "groups": [],
+    "commands": [],
+    "gitCredentials": [],
+    "endpoints": [],
+    "views": [],
+    "offers": {
+      "panels": [
+        {
+          "id": "antigravity",
+          "title": "Antigravity · CLIProxy",
+          "command": "node \"$CODA_PLUGIN_PATH/scripts/antigravity.mjs\"",
+          "maxAge": "PT5M"
+        }
+      ]
+    },
+    "agents": [],
+    "dependencies": [],
+    "extensionPoints": {},
+    "extensions": [],
+    "modelProviders": [
+      {
+        "id": "cliproxy",
+        "title": "CLIProxy",
+        "api": "openai-completions",
+        "url": "${config:cliproxy.url}",
+        "key": "cliproxy.key"
+      }
+    ]
+  },
+  {
+    "id": "github",
+    "displayName": "GitHub",
+    "description": "在 Coda 里登录 GitHub 账号，可以登录多个。Coda 启动的会话、流程步骤与插件安装访问 GitHub 时，按仓库的 owner 自动试出能推送的账号并记下，之后这个 owner 的仓库都用它；账号按面板上的顺序试，可以上移下移；会话里的 gh 与提交署名也跟着这个账号；gh 的只读命令遇到网络类失败会自动重试。添加项目、安装插件时可以从这些账号的仓库里挑。",
+    "version": "1.6.0",
+    "category": "模型与账号",
+    "source": {
+      "kind": "builtin"
+    },
+    "dir": "src/resources/plugins/github",
+    "title": "GitHub",
+    "properties": {
+      "github.pullRequestPoll": {
+        "type": "string",
+        "format": "duration",
+        "description": "PR 观察多久看一次 PR（ISO 8601 时长）。",
+        "default": "PT1M"
+      }
+    },
+    "workflows": [
+      "pull-request-watch"
+    ],
+    "capabilities": [],
+    "services": [],
+    "groups": [],
+    "commands": [
+      {
+        "name": "gh",
+        "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/gh.mjs\""
+      },
+      {
+        "name": "github-reported-pr",
+        "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/reported-pr.mjs\""
+      }
+    ],
+    "events": [
+      {
+        "name": "github.pull_request_reported",
+        "starts": true
+      },
+      {
+        "name": "pull_request.opened",
+        "starts": true
+      },
+      {
+        "name": "pull_request.synchronize",
+        "starts": true
+      },
+      {
+        "name": "pull_request.ready_for_review",
+        "starts": false
+      },
+      {
+        "name": "pull_request.converted_to_draft",
+        "starts": false
+      },
+      {
+        "name": "pull_request.edited",
+        "starts": false
+      },
+      {
+        "name": "pull_request.closed",
+        "starts": false,
+        "ends": true
+      }
+    ],
+    "gitCredentials": [
+      {
+        "url": "https://github.com",
+        "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/credential.mjs\""
+      }
+    ],
+    "endpoints": [],
+    "views": [],
+    "offers": {
+      "panels": [
+        {
+          "id": "accounts",
+          "title": "GitHub 账号",
+          "command": "node \"$CODA_PLUGIN_PATH/scripts/panel.mjs\"",
+          "maxAge": "PT1M",
+          "actions": {
+            "remove": {
+              "command": "node \"$CODA_PLUGIN_PATH/scripts/action.mjs\" remove",
+              "confirm": "移除这个账号的登录？\n它负责的 owner 之后会重新试出用哪个账号。"
+            },
+            "assign": {
+              "command": "node \"$CODA_PLUGIN_PATH/scripts/action.mjs\" assign"
+            },
+            "forget": {
+              "command": "node \"$CODA_PLUGIN_PATH/scripts/action.mjs\" forget"
+            },
+            "move": {
+              "command": "node \"$CODA_PLUGIN_PATH/scripts/action.mjs\" move"
+            }
+          },
+          "signIn": {
+            "command": "exec node \"$CODA_PLUGIN_PATH/scripts/login.mjs\"",
+            "installed": "command -v gh",
+            "note": "可以登录多个账号：再登录一个即添加，登录已有账号会更新它的凭据。Coda 按仓库的 owner 自动选用能推送的那个。"
+          }
+        }
+      ]
+    },
+    "agents": [],
+    "dependencies": [],
+    "extensionPoints": {},
+    "extensions": [],
+    "instructions": "GitHub 仓库用 HTTPS 地址（https://github.com/<owner>/<repo>.git），不要改成 SSH 别名。用哪个账号、提交署什么名，由 Coda 按仓库的 owner 决定：不要自己设 user.name、user.email 或 GH_CONFIG_DIR。",
+    "environment": [
+      {
+        "name": "GIT_CONFIG_PARAMETERS",
+        "value": "'include.path=${CODA_PLUGIN_STATE}/git/config'"
+      }
+    ],
+    "repositories": {
+      "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/repositories.mjs\""
+    }
+  },
+  {
+    "id": "guide",
+    "displayName": "Coda 使用指南",
+    "description": "给会话里的 Agent 一份 Coda 使用指南（Skill `coda`）：你问 Coda 怎么用、某个界面或状态是什么意思时，Agent 按它回答。",
+    "version": "1.0.0",
+    "category": "工作流程",
+    "source": {
+      "kind": "builtin"
+    },
+    "dir": "src/resources/plugins/guide",
+    "title": "Coda 使用指南",
+    "properties": {},
+    "workflows": [],
+    "capabilities": [],
+    "services": [],
+    "groups": [],
+    "commands": [],
+    "gitCredentials": [],
+    "endpoints": [],
+    "views": [],
+    "agents": [],
+    "dependencies": [],
+    "extensionPoints": {},
+    "extensions": [],
+    "skills": [
+      {
+        "name": "coda",
+        "path": "src/resources/plugins/guide/skills/coda",
+        "description": "Coda 的使用指南：Coda 是什么、连接、项目、会话、卡片、流程、插件、空间各是什么、怎么配合。用户问 Coda 怎么用、某个界面、菜单、状态或标记是什么意思时，先读这里再回答。"
+      }
+    ]
+  },
+  {
+    "id": "maintenance",
+    "displayName": "维护",
+    "description": "按周期为每个项目做维护：把旧的工具详情移到冷文件，清掉空闲工作树的构建产物，以及已归档会话的密钥与命令输出；整台机器清一次没人引用的旧附件。",
+    "version": "1.0.0",
+    "category": "工作流程",
+    "source": {
+      "kind": "builtin"
+    },
+    "dir": "src/resources/plugins/maintenance",
+    "title": "维护",
+    "properties": {
+      "maintenance.schedule": {
+        "type": "string",
+        "description": "ISO 8601 重复间隔。R/PT6H 是每 6 小时一次，从 Coda 第一次登记这个周期起算；R/2026-01-01T03:00:00+08:00/P1D 是每天 3 点。最短 5 分钟。",
+        "title": "维护周期",
+        "order": 1,
+        "default": "R/PT6H"
+      },
+      "maintenance.coldAfterAny": {
+        "type": "string",
+        "format": "duration",
+        "description": "已结束的工具调用多久没有变化，就把详情移出数据库、存进冷文件；会话里打开这一步时照常读回。ISO 8601 时长，如 P30D。",
+        "title": "工具详情多久后转冷",
+        "order": 2,
+        "default": "P30D"
+      },
+      "maintenance.coldAfterArchived": {
+        "type": "string",
+        "format": "duration",
+        "description": "会话（或它的根会话）已归档时，工具详情多久没有变化就转冷。ISO 8601 时长，如 P7D。",
+        "title": "已归档会话的工具详情多久后转冷",
+        "order": 3,
+        "default": "P7D"
+      },
+      "maintenance.buildIdle": {
+        "type": "string",
+        "format": "duration",
+        "description": "未归档会话的工作树多久没有动静（输入、请求、轮次），就删掉其中的构建产物（.build、node_modules、DerivedData），下次构建重新生成；源码、分支和其他被忽略的文件都保留。ISO 8601 时长，如 PT6H。",
+        "title": "工作树空闲多久清构建产物",
+        "order": 4,
+        "default": "PT6H"
+      },
+      "maintenance.uploadsAfter": {
+        "type": "string",
+        "format": "duration",
+        "description": "上传后既没有发送、也没有留在草稿里的附件，过了这么久就删掉；已发送消息里的附件与消息同寿命。附件不属于任何项目，由流程 clean-uploads 按维护周期整台机器清一次。ISO 8601 时长，如 P1D。",
+        "title": "没人引用的附件多久后清掉",
+        "order": 5,
+        "default": "P1D"
+      },
+      "maintenance.archivedGrace": {
+        "type": "string",
+        "format": "duration",
+        "description": "会话（随它的根会话）归档满这么久，就删掉它的密钥文件、人机验证截图和批准执行命令的输出；期间取消归档就保留。实际删除发生在这之后的下一次维护。ISO 8601 时长，如 PT10M。",
+        "title": "归档后多久删掉会话的密钥与命令输出",
+        "order": 6,
+        "default": "PT10M"
+      }
+    },
+    "workflows": [
+      "clean-uploads",
+      "maintenance"
+    ],
+    "capabilities": [],
+    "services": [],
+    "groups": [],
+    "commands": [],
+    "gitCredentials": [],
+    "endpoints": [],
+    "views": [],
+    "agents": [],
+    "dependencies": [],
+    "extensionPoints": {},
+    "extensions": []
+  },
+  {
+    "id": "resources",
+    "displayName": "资源",
+    "description": "资源页：这台电脑（看一组电脑时是每一台）上已安装插件的面板，如账号与额度，按插件排列；可以隐藏、从 Coda 登录、选择显示的指标。",
+    "version": "1.1.0",
+    "category": "机器与资源",
+    "source": {
+      "kind": "builtin"
+    },
+    "dir": "src/resources/plugins/resources",
+    "title": "资源",
+    "properties": {},
+    "main": "main.mjs",
+    "workflows": [],
+    "capabilities": [],
+    "services": [],
+    "groups": [],
+    "commands": [],
+    "gitCredentials": [],
+    "endpoints": [],
+    "views": [
+      {
+        "id": "panels",
+        "title": "资源",
+        "entry": "view/index.html",
+        "in": [
+          "page"
+        ],
+        "icon": "square.stack.3d.up",
+        "readout": "machines"
+      }
+    ],
+    "agents": [],
+    "dependencies": [],
+    "extensionPoints": {
+      "panels": {
+        "description": "资源页上的面板：插件在 contributes.panels 里声明，由资源插件读取、执行动作与登录",
+        "contributes": "panels",
+        "title": "面板",
+        "commands": {
+          "command": "读取",
+          "actions.*.command": "动作",
+          "signIn.command": "登录",
+          "signIn.installed": "安装检查",
+          "signIn.install": "安装"
+        }
+      }
+    },
+    "extensions": []
+  },
+  {
+    "id": "secrets",
+    "displayName": "密钥",
+    "description": "用卡片填写凭据，Agent 只拿到密文路径或句柄；Coda 代填指定网站。Mac 系统身份验证密码只在后端内存中供本会话复用，归档或重启后清除。",
+    "version": "1.0.0",
+    "category": "工作流程",
+    "source": {
+      "kind": "builtin"
+    },
+    "dir": "src/resources/plugins/secrets",
+    "title": "密钥",
+    "properties": {},
+    "workflows": [],
+    "capabilities": [
+      "secret-fill",
+      "secret-request"
+    ],
+    "services": [],
+    "groups": [],
+    "commands": [],
+    "gitCredentials": [],
+    "endpoints": [],
+    "views": [],
+    "agents": [],
+    "dependencies": [],
+    "extensionPoints": {},
+    "extensions": [],
+    "instructions": "凭据用 workflow_run 调 secret-request（name、purpose、fields JSON、网页加 host），勿贴对话或读密文。网页用 secret-fill（path、field）；Mac 验证用 secret-fill（target=system、purpose），密码在本会话内存复用。submitted 后核对原操作；管理员、钥匙串、Touch ID 由本人处理。"
+  },
+  {
+    "id": "session",
+    "displayName": "会话生命周期",
+    "description": "所有会话共用：存续期间管理空闲进程和任务转交，归档宽限后收尾，按设置回收托管工作树。停用后不自动执行这些政策。",
+    "version": "1.0.0",
+    "category": "工作流程",
+    "source": {
+      "kind": "builtin"
+    },
+    "dir": "src/resources/plugins/session",
+    "title": "会话生命周期",
+    "properties": {
+      "session.reclaimWorktree": {
+        "type": "boolean",
+        "description": "归档收尾时回收 Coda 托管的工作树，包含未提交与未跟踪文件；分支保留提交。关掉则保留工作树，生命周期照常结束。",
+        "title": "归档后收回工作树",
+        "order": 1,
+        "default": true
+      },
+      "session.archiveGrace": {
+        "type": "string",
+        "format": "duration",
+        "description": "所有会话从归档起算，期间取消归档就回到会话存续；收尾暂未完成时也按此间隔重试。",
+        "title": "归档后多久收尾",
+        "order": 2,
+        "default": "PT10M"
+      },
+      "session.idleProcess": {
+        "type": "string",
+        "format": "duration",
+        "description": "会话空闲或只在等外部结果时，从进程最后一次干活算起；归档收尾使用归档宽限期。",
+        "title": "会话静止多久停掉进程",
+        "order": 5,
+        "default": "PT1H"
+      },
+      "session.handToUser": {
+        "type": "boolean",
+        "description": "流程交给会话 Agent 的任务，Agent 停下没答复、也没有别的东西会叫醒它时，转成你的卡片；关掉就一直留在 Agent 那里，等它下次被叫醒。",
+        "title": "Agent 停下没答复的任务转给你",
+        "order": 8,
+        "default": true
+      },
+      "session.handToUserAfter": {
+        "type": "string",
+        "format": "duration",
+        "description": "从 Agent 最后一次干活算起。期间它刚做完的事让流程撤掉了任务（如推送新提交），就不转；进程已停就立即转。",
+        "title": "Agent 停下多久后转给你",
+        "order": 9,
+        "default": "PT2M"
+      }
+    },
+    "workflows": [
+      "session"
+    ],
+    "capabilities": [],
+    "services": [],
+    "groups": [],
+    "commands": [],
+    "gitCredentials": [],
+    "endpoints": [],
+    "views": [],
+    "agents": [],
+    "dependencies": [],
+    "extensionPoints": {},
+    "extensions": []
+  },
+  {
+    "id": "space",
+    "displayName": "空间",
+    "description": "把几台电脑组成一个空间：在一处看各台的项目与会话，把任务派到另一台上，在一处对各台的插件一起改。安装或卸载后，这台电脑的后端会重启一下。",
+    "version": "1.1.0",
+    "category": "机器与资源",
+    "source": {
+      "kind": "builtin"
+    },
+    "dir": "src/resources/plugins/space",
+    "title": "空间",
+    "properties": {},
+    "workflows": [],
+    "capabilities": [],
+    "services": [
+      "space"
+    ],
+    "groups": [],
+    "commands": [],
+    "gitCredentials": [],
+    "endpoints": [],
+    "views": [],
+    "agents": [],
+    "dependencies": [
+      "tailnet"
+    ],
+    "extensionPoints": {},
+    "extensions": []
+  },
+  {
+    "id": "tailnet",
+    "displayName": "网络",
+    "description": "这台电脑在 tailnet 里的节点：空间的机器经它互相访问；也给插件中继（coda-relay）。由空间插件带来，安装或卸载后，这台电脑的后端会重启一下。",
+    "version": "1.2.0",
+    "category": "机器与资源",
+    "source": {
+      "kind": "builtin"
+    },
+    "dir": "src/resources/plugins/tailnet",
+    "title": "网络",
+    "properties": {},
+    "workflows": [],
+    "capabilities": [],
+    "services": [
+      "tailnet"
+    ],
+    "groups": [],
+    "commands": [
+      {
+        "name": "coda-relay",
+        "command": "\"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/relay.mjs\""
+      }
+    ],
+    "gitCredentials": [],
+    "endpoints": [],
+    "views": [],
+    "agents": [],
+    "dependencies": [],
+    "extensionPoints": {
+      "ports": {
+        "description": "要发布到 tailnet 上、或到达别的节点的端口：命令按插件自己的设置打印 { publish: [{ name, port }], reach: [{ name, port, machine }] }"
+      }
+    },
+    "extensions": []
+  },
+  {
+    "id": "workflows",
+    "displayName": "工作流",
+    "description": "工作流的页面：会话的流程模板与相关运行（会话侧栏、iPhone 会话菜单），所有机器的流程运行（一页），运行的进度与流程图、每个节点的执行记录与步骤输出。打开运行的卡片与链接也由它接管。",
+    "version": "1.0.0",
+    "category": "工作流程",
+    "source": {
+      "kind": "builtin"
+    },
+    "dir": "src/resources/plugins/workflows",
+    "title": "工作流",
+    "properties": {},
+    "main": "main.mjs",
+    "workflows": [],
+    "capabilities": [],
+    "services": [],
+    "groups": [],
+    "commands": [],
+    "gitCredentials": [],
+    "endpoints": [],
+    "views": [
+      {
+        "id": "session",
+        "title": "工作流",
+        "entry": "view/index.html",
+        "in": [
+          "side"
+        ],
+        "icon": "point.3.connected.trianglepath.dotted",
+        "handles": [
+          "workflow-runs"
+        ]
+      },
+      {
+        "id": "runs",
+        "title": "流程运行",
+        "entry": "view/runs.html",
+        "in": [
+          "page"
+        ],
+        "icon": "point.3.connected.trianglepath.dotted",
+        "readout": "workflow-runs"
+      },
+      {
+        "id": "graph",
+        "title": "流程图",
+        "entry": "view/graph.html"
+      }
+    ],
+    "agents": [],
+    "dependencies": [],
+    "extensionPoints": {},
+    "extensions": []
+  },
+  {
+    "id": "claude",
+    "displayName": "Claude",
+    "description": "Claude SDK Agent：Coda 基于 Claude Agent SDK 写的 ACP 入口，一个进程一个 SDK 会话；资源页的「Claude」面板显示会话报告的额度，可从 Coda 登录。",
+    "version": "1.7.0",
+    "category": "Agent",
+    "source": {
+      "kind": "builtin",
+      "package": "@coda-console/claude",
+      "tag": "latest",
+      "version": "1.7.0",
+      "integrity": "sha512-Tgxgv1nLRiPDlGuCII1QpFqZQS/K+Sov7fX+01owIL3Q9cB4M0Ny9Kd5fnmdKyz1dJRwgGEz8WYpBbDjxIBsBg==",
+      "repo": "https://github.com/coda-console/coda-plugins.git",
+      "path": "plugins/claude"
+    },
+    "dir": "node_modules/@coda-console/claude",
+    "title": "Claude",
+    "properties": {
+      "claude.modelProviders": {
+        "type": "array",
+        "description": "勾选插件提供的模型服务（如 Magpie），每个服务各成一组，它列出的模型和 Claude 自己的模型一起出现在会话的模型里；选中哪个服务的模型，那个会话就走那个服务，Claude 自己的模型照旧。只列 Anthropic 接口（anthropic-messages）的服务。",
+        "title": "模型服务",
+        "order": 1,
+        "format": "coda-model-provider",
+        "modelApis": [
+          "anthropic-messages"
+        ]
+      },
+      "claude.idleCompaction": {
+        "type": "boolean",
+        "description": "会话停下后还要接着用时（在 Coda 里置顶了，或还在等你、等流程或子会话、等后台命令、子 Agent 与定时唤醒），在一小时的提示词缓存过期前（最后一次请求模型 54 分钟后）压缩一次上下文，同 /compact：回来接着做时只需重新缓存摘要，不必按原价重新缓存整段对话。由插件的生命周期流程「Claude 缓存过期前压缩」按会话计时与判断：只压一小时的缓存、上下文超过 15 万 token 的，最近一件事已经是压缩就不再压；每次做了什么、为什么没做都记在那条流程的运行里。",
+        "title": "缓存过期前压缩",
+        "order": 2,
+        "default": false
+      }
+    },
+    "workflows": [
+      "claude-compaction"
+    ],
+    "capabilities": [],
+    "services": [],
+    "groups": [],
+    "commands": [],
+    "gitCredentials": [],
+    "endpoints": [],
+    "views": [],
+    "offers": {
+      "panels": [
+        {
+          "id": "limits",
+          "title": "Claude",
+          "command": "node \"$CODA_PLUGIN_PATH/scripts/panel.mjs\"",
+          "signIn": {
+            "command": "exec node \"$CODA_PLUGIN_PATH/scripts/login.mjs\"",
+            "installed": "node \"$CODA_PLUGIN_PATH/scripts/login.mjs\" --installed",
+            "input": "authorizationCode",
+            "note": "登录保存在这台机器上，供 Claude SDK 使用；额度在会话运行后出现。这台机器若已配置 OAuth token、API key 或云服务商，会话仍优先用那些配置。"
+          }
+        }
+      ]
+    },
+    "agents": [
+      {
+        "id": "claude-sdk",
+        "displayName": "Claude SDK",
+        "icon": {
+          "light": "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",
+          "template": false
+        },
+        "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/agent/entry.mjs\"",
+        "modes": {
+          "title": "审批模式",
+          "unset": "人工审批",
+          "auto": "auto",
+          "full": "bypassPermissions"
+        },
+        "skillsDir": ".claude/skills",
+        "configFiles": [
+          "${CLAUDE_CONFIG_DIR:-~/.claude}/settings.json",
+          ".claude/settings.json",
+          ".claude/settings.local.json"
+        ],
+        "setupHint": "请在运行机配置 Claude SDK 认证；若指定了 token 文件，请检查路径和权限。"
+      }
+    ],
+    "dependencies": [],
+    "extensionPoints": {},
+    "extensions": [],
+    "defaultInstalled": true
+  },
+  {
+    "id": "codex",
+    "displayName": "Codex",
+    "description": "Codex Agent：Coda 自带的入口运行 codex-acp，报告子 Agent 与后台命令。额度与登录由账号来源插件接管；未接入账号来源时使用 Codex 自己的登录面板。",
+    "version": "1.8.3",
+    "category": "Agent",
+    "source": {
+      "kind": "builtin",
+      "package": "@coda-console/codex",
+      "tag": "latest",
+      "version": "1.8.3",
+      "integrity": "sha512-1F9SFvF3pCnyLeIbSGnvKcrh9DP+84zfHyo5LmOfYcUIASmR6xyDpPEnpj/R4/tBulGSABWu4mHDDKDyxCjNkw==",
+      "repo": "https://github.com/coda-console/coda-plugins.git",
+      "path": "plugins/codex"
+    },
+    "dir": "node_modules/@coda-console/codex",
+    "title": "Codex",
+    "properties": {
+      "codex.modelProviders": {
+        "type": "array",
+        "description": "勾选插件提供的模型服务（如 Magpie），每个服务各成一组，它列出的模型和 Codex 自己的模型一起出现在会话的模型里；选中哪个服务的模型，那个会话就走那个服务，Codex 自己的模型照旧。只列 OpenAI Responses 接口（openai-responses）的服务：Codex 不再支持 Chat Completions。",
+        "title": "模型服务",
+        "order": 1,
+        "format": "coda-model-provider",
+        "modelApis": [
+          "openai-responses"
+        ]
+      }
+    },
+    "workflows": [],
+    "capabilities": [],
+    "services": [],
+    "groups": [],
+    "commands": [],
+    "gitCredentials": [],
+    "endpoints": [],
+    "views": [],
+    "offers": {
+      "panels": [
+        {
+          "id": "login",
+          "title": "Codex",
+          "command": "node \"$CODA_PLUGIN_PATH/scripts/panel.mjs\"",
+          "maxAge": "PT0S",
+          "actions": {
+            "reset": {
+              "command": "node \"$CODA_PLUGIN_PATH/scripts/reset.mjs\"",
+              "confirm": "使用一次完全重置？\n用最早到期的那一次。成功后消耗 1 次，无法撤销。"
+            }
+          },
+          "signIn": {
+            "command": "NO_COLOR=1 exec node \"$CODA_PLUGIN_PATH/scripts/cli.mjs\" login --device-auth",
+            "note": "接入账号插件后，登录会添加或更新插件管理的账号。"
+          }
+        }
+      ]
+    },
+    "agents": [
+      {
+        "id": "codex",
+        "displayName": "Codex",
+        "icon": {
+          "light": "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",
+          "template": true
+        },
+        "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/agent/entry.mjs\"",
+        "modes": {
+          "title": "审批模式",
+          "unset": "人工审批",
+          "auto": "agent",
+          "full": "agent-full-access"
+        },
+        "skillsDir": ".agents/skills",
+        "configFiles": [
+          "${CODEX_HOME:-~/.codex}/config.toml",
+          ".codex/config.toml"
+        ],
+        "setupHint": "请在运行机为后端所属账号完成 Codex 认证。"
+      }
+    ],
+    "dependencies": [],
+    "extensionPoints": {
+      "account-source": {
+        "description": "Codex 的账号与登录入口：来源给出当前账号和令牌，响应 --login，并提供账号与额度面板；接入后 Codex 自带的额度面板隐藏。"
+      }
+    },
+    "extensions": [],
+    "defaultInstalled": true
+  },
+  {
+    "id": "codex-accounts",
+    "displayName": "Codex 多账号",
+    "description": "在 Coda 内管理 Codex 账号：自动纳入已有登录，添加与移除账号、自动续期、查看额度和使用完全重置；接管 Codex 额度面板，所选账号在会话开始和两轮之间生效。",
+    "version": "2.1.3",
+    "category": "模型与账号",
+    "source": {
+      "kind": "builtin",
+      "package": "@coda-console/codex-accounts",
+      "tag": "latest",
+      "version": "2.1.3",
+      "integrity": "sha512-5CECC/Lb+LNjHha039Q/caqv9OSlLb7HdEuTCXbNfhTICybMzwP66QqVhjb1U5HNBb6cIdXEZxzgWG0DZWmgyg==",
+      "repo": "https://github.com/coda-console/coda-plugins.git",
+      "path": "plugins/codex-accounts"
+    },
+    "dir": "node_modules/@coda-console/codex-accounts",
+    "title": "Codex 多账号",
+    "properties": {},
+    "workflows": [],
+    "capabilities": [],
+    "services": [],
+    "groups": [],
+    "commands": [],
+    "gitCredentials": [],
+    "endpoints": [],
+    "views": [],
+    "offers": {
+      "panels": [
+        {
+          "id": "accounts",
+          "title": "Codex 多账号",
+          "command": "node \"$CODA_PLUGIN_PATH/scripts/panel.mjs\"",
+          "maxAge": "PT5M",
+          "actions": {
+            "select": {
+              "command": "node \"$CODA_PLUGIN_PATH/scripts/select.mjs\""
+            },
+            "reset": {
+              "command": "node \"$CODA_PLUGIN_PATH/scripts/reset.mjs\"",
+              "confirm": "使用一次完全重置？\n用最早到期的那一次。成功后消耗 1 次，无法撤销。"
+            },
+            "remove": {
+              "command": "node \"$CODA_PLUGIN_PATH/scripts/remove.mjs\"",
+              "confirm": "移除此账号在插件中保存的登录？之后需要重新登录才能再次使用。"
+            }
+          },
+          "signIn": {
+            "command": "NO_COLOR=1 exec node \"$CODA_PLUGIN_PATH/scripts/login.mjs\"",
+            "note": "登录其他账号即可添加；登录已有账号会更新其凭据。首个账号会自动选用，之后可在面板切换。"
+          }
+        }
+      ]
+    },
+    "agents": [],
+    "dependencies": [
+      "codex"
+    ],
+    "extensionPoints": {},
+    "extensions": [
+      {
+        "plugin": "codex",
+        "point": "account-source",
+        "command": "exec node \"$CODA_PLUGIN_PATH/scripts/source.mjs\""
+      }
+    ],
+    "defaultInstalled": false
+  },
+  {
+    "id": "grok",
+    "displayName": "Grok",
+    "description": "Grok Agent：适配运行机上 Grok CLI 的 ACP 与审批模式；资源页的「Grok」面板显示账号与额度，可从 Coda 安装和登录。",
+    "version": "1.3.2",
+    "category": "Agent",
+    "source": {
+      "kind": "builtin",
+      "package": "@coda-console/grok",
+      "tag": "latest",
+      "version": "1.3.2",
+      "integrity": "sha512-/W3ko6pf/NpDvxJyizz7D1GfOuX+CvvllKdl0RnmC+KrKpytbgCqNJHsd+3UkUbAgiiNIj1fBCA1H4wHsXGt7w==",
+      "repo": "https://github.com/coda-console/coda-plugins.git",
+      "path": "plugins/grok"
+    },
+    "dir": "node_modules/@coda-console/grok",
+    "title": "Grok",
+    "properties": {},
+    "workflows": [],
+    "capabilities": [],
+    "services": [],
+    "groups": [],
+    "commands": [],
+    "gitCredentials": [],
+    "endpoints": [],
+    "views": [],
+    "offers": {
+      "panels": [
+        {
+          "id": "account",
+          "title": "Grok",
+          "command": "node \"$CODA_PLUGIN_PATH/scripts/panel.mjs\"",
+          "maxAge": "PT5M",
+          "signIn": {
+            "command": "g=\"$HOME/.grok/bin/grok\"; [ -x \"$g\" ] || g=grok; BROWSER=/usr/bin/true NO_COLOR=1 exec \"$g\" login --device-auth",
+            "installed": "test -x \"$HOME/.grok/bin/grok\" || command -v grok >/dev/null",
+            "install": "SHELL= PATH=\"$HOME/.grok/bin:$PATH\" exec bash -c 'set -o pipefail; curl -fsSL https://x.ai/cli/install.sh | bash'",
+            "note": "登录保存在这台机器的 Grok CLI 里，由它自己续期；可以用 X 账号确认。"
+          }
+        }
+      ]
+    },
+    "agents": [
+      {
+        "id": "grok",
+        "displayName": "Grok",
+        "icon": {
+          "light": "JVBERi0xLjcKJbXtrvsKNCAwIG9iago8PCAvTGVuZ3RoIDUgMCBSCiAgIC9GaWx0ZXIgL0ZsYXRlRGVjb2RlCj4+CnN0cmVhbQp4nFVTTcoVQQzc9ymyFoxJ57eP4RFkwG/zXKj3Byv9UJCBGZLupCpVGSXB81nx0rPp+bF+Lrm5Xx/05ZvQx+9Vzpqke7Nt+kFqxaedKlg96EXqyqpGtbm3IwyOTirjMkTF0puqUL3oIQ3nszed5D3noezapHpY7KB7cIvi65y1p2AL60EmhE2CTrNnLMQA2EXVnHIu7EGjhyIvgAYSQHhRN1oHKTjsxMEeCFSU8jmJTn7eHLzZfFpo9h1O9+E4mAnDnInF361wHtuoBVL8LYha1Mrig6kpXFKE8RU3tIRDmsw4AxQOwiIQvMUHVaEIbfRDFKaLIED22MIiTjZcLxLkRZkJu/VF+pewOEiMX1ZvwyxpvSjlOqZArw54aNDMR/TNvpN8gxwcPWx1KIEPNigyHQNgdLqSwzDBiNB/ZHfgO0TU5kYRpDvqww8HmNDe8eu/eEJLFigHm1OwEGpYHsH5vvevN10zDK4/l2G1EtLhNdjWRhsTNrVz0IbZVbRAUzg3bh4uJKJAKwhoqdeFrjvCTPLQLqAHJYrRTRmE0Bpu0wIRrVl354oZyEdXWOZ+NRvAmL0dGfA1djipWH60egjCpt9VO3kWXOvEJXDGD4Y9tD2Gjx+p149ZxBd9/7S+rj95P69MCmVuZHN0cmVhbQplbmRvYmoKNSAwIG9iagogICA0ODQKZW5kb2JqCjMgMCBvYmoKPDwKICAgL0V4dEdTdGF0ZSA8PAogICAgICAvYTAgPDwgL0NBIDEgL2NhIDEgPj4KICAgPj4KPj4KZW5kb2JqCjcgMCBvYmoKPDwgL1R5cGUgL09ialN0bQogICAvTGVuZ3RoIDggMCBSCiAgIC9OIDEKICAgL0ZpcnN0IDQKICAgL0ZpbHRlciAvRmxhdGVEZWNvZGUKPj4Kc3RyZWFtCnicM1Mw4IrmiuUCAAY4AV0KZW5kc3RyZWFtCmVuZG9iago4IDAgb2JqCiAgIDE2CmVuZG9iago5IDAgb2JqCjw8IC9UeXBlIC9PYmpTdG0KICAgL0xlbmd0aCAxMiAwIFIKICAgL04gNAogICAvRmlyc3QgMjMKICAgL0ZpbHRlciAvRmxhdGVEZWNvZGUKPj4Kc3RyZWFtCnicVZFBa8MwDIXv/hW6jCUMEtlNtraEHppAGWMQ2t7GDsYxqWHEwXbG+u9nO03HMDro48nvCVFAQhFKJAxoSQmlsHopSFVBfr6OEvKW99ISAMjfVGfhAxggHOEzolpPgwNKdrs40RrdTUIaSARXRgPN6DorILk4N9ptnkfaGz5elLCZNn2azt8YyZ3SQ8OdhKTZMmTPFLFEyhA3T7h+REwXk79Y8OCtw3zLjQw5QrII3mWn+F7/+LjoH92wWEvowXm5heKuPxg9jVBVoQn97BHpgk6eGj7YMXiJ64JfwZlJLl3tVY38VkIeD/sAfebAj9LqyQhpYXX3PPlB4ebo1l/h33o1d/xL97ft/AVuy3nRLxI/bsgKZW5kc3RyZWFtCmVuZG9iagoxMiAwIG9iagogICAyNzcKZW5kb2JqCjEzIDAgb2JqCjw8IC9UeXBlIC9YUmVmCiAgIC9MZW5ndGggNTkKICAgL0ZpbHRlciAvRmxhdGVEZWNvZGUKICAgL1NpemUgMTQKICAgL1cgWzEgMiAyXQogICAvUm9vdCAxMSAwIFIKICAgL0luZm8gMTAgMCBSCj4+CnN0cmVhbQp4nGNgYPj/n4mBk4EBRDAxMoUxMDAy8AMJJgeQGDuINQ9IMCuACFOIOkYQwczIsg8oxnKVgQEA1JwFgQplbmRzdHJlYW0KZW5kb2JqCnN0YXJ0eHJlZgoxMjM3CiUlRU9GCg==",
+          "template": true
+        },
+        "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/agent/entry.mjs\"",
+        "modes": {
+          "title": "审批模式",
+          "unset": "按运行机配置",
+          "note": "切换对后续消息生效；新会话未选择时沿用运行机的 Grok 配置。",
+          "auto": "auto",
+          "full": "always-approve"
+        },
+        "skillsDir": ".agents/skills",
+        "configFiles": [
+          "${GROK_HOME:-~/.grok}/config.toml"
+        ],
+        "setupHint": "请在「资源」里为运行机添加 Grok。"
+      }
+    ],
+    "dependencies": [],
+    "extensionPoints": {},
+    "extensions": [],
+    "setup": {
+      "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/setup.mjs\""
+    },
+    "defaultInstalled": true
+  },
+  {
+    "id": "kimi",
+    "displayName": "Kimi Code",
+    "description": "Kimi Code Agent：Coda 的入口在运行机的 kimi acp 与 Coda 之间转发，读 Kimi 的会话文件报出后台命令与子 Agent；资源页的「Kimi」面板显示账号与额度，可从 Coda 安装和登录。",
+    "version": "1.2.2",
+    "category": "Agent",
+    "source": {
+      "kind": "builtin",
+      "package": "@coda-console/kimi",
+      "tag": "latest",
+      "version": "1.2.2",
+      "integrity": "sha512-9F5T2LP6YY+MzP6QlMNoNAwkfsOsir4RcDcRV5qkTGp0Dr35RlTaETcfCBbC4NwmMxynnAcJu7M1pMPoCi0viA==",
+      "repo": "https://github.com/coda-console/coda-plugins.git",
+      "path": "plugins/kimi"
+    },
+    "dir": "node_modules/@coda-console/kimi",
+    "title": "Kimi Code",
+    "properties": {},
+    "workflows": [],
+    "capabilities": [],
+    "services": [],
+    "groups": [],
+    "commands": [],
+    "gitCredentials": [],
+    "endpoints": [],
+    "views": [],
+    "offers": {
+      "panels": [
+        {
+          "id": "account",
+          "title": "Kimi",
+          "command": "node \"$CODA_PLUGIN_PATH/scripts/panel.mjs\"",
+          "maxAge": "PT5M",
+          "signIn": {
+            "command": "exec sh \"$CODA_PLUGIN_PATH/scripts/login.sh\"",
+            "installed": "test -x \"$HOME/.kimi-code/bin/kimi\" || command -v kimi >/dev/null",
+            "install": "exec sh \"$CODA_PLUGIN_PATH/scripts/install.sh\"",
+            "note": "登录保存在这台机器的 Kimi CLI 里，由它自己续期。"
+          }
+        }
+      ]
+    },
+    "agents": [
+      {
+        "id": "kimi",
+        "displayName": "Kimi Code",
+        "icon": {
+          "light": "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",
+          "dark": "JVBERi0xLjcKJbXtrvsKNCAwIG9iago8PCAvTGVuZ3RoIDUgMCBSCiAgIC9GaWx0ZXIgL0ZsYXRlRGVjb2RlCj4+CnN0cmVhbQp4nGWUXY7dIAyF31kFGyjFGIy9jC6hijTTh8xD2/1LPYeE3GmrK93kAxv/HSK54vdF8Cc68vGRfibJ/P16z1+/1/z+O6mWOWDwkaVKaXw9s0gUj+0nXqzLer2sj2v5sj8XpO3yPF8WK/btynd4jCI1FiCEWNERfFv2Ccb1Nj+5ehtfj71TYfXjU/ZvqZYaVcKQdhmik5FZqNRetHtus6jPVagXeVgEQV2y1tLdXwinxko3w6d72s6dmfbn7BuPHF6abjxzzDLn3Azq0nOv7FD6hF2dvhdfkc8H77wqqmpP0n/VlFYv/qsTLVkCQA9slG6RjelgJ2RNFGl5ZZOjFdGVtopx18dgXopEQE3iJkaaE8Zzb595Wgnvm0GutigGaco6agi72R0vls1RU09wxkKdzoVgK1ByW9tD5aG5Tjw2I0sccT5Yi0UkorQn647AwzdBfbPUV01nVivmzz6ILdtHbVyBjo0YrfnlujAgCNkHgUb1HeYiNuvO494+d5Y33yXcR21acZ5yHe01Sa+CnT1d1tADoE8l2FxbulIeWIZKMSrO+SRbC3JX9B0YrS2sLQ/kNIw0cA2P7JiWRo5eprHRDl3ZpB619+z8GjizjGaJ0oloLIHzhoi16AwyRQ3i/EF1yEMYr9llS3ZWMlnha0GgS1DHbWa91kjSZFcPZ2RpqwGKz4JTR9lHoUbxcMjNFfKmKdTPgMY2U+5g3GXKzE1JNTqJQ/h8U6579c/deUvf0h/d+gmkCmVuZHN0cmVhbQplbmRvYmoKNSAwIG9iagogICA1NjUKZW5kb2JqCjMgMCBvYmoKPDwKICAgL0V4dEdTdGF0ZSA8PAogICAgICAvYTAgPDwgL0NBIDEgL2NhIDEgPj4KICAgPj4KPj4KZW5kb2JqCjcgMCBvYmoKPDwgL1R5cGUgL09ialN0bQogICAvTGVuZ3RoIDggMCBSCiAgIC9OIDEKICAgL0ZpcnN0IDQKICAgL0ZpbHRlciAvRmxhdGVEZWNvZGUKPj4Kc3RyZWFtCnicM1Mw4IrmiuUCAAY4AV0KZW5kc3RyZWFtCmVuZG9iago4IDAgb2JqCiAgIDE2CmVuZG9iago5IDAgb2JqCjw8IC9UeXBlIC9PYmpTdG0KICAgL0xlbmd0aCAxMiAwIFIKICAgL04gNAogICAvRmlyc3QgMjMKICAgL0ZpbHRlciAvRmxhdGVEZWNvZGUKPj4Kc3RyZWFtCnicVZFBa4QwEIXv/oq5lCoFzURtdxfZwyospRTE3VvpIcTgBoqRJJbuv28S1y0lzGE+3uS9YRBIhARKElHAEiNEyF+KqKogO18nAVnLBmEiAMjeZG/gAygQ6OAzoFrNowWM9vsw0WrVz1xoiDmTWgGmuEkLiC/WTmaXZYEOmk0XyU2q9JAkyzdaMCvV2DArIG52lNBnssUtpWWB+EQ2j4Qkq8lfLHhw1n6+ZVr4HD5ZAO+il+ygflxc4h7mZag19Gid3EBx1x+1mieoKt/4fvEIdEUnRzUbzeS9+HXFr2D1LNaudqpGfEsuuuPBQ5fZ804YNWsuDOR3z5Mb5HaJbtwV/q1XM8u+1HDbzl3gtpwT/QIe+27SCmVuZHN0cmVhbQplbmRvYmoKMTIgMCBvYmoKICAgMjc4CmVuZG9iagoxMyAwIG9iago8PCAvVHlwZSAvWFJlZgogICAvTGVuZ3RoIDU5CiAgIC9GaWx0ZXIgL0ZsYXRlRGVjb2RlCiAgIC9TaXplIDE0CiAgIC9XIFsxIDIgMl0KICAgL1Jvb3QgMTEgMCBSCiAgIC9JbmZvIDEwIDAgUgo+PgpzdHJlYW0KeJxjYGD4/5+JgZOBAUQwMTItZ2BgZOAHEkwTQWLsINZ7IMFcCCLaIOoYQQQzI6sAUIxVnYEBAAYyBbwKZW5kc3RyZWFtCmVuZG9iagpzdGFydHhyZWYKMTMxOQolJUVPRgo=",
+          "template": false
+        },
+        "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/agent/entry.mjs\"",
+        "modes": {
+          "title": "审批模式",
+          "unset": "人工审批",
+          "auto": "auto",
+          "full": "yolo"
+        },
+        "skillsDir": ".agents/skills",
+        "configFiles": [
+          "${KIMI_CODE_HOME:-~/.kimi-code}/config.toml"
+        ],
+        "setupHint": "请在「资源」里为运行机添加 Kimi。"
+      }
+    ],
+    "dependencies": [],
+    "extensionPoints": {},
+    "extensions": [],
+    "setup": {
+      "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/setup.mjs\""
+    },
+    "defaultInstalled": true
+  },
+  {
+    "id": "opencode",
+    "displayName": "OpenCode",
+    "description": "OpenCode Agent：接入原生子会话的状态、过程与停止，跟踪后台命令，并送入会话指令。",
+    "version": "2.2.0",
+    "category": "Agent",
+    "source": {
+      "kind": "builtin",
+      "package": "@coda-console/opencode",
+      "tag": "latest",
+      "version": "2.2.0",
+      "integrity": "sha512-mjssWkJr+Pg6bCI9f5JfG3zGrNfE9ecyLZhmz4z3Ij0FHZ7p/4UJ36ps+e18xC8WZDQXkwzOle4xYaxfFPoCAA==",
+      "repo": "https://github.com/coda-console/coda-plugins.git",
+      "path": "plugins/opencode"
+    },
+    "dir": "node_modules/@coda-console/opencode",
+    "title": "OpenCode",
+    "properties": {
+      "opencode.modelProviders": {
+        "type": "array",
+        "description": "勾选插件提供的模型服务（如 Magpie），每个服务各成一组，它列出的模型和 OpenCode 自己的模型一起出现在会话的模型里；选中哪个服务的模型，那个会话就走那个服务。可选 OpenAI Chat、OpenAI Responses 和 Anthropic 接口的服务。",
+        "title": "模型服务",
+        "order": 1,
+        "format": "coda-model-provider",
+        "modelApis": [
+          "openai-completions",
+          "openai-responses",
+          "anthropic-messages"
+        ]
+      }
+    },
+    "workflows": [],
+    "capabilities": [],
+    "services": [],
+    "groups": [],
+    "commands": [],
+    "gitCredentials": [],
+    "endpoints": [],
+    "views": [],
+    "agents": [
+      {
+        "id": "opencode",
+        "displayName": "OpenCode",
+        "icon": {
+          "light": "JVBERi0xLjcKJbXtrvsKNCAwIG9iago8PCAvTGVuZ3RoIDUgMCBSCiAgIC9GaWx0ZXIgL0ZsYXRlRGVjb2RlCj4+CnN0cmVhbQp4nDNUMABCXUMgYWRkqpCcy1XIVaigX2yukF6soF9hoeCSrxDIFcgFAKn0CNoKZW5kc3RyZWFtCmVuZG9iago1IDAgb2JqCiAgIDQ1CmVuZG9iagozIDAgb2JqCjw8CiAgIC9FeHRHU3RhdGUgPDwKICAgICAgL3M3IDcgMCBSCiAgID4+CiAgIC9YT2JqZWN0IDw8IC94OCA4IDAgUiA+Pgo+PgplbmRvYmoKMTAgMCBvYmoKPDwgL1R5cGUgL1hPYmplY3QKICAgL0xlbmd0aCA0MAogICAvRmlsdGVyIC9GbGF0ZURlY29kZQogICAvU3VidHlwZSAvRm9ybQogICAvQkJveCBbIDAgMCAxODAgMjI1IF0KICAgL0dyb3VwIDw8CiAgICAgIC9UeXBlIC9Hcm91cAogICAgICAvUyAvVHJhbnNwYXJlbmN5CiAgICAgIC9JIHRydWUKICAgICAgL0NTIC9EZXZpY2VSR0IKICAgPj4KICAgL1Jlc291cmNlcwo8PAogICAvRXh0R1N0YXRlIDw8CiAgICAgIC9nczAgPDwgL0JNIC9Ob3JtYWwgL1NNYXNrIC9Ob25lIC9DQSAxLjAgL2NhIDEuMCA+PgogICAgICAvYTAgPDwgL0NBIDEgL2NhIDEgPj4KICAgPj4KICAgL1hPYmplY3QgPDwgL3gxMSAxMSAwIFIgPj4KPj4KPj4Kc3RyZWFtCnicK+Qy0DM3VTAAQRgjOZdLP9FAIb1YQb/C0FDBJZ8rkAsApsoIhQplbmRzdHJlYW0KZW5kb2JqCjggMCBvYmoKPDwgL1R5cGUgL1hPYmplY3QKICAgL0xlbmd0aCAyOAogICAvRmlsdGVyIC9GbGF0ZURlY29kZQogICAvU3VidHlwZSAvRm9ybQogICAvQkJveCBbIDAgMCAxODAgMjI1IF0KICAgL0dyb3VwIDw8CiAgICAgIC9UeXBlIC9Hcm91cAogICAgICAvUyAvVHJhbnNwYXJlbmN5CiAgICAgIC9JIHRydWUKICAgICAgL0NTIC9EZXZpY2VSR0IKICAgPj4KICAgL1Jlc291cmNlcwo8PAogICAv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",
+          "dark": "JVBERi0xLjcKJbXtrvsKNCAwIG9iago8PCAvTGVuZ3RoIDUgMCBSCiAgIC9GaWx0ZXIgL0ZsYXRlRGVjb2RlCj4+CnN0cmVhbQp4nDNUMABCXUMgYWRkqpCcy1XIVaigX2yukF6soF9hoeCSrxDIFcgFAKn0CNoKZW5kc3RyZWFtCmVuZG9iago1IDAgb2JqCiAgIDQ1CmVuZG9iagozIDAgb2JqCjw8CiAgIC9FeHRHU3RhdGUgPDwKICAgICAgL3M3IDcgMCBSCiAgID4+CiAgIC9YT2JqZWN0IDw8IC94OCA4IDAgUiA+Pgo+PgplbmRvYmoKMTAgMCBvYmoKPDwgL1R5cGUgL1hPYmplY3QKICAgL0xlbmd0aCA0MAogICAvRmlsdGVyIC9GbGF0ZURlY29kZQogICAvU3VidHlwZSAvRm9ybQogICAvQkJveCBbIDAgMCAxODAgMjI1IF0KICAgL0dyb3VwIDw8CiAgICAgIC9UeXBlIC9Hcm91cAogICAgICAvUyAvVHJhbnNwYXJlbmN5CiAgICAgIC9JIHRydWUKICAgICAgL0NTIC9EZXZpY2VSR0IKICAgPj4KICAgL1Jlc291cmNlcwo8PAogICAvRXh0R1N0YXRlIDw8CiAgICAgIC9nczAgPDwgL0JNIC9Ob3JtYWwgL1NNYXNrIC9Ob25lIC9DQSAxLjAgL2NhIDEuMCA+PgogICAgICAvYTAgPDwgL0NBIDEgL2NhIDEgPj4KICAgPj4KICAgL1hPYmplY3QgPDwgL3gxMSAxMSAwIFIgPj4KPj4KPj4Kc3RyZWFtCnicK+Qy0DM3VTAAQRgjOZdLP9FAIb1YQb/C0FDBJZ8rkAsApsoIhQplbmRzdHJlYW0KZW5kb2JqCjggMCBvYmoKPDwgL1R5cGUgL1hPYmplY3QKICAgL0xlbmd0aCAyOAogICAvRmlsdGVyIC9GbGF0ZURlY29kZQogICAvU3VidHlwZSAvRm9ybQogICAvQkJveCBbIDAgMCAxODAgMjI1IF0KICAgL0dyb3VwIDw8CiAgICAgIC9UeXBlIC9Hcm91cAogICAgICAvUyAvVHJhbnNwYXJlbmN5CiAgICAgIC9JIHRydWUKICAgICAgL0NTIC9EZXZpY2VSR0IKICAgPj4KICAgL1Jlc291cmNlcwo8PAogICAv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",
+          "template": false
+        },
+        "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/agent/entry.mjs\"",
+        "modes": {
+          "title": "工作模式",
+          "unset": "Agent 默认",
+          "note": "工具权限沿用运行机的 OpenCode 配置。"
+        },
+        "skillsDir": ".agents/skills",
+        "configFiles": [
+          "${OPENCODE_CONFIG}",
+          "${XDG_CONFIG_HOME:-~/.config}/opencode/opencode.json",
+          "${XDG_CONFIG_HOME:-~/.config}/opencode/opencode.jsonc",
+          "${XDG_CONFIG_HOME:-~/.config}/opencode/config.json",
+          "opencode.json",
+          "opencode.jsonc"
+        ],
+        "setupHint": "请在运行机安装并登录 OpenCode 2（2.1.4 及以上），确认后端能执行 opencode acp。"
+      }
+    ],
+    "dependencies": [],
+    "extensionPoints": {},
+    "extensions": [],
+    "setup": {
+      "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/setup.mjs\""
+    },
+    "defaultInstalled": true
+  },
+  {
+    "id": "review",
+    "displayName": "PR 生命流程",
+    "description": "会话开的 PR 从开出来起一条流程：每个新版本先跑项目声明的检查，再请另一家 Agent 评审，要求修改时交给开 PR 的会话处理、有分歧时交给你仲裁；通过后请你批准合并，跑过项目的合并前检查再合并，合并后按你的选择调用项目的部署、发布流程，PR 合并或关闭时结束。",
+    "version": "2.6.0",
+    "category": "工作流程",
+    "source": {
+      "kind": "builtin",
+      "package": "@coda-console/review",
+      "tag": "latest",
+      "version": "2.6.0",
+      "integrity": "sha512-OEMg2O/4wJ3hoG/S4cbgXL3Fsmopb4hF6xwDeJbDOR5hWXQ406okHO7uxSOCJCbqp5E8vPTrwmrwvz8CN7qRWw==",
+      "repo": "https://github.com/coda-console/coda-plugins.git",
+      "path": "plugins/review"
+    },
+    "dir": "node_modules/@coda-console/review",
+    "title": "PR 生命流程",
+    "properties": {
+      "review.reviewers": {
+        "type": "object",
+        "description": "一行是一类作者和评审它的 Agent。作者只选到哪一级，就只按那一级区分；越具体的一行越优先。",
+        "title": "评审组合",
+        "order": 1,
+        "entries": {
+          "type": "object",
+          "format": "coda-agent"
+        },
+        "keys": "coda-agent-match",
+        "default": {
+          "claude-sdk": {
+            "agent": "codex",
+            "mode": "agent"
+          },
+          "codex": {
+            "agent": "claude-sdk",
+            "mode": "auto"
+          },
+          "kimi": {
+            "agent": "codex",
+            "mode": "agent"
+          },
+          "grok": {
+            "agent": "codex",
+            "mode": "agent"
+          },
+          "opencode": {
+            "agent": "claude-sdk",
+            "mode": "auto"
+          }
+        }
+      },
+      "review.blockingSeverity": {
+        "type": "string",
+        "enum": [
+          "P0",
+          "P1",
+          "P2",
+          "P3"
+        ],
+        "description": "这一级及更严重的问题要求修改：交给开 PR 的会话处理，它不同意时交给你仲裁。更轻的问题不挡住 PR，评审仍算通过，写在 PR 评论和批准卡上。P0 最严重，P3 最轻。",
+        "title": "阻塞级别",
+        "order": 2,
+        "default": "P2"
+      },
+      "review.principles": {
+        "type": "array",
+        "description": "评审方按勾选的几项看改动，每项一段要求放进提示词；都不勾时只按通用要求评审。",
+        "title": "评审重点",
+        "order": 3,
+        "options": [
+          {
+            "value": "state",
+            "title": "状态与失败",
+            "description": "失败、中断、部分成功之后系统处于什么状态：失败被当作成功、错误变成空值、部分写入后继续、未知值落入默认分支、等待不结束。"
+          },
+          {
+            "value": "defense",
+            "title": "多余的防御",
+            "description": "指出重复检查、用不到的 fallback、吞掉错误的 catch 并建议删除；不因为\"可能出错\"就要求加检查、重试或 fallback。"
+          },
+          {
+            "value": "architecture",
+            "title": "架构与腐化",
+            "description": "绕过边界、依赖反向、第二个事实来源或第二套机制、复制核心逻辑、迁移做一半、死代码、为不存在的需求做的抽象。会扩散的按 P1。"
+          },
+          {
+            "value": "tests",
+            "title": "测试",
+            "description": "缺少回归测试或失败路径的测试；不能失败的测试；依赖时序、顺序、外部环境的脆弱测试；不必要的重型或缓慢测试。偶发失败、会被照搬的写法按 P1。"
+          }
+        ],
+        "default": [
+          "state",
+          "defense",
+          "architecture",
+          "tests"
+        ]
+      },
+      "review.maxReviews": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 100,
+        "description": "一条运行里最多自动评审几次。到了上限，新版本交给你决定：放行，或再评审一次。手动发起不计次数。",
+        "title": "每个 PR 最多自动评审",
+        "order": 4,
+        "default": 3
+      },
+      "review.mergeMethod": {
+        "type": "string",
+        "enum": [
+          "squash",
+          "merge",
+          "rebase"
+        ],
+        "description": "你批准合并后，用哪种 GitHub 合并方式：squash 把 PR 压成一个提交，merge 留下合并提交，rebase 把提交逐个接到目标分支上。目标分支要求合并队列时按队列自己的设定。",
+        "title": "合并方式",
+        "order": 5,
+        "default": "squash"
+      }
+    },
+    "workflows": [
+      "pull-request"
+    ],
+    "capabilities": [],
+    "services": [],
+    "groups": [],
+    "commands": [],
+    "gitCredentials": [],
+    "endpoints": [],
+    "views": [],
+    "agents": [],
+    "dependencies": [
+      "github"
+    ],
+    "extensionPoints": {},
+    "extensions": [],
+    "instructions": "gh pr create 开出即评审，可与验证并行；合并要等别的 PR、升锁或发布的开草稿（-R 写在 --draft 前），说明写明前提，满足后 gh pr ready。只合并进默认分支，叠放的不合。合并前的验证写成流程步骤或 GitHub 必需检查。正常结束只更新状态，任务与失败送到本会话，不要轮询 PR；提前评审用 workflow_run 发起 pull-request，结论交回会话。",
+    "defaultInstalled": false
+  },
+  {
+    "id": "machine-stats",
+    "displayName": "机器负载",
+    "description": "在资源页显示 CPU、内存、各磁盘、网络、温度、GPU、电池与风扇数值；在插件设置中选择显示项，打开或刷新时采样。",
+    "version": "1.0.2",
+    "category": "机器与资源",
+    "source": {
+      "kind": "builtin",
+      "repo": "https://github.com/coda-console/machine-stats.git",
+      "path": "",
+      "commit": "22e991f41d467389d485ac995f8d0f753f5ef608"
+    },
+    "dir": "node_modules/machine-stats",
+    "title": "机器负载",
+    "properties": {
+      "machine-stats.display": {
+        "type": "object",
+        "description": "资源页显示的指标，按磁盘与网卡分别选择。",
+        "title": "显示指标",
+        "entries": {
+          "type": "boolean"
+        },
+        "default": {}
+      }
+    },
+    "workflows": [],
+    "capabilities": [],
+    "services": [],
+    "groups": [],
+    "commands": [],
+    "gitCredentials": [],
+    "endpoints": [],
+    "views": [],
+    "offers": {
+      "panels": [
+        {
+          "id": "load",
+          "title": "机器负载",
+          "command": "node \"$CODA_PLUGIN_PATH/scripts/stats.mjs\"",
+          "displaySetting": "machine-stats.display"
+        }
+      ]
+    },
+    "agents": [],
+    "dependencies": [],
+    "extensionPoints": {},
+    "extensions": [],
+    "defaultInstalled": true
+  }
+]

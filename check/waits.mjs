@@ -1,11 +1,12 @@
-// `_coda/wait` as Coda takes it: validWait first (check/coda.mjs, copied), then the rules of docs/agent-protocol.md
-// 「Agent 活动」. Where Coda drops a report without a word, the checker fails it: an agent that relies on it is not heard.
-import { validWait, WAIT_STATES } from './coda.mjs';
+// `_coda/wait` as Coda takes it: Coda's validWait first (check/coda/domain/agent-protocol.mjs), then the rules of
+// docs/agent-protocol.md「Agent 活动」. Where Coda drops a report without a word, the checker fails it: an agent that relies
+// on it is not heard.
+import { validWait, WAIT_STATES } from './coda/domain/agent-protocol.mjs';
 
 export const TERMINAL = new Set(['done', 'failed', 'cancelled']);
 const LIMITS = { sessionId: 200, waitId: 200, kind: 50, title: 500, detail: 4000, childSessionId: 200, model: 200, outputFile: 4096, toolCallId: 200 };
 
-// The first part of validWait a report fails, in words.
+// The first part of validWait a report fails, in words (validWait decides; this only says why).
 export function whyInvalid(p) {
   if (!p || typeof p !== 'object' || Array.isArray(p)) return 'params 须为对象';
   for (const key of ['sessionId', 'waitId']) if (typeof p[key] !== 'string' || !p[key]) return `缺 ${key}`;

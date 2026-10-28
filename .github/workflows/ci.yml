@@ -28,8 +28,8 @@ jobs:
         run: node scripts/install-plugins.mjs
       - name: 检查包与插件的测试
         run: npm test
-      - name: 协议副本与检查包一致
-        run: node scripts/sync-protocol.mjs --check
+      - name: 插件契约与 Coda 同步的一致（check/coda/ 与 docs/agent-protocol.md 没被手改，依赖版本与 Coda 相同）
+        run: node scripts/check-contract.mjs
       - name: 模板：清单 + 握手 + 一轮
         run: |
           for dir in templates/*/; do node bin/check.mjs "$dir" --live; done

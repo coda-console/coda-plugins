@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, rm, access, mkdir, utimes } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
-import { panelItems } from '../../../check/panel.mjs';
+import { panelTypes } from '../../../check/panel.mjs';
 import { account, card, windows } from '../../../plugins/kimi/scripts/quota.mjs';
 import { KimiUnavailable, kimiWeb } from '../../../plugins/kimi/scripts/web.mjs';
 import { declaredPanel, installed, pluginEnv, run, signIn } from '../command.mjs';
@@ -71,7 +71,7 @@ test('the quota is what the plan has left, booster balance included; who is sign
   assert.throws(() => account({ kind: 'error', message: 'timed out' }), /没有说明/, 'a passing fault is not a sign-out');
   const shown = card({ name: '', plan: '' }, { error: 'Kimi 本地服务返回 500' });
   assert.deepEqual(shown, { type: 'card', title: 'Kimi', items: [{ type: 'error', text: '暂时无法获取额度：Kimi 本地服务返回 500' }] });
-  assert.deepEqual(panelItems(JSON.stringify({ items: [shown] }), declared), ['card', 'error'], 'a reading Coda takes');
+  assert.deepEqual(panelTypes(JSON.stringify({ items: [shown] }), declared), ['card', 'error'], 'a reading Coda takes');
 });
 
 test('the CLI\'s local server is started privately, asked each path with its token, and ended with its directory', async t => {
@@ -99,7 +99,7 @@ test('the panel shows the login and its quota, asks who it is once per state of 
   const read = async () => {
     const result = await run(declared.command, pluginEnv('kimi', { HOME: m.home, KIMI_CODE_HOME: '', CODA_PLUGIN_STATE: state }));
     assert.equal(result.code, 0, result.stderr);
-    panelItems(result.stdout, declared);
+    panelTypes(result.stdout, declared);
     return JSON.parse(result.stdout).items;
   };
   assert.deepEqual(await read(), [], 'no login here: offered under「添加资源」');

@@ -7,14 +7,14 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { panelItems } from '../../../check/panel.mjs';
+import { panelTypes } from '../../../check/panel.mjs';
 import { panel } from '../../../plugins/codex/scripts/quota.mjs';
 import { declaredPanel, pluginEnv, run, signIn } from '../command.mjs';
 import { substituted } from '../substitute.mjs';
 
 const declared = declaredPanel('codex', 'login');
 // What Coda takes of a reading: the item types, or a throw.
-const takes = value => panelItems(JSON.stringify(value), declared);
+const takes = value => panelTypes(JSON.stringify(value), declared);
 
 async function root(t) {
   const dir = await mkdtemp(join(tmpdir(), 'coda-codex-panel-'));

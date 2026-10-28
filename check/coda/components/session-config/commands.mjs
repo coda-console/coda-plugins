@@ -1,0 +1,111 @@
+import { requireCondition as check } from '../../domain/errors.mjs';
+import { AGENT_ID, keys, object, text } from '../../domain/values.mjs';
+
+// What a session runs with: its model, effort and mode, and the agent's other config options by their ID (`options`: a
+// choice's ID, or on and off for a switch), as the agent's catalog offers them (docs/agent-protocol.md「ACP 部分」).
+// Absence means resolve the adapter default. Actual values belong to Turn.
+export const OPTIONS_LIMIT = 20;
+export function configOptions(value) {
+  if (value === undefined) return undefined;
+  object(value, '配置项');
+  const entries = Object.entries(value);
+  check(entries.length <= OPTIONS_LIMIT, 'invalid_input', `配置项至多 ${OPTIONS_LIMIT} 个`);
+  for (const [id, option] of entries) {
+    check(id.length > 0 && id.length <= 100 && !/[\0\n]/.test(id), 'invalid_input', '配置项的 ID 无效');
+    check(typeof option === 'boolean' || (typeof option === 'string' && option.length > 0 && option.length <= 200 && !option.includes('\0')),
+      'invalid_input', `配置项 ${id} 的值须为开关或选项 ID`);
+  }
+  return value;
+}
+export function settings(value = {}) {
+  object(value, '模型设置');
+  keys(value, ['model', 'effort', 'mode', 'options']);
+  const options = configOptions(value.options);
+  return { ...Object.fromEntries(['model', 'effort', 'mode'].filter(key => value[key] !== undefined).map(key => [key, text(value[key], key)])),
+    ...(options ? { options } : {}) };
+}
+
+// Upload IDs as the client names them are the request's identity. What is on disk is read once, when the
+// message is first accepted: an agent may since have changed or removed the file, and a replay must still match.
+export function attachments(value = []) {
+  check(Array.isArray(value) && value.length <= 20 && new Set(value).size === value.length, 'invalid_input', '附件列表无效');
+  return value.map(id => text(id, '附件标识', 100));
+}
+// A message without files keeps the request identity it always had.
+export const withAttachments = (value, ids) => ids.length ? { ...value, attachments: ids } : value;
+// Passages the user picked from the conversation, kept apart from their own words. Together they stay
+// within a message's length, which keeps a request under the 1 MiB body limit.
+export function quotes(value = []) {
+  check(Array.isArray(value) && value.length <= 20, 'invalid_input', '引用列表无效');
+  const passages = value.map(passage => text(passage, '引用', 20_000));
+  check(passages.reduce((sum, passage) => sum + passage.length, 0) <= 100_000, 'invalid_input', '引用合计超过 100000 字');
+  return passages;
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+export function firstMessage(value) {
+  object(value, '首次发送');
+  keys(value, ['requestId', 'projectId', 'title', 'agent', 'checkout', 'settings', 'text', 'attachments', 'quotes', 'handoffSource', 'parentThreadId',
+    'threadId', 'extensionParent']);
+  const handoff = value.handoffSource === undefined ? {} : { handoffSource: text(value.handoffSource, '交接来源', 100) };
+  const parent = value.parentThreadId === undefined ? {} : { parentThreadId: text(value.parentThreadId, '父会话', 100) };
+  check(!parent.parentThreadId || handoff.handoffSource === parent.parentThreadId, 'invalid_input', '子会话必须引用父会话上下文');
+  // Which agents may run is the store's to say (its plugin installed); here only that it names one.
+  check(typeof value.agent === 'string' && AGENT_ID.test(value.agent), 'invalid_input', 'Agent 不可用');
+  // A session an extension starts for a parent session this kernel does not keep (docs/subagent-design.md「扩展作为调用方」):
+  // the extension names it, so that a retry finds it and the parent knows it before the answer comes, and says who calls
+  // it — `caller`, which every later call of that parent's must name again, `threadId` and `title` of the parent, and
+  // `location`, where the parent is, in words — all as the extension knows them. Only an extension may say so
+  // (transport/http.mjs); the child works in a worktree of its own, and is nobody's child here.
+  const outside = value.extensionParent === undefined ? {} : (() => {
+    const p = object(value.extensionParent, '父会话');
+    keys(p, ['caller', 'threadId', 'title', 'location']);
+    check(UUID.test(value.threadId ?? ''), 'invalid_input', '扩展发起的子会话须带会话标识（UUID）');
+    check(value.parentThreadId === undefined && value.handoffSource === undefined && value.checkout?.kind === 'worktree', 'invalid_input',
+      '扩展发起的子会话只在新工作树里开始');
+    return { threadId: value.threadId, extensionParent: { caller: text(p.caller, '调用方', 200), threadId: text(p.threadId, '父会话', 100),
+      title: typeof p.title === 'string' ? p.title.slice(0, 200) : '', ...(typeof p.location === 'string' && p.location ? { location: p.location.slice(0, 200) } : {}) } };
+  })();
+  check(value.threadId === undefined || value.extensionParent !== undefined, 'invalid_input', '只有扩展发起的子会话可以指定会话标识');
+  const checkout = object(value.checkout, '工作位置');
+  keys(checkout, ['kind', 'baseRef']);
+  check(['original', 'worktree', 'handoff'].includes(checkout.kind), 'invalid_input', '工作位置无效');
+  if (checkout.kind !== 'worktree') {
+    check(checkout.baseRef === undefined, 'invalid_input', '此工作位置不接受起点分支');
+    check(checkout.kind !== 'handoff' || handoff.handoffSource, 'invalid_input', '沿用工作目录需要交接来源');
+  } else {
+    text(checkout.baseRef, '起点分支', 500);
+    check(!checkout.baseRef.startsWith('-') && !/[\r\n]/.test(checkout.baseRef), 'invalid_input', '起点分支无效');
+  }
+  const message = text(value.text, '消息', 100_000), passages = quotes(value.quotes);
+  return withAttachments({
+    ...handoff,
+    ...parent,
+    ...outside,
+    requestId: text(value.requestId, '请求标识', 100),
+    projectId: text(value.projectId, '项目标识', 100),
+    title: text(value.title ?? message.trim().slice(0, 80), '会话标题'),
+    agent: value.agent,
+    checkout: checkout.kind === 'worktree' ? { kind: 'worktree', baseRef: checkout.baseRef } : { kind: checkout.kind },
+    settings: settings(value.settings),
+    text: message,
+    ...(passages.length ? { quotes: passages } : {}),
+  }, attachments(value.attachments));
+}
+
+// Agent tool calls. The calling agent never chooses the child's approval mode: the child follows its parent's
+// (see `delegateMode`), so a manually approved session cannot start an unattended one. `turn` is a ticket checked inside the commit transaction and
+// is not part of request equality: a replay may arrive after the turn has ended.
+export function childSpawn(value) {
+  object(value, 'spawn');
+  keys(value, ['turn', 'requestId', 'agent', 'prompt', 'title', 'model', 'effort', 'checkout', 'project']);
+  check([undefined, 'shared', 'worktree'].includes(value.checkout), 'invalid_input', 'checkout 必须是 shared 或 worktree');
+  check(typeof value.agent === 'string' && AGENT_ID.test(value.agent), 'invalid_input', 'agent 须为 Agent 的 ID（agents 工具列出的）');
+  const prompt = text(value.prompt, 'prompt', 100_000);
+  return { turn: text(value.turn, 'turn', 100), requestId: text(value.requestId, 'requestId', 100), agent: value.agent, prompt,
+    title: text(value.title ?? prompt.trim().slice(0, 80), 'title'), checkout: value.checkout ?? 'shared',
+    ...(value.project === undefined ? {} : { project: text(value.project, 'project', 200) }),
+    settings: settings(Object.fromEntries(['model', 'effort'].filter(k => value[k] !== undefined).map(k => [k, value[k]]))) };
+}
+
+

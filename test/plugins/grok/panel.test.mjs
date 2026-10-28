@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, writeFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { panelItems } from '../../../check/panel.mjs';
+import { panelTypes } from '../../../check/panel.mjs';
 import { grokAsk } from '../../../plugins/grok/scripts/ask.mjs';
 import { account, panel, windows } from '../../../plugins/grok/scripts/quota.mjs';
 import { declaredPanel, installed, pluginEnv, run, signIn } from '../command.mjs';
@@ -41,7 +41,7 @@ test('Grok credits read as its own /usage shows them: bars of what is left', () 
   assert.throws(() => account({}, {}), /没有说明登录状态/, 'a passing fault is not a sign-out');
   const { items } = panel([subscription, { firstName: null }, {}]);
   assert.deepEqual(items, [{ type: 'card', title: 'Grok', subtitle: 'SuperGrok', items: [{ type: 'error', text: '暂时无法获取额度：Grok 没有给出额度' }] }]);
-  assert.deepEqual(panelItems(JSON.stringify({ items }), declared), ['card', 'error'], 'a reading Coda takes');
+  assert.deepEqual(panelTypes(JSON.stringify({ items }), declared), ['card', 'error'], 'a reading Coda takes');
 });
 
 // A machine's home with a Grok CLI where its installer puts it, speaking ACP as the real one does. FAKE_GROK: `out` says no
@@ -89,7 +89,7 @@ test('the panel shows nothing without a login file, and the login\'s card with o
     const m = await machine(t, { signedIn });
     const result = await run(declared.command, pluginEnv('grok', { HOME: m.home, GROK_HOME: '' }));
     assert.equal(result.code, 0, result.stderr);
-    panelItems(result.stdout, declared);
+    panelTypes(result.stdout, declared);
     assert.deepEqual(JSON.parse(result.stdout).items.map(c => c.title), expected);
   }
 });

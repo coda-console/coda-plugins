@@ -23,7 +23,7 @@ jobs:
       - run: npm ci
       - run: node scripts/install-plugins.mjs
       - run: npm test
-      - run: node scripts/sync-protocol.mjs --check
+      - run: node scripts/check-contract.mjs
       - name: Validate plugin manifests
         run: for dir in plugins/*/; do node bin/check.mjs "$dir" --manifest; done
       - name: Inspect npm archives

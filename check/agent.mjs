@@ -1,23 +1,33 @@
 // The handshake and live levels for one agent: the checker plays Coda (backend/src/adapters/acp.mjs AcpSession), starts the
 // agent's command the way Coda does, says what Coda says, and holds what the agent says to ACP's schema and to
 // docs/agent-protocol.md. Where Coda would quietly drop or refuse something, the check fails and says what Coda does.
+import { PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { ACP_PROTOCOL_VERSION, CANCEL_LIMIT, METHOD_NOT_FOUND, OPEN_LIMIT, SIGNED_OUT, STEERING, STEERING_OUTCOMES, TERM_GRACE, RETRY_DELAYS, continuationPrompt,
-  agentErrorMessage, serviceFailure, cleared, clientCapabilities, currentModel, pluginEnv, steeringParams, supportsSteering, systemPrompt, takesInstructions } from './coda.mjs';
+import { cleared } from './coda/components/plugins/plugin-rules.mjs';
+import { RETRY_DELAYS, continuationPrompt, serviceFailure } from './coda/components/prompt-recovery/prompt-recovery.mjs';
+import { NOT_STEERED, OPEN_LIMIT, SIGNED_OUT, STEERED, STEERING, STOP_LIMIT, TERM_GRACE, clientCapabilities, currentModel, steeringParams, supportsSteering, systemPrompt,
+  takesInstructions } from './coda/domain/agent-protocol.mjs';
+import { agentErrorMessage } from './coda/kernel/agent-failures.mjs';
 import { temporary } from './leftovers.mjs';
 import { AgentProcess, Exited, Timeout } from './process.mjs';
 import { explain, schemas } from './schema.mjs';
 import { Waits } from './waits.mjs';
 
+// The ACP version Coda speaks: the SDK's, at the version Coda pins (check/coda/contract.json `packages`, as package.json here).
+export const ACP_PROTOCOL_VERSION = PROTOCOL_VERSION;
+// What Coda answers an agent request it has no handler for (JSON-RPC's, as the SDK sends it): it handles only approvals and forms.
+const METHOD_NOT_FOUND = -32601;
+// What an agent answers a message sent into a turn: it joined the turn, or the turn had ended.
+const STEERING_OUTCOMES = [STEERED, NOT_STEERED];
 // `exit`: how long an agent may take to go after SIGTERM, or after its input ends. `cancelReply`: how soon a turn whose work
 // was done answers once it has read the cancel. `pause`: a quiet moment between two turns, as between two messages of a
 // person, for what an agent says after a turn to be heard outside it. `term`: how long Coda's session host waits after
 // SIGTERM before SIGKILL. `steer`: how long a steering request may take to be answered; `steerQuiet`: how long an agent that
 // answered one outside a turn is watched for a turn of its own.
-export const LIMITS = { open: OPEN_LIMIT, turn: 180_000, settle: 60_000, cancel: CANCEL_LIMIT, exit: 5_000, cancelDelay: 500, cancelReply: 5_000,
+export const LIMITS = { open: OPEN_LIMIT, turn: 180_000, settle: 60_000, cancel: STOP_LIMIT, exit: 5_000, cancelDelay: 500, cancelReply: 5_000,
   pause: 500, term: TERM_GRACE, retryDelays: RETRY_DELAYS, steer: 30_000, steerQuiet: 2_000 };
 // A request of the checker's own, sent right behind a `session/cancel`; nothing answers it but an error (Method not found).
 // The agent reads it after the cancel, so its answer is written after the agent has read the cancel.
@@ -38,13 +48,13 @@ const STEER_TURN = '从 1 数到 20，每个数字单独一行。', STEER_TEXT =
 const secs = ms => (ms / 1000).toFixed(1);
 const short = (text, max = 80) => (text.length > max ? `${text.slice(0, max)}…` : text).replace(/\s+/g, ' ');
 
-// The environment Coda starts the agent with: the session's (here the checker's), and its plugin's (`plugin`: its directory,
-// settings and the plugins it depends on).
-const agentEnv = (plugin, base) => ({ ...cleared(process.env), ...pluginEnv({ ...plugin, stateDir: join(base, 'state') }) });
+// The environment Coda starts the agent with: the session's (here the checker's), and what Coda gives its plugin's processes
+// (`checked.env`, components/plugins/plugin-rules.mjs pluginEnv) with the state directory made for it.
+const agentEnv = (checked, base) => ({ ...cleared(process.env), ...checked.env(join(base, 'state')) });
 
 // One process of the agent with the session it opens, and what it says, taken in order.
 class Session {
-  constructor({ agent, plugin, base, say, limits, instructions }) {
+  constructor({ agent, checked, base, say, limits, instructions }) {
     this.say = say; this.limits = limits; this.instructions = instructions;
     this.waits = new Waits({ fail: (rule, message) => this.at.fail(rule, message), warn: (rule, message) => this.at.warn(rule, message) });
     this.turn = null; this.autonomous = null; this.autonomousTurns = 0; this.loading = true; this.pendingWaits = [];
@@ -53,7 +63,7 @@ class Session {
     this.cwd = join(base, 'work');
     for (const dir of [this.cwd, join(base, 'state')]) mkdirSync(dir, { recursive: true });
     this.proc = new AgentProcess({ command: agent.command, cwd: this.cwd,
-      env: agentEnv(plugin, base),
+      env: agentEnv(checked, base),
       onMessage: message => { this.receive(message); this.changed(); }, onNoise: (line, why) => this.noise(line, why) });
     this.proc.exited.then(() => this.changed());
   }
@@ -309,8 +319,8 @@ class Session {
 // The end of its input, in a process of its own once it has answered `initialize`: what an agent sees when whatever runs
 // it is gone without stopping it (Coda's session host killed outright). Coda stops agents with SIGTERM and does not rely on
 // it, so one that stays is only worth a look.
-async function inputEnd({ agent, plugin, base, limits, say }) {
-  const proc = new AgentProcess({ command: agent.command, cwd: join(base, 'work'), env: agentEnv(plugin, base) });
+async function inputEnd({ agent, checked, base, limits, say }) {
+  const proc = new AgentProcess({ command: agent.command, cwd: join(base, 'work'), env: agentEnv(checked, base) });
   try {
     try { await proc.request('initialize', { protocolVersion: ACP_PROTOCOL_VERSION, clientCapabilities: clientCapabilities() }, { timeout: limits.open }); }
     catch { return; }
@@ -344,7 +354,7 @@ async function steering(session, limits, say) {
   if (session.proc.exit) return;
   await delay(limits.steerQuiet);
   const work = session.idleWork.slice(before);
-  if (late.outcome !== 'promptRequired') say.fail('live.steering', `一轮已经结束时发 ${STEERING}，回了 ${answer(late)}：要回 promptRequired（reason noRunningTurn），消息不收、也不自己另开一轮；Coda 把其他答复记为结果未知，不再把消息作为下一轮发出`);
+  if (late.outcome !== NOT_STEERED) say.fail('live.steering', `一轮已经结束时发 ${STEERING}，回了 ${answer(late)}：要回 promptRequired（reason noRunningTurn），消息不收、也不自己另开一轮；Coda 把其他答复记为结果未知，不再把消息作为下一轮发出`);
   else if (work.length) say.fail('live.steering', `一轮已经结束时发 ${STEERING}，回了 promptRequired，随后却自己说起话来（${work.length} 条 session/update：${[...new Set(work)].join('、')}）：promptRequired 的消息没被接收，Agent 不得自己另开一轮，Coda 会把它作为下一轮发出`);
   else say.pass('live.steering', `一轮已经结束时插话：回 promptRequired${late.reason ? `（${late.reason}）` : ''}，${secs(limits.steerQuiet)} 秒里没有自己另开一轮`);
   await delay(limits.pause);
@@ -353,7 +363,7 @@ async function steering(session, limits, say) {
   const steered = await turn.steered;
   if (!STEERING_OUTCOMES.includes(steered.outcome)) say.fail('live.steering', `一轮进行中发 ${STEERING}，回了 ${answer(steered)}：要么 injected（加进这一轮），要么 promptRequired（这一轮已经结束）；Coda 把其他答复记为结果未知`);
   else if (!stop) return;
-  else if (steered.outcome === 'injected') say.pass('live.steering', `一轮进行中插话：injected，原来的 session/prompt 照常结束（stopReason ${stop}，${turn.updates} 条 session/update${turn.text ? `，回复「${short(turn.text)}」` : ''}）`);
+  else if (steered.outcome === STEERED) say.pass('live.steering', `一轮进行中插话：injected，原来的 session/prompt 照常结束（stopReason ${stop}，${turn.updates} 条 session/update${turn.text ? `，回复「${short(turn.text)}」` : ''}）`);
   else say.info('live.steering', `一轮进行中插话：回 promptRequired，插话到时这一轮已经结束（stopReason ${stop}）`);
 }
 
@@ -381,24 +391,24 @@ async function live(session, { prompt, word }, limits, say) {
   if (!session.malformed) say.pass('live.updates', `session/update 都合 ACP schema（SDK 1.4.0）：${kinds || '无'}`);
 }
 
-// Checks one declared agent of the plugin in `pluginDir`, with the plugin's `settings` and `dependencies` (by ID, their
-// directories) as Coda gives them; `say(level)` gives the report scope for a level.
-export async function checkAgent({ agent, pluginDir, settings = {}, dependencies = {}, live: running = false, prompt = '只回复 ok', limits: given = {}, say }) {
+// Checks one declared agent of the plugin as the manifest level read it (`checked`, manifest.mjs checkManifest), started as
+// Coda starts it; `say(level)` gives the report scope for a level.
+export async function checkAgent({ agent, checked, live: running = false, prompt = '只回复 ok', limits: given = {}, say }) {
   const limits = { ...LIMITS, ...given }, temp = temporary('coda-plugin-check-'), base = temp.dir;
-  const scopes = { handshake: say('handshake'), live: say('live') }, sessions = [], plugin = { pluginDir, settings, dependencies };
+  const scopes = { handshake: say('handshake'), live: say('live') }, sessions = [];
   const word = `coda-${randomBytes(3).toString('hex')}`, instructions = instructionsFor(word);
   try {
-    const session = new Session({ agent, plugin, base, say: scopes, limits, instructions });
+    const session = new Session({ agent, checked, base, say: scopes, limits, instructions });
     sessions.push(session);
     const opened = await session.open();
     if (opened === 'ok' && running) await live(session, { prompt, word }, limits, scopes.live);
     else if (running) scopes.live.skip('live.skipped', opened === 'signed-out' ? '未登录，一轮跳过' : '握手没过，一轮跳过');
     else scopes.live.skip('live.skipped', '一轮要 --live（会真的发一条提示词，可能要登录、花额度）');
     await session.finish(scopes.handshake);
-    if (opened !== 'failed') await inputEnd({ agent, plugin, base, limits, say: scopes.handshake });
+    if (opened !== 'failed') await inputEnd({ agent, checked, base, limits, say: scopes.handshake });
     if (opened !== 'ok' || !running) return;
     if (!session.canLoad) { scopes.live.skip('live.load', '没声明 loadSession：Coda 不会要求恢复，session/load 不查'); return; }
-    const again = new Session({ agent, plugin, base, say: scopes, limits, instructions });
+    const again = new Session({ agent, checked, base, say: scopes, limits, instructions });
     sessions.push(again);
     again.live = true;
     if (await again.open(session.sessionId) === 'ok') {
