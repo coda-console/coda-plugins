@@ -4,6 +4,7 @@
 // Coda: every session it names to Coda is `X`, and each run of it a wait of its own. Coda's session instructions are checked
 // here and handed to the patched codex-acp in the request's `_meta` (instructions.mjs).
 import { INSTRUCTIONS, sessionInstructions } from './instructions.mjs';
+import { sleepTitle } from './sleep.mjs';
 
 const record = value => value && typeof value === 'object' && !Array.isArray(value);
 const string = value => typeof value === 'string' && value.length > 0;
@@ -16,7 +17,7 @@ export class CodexWaits {
   // `agentInfo`: the Codex it runs, said in place of codex-acp's own name and version.
   constructor({ agentInfo = null } = {}) {
     // The root session; Coda's requests whose answers are read here, by id; the waits said, by id.
-    this.root = null; this.asked = new Map(); this.waits = new Map(); this.agentInfo = agentInfo;
+    this.root = null; this.asked = new Map(); this.waits = new Map(); this.sleeps = new Map(); this.agentInfo = agentInfo;
   }
   // What Coda says: `agent`, what codex-acp is told; `coda`, what Coda is answered here.
   fromCoda(message) {
@@ -37,6 +38,7 @@ export class CodexWaits {
     }
     if (message.method === 'session/new') this.asked.set(message.id, 'session');
     else if (message.method === 'session/load' && string(message.params?.sessionId)) this.root = message.params.sessionId;
+    else if (message.method === 'session/prompt') this.asked.set(message.id, { prompt: message.params.sessionId });
     return { agent: [message], coda: [] };
   }
   // A command is stopped through the session that keeps it, the root; a subagent by cancelling its session.
@@ -52,12 +54,31 @@ export class CodexWaits {
   // What codex-acp says, as said to Coda.
   fromAgent(message) {
     if (!record(message)) return [];
-    if ('id' in message && !('method' in message)) return [this.answer(message)];
+    if ('id' in message && !('method' in message)) {
+      const sessionId = this.asked.get(message.id)?.prompt;
+      // Cancelling or failing a turn can skip the sleep's completed item. End its waits before ending the prompt.
+      const finished = sessionId ? this.finishSleeps(base(sessionId), message.error ? 'failed' : message.result?.stopReason === 'cancelled' ? 'cancelled' : 'done') : [];
+      return [...finished, this.answer(message)];
+    }
     if (record(message.params) && string(message.params.sessionId)) message = { ...message, params: { ...message.params, sessionId: base(message.params.sessionId) } };
     if (message.method !== 'session/update' || !record(message.params?.update)) return [message];
     const { sessionId, update: u } = message.params;
     const said = params => [{ jsonrpc: '2.0', method: '_coda/wait', params: { sessionId, ...params } }];
     switch (u.sessionUpdate) {
+      case 'session_info_update': {
+        const sleep = u._meta?.coda?.sleep;
+        if (!sleep) return [message];
+        const waitId = `sleep:${sleep.id}`;
+        if (sleep.state === 'waiting') {
+          if (!this.sleeps.has(sessionId)) this.sleeps.set(sessionId, new Set());
+          this.sleeps.get(sessionId).add(waitId);
+          return said({ waitId, kind: 'task', state: 'waiting', title: sleepTitle(sleep.durationMs),
+            detail: '等待结束后继续；发送消息并选择「立即插话」可提前继续。', stoppable: false });
+        }
+        if (!this.sleeps.get(sessionId)?.delete(waitId)) return [];
+        if (!this.sleeps.get(sessionId).size) this.sleeps.delete(sessionId);
+        return said({ waitId, state: 'done' });
+      }
       case 'subagent_spawned': {
         if (!string(u.subagentSessionId)) return [];
         const stoppable = u.capabilities?.cancel === true;
@@ -66,7 +87,10 @@ export class CodexWaits {
           childSessionId: base(u.subagentSessionId), stoppable });
       }
       case 'subagent_state_update':
-        return string(u.subagentSessionId) && SUBAGENT_END[u.state] ? said({ waitId: u.subagentSessionId, state: SUBAGENT_END[u.state] }) : [];
+        return string(u.subagentSessionId) && SUBAGENT_END[u.state] ? [
+          ...this.finishSleeps(base(u.subagentSessionId), SUBAGENT_END[u.state]),
+          ...said({ waitId: u.subagentSessionId, state: SUBAGENT_END[u.state] }),
+        ] : [];
       case 'async_task_spawned': {
         if (!string(u.asyncTaskId)) return [];
         const stoppable = u.canStop === true;
@@ -85,6 +109,11 @@ export class CodexWaits {
       }
     }
     return [message];
+  }
+  finishSleeps(sessionId, state) {
+    const pending = this.sleeps.get(sessionId) ?? [];
+    this.sleeps.delete(sessionId);
+    return [...pending].map(waitId => ({ jsonrpc: '2.0', method: '_coda/wait', params: { sessionId, waitId, state } }));
   }
   answer(message) {
     const asked = this.asked.get(message.id);

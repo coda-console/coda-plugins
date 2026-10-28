@@ -206,6 +206,13 @@ Grok 插件通过 ACP 提供原来的「自动审批」「全部放行」两个�
 不修改运行机配置。自动审批的判断、禁止规则与 hooks 都由 Grok 执行。
 该通知已核对 Grok CLI 1.0.52，升级 CLI 时需复核。
 
+### Codex 主动等待
+
+Codex 调用 `clock.sleep` 时，会话底部显示一个后台等待项（例如「等待 2 小时」），等待结束后留在结束时的位置。
+这次等待仍属于当前一轮；发送消息并选择「立即插话」可提前继续，停止会话会同时结束等待。
+Codex 没有只取消单个 sleep 的接口，因此等待项不提供单独的停止按钮。正常结束、插话唤醒、整轮取消或失败都会了结等待，
+子 Agent 的等待归它自己的会话。
+
 ### Codex 速度
 
 Codex 用普通 ACP 选择型配置项 `service-tier`（「速度」）报告速度，Coda 按通用 `configOptions` 展示和设置。
@@ -446,7 +453,7 @@ CI 先装各插件的依赖再跑全部测试，`plugins/*` 只查清单：真�
 
 MIT，见 [LICENSE](LICENSE)。各插件的品牌图形归各自权利人所有，来源写在插件的 `icons/README.md`。
 
-`plugins/codex/agent/` 里的 `relay.mjs`、`titles.mjs`、`network.mjs`、`process-exit.mjs`、`options.mjs`、`subagents.mjs`、`instructions.mjs`、`steering.mjs`、`providers.mjs` 在加载时给锁定版本的
+`plugins/codex/agent/` 里的 `relay.mjs`、`titles.mjs`、`network.mjs`、`process-exit.mjs`、`options.mjs`、`subagents.mjs`、`instructions.mjs`、`steering.mjs`、`providers.mjs`、`sleep.mjs` 在加载时给锁定版本的
 [codex-acp](https://github.com/agentclientprotocol/codex-acp)（Apache-2.0，Copyright 2025 JetBrains s.r.o.）打补丁，补丁里含 codex-acp 构建产物的原文片段。
 这些片段按 [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0) 使用，许可全文也随 npm 包装在 `node_modules/@agentclientprotocol/codex-acp/LICENSE`；
 codex-acp 本身作为 npm 依赖安装，不在本仓库里。

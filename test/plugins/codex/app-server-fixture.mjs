@@ -32,12 +32,20 @@ const results = {
 };
 const command = { type: 'commandExecution', id: 'command-1', command: 'sleep 100', cwd: '/', processId: '4242', status: 'inProgress', commandActions: [], source: 'agent' };
 let terminals = [], instructions = '', loaded = false;
+let sleeping = null;
 let buffer = '';
 process.stdin.on('data', chunk => {
   buffer += chunk;
   for (let end; (end = buffer.indexOf('\n')) >= 0;) {
     const message = JSON.parse(buffer.slice(0, end)); buffer = buffer.slice(end + 1);
     if (message.id === undefined || !message.method) continue;
+    if (sleeping && ['turn/steer', 'turn/interrupt'].includes(message.method)) {
+      const { turn, item } = sleeping; sleeping = null;
+      send({ id: message.id, result: message.method === 'turn/steer' ? { turnId: turn.id } : {} });
+      if (message.method === 'turn/steer') send({ method: 'item/completed', params: { threadId: thread.id, turnId: turn.id, item } });
+      send({ method: 'turn/completed', params: { threadId: thread.id, turn: { ...turn, status: message.method === 'turn/steer' ? 'completed' : 'interrupted' } } });
+      continue;
+    }
     if (message.method === 'turn/start') appendFileSync(join(process.env.FAKE_CODEX_STATE, 'prompts.ndjson'), JSON.stringify(message.params) + '\n');
     if (['thread/start', 'thread/resume'].includes(message.method) && !message.params.ephemeral) instructions = message.params.developerInstructions ?? '';
     if (['thread/start', 'thread/resume', 'thread/name/set'].includes(message.method)) appendFileSync(join(process.env.FAKE_CODEX_STATE, 'threads.ndjson'), JSON.stringify({ method: message.method, params: message.params }) + '\n');
@@ -88,6 +96,12 @@ process.stdin.on('data', chunk => {
       continue;
     }
     const input = JSON.stringify(message.params.input ?? '');
+    if (input.includes('clock.sleep') && !message.params.outputSchema) {
+      const item = { type: 'sleep', id: `sleep-${turn.id}`, durationMs: 7200000 };
+      send({ method: 'item/started', params: { threadId: thread.id, turnId: turn.id, item } });
+      if (input.includes('hold')) { sleeping = { turn, item }; continue; }
+      send({ method: 'item/completed', params: { threadId: thread.id, turnId: turn.id, item } });
+    }
     if (input.includes('subagent')) {
       const child = 'fake-child', childTurn = { id: `child-${turn.id}`, items: [], status: 'inProgress', error: null };
       send({ method: 'item/started', params: { threadId: thread.id, turnId: turn.id, item: { type: 'subAgentActivity', id: 'activity-1', agentThreadId: child, agentPath: '/root/echo_check', kind: 'started' } } });
