@@ -128,8 +128,8 @@
   {
     "id": "github",
     "displayName": "GitHub",
-    "description": "在 Coda 里登录 GitHub 账号，可以登录多个。Coda 启动的会话、流程步骤与插件安装访问 GitHub 时，按仓库的 owner 自动试出能推送的账号并记下，之后这个 owner 的仓库都用它；账号按面板上的顺序试，可以上移下移；会话里的 gh 与提交署名也跟着这个账号；gh 的只读命令遇到网络类失败会自动重试。添加项目、安装插件时可以从这些账号的仓库里挑。",
-    "version": "1.6.0",
+    "description": "在 Coda 里登录 GitHub 账号，可以登录多个。Coda 启动的会话、流程步骤与插件安装访问 GitHub 时，按仓库的 owner 自动试出能推送的账号并记下，之后这个 owner 的仓库都用它；账号按面板上的顺序试，可以上移下移；会话里的 gh 与提交署名也跟着这个账号；gh 的只读命令遇到网络类失败会自动重试。会话里的 git 也经它交给真正的 git，Git 自己已知、重跑即好的故障（几个工作树同时创建时读到别的还没写好的 commondir）自动重跑；会话推送它开的 PR 的分支时，PR 观察立即去看，PR 已合并或关闭就当场提醒这次推送进不了目标分支。添加项目、安装插件时可以从这些账号的仓库里挑。",
+    "version": "1.8.0",
     "category": "模型与账号",
     "source": {
       "kind": "builtin"
@@ -156,6 +156,10 @@
         "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/gh.mjs\""
       },
       {
+        "name": "git",
+        "command": ". \"$CODA_PLUGIN_PATH/scripts/git.sh\""
+      },
+      {
         "name": "github-reported-pr",
         "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/reported-pr.mjs\""
       }
@@ -163,6 +167,10 @@
     "events": [
       {
         "name": "github.pull_request_reported",
+        "starts": true
+      },
+      {
+        "name": "git.pushed",
         "starts": true
       },
       {
@@ -620,14 +628,14 @@
     "id": "claude",
     "displayName": "Claude",
     "description": "Claude SDK Agent：Coda 基于 Claude Agent SDK 写的 ACP 入口，一个进程一个 SDK 会话；资源页的「Claude」面板显示会话报告的额度，可从 Coda 登录。",
-    "version": "1.7.1",
+    "version": "1.7.2",
     "category": "Agent",
     "source": {
       "kind": "builtin",
       "package": "@coda-console/claude",
       "tag": "latest",
-      "version": "1.7.1",
-      "integrity": "sha512-9qMohzOjOa9b/axGqLmJIMpGqeyBN3cTymzjGI2Q9w0nImRah+/t5sPdTy9k/w2xLY3d7nSnXYJ26A55Bz/m3A==",
+      "version": "1.7.2",
+      "integrity": "sha512-Ux5uWnF1sBwOIUTIXfeZwbRWbJz9ZVKaxPL0Q2QMD7C5uPDzDU1KQjR6fJPKwmIw9kR5YFSz3cq7GuL3DEo4kg==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/claude"
     },
@@ -709,15 +717,15 @@
   {
     "id": "codex",
     "displayName": "Codex",
-    "description": "Codex Agent：Coda 自带的入口运行 codex-acp，报告子 Agent 与后台命令。额度与登录由账号来源插件接管；未接入账号来源时使用 Codex 自己的登录面板。",
-    "version": "1.8.4",
+    "description": "Codex Agent：Coda 自带的入口运行 codex-acp，报告子 Agent、后台命令与命令的自动审核。额度与登录由账号来源插件接管；未接入账号来源时使用 Codex 自己的登录面板。",
+    "version": "1.8.5",
     "category": "Agent",
     "source": {
       "kind": "builtin",
       "package": "@coda-console/codex",
       "tag": "latest",
-      "version": "1.8.4",
-      "integrity": "sha512-5I25uyfwVaAjkOKV7iD5bzFnVGwD0dykFmz12k0sumgICaVKdvkimTK2bZQBAuKwUt8E44F8qSonRRIlIKVK5A==",
+      "version": "1.8.5",
+      "integrity": "sha512-5XPcuzapKiTI/jf8V7JADLTgr2nimB1untf961lhujLlMHPevrMO+u5qIgZPeadLNl7IAo6Gez1GARcpAzfmcw==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/codex"
     },
@@ -1012,14 +1020,14 @@
     "id": "opencode",
     "displayName": "OpenCode",
     "description": "OpenCode Agent：接入原生子会话的状态、过程与停止，跟踪后台命令，并送入会话指令。",
-    "version": "2.2.0",
+    "version": "2.2.1",
     "category": "Agent",
     "source": {
       "kind": "builtin",
       "package": "@coda-console/opencode",
       "tag": "latest",
-      "version": "2.2.0",
-      "integrity": "sha512-mjssWkJr+Pg6bCI9f5JfG3zGrNfE9ecyLZhmz4z3Ij0FHZ7p/4UJ36ps+e18xC8WZDQXkwzOle4xYaxfFPoCAA==",
+      "version": "2.2.1",
+      "integrity": "sha512-Nh8hHSI3mBC43spD6410oCxAfSmjj/OWF1AXEhibCQIxswISHgXt0b39OpY1wHZPENZ9UmFSjmmAJpmdujNuEg==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/opencode"
     },
@@ -1085,15 +1093,15 @@
   {
     "id": "review",
     "displayName": "PR 生命流程",
-    "description": "会话开的 PR 从开出来起一条流程：每个新版本先跑项目声明的检查，再请另一家 Agent 评审，要求修改时交给开 PR 的会话处理、有分歧时交给你仲裁；通过后请你批准合并，跑过项目的合并前检查再合并，合并后按你的选择调用项目的部署、发布流程，PR 合并或关闭时结束。",
-    "version": "2.6.0",
+    "description": "会话开的 PR 从开出来起一条流程：每个新版本先跑项目声明的检查，再请另一家 Agent 评审，要求修改时交给开 PR 的会话处理、有分歧时交给你仲裁；通过后请你批准合并，跑过项目的合并前检查再合并，合并后按你的选择删除远程分支、调用项目的部署和发布流程，PR 合并或关闭时结束。",
+    "version": "2.7.0",
     "category": "工作流程",
     "source": {
       "kind": "builtin",
       "package": "@coda-console/review",
       "tag": "latest",
-      "version": "2.6.0",
-      "integrity": "sha512-OEMg2O/4wJ3hoG/S4cbgXL3Fsmopb4hF6xwDeJbDOR5hWXQ406okHO7uxSOCJCbqp5E8vPTrwmrwvz8CN7qRWw==",
+      "version": "2.7.0",
+      "integrity": "sha512-RI8F5KkWgoKnvCv7Xwk7C0CwXe2AG8WcHOKOSY1oBFwe2qxXhJbgPqroc7IJkjXYhbnW23cmokt9ThP8pPD8gA==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/review"
     },
