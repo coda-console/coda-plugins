@@ -230,8 +230,8 @@ async function retrying(t, answers, config = {}) {
       response.writeHead(400, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ error: { message: said.error, type: 'invalid_request_error' } })); return;
     }
-    response.writeHead(429, { 'content-type': 'application/json', 'retry-after': String(said) });
-    response.end(JSON.stringify({ error: { message: '用量窗口已满，明天 17:42 重置', type: 'rate_limit_error', code: null } }));
+    response.writeHead(429, { 'content-type': 'application/json', 'retry-after': String(said?.retryAfter ?? said) });
+    response.end(JSON.stringify({ error: { message: said?.message ?? '用量窗口已满，明天 17:42 重置', type: 'rate_limit_error', code: null } }));
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { server.closeAllConnections(); server.close(); });
@@ -256,6 +256,22 @@ async function retrying(t, answers, config = {}) {
   return { prompt, turns, updates, request, sessionId, agent };
 }
 const STOPPED = '用量窗口已满，明天 17:42 重置\n\nOpenCode 要等约 15 分钟才会重试，这一轮先结束。';
+
+test('real OpenCode: capacity admission refusal ends as a known service failure with the scheduled wait',
+  { skip: !binary, timeout: 120_000 }, async t => {
+  const message = 'Upstream request failed: [ttft_admission_refused] the cell is at capacity; retry shortly (after 5 s)';
+  const { prompt, turns } = await retrying(t, { Capacity: () => ({ retryAfter: 420, message }), Moment: () => null });
+  const result = await prompt('Capacity, please.');
+  assert.equal(result.result, undefined, JSON.stringify(result));
+  assert.ok(result.error.message.includes(message), result.error.message);
+  assert.match(result.error.message, /^服务容量暂满\n\n/);
+  const failure = result.error.data._meta.coda.failure;
+  assert.equal(failure.kind, 'service_unavailable');
+  assert.equal(failure.input, 'accepted');
+  assert.ok(failure.retryAfterMs > 400_000 && failure.retryAfterMs <= 420_000, JSON.stringify(failure));
+  assert.equal((await prompt('Moment, please.')).result?.stopReason, 'end_turn');
+  assert.deepEqual(turns, ['Capacity', 'Moment']);
+});
 
 test('real OpenCode: a model service\'s wait past a minute ends the turn with its reason; a shorter one OpenCode sits out',
   { skip: !binary, timeout: 120_000 }, async t => {

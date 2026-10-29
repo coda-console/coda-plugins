@@ -93,6 +93,9 @@ OpenCode 遇到模型服务的 429，会照 `Retry-After` 等（OpenCode 2 每�
 Coda 自己对服务故障只等一分钟以内，所以主请求或它仍在等待的前台子会话要等超过一分钟才重试时，入口先 `session/cancel` 停下这一轮（前台子 Agent 随之停下），
 再把这一轮答成失败，原因是服务给的原文加上 OpenCode 要等多久；停下后 OpenCode 回的是什么都不转出。一分钟以内的等待照旧由 OpenCode 自己处理。
 不在入口里按厂商的错误文字判断额度耗尽。
+明确的 `[ttft_admission_refused] the cell is at capacity` 容量拒绝在停下原生轮次后报告为 `service_unavailable`，
+带 `input: accepted` 与 OpenCode 实际安排的剩余等待 `retryAfterMs`；Coda 按该等待决定是否重试，长等待以已知失败结束。
+保留服务原文（其中建议的短等待也原样保留），不把它当成 OpenCode 的实际重试时间，不把普通 429 或认证失败归为容量拒绝。
 
 OpenCode 的原生子会话经 ACP 的 `opencode/child-session-updates` 能力接入（入口 `agent/children.mjs`，核对 OpenCode 2.1.4）：
 `opencode/session/child_update` 的创建与运行状态登记成 `_coda/wait`，带原生 `childSessionId`；子会话的回复、思考与工具调用各归自己的过程，
