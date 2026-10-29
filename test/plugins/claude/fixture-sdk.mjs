@@ -15,6 +15,7 @@ export function fixtureSdk(argv = []) {
   class Query {
     // The background tasks that have not ended, as the SDK lists them whenever the list changes.
     alive = new Map();
+    usage = { input_tokens: 10 };
     queue = []; wake = null; closed = false; controller = new AbortController();
     constructor({ prompt, options }) {
       this.options = options; this.id = options.resume ?? options.sessionId; this.model = options.model ?? models[0].value; this.mode = options.permissionMode ?? 'default';
@@ -276,7 +277,7 @@ export function fixtureSdk(argv = []) {
       for (const m of this.inbox.filter(m => m.priority === 'next')) { this.folded.push(m.uuid); this.text(`插话：${m.message.content}`); }
       this.inbox = this.inbox.filter(m => m.priority !== 'next');
     }
-    // `usage`, when a test sets it: what each response of the main thread says it carried and wrote to the cache.
+    // `usage`: what each response of the main thread says it carried and wrote to the cache.
     text(text, id = randomUUID(), parent = null) {
       const uuid = randomUUID(); this.entries.push({ type: 'assistant', text, uuid }); this.persist();
       this.emit({ type: 'assistant', uuid, parent_tool_use_id: parent, message: { id, content: [{ type: 'text', text }], ...(this.usage && !parent ? { usage: this.usage } : {}) } });

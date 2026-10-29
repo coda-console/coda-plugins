@@ -144,7 +144,7 @@ test('a prompt is answered by the result that names its input: ended, cancelled,
   // With it, what is known of the main thread's cache (compaction.mjs).
   const { _meta, ...usage } = c.updates().find(u => u.sessionUpdate === 'usage_update');
   assert.deepEqual(usage, { sessionUpdate: 'usage_update', used: 10, size: 1000, cost: { amount: 0, currency: 'USD' } });
-  assert.deepEqual(Object.keys(_meta.coda), ['lastRequestAt']);
+  assert.deepEqual(Object.keys(_meta.coda), ['lastRequestAt', 'contextTokens']);
   const held = c.prompt('hold');
   await until(() => c.said().includes('holding'));
   c.send({ method: 'session/cancel', params: { sessionId: c.sessionId } });
@@ -156,6 +156,38 @@ test('a prompt is answered by the result that names its input: ended, cancelled,
   await c.emit({ type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['认证失败'] });
   const failed = await pending;
   assert.deepEqual([failed.error.code, failed.error.message], [-32603, '认证失败']);
+});
+
+test('context usage is the last main-thread request, not the sum of a turn or a subagent\'s usage', async t => {
+  const c = await setup(t); await c.open();
+  const pending = c.prompt('manual'); await until(() => c.query.inputId);
+  const last = { id: 'last-request', usage: { input_tokens: 2, cache_read_input_tokens: 80000, cache_creation_input_tokens: 3503 },
+    content: [{ type: 'text', text: 'done' }] };
+  await c.emit(
+    { type: 'assistant', message: { id: 'first-request', usage: { input_tokens: 10, cache_read_input_tokens: 900000 }, content: [] } },
+    { type: 'assistant', message: last },
+    // One request can arrive in several content blocks; it still occupies the same window.
+    { type: 'assistant', message: { ...last, content: [] } },
+    system('task_started', { task_id: 'child-1', tool_use_id: 'child-tool', task_type: 'local_agent', description: 'child' }),
+    { type: 'assistant', parent_tool_use_id: 'child-tool', message: { id: 'child-request', usage: { input_tokens: 500000 }, content: [{ type: 'text', text: 'child done' }] } },
+    { type: 'result', subtype: 'success', is_error: false, user_message_uuid: c.query.inputId,
+      usage: { input_tokens: 128, cache_read_input_tokens: 2000000, cache_creation_input_tokens: 835252 },
+      modelUsage: { 'fixture-model': { contextWindow: 1000000 } }, total_cost_usd: 12.5 });
+  assert.deepEqual((await pending).result, { stopReason: 'end_turn' });
+  assert.deepEqual(c.said('child-tool'), ['child done'], 'the child response was processed in its own session');
+  const { _meta, ...usage } = c.updates().findLast(u => u.sessionUpdate === 'usage_update');
+  assert.deepEqual(usage, { sessionUpdate: 'usage_update', used: 83505, size: 1000000, cost: { amount: 12.5, currency: 'USD' } });
+  assert.equal(_meta.coda.contextTokens, usage.used);
+});
+
+test('without a measured context, a result does not turn cumulative input into a window measurement', async t => {
+  const c = await setup(t); await c.open();
+  const pending = c.prompt('manual'); await until(() => c.query.inputId);
+  await c.emit({ type: 'result', subtype: 'success', is_error: false, user_message_uuid: c.query.inputId,
+    usage: { input_tokens: 2000000 }, modelUsage: { 'fixture-model': { contextWindow: 1000000 } } });
+  await pending;
+  const usage = c.updates().findLast(u => u.sessionUpdate === 'usage_update');
+  assert.deepEqual([usage.used, usage.size], [0, 0], 'no usable window until the main thread reports its context');
 });
 
 test('streamed text is said as it streams, and the complete message adds only what did not stream', async t => {
@@ -1121,6 +1153,7 @@ test('each turn tells Coda when the main thread\'s cache was last used, how larg
   c.time.at += 10 * MINUTE;
   await c.prompt('/compact');
   assert.deepEqual(c.told().at(-1), { lastRequestAt: iso(first + 10 * MINUTE), contextTokens: 9000, cacheTtl: 'PT5M', compactedAt: iso(first + 20 * MINUTE) });
+  assert.equal(c.updates().findLast(u => u.sessionUpdate === 'usage_update').used, 9000, 'the meter uses the context left by compaction');
 });
 
 test('asked by Coda, a session compacts in a turn of no one\'s that says nothing, and answers how much', async t => {
@@ -1135,6 +1168,7 @@ test('asked by Coda, a session compacts in a turn of no one\'s that says nothing
   assert.deepEqual(c.waits(), []);
   // The compaction's turn is not one of the session's: its last request stays, and it says the session compacted since.
   assert.deepEqual(c.told().at(-1), { lastRequestAt: iso(request), contextTokens: 9000, cacheTtl: 'PT1H', compactedAt: iso(request + 54 * MINUTE) });
+  assert.equal(c.updates().findLast(u => u.sessionUpdate === 'usage_update').used, 9000);
   // A prompt that comes while it compacts runs after it, and is answered by its own turn.
   await c.prompt('again');
   c.query.compactHeld = true;

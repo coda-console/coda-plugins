@@ -194,7 +194,8 @@ Claude 的设置「缓存过期前压缩」（`claude.idleCompaction`，默认�
 - **Agent 报什么**：每轮结束时，入口在 `usage_update` 的 `_meta.coda` 里带上主线程缓存的情况，Coda 原样作为会话事实 `usage`：
   `lastRequestAt`（最后一次请求模型的时刻，缓存最后被用到；压缩那一轮不算）、`contextTokens`（那次请求带的上下文 token 数）、
   `cacheTtl`（`PT1H` 或 `PT5M`，从回复写缓存的明细看出）、`compactedAt`（最近一次压缩，Claude Code 自动的、`/compact` 的、Coda 请的都算）。
-  `usage_update` 的 `used` 是这一轮所有请求加起来的，不是上下文大小。
+  `usage_update` 的 `used` 同样取主线程最近一次请求的上下文量（含缓存读取与写入），压缩后取摘要留下的 token 数；
+  不累加一轮中的多次请求，也不包含子 Agent 的上下文。尚无上下文量时不显示窗口用量；`cost` 保留 SDK 报的累计费用估算。
 - **压缩那一轮**：入口在 `initialize` 的 `agentCapabilities._meta.coda` 里声明 `compact: {}`，收到 `_coda/session/compact`（`{ sessionId }`，
   两轮之间也可以发）就往 SDK 的输入送一条 `/compact`。这一轮不归 Coda 的哪个 `session/prompt`，也不登记活动；Coda 只看到 `compaction_update`，
   命令输出不转成回复。期间 Coda 发来的一轮排在它后面照常回复，插话回 `promptRequired`。压完回答 `{ compacted: true, before, after }`（前后的
