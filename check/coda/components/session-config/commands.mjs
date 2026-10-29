@@ -99,19 +99,20 @@ export function firstMessage(value) {
   }, attachments(value.attachments));
 }
 
-// Agent tool calls. The calling agent never chooses the child's approval mode: the child follows its parent's
-// (see `delegateMode`), so a manually approved session cannot start an unattended one. `turn` is a ticket checked inside the commit transaction and
+// Agent tool calls. The calling agent may ask for the child's approval mode (as an agent reference gives it) but never one
+// more unattended than its parent's hands on (see `delegateMode`), so a manually approved session cannot start an
+// unattended one. `turn` is a ticket checked inside the commit transaction and
 // is not part of request equality: a replay may arrive after the turn has ended.
 export function childSpawn(value) {
   object(value, 'spawn');
-  keys(value, ['turn', 'requestId', 'agent', 'prompt', 'title', 'model', 'effort', 'checkout', 'project']);
+  keys(value, ['turn', 'requestId', 'agent', 'prompt', 'title', 'model', 'effort', 'mode', 'options', 'checkout', 'project']);
   check([undefined, 'shared', 'worktree'].includes(value.checkout), 'invalid_input', 'checkout 必须是 shared 或 worktree');
   check(typeof value.agent === 'string' && AGENT_ID.test(value.agent), 'invalid_input', 'agent 须为 Agent 的 ID（agents 工具列出的）');
   const prompt = text(value.prompt, 'prompt', 100_000);
   return { turn: text(value.turn, 'turn', 100), requestId: text(value.requestId, 'requestId', 100), agent: value.agent, prompt,
     title: text(value.title ?? prompt.trim().slice(0, 80), 'title'), checkout: value.checkout ?? 'shared',
     ...(value.project === undefined ? {} : { project: text(value.project, 'project', 200) }),
-    settings: settings(Object.fromEntries(['model', 'effort'].filter(k => value[k] !== undefined).map(k => [k, value[k]]))) };
+    settings: settings(Object.fromEntries(['model', 'effort', 'mode', 'options'].filter(k => value[k] !== undefined).map(k => [k, value[k]]))) };
 }
 
 

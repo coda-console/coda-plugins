@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 import { settings as agentSettings } from '../session-config/commands.mjs';
 import { requireCondition as check, ContractError } from '../../domain/errors.mjs';
 import { isDuration } from '../../domain/duration.mjs';
+import { MODEL_APIS, isModelApi } from './model-protocols.mjs';
 import { AGENT_ID } from '../../domain/values.mjs';
 import { agentDeclarations } from './agent-plugins.mjs';
 import { checkCatalog, dependencyDeclarations, extensionDeclarations, extensionPointDeclarations, extensionsFor, offerDeclarations } from './plugin-extensions.mjs';
@@ -59,7 +60,7 @@ export const MODEL_PROVIDER = /^[a-z][a-z0-9-]{0,39}\/[a-z][a-z0-9-]{0,39}$/;
 // How many model services a setting of several may name.
 const MODEL_PROVIDERS_AT_MOST = 20;
 // A command's name, as a shell finds it on the PATH; Coda's own come first and are no plugin's.
-const COMMAND = /^[a-z][a-z0-9-]{0,39}$/, CODA_COMMANDS = ['coda-run', 'coda-event'];
+const COMMAND = /^[a-z][a-z0-9-]{0,39}$/, CODA_COMMANDS = ['coda-run', 'coda-event', 'coda-resources'];
 // Where in the clients a view may stay (docs/plugins.md「视图」): beside a session.
 export const VIEW_PLACES = ['side', 'page'];
 // What a view's entry in the clients can show (docs/plugins.md「视图」): a count the clients keep themselves, not one the
@@ -125,7 +126,7 @@ function schema(value, where, level = 'setting') {
     check(Object.keys(items).every(k => ['type', 'format', 'modelApis'].includes(k)) && items.type === 'string', 'invalid_plugin',
       `${where}：多个模型服务写 items: { type: string, format: coda-model-provider, modelApis }`);
     check(items.modelApis === undefined || (Array.isArray(items.modelApis) && items.modelApis.length >= 1 && items.modelApis.length <= 10
-      && items.modelApis.every(api => typeof api === 'string' && COMMAND.test(api))), 'invalid_plugin', `${where}.items.modelApis 须为 1–10 个接口名，如 anthropic-messages`);
+      && items.modelApis.every(isModelApi)), 'invalid_plugin', `${where}.items.modelApis 须为 1–10 个接口名，取 ${MODEL_APIS.join('、')}`);
     out.format = 'coda-model-provider';
     if (items.modelApis) out.modelApis = [...new Set(items.modelApis)];
   } else if (value.type === 'array') {
@@ -411,7 +412,7 @@ function modelProviderDeclarations(raw, declared) {
       `${where} 须为 { id, title, api, url, key? }`);
     check(typeof p.id === 'string' && COMMAND.test(p.id), 'invalid_plugin', `${where} 的 id 只用小写字母、数字和「-」，以字母开头`);
     check(typeof p.title === 'string' && p.title.trim() && [...p.title].length <= 40 && !/[\0\r\n]/.test(p.title), 'invalid_plugin', `${where} 的 title 须为不超过 40 字的一行`);
-    check(typeof p.api === 'string' && COMMAND.test(p.api), 'invalid_plugin', `${where} 的 api 只用小写字母、数字和「-」，如 openai-completions`);
+    check(isModelApi(p.api), 'invalid_plugin', `${where} 的 api 须为 Coda 认得的接口：${MODEL_APIS.join('、')}`);
     check(typeof p.url === 'string' && p.url && p.url.length <= 4096 && !/[\0\r\n]/.test(p.url), 'invalid_plugin', `${where} 的 url 须为一行地址`);
     for (const [, place] of p.url.matchAll(PLACE)) {
       const setting = /^config:(.+)$/.exec(place)?.[1];
