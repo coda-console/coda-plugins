@@ -20,9 +20,11 @@ export class PromptRecovery {
   schedule(run, error) {
     const failure = serviceFailure(error);
     if (!failure || run.commandInput || run.autonomous || !run.turn || this.kernel.closing || this.kernel.sessions.adopting) return false;
+    // The plugin supplies the upstream wait as a fact; Coda keeps its one-minute retry budget.
+    if ((failure.retryAfterMs ?? 0) > RETRY_DELAYS.at(-1)) return false;
     const retry = this.retries.get(run) ?? { attempt: 0 };
     if (this.store.turn(run.turn.id).stopRequestedAt !== null || retry.attempt === this.delays.length) return false;
-    retry.delay = this.delays[retry.attempt++]; retry.waiting = true;
+    retry.delay = Math.max(this.delays[retry.attempt++], failure.retryAfterMs ?? 0); retry.waiting = true;
     this.retries.set(run, retry);
     if (failure.input === 'accepted') this.store.markRunning(run.turn.id);
     this.store.expireRequests(run.turn.id);
