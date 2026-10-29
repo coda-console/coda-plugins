@@ -1,5 +1,5 @@
 {
-  "commit": "95e6604b90218e38e5730725dcf57c8efddf8c10",
+  "commit": "93e1f9059276267bbf0aa4cd2979a98e199b6547",
   "packages": {
     "@0dep/piso": "5.2.0",
     "@agentclientprotocol/sdk": "1.4.0",
@@ -7,7 +7,7 @@
   },
   "files": {
     "check/coda/components/plugins/agent-plugins.mjs": "23016dd0f7350a10f71565a2c44e2c1179299a93e8c859529071099f2ce862d1",
-    "check/coda/components/plugins/model-protocols.mjs": "e02e056a002f0a6c8a5accb39a52635558fa7141540e475f79a309278acb015b",
+    "check/coda/components/plugins/model-protocols.mjs": "762244c01266cf61384377bdfbb84bef5ab157b1783f9254ddc1ae3d576a73c5",
     "check/coda/components/plugins/plugin-extensions.mjs": "e527800a109ec9849975357f841b0c05ecfa50c9d9c34e26d828aef3cb7d3cb3",
     "check/coda/components/plugins/plugin-rules.mjs": "78d9431c1b4f6354457f153bb74a0fd085c771eaadd9f7523633915cb700f4f9",
     "check/coda/components/plugins/plugin-source-rules.mjs": "d620ee62fb372e31e5389e27f7202308aab74324b6f5552ffef3844afc7d0001",
