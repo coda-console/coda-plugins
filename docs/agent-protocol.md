@@ -5,7 +5,7 @@
 # Agent 接入协议
 
 Coda 用 [ACP](https://agentclientprotocol.com)（Agent Client Protocol）接 Agent，要求 Agent 接受[会话指令](#会话指令)（ACP 的 `systemPrompt`），
-可选支持[插话](#插话)（`_session/steering`），另收 Agent 活动报告（`_coda/wait`）和[执行失败事实](#执行失败)（ACP 错误数据里的 `_meta.coda.failure`）。本文是这份协议的唯一正文，写给要让一个 Agent（比如 Cursor 的）接入 Coda 的人：照它实现，
+可选支持[插话](#插话)（`_session/steering`），另收 Agent 活动报告（`_coda/wait`）、[执行失败事实](#执行失败)（ACP 错误数据里的 `_meta.coda.failure`）和[工具调用的审核](#工具调用的审核)（`_meta.coda.review`）。本文是这份协议的唯一正文，写给要让一个 Agent（比如 Cursor 的）接入 Coda 的人：照它实现，
 Coda 就知道这个 Agent 在一轮之外还在做什么，如实显示、不回收它的进程，把它处理这些东西时的输出、审批和提问放进正确的一轮，
 并把它之后说的作为补交交回正确的调用。产品上这些规则的来由见[会话行为契约](session-contracts.md)与[完成唤醒契约](subagent-design.md#完成唤醒契约)。
 
@@ -27,7 +27,7 @@ Coda 是 ACP 的客户端。每个会话的 Agent 进程由一个[会话托管�
 | `session/cancel` | Coda → Agent | 停止：本轮在进行时取消本轮；Agent 在一轮之外处理活动（`handling`）时，停止处理 |
 | `_coda/session/compact` | Coda → Agent | [压缩上下文](#压缩上下文)：请 Agent 压缩这个会话的上下文；只对声明支持的 Agent 发，两轮之间也发 |
 | `session/set_config_option`、`session/set_mode`、`session/set_model` | Coda → Agent | 模型、推理强度与模式 |
-| `session/update` | Agent → Coda | 回复、思考、工具调用、计划、用量（可带给流程的[数据](#用量里的数据)）、可用命令、会话信息；只收本会话与它的子会话的 |
+| `session/update` | Agent → Coda | 回复、思考、工具调用（可带它的[审核](#工具调用的审核)）、计划、用量（可带给流程的[数据](#用量里的数据)）、可用命令、会话信息；只收本会话与它的子会话的 |
 | `session/request_permission`、`elicitation/create`（`mode: form` 或 `mode: url`） | Agent → Coda | 审批与提问，作为卡片交给用户；只在一轮里受理（见[规则](#规则)第 3 条） |
 | `$/cancel_request` | Agent → Coda | 撤回它发出、还没得到回答的审批或提问：卡片失效，Coda 回 `cancelled`（表单回 `cancel`），之后用户的回答不再转交 |
 
@@ -133,12 +133,19 @@ Coda 按该类别显示「额度不足」，保留完整原因，不安排自动
 - `kind: service_unavailable`：服务端暂时无法处理；额度耗尽、未登录、配置或参数错误不得这样报告。
 - `input: accepted`：输入已经进入原生会话；故障回执确认本次原生执行已结束。Coda 在同一会话发送从已有进度继续的指令。
 - `input: not_accepted`：明确拒绝，输入尚未进入原生会话，也没有执行它的操作。仅当原输入从未被接收时重投相同内容与附件；已有接收证据（包括已保存的 `delivered`）时只续跑。
+- 可选 `retryAfterMs`：上游要求或原生 Agent 实际安排的剩余等待，单位毫秒，须为非负有限数；不是预计恢复时间。
+  Coda 不早于这段等待重试；超过一分钟时不安排自动重试。缺省沿用 Coda 的退避，格式不合法的标记按普通错误处理。
 
 输入是否被接收或执行是否已结束无法确定时，不带此标记。错误文字始终放在标准 `error.message`；其他 ACP 客户端可以忽略扩展。
 Agent 自己仍在重连或重试时，不得提前返回本次 `session/prompt` 的失败；Coda 只在失败回执后安排重试。
 Agent 自己的重试要等一分钟以上（比 Coda 的退避更久，例如服务的 `Retry-After` 指向用量窗口重置）时，不得一直等而不报告：
-停下原生执行后以失败结束本轮，在原因中写明服务给出的恢复条件；不带 `service_unavailable`，因为 Coda 的退避等不到恢复；
-上游明确说明额度耗尽时，按[额度不足](#额度不足)报告。
+停下原生执行后以失败结束本轮，在原因中写明服务给出的恢复条件和原生 Agent 实际安排的等待。
+上游明确属于服务临时故障时，带 `service_unavailable`、`input: accepted` 与 `retryAfterMs`，由 Coda 判定不再自动重试；
+上游明确说明额度耗尽时，按[额度不足](#额度不足)报告；只有长等待而没有明确原因时仍按普通错误报告。
+
+`input: accepted` 的服务故障回执在不再重试时确认本轮已结束：轮次记为 `ended`、`stopReason: service_unavailable` 并保留原因，
+操作记为 `completed`，子会话交回 `failed`。两端显示「服务暂不可用」，同一原因只显示一次，不再标作「执行结果未知」。
+重试用尽或斜杠命令不重试时也如此；未接收输入的回执不单凭失败类别认定输入已送达。
 
 Coda 统一按 15、30、60 秒退避，每次执行最多重试三次，沿用原生会话、执行设置、原输入与轮次身份，
 每次 ACP 请求使用新 ID。等待中保持执行状态，可随时停止；斜杠命令不自动重试。次数耗尽或遇到未标记错误时结束并保留最后原因。
@@ -159,6 +166,25 @@ Agent 在 `session/update` 的 `usage_update` 里可以带 `_meta.coda`：一个
 - Claude 插件（Agent `claude-sdk`）每轮结束发 `usage_update` 时都带上，自主轮次也带：
   `lastRequestAt`（主线程最后一次请求模型的时刻，提示词缓存从这一刻起算；比一轮结束早一段输出的时间）、`contextTokens`（那次请求带的上下文 token 数）、
   `cacheTtl`（缓存时长，`PT1H` 或 `PT5M`）、`compactedAt`（最近一次压缩的时刻）。
+
+## 工具调用的审核
+
+Agent 运行一个工具调用之前自己做的检查（如 Codex 的自动审核：按风险决定放不放行），是这个调用的一部分：
+在这个调用的 `tool_call` 或 `tool_call_update` 里带 `_meta.coda.review`，不另报一个工具调用。它不是[审批](#acp-部分)：审批由用户回答，审核由 Agent 自己判断。
+
+```json
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","toolCallId":"exec-1","_meta":{"coda":{"review":{"state":"denied","reason":"会删除工作树外的文件","risk":"high"}}}}}}
+```
+
+| 字段 | 必有 | 含义 |
+| --- | --- | --- |
+| `state` | 是 | `reviewing`：审核中，调用还没运行；`approved`：放行；`denied`：没放行（拒绝、审核超时或中止），调用不照原样运行 |
+| `reason` | 否 | 审核给的理由，给人看，至多 4000 个字符；时刻按[文字里的时刻](#文字里的时刻)写 |
+| `risk` | 否 | 审核判断的风险：`low`、`medium`、`high` 或 `critical` |
+
+- 审核在调用报出之前就开始的，先报这个调用（`tool_call`，`status: pending`，带上审核），之后照常更新它。
+- Coda 记下每个调用最近一次报的审核；之后不带 `_meta.coda.review` 的更新不改它。读不出的丢弃（`state` 不在上表、`reason` 过长），不认识的 `risk` 不记。
+- 两端客户端在调用上写「审核中」或「审核未通过」，放行的不另加标记；点开调用看审核的结果、风险与理由。
 
 ## 压缩上下文
 

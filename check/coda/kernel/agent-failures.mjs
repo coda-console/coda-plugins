@@ -5,7 +5,8 @@ export function agentFailure(error) {
   const failure = error?.data?._meta?.coda?.failure;
   if (!record(failure)) return null;
   return failure.kind === 'quota_exhausted' ||
-    (failure.kind === 'service_unavailable' && ['accepted', 'not_accepted'].includes(failure.input)) ? failure : null;
+    (failure.kind === 'service_unavailable' && ['accepted', 'not_accepted'].includes(failure.input) &&
+      (failure.retryAfterMs === undefined || (Number.isFinite(failure.retryAfterMs) && failure.retryAfterMs >= 0))) ? failure : null;
 }
 
 export function agentErrorMessage(error) {

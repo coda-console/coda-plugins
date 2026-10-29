@@ -1,6 +1,6 @@
 {
   "name": "@coda-console/plugin-check",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "description": "Coda 插件的契约检查：扮演 Coda 读清单、启动 Agent 讲 ACP 与 _coda/wait、读面板。",
   "license": "MIT",
   "repository": {

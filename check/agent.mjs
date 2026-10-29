@@ -243,7 +243,10 @@ class Session {
       return null;
     } finally { clearTimeout(timer); }
     if (m.error) {
-      const failure = serviceFailure(m.error), wait = this.limits.retryDelays[attempt];
+      // As Coda retries (PromptRecovery): an upstream wait past its one-minute budget is not waited for, and a shorter one is
+      // waited at least as long as it asks.
+      const failure = serviceFailure(m.error), upstream = failure?.retryAfterMs ?? 0, base = this.limits.retryDelays[attempt];
+      const wait = base === undefined || upstream > RETRY_DELAYS.at(-1) ? undefined : Math.max(base, upstream);
       if (!cancel && !text.startsWith('/') && failure && wait !== undefined) {
         say.info('live.service-retry', `服务暂不可用，按 Coda 策略 ${secs(wait)} 秒后第 ${attempt + 1} 次重试`);
         await delay(wait);
