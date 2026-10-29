@@ -5,7 +5,7 @@
 // base changed only when it next looks, which may be after the user approved. Not merged (based elsewhere, a conflict, a
 // draft, checks not passed) is no failure of the step: it is put out (`refused`, and the `reason`) for the session that
 // opened the pull request to deal with. What the user chose
-// to follow the merge is put out for the process (`deploy`, `release`, `releaseKinds`, `notify`).
+// to follow the merge is put out for the process (`deleteBranch`, `deploy`, `release`, `releaseKinds`, `notify`).
 import { spawnSync } from 'node:child_process';
 import { baseOf, json, output, summary } from './step.mjs';
 
@@ -15,11 +15,12 @@ const chosen = id => options[id] === true;
 const url = process.env.URL, head = process.env.HEAD, method = ['merge', 'rebase', 'squash'].includes(process.env.METHOD) ? process.env.METHOD : 'squash';
 const number = /\/pull\/(\d+)/.exec(url ?? '')?.[1];
 if (!number || !/^[0-9a-f]{40,64}$/.test(head ?? '')) { console.error('不知道要合并哪个 PR 的哪个提交'); process.exit(1); }
+output('deleteBranch', chosen('deleteBranch'));
 output('deploy', chosen('deploy'));
 output('release', chosen('preview') || chosen('release'));
 output('releaseKinds', ['preview', 'release'].filter(chosen).join(','));
 output('notify', chosen('notify'));
-const what = ['合并', ...[['deploy', '部署'], ['preview', '发布预览版'], ['release', '发布正式版'], ['notify', '全部完成后通知 Agent']].filter(([id]) => chosen(id)).map(([, name]) => name)].join(' · ');
+const what = ['合并', ...[['deleteBranch', '合并后删除远程分支'], ['deploy', '部署'], ['preview', '发布预览版'], ['release', '发布正式版'], ['notify', '全部完成后通知 Agent']].filter(([id]) => chosen(id)).map(([, name]) => name)].join(' · ');
 
 const based = await baseOf(url);
 const elsewhere = based.error ?? (based.base !== based.main ? `base 是 ${based.base}，不是默认分支 ${based.main}；Coda 得知 base 变了后从头再看` : null);
