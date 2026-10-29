@@ -46,10 +46,15 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export function firstMessage(value) {
   object(value, '首次发送');
   keys(value, ['requestId', 'projectId', 'title', 'agent', 'checkout', 'settings', 'text', 'attachments', 'quotes', 'handoffSource', 'parentThreadId',
-    'threadId', 'extensionParent']);
+    'replyTo', 'threadId', 'extensionParent']);
   const handoff = value.handoffSource === undefined ? {} : { handoffSource: text(value.handoffSource, '交接来源', 100) };
   const parent = value.parentThreadId === undefined ? {} : { parentThreadId: text(value.parentThreadId, '父会话', 100) };
   check(!parent.parentThreadId || handoff.handoffSource === parent.parentThreadId, 'invalid_input', '子会话必须引用父会话上下文');
+  // Whom a child the user starts answers (#1904「回复权」): its parent, as a call of the parent's would (`parent`, the
+  // default), or the user who started it (`sender`): under its parent all the same, which is where it belongs, not whom it
+  // answers. Only the one that is not the default is kept, so that a request saying the default is the same request.
+  check(value.replyTo === undefined || parent.parentThreadId && ['parent', 'sender'].includes(value.replyTo), 'invalid_input', '子会话的回报对象无效');
+  const reply = value.replyTo === 'sender' ? { replyTo: 'sender' } : {};
   // Which agents may run is the store's to say (its plugin installed); here only that it names one.
   check(typeof value.agent === 'string' && AGENT_ID.test(value.agent), 'invalid_input', 'Agent 不可用');
   // A session an extension starts for a parent session this kernel does not keep (docs/subagent-design.md「扩展作为调用方」):
@@ -81,6 +86,7 @@ export function firstMessage(value) {
   return withAttachments({
     ...handoff,
     ...parent,
+    ...reply,
     ...outside,
     requestId: text(value.requestId, '请求标识', 100),
     projectId: text(value.projectId, '项目标识', 100),

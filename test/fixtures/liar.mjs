@@ -72,6 +72,10 @@ async function act(sessionId, me, first) {
   if (mode === 'service-failure-always' || (mode === 'service-failure-once' && first))
     throw Object.assign(new Error('Service unavailable'), { code: -32603,
       data: { _meta: { coda: { failure: { kind: 'service_unavailable', input: 'accepted' } } } } });
+  // Once, saying how long upstream asks to wait: within Coda's one-minute budget, or past it.
+  if (first && (mode === 'service-wait-short' || mode === 'service-wait-long'))
+    throw Object.assign(new Error('Service unavailable'), { code: -32603, data: { _meta: { coda: { failure: { kind: 'service_unavailable',
+      input: 'accepted', retryAfterMs: mode === 'service-wait-short' ? 300 : 60_001 } } } } });
   if (mode === 'stdout-noise') process.stdout.write('starting turn...\n');
   if (mode === 'bad-update') notify('session/update', { sessionId, update: { sessionUpdate: 'agent_message_chunk', content: 'hi' } });
   if (mode === 'foreign-session') say('someone-else', 'hi');

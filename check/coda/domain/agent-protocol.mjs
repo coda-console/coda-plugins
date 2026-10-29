@@ -36,6 +36,12 @@ export const validWait = p => record(p) && typeof p.sessionId === 'string' && p.
   && fits(p.toolCallId, 200)
   && [p.stoppable, p.recurring].every(flag => flag === undefined || typeof flag === 'boolean')
   && (p.at === undefined || (typeof p.at === 'string' && Number.isFinite(Date.parse(p.at))));
+// What the agent's own check of a tool call said before running it (「工具调用的审核」): `_meta.coda.review` of the call's
+// `tool_call` or `tool_call_update`, as Coda keeps it; null for anything else. A risk it does not know is left out.
+const REVIEW_STATES = new Set(['reviewing', 'approved', 'denied']);
+const RISKS = new Set(['low', 'medium', 'high', 'critical']);
+export const toolReview = r => record(r) && REVIEW_STATES.has(r.state) && fits(r.reason, 4000)
+  ? { state: r.state, ...(r.reason ? { reason: r.reason } : {}), ...(RISKS.has(r.risk) ? { risk: r.risk } : {}) } : null;
 
 // Opening a session (initialize, then session/new or session/load) may take this long.
 export const OPEN_LIMIT = 60_000;
