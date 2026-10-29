@@ -6,6 +6,7 @@
      叠放：base 不是默认分支的不合并，等 base 改过去再接着走。
      合并：请你批准，再在这个提交上调用项目声明为合并前检查的流程（coda:kind="premerge"），都通过才合并；没通过或 GitHub 没合并就交给开 PR 的会话，
      它推了新提交、评审通过后按你的批准合并，不再问。
+     删除分支：你勾选后，等 GitHub 确认合并，再删除仍指向该提交的远程源分支；本地分支与工作树保留。
      部署与发布：合并后按你勾选的，在合并提交上调用项目里声明为这一类的流程（coda:kind）。
      PR 在 GitHub 上合并或关闭，运行随之结束。也可以手动发起（传 PR 编号或地址），只评审一次。BPMN 2.0，由 Coda 执行（docs/workflows.md）。 -->
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0"
@@ -286,10 +287,11 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
 「合并」以 {{vars.review.mergeMethod}} 方式合并提交 {{reviewing.head}}{{if kinds.premerge then "，先在它上面跑项目的合并前检查，都通过才合并" else ""}}。没合并成（合并前检查没通过，或 GitHub 没合并：冲突、检查没过等）就交给开 PR 的会话处理，它推送的新版本评审通过后按这次的选择合并，不再问你；评审要求修改则这次批准作废。</documentation>
         <extensionElements>
           <coda:choice id="merge" name="合并" primary="true">
+            <coda:option id="deleteBranch" name="合并后删除远程分支" detail="删除这个 PR 的远程源分支，本地分支和工作树保留" />
             <coda:option id="deploy" name="部署" detail="调用项目里的部署流程" coda:shown="=kinds.deploy" />
             <coda:option id="preview" name="发布预览版" detail="调用项目里的预览发布流程" coda:shown="=kinds.preview" />
             <coda:option id="release" name="发布正式版" detail="调用项目里的正式发布流程" coda:shown="=kinds.release" />
-            <coda:option id="notify" name="全部完成后通知 Agent" detail="合并及所选部署、发布结束后通知" />
+            <coda:option id="notify" name="全部完成后通知 Agent" detail="合并及所选删除分支、部署、发布结束后通知" />
           </coda:choice>
           <coda:choice id="send" name="让 Agent 处理评审意见" />
           <coda:choice id="close" name="关闭 PR" detail="不合并，在 GitHub 上关闭这个 PR" />
@@ -367,6 +369,7 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
           <coda:output name="merged" />
           <coda:output name="refused" />
           <coda:output name="reason" />
+          <coda:output name="deleteBranch" />
           <coda:output name="deploy" />
           <coda:output name="release" />
           <coda:output name="releaseKinds" />
@@ -438,7 +441,7 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
     <intermediateCatchEvent id="confirmed" name="PR 关闭"><messageEventDefinition messageRef="closed" /></intermediateCatchEvent>
     <sequenceFlow id="to-landed" sourceRef="confirmed" targetRef="landed" />
     <exclusiveGateway id="landed" name="合并了吗" default="closed-unmerged" />
-    <sequenceFlow id="landed-merged" sourceRef="landed" targetRef="delivering-or-not">
+    <sequenceFlow id="landed-merged" sourceRef="landed" targetRef="deleting-or-not">
       <conditionExpression xsi:type="tFormalExpression">=github.event.pull_request.merged</conditionExpression>
     </sequenceFlow>
     <sequenceFlow id="closed-unmerged" sourceRef="landed" targetRef="closed-elsewhere" />
@@ -454,6 +457,20 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
     <sequenceFlow id="closed-there" sourceRef="ended" targetRef="closed-elsewhere" />
     <endEvent id="merged-there" coda:status="已在 GitHub 上合并" />
     <endEvent id="closed-elsewhere" coda:status="PR 已关闭" />
+
+    <exclusiveGateway id="deleting-or-not" name="删除远程分支吗" default="keep-branch" />
+    <sequenceFlow id="to-delete-branch" sourceRef="deleting-or-not" targetRef="delete-branch">
+      <conditionExpression xsi:type="tFormalExpression">=merge.deleteBranch</conditionExpression>
+    </sequenceFlow>
+    <sequenceFlow id="keep-branch" sourceRef="deleting-or-not" targetRef="delivering-or-not" />
+    <scriptTask id="delete-branch" name="删除远程分支" coda:timeout="5" coda:checkout="false" coda:status="已合并：删除远程分支" scriptFormat="bash">
+      <extensionElements>
+        <coda:env name="URL" value="=github.event.pull_request.html_url" />
+        <coda:env name="HEAD" value="=reviewing.head" />
+      </extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/delete-branch.mjs"</script>
+    </scriptTask>
+    <sequenceFlow id="branch-deleted" sourceRef="delete-branch" targetRef="delivering-or-not" />
 
     <exclusiveGateway id="delivering-or-not" name="部署或发布吗" default="merged-only" />
     <sequenceFlow id="to-delivering" sourceRef="delivering-or-not" targetRef="delivering">
