@@ -3,6 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { CodexReviews } from '../../../plugins/codex/agent/reviews.mjs';
+import { explain, schemas } from '../../../check/schema.mjs';
 
 const update = (sessionId, u) => ({ jsonrpc: '2.0', method: 'session/update', params: { sessionId, update: u } });
 // As codex-acp 1.12.0 says a check: started, then completed, the event itself as the call's input or output.
@@ -12,7 +13,12 @@ const started = (sessionId, e) => update(sessionId, { sessionUpdate: 'tool_call'
   title: 'Guardian Review', status: 'in_progress', content: [{ type: 'content', content: { type: 'text', text: 'Status: In progress' } }], rawInput: e });
 const completed = (sessionId, e) => update(sessionId, { sessionUpdate: 'tool_call_update', toolCallId: `guardian_assessment:${e.reviewId}`,
   status: e.review.status === 'approved' ? 'completed' : 'failed', content: [], rawOutput: e });
-const updates = messages => messages.map(m => m.params.update);
+// What reaches Coda is ACP's.
+const updates = messages => messages.map(m => {
+  const parsed = schemas.zSessionNotification.safeParse(m.params);
+  assert.ok(parsed.success, parsed.success || explain(parsed.error, m.params));
+  return m.params.update;
+});
 
 test('a check of a call codex-acp told of already is an update of that call', () => {
   const reviews = new CodexReviews();
@@ -54,4 +60,20 @@ test('a check that names no call, and everything else, passes as codex-acp said 
   const others = [unnamed, update('root', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '好' } }),
     { jsonrpc: '2.0', id: 3, result: { stopReason: 'end_turn' } }];
   assert.deepEqual(others.flatMap(message => reviews.fromAgent(message)), others);
+});
+
+test('a check of another kind of action, begun before its call is told, tells the call with a title ACP takes', () => {
+  const reviews = new CodexReviews();
+  const actions = [
+    [{ type: 'requestPermissions', reason: null, permissions: {} }, '申请更多权限'],
+    [{ type: 'requestPermissions', reason: '需要写入 ~/.npm', permissions: {} }, '需要写入 ~/.npm'],
+    [{ type: 'applyPatch', cwd: '/w', files: ['/w/a.txt'] }, '修改 /w/a.txt', 'edit'],
+    [{ type: 'applyPatch', cwd: '/w', files: ['/w/a.txt', '/w/b.txt'] }, '修改 2 个文件', 'edit'],
+    [{ type: 'networkAccess', target: '', host: 'registry.npmjs.org', protocol: 'https', port: 443 }, '访问 registry.npmjs.org', 'fetch'],
+    [{ type: 'mcpToolCall', server: 'coda', toolName: 'send', connectorId: null, connectorName: null, toolTitle: null }, 'MCP send（coda）'],
+    [{ type: 'writeStdin', processId: '42', chars: 'y' }, '向进程 42 写入输入', 'execute'],
+    [{ type: 'unheardOf' }, '待审核的操作'],
+  ];
+  const said = updates(actions.flatMap(([action], index) => reviews.fromAgent(started('root', event(`r${index}`, `item-${index}`, { status: 'inProgress' }, action)))));
+  assert.deepEqual(said.map(u => [u.sessionUpdate, u.title, u.kind]), actions.map(([, title, kind]) => ['tool_call', title, kind]));
 });

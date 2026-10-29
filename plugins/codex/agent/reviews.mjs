@@ -7,9 +7,21 @@ const record = value => value && typeof value === 'object' && !Array.isArray(val
 const CHECK = 'guardian_assessment:';
 const STATE = { inProgress: 'reviewing', approved: 'approved', denied: 'denied', aborted: 'denied', timedOut: 'denied' };
 const RISKS = new Set(['low', 'medium', 'high', 'critical']);
-// What the call is, as far as the check says, until codex-acp tells it.
-const placeholder = action => action?.type === 'command' && typeof action.command === 'string' ? { title: action.command, kind: 'execute' }
-  : action?.type === 'execve' && Array.isArray(action.argv) ? { title: action.argv.join(' ') || action.program, kind: 'execute' } : {};
+// What the call is, as far as the check says (each kind of action codex-acp 1.12.0 names), until codex-acp tells it. ACP
+// requires a call's title: one the action does not give is said plainly.
+const PLACEHOLDER = {
+  command: a => [a.command, 'execute'],
+  execve: a => [(a.argv?.length ? a.argv : [a.program]).join(' '), 'execute'],
+  writeStdin: a => [`向进程 ${a.processId} 写入输入`, 'execute'],
+  applyPatch: a => [a.files?.length === 1 ? `修改 ${a.files[0]}` : `修改 ${a.files?.length ?? 0} 个文件`, 'edit'],
+  networkAccess: a => [`访问 ${a.target || a.host}`, 'fetch'],
+  mcpToolCall: a => [`MCP ${a.toolName}（${a.connectorName ?? a.server}）`],
+  requestPermissions: a => [a.reason || '申请更多权限'],
+};
+const placeholder = action => {
+  const [title, kind] = PLACEHOLDER[action?.type]?.(action) ?? [];
+  return { title: typeof title === 'string' && title.trim() ? title : '待审核的操作', ...(kind ? { kind } : {}) };
+};
 
 export class CodexReviews {
   constructor() {
