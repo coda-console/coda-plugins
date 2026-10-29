@@ -571,7 +571,7 @@ export class ClaudeSession {
     }
   }
   result(m) {
-    const usage = m.usage ?? {}, windows = Object.values(m.modelUsage ?? {});
+    const windows = Object.values(m.modelUsage ?? {});
     const ids = takenIn(m);
     // The compaction Coda asked for (compact) is the turn that names its input. Any other is the session's own, whose cache runs
     // from its last request. Coda is told what is known of that cache (compaction.mjs).
@@ -581,8 +581,10 @@ export class ClaudeSession {
     this.turnCompaction = {};
     if (!compaction) { this.cacheUse.ended(); for (const output of turn.outputs ?? []) this.commandOutput(output); }
     const told = this.cacheUse.told();
-    this.update(this.sessionId, { sessionUpdate: 'usage_update', used: (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0),
-      size: Math.max(0, ...windows.map(w => w.contextWindow ?? 0)), cost: { amount: m.total_cost_usd ?? 0, currency: 'USD' },
+    // The result's usage sums every request in the turn. The window holds only the last main-thread request, or what
+    // compaction left. With no measurement, report no usable window; lifecycle metadata is still told.
+    this.update(this.sessionId, { sessionUpdate: 'usage_update', used: this.cacheUse.context ?? 0,
+      size: this.cacheUse.context === null ? 0 : Math.max(0, ...windows.map(w => w.contextWindow ?? 0)), cost: { amount: m.total_cost_usd ?? 0, currency: 'USD' },
       ...(Object.keys(told).length ? { _meta: { coda: told } } : {}) });
     this.turning = false;
     // The compaction's: Coda is answered, and nothing is taken up.
