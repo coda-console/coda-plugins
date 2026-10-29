@@ -11,6 +11,7 @@ const info = (sessionId, meta) => ({ jsonrpc: '2.0', method: 'session/update', p
 const retry = (sessionId, wait, message = 'WorkBuddy: 用量已超出限制，将在 2026-10-24 17:42:38 重置', more = {}) =>
   info(sessionId, { 'opencode/retry': { attempt: 1, nextRetryAt: new Date(NOW + wait).toISOString(), error: { type: 'rate_limit', message, status: 429 } }, ...more });
 const answer = id => ({ jsonrpc: '2.0', id, result: { stopReason: 'cancelled', _meta: {} } });
+const CAPACITY = 'Zen: OpenCode Go 2: Upstream request failed: [ttft_admission_refused] the cell is at capacity; retry shortly (after 5 s)';
 const childStatus = (childSessionId = 'ses_child', parentSessionId = 'ses_a', status = 'created') => ({ method: CHILD_UPDATE,
   params: { rootSessionId: 'ses_a', childSessionId, parentSessionId, type: 'status', status } });
 const childUpdate = (update, childSessionId = 'ses_child', parentSessionId = 'ses_a') => ({ method: CHILD_UPDATE,
@@ -43,6 +44,41 @@ test('a wait past a minute stops OpenCode\'s turn, and its answer, whatever it i
   // The next prompt is answered as OpenCode answers it.
   waits.toAgent(prompt(8));
   assert.deepEqual(waits.fromAgent(answer(8)), answer(8));
+});
+
+for (const child of [false, true]) test(`capacity refusal in a ${child ? 'foreground child' : 'root'} settles only on the native answer, with its actual long wait`, () => {
+  const { cancelled, waits } = retries();
+  waits.toAgent(prompt(1));
+  if (child) { call(waits); waits.fromAgent(childStatus()); }
+  const update = retry('ses_a', 420_000, CAPACITY);
+  const event = child ? childUpdate(update.params.update) : update;
+  assert.equal(waits.fromAgent(event), event, 'a retry notification is not a terminal failure');
+  assert.deepEqual(cancelled, ['ses_a']);
+  assert.deepEqual(waits.fromAgent(answer(2)), answer(2), 'another request cannot settle this prompt');
+  waits.fromAgent(retry('ses_a', 900_000, 'A later generic error'));
+  const result = waits.fromAgent(answer(1));
+  assert.deepEqual(result.error, { code: -32603,
+    message: `服务容量暂满\n\n${CAPACITY}\n\nOpenCode 要等约 7 分钟才会重试，这一轮先结束。`,
+    data: { _meta: { coda: { failure: { kind: 'service_unavailable', input: 'accepted', retryAfterMs: 420_000 } } } },
+  });
+  waits.toAgent(prompt(3));
+  assert.deepEqual(waits.fromAgent(answer(3)), answer(3), 'classification belongs only to the failed prompt');
+});
+
+test('short capacity waits stay with OpenCode; generic rate limits, quota and authentication are not capacity failures', () => {
+  const { cancelled, waits } = retries();
+  waits.toAgent(prompt(1));
+  waits.fromAgent(retry('ses_a', LONG_WAIT, CAPACITY));
+  assert.deepEqual(cancelled, []);
+  assert.deepEqual(waits.fromAgent(answer(1)), answer(1));
+  for (const [message, status] of [['Too Many Requests', 429], ['用量已超出限制', 429],
+    ['the cell is at capacity', 429], ['[ttft_admission_refused] another reason', 503], [CAPACITY, 401], [CAPACITY, 403]]) {
+    waits.toAgent(prompt(2));
+    const event = retry('ses_a', 420_000, message);
+    event.params.update._meta['opencode/retry'].error.status = status;
+    waits.fromAgent(event);
+    assert.equal(waits.fromAgent(answer(2)).error.data, undefined);
+  }
 });
 
 test('a subagent\'s wait, said in the session of the turn that waits on it, stops that turn', () => {

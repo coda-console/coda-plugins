@@ -14,6 +14,10 @@ const CHILD_META = 'opencode/child-session';
 
 const record = value => value && typeof value === 'object' && !Array.isArray(value);
 const span = ms => Math.ceil(ms / 60_000) >= 60 ? `约 ${Math.round(ms / 3_600_000)} 小时` : `约 ${Math.ceil(ms / 60_000)} 分钟`;
+// This admission refusal establishes capacity exhaustion, unlike a generic 429 or retryable error. Its
+// short suggestion in the message does not override the retry time OpenCode actually scheduled.
+const capacityRefused = error => ![401, 403].includes(error?.status) && typeof error?.message === 'string' &&
+  /\[ttft_admission_refused\] the cell is at capacity(?:[;.]|$)/.test(error.message);
 
 export class LongRetries {
   // `cancel(sessionId)`: stops OpenCode's turn in an ACP session.
@@ -46,9 +50,9 @@ export class LongRetries {
     if (!('id' in message) || 'method' in message) return message;
     for (const [session, turn] of this.prompts) if (turn.id === message.id) this.prompts.delete(session);
     if (!this.ending.has(message.id)) return message;
-    const reason = this.ending.get(message.id);
+    const error = this.ending.get(message.id);
     this.ending.delete(message.id);
-    return { jsonrpc: '2.0', id: message.id, error: { code: -32603, message: reason } };
+    return { jsonrpc: '2.0', id: message.id, error };
   }
   childStatus(turn, p) {
     if (typeof p.childSessionId !== 'string' || p.childSessionId === p.rootSessionId) return;
@@ -106,7 +110,13 @@ export class LongRetries {
     const wait = Date.parse(retry.nextRetryAt) - this.now(), id = turn.id;
     if (!(wait > LONG_WAIT) || this.ending.has(id)) return;
     const said = typeof retry.error?.message === 'string' ? retry.error.message.trim() : '';
-    this.ending.set(id, `${said || '模型服务要求稍后再试'}\n\nOpenCode 要等${span(wait)}才会重试，这一轮先结束。`);
+    const capacity = capacityRefused(retry.error);
+    this.ending.set(id, { code: -32603,
+      message: `${capacity ? '服务容量暂满\n\n' : ''}${said || '模型服务要求稍后再试'}\n\nOpenCode 要等${span(wait)}才会重试，这一轮先结束。`,
+      ...(capacity ? { data: { _meta: { coda: { failure: {
+        kind: 'service_unavailable', input: 'accepted', retryAfterMs: wait,
+      } } } } } : {}),
+    });
     this.cancel(sessionId);
   }
 }
