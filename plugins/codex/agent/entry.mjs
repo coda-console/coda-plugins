@@ -1,6 +1,6 @@
 // The Codex agent as Coda starts it (the plugin's `contributes.agents`): the locked codex-acp, run in this process with Coda's
 // patches, which fail the start once the adapter changes. Between it and Coda the entry speaks Coda's protocol for it
-// (waits.mjs, docs/agent-protocol.md): its session instructions become the thread's developer instructions (instructions.mjs),
+// (waits.mjs, docs/agent-protocol.md), and of its own check of a call as that call's (reviews.mjs): its session instructions become the thread's developer instructions (instructions.mjs),
 // and a steer that finds no turn going is answered `promptRequired` (steering.mjs); the models of the model service chosen in
 // Coda join Codex's own (providers.mjs). What Coda wants of Codex beyond ACP is set here: the mode a session starts in, and
 // which Codex program runs, through the account bridge when another plugin chooses the account (accounts.mjs).
@@ -22,6 +22,7 @@ import { promptRequiredCodexSteering } from './steering.mjs';
 import { servedCodexModels } from './providers.mjs';
 import { input, listen, relayedCodexStreams } from './relay.mjs';
 import { CodexWaits } from './waits.mjs';
+import { CodexReviews } from './reviews.mjs';
 import { explainCodexError, reportedCodexFailures } from './errors.mjs';
 import { reportedCodexSleeps } from './sleep.mjs';
 
@@ -48,8 +49,8 @@ if (!env.CODEX_PATH && accountSource(env) && env.CODA_PLUGIN_STATE) {
 
 const version = codexVersion();
 const waits = new CodexWaits({ agentInfo: version ? { name: 'codex', version } : null }), parse = line => { try { return JSON.parse(line); } catch { return null; } };
-const say = message => process.stdout.write(`${JSON.stringify(message)}\n`);
-listen(line => { for (const message of waits.fromAgent(parse(line))) say(explainCodexError(message)); });
+const reviews = new CodexReviews(), say = message => process.stdout.write(`${JSON.stringify(message)}\n`);
+listen(line => { for (const message of waits.fromAgent(parse(line))) for (const each of reviews.fromAgent(message)) say(explainCodexError(each)); });
 readLines(process.stdin).on('line', line => {
   const message = parse(line);
   if (!message || typeof message !== 'object') return;
