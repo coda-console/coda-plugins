@@ -205,8 +205,16 @@ function modelFields(fields, where) {
 // what sending does, its placeholder and send button —, whom what is sent is for (`agent`: the session's agent, `own` one
 // chosen for it, which a new session runs, `off` none shown), and its parameters, written as settings are. One entered by a
 // character typed first (`trigger`, as `!`) is the text's: it has no parameters, and what is sent in it is the session's.
+// Which composers offer it (`in`) is its own to say: a session's (`session`), and the one of a session not started yet
+// (`new`, the new task's), where what is sent starts that session in it; one whose messages a new session takes is sent
+// from a session, so only a session's.
 export const MODE_AGENTS = ['session', 'own', 'off'];
-const MODE_KEYS = ['id', 'title', 'icon', 'hint', 'placeholder', 'sendLabel', 'agent', 'trigger', 'parameters'];
+// What a plugin tells a session's agent at once (docs/session-contracts.md「顺带告诉」): a text, at most this long.
+const TELL_LIMIT = 4000;
+export const checkTold = text => check(typeof text === 'string' && text.trim() && text.length <= TELL_LIMIT && !text.includes('\0'), 'invalid_input',
+  `要告诉的话须为不超过 ${TELL_LIMIT} 字的文字`);
+export const MODE_PLACES = ['session', 'new'];
+const MODE_KEYS = ['id', 'title', 'icon', 'hint', 'placeholder', 'sendLabel', 'agent', 'trigger', 'in', 'parameters'];
 const oneLine = (text, most) => typeof text === 'string' && !!text.trim() && [...text].length <= most && !/[\0\r\n]/.test(text);
 function composerModeDeclarations(value) {
   const modes = value ?? [];
@@ -225,8 +233,12 @@ function composerModeDeclarations(value) {
     check(m.trigger === undefined || (typeof m.trigger === 'string' && /^[!#$%&*+:;=?^|~]$/.test(m.trigger)), 'invalid_plugin',
       `${where}.trigger 是一个标点：!#$%&*+:;=?^|~ 之一`);
     check(m.trigger === undefined || (m.parameters === undefined && m.agent !== 'own'), 'invalid_plugin', `${where}：打字进入的模式（trigger）没有参数，也不另选 Agent`);
+    check(m.in === undefined || (Array.isArray(m.in) && m.in.length && m.in.every(place => MODE_PLACES.includes(place)) && new Set(m.in).size === m.in.length),
+      'invalid_plugin', `${where}.in 是它出现的输入框，取 ${MODE_PLACES.join('、')}，不重复`);
+    check(m.agent !== 'own' || !m.in?.includes('new'), 'invalid_plugin', `${where}：开新会话的模式（agent: own）要从会话里发出，不能在 new 里`);
     return { id: m.id, title: m.title.trim(), icon: m.icon, ...(m.hint ? { hint: m.hint.trim() } : {}), ...(m.placeholder ? { placeholder: m.placeholder.trim() } : {}),
       ...(m.sendLabel ? { sendLabel: m.sendLabel.trim() } : {}), agent: m.agent ?? 'session', ...(m.trigger ? { trigger: m.trigger } : {}),
+      in: m.in ? MODE_PLACES.filter(place => m.in.includes(place)) : ['session'],
       // As read, which the clients show; as written (JSON Schema), which its hooks are given (components/composer-modes).
       ...(m.parameters !== undefined ? { parameters: modeParameters(m.parameters, `${where}.parameters`), schema: structuredClone(m.parameters) } : {}) };
   });
