@@ -36,14 +36,13 @@ export const TOOLS = [
     inputSchema: schema({ path: string('/api/ 开头的只读路径'), query: anyObject, turn }, ['path']), method: 'telemetry' },
   proxy('read_thread', '读取会话消息与工具摘要；完整工具结果用 coda_read_tool_call。', { reference: string('会话 ID 或 coda://threads/ 地址'), before: { type: 'integer' }, limit: { type: 'integer' }, historyVersion: { type: 'integer' }, tools: { type: 'boolean' } }, ['reference']),
   proxy('read_tool_call', '读取会话的一次工具调用及完整结果。', { reference: string('工具条目引用或 ID'), offset: { type: 'integer' }, maxBytes: { type: 'integer' } }, ['reference']),
-  proxy('agents', '列出可派遣 Agent、模型及项目，用于选择修复任务的目录。', { project: string('项目名称或 ID') }),
-  proxy('status', '读取本会话和子会话状态；等待批准的子会话可能不在 children 中，这不代表派活失败，不要据此重复 spawn/send 或轮询。副作用工具的 turn 票据由适配器内部取得，不要自行填写。', { childId: string('要读取结果的子会话') }),
+  proxy('agents', '列出可用 Agent、模型及目录，用于创建独立会话。', { project: string('项目名称或 ID') }),
+  proxy('status', '读取 Bot 当前会话状态；独立会话不会出现在 children 中，不能据此判断创建失败。要跟进独立会话请用 coda_read_thread，不要重复 new_session 或轮询。副作用工具的 turn 票据由适配器取得。'),
   proxy('workflow_status', '查看工作流运行的状态和失败证据。', { runId: string('工作流运行 ID 或 coda://workflow-runs/ 地址'), project: string('项目名称或 ID') }),
   proxy('workflow_list', '列出项目的工作流程。', { project: string('项目名称或 ID') }),
-  proxy('spawn', '必须指定有代码的目标 project，开 Agent 由 Coda 的授权卡片批准；不要在 Bot 的空目录开任务。可能先返回「已提交」；审批期间 status 看不到子会话不代表失败。结果作为新消息送回，不要重试、改写任务重复派出或轮询；无其他工作就 done。',
-    { agent: string('Agent ID'), prompt: string('任务、证据、影响、重点检查项与验收条件'), title: string('任务标题'), project: string('必填：目标项目名称或 ID'), model: string('模型'), effort: string('推理强度'), options: anyObject }, ['agent', 'prompt', 'project']),
-  proxy('send', '给别的会话发消息由 Coda 的授权卡片批准；给自己开出的子会话补充属于已批准任务的延续，不另问。可能先返回「已提交」；审批期间 status 看不到子会话不代表失败。结果作为新消息送回，不要重试或轮询；无其他工作就 done。', { childId: string('目标会话 ID 或引用'), prompt: string('消息正文') }, ['childId', 'prompt']),
-  proxy('cancel', '只能停止自己开出的子会话，由 Coda 校验归属，不另问。', { childId: string('自己开出的子会话 ID 或引用') }, ['childId']),
+  proxy('new_session', '像用户一样在目标目录开一个独立会话，每次要用户在 Coda 卡片上批准；不是你的子会话。立即返回请用户批准的回执，只会收到已开出/被拒绝通知，工作结果不会推给你；记下会话引用，之后用 coda_read_thread 跟进，不要重复开同一任务。任务写清证据、重点代码路径、验收方式、按仓库惯例开 PR 并走完 PR 流程直到评审通过（含检查、交叉评审和自动评审评论）。GitHub 只读限制仅约束 Bot 自己，不要转述进任务或限制会话走 PR 流程。',
+    { project: string('必填：目标目录名字或 ID；别的机器上的目录按 ID'), agent: string('Agent ID，默认选择 codex'), prompt: string('证据、重点代码路径、验收方式；按仓库惯例提交、开 PR 并走 PR 流程直到评审通过'), title: string('会话标题'), model: string('模型'), effort: string('推理强度'), mode: string('独立会话的审批档位，codex 默认选择 agent；用户在卡片上批准'), options: anyObject }, ['project', 'agent', 'prompt']),
+  proxy('send', '给已有会话发消息，每次由 Coda 授权卡片批准。可能先返回「已提交」；不要重试或轮询，无其他工作就 done。', { childId: string('目标会话 ID 或引用（沿用 Coda 参数名，不表示子会话）'), prompt: string('消息正文') }, ['childId', 'prompt']),
 ];
 
 async function jsonPost(address, path, body, token, fetcher = fetch) {
