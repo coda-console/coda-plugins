@@ -34,7 +34,7 @@
 | `grok-bot.turnTimeout` | 默认 `PT30M`；从消息开始或自主轮次开始计时，包含 Webhook、审批与工具等待 |
 
 仅在绑定或选择、切换 Bot 时，将 Bot 选择与绑定状态写入 `CODA_PLUGIN_STATE`；创建和恢复会话不写文件，读取模型和配置项的探测不会留下状态文件。恢复没有状态文件的会话时按未绑定处理。会话指令只保留在内存，由 Coda 在 session/new、session/load 时提供，不落盘。初始化声明 `loadSession`、`sessionCapabilities.systemPrompt`、`_meta.coda.waits` 和 `_meta.coda.remote`。
-会话指令只经 `hello`（绑定时）返回，可重复获取；响应丢失、重新绑定或切换 Bot 都不会清空指令，不再随 Webhook 发送。
+会话指令经 `hello`（绑定时）及每次 `coda_input` 的 instructions 字段返回；Bot 应应用当前指令，替换之前保存的版本（包括清空），无需重新绑定。响应丢失、重新绑定或切换 Bot 都不会清空指令，不再随 Webhook 发送。
 消息以 `{source:"coda", sessionId, turn, kind, preview}` POST 到 Routine。preview 只含正文前 500 个 Unicode 字符，截断时追加「……（完整内容用 coda_input 取）」；kind 根据可识别的 Coda 前缀区分 result、notification，其余为 message。Bot 每次必须先用 `coda_input(turn)` 取完整正文，再做事。完整输入只在内存中保留，轮次结束后仍可读，下一轮（包括自主轮次）开始即替换；进程重启后不可恢复。Bearer key 只送到配置的地址，禁止重定向。HTTP 200 只确认触发，`say` 输出、`done` 完成本轮。失败不自动重发，避免重复操作。
 取消会立即回 `cancelled`；超时说明原因后结束本轮。两者都不保证云端停止。旧 turn 的输出被拒绝；Coda 发起的轮次必须带 turn，省略它不会混入新一轮。
 
@@ -42,7 +42,7 @@
 副作用调用由适配器向 coda MCP 的 status 取 turn 票据并生成 requestId，授权与通知复用 Coda 会话机制。`spawn` 必须指定目标 `project`，缺失直接拒绝（Bot 的空目录没有代码）；开 Agent、给别的会话发消息由 Coda 的授权卡片批准。给自己开出的子会话补充是已批准任务的延续，不另问；`cancel` 只能停自己开出的子会话，由 Coda 校验归属，不另问。适配器不另发审批卡片，工具范围之外全部拒绝。
 
 `spawn`、`send`、`cancel` 的 requestId 由本轮 ID、工具名和规范化参数的 SHA-256 生成 UUID；对象键递归排序，数组顺序保留，参数顶层的 turn/requestId 不参与计算。同一轮内参数等价的重试复用同一 ID，由 Coda 恢复原调用；改参数或换轮次会得到新 ID。
-`spawn`、`send` 提交给 Coda 后，超过 20 秒仍未返回就先回复「已提交，正在等用户在 Coda 卡片上批准；结果会作为新消息送来；不要重试或轮询」。阈值为适配器的 `SUBMISSION_WAIT_MS` 常量。原调用在后台继续，真实结果才完成工具记录；原轮次结束后的结果只记日志。收到回执后可 coda_done，等待批准的子会话不在 status.children 中不代表失败，不要改写同一任务重复派出。
+`spawn`、`send` 提交给 Coda 后，超过 20 秒仍未返回就先回复「已提交，正在等用户在 Coda 卡片上批准；结果会作为新消息送来；不要重试或轮询」。阈值为适配器的 `SUBMISSION_WAIT_MS` 常量。提前回执前以原 toolCallId 登记独立后台活动，原调用继续执行；实际返回或 MCP 断连时，活动报 handling，补交结果、终结原工具记录并报 done/failed。原轮次已结束时由 Coda 开自主轮次交回，失败会明确显示给用户，不自动重试。没有 waits 能力的客户端会继续等实际结果，不提前回执。收到回执后可 coda_done，等待批准的子会话不在 status.children 中不代表失败，不要改写同一任务重复派出。
 
 ## 远端协议与调试
 
@@ -52,7 +52,7 @@ Coda 将 HTTP 调用包装成 `_coda/remote {sessionId,method,params}`；插件�
 | 方法 | 参数与返回 |
 | --- | --- |
 | `hello` | `{}` → `{sessionId, bot, instructions}`，bind 完成时调用；幂等读取指令 |
-| `input` | `{turn}` → `{turn, kind, text}`，读取本轮完整正文，不开启轮次 |
+| `input` | `{turn}` → `{turn, kind, text, instructions}`，读取完整正文与当前会话指令，不开启轮次 |
 | `say` | `{text, turn?}` → `{turn}`，首次主动汇报可省略 turn |
 | `done` | `{turn?}` → `{}`，等待工具全部返回后调用 |
 | `tool` | `{name, arguments, turn?}` → Coda MCP 工具结果 |
@@ -68,4 +68,4 @@ Coda 将 HTTP 调用包装成 `_coda/remote {sessionId,method,params}`；插件�
 ## 验证范围
 
 `test/plugins/grok-bot/` 使用假的 ACP Coda 对端、独立的 coda/diagnostics stdio MCP 服务、HTTP Webhook/远端入口和注入时钟；不需要账号或真实业务等待。仓库契约测试包含新插件握手。回归覆盖 hello 响应丢失后重新绑定、切换 Bot、遥测控制字符与路径越界；Tailscale 恢复脚本在假的系统命令下实际运行，验证已登录状态迁移、迁移后登录、系统目录丢失后的恢复和停止失败，不启动真实守护进程。
-0.1.3 的回归还覆盖：等价副作用调用复用 requestId、假时钟推进后的提前回执与后台收尾、长正文经 coda_input 完整读取、输入保留和失效边界，以及自动／人工档位切换后仍由 Coda 授权 Bot 的派活与发消息。本次修复尚未在真 Grok Bot 上复测；真实 Routine 投递、云端工具超时和子 Agent 的审批档位继承仍需真机验证。
+0.1.3 的回归还覆盖：等价副作用调用复用 requestId、假时钟推进后的提前回执与后台收尾（含 done 后真实 Rpc.close() 的可见失败）、恢复后无需重新绑定即可取到新指令、长正文经 coda_input 完整读取、输入保留和失效边界，以及自动／人工档位切换后仍由 Coda 授权 Bot 的派活与发消息。本次修复尚未在真 Grok Bot 上复测；真实 Routine 投递、云端工具超时和子 Agent 的审批档位继承仍需真机验证。
