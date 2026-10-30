@@ -12,8 +12,9 @@
 1. 给会话发消息，取得十分钟有效的绑定码和可直接贴给 Grok Bot 的安装说明。入口地址为空时先在 Coda 配好远端入口，再取新码。
 2. Bot 下载 `remote/coda-bot.mjs` 到 `/workspace/.coda-bot/coda-bot.mjs`，运行 `node coda-bot.mjs net`，按需完成 Tailscale 登录，然后 `node coda-bot.mjs bind <address> <code>`。后端入口需在云电脑可达的 tailnet 中。
 3. 在 Bot 设置中添加自定义 MCP 服务，命令 `node /workspace/.coda-bot/coda-bot.mjs mcp`；读取并安装同目录的 `remote/SKILL.md`。
-4. 建两个 Routine：Webhook 触发处理 Coda 消息；定时巡检按 Skill 调只读工具，没发现问题不说话。
-5. 把 Webhook 地址与 Bearer key 填到插件设置 `grok-bot.bots` 的同一行，行名为 Bot 名，key 是 writeOnly 密文。会话选择「这是哪个 Bot」。key 需要传递时使用 Grok 密钥卡片，不贴聊天。设置变更后重开会话，让进程读到新的设置环境。
+4. 可选：在 Grok Bot 的应用里连接 GitHub。巡检定位问题时，Skill 会用它读 coda、coda-state、coda-plugins 的代码并在汇报里写明文件与行号；Skill 只让它读，改代码仍经 Coda 卡片批准后由 Coda 的 Agent 做。
+5. 建两个 Routine：Webhook 触发处理 Coda 消息；定时巡检按 Skill 调只读工具，没发现问题不说话。
+6. 把 Webhook 地址与 Bearer key 填到插件设置 `grok-bot.bots` 的同一行，行名为 Bot 名，key 是 writeOnly 密文。会话选择「这是哪个 Bot」。key 需要传递时使用 Grok 密钥卡片，不贴聊天。设置变更后重开会话，让进程读到新的设置环境。
 
 同账号的 Bot 共用电脑。`config.json` 保存多会话绑定；多个绑定时每个 MCP 命令必须追加自己的 `sessionId`，例如 `node /workspace/.coda-bot/coda-bot.mjs mcp <sessionId>`；不指定时明确报错，绝不任选一个。重新 bind 同一会话会撤销旧 token，并原子更新对应记录。文件权限 0600，目录 0700。切换到另一个已命名 Bot 后需重新绑定。
 已绑定会话可发送 `/bind` 获取新绑定码，例如云端配置丢失后重新接入。
