@@ -48,12 +48,12 @@ Coda 将 HTTP 调用包装成 `_coda/remote {sessionId,method,params}`；插件�
 | `tool` | `{name, arguments, turn?}` → Coda MCP 工具结果 |
 | `telemetry` | `{path, query?, turn?}` → 看板 JSON 原样返回 |
 
-只读工具：read_thread、read_tool_call、agents、status、workflow_status、workflow_list、machines、machine_diagnostics。副作用工具：spawn、send、cancel。Bot MCP 以 `coda_` 前缀暴露这些工具，加 coda_say、coda_done、coda_telemetry。
+会话建立与恢复时，从 mcpServers 启动 `coda` 和 `space` 两个 stdio MCP 客户端，用各自 `tools/list` 建立路由，只保留白名单。`machines`、`machine_diagnostics` 由 Coda 内置空间插件的 `space` 提供；space 不存在或没列出工具时明确报不可用，不转给 coda。其余只读工具：read_thread、read_tool_call、agents、status、workflow_status、workflow_list；副作用工具：spawn、send、cancel。工具名冲突拒绝调用。Bot MCP 以 `coda_` 前缀暴露这些工具，加 coda_say、coda_done、coda_telemetry。
 调试：`node coda-bot.mjs call <method> '<JSON>' [sessionId]`。本轮 ID 与 status 的 Coda turn 票据不同，Bot 只传前者，适配器取得后者。
 
 `net` 快速检查本地 Tailscale；未安装时运行[官方安装脚本](https://tailscale.com/install.sh)，无守护进程时按 [tailscaled 参数](https://tailscale.com/docs/reference/tailscaled) 用 `/workspace/.coda-bot/tailscale/` 存状态，首次从 `/var/lib/tailscale` 复制状态。需要免密 sudo；状态恢复使用 flock 协调同账号多个 Bot。登录链接写给用户，MCP 标准输出只有 JSON-RPC。每个 MCP 工具调用前做检查。
 
 ## 验证范围
 
-`test/plugins/grok-bot/` 使用假的 ACP Coda 对端、独立 stdio MCP 服务、HTTP Webhook/远端入口和注入时钟；不需要账号或真实业务等待。仓库契约测试包含新插件握手。
+`test/plugins/grok-bot/` 使用假的 ACP Coda 对端、独立的 coda/space stdio MCP 服务、HTTP Webhook/远端入口和注入时钟；不需要账号或真实业务等待。仓库契约测试包含新插件握手。
 尚未与真 Grok Bot、真实 tailnet、真实 Coda 远端入口及诊断/遥测接口联调；安装软件、云电脑睡醒恢复、Routine 的实际投递与密钥卡片交互需要配套 PR 就绪后验证。

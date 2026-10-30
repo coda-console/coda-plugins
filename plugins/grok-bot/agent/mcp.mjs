@@ -21,5 +21,9 @@ export class CodaMcp {
     await this.connect();
     return this.rpc.request('tools/call', { name, arguments: args }, { signal });
   }
+  async list() {
+    await this.connect();
+    return this.rpc.request('tools/list', {}, { signal: AbortSignal.timeout(30_000) });
+  }
   close() { this.rpc?.close(); this.child?.kill(); }
 }

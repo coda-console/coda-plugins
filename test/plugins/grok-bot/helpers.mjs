@@ -36,7 +36,7 @@ export function fakeClock() {
   return { setTimeout(fn) { const id = Symbol(); timers.set(id, fn); return id; }, clearTimeout(id) { timers.delete(id); },
     expire() { for (const [id, fn] of [...timers]) { timers.delete(id); fn(); } }, get size() { return timers.size; } };
 }
-export async function harness(t, { settings = {}, root = temporary(t), permission, capabilities = { waits: {}, remote: {} }, ...options } = {}) {
+export async function harness(t, { settings = {}, root = temporary(t), permission, space = true, capabilities = { waits: {}, remote: {} }, ...options } = {}) {
   const requests = mailbox(), events = [], logs = [], messages = mailbox();
   const toAgent = new PassThrough(), fromAgent = new PassThrough();
   const keyPath = join(root, 'webhook-key');
@@ -54,7 +54,9 @@ export async function harness(t, { settings = {}, root = temporary(t), permissio
   t.after(() => { running.adapter.close(); client.close(); toAgent.end(); fromAgent.end(); });
   const initialized = await client.request('initialize', { clientCapabilities: { _meta: { coda: capabilities } } });
   const callsFile = join(root, 'calls.jsonl');
-  const open = { cwd: root, mcpServers: [{ name: 'coda', command: process.execPath, args: [fileURLToPath(new URL('./fixture-mcp.mjs', import.meta.url))], env: [{ name: 'CODA_TEST_CALLS', value: callsFile }] }],
+  const discoveryFile = join(root, 'discovery.txt');
+  const open = { cwd: root, mcpServers: ['coda', ...(space ? ['space'] : [])].map(name => ({ name, command: process.execPath, args: [fileURLToPath(new URL('./fixture-mcp.mjs', import.meta.url))],
+    env: [{ name: 'CODA_TEST_CALLS', value: callsFile }, { name: 'CODA_TEST_SERVER', value: name }, { name: 'CODA_TEST_DISCOVERY', value: discoveryFile }] })),
     systemPrompt: { mode: 'append', content: [{ type: 'text', text: 'session instructions marker' }] } };
   const created = await client.request('session/new', open);
   const sessionId = created.sessionId;
@@ -62,6 +64,7 @@ export async function harness(t, { settings = {}, root = temporary(t), permissio
   return { ...running, client, sessionId, remote, initialized, created, events, logs, requests, messages, open, env, root,
     text: () => events.filter(e => e.params.update?.sessionUpdate === 'agent_message_chunk').map(e => e.params.update.content.text).join('\n'),
     calls: () => { try { return readFileSync(callsFile, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse); } catch { return []; } },
+    discovered: () => readFileSync(discoveryFile, 'utf8').trim().split('\n'),
     prompt: text => client.request('session/prompt', { sessionId, prompt: [{ type: 'text', text }] }),
     select: () => client.request('session/set_config_option', { sessionId, configId: 'bot', value: 'inspector' }) };
 }

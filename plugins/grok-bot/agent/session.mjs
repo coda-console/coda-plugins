@@ -7,6 +7,7 @@ import { bindingGuide } from './setup.mjs';
 const MODEL = { id: 'model', name: '模型', category: 'model', type: 'select', currentValue: 'grok-bot', options: [{ value: 'grok-bot', name: 'Grok Bot' }] };
 const READ = new Set(['read_thread', 'read_tool_call', 'agents', 'status', 'workflow_status', 'workflow_list', 'machines', 'machine_diagnostics']);
 const WRITE = new Set(['spawn', 'send', 'cancel']);
+const SPACE = new Set(['machines', 'machine_diagnostics']);
 const fail = message => { throw Object.assign(new Error(message), { code: -32602 }); };
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
 export function duration(value = 'PT30M') {
@@ -91,7 +92,32 @@ export class Adapter {
       try { saved = JSON.parse(readFileSync(this.file(id), 'utf8')); }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
     }
-    const s = { id, saved, mcp: this.mcpFactory(mcpServers.find(server => server.name === 'coda'), cwd), turn: null };
+    const s = { id, saved, clients: [], routes: new Map(), unavailable: new Map(), turn: null };
+    // Coda and the built-in space plugin are separate stdio MCP servers. Discover
+    // both at load time; never treat a tool name returned by a server as authority
+    // to expand the whitelist, or fall back to coda for absent space diagnostics.
+    const catalogs = await Promise.all(['coda', 'space'].map(async name => {
+      const server = mcpServers.find(server => server.name === name);
+      if (!server) return { name, tools: [] };
+      const client = this.mcpFactory(server, cwd);
+      s.clients.push(client);
+      try {
+        const { tools } = await client.list();
+        if (!Array.isArray(tools)) throw new Error('tools/list 未返回工具列表');
+        return { name, client, tools };
+      } catch (error) {
+        client.close();
+        s.unavailable.set(name, error.message);
+        this.log(JSON.stringify({ sessionId: id, server: name, error: error.message }));
+        return { name, tools: [] };
+      }
+    }));
+    for (const catalog of catalogs) for (const tool of catalog.tools) {
+      if (!READ.has(tool.name) && !WRITE.has(tool.name)) continue;
+      if (SPACE.has(tool.name) && catalog.name !== 'space') continue;
+      if (s.routes.has(tool.name)) { s.routes.set(tool.name, null); continue; }
+      s.routes.set(tool.name, catalog.client);
+    }
     this.save(s);
     this.sessions.set(id, s);
     this.wait(s, 'waiting');
@@ -149,6 +175,7 @@ export class Adapter {
   async tool(s, { name, arguments: args = {}, turn: id }) {
     if (!READ.has(name) && !WRITE.has(name)) fail(`不允许代理工具：${name}`);
     if (!object(args)) fail('arguments 必须是对象');
+    this.provider(s, name);
     this.active(s, id, WRITE.has(name));
     return this.trace(s, name, args, async (toolCall, turn) => {
       const signal = turn?.controller.signal;
@@ -157,14 +184,19 @@ export class Adapter {
           options: [{ optionId: 'allow', name: '仅允许本次操作', kind: 'allow_once' }, { optionId: 'deny', name: '拒绝', kind: 'reject_once' }] }, { signal });
         if (s.turn !== turn) fail('轮次已结束，操作未执行');
         if (permission?.outcome?.outcome !== 'selected' || permission.outcome.optionId !== 'allow') fail('用户未批准此操作');
-        const status = await this.trace(s, 'status', {}, () => s.mcp.call('status', {}, signal));
+        const status = await this.trace(s, 'status', {}, () => this.provider(s, 'status').call('status', {}, signal));
         if (status.isError) throw new Error('无法取得 Coda turn 票据');
         const ticket = (status.structuredContent ?? JSON.parse(status.content.find(b => b.type === 'text').text)).turn;
         if (typeof ticket !== 'string' || !ticket || s.turn !== turn) fail('没有有效的 Coda turn 票据');
         args = { ...args, turn: ticket, requestId: randomUUID() };
       }
-      return s.mcp.call(name, args, signal);
+      return this.provider(s, name).call(name, args, signal);
     });
+  }
+  provider(s, name) {
+    const client = s.routes.get(name);
+    if (!client) fail(`${name} 不可用：${SPACE.has(name) ? 'space' : 'coda/space'} MCP 未提供此工具或工具名冲突${s.unavailable.size ? `（${[...s.unavailable].map(([server, error]) => `${server}: ${error}`).join('；')}）` : ''}`);
+    return client;
   }
   async telemetry(s, { path, query = {}, turn }) {
     if (typeof path !== 'string' || !path.startsWith('/api/') || /[\\?#%]/.test(path) || path.split('/').some(p => p === '..' || p === '.')) fail('telemetry 只允许 /api/ 下不含编码或路径跳转的只读路径');
@@ -233,5 +265,5 @@ export class Adapter {
     if (p.method === 'telemetry') return this.telemetry(s, args);
     fail(`未知的远端方法：${p.method}`);
   }
-  close() { for (const s of this.sessions.values()) { this.finish(s, 'cancelled'); s.mcp.close(); } }
+  close() { for (const s of this.sessions.values()) { this.finish(s, 'cancelled'); for (const client of s.clients) client.close(); } }
 }
