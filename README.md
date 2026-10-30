@@ -450,6 +450,28 @@ node scripts/check-contract.mjs   # 每个文件与 Coda 同步的一致，check
 
 ## 开发
 
+`scripts/grok-bot-native-probe.mjs` 是 Grok Bot 桌面客户端 0.78.1 私有 Connect 协议的独立验证程序，
+不接入现行插件、不要求 Bot 安装 MCP 或调用汇报工具。使用 Node 24：
+
+```sh
+node scripts/grok-bot-native-probe.mjs login
+node scripts/grok-bot-native-probe.mjs bots
+node scripts/grok-bot-native-probe.mjs history <agentId>
+node scripts/grok-bot-native-probe.mjs watch <agentId>
+printf '%s' '17+25' | node scripts/grok-bot-native-probe.mjs send <agentId>
+```
+
+`login` 输出官方浏览器登录链接，授权后把凭据存到 `~/.local/state/coda-grok-native-probe/auth.json`（0600），
+不读桌面客户端的凭据。`bots` 列出的 `agentId` 是后续命令使用的 UUID。`history` 读最近 30 条，
+`watch` 从这批历史的最新更新序号起订阅消息、活动与结束状态，五分钟或收到中断信号后退出；不自动重连、续期或重发消息。
+`send` 从标准输入读取原文，直接调用原生发送接口，返回投递状态；投递成功不代表这一轮完成。
+
+标准输出只含结构摘要（`bots` 另含 Bot 名称）。需要查看正文时，`history` 可追加 JSON 输出路径，
+`watch` 可追加 NDJSON 输出路径；文件权限为 0600，包含账号的原始对话事件，不应提交仓库。
+历史清空或游标过期时程序明确退出，需重新读取。程序不把结束状态解释为所有正文已经送达，
+也不把工具活动摘要解释为完整工具输入、输出。它没有实现 ACP 会话、审批、Routine 子会话或认证续期，
+不用于替换现行 `grok-bot` 插件；这是客户端私有接口，不是上游承诺稳定的公开 API。
+
 ```sh
 npm ci
 node scripts/install-plugins.mjs          # 在每个带 package-lock.json 的插件目录里 npm ci（照 Coda 装版本目录的参数）
