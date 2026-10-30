@@ -87,11 +87,12 @@ export class Adapter {
     const id = load ? params.sessionId : randomUUID();
     if (typeof id !== 'string' || !id) fail('缺少 sessionId');
     if (this.sessions.has(id)) fail('会话已经加载');
-    let saved = { bot: '', bound: false, instructions: systemPrompt?.content.map(b => b.text).join('\n') ?? '' };
+    let saved = { bot: '', bound: false, instructions: '' };
     if (load) {
       try { saved = JSON.parse(readFileSync(this.file(id), 'utf8')); }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
     }
+    if (systemPrompt) saved.instructions = systemPrompt.content.map(b => b.text).join('\n');
     const s = { id, saved, diagnosticsEnabled: mcpServers.some(server => server.name === 'diagnostics'), clients: [], routes: new Map(), unavailable: new Map(), turn: null };
     // Coda and the optional built-in diagnostics plugin are separate stdio MCP servers. Discover
     // both at load time; never treat a tool name returned by a server as authority

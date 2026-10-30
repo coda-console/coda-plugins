@@ -212,6 +212,34 @@ test('session/load preserves Bot binding and re-registers timer; invalid instruc
   assert.match(h.text(), /single-use-code/);
 });
 
+test('session/load adopts supplied instructions, persists them and retains them only when omitted', async t => {
+  const h = await bound(t);
+  const replacement = { mode: 'append', content: [
+    { type: 'text', text: 'new project instructions' },
+    { type: 'text', text: 'enabled plugin instructions' },
+  ] };
+  for (const [systemPrompt, expected] of [
+    [replacement, 'new project instructions\nenabled plugin instructions'],
+    [undefined, 'new project instructions\nenabled plugin instructions'],
+    [{ mode: 'append', content: [] }, ''],
+    [undefined, ''],
+  ]) {
+    h.adapter.close();
+    h.adapter.sessions.clear();
+    const { systemPrompt: _old, ...open } = h.open;
+    const loaded = await h.client.request('session/load', {
+      ...open, sessionId: h.sessionId, ...(systemPrompt === undefined ? {} : { systemPrompt }),
+    });
+    assert.equal(loaded.configOptions[1].currentValue, 'inspector');
+    assert.equal((await h.remote('hello')).instructions, expected);
+    const pending = h.prompt('inspect');
+    const { body } = await h.deliveries.next();
+    assert.equal(body.text, expected ? `<coda-session-instructions>\n${expected}\n</coda-session-instructions>\n\ninspect` : 'inspect');
+    await h.remote('done', { turn: body.turn });
+    assert.equal((await pending).stopReason, 'end_turn');
+  }
+});
+
 test('telemetry preserves JSON, query and base path; refuses traversal, redirects and missing config', async t => {
   const queries = mailbox();
   const base = await http(t, (request, response) => {
