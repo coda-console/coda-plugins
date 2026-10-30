@@ -17,7 +17,7 @@ const anyObject = { type: 'object', additionalProperties: true };
 const proxy = (name, description, properties = {}, required = []) => ({ name: `coda_${name}`, description,
   inputSchema: schema({ ...properties, turn }, required), method: 'tool', tool: name });
 export const TOOLS = [
-  { name: 'coda_input', description: '每次收到 Webhook 后先调用：用其中的 turn 获取本轮完整正文和 kind，preview 只是预览。输入保留到下一轮开始，旧 turn 不可读取。',
+  { name: 'coda_input', description: '每次收到 Webhook 后先调用：用其中的 turn 获取本轮完整正文、kind 和当前 instructions；先用 instructions 替换此前会话指令（为空也替换），再处理正文。preview 只是预览。输入保留到下一轮开始，旧 turn 不可读取。',
     inputSchema: schema({ turn }, ['turn']), method: 'input' },
   { name: 'coda_say', description: '向这个 Coda 会话汇报。处理 Webhook 必须带 turn；巡检发现问题才首次省略 turn，开启自主轮次，记下返回的 turn。没问题不调用。',
     inputSchema: schema({ text: string('给用户看的简明正文'), turn }, ['text']), method: 'say' },

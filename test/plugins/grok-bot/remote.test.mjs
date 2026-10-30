@@ -24,7 +24,7 @@ async function endpoint(t) {
       if (!sessionId) { response.writeHead(401); response.end(JSON.stringify({ error: { code: 'unauthorized', message: 'invalid token' } })); return; }
       if (body.method === 'fail') { response.writeHead(409); response.end(JSON.stringify({ error: { code: 'archived', message: '会话已归档' } })); return; }
       const result = body.method === 'hello' ? { sessionId, instructions: 'Be concise' }
-        : body.method === 'input' ? { turn: body.params.turn, kind: 'result', text: '完整正文'.repeat(2000) }
+        : body.method === 'input' ? { turn: body.params.turn, kind: 'result', text: '完整正文'.repeat(2000), instructions: 'Current Coda instructions' }
         : body.method === 'tool' ? { content: [{ type: 'text', text: JSON.stringify(body.params) }] } : { echo: body, sessionId };
       response.end(JSON.stringify({ result }));
     }
@@ -82,7 +82,7 @@ test('MCP initialize/list/call map every named tool through HTTP and check net b
       assert.deepEqual(result.content, [{ type: 'text', text: JSON.stringify(sent.params) }]);
     }
     if (tool.name === 'coda_input') assert.deepEqual(JSON.parse(result.content[0].text), {
-      turn: 'webhook-turn', kind: 'result', text: '完整正文'.repeat(2000),
+      turn: 'webhook-turn', kind: 'result', text: '完整正文'.repeat(2000), instructions: 'Current Coda instructions',
     });
   }
   assert.equal(checks, TOOLS.length);
