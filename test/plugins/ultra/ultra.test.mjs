@@ -1,6 +1,8 @@
 // The Ultra plugin's module (plugins/ultra/README.md), its hooks called as Coda calls them, with a `coda` that keeps what
 // it is told. Entering, the parameters and what the agent hears; what Coda does with them is Coda's own to test.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { pluginDir } from '../plugin.mjs';
 import { activate } from '../../../plugins/ultra/main.mjs';
@@ -21,6 +23,8 @@ function plugin(settings = { 'ultra.templates': rows }) {
   return { ultra: hooks.get('ultra'), told };
 }
 const session = { id: 's1', projectId: 'p1' };
+// The mode's parameters as Coda gives them to its hooks: as package.json writes them.
+const parameters = JSON.parse(readFileSync(join(pluginDir('ultra'), 'package.json'), 'utf8')).contributes.composerModes.find(m => m.id === 'ultra').parameters;
 
 test('the templates are the setting\'s rows by name, in the order each first comes; a row with no name or no agent is none', () => {
   const all = templates(rows);
@@ -31,12 +35,12 @@ test('the templates are the setting\'s rows by name, in the order each first com
 
 test('entering offers the templates, the first chosen and its list filled in; none set, the list is the user\'s own', async () => {
   const { ultra } = plugin();
-  const entered = await ultra.enter({ session, values: {} });
+  const entered = await ultra.enter({ session, values: {}, parameters });
   assert.deepEqual(entered.parameters.properties.template.enum, ['均衡', '快', CUSTOM]);
   assert.equal(entered.parameters.properties.template.default, '均衡');
   assert.deepEqual(entered.parameters.properties.subagents.items.properties.when, { title: '什么时候派给它', type: 'string' }, 'the rest as declared');
   assert.deepEqual([entered.values.template, entered.values.subagents.map(r => r.who.agent)], ['均衡', ['claude-sdk', 'codex']]);
-  const none = await plugin({}).ultra.enter({ session, values: {} });
+  const none = await plugin({}).ultra.enter({ session, values: {}, parameters });
   assert.deepEqual([none.values.template, none.values.subagents, none.parameters.properties.template.enum], [CUSTOM, [], [CUSTOM]]);
 });
 
