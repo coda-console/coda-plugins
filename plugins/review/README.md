@@ -2,10 +2,11 @@
 
 `review`：会话开的 PR 从开出来起由流程 `pull-request` 跟着走，一个 PR 一条运行，到合并或关闭才结束。
 它只用 Coda 流程的公开原语（PR 事件、Agent 步骤、人工任务、调用其他流程），也是写 PR 流程的样例：要不一样的流程，照着它改一份（见文末「改成自己的」）。
-它依赖内置的 GitHub 插件（`extensionDependencies`）：PR 事件由 GitHub 插件的「PR 观察」发布，`github-reported-pr` 也是它的命令；装 review 时先装 GitHub 插件，卸载 GitHub 插件时 review 一起卸载。
-运行的标题是「PR #号 标题」（手动发起的是参数 `pr`，留空时评审查出 PR 后是「PR #号（地址）」），卡片上有「检查」「评审」「合并」三段；草稿、叠放的 PR 另有「草稿」「叠放」，选了部署或发布的，合并后再有「部署与发布」。
-也可以 `workflow_run pull-request` 手动发起（参数 `pr`、可选 `focus`）：只评审一次、不计次数，不进入合并（手动发起的运行不挂在 PR 上，收不到它的新提交和关闭）。
-`pr` 不填时评审会话最近开的、这个仓库的 PR，由 GitHub 插件的命令 `github-reported-pr` 查出（项目里停用了 GitHub 插件就要填）。
+它依赖内置的 GitHub 插件（`extensionDependencies`）：PR 事件由 GitHub 插件的「PR 观察」发布；装 review 时先装 GitHub 插件，卸载 GitHub 插件时 review 一起卸载。
+运行的标题是「PR #号 标题」（手动发起的是参数 `pr`，评审查出 PR 后是「PR #号（地址）」），卡片上有「检查」「评审」「合并」三段；草稿、叠放的 PR 另有「草稿」「叠放」，选了部署或发布的，合并后再有「部署与发布」。
+流程通过 `coda:key` 声明 PR 地址为主键：在同一项目中，自动、手动发起共享一条未结束的运行，包括排队、等答复和取消收尾。地址不区分大小写。结束后新请求可再发起；旧请求重试仍返回原运行。
+也可以 `workflow_run pull-request` 手动发起（必填 `pr`：GitHub 返回的完整 PR 地址，可选 `focus`）。已有运行时返回它，沿用原进度、关注点和结果接收会话；草稿中的运行也照旧等标记为可评审。没有运行时只评审一次、不计次数、不进入合并；如果随后 PR 观察发来事件，在同一条运行里接上完整流程。是否接入完整流程按 `github.event.coda.heard` 判断：手动运行尚未收到事件时为空。
+`pr` 须在创建运行前明确。编号、旧仓库地址或带后缀的链接先用 `gh pr view <编号或链接> --json url --jq .url` 取得 GitHub 返回的地址，再传入；流程不从 origin 猜仓库身份。需要查最近开的 PR 时先用 GitHub 插件的 `github-reported-pr` 找到它，再用 `gh pr view` 确认当前地址。输入不接受编号、末尾斜线、查询参数或片段，避免不同拼写创建不同主键。此版本需要支持 `coda:key` 的 Coda 流程引擎。
 
 ```
 .coda/workflows/pull-request.bpmn   流程本身

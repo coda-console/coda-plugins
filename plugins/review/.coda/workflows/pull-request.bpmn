@@ -8,7 +8,7 @@
      它推了新提交、评审通过后按你的批准合并，不再问。
      删除分支：你勾选后，等 GitHub 确认合并，再删除仍指向该提交的远程源分支；本地分支与工作树保留。
      部署与发布：合并后按你勾选的，在合并提交上调用项目里声明为这一类的流程（coda:kind）。
-     PR 在 GitHub 上合并或关闭，运行随之结束。也可以手动发起（传 PR 编号或地址），只评审一次。BPMN 2.0，由 Coda 执行（docs/workflows.md）。 -->
+     PR 在 GitHub 上合并或关闭，运行随之结束。也可以手动发起（传 GitHub 返回的 PR 地址），只评审一次。BPMN 2.0，由 Coda 执行（docs/workflows.md）。 -->
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="pull-request-definitions" targetNamespace="https://coda.pub/plugins/review">
   <message id="dispatch" name="workflow.dispatch" />
@@ -18,9 +18,11 @@
   <message id="edited" name="pull_request.edited" />
   <message id="closed" name="pull_request.closed" />
   <process id="pull-request" name="PR 生命流程" isExecutable="true"
-    coda:title='PR {{if github.event.number = null then (if review.pr = null then inputs.pr else review.pr) else "#" + string(github.event.number) + " " + github.event.pull_request.title}}'>
+    coda:key='=lower case(if github.event.pull_request.html_url != null then github.event.pull_request.html_url
+      else if matches(inputs.pr, "^https://github[.]com/[a-z0-9_.-]+/[a-z0-9_.-]+/pull/[1-9][0-9]*$", "i") then inputs.pr else null)'
+    coda:title='PR {{if github.event.coda.heard = null then (if review.pr = null then inputs.pr else review.pr) else "#" + string(github.event.number) + " " + github.event.pull_request.title}}'>
     <extensionElements>
-      <coda:input name="pr" label="PR" description="PR 编号或地址；不填就评审会话最近开的、这个仓库的 PR" />
+      <coda:input name="pr" label="PR 地址" required="true" description="GitHub 返回的完整 PR 地址，不带末尾斜线、查询参数或片段；编号先用 gh pr view 解析。已有未结束运行时复用它" />
       <coda:input name="focus" label="关注点" description="请评审方特别关注的内容" />
     </extensionElements>
     <startEvent id="new" name="PR 新建"><messageEventDefinition messageRef="opened" /></startEvent>
@@ -113,7 +115,7 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
         <conditionExpression xsi:type="tFormalExpression">=review.passed and review.head = github.event.pull_request.head.sha and review.base = github.event.pull_request.base.ref</conditionExpression>
       </sequenceFlow>
       <sequenceFlow id="at-limit" sourceRef="whether" targetRef="limit">
-        <conditionExpression xsi:type="tFormalExpression">=github.event_name != "workflow_dispatch" and number(review.count) >= vars.review.maxReviews</conditionExpression>
+        <conditionExpression xsi:type="tFormalExpression">=github.event.coda.heard != null and number(review.count) >= vars.review.maxReviews</conditionExpression>
       </sequenceFlow>
       <sequenceFlow id="go" sourceRef="whether" targetRef="review" />
 
@@ -211,6 +213,9 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
       </endEvent>
       <endEvent id="fixing" name="等修改"><extensionElements><coda:output name="outcome" value="fixing" /></extensionElements></endEvent>
     </subProcess>
+    <!-- 先手动发起，随后观察到 PR：在同一条运行里接上 PR 的完整流程。 -->
+    <boundaryEvent id="opened-while-reviewing" name="观察到 PR" attachedToRef="reviewing"><messageEventDefinition messageRef="opened" /></boundaryEvent>
+    <sequenceFlow id="review-opened" sourceRef="opened-while-reviewing" targetRef="opening" />
     <boundaryEvent id="pushed-while-reviewing" name="新提交" attachedToRef="reviewing"><messageEventDefinition messageRef="synchronize" /></boundaryEvent>
     <sequenceFlow id="review-pushed" sourceRef="pushed-while-reviewing" targetRef="opening" />
     <boundaryEvent id="closed-while-reviewing" name="PR 关闭" attachedToRef="reviewing"><messageEventDefinition messageRef="closed" /></boundaryEvent>
@@ -218,7 +223,7 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
     <sequenceFlow id="to-next" sourceRef="reviewing" targetRef="after-reviewing" />
     <exclusiveGateway id="after-reviewing" name="接下来" default="to-based" />
     <sequenceFlow id="by-hand" sourceRef="after-reviewing" targetRef="reviewed-by-hand">
-      <conditionExpression xsi:type="tFormalExpression">=github.event_name = "workflow_dispatch"</conditionExpression>
+      <conditionExpression xsi:type="tFormalExpression">=github.event.coda.heard = null</conditionExpression>
     </sequenceFlow>
     <sequenceFlow id="to-waiting" sourceRef="after-reviewing" targetRef="waiting">
       <conditionExpression xsi:type="tFormalExpression">=reviewing.outcome = "fixing"</conditionExpression>
