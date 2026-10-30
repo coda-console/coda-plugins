@@ -54,7 +54,7 @@ Coda 将 HTTP 调用包装成 `_coda/remote {sessionId,method,params}`；插件�
 
 `coda_machine_diagnostics` 的参数直接传入：`machine` 为 ID 或唯一名字，`kind` 为 network / client-performance；`from`、`to` 为 Unix 毫秒数，`days` 为 1–30 的整数，另有 `limit`（1–500）、`client`、`verdict`。client-performance 只支持 days；network 的 from/to 选择分钟样本，其余参数筛选探测报告。
 
-`net` 只通过 `/workspace/.coda-bot/tailscale/tailscaled.sock` 检查持久守护进程；未安装时运行[官方安装脚本](https://tailscale.com/install.sh)。首次接入会停止系统 tailscaled 服务与原进程，等状态写完后从 `/var/lib/tailscale` 迁移到 `/workspace/.coda-bot/tailscale/`，按 [tailscaled 参数](https://tailscale.com/docs/reference/tailscaled) 从该目录启动；后续登录也写入这里。已有的持久登录状态在系统目录丢失后仍可恢复。需要 Debian 自带的 start-stop-daemon 和免密 sudo；状态恢复使用 flock 协调同账号多个 Bot。登录链接写给用户，MCP 标准输出只有 JSON-RPC。每个 MCP 工具调用前做检查。
+`net` 只通过 `/workspace/.coda-bot/tailscale/tailscaled.sock` 检查持久守护进程；未安装时运行[官方安装脚本](https://tailscale.com/install.sh)。首次接入会停止系统 tailscaled 服务与原进程，等状态写完后从 `/var/lib/tailscale` 迁移到 `/workspace/.coda-bot/tailscale/`，按 [tailscaled 参数](https://tailscale.com/docs/reference/tailscaled) 从该目录启动；后续登录也写入这里。已有的持久登录状态在系统目录丢失后仍可恢复。需要 Debian 自带的 start-stop-daemon 和免密 sudo；状态恢复使用 flock 协调同账号多个 Bot。登录链接写给用户，MCP 标准输出只有 JSON-RPC。每个 MCP 工具调用前做检查。Running 快速路径额外检查一次持久状态文件；若副本缺失且系统状态文件存在，在同一 flock 锁内重新检查并复制，已有副本不覆盖。
 
 ## 验证范围
 

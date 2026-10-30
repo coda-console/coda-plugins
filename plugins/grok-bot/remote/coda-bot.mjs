@@ -86,6 +86,17 @@ export async function call(method, params, { home = HOME, session, fetcher = fet
   return (await jsonPost(address, '/v1/remote-agent', { method, params }, token, fetcher)).result;
 }
 
+// Backfill a missing snapshot without replacing an existing workspace identity.
+// Recheck under the same lock as recovery: another Bot may have copied first.
+const BACKUP = `set -eu
+state="$1"
+system_state="$2"
+if [ ! -f "$state/tailscaled.state" ] && [ -f "$system_state/tailscaled.state" ]; then
+  cp -p "$system_state/tailscaled.state" "$state/tailscaled.state.tmp"
+  mv "$state/tailscaled.state.tmp" "$state/tailscaled.state"
+fi
+`;
+
 // Only our private socket qualifies for the fast path: a system daemon may
 // still be writing its identity to /var/lib, which disappears on cloud updates.
 const RECOVER = `set -eu
@@ -134,6 +145,16 @@ done
 export async function net({ home = HOME, run = exec } = {}) {
   const state = join(home, 'tailscale'), socket = join(state, 'tailscaled.sock');
   const cli = ['-n', 'tailscale', `--socket=${socket}`];
+  const connected = async () => {
+    try { await run('sudo', ['-n', 'test', '-f', join(state, 'tailscaled.state')]); }
+    catch (error) {
+      if (error.code !== 1) throw error;
+      await run('sudo', ['-n', 'mkdir', '-p', state]);
+      await run('sudo', ['-n', 'chmod', '700', state]);
+      await run('sudo', ['-n', 'flock', '--close', join(state, 'net.lock'), 'sh', '-c', BACKUP, 'coda-bot-backup', state, '/var/lib/tailscale'], { timeout: 10_000 });
+    }
+    return { connected: true };
+  };
   const status = async () => {
     try { return JSON.parse((await run('sudo', [...cli, 'status', '--json'], { timeout: 10_000 })).stdout); }
     catch (error) { try { return JSON.parse(error.stdout); } catch { return null; } }
@@ -146,12 +167,12 @@ export async function net({ home = HOME, run = exec } = {}) {
     await run('sudo', ['-n', 'flock', '--close', join(state, 'net.lock'), 'sh', '-c', RECOVER, 'coda-bot-net', state, '/var/lib/tailscale'], { timeout: 180_000 });
     info = await status();
   }
-  if (info?.BackendState === 'Running') return { connected: true };
+  if (info?.BackendState === 'Running') return connected();
   let login = '';
   try { await run('sudo', [...cli, 'up', '--timeout=15s'], { timeout: 20_000 }); }
   catch (error) { login = `${error.stdout ?? ''}\n${error.stderr ?? ''}`.match(/https:\/\/login\.tailscale\.com\/[^\s]+/)?.[0] ?? ''; }
   info = await status();
-  if (info?.BackendState === 'Running') return { connected: true };
+  if (info?.BackendState === 'Running') return connected();
   throw new Error(info?.AuthURL || login ? `请打开 Tailscale 登录链接：${info?.AuthURL || login}；完成后重试 net。` : `Tailscale 未连接；检查 sudo tailscale --socket=${socket} status。`);
 }
 

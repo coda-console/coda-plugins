@@ -134,7 +134,7 @@ function tailscale(t, identity, { stale = false } = {}) {
   mkdirSync(bin); mkdirSync(system);
   const file = join(home, 'runtime.json'), state = join(home, 'tailscale');
   const runtime = { daemon: { socket: 'default', state: join(system, 'tailscaled.state'), identity } };
-  writeFileSync(runtime.daemon.state, JSON.stringify({ BackendState: 'NeedsLogin' }));
+  writeFileSync(runtime.daemon.state, JSON.stringify({ BackendState: 'NeedsLogin' }), { mode: 0o600 });
   writeFileSync(file, JSON.stringify(runtime));
   if (stale) {
     mkdirSync(state);
@@ -172,7 +172,10 @@ test('net migrates a logged-in default daemon and its latest identity before usi
   assert.equal(statSync(join(f.home, 'tailscale')).mode & 0o777, 0o700);
   f.commands.length = 0;
   assert.deepEqual(await net(f), { connected: true });
-  assert.deepEqual(f.commands, [['-n', 'tailscale', `--socket=${join(f.home, 'tailscale/tailscaled.sock')}`, 'status', '--json']]);
+  assert.deepEqual(f.commands, [
+    ['-n', 'tailscale', `--socket=${join(f.home, 'tailscale/tailscaled.sock')}`, 'status', '--json'],
+    ['-n', 'test', '-f', f.state],
+  ]);
   assert.equal(f.read().starts, 1);
   // An OS replacement loses /var/lib and the daemon, but preserves the login.
   f.eraseSystem();
@@ -202,4 +205,53 @@ test('failed daemon shutdown fails migration instead of reporting connected', as
   assert.equal(f.read().daemon.socket, 'default');
   assert.equal(f.read().starts, undefined);
   assert.throws(() => readFileSync(f.state), { code: 'ENOENT' });
+});
+
+function runningWithoutSnapshot(t) {
+  const identity = { BackendState: 'Running', node: 'system-login' };
+  const f = tailscale(t, identity);
+  const runtime = f.read();
+  runtime.daemon.socket = join(f.home, 'tailscale/tailscaled.sock');
+  writeFileSync(runtime.daemon.state, JSON.stringify(identity), { mode: 0o600 });
+  f.write(runtime);
+  return f;
+}
+
+test('Running backfills missing workspace state under flock and leaves an existing copy untouched', async t => {
+  const f = runningWithoutSnapshot(t);
+  const source = f.read().daemon.state;
+  assert.deepEqual(await net(f), { connected: true });
+  assert.equal(readFileSync(f.state, 'utf8'), readFileSync(source, 'utf8'));
+  assert.equal(statSync(f.state).mode & 0o777, 0o600);
+  assert.ok(f.commands.some(args => args[1] === 'flock'));
+  assert.equal(f.read().starts, undefined, 'backup must not restart the daemon');
+  const before = statSync(f.state);
+  writeFileSync(source, 'changed system state');
+  f.commands.length = 0;
+  assert.deepEqual(await net(f), { connected: true });
+  assert.equal(JSON.parse(readFileSync(f.state)).node, 'system-login');
+  assert.equal(statSync(f.state).mtimeMs, before.mtimeMs);
+  assert.equal(statSync(f.state).ino, before.ino);
+  assert.deepEqual(f.commands, [
+    ['-n', 'tailscale', `--socket=${join(f.home, 'tailscale/tailscaled.sock')}`, 'status', '--json'],
+    ['-n', 'test', '-f', f.state],
+  ]);
+});
+
+test('Running rechecks the snapshot under flock instead of overwriting another Bot copy', async t => {
+  const f = runningWithoutSnapshot(t);
+  const run = async (command, args) => {
+    if (args[1] === 'flock') writeFileSync(f.state, 'copied by another Bot');
+    return f.run(command, args);
+  };
+  assert.deepEqual(await net({ ...f, run }), { connected: true });
+  assert.equal(readFileSync(f.state, 'utf8'), 'copied by another Bot');
+});
+
+test('Running without system state does not fabricate a workspace snapshot', async t => {
+  const f = runningWithoutSnapshot(t);
+  f.eraseSystem();
+  assert.deepEqual(await net(f), { connected: true });
+  assert.throws(() => readFileSync(f.state), { code: 'ENOENT' });
+  assert.equal(f.read().starts, undefined);
 });
