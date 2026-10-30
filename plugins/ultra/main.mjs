@@ -20,9 +20,10 @@ export function activate(coda) {
     },
     async send({ session, values, sent }) {
       const list = values.subagents ?? [], said = JSON.stringify(list);
+      // Kept once told: one Coda could not take (too long) refuses the message, and the next is told again.
       if (sent === 0 || told.get(session.id) !== said) {
-        told.set(session.id, said);
         await coda.tell(session.id, on(list));
+        told.set(session.id, said);
       } else if (sent % REMIND_EVERY === 0) await coda.tell(session.id, STILL_ON);
     },
     async exit({ session, sent }) {

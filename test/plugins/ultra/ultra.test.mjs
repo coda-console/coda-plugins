@@ -14,12 +14,13 @@ const rows = [
   { template: '快', who: { agent: 'codex', effort: 'low', mode: 'agent' } },
   { template: '', who: { agent: 'codex' } }, { template: '缺 Agent', who: {} },
 ];
+// `coda.tell` refuses what Coda's does: more than 4000 characters.
 function plugin(settings = { 'ultra.templates': rows }) {
   const hooks = new Map(), told = [];
   activate({ plugin: { id: 'ultra', path: pluginDir('ultra') },
     composerModes: { register: (id, h) => hooks.set(id, h) },
     environment: async () => ({ CODA_PLUGIN_SETTINGS: JSON.stringify(settings) }),
-    tell: async (session, text) => { told.push([session, text]); } });
+    tell: async (session, text) => { if (text.length > 4000) throw new Error('要告诉的话须为不超过 4000 字的文字'); told.push([session, text]); } });
   return { ultra: hooks.get('ultra'), told };
 }
 const session = { id: 's1', projectId: 'p1' };
@@ -70,4 +71,14 @@ test('the agent is told it is on with the first message and whenever the list ch
   await ultra.exit({ session: { id: 's2' }, sent: 0 });
   assert.deepEqual(told, [], 'left before anything was sent: nothing to take back');
   assert.match(on([]), /your own agent and model/);
+});
+
+test('a list the agent could not be told refuses the message, and the same list sent again is told again', async () => {
+  const { ultra, told } = plugin();
+  const short = [{ who: { agent: 'codex' }, when: '调研' }], long = [{ who: { agent: 'codex' }, when: '长'.repeat(4000) }];
+  await ultra.send({ session, values: { subagents: short }, sent: 0 });
+  for (let i = 0; i < 2; i++) await assert.rejects(ultra.send({ session, values: { subagents: long }, sent: 1 }), /4000/);
+  const shorter = [{ who: { agent: 'codex' }, when: '短了' }];
+  await ultra.send({ session, values: { subagents: shorter }, sent: 1 });
+  assert.deepEqual(told.map(([, text]) => text), [on(short), on(shorter)]);
 });
