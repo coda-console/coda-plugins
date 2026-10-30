@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { pluginDir } from '../plugin.mjs';
+import { modeParameters } from '../../../check/coda/components/plugins/plugin-rules.mjs';
 import { activate } from '../../../plugins/ultra/main.mjs';
 import { CUSTOM, OFF, STILL_ON, on, templateValue, templates } from '../../../plugins/ultra/ultra.mjs';
 
@@ -42,6 +43,9 @@ test('entering offers the templates, the first chosen and its list filled in; no
   assert.equal(entered.parameters.properties.template.default, templateValue('均衡'));
   assert.deepEqual(entered.parameters.properties.subagents.items.properties.when, { title: '什么时候派给它', type: 'string' }, 'the rest as declared');
   assert.deepEqual([entered.values.template, entered.values.subagents.map(r => r.who.agent)], [templateValue('均衡'), ['claude-sdk', 'codex']]);
+  // What it gives Coda reads, however long a template's name: one of emoji is cut short in whole characters.
+  const emoji = '😀'.repeat(51), long = await plugin({ 'ultra.templates': [{ template: emoji, who: { agent: 'kimi' } }] }).ultra.enter({ session, values: {}, parameters });
+  assert.equal(modeParameters(long.parameters, 'ultra').properties.template.enumItemLabels[0], '😀'.repeat(50));
   const none = await plugin({}).ultra.enter({ session, values: {}, parameters });
   assert.deepEqual([none.values.template, none.values.subagents, none.parameters.properties.template.enum], [CUSTOM, [], [CUSTOM]]);
 });

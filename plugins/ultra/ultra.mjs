@@ -23,9 +23,15 @@ export function templates(rows) {
 
 // The mode's parameters with the templates there are to choose among, and the hand-made list beside them; the first is
 // what entering takes.
+// A template's name as an option is shown: as long as Coda takes a label (100 UTF-16 units, as JavaScript counts), in whole characters.
+const label = name => {
+  let out = '';
+  for (const character of name) { if (out.length + character.length > 100) break; out += character; }
+  return out;
+};
 export function withTemplates(declared, names) {
   return { ...declared, properties: { ...declared.properties, template: { ...declared.properties.template,
-    enum: [...names.map(templateValue), CUSTOM], enumItemLabels: [...names.map(name => [...name].slice(0, 100).join('')), '自定义'],
+    enum: [...names.map(templateValue), CUSTOM], enumItemLabels: [...names.map(label), '自定义'],
     default: names.length ? templateValue(names[0]) : CUSTOM } } };
 }
 
