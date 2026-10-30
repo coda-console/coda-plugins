@@ -1,0 +1,73 @@
+{
+  "name": "@coda-console/ultra",
+  "id": "ultra",
+  "displayName": "Ultra",
+  "description": "输入框的 Ultra 模式：主 Agent 主动把能并行的活拆出去，按名单派给 Coda 子会话，自己做卡住的那一步，结果回来后汇总、验证。名单在模式的参数里改，常用的存成设置里的模板。",
+  "version": "1.0.0",
+  "categories": ["工作流程"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coda-console/coda-plugins.git",
+    "directory": "plugins/ultra"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": ["main.mjs", "ultra.mjs"],
+  "main": "main.mjs",
+  "contributes": {
+    "configuration": {
+      "title": "Ultra",
+      "properties": {
+        "ultra.templates": {
+          "title": "模板",
+          "description": "进入 Ultra 时可选的名单，一行一个子 Agent：同一个模板名的几行是一个模板，排第一的模板是进入时的默认。",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "template": { "title": "模板", "type": "string", "order": 0 },
+              "who": { "title": "Agent", "type": "object", "format": "coda-agent", "order": 1 },
+              "when": { "title": "什么时候派给它", "type": "string", "order": 2 }
+            },
+            "required": ["template", "who"]
+          },
+          "default": [
+            { "template": "均衡", "who": { "agent": "claude-sdk", "model": "claude-opus-5-5", "effort": "xhigh" }, "when": "界面、文案、品味和整洁性的活" },
+            { "template": "均衡", "who": { "agent": "codex", "model": "gpt-6.1-sol", "effort": "ultra" }, "when": "简单活、调研和验证" },
+            { "template": "只用 Codex", "who": { "agent": "codex", "model": "gpt-6.1-sol", "effort": "high" }, "when": "所有能拆出去的活" }
+          ]
+        }
+      }
+    },
+    "composerModes": [
+      {
+        "id": "ultra",
+        "title": "Ultra",
+        "icon": "square.stack.3d.up",
+        "hint": "主 Agent 拆出能并行的活，按名单派给子会话，汇总后验证",
+        "placeholder": "要完成什么？",
+        "agent": "session",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "template": { "title": "模板", "type": "string" },
+            "subagents": {
+              "title": "子 Agent",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "who": { "title": "Agent", "type": "object", "format": "coda-agent" },
+                  "when": { "title": "什么时候派给它", "type": "string" }
+                },
+                "required": ["who"]
+              }
+            }
+          }
+        }
+      }
+    ]
+  }
+}
