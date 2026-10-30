@@ -4,7 +4,8 @@ Coda 的公开插件仓库，和给插件作者用的契约检查。Coda 自带�
 
 Coda 是一个多 Agent 客户端（Mac、iPhone 与运行在你机器上的后端）。Agent 与资源页的面板都以插件接入：
 插件是一个目录，清单就是它的 `package.json`（`contributes.agents`、`contributes.panels` 等，照 VS Code 扩展的写法）；
-Agent 讲 [ACP](https://agentclientprotocol.com)，外加 Coda 的 Agent 活动报告 `_coda/wait`，见 [接入协议](docs/agent-protocol.md)。
+Agent 讲 [ACP](https://agentclientprotocol.com)，外加 Coda 的 Agent 活动报告 `_coda/wait`，见 [接入协议](https://github.com/coda-console/coda-protocol/blob/main/docs/agent-protocol.md)。
+插件清单的类型、它们的 schema 与接入协议都在协议包 `@coda-console/protocol`（[coda-console/coda-protocol](https://github.com/coda-console/coda-protocol)）里；本仓库文中与代码注释说的 `docs/agent-protocol.md` 指那里的那份。
 
 ```
 plugins/codex/           Codex：入口在同一进程里运行锁定版本的 codex-acp（npm 依赖），面板「Codex」
@@ -25,7 +26,6 @@ templates/agent/         最小的 Agent 插件：手写 ACP 的回声 Agent，�
 templates/panel/         最小的面板插件：一张卡片、一条进度条、一个按钮
 bin/、check/             契约检查（仓库根的 package.json 就是它，@coda-console/plugin-check）；check/coda/ 是 Coda 同步来的规则副本，不要手改
 test/                    检查包的测试；test/plugins/ 是各插件的测试（插件目录里只放运行要用的文件）
-docs/agent-protocol.md   Coda 接入协议正文的公开副本
 .coda/workflows/         本仓库自己的流程：sync-coda 等新版本发到 npm，再给 Coda 开升级依赖的 PR
 ```
 
@@ -82,7 +82,7 @@ Claude 把一轮进行中的插话标上 `priority: 'next'` 交给 Claude Code�
 这一轮被停止或失败时，还没并进去的插话随之撤掉（`interrupt` 带 `cancelQueued`），不会在之后再跑，原来的 `session/prompt` 等撤掉了才答复。
 结果最多列出 64 条它接收的消息，所以同时在途的插话最多 32 条，再多的回 `promptRequired`，由 Coda 在这一轮结束后作为下一轮发出。
 
-Claude 的额度耗尽按[执行失败](docs/agent-protocol.md#额度不足)报 `quota_exhausted`，保留上游给出的重置时间；
+Claude 的额度耗尽按[执行失败](https://github.com/coda-console/coda-protocol/blob/main/docs/agent-protocol.md#额度不足)报 `quota_exhausted`，保留上游给出的重置时间；
 只认明确的额度原因，或本轮 `rate_limit` 错误配合订阅窗口的 `rejected`，不把普通 429、登录失败或额度预警算进去。
 SDK 作为 `assistant` 消息发来的 API 错误不当成回复正文；由本轮 `result` 报告失败。
 后台结果或定时唤醒后的自主轮次没有 `session/prompt` 可回复，失败时以自己的活动卡片报 `failed` 和原因，额度耗尽的卡片标题为「额度不足」；
@@ -282,7 +282,7 @@ Codex 的原生失败统一以 ACP 错误结束，包括只有 `turn/completed.f
 
 Kimi 2.1.1 会把五小时额度耗尽（`403 You've reached your 5-hour usage limit.`）误报为 ACP `auth_required`。
 Kimi 插件在 `session/prompt` 的回执中将这条已知错误改为普通执行错误（-32603），在标准 `error.message` 中保留服务端完整原因，
-同时按[执行失败协议](docs/agent-protocol.md#执行失败)报告 `error.data._meta.coda.failure: {kind: "quota_exhausted"}`。
+同时按[执行失败协议](https://github.com/coda-console/coda-protocol/blob/main/docs/agent-protocol.md#执行失败)报告 `error.data._meta.coda.failure: {kind: "quota_exhausted"}`。
 Coda 按这个通用类别显示「额度不足」，不触发服务故障重试；其他 ACP 客户端仍能读取完整原因。
 插件不推算额度重置时间；其他认证失败、403、短时限流与普通错误原样保留。
 `CODA_DISABLE_RUNTIME_PATCHES=kimi` 关闭这层适配。
@@ -342,7 +342,7 @@ Agent 进程的环境是会话的环境再加插件进程的那组变量（面�
 `CODA_ARBITER`（`1`：这是它所在实例自己的正式后端；动本机共享的东西前看它）。
 插件自带的入口只能用插件目录里的代码、Node 自带的模块与清单里声明的 npm 依赖。
 
-照 [接入协议](docs/agent-protocol.md) 实现，另外几条容易漏的：
+照 [接入协议](https://github.com/coda-console/coda-protocol/blob/main/docs/agent-protocol.md) 实现，另外几条容易漏的：
 
 - 标准输出只写 JSON-RPC，一行一条；日志写标准错误（Coda 不读它）。请求 ID 是字符串。
 - 必须接受会话指令：`initialize` 结果声明 `agentCapabilities.sessionCapabilities.systemPrompt: {}`，`session/new`、`session/load` 收到的
@@ -438,7 +438,7 @@ npx github:coda-console/coda-plugins#<提交> <插件目录>
 ## 契约副本
 
 Coda 主仓库不公开。它的插件规则（读清单、读面板、插件进程的环境、ACP 与 `_coda/wait` 的约定等，按 Coda `backend/src/` 下的路径放在 `check/coda/`）、
-它自带的插件（`check/coda/builtin.json`）与协议正文 `docs/agent-protocol.md` 都是 Coda 的原样副本，由 Coda 的部署流程 `sync-plugin-check`
+它自带的插件（`check/coda/builtin.json`）都是 Coda 的原样副本，由 Coda 的部署流程 `sync-plugin-check`
 （脚本 `scripts/plugin-contract.mjs`）同步：它在分支 `sync/coda` 上给这里开 PR。**不要手改**；规则要改先改 Coda。
 `check/coda/contract.json` 记着同步自哪个提交、每个文件的 sha256 和副本用到的包的版本，CI 用它核对：
 

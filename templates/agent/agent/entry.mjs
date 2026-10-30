@@ -1,7 +1,7 @@
 // 回声 Agent：Coda Agent 插件的最小模板。
 //
 // Coda 用 `sh -c` 运行清单里的 command，经标准输入输出讲 ACP（一行一个 JSON-RPC 消息），外加 Coda 的等待项登记
-// `_coda/wait`（见仓库里的 docs/agent-protocol.md）。这里全部手写，只用 Node 自带的模块：从仓库安装的插件没有 npm 依赖。
+// `_coda/wait`（见协议仓库 coda-console/coda-protocol 的 docs/agent-protocol.md）。这里全部手写，只用 Node 自带的模块：从仓库安装的插件没有 npm 依赖。
 //
 // - 每轮把提示词原样回显，几个字一段地流式发出，所以「停止」能落在一轮中间。
 // - 会话指令（systemPrompt）：Coda 要求声明。回声 Agent 没有原生的系统提示词，就照协议在这个会话第一次 session/prompt 时
