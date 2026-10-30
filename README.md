@@ -11,6 +11,7 @@ plugins/codex/           Codex：入口在同一进程里运行锁定版本的 c
 plugins/claude/          Claude SDK：基于 Claude Agent SDK 的 ACP 入口（npm 依赖），面板「Claude」
 plugins/kimi/            Kimi Code：在运行机的 kimi acp 与 Coda 之间转发，面板「Kimi」
 plugins/grok/            Grok：转发运行机上 Grok CLI 的 ACP，并适配审批模式，面板「Grok」
+plugins/grok-bot/        Grok Bot：把 xAI 云端 Bot 接成长期会话，Webhook 消息、定时巡检与用户审批；依赖 Coda 远端 Agent 入口
 plugins/opencode/        OpenCode：在运行机的 opencode acp 与 Coda 之间转发，送入会话指令与所选模型服务，模型按来源分组
 plugins/codex-accounts/  Codex 多账号：管理登录、自动续期与账号选择，接管 Codex 额度面板
 plugins/cursor/          Cursor：在运行机的 cursor-agent acp 与 Coda 之间转发，送入会话指令
@@ -19,6 +20,7 @@ plugins/magpie/          Magpie：把本机的 Magpie 网关作为模型服务�
 plugins/network-log/     网络记录：只记录不拦截，每秒读连接表记下建连卡住的连接（进程、对端、网卡、mihomo 有没有收到），每分钟分段探测常用服务
 plugins/review/          PR 生命流程：会话开的 PR 先跑项目的检查、再交叉评审，你批准后合并、部署与发布；也是写 PR 流程的样例
 plugins/testbed/         测试机：长插在 Mac 上的 iPhone、iPad 只经 use-testbed 使用，排到后装 App、交给会话操作、用完切黑屏；依赖宿主资源
+plugins/ultra/           Ultra：输入框的 Ultra 模式，主 Agent 主动把能并行的活按名单派给子会话，汇总后验证；名单与模板在模式参数和设置里
 templates/agent/         最小的 Agent 插件：手写 ACP 的回声 Agent，演示会话指令、插话、Agent 活动与自主轮次
 templates/panel/         最小的面板插件：一张卡片、一条进度条、一个按钮
 bin/、check/             契约检查（仓库根的 package.json 就是它，@coda-console/plugin-check）；check/coda/ 是 Coda 同步来的规则副本，不要手改

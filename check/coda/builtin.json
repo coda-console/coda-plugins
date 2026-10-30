@@ -126,6 +126,155 @@
     ]
   },
   {
+    "id": "composer",
+    "displayName": "输入框模式",
+    "description": "输入框的三种模式：交接到新会话、新建子会话，以及打 ! 执行命令。停用后输入框里没有这几种模式。",
+    "version": "1.1.0",
+    "category": "工作流程",
+    "source": {
+      "kind": "builtin"
+    },
+    "dir": "src/resources/plugins/composer",
+    "title": "输入框模式",
+    "properties": {},
+    "main": "main.mjs",
+    "workflows": [],
+    "capabilities": [],
+    "services": [],
+    "groups": [],
+    "commands": [],
+    "gitCredentials": [],
+    "endpoints": [],
+    "views": [],
+    "composerModes": [
+      {
+        "id": "handoff",
+        "title": "交接到新会话",
+        "icon": "arrow.right.square",
+        "hint": "新会话承接这里的上下文，共享当前工作目录及其中的文件；这个会话保留，仍可继续使用。",
+        "placeholder": "接下来要完成什么？",
+        "sendLabel": "交接",
+        "agent": "own",
+        "in": [
+          "session"
+        ]
+      },
+      {
+        "id": "subagent",
+        "title": "子会话",
+        "icon": "arrow.triangle.branch",
+        "hint": "承接父会话近期上下文，沿用父会话工作目录；只启动子会话，不向父 Agent 发送这段要求。",
+        "placeholder": "描述交给子会话的任务…",
+        "sendLabel": "启动子会话",
+        "agent": "own",
+        "in": [
+          "session"
+        ],
+        "parameters": {
+          "properties": {
+            "replyTo": {
+              "type": "string",
+              "enum": [
+                "parent",
+                "sender"
+              ],
+              "enumItemLabels": [
+                "完成后回报父会话",
+                "完成后回报你"
+              ],
+              "enumDescriptions": [
+                "结果交给父 Agent，由它接着处理",
+                "做完提醒你，不叫醒父 Agent"
+              ],
+              "title": "回报对象",
+              "default": "parent",
+              "order": 0
+            }
+          }
+        },
+        "schema": {
+          "type": "object",
+          "properties": {
+            "replyTo": {
+              "title": "回报对象",
+              "type": "string",
+              "enum": [
+                "parent",
+                "sender"
+              ],
+              "enumItemLabels": [
+                "完成后回报父会话",
+                "完成后回报你"
+              ],
+              "enumDescriptions": [
+                "结果交给父 Agent，由它接着处理",
+                "做完提醒你，不叫醒父 Agent"
+              ],
+              "default": "parent"
+            }
+          }
+        }
+      },
+      {
+        "id": "shell",
+        "title": "执行命令",
+        "icon": "terminal",
+        "hint": "在会话工作目录执行，命令和结果作为这条消息发给 Agent。",
+        "placeholder": "输入要执行的命令…",
+        "sendLabel": "执行",
+        "agent": "off",
+        "trigger": "!",
+        "in": [
+          "session",
+          "new"
+        ]
+      }
+    ],
+    "agents": [],
+    "dependencies": [],
+    "extensionPoints": {},
+    "extensions": []
+  },
+  {
+    "id": "diagnostics",
+    "displayName": "机器诊断",
+    "description": "给巡检会话提供只读工具，查看空间各台机器的健康状态、网络诊断与客户端性能。需要时安装，再按目录启用或用 Tag 限定。",
+    "version": "1.0.0",
+    "category": "机器与资源",
+    "source": {
+      "kind": "builtin"
+    },
+    "dir": "src/resources/plugins/diagnostics",
+    "title": "机器诊断",
+    "properties": {},
+    "workflows": [],
+    "capabilities": [],
+    "services": [],
+    "groups": [],
+    "commands": [],
+    "gitCredentials": [],
+    "endpoints": [],
+    "views": [],
+    "agents": [],
+    "dependencies": [
+      "space"
+    ],
+    "extensionPoints": {},
+    "extensions": [],
+    "mcpServers": [
+      {
+        "name": "diagnostics",
+        "command": "${CODA_NODE}",
+        "args": [
+          "${CODA_PLUGIN_PATH}/mcp.mjs",
+          "--state",
+          "${CODA_PLUGIN_STATE}"
+        ],
+        "env": []
+      }
+    ]
+  },
+  {
     "id": "github",
     "displayName": "GitHub",
     "description": "在 Coda 里登录 GitHub 账号，可以登录多个。Coda 启动的会话、流程步骤与插件安装访问 GitHub 时，按仓库的 owner 自动试出能推送的账号并记下，之后这个 owner 的仓库都用它；账号按面板上的顺序试，可以上移下移；会话里的 gh 与提交署名也跟着这个账号；gh 的只读命令遇到网络类失败会自动重试。会话里的 git 也经它交给真正的 git，Git 自己已知、重跑即好的故障（几个工作树同时创建时读到别的还没写好的 commondir）自动重跑；会话推送它开的 PR 的分支时，PR 观察立即去看，PR 已合并或关闭就当场提醒这次推送进不了目标分支。添加项目、安装插件时可以从这些账号的仓库里挑。",
@@ -442,7 +591,7 @@
   {
     "id": "session",
     "displayName": "会话生命周期",
-    "description": "所有会话共用：存续期间管理空闲进程和任务转交，归档宽限后收尾，按设置回收托管工作树。停用后不自动执行这些政策。",
+    "description": "所有会话共用：存续期间管理空闲进程和任务转交，归档宽限后收尾，按设置回收托管工作树，限定同时执行的子会话。停用后不自动执行这些政策。",
     "version": "1.0.0",
     "category": "工作流程",
     "source": {
@@ -488,6 +637,15 @@
         "title": "Agent 停下多久后转给你",
         "order": 9,
         "default": "PT2M"
+      },
+      "session.subagents": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 64,
+        "description": "Agent 开的子会话为父会话干活时各占一个名额；满了再开会当场失败，Agent 等其中一个做完再开，或者自己做。按这台机器算。",
+        "title": "同时执行的子会话",
+        "order": 10,
+        "default": 5
       }
     },
     "workflows": [
@@ -495,7 +653,12 @@
     ],
     "capabilities": [],
     "services": [],
-    "groups": [],
+    "groups": [
+      {
+        "name": "subagents",
+        "capacity": "session.subagents"
+      }
+    ],
     "commands": [],
     "gitCredentials": [],
     "endpoints": [],
