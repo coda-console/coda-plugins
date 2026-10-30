@@ -1,27 +1,36 @@
 // Routine execution stays in Grok. Only run records are mirrored; executor
 // transcripts are neither queried nor inferred from the main conversation.
+import { ConnectionHealth, authenticationError } from './health.mjs';
+export const RUN_CACHE_LIMIT = 200;
 export const ROUTINE_POLL_MS = 5000;
 export class RoutineWatch {
-  constructor({ client, bot, saved, clock, commit, notify, error }) {
-    Object.assign(this, { client, bot, saved, clock, commit, notify, error });
+  constructor({ client, bot, saved, clock, commit, notify, error, recovered, log }) {
+    Object.assign(this, { client, bot, saved, clock, commit, notify, error, recovered, log });
+    this.health = new ConnectionHealth({ error, recovered, log });
     this.controller = new AbortController();
     this.registered = new Set();
     this.activeHint = false;
     this.saved.runs ??= {};
   }
   hint(active) {
+    if (this.controller.signal.aborted) return;
     if (active !== undefined) this.activeHint = active;
     if (this.flight) { this.again = true; return this.flight; }
     this.clock.clearTimeout(this.timer);
     this.flight = (async () => {
-      do { this.again = false; await this.refresh(); } while (this.again && !this.controller.signal.aborted);
+      do {
+        this.again = false;
+        await this.refresh();
+        if (this.controller.signal.aborted) return;
+        this.health.success();
+      } while (this.again && !this.controller.signal.aborted);
     })().catch(error => { if (!this.controller.signal.aborted) {
-      this.error(error);
-      if (error.status === 401 || error.status === 403) this.close();
+      this.health.failure(error);
+      if (authenticationError(error)) this.close();
     } }).finally(() => {
       this.flight = null;
-      if (!this.controller.signal.aborted && (this.activeHint || Object.values(this.saved.runs).some(r => r.status === 'running')))
-        this.timer = this.clock.setTimeout(() => { void this.hint(); }, ROUTINE_POLL_MS);
+      if (!this.controller.signal.aborted && (this.health.failures || this.activeHint || Object.values(this.saved.runs).some(r => r.status === 'running')))
+        this.timer = this.clock.setTimeout(() => { void this.hint(); }, Math.max(ROUTINE_POLL_MS, this.health.delay));
     });
     return this.flight;
   }
@@ -50,7 +59,7 @@ export class RoutineWatch {
         returned.add(run.id);
         const before = this.saved.runs[run.id];
         // Completed history on first selection is a baseline, not new work.
-        if ((baseline && run.status !== 'running') || (before && before.status === run.status && run.status !== 'running')) {
+        if (((baseline || (!before && run.startedAt <= (this.saved.runsBefore ?? -1))) && run.status !== 'running') || (before && before.status === run.status && run.status !== 'running')) {
           this.saved.runs[run.id] = run; continue;
         }
         const title = `定时任务「${run.name}」`;
@@ -71,6 +80,14 @@ export class RoutineWatch {
         this.activity(run, 'failed', `定时任务「${run.name}」已不可见，无法确认结果；请在 Grok 客户端查看`);
         run.status = 'unavailable';
       }
+    }
+    // Keep every active run plus the newest completed records. The timestamp
+    // floor prevents old server history being announced again after eviction.
+    const completed = Object.values(this.saved.runs).filter(r => r.status !== 'running').sort((a, b) => b.startedAt - a.startedAt);
+    for (const run of completed.slice(RUN_CACHE_LIMIT)) {
+      this.saved.runsBefore = Math.max(this.saved.runsBefore ?? -1, run.startedAt);
+      delete this.saved.runs[run.id];
+      this.registered.delete(run.id);
     }
     this.saved.routinesInitialized = true;
     this.commit();

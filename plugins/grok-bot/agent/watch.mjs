@@ -1,5 +1,8 @@
 import { createHash } from 'node:crypto';
 import { pause } from './auth.mjs';
+import { ConnectionHealth, authenticationError } from './health.mjs';
+
+export const TRANSCRIPT_CACHE_LIMIT = 2000;
 
 export function decode(entry) {
   if (entry.bodyOmitted) throw new Error('原生 transcript 正文被省略，无法交付；请在 Grok 客户端查看');
@@ -10,8 +13,9 @@ export const sequence = entries => entries.reduce((n, e) => BigInt(e.updatedSeq 
 // A single connection owns a Bot's main transcript. The adapter serializes
 // events; reconnects use the committed cursor, never resend user messages.
 export class NativeWatch {
-  constructor({ client, bot, saved, clock, commit, event, error }) {
-    Object.assign(this, { client, bot, saved, clock, commit, event, error });
+  constructor({ client, bot, saved, clock, commit, event, error, recovered, log }) {
+    Object.assign(this, { client, bot, saved, clock, commit, event, error, recovered, log });
+    this.health = new ConnectionHealth({ error, recovered, log });
     this.controller = new AbortController();
   }
   async history({ all = false } = {}) {
@@ -42,28 +46,44 @@ export class NativeWatch {
       }
       this.commit();
     }
+    if (this.trim()) this.commit();
     this.running = this.loop();
+  }
+  trim() {
+    const state = this.saved.stream;
+    const oldSize = Object.keys(state.seen).length;
+    const oldHashSize = Object.keys(state.hashes ?? {}).length;
+    const ids = Object.keys(state.seen).sort((a, b) => BigInt(state.seen[a]) > BigInt(state.seen[b]) ? -1 : 1).slice(0, TRANSCRIPT_CACHE_LIMIT);
+    state.seen = Object.fromEntries(ids.map(id => [id, state.seen[id]]));
+    state.hashes = Object.fromEntries(ids.map(id => [id, state.hashes?.[id]]));
+    return oldSize !== ids.length || oldHashSize !== ids.length;
   }
   async rows(rows) {
     if (rows.agentId !== this.bot || (rows.sessionId ?? '') !== '') return;
     const state = this.saved.stream;
-    state.hashes ??= {};
-    for (const row of [...(rows.entries ?? [])].sort((a, b) => BigInt(a.updatedSeq) < BigInt(b.updatedSeq) ? -1 : 1)) {
-      const seq = String(row.updatedSeq ?? row.seq);
-      if (state.seen[row.entryId] !== undefined && BigInt(state.seen[row.entryId]) >= BigInt(seq)) {
-        if (BigInt(seq) > BigInt(state.afterUpdatedSeq)) { state.afterUpdatedSeq = seq; this.commit(); }
-        continue;
+    const through = BigInt(rows.replayThrough ?? state.afterUpdatedSeq);
+    let changed = false;
+    try {
+      for (const row of [...(rows.entries ?? [])].sort((a, b) => BigInt(a.updatedSeq) < BigInt(b.updatedSeq) ? -1 : 1)) {
+        const seq = String(row.updatedSeq ?? row.seq);
+        // Eviction must not turn normal history reconciliation into replay.
+        if (state.seen[row.entryId] === undefined && !rows.newGeneration && BigInt(seq) <= through) continue;
+        if (state.seen[row.entryId] !== undefined && BigInt(state.seen[row.entryId]) >= BigInt(seq)) continue;
+        const body = decode(row);
+        const hash = createHash('sha256').update(row.body).digest('hex');
+        if (state.hashes[row.entryId] !== hash && !(rows.replay && body.timestampMs < state.baselineAt && !state.seen[row.entryId]))
+          await this.event({ entry: { row, body } });
+        state.hashes[row.entryId] = hash;
+        state.seen[row.entryId] = seq;
+        if (BigInt(seq) > BigInt(state.afterUpdatedSeq)) state.afterUpdatedSeq = seq;
+        changed = true;
       }
-      const body = decode(row);
-      const hash = createHash('sha256').update(row.body).digest('hex');
-      // Old history omitted by the baseline page must not appear on reset.
-      if (state.hashes[row.entryId] !== hash && !(rows.replay && body.timestampMs < state.baselineAt && !state.seen[row.entryId]))
-        await this.event({ entry: { row, body } });
-      state.hashes[row.entryId] = hash;
-      state.seen[row.entryId] = seq;
-      if (BigInt(seq) > BigInt(state.afterUpdatedSeq)) state.afterUpdatedSeq = seq;
-      this.commit();
+    } finally {
+      // Commit delivered rows once per batch, including a partial batch whose
+      // later entry failed. Keep only the newest updatedSeq IDs and hashes.
+      if (changed) { this.trim(); this.commit(); }
     }
+    await this.event({ checkpoint: true });
   }
   async reconcile() {
     const history = await this.history();
@@ -71,7 +91,6 @@ export class NativeWatch {
   }
   async loop() {
     const signal = this.controller.signal;
-    let failures = 0;
     while (!signal.aborted) {
       try {
         const stream = await this.client.request('WatchGrokBotTranscripts', {
@@ -84,12 +103,17 @@ export class NativeWatch {
           const reset = value.cleared ?? value.cursorTooOld;
           if (reset && (!reset.agentId || reset.agentId === this.bot) && (reset.sessionId ?? '') === '') {
             const history = await this.history({ all: true });
+            const previous = this.saved.stream;
+            const newGeneration = previous.generation !== (history.generation ?? 0);
+            const replayThrough = previous.afterUpdatedSeq;
             this.saved.stream.generation = history.generation ?? 0;
-            this.saved.stream.seen = {};
+            if (newGeneration) this.saved.stream.seen = {};
             this.saved.stream.afterUpdatedSeq = '0';
             // Keep IDs across cursor resets; the new stream replays history.
-            await this.rows({ agentId: this.bot, entries: history.entries, replay: true });
-            this.commit();
+            await this.rows({ agentId: this.bot, entries: history.entries, replay: true, replayThrough, newGeneration });
+            this.saved.stream.afterUpdatedSeq = sequence(history.entries);
+            this.trim(); this.commit();
+            this.log('原生游标已重置，静默重连');
             break;
           }
           if (value.rows) await this.rows(value.rows);
@@ -99,17 +123,20 @@ export class NativeWatch {
           if (value.agentStateChanged?.agentId === this.bot && value.agentStateChanged.families?.some(f => ['subagents', 'automations'].includes(f)))
             await this.event({ routinesChanged: true });
           if (value.turnFailed?.agentId === this.bot && (value.turnFailed.sessionId ?? '') === '') await this.event({ failed: value.turnFailed });
-          if (value.heartbeat) { failures = 0; await this.event({ heartbeat: value.heartbeat }); }
+          if (value.heartbeat) await this.event({ heartbeat: value.heartbeat });
+          if (value.heartbeat || value.rows || value.agentState) this.health.success();
         }
-        if (!signal.aborted) throw new Error('原生订阅已结束，正在按游标重连');
+        if (signal.aborted) break;
+        this.log('原生订阅正常结束，静默重连');
+        this.health.success();
       } catch (error) {
         if (signal.aborted) break;
-        this.error(error);
+        this.health.failure(error);
         // Authentication errors need a new official login, not a retry loop.
-        if (error.status === 401 || error.status === 403 || /unauthenticated/.test(error.message)) break;
-        try { await pause(this.clock, Math.min(30_000, 1000 * 2 ** Math.min(failures++, 5)), signal); }
-        catch { break; }
+        if (authenticationError(error)) break;
       }
+      try { await pause(this.clock, this.health.delay, signal); }
+      catch { break; }
     }
   }
   close() { this.controller.abort(); }

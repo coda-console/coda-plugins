@@ -34,6 +34,7 @@ export class FakeNative {
     throw new Error(`Unexpected fake request: ${method}`);
   };
   emit(event) { this.connections.at(-1).controller.enqueue(envelope(event)); }
+  end() { const connection = this.connections.at(-1); connection.closed = true; const frame = envelope({}); frame[0] = 2; connection.controller.enqueue(frame); connection.controller.close(); }
   drop() { const connection = this.connections.at(-1); connection.closed = true; connection.controller.error(new Error('connection dropped')); }
   row(id, body, seq = this.entries.length + 1) {
     const row = { entryId: id, entryKind: body.kind, seq: String(seq), updatedSeq: String(seq), body: Buffer.from(JSON.stringify({ timestampMs: Date.now() + 10000, ...body })).toString('base64') };

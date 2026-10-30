@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { Adapter, SUBMISSION_WAIT_MS } from '../../../plugins/grok-bot/agent/session.mjs';
+import { Adapter, SUBMISSION_WAIT_MS, SETTLEMENT_GRACE_MS } from '../../../plugins/grok-bot/agent/session.mjs';
+import { TRANSCRIPT_CACHE_LIMIT } from '../../../plugins/grok-bot/agent/watch.mjs';
+import { RUN_CACHE_LIMIT } from '../../../plugins/grok-bot/agent/routines.mjs';
 import { FakeNative } from './native-fixture.mjs';
 import { fakeClock, mailbox, temporary, harness } from './helpers.mjs';
 import { schemas } from '../../../check/schema.mjs';
@@ -66,8 +68,7 @@ test('native send is unchanged; settlement before reply waits; events are valid 
   await h.emit(live({ isRunning: true, activity: { kind: 'thinking' } }));
   await h.emit(live({ isRunning: true, activity: { kind: 'tool', tool: 'SetStatus', detail: '检查机器' } }));
   await h.emit(settle(run.id));
-  await h.emit(heartbeat);
-  assert.ok(h.s.turn, 'terminal state alone is not a reply');
+  assert.ok(h.s.turn, 'terminal state alone waits briefly for a reply');
   await reply(h, run.id); await h.emit(heartbeat);
   assert.equal((await run.done).stopReason, 'end_turn');
   assert.match(h.text(), /42/);
@@ -81,7 +82,8 @@ test('reply before settlement, duplicate rows, and history reconciliation delive
   const h = await connected(t), run = await sent(h);
   const event = h.native.row('answer', { kind: 'send-message', requestId: run.id, message: { type: 'text', content: 'unique-answer' } });
   await h.emit(event); h.native.emit(event);
-  await h.emit(settle(run.id)); await h.emit(heartbeat); await run.done;
+  await h.emit(settle(run.id)); await run.done;
+  assert.equal(h.s.turn, null);
   assert.equal(h.text().match(/unique-answer/g).length, 1);
 });
 
@@ -112,7 +114,8 @@ test('interrupt calls native service; late output remains visible without reopen
   assert.equal((await run.done).stopReason, 'cancelled');
   assert.equal((await h.native.next('InterruptGrokBotAgentRun')).params.sessionId, '');
   await reply(h, run.id, 'late reply');
-  assert.equal(h.s.turn.autonomous, true); assert.match(h.text(), /late reply/);
+  await h.s.turn?.result;
+  assert.equal(h.s.turn, null); assert.match(h.text(), /上一轮补充消息[\s\S]*late reply/);
 });
 
 test('awaiting is explained in Coda and logged without pretending to resolve auto-review', async t => {
@@ -146,8 +149,8 @@ test('disconnect reconnects with committed cursor; expired cursor replays by ent
   assert.equal(requests.at(-1).params.cursors[0].afterUpdatedSeq, '2');
   h.native.emit({ cursorTooOld: {} });
   await h.native.next('ListGrokBotTranscriptEntries');
-  // A connection that fails again before a heartbeat increases the backoff.
-  await h.clock.untilTimer(2000); h.clock.advance(2000);
+  // Cursor reset is a normal reconnect, not another failed connection.
+  await h.clock.untilTimer(1000); h.clock.advance(1000);
   await h.native.next('WatchGrokBotTranscripts'); await h.until(e => e.connected);
   await h.emit(settle(run.id)); await h.emit(heartbeat); await run.done;
   assert.equal(h.text().match(/once/g).length, 1);
@@ -207,16 +210,18 @@ test('updatedSeq changes and process reload do not redisplay an already delivere
   assert.equal(h.adapter.session(h.id).saved.stream.afterUpdatedSeq, '99');
 });
 
-test('old settlement does not terminate a new native run and missing reply waits until the configured turn timeout', async t => {
+test('old settlement does not terminate a new native run and silent success ends on a newer heartbeat and late text is a supplement', async t => {
   const h = await connected(t), run = await sent(h);
   await h.emit(live({ isRunning: true, lastTurnSettlement: { turnId: 'previous', outcome: 'success', settledAtMs: '1' } }));
   assert.equal(h.s.turn.nativeId, run.id); assert.equal(h.s.turn.settlement, undefined);
-  await h.emit(settle(run.id)); await h.emit(heartbeat);
-  assert.ok(h.s.turn);
-  await h.emit(heartbeat); assert.ok(h.s.turn);
-  h.clock.advance(h.adapter.timeout);
+  await h.emit(settle(run.id));
+  await h.emit({ heartbeat: { serverTimeMs: '100' } });
+  assert.ok(h.s.turn, 'equal timestamp is not a later heartbeat');
+  await h.emit(heartbeat);
   assert.equal((await run.done).stopReason, 'end_turn');
-  assert.match(h.text(), /本轮已结束/);
+  assert.doesNotMatch(h.text(), /超过|未返回正文/);
+  await reply(h, run.id, 'late-silent-result'); await h.until(e => e.checkpoint);
+  assert.match(h.text(), /上一轮补充消息[\s\S]*late-silent-result/);
 });
 
 test('login HTTP failure is visible and can be retried without leaving a fake successful credential', async t => {
@@ -272,8 +277,8 @@ test('Routine records follow executor/run IDs, stop polling at completion, and i
   assert.equal(h.native.requests.length, end);
   await h.emit(live({ isRunning: true, activity: { kind: 'thinking' } }));
   assert.equal(h.s.turn.autonomous, true);
-  await h.emit(settle('main-completion')); await h.emit(heartbeat);
-  assert.ok(h.s.turn, 'Routine completion is not a substitute for its main reply');
+  await h.emit(settle('main-completion'));
+  assert.ok(h.s.turn, 'wait briefly for the main reply');
   await reply(h, 'main-completion', 'COMPLETION_PATH_PROBE'); await h.emit(heartbeat);
   assert.equal(h.s.turn, null); assert.match(h.text(), /COMPLETION_PATH_PROBE/);
   assert.equal(h.native.requests.some(r => r.method === 'SendGrokBotUserMessage'), false);
@@ -342,4 +347,112 @@ test('native failure terminates activity as failed; an old failure cannot close 
   await h.until(e => e.failed); await run.done;
   const tool = h.events.find(e => e.params.update?.title === '检查连接').params.update;
   assert.ok(h.events.some(e => e.params.update?.toolCallId === tool.toolCallId && e.params.update.status === 'failed'));
+});
+
+test('silent settlement reconciles and finishes after grace even without another heartbeat', async t => {
+  const h = await connected(t), run = await sent(h);
+  await h.emit(settle(run.id));
+  h.clock.advance(SETTLEMENT_GRACE_MS);
+  assert.equal((await run.done).stopReason, 'end_turn');
+  assert.equal(h.s.turn, null);
+  assert.doesNotMatch(h.text(), /超过|未返回正文/);
+});
+
+test('normal stream expiration and cursor reset reconnect silently without Coda turns', async t => {
+  const h = await connected(t);
+  const before = h.events.length;
+  h.native.end();
+  await h.clock.untilTimer(1000); h.clock.advance(1000); await h.until(e => e.connected);
+  h.native.emit({ cleared: { agentId: 'inspector' } });
+  await h.clock.untilTimer(1000); h.clock.advance(1000); await h.until(e => e.connected);
+  assert.equal(h.s.turn, null);
+  assert.equal(h.events.slice(before).some(e => e.params.state === 'handling' || e.method === 'session/update'), false);
+  assert.ok(h.logs.some(line => line.includes('静默重连')));
+});
+
+test('transient stream failures only log; three consecutive failures notify once and stable recovery notifies once', async t => {
+  const h = await connected(t);
+  for (let n = 0; n < 4; n++) {
+    h.native.drop();
+    await h.clock.untilTimer(1000 * 2 ** n);
+    assert.equal((h.text().match(/持续失败/g) ?? []).length, n < 2 ? 0 : 1);
+    h.clock.advance(1000 * 2 ** n); await h.until(e => e.connected);
+  }
+  await h.emit(heartbeat); await h.emit(heartbeat);
+  assert.equal((h.text().match(/已恢复/g) ?? []).length, 1);
+  h.native.drop(); await h.clock.untilTimer(1000);
+  assert.equal((h.text().match(/持续失败/g) ?? []).length, 1, 'a recovered connection starts a fresh failure sequence');
+});
+
+test('subscription authentication failure is visible immediately and stops retrying', async t => {
+  const h = await connected(t);
+  h.native.handler = async method => method === 'WatchGrokBotTranscripts' ? new Response('{}', { status: 401 }) : undefined;
+  h.native.end(); await h.clock.untilTimer(1000); h.clock.advance(1000);
+  await h.s.watch.running;
+  assert.match(h.text(), /401[\s\S]*\/login/);
+  const requests = h.native.requests.length; h.clock.advance(60000);
+  assert.equal(h.native.requests.length, requests);
+});
+
+test('Routine refresh uses the same delayed warning, backoff and single recovery notice', async t => {
+  const h = await connected(t);
+  h.native.handler = async method => method === 'ListGrokBotAgentAutomations' ? new Response('{}', { status: 502 }) : undefined;
+  await h.s.routines.hint();
+  assert.equal(h.text(), '');
+  for (let n = 0; n < 3; n++) {
+    h.clock.advance(5000); await h.s.routines.flight;
+    assert.equal((h.text().match(/持续失败/g) ?? []).length, n === 0 ? 0 : 1);
+  }
+  h.native.handler = null;
+  h.clock.advance(8000); await h.s.routines.flight;
+  assert.equal((h.text().match(/已恢复/g) ?? []).length, 1);
+  const requests = h.native.requests.length; h.clock.advance(60000);
+  assert.equal(h.native.requests.length, requests, 'successful idle refresh stops retrying');
+});
+
+test('transcript batches commit once, bound seen/hashes, and an evicted entry revision appears as new', async t => {
+  const h = await connected(t);
+  const entries = Array.from({ length: TRANSCRIPT_CACHE_LIMIT + 50 }, (_, n) => ({ entryId: `bounded-${n + 1}`, seq: String(n + 1), updatedSeq: String(n + 1),
+    body: Buffer.from(JSON.stringify({ kind: 'record', timestampMs: Date.now() + 1000 })).toString('base64') }));
+  let writes = 0;
+  const commit = h.s.watch.commit; h.s.watch.commit = () => { writes++; commit(); };
+  await h.s.watch.rows({ agentId: 'inspector', entries });
+  assert.equal(writes, 1);
+  assert.equal(Object.keys(h.s.saved.stream.seen).length, TRANSCRIPT_CACHE_LIMIT);
+  assert.equal(Object.keys(h.s.saved.stream.hashes).length, TRANSCRIPT_CACHE_LIMIT);
+  assert.equal(h.s.saved.stream.seen['bounded-1'], undefined);
+  await h.s.watch.rows({ agentId: 'inspector', entries });
+  assert.equal(writes, 1, 'old history does not rewrite the same state or replay evicted rows');
+  const revision = { ...entries[0], updatedSeq: '3000', body: Buffer.from(JSON.stringify({ kind: 'send-message', requestId: 'old', message: { type: 'text', content: 'revised old entry' } })).toString('base64') };
+  await h.s.watch.rows({ agentId: 'inspector', entries: [revision] });
+  assert.match(h.text(), /revised old entry/);
+  assert.equal(h.s.saved.stream.seen['bounded-1'], '3000');
+  const persisted = JSON.parse(readFileSync(h.adapter.file(h.id)));
+  assert.equal(Object.keys(persisted.stream.seen).length, TRANSCRIPT_CACHE_LIMIT);
+});
+
+test('Routine history is bounded and old completed records do not reappear after eviction', async t => {
+  const native = new FakeNative();
+  native.automations = automation(Array.from({ length: RUN_CACHE_LIMIT + 20 }, (_, n) => ({ id: `run-${n}`, startedAt: n, finishedAt: n + 1, status: 'ok' })));
+  const h = await connected(t, { native });
+  assert.equal(Object.keys(h.s.saved.runs).length, RUN_CACHE_LIMIT);
+  assert.equal(h.s.saved.runs['run-0'], undefined);
+  await h.s.routines.hint();
+  assert.deepEqual(routineEvents(h), []);
+  assert.equal(Object.keys(JSON.parse(readFileSync(h.adapter.file(h.id))).runs).length, RUN_CACHE_LIMIT);
+});
+
+
+test('an old active Routine stays tracked across retention and receives its terminal activity', async t => {
+  const native = new FakeNative();
+  const active = { id: 'long-running', startedAt: 0, status: 'running' };
+  const completed = Array.from({ length: RUN_CACHE_LIMIT + 20 }, (_, n) => ({ id: `newer-${n}`, startedAt: n + 1, finishedAt: n + 2, status: 'ok' }));
+  native.automations = automation([active, ...completed]);
+  const h = await connected(t, { native });
+  assert.equal(Object.keys(h.s.saved.runs).length, RUN_CACHE_LIMIT + 1);
+  assert.deepEqual(routineEvents(h).map(e => e.state), ['waiting']);
+  native.automations = automation([{ ...active, status: 'ok', finishedAt: 1000 }, ...completed]);
+  await h.s.routines.hint();
+  assert.deepEqual(routineEvents(h).map(e => e.state), ['waiting', 'done']);
+  assert.equal(Object.keys(h.s.saved.runs).length, RUN_CACHE_LIMIT);
 });

@@ -20,9 +20,11 @@ Coda 的 `systemPrompt` 接受格式校验，但不发送给 Grok、不保存，
 | `grok-bot.telemetry` | 可选看板基地址，只能读取其 `/api/` 路径 |
 | `grok-bot.turnTimeout` | 默认 `PT30M`，Coda 等待一轮的上限；超时不自动重发，云端未必停止 |
 
-巡检日程与内容在 Grok Routine 中配置，Coda 不创建巡检计时器。收到 subagents/automations 变化通知或 `hasRunningSubagents` 时刷新运行记录；活动期间每 5 秒核对，空闲时不持续轮询。首次连接只建立已结束记录的基线，重连补齐新记录。
+巡检日程与内容在 Grok Routine 中配置，Coda 不创建巡检计时器。收到 subagents/automations 变化通知或 `hasRunningSubagents` 时刷新运行记录；活动期间每 5 秒核对，空闲时不持续轮询。首次连接只建立已结束记录的基线，重连补齐新记录。只保存最近 200 条已结束记录及仍运行的记录，已淘汰的旧历史不会反复显示。
 
 每个 Routine run 显示一条活动，例如「定时任务「Coda 巡检」运行中 → 成功（72 秒）」；失败或记录丢失会明确说明。run ID 对应 executor ID `sand-subagent-<runId>`。executor 内部正文、命令与输出不追踪。主会话结论的 requestId 与 automation run 的 requestId 不同，没有验证到直接关联字段，所以不把并发结论猜测归属到某条 run。
+
+订阅正常到期、游标重置后静默重连；暂时失败只写日志并退避。连续 3 次失败才在会话提示一次，认证失效立即提示，恢复后提示一次。Routine 刷新采用相同策略。
 
 主会话订阅用 `_coda/wait` 保持活动；自主运行用 handling/waiting 切换轮次。Coda 的未结束等待项会阻止 Agent 空闲回收；退出、断网或归档时不镜像，重新加载后按游标补齐。Grok 的 Routine 执行不依赖 Coda 在线。
 
@@ -57,8 +59,8 @@ node /workspace/.coda-bot/coda-bot.mjs mcp <Coda-sessionId>
 这是未获稳定性保证的私有接口，上游升级可能使登录、字段或接口失效；错误会显示在会话中。[Cursor 服务条款 §1.5](https://cursor.com/terms-of-service) 限制逆向工程等行为（法律不允许此限制的情况除外），使用前需评估该条款风险。
 
 - SetStatus 只提供名称/说明，映射为 tool_call 标题和状态，不伪造云端工具输入输出。thinking 只显示“正在思考”，不是思考正文。
-- 按 requestId/turnId 归并，结束后的心跳读取历史核对，匹配正文与结束状态都到达才结束 ACP 轮次。没有正文会继续等待到 turnTimeout；上游没有“最后正文已落盘”标志，极迟消息仍作为补充显示，不静默丢弃。
-- entryId、updatedSeq 和正文摘要保存在游标状态中；断线按游标重连，游标失效分页读历史补齐并去重，不重发用户消息。首次选择只建立历史基线，不灌入旧聊天。正文被服务端省略或消息类型不支持时明确提示去 Grok 客户端查看。
+- 按 requestId/turnId 归并，成功结束且已有正文时立即核对历史并收尾；没有正文时，等到 serverTimeMs 晚于 settledAtMs 的心跳或 5 秒宽限期，再核对历史并收尾，不把正常的静默运行挂到 turnTimeout。上游没有“最后正文已落盘”标志，极迟消息仍作为补充显示，不静默丢弃。
+- entryId、updatedSeq 和正文摘要只保留按 updatedSeq 排序的最近 2000 条，每批条目合并写盘；更早条目若被服务端修订，会当作新条目呈现。断线按游标重连，游标失效分页读历史补齐并去重，不重发用户消息。首次选择只建立历史基线，不灌入旧聊天。正文被服务端省略或消息类型不支持时明确提示去 Grok 客户端查看。
 - Stop 调 InterruptGrokBotAgentRun。widget 选项变成 Coda 卡片，选择后交回 RespondGrokBotWidget；未选择则不代答。auto-review 尚未实测，收到 awaiting 时提示去 Grok 客户端处理，并记事件日志。
 
 实机已验证官方登录、Bot 列表、原生发送/状态/活动/回复、Interrupt、widget 选择交回、Routine run 与 executor ID 的关联，以及无需任何 Coda 汇报工具也会出现的主会话结论（结束状态比正文早 121 ms）。完整新适配器尚未真机部署；自动续期、auto-review、executor 内部过程未实测。适配器测试使用假原生服务端与假时钟。

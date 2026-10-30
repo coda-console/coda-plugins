@@ -13,6 +13,7 @@ const WRITE = new Set(['new_session', 'send']);
 const DIAGNOSTICS = new Set(['machines', 'machine_diagnostics']);
 const fail = message => { throw Object.assign(new Error(message), { code: -32602 }); };
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
+export const SETTLEMENT_GRACE_MS = 5000;
 export const SUBMISSION_WAIT_MS = 20_000;
 function canonical(value) {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
@@ -96,6 +97,7 @@ export class Adapter {
     for (const [toolCallId, call] of turn.tools) if (!call.background)
       this.update(s, { sessionUpdate: 'tool_call_update', toolCallId, status: 'failed', rawOutput: '本轮已结束，远端操作结果未确认' });
     this.clock.clearTimeout(turn.timer);
+    this.clock.clearTimeout(turn.settlementTimer);
     if (turn.activityId) this.update(s, { sessionUpdate: 'tool_call_update', toolCallId: turn.activityId, status: stopReason === 'cancelled' || turn.failed ? 'failed' : 'completed' });
     if (turn.nativeId) s.closedRuns.add(turn.nativeId);
     s.turn = null;
@@ -200,28 +202,30 @@ export class Adapter {
       this.rpc.notify('_coda/wait', { sessionId: s.id, waitId, state: 'failed' });
     }).finally(() => { this.loginTask = null; });
   }
-  nativeError(s, error) {
-    this.log(JSON.stringify({ sessionId: s.id, nativeError: error.message }));
-    if (s.lastNativeError === error.message) return;
-    s.lastNativeError = error.message;
+  nativeNotice(s, text) {
     const own = !s.turn; if (own) this.start(s, true);
-    this.say(s, `Grok 订阅：${error.message}。认证失效请发送 /login；其他断线按游标重连，不重发消息。`);
+    this.say(s, text);
     if (own) this.finish(s, 'end_turn');
+  }
+  healthCallbacks(s, source) {
+    return {
+      log: message => this.log(JSON.stringify({ sessionId: s.id, source, message })),
+      error: error => this.nativeNotice(s, `Grok ${source}持续失败：${error.message}。认证失效请发送 /login；其他断线按游标重连，不重发消息。`),
+      recovered: () => this.nativeNotice(s, `Grok ${source}已恢复。`),
+    };
   }
   async attach(s) {
     if (!this.waits) throw new Error('当前 Coda 不支持 waits，无法保持原生订阅与自主轮次');
     s.subscriptionId = `grok-native-${randomUUID()}`;
     this.wait(s, 'waiting');
     const watch = new NativeWatch({ client: this.auth.client, bot: s.saved.bot, saved: s.saved, clock: this.clock,
-      commit: () => { if (s.watch === watch) this.save(s); }, event: event => { if (s.watch === watch) return this.nativeEvent(s, event); }, error: error => {
-        if (s.watch !== watch) return;
-        this.nativeError(s, error);
-      } });
+      commit: () => { if (s.watch === watch) this.save(s); }, event: event => { if (s.watch === watch) return this.nativeEvent(s, event); },
+      ...this.healthCallbacks(s, '主会话订阅') });
     s.watch = watch;
     s.routines?.close();
     s.routines = new RoutineWatch({ client: this.auth.client, bot: s.saved.bot, saved: s.saved, clock: this.clock,
       commit: () => this.save(s), notify: event => this.rpc.notify('_coda/wait', { sessionId: s.id, ...event }),
-      error: error => this.nativeError(s, error) });
+      ...this.healthCallbacks(s, 'Routine 记录') });
     try { await watch.start(); void s.routines.hint(); }
     catch (error) { watch.close(); s.watch = null; this.wait(s, 'failed'); throw error; }
   }
@@ -236,7 +240,6 @@ export class Adapter {
     if (this.closed) return;
     if (event.connected) { if (s.connected) void s.routines.hint(); s.connected = true; return; }
     if (event.routinesChanged) { void s.routines.hint(); return; }
-    if (event.heartbeat) s.lastNativeError = null;
     if (event.entry) {
       const { row, body } = event.entry;
       if (body.kind === 'message' && body.role === 'user') {
@@ -325,18 +328,31 @@ export class Adapter {
         this.finish(s, 'end_turn');
       }
     }
-    // Settlement can precede the final row. A later stream heartbeat plus a
-    // history reconciliation drains rows before returning the ACP prompt.
-    // There is no native "last body" bit: extremely late rows remain visible
-    // as a new autonomous supplement rather than being discarded.
-    if (event.heartbeat && s.turn?.settlement && !s.turn.widgetPending) {
-      const turn = s.turn;
-      if (BigInt(event.heartbeat.serverTimeMs ?? 0) < BigInt(turn.settlement.settledAtMs ?? 0)) return;
-      await s.watch.reconcile();
-      if (s.turn === turn && !turn.widgetPending && turn.hasReply) {
-        this.finish(s, 'end_turn');
-      }
+    const turn = s.turn;
+    if (turn?.settlement?.outcome === 'success') {
+      const afterSettlement = event.heartbeat && BigInt(event.heartbeat.serverTimeMs ?? 0) > BigInt(turn.settlement.settledAtMs ?? 0);
+      if (turn.hasReply || afterSettlement) await this.completeSettled(s, turn, !!afterSettlement);
+      else this.settlementGrace(s, turn);
     }
+  }
+  settlementGrace(s, turn) {
+    if (turn.settlementTimer || s.turn !== turn) return;
+    turn.settlementTimer = this.clock.setTimeout(() => {
+      turn.settlementTimer = null;
+      void this.completeSettled(s, turn, true).catch(error => {
+        if (s.turn !== turn) return;
+        s.watch.health.failure(error);
+        this.settlementGrace(s, turn);
+      });
+    }, SETTLEMENT_GRACE_MS);
+  }
+  async completeSettled(s, turn, allowEmpty) {
+    if (s.turn !== turn || turn.reconciling || turn.widgetPending || (!turn.hasReply && !allowEmpty)) return;
+    turn.reconciling = true;
+    try {
+      await s.watch.reconcile();
+      if (s.turn === turn && !turn.widgetPending) this.finish(s, 'end_turn');
+    } finally { turn.reconciling = false; }
   }
   async widget(s, turn, entryId, widget) {
     turn.widgetPending = (turn.widgetPending ?? 0) + 1;
@@ -351,7 +367,10 @@ export class Adapter {
       const result = await this.auth.client.request('RespondGrokBotWidget', { agentId: s.saved.bot, sessionId: '', entryId, value: widget.options[choice].value });
       if (!result.accepted) throw new Error('Grok 未接受 widget 回答');
     } catch (error) { if (s.turn === turn) this.say(s, `Grok 卡片未完成：${error.message}`); }
-    finally { turn.widgetPending--; }
+    finally {
+      turn.widgetPending--;
+      if (turn.settlement?.outcome === 'success') this.settlementGrace(s, turn);
+    }
   }
   async trace(s, name, args, operation, replyAfter) {
     const turn = s.turn, toolCallId = randomUUID();
