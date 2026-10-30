@@ -337,6 +337,9 @@ test('fast dispatch returns the original result and clears its submission timer'
     h.answer.resolve(actual);
     assert.deepEqual(await h.result, actual);
     assert.equal((await toolUpdate(h)).status, isError ? 'failed' : 'completed');
+    await backgroundResult(h);
+    assertBackgroundTrace(h, isError ? 'failed' : 'completed');
+    assert.equal(h.text(), '', 'a fast result is returned directly without a duplicate message');
     assert.equal(h.adapter.clock.size, 1, 'only the turn timeout remains');
     await h.remote('done');
   }
@@ -356,6 +359,44 @@ function assertBackgroundTrace(h, status) {
   assert.equal(events[1].params.kind, 'task');
   return events[3].params.update;
 }
+
+test('approval activities belong to the initiating turn even when cancelled or timed out before acknowledgement', async t => {
+  for (const name of ['spawn', 'send']) for (const action of ['cancel', 'timeout']) for (const completion of ['before-receipt', 'after-receipt']) {
+    const h = await pendingDispatch(t, name, { settings: { 'grok-bot.turnTimeout': action === 'timeout' ? 'PT15S' : 'PT30S' } });
+    const registered = h.events.findIndex(e => e.method === '_coda/wait' && e.params.waitId === h.call.toolCallId);
+    assert.ok(registered >= 0, 'activity must already be registered when the MCP call is dispatched');
+    assert.equal(h.events[registered].params.state, 'waiting');
+    assert.equal(h.events[registered].params.toolCallId, h.call.toolCallId);
+    const elapsed = action === 'timeout' ? 15_000 : 10_000;
+    h.adapter.clock.advance(elapsed);
+    if (action === 'cancel') await h.client.request('session/cancel', { sessionId: h.sessionId });
+    assert.equal(h.adapter.session(h.sessionId).turn, null);
+    // Await the next ACP exchange so timeout notifications have reached the
+    // fake Coda peer before asserting their order.
+    const { turn } = await h.remote('say', { text: 'new work' });
+    assert.equal(h.events.some(e => e.params.update?.toolCallId === h.call.toolCallId && e.params.update.status === 'failed'), false,
+      'ending the turn must not mark a still-running background call as failed');
+    const oldTurnEnded = h.events.findIndex((e, i) => i > registered && e.method === '_coda/wait' && e.params.waitId === 'grok-bot-routines' && e.params.state === 'waiting');
+    assert.ok(oldTurnEnded > registered, 'Coda sees registration before the initiating turn ends');
+    if (completion === 'after-receipt') {
+      h.adapter.clock.advance(SUBMISSION_WAIT_MS - elapsed);
+      assert.match((await h.result).content[0].text, /已提交/);
+      h.answer.reject(new Error('late MCP failure'));
+    } else {
+      const actual = { content: [{ type: 'text', text: 'completed before receipt' }] };
+      h.answer.resolve(actual);
+      assert.deepEqual(await h.result, actual);
+    }
+    await backgroundResult(h);
+    const failed = completion === 'after-receipt';
+    assertBackgroundTrace(h, failed ? 'failed' : 'completed');
+    assert.match(h.text(), failed ? /后台调用失败：late MCP failure/ : /后台调用已返回/);
+    assert.equal(h.adapter.session(h.sessionId).turn.id, turn);
+    assert.equal(h.adapter.clock.size, 1, 'only the new turn timeout remains');
+    await h.remote('done', { turn });
+    assert.equal(h.adapter.clock.size, 0);
+  }
+});
 
 test('acknowledged background results remain visible after done, cancel or timeout, including during a new turn', async t => {
   for (const outcome of ['success', 'error', 'rejection']) {

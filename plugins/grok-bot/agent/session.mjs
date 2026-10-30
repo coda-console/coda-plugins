@@ -90,7 +90,8 @@ export class Adapter {
   finish(s, stopReason) {
     const turn = s.turn;
     if (!turn) return;
-    for (const [toolCallId] of turn.tools) this.update(s, { sessionUpdate: 'tool_call_update', toolCallId, status: 'failed', rawOutput: '本轮已结束，远端操作结果未确认' });
+    for (const [toolCallId, call] of turn.tools) if (!call.background)
+      this.update(s, { sessionUpdate: 'tool_call_update', toolCallId, status: 'failed', rawOutput: '本轮已结束，远端操作结果未确认' });
     this.clock.clearTimeout(turn.timer);
     s.turn = null;
     turn.controller.abort();
@@ -185,10 +186,14 @@ export class Adapter {
   }
   async trace(s, name, args, operation, replyAfter) {
     const turn = s.turn, toolCallId = randomUUID();
+    const background = replyAfter !== undefined && !!this.waits;
     const toolCall = { toolCallId, title: `Coda · ${name}`, kind: 'other', status: 'pending', rawInput: args };
-    if (turn) { turn.tools.set(toolCallId, true); this.update(s, { sessionUpdate: 'tool_call', ...toolCall }); }
+    if (turn) { turn.tools.set(toolCallId, { background }); this.update(s, { sessionUpdate: 'tool_call', ...toolCall }); }
     else this.log(JSON.stringify({ sessionId: s.id, toolCallId, name, arguments: args, state: 'started' }));
-    let background = false;
+    // Register while the initiating turn is still active, before dispatch. The
+    // request survives cancellation even before its early acknowledgement.
+    if (background) this.rpc.notify('_coda/wait', { sessionId: s.id, waitId: toolCallId, kind: 'task', state: 'waiting',
+      title: `Coda · ${name} 等待结果`, toolCallId });
     const activity = state => this.rpc.notify('_coda/wait', { sessionId: s.id, waitId: toolCallId, state });
     const report = (status, rawOutput) => {
       if (background) {
@@ -196,7 +201,7 @@ export class Adapter {
         // activity's original cause. Do not reopen the Bot's expired turn.
         activity('handling');
         this.update(s, { sessionUpdate: 'tool_call_update', toolCallId, status, rawOutput });
-        this.say(s, status === 'failed'
+        if (s.turn !== turn || !turn.tools.has(toolCallId)) this.say(s, status === 'failed'
           ? `Coda · ${name} 后台调用失败：${typeof rawOutput === 'string' ? rawOutput : JSON.stringify(rawOutput)}。请核实执行结果，不要自动重发。`
           : `Coda · ${name} 后台调用已返回，结果见该工具记录。`);
         activity(status === 'failed' ? 'failed' : 'done');
@@ -214,13 +219,10 @@ export class Adapter {
       } finally { turn?.tools.delete(toolCallId); }
     })();
     // Without activity support we cannot safely hand off a pending call.
-    if (replyAfter === undefined || !this.waits) return completed;
+    if (!background) return completed;
     let timer;
     const submitted = new Promise(resolve => {
       timer = this.clock.setTimeout(() => {
-        background = true;
-        this.rpc.notify('_coda/wait', { sessionId: s.id, waitId: toolCallId, kind: 'task', state: 'waiting',
-          title: `Coda · ${name} 等待结果`, toolCallId });
         turn.tools.delete(toolCallId);
         resolve({ content: [{ type: 'text', text: '已提交，正在等用户在 Coda 卡片上批准；结果会作为新消息送来；不要重试或轮询。没有其他工作就结束本轮。' }] });
       }, replyAfter);
