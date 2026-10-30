@@ -37,6 +37,9 @@
 会话加载时登记 recurring timer。Bot 主动 say 先报 handling，再输出；done 回 waiting。只读调用若没有轮次只写标准错误审计，不开启空轮次；轮内通过 `tool_call` / `tool_call_update` 留下输入与结果。
 副作用调用由适配器向 coda MCP 的 status 取 turn 票据并生成 requestId，授权与通知复用 Coda 会话机制。`spawn` 必须指定目标 `project`，缺失直接拒绝（Bot 的空目录没有代码）；开 Agent、给别的会话发消息由 Coda 的授权卡片批准。给自己开出的子会话补充是已批准任务的延续，不另问；`cancel` 只能停自己开出的子会话，由 Coda 校验归属，不另问。适配器不另发审批卡片，工具范围之外全部拒绝。
 
+`spawn`、`send`、`cancel` 的 requestId 由本轮 ID、工具名和规范化参数的 SHA-256 生成 UUID；对象键递归排序，数组顺序保留，参数顶层的 turn/requestId 不参与计算。同一轮内参数等价的重试复用同一 ID，由 Coda 恢复原调用；改参数或换轮次会得到新 ID。
+`spawn`、`send` 提交给 Coda 后，超过 20 秒仍未返回就先回复「已提交，正在等用户在 Coda 卡片上批准；结果会作为新消息送来；不要重试或轮询」。阈值为适配器的 `SUBMISSION_WAIT_MS` 常量。原调用在后台继续，真实结果才完成工具记录；原轮次结束后的结果只记日志。收到回执后可 coda_done，等待批准的子会话不在 status.children 中不代表失败，不要改写同一任务重复派出。
+
 ## 远端协议与调试
 
 绑定：`POST /v1/remote-agent/bind {code}` 得到 token；脚本再经带 Bearer token 的 `POST /v1/remote-agent {method:"hello",params:{}}` 确认绑定、取 sessionId 和初始会话指令。token 不进终端输出。

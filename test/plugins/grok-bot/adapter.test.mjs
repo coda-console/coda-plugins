@@ -4,6 +4,7 @@ import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { harness, http, mailbox, temporary } from './helpers.mjs';
 import { bind } from '../../../plugins/grok-bot/remote/coda-bot.mjs';
 import { schemas } from '../../../check/schema.mjs';
+import { SUBMISSION_WAIT_MS } from '../../../plugins/grok-bot/agent/session.mjs';
 
 test('unbound instructions carry one-time code, commands and missing-address explanation', async t => {
   const h = await harness(t);
@@ -138,6 +139,112 @@ test('send and cancel delegate authorization to Coda and preserve its refusal wi
   assert.deepEqual(h.calls().map(c => c.name), ['status', 'send', 'status', 'send', 'status', 'cancel', 'status', 'cancel', 'status', 'spawn']);
   assert.equal(h.events.some(e => e.method === 'session/request_permission'), false);
   await h.remote('done');
+});
+
+test('writes reuse requestId for equivalent JSON in a turn, but separate names, arguments and turns', async t => {
+  const h = await bound(t);
+  const args = { agent: 'codex', project: 'coda', prompt: 'fix', options: { z: 1, a: [{ y: 2, x: 3 }, 'tail'] } };
+  const reordered = { options: { a: [{ x: 3, y: 2 }, 'tail'], z: 1 }, prompt: 'fix', project: 'coda', agent: 'codex' };
+  for (const name of ['spawn', 'send', 'cancel']) {
+    await h.remote('tool', { name, arguments: { ...args, turn: 'forged-a', requestId: 'forged-a' } });
+    await h.remote('tool', { name, arguments: { ...reordered, turn: 'forged-b', requestId: 'forged-b' } });
+  }
+  const first = h.calls().filter(c => c.name !== 'status');
+  for (let i = 0; i < first.length; i += 2) {
+    assert.equal(first[i].arguments.requestId, first[i + 1].arguments.requestId);
+    assert.match(first[i].arguments.requestId, /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    assert.equal(first[i].arguments.turn, 'coda-ticket');
+  }
+  assert.equal(new Set(first.map(c => c.arguments.requestId)).size, 3);
+  await h.remote('tool', { name: 'spawn', arguments: { ...args, prompt: 'different task' } });
+  const different = h.calls().at(-1).arguments.requestId;
+  assert.notEqual(different, first[0].arguments.requestId);
+  await h.remote('tool', { name: 'spawn', arguments: { ...args, options: { z: 1, a: ['tail', { y: 2, x: 3 }] } } });
+  assert.notEqual(h.calls().at(-1).arguments.requestId, first[0].arguments.requestId, 'array order matters');
+  await h.remote('done');
+  await h.remote('tool', { name: 'spawn', arguments: args });
+  assert.notEqual(h.calls().at(-1).arguments.requestId, first[0].arguments.requestId);
+  await h.remote('done');
+});
+
+async function pendingDispatch(t, name, options = {}) {
+  const started = mailbox(), answer = Promise.withResolvers();
+  const h = await harness(t, { ...options, mcpFactory: () => ({
+    list: async () => ({ tools: ['status', 'spawn', 'send'].map(name => ({ name })) }),
+    call(tool, args, signal) {
+      if (tool === 'status') return Promise.resolve({ structuredContent: { turn: 'ticket' } });
+      started.push({ args, signal });
+      return answer.promise;
+    },
+    close() {},
+  }), diagnostics: false });
+  await h.remote('hello');
+  const result = h.remote('tool', { name, arguments: { project: 'coda', agent: 'codex', prompt: 'fix', childId: 'child' } });
+  const dispatched = await started.next();
+  const call = h.events.find(e => e.params.update?.title === `Coda · ${name}`).params.update;
+  return { ...h, result, answer, dispatched, call };
+}
+
+async function toolUpdate(h) {
+  for (;;) {
+    const event = await h.messages.next();
+    if (event.params.update?.sessionUpdate === 'tool_call_update' && event.params.update.toolCallId === h.call.toolCallId)
+      return event.params.update;
+  }
+}
+
+test('slow spawn/send acknowledge submission at the deadline and update the trace only on actual completion', async t => {
+  assert.equal(SUBMISSION_WAIT_MS, 20_000);
+  for (const name of ['spawn', 'send']) {
+    const h = await pendingDispatch(t, name);
+    assert.equal(h.dispatched.signal, null, 'submitted request must outlive the turn and MCP default timeout');
+    await assert.rejects(h.remote('done'), /仍有工具/);
+    h.adapter.clock.advance(SUBMISSION_WAIT_MS);
+    const submitted = await h.result;
+    assert.match(submitted.content[0].text, /已提交.*Coda 卡片.*新消息.*不要重试或轮询/);
+    assert.equal(h.events.some(e => e.params.update?.toolCallId === h.call.toolCallId && e.params.update.sessionUpdate === 'tool_call_update'), false);
+    const actual = { content: [{ type: 'text', text: 'Coda approval result' }] };
+    h.answer.resolve(actual);
+    const update = await toolUpdate(h);
+    assert.equal(update.status, 'completed');
+    assert.deepEqual(update.rawOutput, actual);
+    await h.remote('done');
+    assert.equal(h.adapter.clock.size, 0);
+  }
+});
+
+test('fast dispatch returns the original result and clears its submission timer', async t => {
+  for (const isError of [false, true]) {
+    const h = await pendingDispatch(t, 'spawn');
+    h.adapter.clock.advance(SUBMISSION_WAIT_MS - 1);
+    const actual = { isError, content: [{ type: 'text', text: isError ? 'declined' : 'childId: child' }] };
+    h.answer.resolve(actual);
+    assert.deepEqual(await h.result, actual);
+    assert.equal((await toolUpdate(h)).status, isError ? 'failed' : 'completed');
+    assert.equal(h.adapter.clock.size, 1, 'only the turn timeout remains');
+    await h.remote('done');
+  }
+});
+
+test('background dispatch survives done, cancel and timeout; late success/failure only logs', async t => {
+  for (const outcome of ['success', 'error', 'rejection']) {
+    const logged = mailbox();
+    const h = await pendingDispatch(t, 'spawn', { submissionWaitMs: 7, log: text => logged.push(JSON.parse(text)) });
+    h.adapter.clock.advance(7);
+    await h.result;
+    if (outcome === 'success') await h.remote('done');
+    else if (outcome === 'error') await h.client.request('session/cancel', { sessionId: h.sessionId });
+    else h.adapter.clock.expire();
+    await h.remote('say', { text: 'next turn' });
+    const count = h.events.length;
+    if (outcome === 'rejection') h.answer.reject(new Error('MCP connection failed'));
+    else h.answer.resolve({ isError: outcome === 'error', content: [{ type: 'text', text: 'late result' }] });
+    const entry = await logged.next();
+    assert.equal(entry.toolCallId, h.call.toolCallId);
+    assert.equal(entry.state, outcome === 'success' ? 'completed' : 'failed');
+    assert.equal(h.events.length, count, 'old completion must not enter the new turn');
+    await h.remote('done');
+  }
 });
 
 test('cancel while obtaining a turn ticket never dispatches the write', async t => {

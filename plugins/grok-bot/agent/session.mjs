@@ -10,6 +10,21 @@ const WRITE = new Set(['spawn', 'send', 'cancel']);
 const DIAGNOSTICS = new Set(['machines', 'machine_diagnostics']);
 const fail = message => { throw Object.assign(new Error(message), { code: -32602 }); };
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
+export const SUBMISSION_WAIT_MS = 20_000;
+function canonical(value) {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
+  if (object(value)) return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`;
+  return JSON.stringify(value);
+}
+function requestId(turn, name, args) {
+  const { turn: _ticket, requestId: _request, ...input } = args;
+  const bytes = createHash('sha256').update(canonical([turn.id, name, input])).digest().subarray(0, 16);
+  // UUIDv8: a custom SHA-256-derived identifier, with UUID version/variant bits.
+  bytes[6] = (bytes[6] & 0x0f) | 0x80;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
 export function duration(value = 'PT30M') {
   const m = /^P(?:(\d+(?:\.\d+)?)W)?(?:(\d+(?:\.\d+)?)D)?(?:T(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?)?$/.exec(value);
   const ms = m && m.slice(1).reduce((sum, n, i) => sum + Number(n ?? 0) * [604800000, 86400000, 3600000, 60000, 1000][i], 0);
@@ -23,8 +38,8 @@ function url(value) {
 }
 
 export class Adapter {
-  constructor({ rpc, env = process.env, fetcher = fetch, clock = { setTimeout, clearTimeout }, log = text => console.error(text), mcpFactory = (server, cwd) => new CodaMcp(server, cwd) }) {
-    Object.assign(this, { rpc, env, fetcher, clock, log, mcpFactory });
+  constructor({ rpc, env = process.env, fetcher = fetch, clock = { setTimeout, clearTimeout }, submissionWaitMs = SUBMISSION_WAIT_MS, log = text => console.error(text), mcpFactory = (server, cwd) => new CodaMcp(server, cwd) }) {
+    Object.assign(this, { rpc, env, fetcher, clock, submissionWaitMs, log, mcpFactory });
     this.settings = JSON.parse(env.CODA_PLUGIN_SETTINGS || '{}');
     this.secrets = JSON.parse(env.CODA_PLUGIN_SECRETS || '{}');
     this.sessions = new Map();
@@ -158,21 +173,35 @@ export class Adapter {
     });
     return turn.result;
   }
-  async trace(s, name, args, operation) {
+  async trace(s, name, args, operation, replyAfter) {
     const turn = s.turn, toolCallId = randomUUID();
     const toolCall = { toolCallId, title: `Coda · ${name}`, kind: 'other', status: 'pending', rawInput: args };
     if (turn) { turn.tools.set(toolCallId, true); this.update(s, { sessionUpdate: 'tool_call', ...toolCall }); }
     else this.log(JSON.stringify({ sessionId: s.id, toolCallId, name, arguments: args, state: 'started' }));
-    try {
-      const result = await operation(toolCall, turn);
-      if (turn && s.turn === turn) this.update(s, { sessionUpdate: 'tool_call_update', toolCallId, status: result?.isError ? 'failed' : 'completed', rawOutput: result });
-      else if (!turn) this.log(JSON.stringify({ sessionId: s.id, toolCallId, state: 'completed', result }));
-      return result;
-    } catch (error) {
-      if (turn && s.turn === turn) this.update(s, { sessionUpdate: 'tool_call_update', toolCallId, status: 'failed', rawOutput: error.message });
-      else if (!turn) this.log(JSON.stringify({ sessionId: s.id, toolCallId, state: 'failed', error: error.message }));
-      throw error;
-    } finally { turn?.tools.delete(toolCallId); }
+    const completed = (async () => {
+      try {
+        const result = await operation(toolCall, turn);
+        if (turn && s.turn === turn) this.update(s, { sessionUpdate: 'tool_call_update', toolCallId, status: result?.isError ? 'failed' : 'completed', rawOutput: result });
+        else this.log(JSON.stringify({ sessionId: s.id, toolCallId, state: result?.isError ? 'failed' : 'completed', result }));
+        return result;
+      } catch (error) {
+        if (turn && s.turn === turn) this.update(s, { sessionUpdate: 'tool_call_update', toolCallId, status: 'failed', rawOutput: error.message });
+        else this.log(JSON.stringify({ sessionId: s.id, toolCallId, state: 'failed', error: error.message }));
+        throw error;
+      } finally { turn?.tools.delete(toolCallId); }
+    })();
+    if (replyAfter === undefined) return completed;
+    let timer;
+    const submitted = new Promise(resolve => {
+      timer = this.clock.setTimeout(() => {
+        // done may now end the turn; the actual Coda request and its trace keep
+        // running, and late completion is logged rather than added to a new turn.
+        turn.tools.delete(toolCallId);
+        resolve({ content: [{ type: 'text', text: '已提交，正在等用户在 Coda 卡片上批准；结果会作为新消息送来；不要重试或轮询。没有其他工作就结束本轮。' }] });
+      }, replyAfter);
+    });
+    try { return await Promise.race([completed, submitted]); }
+    finally { this.clock.clearTimeout(timer); }
   }
   async tool(s, { name, arguments: args = {}, turn: id }) {
     if (!READ.has(name) && !WRITE.has(name)) fail(`不允许代理工具：${name}`);
@@ -180,20 +209,23 @@ export class Adapter {
     if (name === 'spawn' && (typeof args.project !== 'string' || !args.project.trim()))
       fail('spawn 必须指定目标 project；Bot 所在的空目录没有代码，请选择要修复的项目');
     this.provider(s, name);
-    this.active(s, id, WRITE.has(name));
-    return this.trace(s, name, args, async (_toolCall, turn) => {
-      const signal = turn?.controller.signal;
-      if (WRITE.has(name)) {
-        // Coda owns authorization: cross-project spawn and messages to other
-        // sessions use its cards; follow-ups/cancel of our children use its ownership checks.
-        const status = await this.trace(s, 'status', {}, () => this.provider(s, 'status').call('status', {}, signal));
-        if (status.isError) throw new Error('无法取得 Coda turn 票据');
-        const ticket = (status.structuredContent ?? JSON.parse(status.content.find(b => b.type === 'text').text)).turn;
-        if (typeof ticket !== 'string' || !ticket || s.turn !== turn) fail('没有有效的 Coda turn 票据');
-        args = { ...args, turn: ticket, requestId: randomUUID() };
-      }
-      return this.provider(s, name).call(name, args, signal);
-    });
+    const turn = this.active(s, id, WRITE.has(name));
+    const signal = turn?.controller.signal;
+    let forwarded = args;
+    if (WRITE.has(name)) {
+      // Coda owns authorization: cross-project spawn and messages to other
+      // sessions use its cards; follow-ups/cancel of our children use its ownership checks.
+      const status = await this.trace(s, 'status', {}, () => this.provider(s, 'status').call('status', {}, signal));
+      if (status.isError) throw new Error('无法取得 Coda turn 票据');
+      const ticket = (status.structuredContent ?? JSON.parse(status.content.find(b => b.type === 'text').text)).turn;
+      if (typeof ticket !== 'string' || !ticket || s.turn !== turn) fail('没有有效的 Coda turn 票据');
+      forwarded = { ...args, turn: ticket, requestId: requestId(turn, name, args) };
+    }
+    const mayWaitForApproval = name === 'spawn' || name === 'send';
+    // Approval calls outlive a Coda turn and must not inherit its abort signal
+    // or the MCP client's default 60-second timeout (null disables both).
+    return this.trace(s, name, args, () => this.provider(s, name).call(name, forwarded, mayWaitForApproval ? null : signal),
+      mayWaitForApproval ? this.submissionWaitMs : undefined);
   }
   provider(s, name) {
     const client = s.routes.get(name);

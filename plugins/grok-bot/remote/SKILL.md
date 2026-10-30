@@ -14,7 +14,7 @@ description: 处理 Coda 会话的 Webhook 消息，安静巡检性能、稳定�
 1. 读取收到的 JSON：`source: "coda"`、`sessionId`、`turn`、`text`。确认 sessionId 是本 Bot 绑定的会话；不同的拒绝处理。
 2. 按 text 做事；其中可能包含明确分隔的会话指令，或子 Agent 交回的结果。子结果也按本轮要求处理。
 3. 每次 coda_say、coda_done、Coda 工具与遥测调用都带这个 turn。它是本轮关联 ID，不是 Coda 工具的 turn 票据；后者由适配器取得。
-4. 需要时用 coda_say 简明汇报进展与结论；工具、审批都返回之后，最后调用 coda_done。Webhook 的 HTTP 200 只表示 Routine 开始，Bot 自己聊天里的答复不会自动显示到 Coda。
+4. 需要时用 coda_say 简明汇报进展与结论；工具返回（含「已提交」回执）后，没有其他工作就调用 coda_done，不必继续等审批。Webhook 的 HTTP 200 只表示 Routine 开始，Bot 自己聊天里的答复不会自动显示到 Coda。
 5. 提示轮次已结束/不匹配时，立即停止向该轮说话，不要省略 turn 重试，也不要创建新轮次绕过取消。云端任务未必随 Coda 取消停止，副作用是否已执行不确定时先只读核实，不能自动重发。
 
 同一 Bot 的 Routine 不要重叠处理同一条 Webhook；记住已处理的 turn，不重复执行。Coda 没有保证云端恰好执行一次。
@@ -40,7 +40,8 @@ coda_machines 与 coda_machine_diagnostics 由 Coda 内置的「机器诊断」�
 发现问题时，先以 coda_say 简明报告「现象、证据、影响、建议」，首次省略 turn 开启自主轮次，保存返回的 turn，后续调用均带它。
 需要修复时，先 coda_agents 找对应项目、机器、Agent，再 coda_spawn，必须带目标 project，不能在 Bot 所在的空目录开 Agent。在任务里写清证据位置、受影响版本/机器/时段、要重点关注的性能或逻辑路径、验证要求。
 开 Agent、给别的会话发消息由 Coda 的授权卡片批准；拒绝后不能换手段执行。给自己开出的子会话补充属于已批准任务的延续，不另问；cancel 只能停自己开出的子会话，由 Coda 校验归属，不另问。不要为了绕过审批在云电脑上直接调用其他写接口。
-等待 Coda 的授权和调用结果，返回后 coda_done，不轮询子 Agent；结果会通过新的 Webhook 送回。
+coda_spawn/coda_send 可能要等用户批准，等待期间 coda_status 看不到这个子会话，这不代表失败；不要重复调用，也不要改写同一任务再次派出。
+收到「已提交，正在等用户在 Coda 卡片上批准」或其他等待授权的回执后，不重试、不轮询，没有其他工作就 coda_done；结果会通过新的 Webhook 送回。
 
 把已报告问题的指纹、证据范围、相关会话/修复任务、最后状态按 sessionId 保存在 `/workspace/.coda-bot/memory/<sessionId>.json`。
 同一问题无新证据不重复报告；恢复、明显恶化或修复结果值得更新时再说。遥测未配置、机器暂不可达时不编造健康结论，首次简明说明观测缺口并记住，避免每轮重复。
