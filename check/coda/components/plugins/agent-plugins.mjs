@@ -1,5 +1,5 @@
 // The agents a plugin brings (docs/plugins.md「Agent」, schemas/agents.json): who each is, how the clients draw it, and how
-// Coda starts its process, which speaks ACP with Coda's waits (docs/agent-protocol.md). Nothing here knows any agent by
+// Coda starts its process, which speaks ACP with Coda's waits (coda-protocol docs/agent-protocol.md). Nothing here knows any agent by
 // name: Codex and Claude are plugins like any other.
 import { readFileSync } from 'node:fs';
 import { isAbsolute, join, normalize } from 'node:path';

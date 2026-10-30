@@ -1,7 +1,0 @@
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://coda.pub/schemas/plugin/v1/repositories.json",
-  "title": "contributes.repositories：列出这台能访问的仓库",
-  "description": "一行命令，打印仓库供客户端选。只有 Coda 自带的插件装得上（安装时的规则）。",
-  "$ref": "common.json#/$defs/commandHolder"
-}

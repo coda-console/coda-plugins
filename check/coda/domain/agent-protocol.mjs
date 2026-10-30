@@ -1,4 +1,4 @@
-// What Coda says to an agent and takes from it beside the connection itself (docs/agent-protocol.md): the capabilities it
+// What Coda says to an agent and takes from it beside the connection itself (coda-protocol docs/agent-protocol.md): the capabilities it
 // sends, session instructions, steering, the agent's own waits, and how long Coda waits on it. Part of the plugin contract
 // coda-plugins' check is given as written (scripts/plugin-contract.mjs).
 

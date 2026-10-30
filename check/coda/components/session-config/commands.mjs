@@ -2,7 +2,7 @@ import { requireCondition as check } from '../../domain/errors.mjs';
 import { AGENT_ID, keys, object, text } from '../../domain/values.mjs';
 
 // What a session runs with: its model, effort and mode, and the agent's other config options by their ID (`options`: a
-// choice's ID, or on and off for a switch), as the agent's catalog offers them (docs/agent-protocol.md「ACP 部分」).
+// choice's ID, or on and off for a switch), as the agent's catalog offers them (coda-protocol docs/agent-protocol.md「ACP 部分」).
 // Absence means resolve the adapter default. Actual values belong to Turn.
 export const OPTIONS_LIMIT = 20;
 export function configOptions(value) {
