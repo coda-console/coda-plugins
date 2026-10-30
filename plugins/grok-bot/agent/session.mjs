@@ -319,14 +319,28 @@ export class Adapter {
     }
     if (event.failed) {
       const id = event.failed.turnId;
-      if (s.turn?.nativeId && id && s.turn.nativeId !== id) {
-        this.say(s, `Grok 其他轮次 ${id} 失败（${event.failed.code ?? 'unknown'}）`);
+      if (id && s.closedRuns.has(id)) {
+        this.log(JSON.stringify({ sessionId: s.id, closedRunFailure: event.failed }));
+        return;
+      }
+      if (s.turn && (!id || s.turn.nativeId !== id)) {
+        if (id && !s.turn.nativeId) {
+          // A Coda prompt is not associated with a native turn until its echo
+          // (or reply) arrives. Retain failures until that association is known.
+          (s.turn.pendingFailures ??= new Map()).set(id, event.failed);
+          this.log(JSON.stringify({ sessionId: s.id, unassociatedFailure: event.failed }));
+        } else this.say(s, `Grok 其他轮次 ${id ?? '（未提供 ID）'} 失败（${event.failed.code ?? 'unknown'}）`);
       } else {
-        if (!s.turn) this.start(s, true);
+        if (!s.turn) { this.start(s, true); s.turn.nativeId = id; }
         s.turn.failed = true;
         this.say(s, `Grok 运行失败（${event.failed.code ?? 'unknown'}）`);
         this.finish(s, 'end_turn');
       }
+    }
+    if (s.turn?.nativeId && s.turn.pendingFailures) {
+      const failed = s.turn.pendingFailures.get(s.turn.nativeId);
+      delete s.turn.pendingFailures;
+      if (failed) return this.nativeEvent(s, { failed });
     }
     const turn = s.turn;
     if (turn?.settlement?.outcome === 'success') {
@@ -497,10 +511,11 @@ export class Adapter {
     }
     if (method === 'session/prompt') return this.prompt(s, p.prompt);
     if (method === 'session/cancel') {
-      if (s.turn && s.saved.bot && this.auth.client) {
+      const turn = s.turn;
+      if (turn && s.saved.bot && this.auth.client) {
         await this.auth.client.request('InterruptGrokBotAgentRun', { agentId: s.saved.bot, sessionId: '' });
       }
-      if (s.turn) this.finish(s, 'cancelled');
+      if (turn && s.turn === turn) this.finish(s, 'cancelled');
       return {};
     }
     const args = p.params ?? {};

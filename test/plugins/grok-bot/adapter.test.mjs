@@ -456,3 +456,73 @@ test('an old active Routine stays tracked across retention and receives its term
   assert.deepEqual(routineEvents(h).map(e => e.state), ['waiting', 'done']);
   assert.equal(Object.keys(h.s.saved.runs).length, RUN_CACHE_LIMIT);
 });
+
+test('closed and unrelated failures before the new prompt echo cannot finish the new turn', async t => {
+  const h = await connected(t), old = await sent(h, 'old');
+  await h.adapter.handle('session/cancel', { sessionId: h.id }); await old.done;
+  const done = h.prompt('new'), request = await h.native.next('SendGrokBotUserMessage');
+  const turn = h.s.turn;
+  for (const id of [old.id, 'unrelated-run']) {
+    h.native.emit({ turnFailed: { agentId: 'inspector', turnId: id, code: 'late_failure' } });
+    await h.until(e => e.failed);
+    assert.equal(h.s.turn, turn);
+    assert.notEqual(turn.failed, true);
+  }
+  await h.emit(h.native.row('new-echo', { kind: 'message', role: 'user', clientNonce: request.params.messageId, requestId: 'new-native-run' }));
+  await reply(h, 'new-native-run', 'new result'); await h.emit(settle('new-native-run'));
+  assert.equal((await done).stopReason, 'end_turn');
+  assert.match(h.text(), /new result/);
+});
+
+test('a failure received before echo is applied only when its native ID is associated', async t => {
+  const h = await connected(t);
+  const done = h.prompt('new'), request = await h.native.next('SendGrokBotUserMessage');
+  const turn = h.s.turn;
+  h.native.emit({ turnFailed: { agentId: 'inspector', turnId: 'actual-native-run', code: 'actual_failure' } });
+  await h.until(e => e.failed);
+  assert.equal(h.s.turn, turn);
+  await h.emit(h.native.row('association', { kind: 'message', role: 'user', clientNonce: request.params.messageId, requestId: 'actual-native-run' }));
+  assert.equal((await done).stopReason, 'end_turn');
+  assert.match(h.text(), /actual_failure/);
+  assert.equal(h.s.turn, null);
+});
+
+test('switching Bot ends the running Routine activity with an unconfirmed tracking result', async t => {
+  const h = await connected(t);
+  h.native.automations = automation([{ id: 'switching-run', status: 'running', startedAt: 100 }]);
+  await h.s.routines.hint();
+  const previous = h.s.routines;
+  const waitId = routineEvents(h)[0].waitId;
+  assert.equal(h.s.turn, null);
+  h.native.handler = async (method, params) => {
+    if (method === 'ListGrokBotAgents') return Response.json({ agents: [{ agentId: 'inspector', name: '巡检' }, { agentId: 'another', name: '另一 Bot' }] });
+    if (params.agentId === 'another' && method === 'ListGrokBotAgentAutomations') return Response.json({ automations: [] });
+    if (params.agentId === 'another' && method === 'ListGrokBotSubagents') return Response.json({ subagents: [] });
+  };
+  await h.adapter.handle('session/set_config_option', { sessionId: h.id, configId: 'bot', value: 'another' });
+  await h.s.routines.flight;
+  assert.equal(h.s.saved.bot, 'another');
+  const activity = () => routineEvents(h).filter(e => e.waitId === waitId);
+  assert.deepEqual(activity().map(e => e.state), ['waiting', 'failed']);
+  assert.match(activity().at(-1).title, /停止跟踪.*结果未确认/);
+  previous.close();
+  assert.equal(activity().length, 2, 'closing again does not duplicate the terminal event');
+});
+
+test('a delayed Interrupt response cannot cancel the next turn', async t => {
+  const h = await connected(t), old = await sent(h, 'old');
+  let release;
+  h.native.handler = async method => {
+    if (method === 'InterruptGrokBotAgentRun') return new Promise(resolve => { release = () => resolve(Response.json({ hadActiveRun: true })); });
+  };
+  const cancelling = h.adapter.handle('session/cancel', { sessionId: h.id });
+  await h.native.next('InterruptGrokBotAgentRun');
+  await reply(h, old.id, 'old result', 'old-reply'); await h.emit(settle(old.id));
+  assert.equal((await old.done).stopReason, 'end_turn');
+  const next = await sent(h, 'next'), turn = h.s.turn;
+  release(); await cancelling;
+  assert.equal(h.s.turn, turn);
+  await reply(h, next.id, 'next result', 'next-reply'); await h.emit(settle(next.id));
+  assert.equal((await next.done).stopReason, 'end_turn');
+  assert.match(h.text(), /next result/);
+});

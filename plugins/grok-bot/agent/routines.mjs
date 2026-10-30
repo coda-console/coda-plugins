@@ -92,5 +92,13 @@ export class RoutineWatch {
     this.saved.routinesInitialized = true;
     this.commit();
   }
-  close() { this.controller.abort(); this.clock.clearTimeout(this.timer); }
+  close() {
+    this.controller.abort();
+    this.clock.clearTimeout(this.timer);
+    for (const id of this.registered) {
+      const run = this.saved.runs[id];
+      if (run?.status === 'running') this.activity(run, 'failed', `定时任务「${run.name}」已停止跟踪，结果未确认；Grok 中的任务未必停止`);
+    }
+    this.registered.clear();
+  }
 }
