@@ -42,11 +42,20 @@ export function quotes(value = []) {
   return passages;
 }
 
+// The composer mode a message was sent in (docs/plugins.md「输入框模式」), as it was then: `<plugin>/<mode>`, its title and
+// icon, which its bubble shows however the plugin changes later.
+export function modeMark(value) {
+  object(value, '输入框模式');
+  keys(value, ['id', 'title', 'icon']);
+  check(typeof value.id === 'string' && /^[a-z][a-z0-9-]{0,39}\/[a-z][a-z0-9-]{0,39}$/.test(value.id), 'invalid_input', '输入框模式须写成「插件/模式」');
+  return { id: value.id, title: text(value.title, '模式名', 40), icon: text(value.icon, '模式图标', 100) };
+}
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export function firstMessage(value) {
   object(value, '首次发送');
   keys(value, ['requestId', 'projectId', 'title', 'agent', 'checkout', 'settings', 'text', 'attachments', 'quotes', 'handoffSource', 'parentThreadId',
-    'replyTo', 'threadId', 'extensionParent']);
+    'replyTo', 'threadId', 'extensionParent', 'mode']);
   const handoff = value.handoffSource === undefined ? {} : { handoffSource: text(value.handoffSource, '交接来源', 100) };
   const parent = value.parentThreadId === undefined ? {} : { parentThreadId: text(value.parentThreadId, '父会话', 100) };
   check(!parent.parentThreadId || handoff.handoffSource === parent.parentThreadId, 'invalid_input', '子会话必须引用父会话上下文');
@@ -96,6 +105,7 @@ export function firstMessage(value) {
     settings: settings(value.settings),
     text: message,
     ...(passages.length ? { quotes: passages } : {}),
+    ...(value.mode === undefined ? {} : { mode: modeMark(value.mode) }),
   }, attachments(value.attachments));
 }
 

@@ -51,7 +51,7 @@ const PACKAGE_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 // What a plugin may contribute to Coda itself; anything else in `contributes` is for a point another plugin declares to
 // take it (the resources plugin's `panels`), refused when none does, as any other way of writing Coda cannot read.
 export const CONTRIBUTES = ['configuration', 'capabilities', 'instructions', 'agents', 'extensionPoints', 'extensions', 'groups', 'events', 'commands', 'gitCredentials',
-  'repositories', 'services', 'setup', 'skills', 'environment', 'path', 'endpoints', 'mcpServers', 'views', 'modelProviders', 'executors'];
+  'repositories', 'services', 'setup', 'skills', 'environment', 'path', 'endpoints', 'mcpServers', 'views', 'modelProviders', 'executors', 'composerModes'];
 // The string formats a setting may have, beside `coda-agent` (an object) and `coda-agent-match` (a table's row names):
 // `coda-model-provider` names a model service another plugin provides (docs/plugins.md「模型服务」); `coda-model-url` is the
 // address of one, its Key and API in fields beside it (`modelKey`, `modelApi`), which Coda checks (「检查可用模型」).
@@ -81,19 +81,22 @@ const SYMBOL = /^[a-z0-9]+(\.[a-z0-9]+)*$/;
 // ---- Declarations ----
 // The JSON Schema Coda reads: a scalar, a choice of several among fixed options (an array of `items.anyOf` constants, as a
 // form's multi-select), several model services (an array of `items` of format `coda-model-provider`, which the
-// machine's model services are offered for), or an object whose entries all share one schema (VS Code shows such a setting as a table): a single
-// value, an Agent combination, or a row of named columns, each a single value, secrets among them (docs/plugins.md「类型」). Anything else is refused when the plugin is read, not ignored. `level`: what is read, a
-// setting, a table's entry, or a column of its rows.
+// machine's model services are offered for), a list of rows (an array of `items` an object of named columns), or an object
+// whose entries all share one schema (VS Code shows such a setting as a table): a single value, an Agent combination, or a
+// row of named columns, each a single value or an Agent combination, secrets among them (docs/plugins.md「类型」). Anything
+// else is refused when the plugin is read, not ignored. `level`: what is read, a setting, a table's entry, or a column of its rows.
 const COLUMN = /^[a-z][A-Za-z0-9]{0,39}$/, OPTION = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+// How many rows a list of them holds.
+const ROWS_AT_MOST = 50;
 function schema(value, where, level = 'setting') {
   check(value && typeof value === 'object' && !Array.isArray(value), 'invalid_plugin', `${where} 须为 JSON Schema 对象`);
-  const known = ['type', 'default', 'description', 'markdownDescription', 'title', 'enum', 'enumDescriptions', 'minimum', 'maximum', 'format', 'order',
+  const known = ['type', 'default', 'description', 'markdownDescription', 'title', 'enum', 'enumDescriptions', 'enumItemLabels', 'minimum', 'maximum', 'format', 'order',
     ...{ setting: ['additionalProperties', 'propertyNames', 'writeOnly', 'modelKey', 'modelApi', 'items', 'uniqueItems'], entry: ['properties', 'required'],
       column: ['writeOnly', 'modelKey', 'modelApi'] }[level]];
-  check(level !== 'column' || value.type !== 'object', 'invalid_plugin', `${where}：一列只能是单个值`);
+  check(level !== 'column' || value.type !== 'object' || value.format === 'coda-agent', 'invalid_plugin', `${where}：一列只能是单个值或 Agent 组合`);
   check(level !== 'entry' || value.type !== 'object' || value.format === 'coda-agent' || value.properties !== undefined, 'invalid_plugin',
     `${where}：表格的每一项只能是单个值、Agent 组合，或 properties 写明的 1–20 列`);
-  check(value.type !== 'array' || level === 'setting', 'invalid_plugin', `${where}：多选只能是插件的一项设置，不能放进表格`);
+  check(value.type !== 'array' || level === 'setting', 'invalid_plugin', `${where}：多选与一列行只能是插件的一项设置，不能放进表格`);
   const extra = Object.keys(value).filter(k => !known.includes(k));
   check(!extra.length, 'invalid_plugin', `${where} 里有 Coda 不支持的键：${extra.join('、')}`);
   check((value.properties === undefined && value.required === undefined) || (value.type === 'object' && value.format === undefined), 'invalid_plugin',
@@ -104,14 +107,20 @@ function schema(value, where, level = 'setting') {
     'invalid_plugin', `${where}：密文设置（writeOnly）只能是没有 format、enum 与默认值的文本`);
   const agent = value.format === 'coda-agent';
   check(['boolean', 'integer', 'number', 'string', 'object', 'array'].includes(value.type), 'invalid_plugin', `${where} 的 type 不受支持：${value.type}`);
-  check((value.items === undefined && value.uniqueItems === undefined) || value.type === 'array', 'invalid_plugin', `${where}：只有多选（type: array）才写 items 与 uniqueItems`);
+  check((value.items === undefined && value.uniqueItems === undefined) || value.type === 'array', 'invalid_plugin', `${where}：只有多选与一列行（type: array）才写 items 与 uniqueItems`);
   check(value.format === undefined || agent || value.format === 'coda-agent-match' || STRING_FORMATS.includes(value.format), 'invalid_plugin', `${where} 的 format 不受支持：${value.format}`);
   check(!agent || value.type === 'object', 'invalid_plugin', `${where}：coda-agent 是对象`);
   check(!STRING_FORMATS.includes(value.format) || value.type === 'string', 'invalid_plugin', `${where}：${value.format} 是文本`);
   check(value.enum === undefined || (Array.isArray(value.enum) && value.enum.length && ['string', 'integer', 'number'].includes(value.type)), 'invalid_plugin', `${where} 的 enum 无效`);
+  // What each option is shown as, as VS Code's settings say it.
+  check(value.enumItemLabels === undefined || (Array.isArray(value.enum) && Array.isArray(value.enumItemLabels) && value.enumItemLabels.length === value.enum.length
+    && value.enumItemLabels.every(label => typeof label === 'string' && label.length <= 100)), 'invalid_plugin', `${where} 的 enumItemLabels 须与 enum 一一对应`);
   check((value.modelKey === undefined && value.modelApi === undefined) || value.format === 'coda-model-url', 'invalid_plugin',
     `${where}：modelKey 与 modelApi 只写在 coda-model-url 的地址上`);
   const out = { type: value.type, ...(value.format ? { format: value.format } : {}), ...(value.enum ? { enum: value.enum } : {}),
+    ...(value.enumItemLabels ? { enumItemLabels: value.enumItemLabels } : {}),
+    ...(Array.isArray(value.enumDescriptions) && value.enum && value.enumDescriptions.length === value.enum.length && value.enumDescriptions.every(d => typeof d === 'string')
+      ? { enumDescriptions: value.enumDescriptions } : {}),
     ...(value.minimum !== undefined ? { minimum: value.minimum } : {}), ...(value.maximum !== undefined ? { maximum: value.maximum } : {}),
     ...(typeof value.description === 'string' ? { description: value.description } : typeof value.markdownDescription === 'string' ? { description: value.markdownDescription } : {}),
     ...(typeof value.title === 'string' ? { title: value.title } : {}), ...(Number.isFinite(value.order) ? { order: value.order } : {}),
@@ -129,6 +138,14 @@ function schema(value, where, level = 'setting') {
       && items.modelApis.every(isModelApi)), 'invalid_plugin', `${where}.items.modelApis 须为 1–10 个接口名，取 ${MODEL_APIS.join('、')}`);
     out.format = 'coda-model-provider';
     if (items.modelApis) out.modelApis = [...new Set(items.modelApis)];
+  } else if (value.type === 'array' && value.items?.type === 'object') {
+    // A list of rows, each of named columns as a table's row is, kept in the order written: what has no name of its own.
+    check(value.format === undefined && value.minimum === undefined && value.maximum === undefined && value.uniqueItems === undefined, 'invalid_plugin',
+      `${where}：一列行不写 format、minimum、maximum 与 uniqueItems`);
+    check(value.items.format === undefined && value.items.properties !== undefined, 'invalid_plugin', `${where}：一列行写 items: { type: object, properties, required }`);
+    out.rows = schema(value.items, `${where}.items`, 'entry');
+    // Taken whole, as a value is: a secret is written only column by column, as a table's row has it.
+    check(!Object.values(out.rows.columns).some(column => column.writeOnly), 'invalid_plugin', `${where}：一列行的列不能是密文，要密文用表格`);
   } else if (value.type === 'array') {
     // A choice of several: each option a constant of its own, with what the client shows for it; chosen ones kept in this order.
     check(value.format === undefined && value.minimum === undefined && value.maximum === undefined, 'invalid_plugin', `${where}：多选不写 format、minimum 与 maximum`);
@@ -182,6 +199,64 @@ function modelFields(fields, where) {
     check(field.modelApi === undefined || (typeof field.modelApi === 'string' && Object.hasOwn(fields, field.modelApi) && fields[field.modelApi].type === 'string'
       && !fields[field.modelApi].writeOnly), 'invalid_plugin', `${where}「${name}」的 modelApi 须为同组的文本`);
   }
+}
+
+// The modes a composer can be put in (docs/plugins.md「输入框模式」): what it shows then — an icon and a title, a line on
+// what sending does, its placeholder and send button —, whom what is sent is for (`agent`: the session's agent, `own` one
+// chosen for it, which a new session runs, `off` none shown), and its parameters, written as settings are. One entered by a
+// character typed first (`trigger`, as `!`) is the text's: it has no parameters, and what is sent in it is the session's.
+export const MODE_AGENTS = ['session', 'own', 'off'];
+const MODE_KEYS = ['id', 'title', 'icon', 'hint', 'placeholder', 'sendLabel', 'agent', 'trigger', 'parameters'];
+const oneLine = (text, most) => typeof text === 'string' && !!text.trim() && [...text].length <= most && !/[\0\r\n]/.test(text);
+function composerModeDeclarations(value) {
+  const modes = value ?? [];
+  check(Array.isArray(modes) && modes.length <= 10, 'invalid_plugin', 'contributes.composerModes 须为数组，至多 10 个');
+  const out = modes.map((m, i) => {
+    const where = `contributes.composerModes[${i}]`;
+    check(m && typeof m === 'object' && !Array.isArray(m) && Object.keys(m).every(k => MODE_KEYS.includes(k)), 'invalid_plugin',
+      `${where} 只能写 ${MODE_KEYS.join('、')}`);
+    check(typeof m.id === 'string' && COMMAND.test(m.id), 'invalid_plugin', `${where}.id 是小写字母、数字和「-」，以字母开头，不超过 40 个字符`);
+    check(oneLine(m.title, 40), 'invalid_plugin', `${where}.title 是不超过 40 字的一行`);
+    check(typeof m.icon === 'string' && m.icon.length <= 100 && SYMBOL.test(m.icon), 'invalid_plugin', `${where}.icon 是 SF Symbol 的名字`);
+    check(m.hint === undefined || oneLine(m.hint, 200), 'invalid_plugin', `${where}.hint 是不超过 200 字的一行`);
+    check(m.placeholder === undefined || oneLine(m.placeholder, 40), 'invalid_plugin', `${where}.placeholder 是不超过 40 字的一行`);
+    check(m.sendLabel === undefined || oneLine(m.sendLabel, 20), 'invalid_plugin', `${where}.sendLabel 是不超过 20 字的一行`);
+    check(m.agent === undefined || MODE_AGENTS.includes(m.agent), 'invalid_plugin', `${where}.agent 只能是 ${MODE_AGENTS.join('、')}`);
+    check(m.trigger === undefined || (typeof m.trigger === 'string' && /^[!#$%&*+:;=?^|~]$/.test(m.trigger)), 'invalid_plugin',
+      `${where}.trigger 是一个标点：!#$%&*+:;=?^|~ 之一`);
+    check(m.trigger === undefined || (m.parameters === undefined && m.agent !== 'own'), 'invalid_plugin', `${where}：打字进入的模式（trigger）没有参数，也不另选 Agent`);
+    return { id: m.id, title: m.title.trim(), icon: m.icon, ...(m.hint ? { hint: m.hint.trim() } : {}), ...(m.placeholder ? { placeholder: m.placeholder.trim() } : {}),
+      ...(m.sendLabel ? { sendLabel: m.sendLabel.trim() } : {}), agent: m.agent ?? 'session', ...(m.trigger ? { trigger: m.trigger } : {}),
+      // As read, which the clients show; as written (JSON Schema), which its hooks are given (components/composer-modes).
+      ...(m.parameters !== undefined ? { parameters: modeParameters(m.parameters, `${where}.parameters`), schema: structuredClone(m.parameters) } : {}) };
+  });
+  check(new Set(out.map(m => m.id)).size === out.length, 'invalid_plugin', 'contributes.composerModes 的 id 不能重复');
+  const triggers = out.filter(m => m.trigger).map(m => m.trigger);
+  check(new Set(triggers).size === triggers.length, 'invalid_plugin', 'contributes.composerModes 的 trigger 不能重复');
+  return out;
+}
+// A mode's parameters: an object of named properties, each read as a setting is but a secret; what it cannot go without, `required`.
+export function modeParameters(value, where) {
+  check(value && typeof value === 'object' && !Array.isArray(value) && value.type === 'object' && Object.keys(value).every(k => ['type', 'properties', 'required'].includes(k)),
+    'invalid_plugin', `${where} 须为 { type: object, properties, required? }`);
+  const properties = value.properties;
+  check(properties && typeof properties === 'object' && !Array.isArray(properties) && Object.keys(properties).length >= 1 && Object.keys(properties).length <= 20,
+    'invalid_plugin', `${where}.properties 须为 1–20 个参数`);
+  // In the order written, which the clients show them in: JSON's objects keep none of their own there.
+  const ordered = (fields, at) => Object.fromEntries(Object.entries(fields).map(([name, spec], i) => [name, { ...spec, order: spec.order ?? at + i }]));
+  const out = Object.fromEntries(Object.entries(properties).map(([name, p], i) => {
+    check(COLUMN.test(name), 'invalid_plugin', `${where} 的参数名只用字母和数字，以小写字母开头：${name}`);
+    const read = schema(p, `${where}.properties.${name}`);
+    const rows = read.rows ? { rows: { ...read.rows, columns: ordered(read.rows.columns, 0) } } : {};
+    const spec = { ...read, ...rows, order: read.order ?? i };
+    const secret = s => s.writeOnly || Object.values(s.columns ?? s.rows?.columns ?? s.entries?.columns ?? {}).some(c => c.writeOnly);
+    check(!secret(spec), 'invalid_plugin', `${where}.properties.${name}：参数不能是密文`);
+    return [name, spec];
+  }));
+  const required = value.required ?? [];
+  check(Array.isArray(required) && required.every(name => typeof name === 'string' && Object.hasOwn(out, name)) && new Set(required).size === required.length,
+    'invalid_plugin', `${where}.required 须为本模式的参数名，不重复`);
+  return { properties: out, ...(required.length ? { required: [...required] } : {}) };
 }
 
 // The category it is listed under (docs/plugins.md「商店」): the first of its manifest's `categories`, as VS Code's are
@@ -288,6 +363,7 @@ export function readPlugin(dir, source) {
     && (v.readout === undefined || VIEW_READOUTS.includes(v.readout)) && (v.checkout === undefined || VIEW_CHECKOUTS.includes(v.checkout)))
     && new Set(views.map(v => v.id)).size === views.length, 'invalid_plugin',
   `contributes.views 须为 { id, title, entry, in?, icon?, handles? } 的数组，至多 10 个：id 是小写字母、数字和「-」，以字母开头，不重复；title 是不超过 40 字的一行；entry 是插件目录里的 .html 文件；in 是它常驻的位置（${VIEW_PLACES.join('、')}），不重复；icon 是 SF Symbol 的名字；handles 是它接管打开的引用种类（如 workflow-runs），至多 8 个，不重复；readout 是它的读数（${VIEW_READOUTS.join('、')}）；checkout 是它只给哪种工作位置的会话（${VIEW_CHECKOUTS.join('、')}）`);
+  const composerModes = composerModeDeclarations(manifest.contributes?.composerModes);
   const handled = views.flatMap(v => v.handles ?? []);
   check(new Set(handled).size === handled.length, 'invalid_plugin', 'contributes.views：同一种引用只能由一个视图接管');
   for (const v of views) {
@@ -337,6 +413,7 @@ export function readPlugin(dir, source) {
     views: views.map(v => ({ id: v.id, title: v.title, entry: posix.normalize(v.entry), ...(v.in?.length ? { in: [...v.in] } : {}), ...(v.icon ? { icon: v.icon } : {}),
       ...(v.handles?.length ? { handles: [...v.handles] } : {}), ...(v.readout ? { readout: v.readout } : {}),
       ...(v.checkout ? { checkout: v.checkout } : {}) })),
+    ...(composerModes.length ? { composerModes } : {}),
     // What it writes for another plugin's points, as written (components/plugins/plugin-extensions.mjs offerDeclarations).
     ...(Object.keys(offers).length ? { offers } : {}),
     agents: agentDeclarations(manifest.contributes?.agents, dir),
@@ -647,6 +724,16 @@ export function checkValue(spec, value, where, code = 'invalid_input') {
     }));
   }
   if (spec.type === 'boolean') { check(typeof value === 'boolean', code, `${where}须为开或关`); return value; }
+  // Rows in the order written, taken whole: a column not written is its default, as a table's row is resolved (rowValue),
+  // so that one a row cannot go without is there.
+  if (spec.type === 'array' && spec.rows) {
+    check(Array.isArray(value) && value.length <= ROWS_AT_MOST, code, `${where}须为至多 ${ROWS_AT_MOST} 行`);
+    const defaults = Object.entries(spec.rows.columns).filter(([, column]) => column.default !== undefined);
+    return value.map((row, i) => {
+      const checked = checkValue(spec.rows, row, `${where}第 ${i + 1} 行`, code);
+      return { ...Object.fromEntries(defaults.map(([name, column]) => [name, column.default])), ...checked };
+    });
+  }
   // Model services, each once, in the order chosen: one named may be of a plugin not installed (yet), as a single one may.
   if (spec.type === 'array' && spec.format === 'coda-model-provider') {
     check(Array.isArray(value) && value.length <= MODEL_PROVIDERS_AT_MOST && value.every(v => typeof v === 'string' && MODEL_PROVIDER.test(v)), code,
@@ -761,7 +848,7 @@ function read(item, spec, from) {
   // Of options chosen once, those the plugin has no more are not chosen; a value stored before the setting was a choice is none.
   if (spec.type === 'array' && spec.format === 'coda-model-provider')
     return Array.isArray(item.value) ? { value: item.value.filter(v => typeof v === 'string' && MODEL_PROVIDER.test(v)), from } : null;
-  if (spec.type === 'array') return Array.isArray(item.value) ? { value: spec.options.map(o => o.value).filter(v => item.value.includes(v)), from } : null;
+  if (spec.type === 'array' && spec.options) return Array.isArray(item.value) ? { value: spec.options.map(o => o.value).filter(v => item.value.includes(v)), from } : null;
   return { value: item.value, from };
 }
 // Every setting of a plugin for one project (or for every project, without one): project over plugin over default.

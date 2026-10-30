@@ -254,11 +254,13 @@ export function builtinProblem(id, source, builtin, installed) {
   return `与内置插件 ${id} 同名${copy.source?.repo || copy.source?.package ? '，来源不同' : ''}，请先卸载内置插件再安装`;
 }
 // What only one plugin may declare, as said to the user: an agent (sessions name it by its ID alone), a concurrency group
-// (any process takes it by its name), Git's credentials for an address, opening a kind of reference (a view's `handles`)
+// (any process takes it by its name), Git's credentials for an address, opening a kind of reference (a view's `handles`),
+// a composer mode's name and the character typed to enter one (the composer finds it by them)
 // and a key of `contributes` a point takes. A command, as a Skill or a variable, is a
 // project's: one two plugins of a project bring is neither's there (components/plugins/plugins.mjs launch).
 export const claims = plugin => [...plugin.agents.map(a => `Agent ${a.id}`), ...plugin.groups.map(g => `组 ${g.name}`),
   ...(plugin.gitCredentials ?? []).map(c => `${c.url} 的 Git 凭据`), ...(plugin.views ?? []).flatMap(v => (v.handles ?? []).map(kind => `打开 ${kind} 引用`)),
+  ...(plugin.composerModes ?? []).flatMap(m => [`输入框模式 /${m.id}`, ...(m.trigger ? [`输入框里打 ${m.trigger} 进入的模式`] : [])]),
   ...Object.values(plugin.extensionPoints ?? {}).filter(p => p.contributes).map(p => `扩展点 contributes.${p.contributes}`)];
 // Why a plugin cannot sit beside those this machine has (`catalog`: built-in and installed, by ID; `builtin`: the plugins
 // Coda ships, by ID), or null: an installed built-in one's ID from another source (builtinProblem), or an agent, a group
@@ -328,6 +330,8 @@ export function contributions(plugin, catalog = new Map()) {
     ...(plugin.views?.length ? { views: plugin.views.map(v => ({ id: v.id, title: v.title, ...(v.in ? { in: v.in } : {}), ...(v.icon ? { icon: v.icon } : {}), ...(v.handles ? { handles: v.handles } : {}), ...(v.readout ? { readout: v.readout } : {}),
       ...(v.checkout ? { checkout: v.checkout } : {}) })) } : {}),
     groups: plugin.groups.map(g => ({ name: g.name, capacity: g.capacity })),
+    // The modes it puts the composer in, as declared: the clients show them from this.
+    ...(plugin.composerModes?.length ? { composerModes: plugin.composerModes.map(({ schema: _, ...mode }) => mode) } : {}),
     extensions: plugin.extensions.map(e => ({ plugin: e.plugin, point: e.point, command: e.command })),
     // What it writes for points under keys of `contributes` (the resources plugin's panels): by point, how many and the
     // commands in them, each with what it is for.
