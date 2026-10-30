@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://coda.pub/schemas/plugin/v1/views.json",
+  "title": "contributes.views：客户端为插件打开的页面",
+  "description": "插件目录里的 HTML，客户端在沙箱里开：在哪常驻（side 会话旁、page 一页），图标，接管打开的引用种类（handles，像 VS Code 的自定义编辑器），读数（readout）与只给哪种工作位置的会话（checkout）。",
+  "type": "array",
+  "maxItems": 10,
+  "items": {
+    "type": "object",
+    "properties": {
+      "id": {"$ref": "common.json#/$defs/id"},
+      "title": {"$ref": "common.json#/$defs/line40"},
+      "entry": {"description": "插件目录里的 .html 文件", "type": "string", "pattern": "^(?!/)(?!(.*/)?\\.\\.(/|$)).*\\.html$", "x-file": {"type": "file"}},
+      "in": {"description": "它常驻的位置：side、page，不重复", "type": "array", "uniqueItems": true, "items": {"enum": ["side", "page"]}},
+      "icon": {"$ref": "common.json#/$defs/symbol"},
+      "handles": {
+        "description": "它接管打开的引用种类（如 workflow-runs），至多 8 个，不重复",
+        "type": "array",
+        "maxItems": 8,
+        "uniqueItems": true,
+        "items": {"$ref": "common.json#/$defs/id"}
+      },
+      "readout": {"description": "读数：workflow-runs、machines、changes", "enum": ["workflow-runs", "machines", "changes"]},
+      "checkout": {"description": "只给哪种工作位置的会话：worktree", "enum": ["worktree"]}
+    },
+    "required": ["id", "title", "entry"],
+    "additionalProperties": false
+  },
+  "x-unique-by": ["id"]
+}

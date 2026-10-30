@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://coda.pub/schemas/plugin/v1/endpoints.json",
+  "title": "contributes.endpoints：客户端发给插件的请求",
+  "description": "id → 回答它的一行命令（请求从标准输入给）；checks 是它检查的本插件设置，客户端在那项设置旁提供「检查」，一项设置至多一个端点。",
+  "type": "array",
+  "maxItems": 20,
+  "items": {
+    "type": "object",
+    "properties": {
+      "id": {"$ref": "common.json#/$defs/id"},
+      "command": {"$ref": "common.json#/$defs/command"},
+      "checks": {"description": "checks 是本插件声明的一项设置", "type": "string", "x-ref": {"pointer": "/contributes/configuration/properties"}}
+    },
+    "required": ["id", "command"],
+    "additionalProperties": false
+  },
+  "x-unique-by": ["id", "checks"]
+}

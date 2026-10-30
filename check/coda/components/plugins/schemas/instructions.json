@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://coda.pub/schemas/plugin/v1/instructions.json",
+  "title": "contributes.instructions：写给 Agent 的几句话",
+  "description": "装了这个插件的项目里，每个会话的指令都带上它：不超过 200 字。",
+  "type": "string",
+  "maxLength": 200,
+  "pattern": "\\S"
+}

@@ -1,0 +1,242 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://coda.pub/schemas/plugin/v1/setting.json",
+  "title": "一项设置的声明",
+  "description": "插件用 JSON Schema 声明设置，Coda 读的是其中一部分：单个值；多选（items.anyOf 的常量）；多个模型服务；一列行；表格（additionalProperties 是每一项）。表格的每一项是单个值、Agent 组合或几列；一列是单个值或 Agent 组合。格式只认 coda-agent（新会话用什么启动）、coda-agent-match（表格的行名：哪些会话）、duration（ISO 8601 时长）、coda-repo、coda-directory、coda-model-provider（别的插件提供的模型服务）、coda-model-url（模型服务的地址，Key 与接口写在同组的 modelKey、modelApi）。writeOnly 是密文：只写不读，放在数据库旁的文件里。",
+  "$ref": "#/$defs/setting",
+  "$defs": {
+    "base": {
+      "type": "object",
+      "properties": {
+        "type": {"description": "type 取 boolean、integer、number、string、object、array", "enum": ["boolean", "integer", "number", "string", "object", "array"]},
+        "title": {"type": "string"},
+        "description": {"type": "string"},
+        "markdownDescription": {"type": "string"},
+        "order": {"type": "number"},
+        "default": true,
+        "enum": {"description": "enum 是非空的数组", "type": "array", "minItems": 1},
+        "enumDescriptions": {"type": "array"},
+        "enumItemLabels": {"description": "enumItemLabels 是每个选项显示的文字，各不超过 100 字", "type": "array", "items": {"type": "string", "maxLength": 100}},
+        "minimum": {"type": "number"},
+        "maximum": {"type": "number"},
+        "format": {
+          "description": "format 只认 coda-agent、coda-agent-match、duration、coda-repo、coda-directory、coda-model-provider、coda-model-url",
+          "enum": ["coda-agent", "coda-agent-match", "duration", "coda-repo", "coda-directory", "coda-model-provider", "coda-model-url"]
+        }
+      },
+      "required": ["type"],
+      "allOf": [
+        {
+          "if": {"properties": {"format": {"const": "coda-agent"}}, "required": ["format"]},
+          "then": {"description": "coda-agent 是对象", "properties": {"type": {"const": "object"}}}
+        },
+        {
+          "if": {
+            "properties": {"format": {"enum": ["duration", "coda-repo", "coda-directory", "coda-model-provider", "coda-model-url"]}},
+            "required": ["format"]
+          },
+          "then": {"description": "duration、coda-repo、coda-directory、coda-model-provider、coda-model-url 是文本", "properties": {"type": {"const": "string"}}}
+        },
+        {"if": {"required": ["enum"]}, "then": {"description": "enum 只用于文本与数字", "properties": {"type": {"enum": ["string", "integer", "number"]}}}},
+        {"if": {"required": ["enumItemLabels"]}, "then": {"description": "enumItemLabels 跟着 enum 写", "required": ["enum"]}},
+        {
+          "if": {"anyOf": [{"required": ["modelKey"]}, {"required": ["modelApi"]}]},
+          "then": {
+            "description": "modelKey 与 modelApi 只写在 coda-model-url 的地址上",
+            "properties": {"format": {"const": "coda-model-url"}},
+            "required": ["format"]
+          }
+        }
+      ]
+    },
+    "secret": {"description": "writeOnly 是开或关", "type": "boolean"},
+    "modelKey": {
+      "description": "modelKey 是同组的一个密文的名字",
+      "type": "string",
+      "x-ref": {"pointer": "2", "match": {"properties": {"writeOnly": {"const": true}}, "required": ["writeOnly"]}}
+    },
+    "modelApi": {
+      "description": "modelApi 是同组的一个文本（不是密文）的名字",
+      "type": "string",
+      "x-ref": {"pointer": "2", "match": {"properties": {"type": {"const": "string"}, "writeOnly": {"const": false}}, "required": ["type"]}}
+    },
+    "setting": {
+      "description": "插件的一项设置",
+      "$ref": "#/$defs/base",
+      "properties": {
+        "writeOnly": {"$ref": "#/$defs/secret"},
+        "modelKey": {"$ref": "#/$defs/modelKey"},
+        "modelApi": {"$ref": "#/$defs/modelApi"},
+        "items": true,
+        "uniqueItems": {"description": "uniqueItems 只能是 true（每项至多一次）", "const": true},
+        "additionalProperties": true,
+        "propertyNames": true
+      },
+      "unevaluatedProperties": false,
+      "allOf": [
+        {
+          "if": {"properties": {"writeOnly": {"const": true}}, "required": ["writeOnly"]},
+          "then": {
+            "description": "密文设置（writeOnly）只能是没有 format、enum 与默认值的文本",
+            "properties": {"type": {"const": "string"}},
+            "not": {"anyOf": [{"required": ["format"]}, {"required": ["enum"]}, {"required": ["default"]}]}
+          }
+        },
+        {
+          "if": {"properties": {"type": {"const": "array"}}, "required": ["type"]},
+          "then": {"$ref": "#/$defs/array"},
+          "else": {
+            "description": "只有多选、多个模型服务与一列行（type: array）才写 items 与 uniqueItems",
+            "not": {"anyOf": [{"required": ["items"]}, {"required": ["uniqueItems"]}]}
+          }
+        },
+        {
+          "if": {
+            "properties": {"type": {"const": "object"}},
+            "required": ["type"],
+            "not": {"properties": {"format": {"const": "coda-agent"}}, "required": ["format"]}
+          },
+          "then": {
+            "description": "表格写 additionalProperties（每一项是什么）；propertyNames 只能是 { format: coda-agent-match }",
+            "required": ["additionalProperties"],
+            "properties": {
+              "additionalProperties": {"$ref": "#/$defs/entry"},
+              "propertyNames": {
+                "description": "propertyNames 只支持 format: coda-agent-match",
+                "type": "object",
+                "properties": {"format": {"const": "coda-agent-match"}},
+                "required": ["format"],
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      ]
+    },
+    "array": {
+      "description": "多选、多个模型服务与一列行写 items，不写 format、minimum 与 maximum",
+      "required": ["items"],
+      "not": {"anyOf": [{"required": ["format"]}, {"required": ["minimum"]}, {"required": ["maximum"]}]},
+      "if": {"properties": {"items": {"properties": {"format": {"const": "coda-model-provider"}}, "required": ["format"]}}},
+      "then": {"properties": {"items": {"$ref": "#/$defs/modelProviders"}}},
+      "else": {
+        "if": {"properties": {"items": {"properties": {"type": {"const": "object"}}, "required": ["type"]}}},
+        "then": {"description": "一列行不写 uniqueItems", "not": {"required": ["uniqueItems"]}, "properties": {"items": {"$ref": "#/$defs/rows"}}},
+        "else": {"properties": {"items": {"$ref": "#/$defs/options"}}}
+      }
+    },
+    "modelProviders": {
+      "description": "多个模型服务写 items: { type: string, format: coda-model-provider, modelApis }",
+      "type": "object",
+      "properties": {
+        "type": {"const": "string"},
+        "format": {"const": "coda-model-provider"},
+        "modelApis": {
+          "description": "modelApis 是 1–10 个接口名，取 openai-completions、openai-responses、anthropic-messages",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 10,
+          "items": {"enum": ["openai-completions", "openai-responses", "anthropic-messages"]}
+        }
+      },
+      "required": ["type", "format"],
+      "additionalProperties": false
+    },
+    "rows": {
+      "description": "一列行写 items: { type: object, properties, required }",
+      "$ref": "#/$defs/entry",
+      "required": ["properties"],
+      "not": {"required": ["format"]},
+      "properties": {
+        "properties": {
+          "additionalProperties": {"description": "一列行的列不能是密文，要密文用表格", "not": {"properties": {"writeOnly": {"const": true}}, "required": ["writeOnly"]}}
+        }
+      }
+    },
+    "options": {
+      "description": "多选写 items: { anyOf: [{ const, title, description }] }，1–50 项",
+      "type": "object",
+      "properties": {
+        "anyOf": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 50,
+          "items": {
+            "description": "多选的一项是 { const, title, description }：const 只用字母、数字和「._-」，title 与 description 不超过 400 字",
+            "type": "object",
+            "properties": {
+              "const": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+              "title": {"type": "string", "maxLength": 400},
+              "description": {"type": "string", "maxLength": 400}
+            },
+            "required": ["const"],
+            "additionalProperties": false
+          },
+          "x-unique-by": ["const"]
+        }
+      },
+      "required": ["anyOf"],
+      "additionalProperties": false
+    },
+    "entry": {
+      "description": "表格的一项：单个值、Agent 组合，或 properties 写明的 1–20 列",
+      "$ref": "#/$defs/base",
+      "properties": {"properties": true, "required": true},
+      "unevaluatedProperties": false,
+      "allOf": [
+        {"if": {"properties": {"type": {"const": "array"}}, "required": ["type"]}, "then": {"description": "多选与一列行只能是插件的一项设置，不能放进表格", "not": {}}},
+        {
+          "if": {"properties": {"type": {"const": "object"}}, "required": ["type"]},
+          "then": {
+            "description": "表格的每一项只能是单个值、Agent 组合，或 properties 写明的 1–20 列",
+            "anyOf": [{"properties": {"format": {"const": "coda-agent"}}, "required": ["format"]}, {"required": ["properties"]}]
+          }
+        },
+        {
+          "if": {"anyOf": [{"required": ["properties"]}, {"required": ["required"]}]},
+          "then": {"description": "只有一行几列时才写 properties 与 required", "properties": {"type": {"const": "object"}}, "not": {"required": ["format"]}}
+        },
+        {"if": {"required": ["properties"]}, "then": {"$ref": "#/$defs/row"}}
+      ]
+    },
+    "row": {
+      "properties": {
+        "properties": {
+          "description": "一行写 1–20 列；一行是一组，至多一个模型地址（coda-model-url）：检查可用模型按组找它",
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 20,
+          "propertyNames": {"description": "列名只用字母和数字，以小写字母开头", "pattern": "^[a-z][A-Za-z0-9]{0,39}$"},
+          "additionalProperties": {"$ref": "#/$defs/column"},
+          "x-max-contains": {"match": {"properties": {"format": {"const": "coda-model-url"}}, "required": ["format"]}, "max": 1}
+        },
+        "required": {
+          "description": "required 是本行的列名，不重复",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"description": "required 是本行的列名，不重复", "type": "string", "x-ref": {"pointer": "2/properties"}}
+        }
+      }
+    },
+    "column": {
+      "description": "一列：单个值或 Agent 组合",
+      "$ref": "#/$defs/base",
+      "properties": {"writeOnly": {"$ref": "#/$defs/secret"}, "modelKey": {"$ref": "#/$defs/modelKey"}, "modelApi": {"$ref": "#/$defs/modelApi"}},
+      "unevaluatedProperties": false,
+      "allOf": [
+        {
+          "if": {"properties": {"writeOnly": {"const": true}}, "required": ["writeOnly"]},
+          "then": {
+            "description": "密文设置（writeOnly）只能是没有 format、enum 与默认值的文本",
+            "properties": {"type": {"const": "string"}},
+            "not": {"anyOf": [{"required": ["format"]}, {"required": ["enum"]}, {"required": ["default"]}]}
+          }
+        },
+        {
+          "if": {"properties": {"type": {"enum": ["object", "array"]}}, "required": ["type"]},
+          "then": {"description": "一列只能是单个值或 Agent 组合", "properties": {"format": {"const": "coda-agent"}}, "required": ["format"]}
+        }
+      ]
+    }
+  }
+}

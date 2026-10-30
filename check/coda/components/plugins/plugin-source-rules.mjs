@@ -273,7 +273,9 @@ export function catalogProblem(plugin, catalog, builtin, installed) {
   if (plugin.gitCredentials?.length && plugin.source?.kind !== 'builtin') return '只有 Coda 自带的插件能提供 Git 凭据';
   // Nor the command that lists repositories to choose from.
   if (plugin.repositories && plugin.source?.kind !== 'builtin') return '只有 Coda 自带的插件能提供仓库列表';
-  for (const claim of claims(plugin)) {
+  const own = claims(plugin), twice = own.find((claim, i) => own.indexOf(claim) !== i);
+  if (twice) return `${twice} 在插件里声明了两次`;
+  for (const claim of own) {
     const owner = [...catalog.values()].find(p => p.id !== plugin.id && claims(p).includes(claim));
     if (owner) return `${claim} 已由插件 ${owner.displayName} 声明`;
   }

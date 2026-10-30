@@ -55,7 +55,14 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export function firstMessage(value) {
   object(value, '首次发送');
   keys(value, ['requestId', 'projectId', 'title', 'agent', 'checkout', 'settings', 'text', 'attachments', 'quotes', 'handoffSource', 'parentThreadId',
-    'replyTo', 'threadId', 'extensionParent', 'mode']);
+    'replyTo', 'threadId', 'extensionParent', 'mode', 'initiatedBy']);
+  const initiatedBy = value.initiatedBy === undefined ? {} : (() => {
+    const source = object(value.initiatedBy, '发起会话');
+    keys(source, ['threadId', 'title']);
+    check(UUID.test(source.threadId ?? ''), 'invalid_input', '发起会话标识须为 UUID');
+    check(!value.parentThreadId && !value.extensionParent && !value.handoffSource, 'invalid_input', '发起的会话须为独立会话');
+    return { initiatedBy: { threadId: source.threadId, title: text(source.title, '发起会话标题') } };
+  })();
   const handoff = value.handoffSource === undefined ? {} : { handoffSource: text(value.handoffSource, '交接来源', 100) };
   const parent = value.parentThreadId === undefined ? {} : { parentThreadId: text(value.parentThreadId, '父会话', 100) };
   check(!parent.parentThreadId || handoff.handoffSource === parent.parentThreadId, 'invalid_input', '子会话必须引用父会话上下文');
@@ -94,6 +101,7 @@ export function firstMessage(value) {
   const message = text(value.text, '消息', 100_000), passages = quotes(value.quotes);
   return withAttachments({
     ...handoff,
+    ...initiatedBy,
     ...parent,
     ...reply,
     ...outside,
@@ -125,4 +133,11 @@ export function childSpawn(value) {
     settings: settings(Object.fromEntries(['model', 'effort', 'mode', 'options'].filter(k => value[k] !== undefined).map(k => [k, value[k]]))) };
 }
 
-
+// A remote client asks the user to open a root session. No checkout or parent is supplied by the agent.
+export function newSession(value) {
+  object(value, 'new_session');
+  keys(value, ['turn', 'requestId', 'project', 'agent', 'prompt', 'title', 'model', 'effort', 'mode', 'options']);
+  text(value.project, 'project', 200);
+  const { checkout: _, ...spec } = childSpawn(value);
+  return spec;
+}
