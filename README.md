@@ -400,7 +400,7 @@ gh workflow run publish.yml --repo coda-console/coda-plugins --ref main
 ## 契约检查
 
 扮演 Coda 去读一个插件目录：清单对 Coda 的类型 schema 校验，Agent 照 Coda 的样子启动、说 Coda 说的话，面板由 Coda 的资源插件模块读一次。
-插件写的合乎它用到的类型就对：清单的写法只在 Coda 的 schema 里（`check/coda/components/plugins/schemas/`，由 Coda 自己用的同一个校验器 `plugin-schema.mjs` 判），
+插件写的合乎它用到的类型就对：清单的写法只在协议包 `@coda-console/protocol`（[coda-console/coda-protocol](https://github.com/coda-console/coda-protocol)）的 schema 里，由 Coda 自己用的同一个校验器判，
 检查包不另写规则，Coda 加字段只是改 schema。`check/coda/` 是 Coda 文件的原样副本（见[契约副本](#契约副本)），检查包手写的只有怎样扮演 Coda、怎样判。
 只在装到一台机器上才知道的（仓库里扫不扫得到、npm 锁文件、和那台已装插件冲突）是那台 Coda 安装时说的，不是插件类型的问题，检查不跑。
 

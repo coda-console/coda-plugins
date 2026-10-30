@@ -1,7 +1,6 @@
 // The manifest level: whether the plugin is of the types it names (Coda's docs/plugins.md「插件的内容」, #1917). Its
-// package.json is checked against the schemas of Coda's types (check/coda/components/plugins/schemas/, copied as they are
-// from the Coda commit check/coda/contract.json names) by the checker Coda runs itself, and then read as Coda reads it: its
-// ID, and its settings named under it. What Coda says only where it installs one — the repository it comes from, its npm
+// package.json is checked against the schemas of Coda's types (the protocol, @coda-console/protocol) by the checker Coda runs
+// itself, and then read as Coda reads it: its ID, and its settings named under it. What Coda says only where it installs one — the repository it comes from, its npm
 // lock, the plugins of that machine beside it — is that machine's to say, not a question of the plugin's types: the checker
 // does not run it. The plugins Coda ships (check/coda/builtin.json) and those beside this one in its directory's parent
 // stand in for what it depends on, for the levels after this one.
@@ -9,7 +8,7 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { inflateSync } from 'node:zlib';
 import shipped from './coda/builtin.json' with { type: 'json' };
-import { manifestProblem } from './coda/components/plugins/plugin-schema.mjs';
+import { manifestProblem } from '@coda-console/protocol/validate';
 import { offerProblem } from './coda/components/plugins/plugin-extensions.mjs';
 import { choosesModelProviders, pluginEnv, readPlugin, resolveSettings } from './coda/components/plugins/plugin-rules.mjs';
 import { panelEntries } from './coda/resources/plugins/resources/panels/rules.mjs';
