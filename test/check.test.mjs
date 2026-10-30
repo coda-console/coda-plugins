@@ -271,6 +271,18 @@ describe('manifests Coda does not take', () => {
       groups: [{ name: 'liar', capacity: 'liar.capacity' }], configuration: { properties: { 'liar.capacity': { type: 'integer', default: 1 } } } } } }), { manifestOnly: true });
     assertPasses(report, ['manifest.commands', 'manifest.groups']);
   });
+  // A type is declared by a plugin it depends on through another as well: the checker looks for each beside it, once.
+  test('a key of contributes a plugin it depends on through another declares is of that type', async () => {
+    const top = mkdtempSync(join(tmpdir(), 'coda-plugin-check-chain-'));
+    temps.push(top);
+    const write = (id, manifest) => { mkdirSync(join(top, id)); writeFileSync(join(top, id, 'package.json'), JSON.stringify({ name: id, version: '1.0.0', ...manifest })); };
+    write('provider', { contributes: { extensionPoints: { widgets: { description: '小部件', contributes: 'widgets', title: '小部件' } } } });
+    write('base', { extensionDependencies: ['provider'], contributes: {} });
+    write('reader', { extensionDependencies: ['base'], contributes: { widgets: [{ id: 'clock' }] } });
+    write('stray', { contributes: { widgets: [{ id: 'clock' }] } });
+    assert.deepEqual(failed((await checkPlugin(join(top, 'reader'), { manifestOnly: true })).report), []);
+    assert.deepEqual(failed((await checkPlugin(join(top, 'stray'), { manifestOnly: true })).report), ['manifest.offers']);
+  });
   // Of the plugins it depends on, one of the same repository is there (as Coda installs it along); one Coda ships has its
   // directory in Coda, not here, even with a plugin of its ID from another source beside it: Coda picks its own.
   test("a panel's command gets what Coda gives a plugin's processes, and the directories of the plugins it depends on beside it", async () => {

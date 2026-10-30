@@ -27,6 +27,21 @@ function beside(dir, id) {
   if (!existsSync(join(at, 'package.json'))) return null;
   try { const plugin = readPlugin(at, { kind: 'git' }); return plugin.id === id ? plugin : null; } catch { return null; }
 }
+// The plugins it depends on, directly or through another, found beside it (`ids`: those it names), by ID; one Coda ships is
+// Coda's, not looked for here.
+function besideAll(dir, ids) {
+  const found = new Map(), seen = new Set();
+  const visit = id => {
+    if (seen.has(id) || builtin.has(id)) return;
+    seen.add(id);
+    const there = beside(dir, id);
+    if (!there) return;
+    found.set(id, there);
+    for (const next of there.dependencies) visit(next);
+  };
+  for (const id of ids) visit(id);
+  return found;
+}
 // iOS draws an icon's PDF at 96 points and only ever scales it down: a smaller page comes out as a dot (Coda's own icons are
 // 256 points). The page box may sit in a compressed object stream (PDF 1.5 and later, as CairoSVG writes them).
 function pageSize(data) {
@@ -89,8 +104,8 @@ export function checkManifest(dir, say) {
     }
   });
   // What it writes for other plugins' points (Coda's own keys aside) is of the types they declare: one no plugin Coda ships, and
-  // none it depends on beside it, declares is of no type.
-  const found = new Map(plugin.dependencies.filter(id => !builtin.has(id)).flatMap(id => { const there = beside(dir, id); return there ? [[id, there]] : []; }));
+  // none it depends on beside it (directly or through another), declares is of no type.
+  const found = besideAll(dir, plugin.dependencies);
   const offered = offerProblem(plugin, new Map([...builtin, ...found]));
   if (offered) say.fail('manifest.offers', offered);
   // Its panels, as the resources plugin reads what is written for its point: one it cannot read shows there as such.
@@ -105,7 +120,7 @@ export function checkManifest(dir, say) {
   // What its processes are given (pluginEnv): the plugins it depends on, those beside it here; one Coda ships has its
   // directory in Coda, not here, even with one of its ID beside it (Coda picks its own), and one found nowhere is not named.
   const given = new Map([...builtin, ...found, [plugin.id, { ...plugin, dependencies: plugin.dependencies.filter(d => found.has(d) || builtin.has(d)) }]]);
-  const dependencies = Object.fromEntries([...found].map(([id, each]) => [id, each.dir]));
+  const dependencies = Object.fromEntries([...found].filter(([id]) => plugin.dependencies.includes(id)).map(([id, each]) => [id, each.dir]));
   if (plugin.dependencies.length) {
     const absent = plugin.dependencies.filter(d => !found.has(d));
     say.info('manifest.extensions', `依赖 ${plugin.dependencies.join('、')}：Coda 装它时先装它们，它的进程从 CODA_PLUGIN_DEPENDENCIES 拿到它们的目录${absent.length
