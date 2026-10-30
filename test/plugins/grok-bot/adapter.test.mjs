@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { harness, http, mailbox } from './helpers.mjs';
+import { harness, http, mailbox, temporary } from './helpers.mjs';
+import { bind } from '../../../plugins/grok-bot/remote/coda-bot.mjs';
 import { schemas } from '../../../check/schema.mjs';
 
 test('unbound instructions carry one-time code, commands and missing-address explanation', async t => {
@@ -40,13 +41,14 @@ test('prompt -> Webhook -> say -> done; bearer secret, traces and subsequent chi
   const pending = h.prompt('inspect');
   const { body, request } = await h.deliveries.next();
   assert.equal(request.headers.authorization, 'Bearer secret-for-fixture');
-  assert.deepEqual({ ...body, turn: 'ID' }, { source: 'coda', sessionId: h.sessionId, turn: 'ID', text: 'inspect' });
+  assert.deepEqual({ ...body, turn: 'ID' }, { source: 'coda', sessionId: h.sessionId, turn: 'ID', text: '<coda-session-instructions>\nsession instructions marker\n</coda-session-instructions>\n\ninspect' });
   await assert.rejects(h.remote('say', { text: 'missing ID' }), /必须带/);
   await h.remote('say', { text: 'report', turn: body.turn });
   await h.remote('tool', { name: 'read_thread', arguments: { reference: 'thread' }, turn: body.turn });
   await h.remote('done', { turn: body.turn });
   assert.equal((await pending).stopReason, 'end_turn');
   assert.match(h.text(), /report/);
+  assert.equal((await h.remote('hello')).instructions, 'session instructions marker');
   const updates = h.events.filter(e => e.method === 'session/update');
   assert.ok(updates.some(e => e.params.update.sessionUpdate === 'tool_call_update'));
   for (const e of updates) assert.ok(schemas.zSessionNotification.safeParse(e.params).success, JSON.stringify(e.params));
@@ -200,7 +202,7 @@ test('session/load preserves Bot binding and re-registers timer; invalid instruc
   assert.equal(loaded.configOptions[1].currentValue, 'inspector');
   const pending = h.prompt('after load');
   const { body } = await h.deliveries.next();
-  assert.equal(body.text, 'after load');
+  assert.match(body.text, /session instructions marker[\s\S]*after load/);
   await h.remote('done', { turn: body.turn });
   await pending;
   const before = h.adapter.sessions.size;
@@ -220,9 +222,34 @@ test('telemetry preserves JSON, query and base path; refuses traversal, redirect
   const h = await bound(t, { settings: { 'grok-bot.telemetry': `${base}/dashboard` } });
   assert.deepEqual(await h.remote('telemetry', { path: '/api/overview', query: { days: 7 } }), { raw: ['evidence', 1] });
   assert.deepEqual(await queries.next(), { url: '/dashboard/api/overview?days=7', method: 'GET' });
-  for (const path of ['/admin', '//evil/api/', '/api/../admin', '/api/%2e%2e/admin', '/api/\\admin', '/api/events?x=1'])
+  for (const path of ['/admin', '//evil/api/', '/api/../admin', '/api/%2e%2e/admin', '/api/\\admin', '/api/events?x=1', '/api/.\n./.\t./admin', '/api/\r../admin', '/api/events\0', '/api/events\x7f'])
     await assert.rejects(h.remote('telemetry', { path }), /只允许/);
   await assert.rejects(h.remote('telemetry', { path: '/api/redirect' }));
   const missing = await bound(t);
   await assert.rejects(missing.remote('telemetry', { path: '/api/tags' }), /尚未设置/);
+});
+
+test('lost hello response can be rebound after load or Bot switch without losing instructions', async t => {
+  const h = await harness(t, { settings: { 'grok-bot.bots': { inspector: {}, replacement: {} } } });
+  await h.select();
+  const home = temporary(t);
+  let loseResponse = true;
+  const fetcher = async (address, init) => {
+    if (address.pathname.endsWith('/bind')) return Response.json({ token: 'replacement-token', session: {} });
+    const { method, params } = JSON.parse(init.body);
+    const result = await h.remote(method, params);
+    if (loseResponse) { loseResponse = false; throw new Error('HTTP response lost'); }
+    return Response.json({ result });
+  };
+  await assert.rejects(bind('http://coda', 'code-1', { home, fetcher }), /HTTP response lost/);
+  h.adapter.close();
+  h.adapter.sessions.clear();
+  await h.client.request('session/load', { ...h.open, sessionId: h.sessionId });
+  await h.prompt('/bind');
+  assert.match(h.text(), /single-use-code/);
+  const rebound = await bind('http://coda', 'code-2', { home, fetcher });
+  assert.equal(rebound.instructions, 'session instructions marker');
+  assert.equal((await h.remote('hello')).instructions, rebound.instructions);
+  await h.client.request('session/set_config_option', { sessionId: h.sessionId, configId: 'bot', value: 'replacement' });
+  assert.equal((await bind('http://coda', 'code-3', { home, fetcher })).instructions, rebound.instructions);
 });

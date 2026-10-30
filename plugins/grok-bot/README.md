@@ -28,7 +28,8 @@
 | `grok-bot.telemetry` | 看板 HTTP(S) 基地址，无默认值；只允许 GET `/api/` 路径，不跟随重定向 |
 | `grok-bot.turnTimeout` | 默认 `PT30M`；从消息开始或自主轮次开始计时，包含 Webhook、审批与工具等待 |
 
-会话绑定与尚未送达的会话指令存于 `CODA_PLUGIN_STATE`。初始化声明 `loadSession`、`sessionCapabilities.systemPrompt`、`_meta.coda.waits` 和 `_meta.coda.remote`。
+会话绑定与完整会话指令存于 `CODA_PLUGIN_STATE`。初始化声明 `loadSession`、`sessionCapabilities.systemPrompt`、`_meta.coda.waits` 和 `_meta.coda.remote`。
+会话指令可经 `hello` 重复获取，且随每次 Webhook 的正文一起发送；响应丢失、重新绑定或切换 Bot 都不会清空指令。
 消息以 `{source:"coda", sessionId, turn, text}` POST 到 Routine，Bearer key 只送到配置的地址，禁止重定向。HTTP 200 只确认触发，`say` 输出、`done` 完成本轮。失败不自动重发，避免重复操作。
 取消会立即回 `cancelled`；超时说明原因后结束本轮。两者都不保证云端停止。旧 turn 被拒绝；Coda 发起的轮次必须带 turn，省略它不会混入新一轮。
 
@@ -42,7 +43,7 @@ Coda 将 HTTP 调用包装成 `_coda/remote {sessionId,method,params}`；插件�
 
 | 方法 | 参数与返回 |
 | --- | --- |
-| `hello` | `{}` → `{sessionId, bot, instructions}`，bind 完成时调用 |
+| `hello` | `{}` → `{sessionId, bot, instructions}`，bind 完成时调用；幂等读取指令 |
 | `say` | `{text, turn?}` → `{turn}`，首次主动汇报可省略 turn |
 | `done` | `{turn?}` → `{}`，等待工具全部返回后调用 |
 | `tool` | `{name, arguments, turn?}` → Coda MCP 工具结果 |
@@ -53,9 +54,9 @@ Coda 将 HTTP 调用包装成 `_coda/remote {sessionId,method,params}`；插件�
 
 `coda_machine_diagnostics` 的参数直接传入：`machine` 为 ID 或唯一名字，`kind` 为 network / client-performance；`from`、`to` 为 Unix 毫秒数，`days` 为 1–30 的整数，另有 `limit`（1–500）、`client`、`verdict`。client-performance 只支持 days；network 的 from/to 选择分钟样本，其余参数筛选探测报告。
 
-`net` 快速检查本地 Tailscale；未安装时运行[官方安装脚本](https://tailscale.com/install.sh)，无守护进程时按 [tailscaled 参数](https://tailscale.com/docs/reference/tailscaled) 用 `/workspace/.coda-bot/tailscale/` 存状态，首次从 `/var/lib/tailscale` 复制状态。需要免密 sudo；状态恢复使用 flock 协调同账号多个 Bot。登录链接写给用户，MCP 标准输出只有 JSON-RPC。每个 MCP 工具调用前做检查。
+`net` 只通过 `/workspace/.coda-bot/tailscale/tailscaled.sock` 检查持久守护进程；未安装时运行[官方安装脚本](https://tailscale.com/install.sh)。首次接入会停止系统 tailscaled 服务与原进程，等状态写完后从 `/var/lib/tailscale` 迁移到 `/workspace/.coda-bot/tailscale/`，按 [tailscaled 参数](https://tailscale.com/docs/reference/tailscaled) 从该目录启动；后续登录也写入这里。已有的持久登录状态在系统目录丢失后仍可恢复。需要 Debian 自带的 start-stop-daemon 和免密 sudo；状态恢复使用 flock 协调同账号多个 Bot。登录链接写给用户，MCP 标准输出只有 JSON-RPC。每个 MCP 工具调用前做检查。
 
 ## 验证范围
 
-`test/plugins/grok-bot/` 使用假的 ACP Coda 对端、独立的 coda/diagnostics stdio MCP 服务、HTTP Webhook/远端入口和注入时钟；不需要账号或真实业务等待。仓库契约测试包含新插件握手。
+`test/plugins/grok-bot/` 使用假的 ACP Coda 对端、独立的 coda/diagnostics stdio MCP 服务、HTTP Webhook/远端入口和注入时钟；不需要账号或真实业务等待。仓库契约测试包含新插件握手。回归覆盖 hello 响应丢失后重新绑定、切换 Bot、遥测控制字符与路径越界；Tailscale 恢复脚本在假的系统命令下实际运行，验证已登录状态迁移、迁移后登录、系统目录丢失后的恢复和停止失败，不启动真实守护进程。
 尚未与真 Grok Bot、真实 tailnet、真实 Coda 远端入口及诊断/遥测接口联调；安装软件、云电脑睡醒恢复、Routine 的实际投递与密钥卡片交互需要配套 PR 就绪后验证。

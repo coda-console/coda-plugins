@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { PassThrough } from 'node:stream';
-import { readFileSync, statSync, writeFileSync } from 'node:fs';
+import { readFileSync, statSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { Rpc } from '../../../plugins/grok-bot/agent/rpc.mjs';
 import { bind, call, net, serveMcp, TOOLS } from '../../../plugins/grok-bot/remote/coda-bot.mjs';
@@ -124,27 +127,79 @@ test('diagnostics exposes Coda filter types and forwards flat parameters unchang
   assert.equal(calls.length, 1);
 });
 
-test('net fast check does not install or restart a running daemon', async () => {
-  const commands = [];
-  const result = await net({ run: async (command, args) => { commands.push([command, args]); return { stdout: JSON.stringify({ BackendState: 'Running' }) }; }, pause: () => assert.fail('no wait') });
-  assert.deepEqual(result, { connected: true });
-  assert.deepEqual(commands, [['sudo', ['-n', 'tailscale', 'status', '--json']]]);
+// Execute the production recovery shell with fake OS commands. Only the
+// system state path is relocated; persistent state uses a real temporary dir.
+function tailscale(t, identity, { stale = false } = {}) {
+  const home = temporary(t), bin = join(home, 'bin'), system = join(home, 'system');
+  mkdirSync(bin); mkdirSync(system);
+  const file = join(home, 'runtime.json'), state = join(home, 'tailscale');
+  const runtime = { daemon: { socket: 'default', state: join(system, 'tailscaled.state'), identity } };
+  writeFileSync(runtime.daemon.state, JSON.stringify({ BackendState: 'NeedsLogin' }));
+  writeFileSync(file, JSON.stringify(runtime));
+  if (stale) {
+    mkdirSync(state);
+    writeFileSync(join(state, 'tailscaled.state'), JSON.stringify({ BackendState: 'NeedsLogin' }));
+  }
+  const fixture = fileURLToPath(new URL('./fixture-tailscale.mjs', import.meta.url));
+  for (const command of ['tailscale', 'tailscaled', 'systemctl', 'pgrep', 'pkill', 'start-stop-daemon', 'sleep']) {
+    writeFileSync(join(bin, command), `#!/bin/sh\nexec '${process.execPath}' '${fixture}' '${command}' "$@"\n`, { mode: 0o700 });
+  }
+  const commands = [], execute = promisify(execFile);
+  const run = async (command, args) => {
+    assert.equal(command, 'sudo');
+    assert.equal(args[0], '-n');
+    commands.push(args);
+    let [program, ...rest] = args.slice(1);
+    if (program === 'flock') {
+      assert.equal(rest[0], '--close');
+      assert.equal(rest[1], join(state, 'net.lock'));
+      [program, ...rest] = rest.slice(2);
+      rest = rest.map(arg => arg === '/var/lib/tailscale' ? system : arg);
+    }
+    return execute(program, rest, { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CODA_TEST_TAILSCALE: file } });
+  };
+  return { home, commands, run, state: join(state, 'tailscaled.state'),
+    read: () => JSON.parse(readFileSync(file)),
+    write: value => writeFileSync(file, JSON.stringify(value)),
+    eraseSystem: () => rmSync(system, { recursive: true }) };
+}
+
+test('net migrates a logged-in default daemon and its latest identity before using the fast path', async t => {
+  const f = tailscale(t, { BackendState: 'Running', node: 'existing-login' }, { stale: true });
+  assert.deepEqual(await net(f), { connected: true });
+  assert.equal(f.read().daemon.state, f.state);
+  assert.deepEqual(JSON.parse(readFileSync(f.state)), { BackendState: 'Running', node: 'existing-login' });
+  assert.equal(statSync(join(f.home, 'tailscale')).mode & 0o777, 0o700);
+  f.commands.length = 0;
+  assert.deepEqual(await net(f), { connected: true });
+  assert.deepEqual(f.commands, [['-n', 'tailscale', `--socket=${join(f.home, 'tailscale/tailscaled.sock')}`, 'status', '--json']]);
+  assert.equal(f.read().starts, 1);
+  // An OS replacement loses /var/lib and the daemon, but preserves the login.
+  f.eraseSystem();
+  f.write({ ...f.read(), daemon: null });
+  assert.deepEqual(await net(f), { connected: true });
+  assert.equal(f.read().daemon.identity.node, 'existing-login');
 });
 
-test('net recovery uses persistent state, lock and official installer; login link is actionable', async () => {
-  const commands = [], login = 'https://login.tailscale.com/a/fixture';
-  let first = true;
-  await assert.rejects(net({ home: '/workspace/.coda-bot', pause: async () => {}, run: async (command, args) => {
-    commands.push([command, args]);
-    if (args.includes('status')) {
-      if (first) { first = false; throw new Error('daemon missing'); }
-      return { stdout: JSON.stringify({ BackendState: 'NeedsLogin', AuthURL: login }) };
-    }
-    return { stdout: '' };
-  } }), new RegExp(login));
-  const recovery = commands.find(([, args]) => args.includes('flock'))[1];
-  assert.ok(recovery.includes('/workspace/.coda-bot/tailscale/net.lock'));
-  assert.match(recovery.join(' '), /https:\/\/tailscale.com\/install.sh/);
-  assert.match(recovery.join(' '), /cp -a \/var\/lib\/tailscale/);
-  assert.match(recovery.join(' '), /--statedir=/);
+test('net migrates before login and writes the new authentication to workspace', async t => {
+  const login = 'https://login.tailscale.com/a/fixture';
+  const f = tailscale(t, { BackendState: 'NeedsLogin', AuthURL: login });
+  await assert.rejects(net(f), new RegExp(login));
+  assert.equal(f.read().daemon.state, f.state);
+  f.write({ ...f.read(), approveLogin: true });
+  assert.deepEqual(await net(f), { connected: true });
+  assert.equal(JSON.parse(readFileSync(f.state)).node, 'new-login');
+  f.eraseSystem();
+  f.write({ ...f.read(), daemon: null, approveLogin: false });
+  assert.deepEqual(await net(f), { connected: true });
+  assert.equal(f.read().daemon.identity.node, 'new-login');
+});
+
+test('failed daemon shutdown fails migration instead of reporting connected', async t => {
+  const f = tailscale(t, { BackendState: 'Running', node: 'existing-login' });
+  f.write({ ...f.read(), failStop: true });
+  await assert.rejects(net(f), /shutdown refused/);
+  assert.equal(f.read().daemon.socket, 'default');
+  assert.equal(f.read().starts, undefined);
+  assert.throws(() => readFileSync(f.state), { code: 'ENOENT' });
 });

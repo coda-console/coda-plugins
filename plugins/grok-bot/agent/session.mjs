@@ -148,7 +148,6 @@ export class Adapter {
           text: instructions ? `<coda-session-instructions>\n${instructions}\n</coda-session-instructions>\n\n${text}` : text }), signal: turn.controller.signal });
       if (!response.ok) throw new Error(`Grok Webhook 返回 HTTP ${response.status}；未确认云端是否开始处理，不自动重发。`);
       await response.body?.cancel();
-      if (instructions && s.saved.instructions === instructions) { s.saved.instructions = ''; this.save(s); }
     })().catch(error => {
       if (s.turn !== turn) return;
       this.say(s, `消息未能完成：${error.message}`);
@@ -201,12 +200,14 @@ export class Adapter {
     return client;
   }
   async telemetry(s, { path, query = {}, turn }) {
-    if (typeof path !== 'string' || !path.startsWith('/api/') || /[\\?#%]/.test(path) || path.split('/').some(p => p === '..' || p === '.')) fail('telemetry 只允许 /api/ 下不含编码或路径跳转的只读路径');
+    if (typeof path !== 'string' || !path.startsWith('/api/') || /[\x00-\x20\x7f\\?#%]/.test(path) || path.split('/').some(p => p === '..' || p === '.')) fail('telemetry 只允许 /api/ 下不含控制字符、编码或路径跳转的只读路径');
     if (!object(query) || Object.values(query).some(v => !['string', 'number', 'boolean'].includes(typeof v))) fail('query 必须是标量键值对象');
     if (!this.settings['grok-bot.telemetry']) fail('尚未设置 grok-bot.telemetry');
     this.active(s, turn);
     const target = url(this.settings['grok-bot.telemetry']);
-    target.pathname = `${target.pathname.replace(/\/$/, '')}${path}`;
+    const basePath = target.pathname.replace(/\/$/, '');
+    target.pathname = `${basePath}${path}`;
+    if (!target.pathname.startsWith(`${basePath}/api/`)) fail('telemetry 只允许配置基地址的 /api/ 下的只读路径');
     target.search = new URLSearchParams(query).toString();
     target.hash = '';
     return this.trace(s, 'telemetry', { path, query }, async () => {
@@ -244,10 +245,10 @@ export class Adapter {
     if (!object(args)) fail('远端 params 必须是对象');
     if (p.method === 'hello') {
       s.saved.bound = true;
-      const instructions = s.saved.instructions;
-      s.saved.instructions = '';
       this.save(s);
-      return { sessionId: s.id, bot: s.saved.bot, instructions };
+      // The HTTP response can be lost after this request succeeds. Keep the
+      // instructions available to every bind (including a different Bot).
+      return { sessionId: s.id, bot: s.saved.bot, instructions: s.saved.instructions };
     }
     if (!s.saved.bound) fail('Bot 尚未完成绑定，请先运行 bind');
     if (p.method === 'say') {

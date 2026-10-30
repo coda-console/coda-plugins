@@ -7,7 +7,6 @@ import { mkdir, readFile, writeFile, rename, open, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import { setTimeout as delay } from 'node:timers/promises';
 
 const exec = promisify(execFile);
 export const HOME = '/workspace/.coda-bot';
@@ -87,48 +86,73 @@ export async function call(method, params, { home = HOME, session, fetcher = fet
   return (await jsonPost(address, '/v1/remote-agent', { method, params }, token, fetcher)).result;
 }
 
-// The fast path is one local status request, never an install/login per tool call.
-// Recovery runs under flock: all Bots share the daemon and its persistent state.
+// Only our private socket qualifies for the fast path: a system daemon may
+// still be writing its identity to /var/lib, which disappears on cloud updates.
 const RECOVER = `set -eu
 state="$1"
+system_state="$2"
+socket="$state/tailscaled.sock"
 if ! command -v tailscale >/dev/null 2>&1; then
   curl -fL https://tailscale.com/install.sh -o "$state/install.sh"
   sh "$state/install.sh" >&2
 fi
-if [ ! -f "$state/tailscaled.state" ] && [ -d /var/lib/tailscale ]; then
-  cp -a /var/lib/tailscale/. "$state/"
+ready() {
+  info="$(tailscale --socket="$socket" status --json 2>/dev/null || true)"
+  printf '%s' "$info" | grep -q '"BackendState"'
+}
+# Recheck under the lock, including a live daemon that still needs login.
+if ready; then exit 0; fi
+default_info="$(tailscale status --json 2>/dev/null || true)"
+# Stop the service first so its restart policy cannot race the migration.
+if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1 && systemctl cat tailscaled >/dev/null 2>&1; then
+  systemctl stop tailscaled
 fi
-if ! tailscale status --json >/dev/null 2>&1; then
-  # status also returns nonzero while logged out; only start if no daemon exists.
-  if ! pgrep -x tailscaled >/dev/null; then
-    nohup tailscaled --state="$state/tailscaled.state" --statedir="$state" >"$state/daemon.log" 2>&1 < /dev/null &
-  fi
+if pgrep -x tailscaled >/dev/null; then pkill -TERM -x tailscaled; fi
+remaining=30
+while pgrep -x tailscaled >/dev/null; do
+  remaining=$((remaining - 1))
+  if [ "$remaining" -eq 0 ]; then echo 'tailscaled did not stop; state not migrated' >&2; exit 1; fi
+  sleep 1
+done
+# Copy after shutdown flushes state. Replace an old pre-login snapshot when
+# the default daemon has since logged in, but preserve workspace identity after
+# an OS update starts a fresh, logged-out system daemon.
+if [ ! -f "$state/tailscaled.state" ] || printf '%s' "$default_info" | grep -q '"BackendState"[[:space:]]*:[[:space:]]*"Running"'; then
+  if [ -d "$system_state" ]; then cp -a "$system_state/." "$state/"; fi
 fi
+chmod 700 "$state"
+start-stop-daemon --start --background --exec "$(command -v tailscaled)" -- \
+  --state="$state/tailscaled.state" --statedir="$state" --socket="$socket"
+# Keep the lock until the new daemon answers; another Bot must not restart it.
+remaining=30
+until ready; do
+  remaining=$((remaining - 1))
+  if [ "$remaining" -eq 0 ]; then echo 'persistent tailscaled did not start' >&2; exit 1; fi
+  sleep 1
+done
 `;
-export async function net({ home = HOME, run = exec, pause = delay } = {}) {
+export async function net({ home = HOME, run = exec } = {}) {
+  const state = join(home, 'tailscale'), socket = join(state, 'tailscaled.sock');
+  const cli = ['-n', 'tailscale', `--socket=${socket}`];
   const status = async () => {
-    try { return JSON.parse((await run('sudo', ['-n', 'tailscale', 'status', '--json'], { timeout: 10_000 })).stdout); }
+    try { return JSON.parse((await run('sudo', [...cli, 'status', '--json'], { timeout: 10_000 })).stdout); }
     catch (error) { try { return JSON.parse(error.stdout); } catch { return null; } }
   };
   let info = await status();
-  if (info?.BackendState === 'Running') return { connected: true };
-  const state = join(home, 'tailscale');
-  await run('sudo', ['-n', 'mkdir', '-p', state]);
-  await run('sudo', ['-n', 'chmod', '700', state]);
-  await run('sudo', ['-n', 'flock', join(state, 'net.lock'), 'sh', '-c', RECOVER, 'coda-bot-net', state], { timeout: 180_000 });
-  // Only recovery waits for the freshly spawned local daemon. Tests inject pause.
-  for (let attempt = 0; attempt < 6; attempt++) {
+  if (!info) {
+    await run('sudo', ['-n', 'mkdir', '-p', state]);
+    await run('sudo', ['-n', 'chmod', '700', state]);
+    // --close prevents the daemon inheriting the recovery lock indefinitely.
+    await run('sudo', ['-n', 'flock', '--close', join(state, 'net.lock'), 'sh', '-c', RECOVER, 'coda-bot-net', state, '/var/lib/tailscale'], { timeout: 180_000 });
     info = await status();
-    if (info) break;
-    await pause(100 * 2 ** attempt);
   }
   if (info?.BackendState === 'Running') return { connected: true };
   let login = '';
-  try { await run('sudo', ['-n', 'tailscale', 'up', '--timeout=15s'], { timeout: 20_000 }); }
+  try { await run('sudo', [...cli, 'up', '--timeout=15s'], { timeout: 20_000 }); }
   catch (error) { login = `${error.stdout ?? ''}\n${error.stderr ?? ''}`.match(/https:\/\/login\.tailscale\.com\/[^\s]+/)?.[0] ?? ''; }
   info = await status();
   if (info?.BackendState === 'Running') return { connected: true };
-  throw new Error(info?.AuthURL || login ? `请打开 Tailscale 登录链接：${info?.AuthURL || login}；完成后重试 net。` : 'Tailscale 未连接；检查 /workspace/.coda-bot/tailscale/daemon.log 与 sudo tailscale status。');
+  throw new Error(info?.AuthURL || login ? `请打开 Tailscale 登录链接：${info?.AuthURL || login}；完成后重试 net。` : `Tailscale 未连接；检查 sudo tailscale --socket=${socket} status。`);
 }
 
 export function serveMcp({ input = process.stdin, output = process.stdout, ensureNet = () => net(), invoke = (method, params) => call(method, params) } = {}) {
