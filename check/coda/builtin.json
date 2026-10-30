@@ -129,7 +129,7 @@
     "id": "composer",
     "displayName": "输入框模式",
     "description": "输入框的三种模式：交接到新会话、新建子会话，以及打 ! 执行命令。停用后输入框里没有这几种模式。",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "category": "工作流程",
     "source": {
       "kind": "builtin"
@@ -154,7 +154,10 @@
         "hint": "新会话承接这里的上下文，共享当前工作目录及其中的文件；这个会话保留，仍可继续使用。",
         "placeholder": "接下来要完成什么？",
         "sendLabel": "交接",
-        "agent": "own"
+        "agent": "own",
+        "in": [
+          "session"
+        ]
       },
       {
         "id": "subagent",
@@ -164,6 +167,9 @@
         "placeholder": "描述交给子会话的任务…",
         "sendLabel": "启动子会话",
         "agent": "own",
+        "in": [
+          "session"
+        ],
         "parameters": {
           "properties": {
             "replyTo": {
@@ -217,13 +223,56 @@
         "placeholder": "输入要执行的命令…",
         "sendLabel": "执行",
         "agent": "off",
-        "trigger": "!"
+        "trigger": "!",
+        "in": [
+          "session",
+          "new"
+        ]
       }
     ],
     "agents": [],
     "dependencies": [],
     "extensionPoints": {},
     "extensions": []
+  },
+  {
+    "id": "diagnostics",
+    "displayName": "机器诊断",
+    "description": "给巡检会话提供只读工具，查看空间各台机器的健康状态、网络诊断与客户端性能。需要时安装，再按目录启用或用 Tag 限定。",
+    "version": "1.0.0",
+    "category": "机器与资源",
+    "source": {
+      "kind": "builtin"
+    },
+    "dir": "src/resources/plugins/diagnostics",
+    "title": "机器诊断",
+    "properties": {},
+    "workflows": [],
+    "capabilities": [],
+    "services": [],
+    "groups": [],
+    "commands": [],
+    "gitCredentials": [],
+    "endpoints": [],
+    "views": [],
+    "agents": [],
+    "dependencies": [
+      "space"
+    ],
+    "extensionPoints": {},
+    "extensions": [],
+    "mcpServers": [
+      {
+        "name": "diagnostics",
+        "command": "${CODA_NODE}",
+        "args": [
+          "${CODA_PLUGIN_PATH}/mcp.mjs",
+          "--state",
+          "${CODA_PLUGIN_STATE}"
+        ],
+        "env": []
+      }
+    ]
   },
   {
     "id": "github",
