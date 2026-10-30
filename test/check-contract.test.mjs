@@ -24,12 +24,12 @@ test('the copy is as Coda synced it', () => {
 test('an edited file, one gone, one added, or a package at another version is said', () => {
   const dir = copy(), pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
   appendFileSync(join(dir, 'check/coda/domain/agent-protocol.mjs'), '\n// edited\n');
-  rmSync(join(dir, 'docs/agent-protocol.md'));
+  rmSync(join(dir, 'check/coda/domain/errors.mjs'));
   writeFileSync(join(dir, 'check/coda/domain/mine.mjs'), '');
   writeFileSync(join(dir, 'package.json'), JSON.stringify({ ...pkg, dependencies: { ...pkg.dependencies, yaml: '0.0.1' } }));
   const problems = contractProblems(dir).join('\n');
   assert.match(problems, /check\/coda\/domain\/agent-protocol\.mjs 与 Coda 同步的不一样/);
-  assert.match(problems, /docs\/agent-protocol\.md 不见了/);
+  assert.match(problems, /check\/coda\/domain\/errors\.mjs 不见了/);
   assert.match(problems, /check\/coda\/domain\/mine\.mjs 不在 contract\.json 里/);
   assert.match(problems, /yaml 2\.9\.1（Coda 用的版本），现为 0\.0\.1/);
 });
