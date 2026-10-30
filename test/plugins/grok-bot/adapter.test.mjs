@@ -74,24 +74,24 @@ test('autonomous say registers handling before output and done returns recurring
 
 test('all read tools proxy outside a turn with logs only; disallowed tools never reach MCP', async t => {
   const h = await bound(t);
-  assert.deepEqual(h.discovered().sort(), ['coda', 'space']);
+  assert.deepEqual(h.discovered().sort(), ['coda', 'diagnostics']);
   const start = h.events.length;
   for (const name of ['read_thread', 'read_tool_call', 'agents', 'status', 'workflow_status', 'workflow_list', 'machines', 'machine_diagnostics']) {
     const result = await h.remote('tool', { name, arguments: { reference: 'reference', machine: 'machine', kind: 'network' } });
     assert.ok(result.content.length);
   }
   assert.equal(h.calls().length, 8);
-  assert.deepEqual(h.calls().map(c => [c.name, c.server]).slice(-2), [['machines', 'space'], ['machine_diagnostics', 'space']]);
+  assert.deepEqual(h.calls().map(c => [c.name, c.server]).slice(-2), [['machines', 'diagnostics'], ['machine_diagnostics', 'diagnostics']]);
   assert.equal(h.events.length, start);
   assert.equal(h.logs.length, 16);
   for (const name of ['exec', 'workflow_run', 'tools/call', '__proto__', 'forbidden_tool']) await assert.rejects(h.remote('tool', { name }), /不允许代理/);
   assert.equal(h.calls().length, 8);
 });
 
-test('missing space reports diagnostics unavailable while coda reads still work', async t => {
-  const h = await bound(t, { space: false });
+test('missing diagnostics reports diagnostics unavailable while coda reads still work', async t => {
+  const h = await bound(t, { diagnostics: false });
   assert.deepEqual(h.discovered(), ['coda']);
-  for (const name of ['machines', 'machine_diagnostics']) await assert.rejects(h.remote('tool', { name }), /space MCP 未提供/);
+  for (const name of ['machines', 'machine_diagnostics']) await assert.rejects(h.remote('tool', { name }), /这两个工具需要在 Coda 里安装并为这个目录启用『机器诊断』插件/);
   await h.remote('tool', { name: 'read_thread', arguments: { reference: 'thread' } });
   assert.deepEqual(h.calls().map(c => [c.name, c.server]), [['read_thread', 'coda']]);
 });
@@ -196,7 +196,7 @@ test('session/load preserves Bot binding and re-registers timer; invalid instruc
   h.adapter.close();
   h.adapter.sessions.clear();
   const loaded = await h.client.request('session/load', { ...h.open, sessionId: h.sessionId });
-  assert.deepEqual(h.discovered().sort(), ['coda', 'coda', 'space', 'space']);
+  assert.deepEqual(h.discovered().sort(), ['coda', 'coda', 'diagnostics', 'diagnostics']);
   assert.equal(loaded.configOptions[1].currentValue, 'inspector');
   const pending = h.prompt('after load');
   const { body } = await h.deliveries.next();

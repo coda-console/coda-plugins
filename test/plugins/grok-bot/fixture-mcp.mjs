@@ -6,7 +6,7 @@ createInterface({ input: process.stdin }).on('line', line => {
   if (id === undefined) return;
   if (method === 'initialize') return send(id, { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'fake-coda', version: '1.0.0' } });
   const server = process.env.CODA_TEST_SERVER ?? 'coda';
-  const names = server === 'space' ? ['machines', 'machine_diagnostics']
+  const names = server === 'diagnostics' ? ['machines', 'machine_diagnostics']
     : ['read_thread', 'read_tool_call', 'agents', 'status', 'workflow_status', 'workflow_list', 'spawn', 'send', 'cancel'];
   if (method === 'tools/list') {
     if (process.env.CODA_TEST_DISCOVERY) appendFileSync(process.env.CODA_TEST_DISCOVERY, `${server}\n`);

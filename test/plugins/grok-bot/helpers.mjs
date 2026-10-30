@@ -36,7 +36,7 @@ export function fakeClock() {
   return { setTimeout(fn) { const id = Symbol(); timers.set(id, fn); return id; }, clearTimeout(id) { timers.delete(id); },
     expire() { for (const [id, fn] of [...timers]) { timers.delete(id); fn(); } }, get size() { return timers.size; } };
 }
-export async function harness(t, { settings = {}, root = temporary(t), space = true, capabilities = { waits: {}, remote: {} }, ...options } = {}) {
+export async function harness(t, { settings = {}, root = temporary(t), diagnostics = true, capabilities = { waits: {}, remote: {} }, ...options } = {}) {
   const events = [], logs = [], messages = mailbox();
   const toAgent = new PassThrough(), fromAgent = new PassThrough();
   const keyPath = join(root, 'webhook-key');
@@ -55,7 +55,7 @@ export async function harness(t, { settings = {}, root = temporary(t), space = t
   const initialized = await client.request('initialize', { clientCapabilities: { _meta: { coda: capabilities } } });
   const callsFile = join(root, 'calls.jsonl');
   const discoveryFile = join(root, 'discovery.txt');
-  const open = { cwd: root, mcpServers: ['coda', ...(space ? ['space'] : [])].map(name => ({ name, command: process.execPath, args: [fileURLToPath(new URL('./fixture-mcp.mjs', import.meta.url))],
+  const open = { cwd: root, mcpServers: ['coda', ...(diagnostics ? ['diagnostics'] : [])].map(name => ({ name, command: process.execPath, args: [fileURLToPath(new URL('./fixture-mcp.mjs', import.meta.url))],
     env: [{ name: 'CODA_TEST_CALLS', value: callsFile }, { name: 'CODA_TEST_SERVER', value: name }, { name: 'CODA_TEST_DISCOVERY', value: discoveryFile }] })),
     systemPrompt: { mode: 'append', content: [{ type: 'text', text: 'session instructions marker' }] } };
   const created = await client.request('session/new', open);

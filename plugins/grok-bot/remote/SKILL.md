@@ -25,6 +25,8 @@ Bot 重启后仍使用原来的 MCP 配置与持久文件。多个 Bot 的 MCP �
 先只读调查。没有发现问题就保持安静：不调用 coda_say，不开空轮次，也无需 coda_done。
 只读工具不会开启自主轮次，审计写入适配器日志。每次 MCP 调用会快速检查 Tailscale，睡醒后守护进程丢失会恢复；需要登录时让用户打开工具返回的链接。
 
+coda_machines 与 coda_machine_diagnostics 由 Coda 内置的「机器诊断」插件提供，MCP 服务器名为 diagnostics。该插件不默认安装；缺少时工具会提示需要在 Coda 里安装并为这个目录启用。把这项观测缺口简明告诉用户并记住，避免重复报告，不把诊断不可用当作机器故障。
+
 巡检重点是性能、稳定性、逻辑问题，不检查交互设计或视觉样式：
 
 - 遥测：用 coda_telemetry 查 `/api/overview`（days 为 7、30 或 90）、`/api/events`（days、kind、component、outcome、limit）、`/api/tags`；再按返回 ID 查 `/api/installations/<id>` 与 `/api/hangs/<事件 id>`。

@@ -4,7 +4,7 @@
 
 ## 前提与安装
 
-依赖 Coda 仓库的[远端 Agent 入口 #2006](https://github.com/coda-console/coda/pull/2006)：远端能力协商、绑定码、HTTP 入口与 `_coda/remote` 转发；[遥测 JSON 接口 #2004](https://github.com/coda-console/coda/pull/2004) 与[机器诊断工具 #2003](https://github.com/coda-console/coda/pull/2003) 配套提供观测数据，诊断工具改由内置空间插件的 `space` MCP 服务提供。本插件可独立通过握手检查，旧版 Coda 发消息时会提示升级。
+依赖 Coda 仓库的[远端 Agent 入口 #2006](https://github.com/coda-console/coda/pull/2006)：远端能力协商、绑定码、HTTP 入口与 `_coda/remote` 转发；[遥测 JSON 接口 #2004](https://github.com/coda-console/coda/pull/2004) 与[机器诊断工具 #2003](https://github.com/coda-console/coda/pull/2003) 配套提供观测数据，诊断工具由不默认安装的 Coda 内置插件「机器诊断」提供，MCP 服务器名为 `diagnostics`；需要在 Coda 里安装并为 Bot 所在目录启用。本插件可独立通过握手检查，旧版 Coda 发消息时会提示升级。
 
 在 Coda 从仓库 `https://github.com/coda-console/coda-plugins.git` 安装 `plugins/grok-bot`；发布后也可安装 `@coda-console/grok-bot`。
 创建一个名为「Bot」的空目录，添加到 Coda，每个 Bot 在其中建立一个 Grok Bot 会话。Coda 运行机需要 Node 24（使用 Coda 自带 Node）；云电脑脚本需要 Node 22 或以上。
@@ -48,7 +48,7 @@ Coda 将 HTTP 调用包装成 `_coda/remote {sessionId,method,params}`；插件�
 | `tool` | `{name, arguments, turn?}` → Coda MCP 工具结果 |
 | `telemetry` | `{path, query?, turn?}` → 看板 JSON 原样返回 |
 
-会话建立与恢复时，从 mcpServers 启动 `coda` 和 `space` 两个 stdio MCP 客户端，用各自 `tools/list` 建立路由，只保留白名单。`machines`、`machine_diagnostics` 由 Coda 内置空间插件的 `space` 提供；space 不存在或没列出工具时明确报不可用，不转给 coda。其余只读工具：read_thread、read_tool_call、agents、status、workflow_status、workflow_list；副作用工具：spawn、send、cancel。工具名冲突拒绝调用。Bot MCP 以 `coda_` 前缀暴露这些工具，加 coda_say、coda_done、coda_telemetry。
+会话建立与恢复时，仅为 mcpServers 中收到的 `coda` 和 `diagnostics` 启动 stdio MCP 客户端，用各自 `tools/list` 建立路由，只保留白名单。`machines`、`machine_diagnostics` 由「机器诊断」插件的 `diagnostics` 提供；未收到该服务器时不启动额外进程，调用这两个工具会提示「这两个工具需要在 Coda 里安装并为这个目录启用『机器诊断』插件」。服务没列出工具时明确报不可用，不转给 coda。其余只读工具：read_thread、read_tool_call、agents、status、workflow_status、workflow_list；副作用工具：spawn、send、cancel。工具名冲突拒绝调用。Bot MCP 以 `coda_` 前缀暴露这些工具，加 coda_say、coda_done、coda_telemetry。
 调试：`node coda-bot.mjs call <method> '<JSON>' [sessionId]`。本轮 ID 与 status 的 Coda turn 票据不同，Bot 只传前者，适配器取得后者。
 
 `coda_machine_diagnostics` 的参数直接传入：`machine` 为 ID 或唯一名字，`kind` 为 network / client-performance；`from`、`to` 为 Unix 毫秒数，`days` 为 1–30 的整数，另有 `limit`（1–500）、`client`、`verdict`。client-performance 只支持 days；network 的 from/to 选择分钟样本，其余参数筛选探测报告。
@@ -57,5 +57,5 @@ Coda 将 HTTP 调用包装成 `_coda/remote {sessionId,method,params}`；插件�
 
 ## 验证范围
 
-`test/plugins/grok-bot/` 使用假的 ACP Coda 对端、独立的 coda/space stdio MCP 服务、HTTP Webhook/远端入口和注入时钟；不需要账号或真实业务等待。仓库契约测试包含新插件握手。
+`test/plugins/grok-bot/` 使用假的 ACP Coda 对端、独立的 coda/diagnostics stdio MCP 服务、HTTP Webhook/远端入口和注入时钟；不需要账号或真实业务等待。仓库契约测试包含新插件握手。
 尚未与真 Grok Bot、真实 tailnet、真实 Coda 远端入口及诊断/遥测接口联调；安装软件、云电脑睡醒恢复、Routine 的实际投递与密钥卡片交互需要配套 PR 就绪后验证。

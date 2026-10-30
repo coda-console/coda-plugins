@@ -7,7 +7,7 @@ import { bindingGuide } from './setup.mjs';
 const MODEL = { id: 'model', name: '模型', category: 'model', type: 'select', currentValue: 'grok-bot', options: [{ value: 'grok-bot', name: 'Grok Bot' }] };
 const READ = new Set(['read_thread', 'read_tool_call', 'agents', 'status', 'workflow_status', 'workflow_list', 'machines', 'machine_diagnostics']);
 const WRITE = new Set(['spawn', 'send', 'cancel']);
-const SPACE = new Set(['machines', 'machine_diagnostics']);
+const DIAGNOSTICS = new Set(['machines', 'machine_diagnostics']);
 const fail = message => { throw Object.assign(new Error(message), { code: -32602 }); };
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
 export function duration(value = 'PT30M') {
@@ -92,11 +92,11 @@ export class Adapter {
       try { saved = JSON.parse(readFileSync(this.file(id), 'utf8')); }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
     }
-    const s = { id, saved, clients: [], routes: new Map(), unavailable: new Map(), turn: null };
-    // Coda and the built-in space plugin are separate stdio MCP servers. Discover
+    const s = { id, saved, diagnosticsEnabled: mcpServers.some(server => server.name === 'diagnostics'), clients: [], routes: new Map(), unavailable: new Map(), turn: null };
+    // Coda and the optional built-in diagnostics plugin are separate stdio MCP servers. Discover
     // both at load time; never treat a tool name returned by a server as authority
-    // to expand the whitelist, or fall back to coda for absent space diagnostics.
-    const catalogs = await Promise.all(['coda', 'space'].map(async name => {
+    // to expand the whitelist, or fall back to coda for absent diagnostics tools.
+    const catalogs = await Promise.all(['coda', 'diagnostics'].map(async name => {
       const server = mcpServers.find(server => server.name === name);
       if (!server) return { name, tools: [] };
       const client = this.mcpFactory(server, cwd);
@@ -114,7 +114,7 @@ export class Adapter {
     }));
     for (const catalog of catalogs) for (const tool of catalog.tools) {
       if (!READ.has(tool.name) && !WRITE.has(tool.name)) continue;
-      if (SPACE.has(tool.name) && catalog.name !== 'space') continue;
+      if (DIAGNOSTICS.has(tool.name) && catalog.name !== 'diagnostics') continue;
       if (s.routes.has(tool.name)) { s.routes.set(tool.name, null); continue; }
       s.routes.set(tool.name, catalog.client);
     }
@@ -195,7 +195,9 @@ export class Adapter {
   }
   provider(s, name) {
     const client = s.routes.get(name);
-    if (!client) fail(`${name} 不可用：${SPACE.has(name) ? 'space' : 'coda/space'} MCP 未提供此工具或工具名冲突${s.unavailable.size ? `（${[...s.unavailable].map(([server, error]) => `${server}: ${error}`).join('；')}）` : ''}`);
+    if (!client && DIAGNOSTICS.has(name) && !s.diagnosticsEnabled)
+      fail('这两个工具需要在 Coda 里安装并为这个目录启用『机器诊断』插件');
+    if (!client) fail(`${name} 不可用：${DIAGNOSTICS.has(name) ? 'diagnostics' : 'coda/diagnostics'} MCP 未提供此工具或工具名冲突${s.unavailable.size ? `（${[...s.unavailable].map(([server, error]) => `${server}: ${error}`).join('；')}）` : ''}`);
     return client;
   }
   async telemetry(s, { path, query = {}, turn }) {
