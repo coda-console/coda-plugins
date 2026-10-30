@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { PassThrough } from 'node:stream';
+import { Rpc } from '../../../plugins/grok-bot/agent/rpc.mjs';
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { harness, http, mailbox, temporary } from './helpers.mjs';
 import { bind } from '../../../plugins/grok-bot/remote/coda-bot.mjs';
@@ -118,7 +120,7 @@ test('Webhook previews a long child result; input retains full text until the ne
   assert.deepEqual(body, { source: 'coda', sessionId: h.sessionId, turn: body.turn, kind: 'result',
     preview: [...text].slice(0, 500).join('') + '……（完整内容用 coda_input 取）' });
   assert.doesNotMatch(JSON.stringify(body), /coda-session-instructions|session instructions marker/);
-  const expected = { turn: body.turn, kind: 'result', text };
+  const expected = { turn: body.turn, kind: 'result', text, instructions: 'session instructions marker' };
   assert.deepEqual(await h.remote('input', { turn: body.turn }), expected);
   await assert.rejects(h.remote('input'), /必须带/);
   await assert.rejects(h.remote('input', { turn: 'wrong-turn' }), /不存在或已被下一轮替换/);
@@ -151,7 +153,7 @@ test('preview counts Unicode characters, marks truncation, and falls back to mes
     const { body } = await h.deliveries.next();
     assert.equal(body.kind, kind);
     assert.equal(body.preview, preview);
-    assert.deepEqual(await h.remote('input', { turn: body.turn }), { turn: body.turn, kind, text });
+    assert.deepEqual(await h.remote('input', { turn: body.turn }), { turn: body.turn, kind, text, instructions: 'session instructions marker' });
     await h.remote('done', { turn: body.turn });
     await pending;
   }
@@ -340,24 +342,72 @@ test('fast dispatch returns the original result and clears its submission timer'
   }
 });
 
-test('background dispatch survives done, cancel and timeout; late success/failure only logs', async t => {
+async function backgroundResult(h) {
+  for (;;) {
+    const event = await h.messages.next();
+    if (event.method === '_coda/wait' && event.params.waitId === h.call.toolCallId && ['done', 'failed'].includes(event.params.state)) return event.params;
+  }
+}
+
+function assertBackgroundTrace(h, status) {
+  const events = h.events.filter(e => e.params.waitId === h.call.toolCallId || e.params.update?.toolCallId === h.call.toolCallId);
+  assert.deepEqual(events.map(e => e.params.state ?? e.params.update.status), ['pending', 'waiting', 'handling', status, status === 'failed' ? 'failed' : 'done']);
+  assert.equal(events[1].params.toolCallId, h.call.toolCallId, 'activity protects the original tool record from premature closure');
+  assert.equal(events[1].params.kind, 'task');
+  return events[3].params.update;
+}
+
+test('acknowledged background results remain visible after done, cancel or timeout, including during a new turn', async t => {
   for (const outcome of ['success', 'error', 'rejection']) {
-    const logged = mailbox();
-    const h = await pendingDispatch(t, 'spawn', { submissionWaitMs: 7, log: text => logged.push(JSON.parse(text)) });
-    h.adapter.clock.advance(7);
+    const h = await pendingDispatch(t, 'spawn');
+    h.adapter.clock.advance(SUBMISSION_WAIT_MS);
     await h.result;
     if (outcome === 'success') await h.remote('done');
     else if (outcome === 'error') await h.client.request('session/cancel', { sessionId: h.sessionId });
     else h.adapter.clock.expire();
-    await h.remote('say', { text: 'next turn' });
-    const count = h.events.length;
+    const { turn } = await h.remote('say', { text: 'next turn' });
+    const actual = { isError: outcome === 'error', content: [{ type: 'text', text: 'late result' }] };
     if (outcome === 'rejection') h.answer.reject(new Error('MCP connection failed'));
-    else h.answer.resolve({ isError: outcome === 'error', content: [{ type: 'text', text: 'late result' }] });
-    const entry = await logged.next();
-    assert.equal(entry.toolCallId, h.call.toolCallId);
-    assert.equal(entry.state, outcome === 'success' ? 'completed' : 'failed');
-    assert.equal(h.events.length, count, 'old completion must not enter the new turn');
+    else h.answer.resolve(actual);
+    const terminal = await backgroundResult(h);
+    assert.equal(terminal.state, outcome === 'success' ? 'done' : 'failed');
+    const update = assertBackgroundTrace(h, outcome === 'success' ? 'completed' : 'failed');
+    assert.deepEqual(update.rawOutput, outcome === 'rejection' ? 'MCP connection failed' : actual);
+    assert.match(h.text(), outcome === 'success' ? /后台调用已返回/ : /后台调用失败/);
+    assert.equal(h.adapter.session(h.sessionId).turn.id, turn, 'completion must not end or replace the active Bot turn');
+    await h.remote('done', { turn });
+    assert.equal(h.adapter.clock.size, 0);
+  }
+});
+
+test('acknowledgement -> done -> real RPC close reports failure and terminates the original tool and activity', async t => {
+  for (const name of ['spawn', 'send']) {
+    const input = new PassThrough(), output = new PassThrough(), started = mailbox();
+    const rpc = new Rpc(input, output);
+    const peer = new Rpc(output, input, async (method, params) => {
+      if (params.name === 'status') return { structuredContent: { turn: 'ticket' } };
+      started.push(params);
+      return new Promise(() => {}); // Coda has accepted the call but has not replied.
+    });
+    t.after(() => { rpc.close(); peer.close(); input.end(); output.end(); });
+    const h = await harness(t, { diagnostics: false, mcpFactory: () => ({
+      list: async () => ({ tools: ['status', 'spawn', 'send'].map(name => ({ name })) }),
+      call: (name, args, signal) => rpc.request('tools/call', { name, arguments: args }, { signal }),
+      close: () => rpc.close(),
+    }) });
+    await h.remote('hello');
+    const result = h.remote('tool', { name, arguments: { project: 'coda', agent: 'codex', prompt: 'fix', childId: 'child' } });
+    await started.next();
+    h.call = h.events.find(e => e.params.update?.title === `Coda · ${name}`).params.update;
+    h.adapter.clock.advance(SUBMISSION_WAIT_MS);
+    assert.match((await result).content[0].text, /已提交/);
     await h.remote('done');
+    rpc.close();
+    await backgroundResult(h);
+    assert.equal(assertBackgroundTrace(h, 'failed').rawOutput, 'RPC connection closed');
+    assert.match(h.text(), /后台调用失败：RPC connection closed/);
+    assert.equal(h.adapter.session(h.sessionId).turn, null);
+    assert.equal(h.adapter.clock.size, 0);
   }
 });
 
@@ -459,13 +509,13 @@ test('session/load takes instructions only from Coda without persisting them or 
     });
     assert.equal(loaded.configOptions[1].currentValue, 'inspector');
     assert.equal(readFileSync(file, 'utf8'), before, 'load must not write state');
-    assert.equal((await h.remote('hello')).instructions, expected);
-    assert.deepEqual(JSON.parse(readFileSync(file)), { bot: 'inspector', bound: true });
     const pending = h.prompt('inspect');
     const { body } = await h.deliveries.next();
     assert.equal(body.preview, 'inspect');
     assert.equal(body.text, undefined);
-    assert.equal((await h.remote('input', { turn: body.turn })).text, 'inspect');
+    assert.deepEqual(await h.remote('input', { turn: body.turn }), { turn: body.turn, kind: 'message', text: 'inspect', instructions: expected });
+    assert.equal(readFileSync(file, 'utf8'), before, 'input delivers current instructions without rebinding or rewriting state');
+    assert.equal((await h.remote('hello')).instructions, expected);
     await h.remote('done', { turn: body.turn });
     assert.equal((await pending).stopReason, 'end_turn');
   }
