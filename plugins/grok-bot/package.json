@@ -3,7 +3,7 @@
   "id": "grok-bot",
   "displayName": "Grok Bot",
   "description": "把 Grok 云端 Bot 接到 Coda 的长期会话：Webhook 消息、定时巡检与用户审批。",
-  "version": "0.1.5",
+  "version": "0.1.7",
   "type": "module",
   "engines": { "node": ">=24" },
   "categories": ["Agent"],
