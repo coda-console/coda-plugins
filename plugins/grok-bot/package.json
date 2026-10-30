@@ -19,6 +19,7 @@
     "agents": [{
       "id": "grok-bot",
       "displayName": "Grok Bot",
+      "modes": { "title": "派出的 Agent", "unset": "要你批准", "auto": "auto" },
       "icon": { "light": "icons/grok.pdf", "template": true },
       "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/agent/entry.mjs\"",
       "setupHint": "需要支持远端 Agent 入口的 Coda。先发一条消息获取绑定说明，再配置 Bot 的 Routine Webhook。"

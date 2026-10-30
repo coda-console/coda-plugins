@@ -5,6 +5,10 @@ import { CodaMcp } from './mcp.mjs';
 import { bindingGuide } from './setup.mjs';
 
 const MODEL = { id: 'model', name: '模型', category: 'model', type: 'select', currentValue: 'grok-bot', options: [{ value: 'grok-bot', name: 'Grok Bot' }] };
+const MODES = [
+  { id: 'manual', name: '要你批准', description: '派出的 Agent 遇到需要授权的操作时请用户批准' },
+  { id: 'auto', name: '自动', description: '派出的 Agent 使用自己的自动审批档位；Bot 派活与发消息仍由 Coda 授权卡片批准' },
+];
 const READ = new Set(['read_thread', 'read_tool_call', 'agents', 'status', 'workflow_status', 'workflow_list', 'machines', 'machine_diagnostics']);
 const WRITE = new Set(['spawn', 'send', 'cancel']);
 const DIAGNOSTICS = new Set(['machines', 'machine_diagnostics']);
@@ -116,7 +120,7 @@ export class Adapter {
       catch (error) { if (error.code !== 'ENOENT') throw error; }
     }
     const instructions = systemPrompt?.content.map(b => b.text).join('\n') ?? '';
-    const s = { id, saved, instructions, diagnosticsEnabled: mcpServers.some(server => server.name === 'diagnostics'), clients: [], routes: new Map(), unavailable: new Map(), turn: null };
+    const s = { id, saved, instructions, mode: 'manual', diagnosticsEnabled: mcpServers.some(server => server.name === 'diagnostics'), clients: [], routes: new Map(), unavailable: new Map(), turn: null };
     // Coda and the optional built-in diagnostics plugin are separate stdio MCP servers. Discover
     // both at load time; never treat a tool name returned by a server as authority
     // to expand the whitelist, or fall back to coda for absent diagnostics tools.
@@ -144,7 +148,7 @@ export class Adapter {
     }
     this.sessions.set(id, s);
     this.wait(s, 'waiting');
-    return { ...(load ? {} : { sessionId: id }), configOptions: this.configs(s) };
+    return { ...(load ? {} : { sessionId: id }), configOptions: this.configs(s), modes: { currentModeId: s.mode, availableModes: MODES } };
   }
   async prompt(s, prompt) {
     if (!Array.isArray(prompt) || prompt.some(block => block.type !== 'text' || typeof block.text !== 'string')) fail('Grok Bot 目前只接受文本；请在文本里提供可读取的附件路径');
@@ -264,8 +268,16 @@ export class Adapter {
       return { protocolVersion: 1, agentCapabilities: { loadSession: true, sessionCapabilities: { systemPrompt: {} }, _meta: { coda: { waits: {}, remote: {} } } }, authMethods: [] };
     }
     if (method === 'session/new' || method === 'session/load') return this.open(p, method === 'session/load');
-    if (!['session/set_config_option', 'session/prompt', 'session/cancel', '_coda/remote'].includes(method)) throw Object.assign(new Error(`Method not found: ${method}`), { code: -32601 });
+    if (!['session/set_mode', 'session/set_config_option', 'session/prompt', 'session/cancel', '_coda/remote'].includes(method)) throw Object.assign(new Error(`Method not found: ${method}`), { code: -32601 });
     const s = this.session(p.sessionId);
+    if (method === 'session/set_mode') {
+      if (!MODES.some(mode => mode.id === p.modeId)) fail('未知的派出 Agent 档位');
+      // Coda persists and reapplies the selection, and delegates child approval
+      // modes using the manifest. It does not change this adapter's tool policy.
+      s.mode = p.modeId;
+      this.update(s, { sessionUpdate: 'current_mode_update', currentModeId: s.mode });
+      return {};
+    }
     if (method === 'session/set_config_option') {
       if (p.configId === 'model' && p.value === 'grok-bot') return { configOptions: this.configs(s) };
       if (p.configId !== 'bot' || typeof p.value !== 'string' || (p.value !== '' && !Object.hasOwn(this.settings['grok-bot.bots'] ?? {}, p.value))) fail('未知的 Bot 配置');

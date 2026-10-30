@@ -25,6 +25,38 @@ test('old Coda gets an upgrade explanation without sending unknown requests', as
   assert.equal(h.events.some(e => e.method === '_coda/remote/code'), false);
 });
 
+test('new/load advertise child approval modes; Coda can reapply auto and switch back without saving plugin state', async t => {
+  const h = await harness(t, { mcpFactory: () => ({ list: async () => ({ tools: [] }), close() {} }) });
+  const modes = h.created.modes;
+  assert.equal(modes.currentModeId, 'manual');
+  assert.deepEqual(modes.availableModes.map(mode => mode.id), ['manual', 'auto']);
+  assert.deepEqual(schemas.zNewSessionResponse.parse(h.created).modes, modes);
+  const manifest = JSON.parse(readFileSync(new URL('../../../plugins/grok-bot/package.json', import.meta.url), 'utf8'));
+  assert.deepEqual(manifest.contributes.agents[0].modes, { title: '派出的 Agent', unset: '要你批准', auto: 'auto' });
+  const setMode = modeId => h.client.request('session/set_mode', { sessionId: h.sessionId, modeId });
+  const assertMode = mode => {
+    const event = h.events.at(-1);
+    assert.equal(event.params.update.sessionUpdate, 'current_mode_update');
+    assert.equal(event.params.update.currentModeId, mode);
+    assert.ok(schemas.zSessionNotification.safeParse(event.params).success);
+  };
+  assert.deepEqual(await setMode('auto'), {});
+  assertMode('auto');
+  h.adapter.close();
+  h.adapter.sessions.clear();
+  const loaded = await h.client.request('session/load', { ...h.open, sessionId: h.sessionId });
+  assert.deepEqual(schemas.zLoadSessionResponse.parse(loaded).modes, modes);
+  await setMode('auto'); // Coda reapplies the saved session setting after load.
+  assertMode('auto');
+  await setMode('manual');
+  assertMode('manual');
+  const count = h.events.length;
+  await assert.rejects(setMode('full'), /未知的派出 Agent 档位/);
+  assert.equal(h.events.length, count);
+  assert.equal(h.adapter.session(h.sessionId).mode, 'manual');
+  assert.deepEqual(readdirSync(h.root).filter(file => file.endsWith('.json')), [], 'mode changes do not persist binding files');
+});
+
 async function bound(t, extra = {}) {
   const deliveries = mailbox();
   const webhook = await http(t, (request, response, body) => {
@@ -183,6 +215,26 @@ test('spawn with project starts a turn and proxies with a fresh ticket and reque
   const handling = h.events.findIndex(e => e.params.state === 'handling');
   assert.ok(handling >= 0 && handling < h.events.findIndex(e => e.params.update?.sessionUpdate === 'tool_call'));
   await h.remote('done');
+});
+
+test('auto/manual modes keep Bot spawn/send authorization with Coda and preserve refusals', async t => {
+  const h = await bound(t);
+  for (const modeId of ['auto', 'manual']) {
+    await h.client.request('session/set_mode', { sessionId: h.sessionId, modeId });
+    await assert.rejects(h.remote('tool', { name: 'spawn', arguments: { prompt: 'fix' } }), /必须指定目标 project/);
+    for (const [name, args] of [['spawn', { project: 'app', prompt: 'fix', error: true }], ['send', { childId: 'other', prompt: 'inspect', error: true }]]) {
+      const result = await h.remote('tool', { name, arguments: args });
+      assert.equal(result.isError, true);
+      const forwarded = h.calls().at(-1).arguments;
+      const { turn, requestId, ...original } = forwarded;
+      assert.deepEqual(original, args);
+      assert.equal(turn, 'coda-ticket');
+      assert.match(requestId, /^[0-9a-f-]{36}$/);
+    }
+    await h.remote('done');
+  }
+  assert.deepEqual(h.calls().map(call => call.name), ['status', 'spawn', 'status', 'send', 'status', 'spawn', 'status', 'send']);
+  assert.equal(h.events.some(event => event.method === 'session/request_permission'), false);
 });
 
 test('send and cancel delegate authorization to Coda and preserve its refusal without retry', async t => {

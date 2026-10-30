@@ -25,6 +25,8 @@
 
 ## 设置与生命周期
 
+会话的「派出的 Agent」默认「要你批准」，可切到「自动」，也可切回人工。想让派出的 Agent 不再要求用户逐次点审批，就把这个选项设为「自动」；Coda 会为子 Agent 选择它自己的自动档位（如 Codex 的 agent 档位，由自动审核按风险判断越权操作）。这个设置只影响派出的 Agent，Bot 自己开 Agent、给别的会话发消息仍由 Coda 授权卡片批准。适配器通过 ACP modes / session/set_mode 报告和切换档位；选择由 Coda 保存并在恢复后重新应用，不写入插件绑定文件。
+
 | 设置 | 作用 |
 | --- | --- |
 | `grok-bot.bots` | Bot 名到 `{webhook, key}` 的表格；key 经 `CODA_PLUGIN_SECRETS` 中的文件路径读取 |
@@ -66,4 +68,4 @@ Coda 将 HTTP 调用包装成 `_coda/remote {sessionId,method,params}`；插件�
 ## 验证范围
 
 `test/plugins/grok-bot/` 使用假的 ACP Coda 对端、独立的 coda/diagnostics stdio MCP 服务、HTTP Webhook/远端入口和注入时钟；不需要账号或真实业务等待。仓库契约测试包含新插件握手。回归覆盖 hello 响应丢失后重新绑定、切换 Bot、遥测控制字符与路径越界；Tailscale 恢复脚本在假的系统命令下实际运行，验证已登录状态迁移、迁移后登录、系统目录丢失后的恢复和停止失败，不启动真实守护进程。
-尚未与真 Grok Bot、真实 tailnet、真实 Coda 远端入口及诊断/遥测接口联调；安装软件、云电脑睡醒恢复、Routine 的实际投递与密钥卡片交互需要配套 PR 就绪后验证。
+0.1.3 的回归还覆盖：等价副作用调用复用 requestId、假时钟推进后的提前回执与后台收尾、长正文经 coda_input 完整读取、输入保留和失效边界，以及自动／人工档位切换后仍由 Coda 授权 Bot 的派活与发消息。本次修复尚未在真 Grok Bot 上复测；真实 Routine 投递、云端工具超时和子 Agent 的审批档位继承仍需真机验证。
