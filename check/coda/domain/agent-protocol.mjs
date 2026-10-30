@@ -7,9 +7,15 @@ export const clientCapabilities = () => ({
   elicitation: { form: {}, url: {} },
   // A config option may be a switch: shown as one, its value on or off (`options`).
   session: { compaction: {}, configOptions: { boolean: {} } },
-  // Coda takes the agent's own waits.
-  _meta: { coda: { waits: {} } },
+  // Coda takes the agent's own waits, and relays what is asked of the session from outside to an agent that takes it.
+  _meta: { coda: { waits: {}, remote: {} } },
 });
+// The remote entry (「远端入口」): an agent whose work is done elsewhere (a bot on its own computer) declares it; the code to
+// bind that place to its session is asked of Coda (`REMOTE_CODE`), and what that place then asks of the session is handed
+// to the agent (`REMOTE`) as it was asked.
+export const REMOTE = '_coda/remote', REMOTE_CODE = '_coda/remote/code';
+export const supportsRemote = init => init?.agentCapabilities?._meta?.coda?.remote != null
+  && typeof init.agentCapabilities._meta.coda.remote === 'object';
 // The agent refuses until it is signed in (ACP's auth_required).
 export const SIGNED_OUT = -32000;
 // Session instructions (「会话指令」): ACP's `systemPrompt`, only to an agent that declares it, the same on every open of

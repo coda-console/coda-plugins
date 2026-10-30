@@ -20,7 +20,7 @@ Coda 是 ACP 的客户端。每个会话的 Agent 进程由一个[会话托管�
 
 | 方法 | 方向 | Coda 怎么用 |
 | --- | --- | --- |
-| `initialize` | Coda → Agent | 握手。`clientCapabilities` 带 `elicitation.form`、`elicitation.url`、`session.compaction`、`session.configOptions.boolean` 与 `_meta.coda.waits`（见[能力协商](#能力协商)） |
+| `initialize` | Coda → Agent | 握手。`clientCapabilities` 带 `elicitation.form`、`elicitation.url`、`session.compaction`、`session.configOptions.boolean`、`_meta.coda.waits`（见[能力协商](#能力协商)）与 `_meta.coda.remote`（见[远端入口](#远端入口)） |
 | `session/new`、`session/load` | Coda → Agent | 新建或恢复原生会话，会话 ID 由 Agent 给；Agent 声明 `loadSession` 才会被要求恢复。带 `systemPrompt`（[会话指令](#会话指令)）。结果里要报出当前模型（见下）。恢复期间重放的历史 Coda 不收（它有自己的），只收命令与标题 |
 | `session/prompt` | Coda → Agent | 一轮：Coda 送出用户的消息或它自己合成的输入（子会话结果等），Agent 回复 `stopReason` 即本轮结束 |
 | `_session/steering` | Coda → Agent | [插话](#插话)：把用户的消息加进正在进行的一轮；只对声明支持的 Agent 发 |
@@ -29,6 +29,7 @@ Coda 是 ACP 的客户端。每个会话的 Agent 进程由一个[会话托管�
 | `session/set_config_option`、`session/set_mode`、`session/set_model` | Coda → Agent | 模型、推理强度与模式 |
 | `session/update` | Agent → Coda | 回复、思考、工具调用（可带它的[审核](#工具调用的审核)）、计划、用量（可带给流程的[数据](#用量里的数据)）、可用命令、会话信息；只收本会话与它的子会话的 |
 | `session/request_permission`、`elicitation/create`（`mode: form` 或 `mode: url`） | Agent → Coda | 审批与提问，作为卡片交给用户；只在一轮里受理（见[规则](#规则)第 3 条） |
+| `_coda/remote/code`、`_coda/remote` | Agent → Coda、Coda → Agent | [远端入口](#远端入口)：Agent 要绑定码；Coda 转交远端来的请求 |
 | `$/cancel_request` | Agent → Coda | 撤回它发出、还没得到回答的审批或提问：卡片失效，Coda 回 `cancelled`（表单回 `cancel`），之后用户的回答不再转交 |
 
 ACP 只允许在一轮（`session/prompt`）进行时交互。Agent 在两轮之间发来的审批或提问，Coda 拒绝（审批回 `cancelled`，表单回 `cancel`）
@@ -60,13 +61,13 @@ ACP 只允许在一轮（`session/prompt`）进行时交互。Agent 在两轮之
 
 ## 会话指令
 
-Coda 给每个会话一份指令：回复怎样在 Mac 与 iPhone 上显示、默认回复语言，再接项目启用的插件说明（[插件](plugins.md)的 `contributes.instructions`），
+Coda 给每个会话一份指令：回复怎样在 Mac 与 iPhone 上显示、默认回复语言，再接目录启用的插件说明（[插件](plugins.md)的 `contributes.instructions`），
 正文在 `backend/src/components/session-config/client-instructions.mjs`。它走 ACP 的 [`systemPrompt`](https://agentclientprotocol.com/protocol/draft/session-setup#system-prompt-unstable)（unstable），
 **接入 Coda 的 Agent 必须支持**：
 
 - **声明**：`initialize` 结果的 `agentCapabilities.sessionCapabilities.systemPrompt: {}`。Coda 只用 `append` 模式，不需要声明 `mode.override`。
 - **传入**：`session/new` 与 `session/load` 都带同一份 `{"mode": "append", "content": [{"type": "text", "text": …}]}`，只有一个文本块。
-  每次打开时按项目当时启用的插件生成，插件说明变了，下次打开会话时带的就是新的。
+  每次打开时按目录当时启用的插件生成，插件说明变了，下次打开会话时带的就是新的。
 - **生效**：在会话的第一轮执行之前进入上下文。Agent 有原生的系统提示词或 developer instructions 入口就放在那里（Claude 追加到系统提示词，Codex 是 `developerInstructions`）；
   没有原生入口的，由插件在这个原生会话**第一次** `session/prompt` 时把指令作为单独、明确分隔的一段放在用户输入前面一起送入，之后不再送（第一轮是斜杠命令时顺延到下一轮，免得命令不再被认出）；
   `session/load` 恢复的会话已经送过，不再送。Coda 显示与保存的用户原文不变。首条消息里的指令分量不如系统提示词，这是没有原生入口时的近似。
@@ -308,6 +309,28 @@ Coda 发给 Agent 的请求，参数 `{ "sessionId": …, "waitId": … }`，Age
    后端不在期间的 `_coda/wait` 从托管日志续读，各只算一次。
 7. **会话加载中**：`session/new`、`session/load` 期间发来的 `_coda/wait` 先存着，会话身份确定后按原顺序处理，只收本会话与这些登记里公告的子会话。
    所以 Agent 恢复会话时可以把还在等的东西重报一遍：同一个 `waitId` 再报 `waiting` 不会多登记一项。
+
+## 远端入口
+
+有的 Agent 不在这台机器上干活：它是别处的一个 Bot（比如 Grok Bot，在它自己的云电脑上），会话里的适配器只是它的代言。
+Bot 需要随时进到自己的会话里来：说话、调 Coda 的工具、开一轮。远端入口给它一条只通往这个会话的路。
+
+- **能力**：Coda 在 `initialize` 的 `clientCapabilities._meta.coda.remote` 里带 `{}`；Agent 在 `agentCapabilities._meta.coda.remote` 里声明 `{}`，
+  才会被转交远端请求。
+- **绑定码**：Agent 向 Coda 发请求 `_coda/remote/code`（`{ sessionId }`，只能为本会话），Coda 回 `{ code, expiresAt, addresses }`：
+  一次性的绑定码，10 分钟内有效；`addresses` 是这台后端在 tailnet 里的入口（`http://<节点地址>:8080`），这台的网络节点不在 tailnet 里时为空。
+  怎么把码交给 Bot 是 Agent 的事（比如在会话里给出一段让用户贴给 Bot 的话）。
+- **绑定**：Bot 以 `POST /v1/remote-agent/bind`、正文 `{ code }` 换得 `{ token, session }`。不需凭据，每分钟最多 30 次；码用过即失效。
+  同一会话再绑定，新令牌取代旧的。令牌与配对设备的凭据存在一起（`devices.sqlite`），只存摘要。
+- **调用**：Bot 以 `POST /v1/remote-agent`，头 `Authorization: Bearer <token>`，正文 `{ method, params }`（`params` 是对象，可省略，正文至多 256 KiB）。
+  Coda 找到令牌对应的会话，Agent 进程没在运行时先恢复它（`session/load`，不开轮次；与同时到的一轮共用这一次启动），再向它发请求 `_coda/remote`：
+  `{ sessionId, method, params }`，`method`、`params` 原样，Coda 不解释。Agent 的回答原样作为 `{ result }` 回给 Bot。
+- **拒绝**：令牌不对 401；会话所在的目录已删除、会话还没开始过（`invalid_state`），会话家族已归档（子会话随根会话，`archived`），或 Agent 没声明能力（`remote_unsupported`）409；
+  Agent 回 JSON-RPC 错误时 502（`agent_error`，`message` 照 Agent 说的）；Agent 进程在回答前结束 503（`connection_lost`）。Coda 不替 Agent 设回答期限；
+  从收到请求（含为它启动 Agent）到 Agent 回答，会话算在忙：进程不因空闲被回收，所在目录也不能删除。
+- **令牌只通往这个会话**：它不是设备凭据，进不了别的接口。Bot 在会话里做的事经 Agent 走：说话、开轮次照[Agent 活动](#agent-活动)；
+  调 Coda 的工具由 Agent 代它调，跨目录开子会话、给别的会话发消息照常出授权卡片。
+- **入口在哪**：手机入口（[手机连接](ios-development.md#手机连接)），这台的网络节点把 tailnet 里到 8080 的请求转给它。
 
 ## 内置 Agent 的入口进程
 
