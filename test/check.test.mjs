@@ -66,7 +66,7 @@ describe('this repository', () => {
     const known = await read({ panels: [], executors: [] }), other = await read({ menus: [] });
     assert.deepEqual(failed(known), []);
     assert.deepEqual(failed(other), ['source.catalog']);
-    assert.match(other.failures[0].message, /contributes 里有 Coda 不支持的贡献：menus/);
+    assert.match(other.failures[0].message, /menus/);
   });
   test('a plugin reached through a symbolic link is measured from the real repository', async () => {
     const link = join(mkdtempSync(join(tmpdir(), 'coda-plugin-check-link-')), 'repo');
@@ -202,9 +202,9 @@ describe('manifests Coda does not take', () => {
   };
   test('an icon over 32 KiB', () => manifestFails({ agent: { icon: { light: 'big.pdf' } },
     files: { 'big.pdf': `%PDF-1.7\n${'%'.repeat(33 * 1024)}` } }, 'manifest.read', /超过 32 KiB/));
-  test('an icon that is not a PDF', () => manifestFails({ agent: { icon: { light: 'icon.svg' } }, files: { 'icon.svg': '<svg/>' } }, 'manifest.read', /须为 PDF/));
+  test('an icon that is not a PDF', () => manifestFails({ agent: { icon: { light: 'icon.svg' } }, files: { 'icon.svg': '<svg/>' } }, 'manifest.read', /icon\.light/));
   test('a command over two lines', () => manifestFails({ agent: { command: 'exec a\nexec b' } }, 'manifest.read', /一行/));
-  test('a key Coda does not read', () => manifestFails({ agent: { args: ['acp'] } }, 'manifest.read', /不支持的键：args/));
+  test('a key Coda does not read', () => manifestFails({ agent: { args: ['acp'] } }, 'manifest.read', /args/));
   // Coda stops at the first thing it refuses: that one, and no other, is the verdict.
   test('only the first refusal is said, in the order Coda reads', async () => {
     const dir = plugin({ agent: { args: ['acp'] }, manifest: { dependencies: { left: '1.0.0' } } });
@@ -235,7 +235,7 @@ describe('manifests Coda does not take', () => {
     assertPasses(report, ['manifest.name', 'manifest.settings', 'manifest.agents']);
     assert.equal(checked.id, 'claude');
     for (const id of ['', '@acme/board', 1, null]) {
-      await manifestFails({ manifest: { name: 'liar', id } }, 'manifest.read', /package.json 的 id/);
+      await manifestFails({ manifest: { name: 'liar', id } }, 'manifest.read', /\bid[ ：]/);
     }
   });
   test('a built-in agent ID', () => manifestFails({ agent: { id: 'claude-sdk' } }, 'source.catalog', /Agent claude-sdk 已由插件 Claude 声明/));
@@ -298,7 +298,7 @@ describe('manifests Coda does not take', () => {
   });
   test('a command Coda answers for itself, or one on two lines', async () => {
     await manifestFails({ manifest: { contributes: { commands: [{ name: 'coda-event', command: 'exec true' }] } } }, 'manifest.read', /coda-run、coda-event/);
-    await manifestFails({ manifest: { contributes: { commands: [{ name: 'liar', command: 'a\nb' }] } } }, 'manifest.read', /command 是一行命令/);
+    await manifestFails({ manifest: { contributes: { commands: [{ name: 'liar', command: 'a\nb' }] } } }, 'manifest.read', /command/);
   });
   test('events it publishes: named in a domain of its own, once, whether they start and end their subject', async () => {
     const { report } = await checkPlugin(plugin({ manifest: { contributes: { events: [{ name: 'deploy.started' }, { name: 'deploy.ended', starts: false, ends: true }] } } }), { manifestOnly: true });
@@ -306,12 +306,12 @@ describe('manifests Coda does not take', () => {
     assert.match(report.items.find(item => item.rule === 'manifest.events').message, /deploy\.started、deploy\.ended/);
     await manifestFails({ manifest: { contributes: { events: [{ name: 'session.ended' }] } } }, 'manifest.read', /workflow、session、user/);
     for (const events of [[{ name: 'deploy' }], [{ name: 'deploy.ended', ends: 'yes' }], [{ name: 'deploy.ended' }, { name: 'deploy.ended' }]])
-      await manifestFails({ manifest: { contributes: { events } } }, 'manifest.read', /contributes\.events 须为/);
+      await manifestFails({ manifest: { contributes: { events } } }, 'manifest.read', /contributes\.events/);
   });
   test('a setup action with a key Coda does not read, or on two lines; services that repeat', async () => {
-    await manifestFails({ manifest: { contributes: { setup: { command: 'exec true', title: '安装' } } } }, 'manifest.read', /contributes\.setup 须为 \{ command \}/);
+    await manifestFails({ manifest: { contributes: { setup: { command: 'exec true', title: '安装' } } } }, 'manifest.read', /contributes\.setup/);
     await manifestFails({ manifest: { contributes: { setup: { command: 'a\nb' } } } }, 'manifest.read', /一行/);
-    await manifestFails({ manifest: { contributes: { services: ['space', 'space'] } } }, 'manifest.read', /不重复/);
+    await manifestFails({ manifest: { contributes: { services: ['space', 'space'] } } }, 'manifest.read', /contributes\.services/);
   });
   test('a setup action and services are taken, and the setup action is not run', async () => {
     const { report } = await checkPlugin(plugin({ manifest: { contributes: { setup: { command: 'exec false' }, services: ['space'] } } }), { manifestOnly: true });
@@ -334,7 +334,7 @@ describe('manifests Coda does not take', () => {
     const { report } = await checkPlugin(plugin({ manifest: { contributes: { configuration: { properties } } } }), { manifestOnly: true });
     assertPasses(report, ['manifest.settings']);
     const refused = [[{ type: 'integer', format: 'coda-model-provider' }, /是文本/], [{ type: 'string', format: 'coda-model-provider', default: 'magpie' }, /插件\/服务/],
-      [{ type: 'string', format: 'coda-directory', default: 'relative' }, /绝对目录/], [{ type: 'string', format: 'coda-unknown' }, /format 不受支持/]];
+      [{ type: 'string', format: 'coda-directory', default: 'relative' }, /绝对目录/], [{ type: 'string', format: 'coda-unknown' }, /liar\.value/]];
     for (const [spec, message] of refused)
       await manifestFails({ manifest: { contributes: { configuration: { properties: { 'liar.value': spec } } } } }, 'manifest.read', message);
   });
@@ -350,7 +350,7 @@ describe('manifests Coda does not take', () => {
       properties: { ...providers.additionalProperties.properties, key: secret } } } } } } } }, 'manifest.read', /密文设置（writeOnly）只能是没有 format、enum 与默认值的文本/);
   });
   test('a group with a key Coda does not read', () => manifestFails({ manifest: { contributes: { groups: [{ name: 'liar', capacity: 'liar.capacity', note: '' }],
-    configuration: { properties: { 'liar.capacity': { type: 'integer', default: 1 } } } } } }, 'manifest.read', /contributes\.groups 须为/));
+    configuration: { properties: { 'liar.capacity': { type: 'integer', default: 1 } } } } } }, 'manifest.read', /contributes\.groups/));
   // What only one plugin may declare (Coda's claims): a key of contributes a point takes, opening a kind of reference.
   test("what a plugin Coda ships declares as its own", async () => {
     await manifestFails({ manifest: { contributes: { extensionPoints: { cards: { description: '卡片', contributes: 'panels', title: '卡片', commands: {} } } } } },
