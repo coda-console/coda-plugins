@@ -152,6 +152,8 @@ test('inputKind recognizes both project/directory wording and independent-sessio
     ['已开出：[修复](coda://threads/independent)', 'notification'],
     ['[Coda] 用户拒绝了：修复', 'notification'],
     ['用户拒绝了：修复', 'notification'],
+    ['未能开出：修复（目录已删除）', 'notification'],
+    ['这张卡片已失效，没有开出：修复', 'notification'],
     ['我说已开出只是一个例子', 'message'],
   ]) {
     const pending = h.prompt(text);

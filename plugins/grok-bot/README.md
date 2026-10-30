@@ -43,7 +43,7 @@
 会话加载时登记 recurring timer。Bot 主动 say 先报 handling，再输出；done 回 waiting。只读调用若没有轮次只写标准错误审计，不开启空轮次；轮内通过 `tool_call` / `tool_call_update` 留下输入与结果。
 副作用只放行 `new_session` 和 `send`，必须在一轮内调用；没有轮次时先开自主轮次。适配器向 coda MCP 的 status 取 turn 票据，并由本轮 ID、工具名和规范化参数的 SHA-256 生成稳定 requestId。对象键递归排序，数组顺序保留，参数顶层 turn/requestId 不参与计算；同轮等价重试复用 ID，不同参数或轮次是新调用。
 
-`new_session` 必须指定目标 project。Coda 每次在 Bot 会话出允许／拒绝卡片，工具立即返回请求批准的回执，适配器原样返回，不使用 20 秒提前回执逻辑。批准后开出独立会话，仅通知 Bot「已开出：引用与标题」或「用户拒绝了：标题」；不会自动推送该会话之后的工作结果。Bot 记录引用，下次巡检用 `coda_read_thread` 跟进，不重复开同一任务。
+`new_session` 必须指定目标 project。Coda 每次在 Bot 会话出允许／拒绝卡片，工具立即返回请求批准的回执，适配器原样返回，不使用 20 秒提前回执逻辑。批准后开出独立会话，仅通知 Bot「已开出：引用与标题」「用户拒绝了：标题」，或没开出的「未能开出：标题（原因）」「这张卡片已失效，没有开出：标题」；不会自动推送该会话之后的工作结果。Bot 记录引用，下次巡检用 `coda_read_thread` 跟进，不重复开同一任务。
 
 `send` 给已有会话发消息，由 Coda 授权卡片批准；保留超过 20 秒先回「已提交」的逻辑（阈值 `SUBMISSION_WAIT_MS`），原 MCP 调用继续等待。提前回执时以原 toolCallId 登记 `_coda/wait` task；实际返回或 MCP 断连时，活动报 handling，补交结果、终结原工具记录并报 done/failed。原轮次已结束时由 Coda 开自主轮次汇报，失败对用户可见，不自动重试。没有 waits 能力时继续等待实际结果，不提前回执。Bot 收到回执后可 done，不重试或轮询。适配器不另发审批卡片，不再代理 spawn/cancel。
 

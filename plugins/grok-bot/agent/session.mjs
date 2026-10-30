@@ -12,7 +12,7 @@ const fail = message => { throw Object.assign(new Error(message), { code: -32602
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
 function inputKind(text) {
   if (/^\s*(?:Child session completed:|\[Coda\] (?:以下子会话(?:已结束|交回结果)|以下会话回复|你请求(?:派到其他(?:项目|目录)的子会话|发给其他会话的消息)))/u.test(text)) return 'result';
-  if (/^\s*(?:\[Coda\]\s*)?(?:已开出|用户拒绝了)[：:]/u.test(text)) return 'notification';
+  if (/^\s*(?:\[Coda\]\s*)?(?:已开出|用户拒绝了|未能开出|这张卡片已失效，没有开出)[：:]/u.test(text)) return 'notification';
   return /^\s*\[Coda\]/u.test(text) ? 'notification' : 'message';
 }
 export const SUBMISSION_WAIT_MS = 20_000;
