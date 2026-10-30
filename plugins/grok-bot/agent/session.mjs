@@ -269,7 +269,8 @@ export class Adapter {
       if (body.requestId && turn.nativeId !== body.requestId) this.say(s, 'Grok 上一轮补充消息：');
       if (turn.nativeId === body.requestId) {
         turn.hasReply = true;
-        if (s.lastSettlement?.turnId === body.requestId) turn.settlement = s.lastSettlement;
+        if (s.lastSettlement?.turnId === body.requestId)
+          (turn.pendingSettlements ??= new Map()).set(body.requestId, s.lastSettlement);
       }
       if (body.message?.type === 'text') {
         const text = body.message.content ?? '', previous = s.texts.get(row.entryId) ?? '';
@@ -309,12 +310,11 @@ export class Adapter {
       if (settlement && !live.isRunning) s.lastSettlement = settlement;
       if (!live.isRunning && settlement && !s.closedRuns.has(settlement.turnId) && !(event.snapshot && !s.turn)) {
         if (!s.turn) this.start(s, true);
-        if (!s.turn.nativeId) s.turn.nativeId = settlement.turnId;
-        if (s.turn.nativeId === settlement.turnId) {
-          s.turn.settlement = settlement; s.turn.nativeRunning = false;
-          if (settlement.outcome === 'cancelled') this.finish(s, 'cancelled');
-          else if (settlement.outcome !== 'success') { s.turn.failed = true; this.say(s, `Grok 运行结束：${settlement.outcome}`); this.finish(s, 'end_turn'); }
-        }
+        // An outgoing prompt needs its echo/reply to identify the native run.
+        // Autonomous runs have no outgoing message and may settle silently.
+        if (!s.turn.nativeId && s.turn.autonomous) s.turn.nativeId = settlement.turnId;
+        if (s.turn.nativeId === settlement.turnId) this.applySettlement(s, settlement);
+        else if (!s.turn.nativeId) (s.turn.pendingSettlements ??= new Map()).set(settlement.turnId, settlement);
       }
     }
     if (event.failed) {
@@ -342,11 +342,26 @@ export class Adapter {
       delete s.turn.pendingFailures;
       if (failed) return this.nativeEvent(s, { failed });
     }
+    if (s.turn?.nativeId && s.turn.pendingSettlements) {
+      const settlement = s.turn.pendingSettlements.get(s.turn.nativeId);
+      delete s.turn.pendingSettlements;
+      if (settlement) this.applySettlement(s, settlement);
+    }
     const turn = s.turn;
     if (turn?.settlement?.outcome === 'success') {
       const afterSettlement = event.heartbeat && BigInt(event.heartbeat.serverTimeMs ?? 0) > BigInt(turn.settlement.settledAtMs ?? 0);
       if (turn.hasReply || afterSettlement) await this.completeSettled(s, turn, !!afterSettlement);
       else this.settlementGrace(s, turn);
+    }
+  }
+  applySettlement(s, settlement) {
+    s.turn.settlement = settlement;
+    s.turn.nativeRunning = false;
+    if (settlement.outcome === 'cancelled') this.finish(s, 'cancelled');
+    else if (settlement.outcome !== 'success') {
+      s.turn.failed = true;
+      this.say(s, `Grok 运行结束：${settlement.outcome}`);
+      this.finish(s, 'end_turn');
     }
   }
   settlementGrace(s, turn) {

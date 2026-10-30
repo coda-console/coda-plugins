@@ -526,3 +526,39 @@ test('a delayed Interrupt response cannot cancel the next turn', async t => {
   assert.equal((await next.done).stopReason, 'end_turn');
   assert.match(h.text(), /next result/);
 });
+
+for (const outcome of ['success', 'cancelled', 'failed']) {
+  test(`old ${outcome} settlement before either prompt echo cannot claim the new prompt`, async t => {
+    const h = await connected(t);
+    const oldDone = h.prompt('old without echo'), oldRequest = await h.native.next('SendGrokBotUserMessage');
+    await h.adapter.handle('session/cancel', { sessionId: h.id });
+    assert.equal((await oldDone).stopReason, 'cancelled');
+    const done = h.prompt('new without echo'), request = await h.native.next('SendGrokBotUserMessage');
+    const turn = h.s.turn;
+    await h.emit(live({ lastTurnSettlement: { turnId: 'old-native-id', outcome, settledAtMs: '100' } }));
+    assert.equal(h.s.turn, turn);
+    assert.equal(turn.nativeId, undefined);
+    await h.emit(heartbeat); h.clock.advance(SETTLEMENT_GRACE_MS);
+    assert.equal(h.s.turn, turn);
+    assert.equal(turn.settlement, undefined);
+    await h.emit(h.native.row('old-delayed-echo', { kind: 'message', role: 'user', clientNonce: oldRequest.params.messageId, requestId: 'old-native-id' }));
+    await h.emit(h.native.row('new-delayed-echo', { kind: 'message', role: 'user', clientNonce: request.params.messageId, requestId: 'new-native-id' }));
+    await reply(h, 'new-native-id', 'new prompt completed'); await h.emit(settle('new-native-id'));
+    assert.equal((await done).stopReason, 'end_turn');
+    assert.match(h.text(), /new prompt completed/);
+  });
+
+  test(`matching ${outcome} settlement before echo is applied after native association`, async t => {
+    const h = await connected(t);
+    const done = h.prompt('before echo'), request = await h.native.next('SendGrokBotUserMessage');
+    const turn = h.s.turn;
+    await h.emit(live({ lastTurnSettlement: { turnId: 'matching-native-id', outcome, settledAtMs: '100' } }));
+    assert.equal(h.s.turn, turn);
+    assert.equal(turn.nativeId, undefined);
+    await h.emit(h.native.row('matching-echo', { kind: 'message', role: 'user', clientNonce: request.params.messageId, requestId: 'matching-native-id' }));
+    await h.emit(heartbeat);
+    assert.equal((await done).stopReason, outcome === 'cancelled' ? 'cancelled' : 'end_turn');
+    assert.equal(h.s.turn, null);
+    if (outcome === 'failed') assert.match(h.text(), /Grok 运行结束：failed/);
+  });
+}
