@@ -71,6 +71,13 @@ test('grok, its approval-mode entry with a fake Grok CLI', async () => {
   assertPasses(report, [...EVERY, 'live.load']);
 });
 
+test('grok-bot, handshake without a cloud account or the pending remote extension', async () => {
+  const { report } = await checkPlugin(pluginDir('grok-bot'), { agent: 'grok-bot', limits });
+  assert.deepEqual(report.failures, []);
+  for (const rule of ['handshake.initialize', 'handshake.new', 'handshake.sigterm', 'handshake.exit-input'])
+    assert.ok(report.items.some(item => item.rule === rule && item.status === 'pass'), rule);
+});
+
 test('opencode and cursor, their relays with a fake CLI', async () => {
   for (const [id, binary] of [['opencode', '.opencode/bin/opencode'], ['cursor', '.local/bin/cursor-agent']]) {
     const home = join(root, `${id}-home`);
