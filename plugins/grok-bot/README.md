@@ -29,7 +29,7 @@
 | `grok-bot.telemetry` | 看板 HTTP(S) 基地址，无默认值；只允许 GET `/api/` 路径，不跟随重定向 |
 | `grok-bot.turnTimeout` | 默认 `PT30M`；从消息开始或自主轮次开始计时，包含 Webhook、审批与工具等待 |
 
-会话绑定与完整会话指令存于 `CODA_PLUGIN_STATE`。初始化声明 `loadSession`、`sessionCapabilities.systemPrompt`、`_meta.coda.waits` 和 `_meta.coda.remote`。
+仅在绑定或选择、切换 Bot 时，将 Bot 选择与绑定状态写入 `CODA_PLUGIN_STATE`；创建和恢复会话不写文件，读取模型和配置项的探测不会留下状态文件。恢复没有状态文件的会话时按未绑定处理。会话指令只保留在内存，由 Coda 在 session/new、session/load 时提供，不落盘。初始化声明 `loadSession`、`sessionCapabilities.systemPrompt`、`_meta.coda.waits` 和 `_meta.coda.remote`。
 会话指令可经 `hello` 重复获取，且随每次 Webhook 的正文一起发送；响应丢失、重新绑定或切换 Bot 都不会清空指令。
 消息以 `{source:"coda", sessionId, turn, text}` POST 到 Routine，Bearer key 只送到配置的地址，禁止重定向。HTTP 200 只确认触发，`say` 输出、`done` 完成本轮。失败不自动重发，避免重复操作。
 取消会立即回 `cancelled`；超时说明原因后结束本轮。两者都不保证云端停止。旧 turn 被拒绝；Coda 发起的轮次必须带 turn，省略它不会混入新一轮。

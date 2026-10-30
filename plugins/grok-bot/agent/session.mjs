@@ -32,11 +32,11 @@ export class Adapter {
   }
   file(id) {
     if (!this.env.CODA_PLUGIN_STATE) throw new Error('缺少 CODA_PLUGIN_STATE，无法保存 Bot 绑定');
-    mkdirSync(this.env.CODA_PLUGIN_STATE, { recursive: true, mode: 0o700 });
     return join(this.env.CODA_PLUGIN_STATE, `${createHash('sha256').update(id).digest('hex')}.json`);
   }
   save(s) {
     const file = this.file(s.id), temp = `${file}.${randomUUID()}.tmp`;
+    mkdirSync(this.env.CODA_PLUGIN_STATE, { recursive: true, mode: 0o700 });
     writeFileSync(temp, JSON.stringify(s.saved), { mode: 0o600 });
     renameSync(temp, file);
   }
@@ -87,13 +87,16 @@ export class Adapter {
     const id = load ? params.sessionId : randomUUID();
     if (typeof id !== 'string' || !id) fail('缺少 sessionId');
     if (this.sessions.has(id)) fail('会话已经加载');
-    let saved = { bot: '', bound: false, instructions: '' };
+    let saved = { bot: '', bound: false };
     if (load) {
-      try { saved = JSON.parse(readFileSync(this.file(id), 'utf8')); }
+      try {
+        const { bot, bound } = JSON.parse(readFileSync(this.file(id), 'utf8'));
+        saved = { bot, bound };
+      }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
     }
-    if (systemPrompt) saved.instructions = systemPrompt.content.map(b => b.text).join('\n');
-    const s = { id, saved, diagnosticsEnabled: mcpServers.some(server => server.name === 'diagnostics'), clients: [], routes: new Map(), unavailable: new Map(), turn: null };
+    const instructions = systemPrompt?.content.map(b => b.text).join('\n') ?? '';
+    const s = { id, saved, instructions, diagnosticsEnabled: mcpServers.some(server => server.name === 'diagnostics'), clients: [], routes: new Map(), unavailable: new Map(), turn: null };
     // Coda and the optional built-in diagnostics plugin are separate stdio MCP servers. Discover
     // both at load time; never treat a tool name returned by a server as authority
     // to expand the whitelist, or fall back to coda for absent diagnostics tools.
@@ -119,7 +122,6 @@ export class Adapter {
       if (s.routes.has(tool.name)) { s.routes.set(tool.name, null); continue; }
       s.routes.set(tool.name, catalog.client);
     }
-    this.save(s);
     this.sessions.set(id, s);
     this.wait(s, 'waiting');
     return { ...(load ? {} : { sessionId: id }), configOptions: this.configs(s) };
@@ -143,7 +145,7 @@ export class Adapter {
       const key = readFileSync(keyPath, 'utf8').trim();
       if (!key) throw new Error('这个 Bot 的 Webhook key 为空');
       const text = prompt.map(b => b.text).join('\n');
-      const instructions = s.saved.instructions;
+      const instructions = s.instructions;
       const response = await this.fetcher(url(bot.webhook), { method: 'POST', redirect: 'error', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
         body: JSON.stringify({ source: 'coda', sessionId: s.id, turn: turn.id,
           text: instructions ? `<coda-session-instructions>\n${instructions}\n</coda-session-instructions>\n\n${text}` : text }), signal: turn.controller.signal });
@@ -249,7 +251,7 @@ export class Adapter {
       this.save(s);
       // The HTTP response can be lost after this request succeeds. Keep the
       // instructions available to every bind (including a different Bot).
-      return { sessionId: s.id, bot: s.saved.bot, instructions: s.saved.instructions };
+      return { sessionId: s.id, bot: s.saved.bot, instructions: s.instructions };
     }
     if (!s.saved.bound) fail('Bot 尚未完成绑定，请先运行 bind');
     if (p.method === 'say') {
