@@ -5,17 +5,14 @@ import { CodaMcp } from './mcp.mjs';
 import { bindingGuide } from './setup.mjs';
 
 const MODEL = { id: 'model', name: '模型', category: 'model', type: 'select', currentValue: 'grok-bot', options: [{ value: 'grok-bot', name: 'Grok Bot' }] };
-const MODES = [
-  { id: 'manual', name: '要你批准', description: '派出的 Agent 遇到需要授权的操作时请用户批准' },
-  { id: 'auto', name: '自动', description: '派出的 Agent 使用自己的自动审批档位；Bot 派活与发消息仍由 Coda 授权卡片批准' },
-];
 const READ = new Set(['read_thread', 'read_tool_call', 'agents', 'status', 'workflow_status', 'workflow_list', 'machines', 'machine_diagnostics']);
-const WRITE = new Set(['spawn', 'send', 'cancel']);
+const WRITE = new Set(['new_session', 'send']);
 const DIAGNOSTICS = new Set(['machines', 'machine_diagnostics']);
 const fail = message => { throw Object.assign(new Error(message), { code: -32602 }); };
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
 function inputKind(text) {
-  if (/^\s*(?:Child session completed:|\[Coda\] (?:以下子会话(?:已结束|交回结果)|以下会话回复|你请求(?:派到其他项目的子会话|发给其他会话的消息)))/u.test(text)) return 'result';
+  if (/^\s*(?:Child session completed:|\[Coda\] (?:以下子会话(?:已结束|交回结果)|以下会话回复|你请求(?:派到其他(?:项目|目录)的子会话|发给其他会话的消息)))/u.test(text)) return 'result';
+  if (/^\s*(?:\[Coda\]\s*)?(?:已开出|用户拒绝了|未能开出|这张卡片已失效，没有开出)[：:]/u.test(text)) return 'notification';
   return /^\s*\[Coda\]/u.test(text) ? 'notification' : 'message';
 }
 export const SUBMISSION_WAIT_MS = 20_000;
@@ -121,7 +118,7 @@ export class Adapter {
       catch (error) { if (error.code !== 'ENOENT') throw error; }
     }
     const instructions = systemPrompt?.content.map(b => b.text).join('\n') ?? '';
-    const s = { id, saved, instructions, mode: 'manual', diagnosticsEnabled: mcpServers.some(server => server.name === 'diagnostics'), clients: [], routes: new Map(), unavailable: new Map(), turn: null };
+    const s = { id, saved, instructions, diagnosticsEnabled: mcpServers.some(server => server.name === 'diagnostics'), clients: [], routes: new Map(), unavailable: new Map(), turn: null };
     // Coda and the optional built-in diagnostics plugin are separate stdio MCP servers. Discover
     // both at load time; never treat a tool name returned by a server as authority
     // to expand the whitelist, or fall back to coda for absent diagnostics tools.
@@ -149,7 +146,7 @@ export class Adapter {
     }
     this.sessions.set(id, s);
     this.wait(s, 'waiting');
-    return { ...(load ? {} : { sessionId: id }), configOptions: this.configs(s), modes: { currentModeId: s.mode, availableModes: MODES } };
+    return { ...(load ? {} : { sessionId: id }), configOptions: this.configs(s) };
   }
   async prompt(s, prompt) {
     if (!Array.isArray(prompt) || prompt.some(block => block.type !== 'text' || typeof block.text !== 'string')) fail('Grok Bot 目前只接受文本；请在文本里提供可读取的附件路径');
@@ -233,22 +230,22 @@ export class Adapter {
   async tool(s, { name, arguments: args = {}, turn: id }) {
     if (!READ.has(name) && !WRITE.has(name)) fail(`不允许代理工具：${name}`);
     if (!object(args)) fail('arguments 必须是对象');
-    if (name === 'spawn' && (typeof args.project !== 'string' || !args.project.trim()))
-      fail('spawn 必须指定目标 project；Bot 所在的空目录没有代码，请选择要修复的项目');
+    if (name === 'new_session' && (typeof args.project !== 'string' || !args.project.trim()))
+      fail('new_session 必须指定目标 project；Bot 所在的空目录没有代码，请选择要修复的项目');
     this.provider(s, name);
     const turn = this.active(s, id, WRITE.has(name));
     const signal = turn?.controller.signal;
     let forwarded = args;
     if (WRITE.has(name)) {
-      // Coda owns authorization: cross-project spawn and messages to other
-      // sessions use its cards; follow-ups/cancel of our children use its ownership checks.
+      // Coda owns authorization for new independent sessions and messages.
+      // new_session returns immediately after requesting approval.
       const status = await this.trace(s, 'status', {}, () => this.provider(s, 'status').call('status', {}, signal));
       if (status.isError) throw new Error('无法取得 Coda turn 票据');
       const ticket = (status.structuredContent ?? JSON.parse(status.content.find(b => b.type === 'text').text)).turn;
       if (typeof ticket !== 'string' || !ticket || s.turn !== turn) fail('没有有效的 Coda turn 票据');
       forwarded = { ...args, turn: ticket, requestId: requestId(turn, name, args) };
     }
-    const mayWaitForApproval = name === 'spawn' || name === 'send';
+    const mayWaitForApproval = name === 'send';
     // Approval calls outlive a Coda turn and must not inherit its abort signal
     // or the MCP client's default 60-second timeout (null disables both).
     return this.trace(s, name, args, () => this.provider(s, name).call(name, forwarded, mayWaitForApproval ? null : signal),
@@ -285,16 +282,8 @@ export class Adapter {
       return { protocolVersion: 1, agentCapabilities: { loadSession: true, sessionCapabilities: { systemPrompt: {} }, _meta: { coda: { waits: {}, remote: {} } } }, authMethods: [] };
     }
     if (method === 'session/new' || method === 'session/load') return this.open(p, method === 'session/load');
-    if (!['session/set_mode', 'session/set_config_option', 'session/prompt', 'session/cancel', '_coda/remote'].includes(method)) throw Object.assign(new Error(`Method not found: ${method}`), { code: -32601 });
+    if (!['session/set_config_option', 'session/prompt', 'session/cancel', '_coda/remote'].includes(method)) throw Object.assign(new Error(`Method not found: ${method}`), { code: -32601 });
     const s = this.session(p.sessionId);
-    if (method === 'session/set_mode') {
-      if (!MODES.some(mode => mode.id === p.modeId)) fail('未知的派出 Agent 档位');
-      // Coda persists and reapplies the selection, and delegates child approval
-      // modes using the manifest. It does not change this adapter's tool policy.
-      s.mode = p.modeId;
-      this.update(s, { sessionUpdate: 'current_mode_update', currentModeId: s.mode });
-      return {};
-    }
     if (method === 'session/set_config_option') {
       if (p.configId === 'model' && p.value === 'grok-bot') return { configOptions: this.configs(s) };
       if (p.configId !== 'bot' || typeof p.value !== 'string' || (p.value !== '' && !Object.hasOwn(this.settings['grok-bot.bots'] ?? {}, p.value))) fail('未知的 Bot 配置');

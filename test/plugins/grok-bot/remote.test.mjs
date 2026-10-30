@@ -128,9 +128,26 @@ test('diagnostics exposes Coda filter types and forwards flat parameters unchang
   const args = { machine: 'unique-machine-name', kind: 'network', from: 1000, to: 2000, days: 7, limit: 100, client: 'ios:fixture', verdict: 'slow_server' };
   await rpc.request('tools/call', { name: 'coda_machine_diagnostics', arguments: { ...args, turn: 'webhook-turn' } });
   assert.deepEqual(calls, [{ method: 'tool', params: { name: 'machine_diagnostics', arguments: args, turn: 'webhook-turn' } }]);
-  const spawn = tools.find(t => t.name === 'coda_spawn');
-  assert.ok(spawn.inputSchema.required.includes('project'));
-  assert.equal((await rpc.request('tools/call', { name: 'coda_spawn', arguments: { agent: 'codex', prompt: 'fix' } })).isError, true);
+
+});
+
+test('MCP new_session exposes independent-session parameters and removes spawn/cancel', async t => {
+  const input = new PassThrough(), output = new PassThrough(), calls = [];
+  const lines = serveMcp({ input, output, ensureNet: async () => {}, invoke: async (method, params) => { calls.push({ method, params }); return {}; } });
+  const rpc = new Rpc(output, input);
+  t.after(() => { rpc.close(); lines.close(); input.end(); output.end(); });
+  const tools = (await rpc.request('tools/list', {})).tools;
+  const create = tools.find(tool => tool.name === 'coda_new_session');
+  assert.deepEqual(create.inputSchema.required, ['project', 'agent', 'prompt']);
+  assert.deepEqual(Object.keys(create.inputSchema.properties).sort(), ['project', 'agent', 'prompt', 'title', 'model', 'effort', 'mode', 'options', 'turn'].sort());
+  assert.equal((await rpc.request('tools/call', { name: create.name, arguments: { agent: 'codex', prompt: 'fix' } })).isError, true);
+  const args = { project: 'remote-project-id', agent: 'codex', mode: 'agent', model: 'model-id', effort: 'high', title: 'Fix issue', prompt: 'Evidence and PR acceptance', options: { custom: true } };
+  await rpc.request('tools/call', { name: create.name, arguments: { ...args, turn: 'webhook-turn' } });
+  assert.deepEqual(calls, [{ method: 'tool', params: { name: 'new_session', arguments: args, turn: 'webhook-turn' } }]);
+  for (const name of ['coda_spawn', 'coda_cancel']) {
+    assert.equal(tools.some(tool => tool.name === name), false);
+    await assert.rejects(rpc.request('tools/call', { name, arguments: {} }), /Unknown tool/);
+  }
   assert.equal(calls.length, 1);
 });
 
