@@ -1,6 +1,6 @@
 {
   "name": "@coda-console/plugin-check",
-  "version": "0.5.12",
+  "version": "0.5.13",
   "description": "Coda 插件的契约检查：扮演 Coda 读清单、启动 Agent 讲 ACP 与 _coda/wait、读面板。",
   "license": "MIT",
   "repository": {
@@ -24,6 +24,7 @@
   "dependencies": {
     "@0dep/piso": "5.2.0",
     "@agentclientprotocol/sdk": "1.4.0",
+    "@coda-console/protocol": "1.0.0",
     "ajv": "8.20.0",
     "yaml": "2.9.1"
   },
