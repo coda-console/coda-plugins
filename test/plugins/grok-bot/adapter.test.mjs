@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { harness, http, mailbox, temporary } from './helpers.mjs';
 import { bind } from '../../../plugins/grok-bot/remote/coda-bot.mjs';
 import { schemas } from '../../../check/schema.mjs';
@@ -212,32 +213,74 @@ test('session/load preserves Bot binding and re-registers timer; invalid instruc
   assert.match(h.text(), /single-use-code/);
 });
 
-test('session/load adopts supplied instructions, persists them and retains them only when omitted', async t => {
+test('session/load takes instructions only from Coda without persisting them or rewriting legacy state', async t => {
   const h = await bound(t);
+  const file = h.adapter.file(h.sessionId);
+  writeFileSync(file, JSON.stringify({ bot: 'inspector', bound: true, instructions: 'legacy instructions' }));
   const replacement = { mode: 'append', content: [
     { type: 'text', text: 'new project instructions' },
     { type: 'text', text: 'enabled plugin instructions' },
   ] };
   for (const [systemPrompt, expected] of [
+    [undefined, ''],
     [replacement, 'new project instructions\nenabled plugin instructions'],
-    [undefined, 'new project instructions\nenabled plugin instructions'],
+    [undefined, ''],
     [{ mode: 'append', content: [] }, ''],
     [undefined, ''],
   ]) {
     h.adapter.close();
     h.adapter.sessions.clear();
+    const before = readFileSync(file, 'utf8');
     const { systemPrompt: _old, ...open } = h.open;
     const loaded = await h.client.request('session/load', {
       ...open, sessionId: h.sessionId, ...(systemPrompt === undefined ? {} : { systemPrompt }),
     });
     assert.equal(loaded.configOptions[1].currentValue, 'inspector');
+    assert.equal(readFileSync(file, 'utf8'), before, 'load must not write state');
     assert.equal((await h.remote('hello')).instructions, expected);
+    assert.deepEqual(JSON.parse(readFileSync(file)), { bot: 'inspector', bound: true });
     const pending = h.prompt('inspect');
     const { body } = await h.deliveries.next();
     assert.equal(body.text, expected ? `<coda-session-instructions>\n${expected}\n</coda-session-instructions>\n\ninspect` : 'inspect');
     await h.remote('done', { turn: body.turn });
     assert.equal((await pending).stopReason, 'end_turn');
   }
+});
+
+test('model/config probes leave no files; an unwritten session loads unbound and hello persists only binding', async t => {
+  const h = await harness(t, { mcpFactory: () => ({ list: async () => ({ tools: [] }), close() {} }) });
+  const files = () => readdirSync(h.root).filter(name => name.endsWith('.json'));
+  for (let i = 0; i < 5; i++) {
+    const created = await h.client.request('session/new', { ...h.open, mcpServers: [] });
+    assert.equal(created.configOptions[0].currentValue, 'grok-bot');
+    assert.equal(created.configOptions[1].currentValue, '');
+  }
+  assert.deepEqual(files(), []);
+  h.adapter.close();
+  h.adapter.sessions.clear();
+  const loaded = await h.client.request('session/load', { ...h.open, mcpServers: [], sessionId: h.sessionId });
+  assert.equal(loaded.configOptions[0].currentValue, 'grok-bot');
+  assert.equal(loaded.configOptions[1].currentValue, '');
+  await assert.rejects(h.remote('say', { text: 'not bound' }), /尚未完成绑定/);
+  assert.equal((await h.prompt('hello')).stopReason, 'end_turn');
+  assert.match(h.text(), /single-use-code/);
+  assert.deepEqual(files(), []);
+  assert.equal((await h.remote('hello')).instructions, 'session instructions marker');
+  assert.equal(files().length, 1);
+  assert.deepEqual(JSON.parse(readFileSync(h.adapter.file(h.sessionId))), { bot: '', bound: true });
+});
+
+test('selecting and changing Bot persist selection without instructions', async t => {
+  const h = await harness(t, { settings: { 'grok-bot.bots': { inspector: {}, replacement: {} } },
+    mcpFactory: () => ({ list: async () => ({ tools: [] }), close() {} }) });
+  const file = h.adapter.file(h.sessionId);
+  assert.throws(() => readFileSync(file), { code: 'ENOENT' });
+  await h.select();
+  assert.deepEqual(JSON.parse(readFileSync(file)), { bot: 'inspector', bound: false });
+  await h.remote('hello');
+  assert.deepEqual(JSON.parse(readFileSync(file)), { bot: 'inspector', bound: true });
+  await h.client.request('session/set_config_option', { sessionId: h.sessionId, configId: 'bot', value: 'replacement' });
+  assert.deepEqual(JSON.parse(readFileSync(file)), { bot: 'replacement', bound: false });
 });
 
 test('telemetry preserves JSON, query and base path; refuses traversal, redirects and missing config', async t => {
