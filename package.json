@@ -28,5 +28,8 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "devDependencies": {
+    "feelin": "8.2.0"
   }
 }

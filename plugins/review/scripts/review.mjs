@@ -27,23 +27,12 @@ const row = Object.keys(reviewers).filter(key => {
 if (!row) fail(`评审组合里没有适用于${session?.agent ? `「${[session.agent, session.model, session.effort].filter(Boolean).join(' · ')}」` : '这个会话'}的一行`);
 const reviewer = reviewers[row];
 
-// What is reviewed: the event's pull request, or the one asked for by hand, read with the project's own gh; none asked
-// for, the one the session opened last of this repository, as the GitHub plugin knows it (its command github-reported-pr,
-// where that plugin applies).
+// What is reviewed: the event's pull request, or the explicit PR used to key this manual run before it started.
 const event = json('PULL_REQUEST', null), automatic = !!event?.head?.sha;
 let pr = event;
 if (!automatic) {
-  // What it says when it finds none, or cannot look, is why none is reviewed.
-  const reported = () => {
-    const found = spawnSync('github-reported-pr', [], { encoding: 'utf8', timeout: 60_000 });
-    if (found.error) fail(`没有指明要评审的 PR，也没能查会话最近开的 PR：${found.error.code === 'ENOENT'
-      ? '没有 GitHub 插件的 github-reported-pr（项目里停用了 GitHub 插件时要填 PR）' : `github-reported-pr ${found.error.message}`}`);
-    if (found.status !== 0) fail(`没有指明要评审的 PR，也没查到会话最近开的 PR：${found.stderr.trim().split('\n').at(-1)
-      || `github-reported-pr 以 ${found.status ?? found.signal} 退出`}`);
-    return found.stdout.trim();
-  };
-  const asked = (process.env.PR ?? '').trim() || reported();
-  if (!asked) fail('没有指明要评审的 PR，github-reported-pr 也没有给出');
+  const asked = (process.env.PR ?? '').trim();
+  if (!asked) fail('请填写要评审的 PR 编号或 GitHub 地址');
   let view;
   try { view = JSON.parse(execFileSync('gh', ['pr', 'view', asked, '--json', 'number,url,title,body,headRefOid,headRefName,baseRefOid,baseRefName'], { encoding: 'utf8' })); }
   catch (e) { fail(`读不到 PR ${asked}：${e.stderr?.toString().trim() || e.message}`); }
