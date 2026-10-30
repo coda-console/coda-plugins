@@ -2,8 +2,11 @@
 // mode entered offers, and the three things said — on, still on, off — modelled on Codex's proactive multi-agent mode and
 // Claude Code's Ultracode. Nothing here talks to Coda: main.mjs does.
 
-// The template's value once the list is changed by hand.
-export const CUSTOM = '自定义';
+// What the parameter 模板 holds: a template, by its name, or the list made by hand. Apart, so that no name a template is
+// given is taken for the hand-made list; each is shown by its label, the hand-made one as 自定义.
+export const CUSTOM = 'custom';
+export const templateValue = name => `template:${name}`;
+export const templateName = value => typeof value === 'string' && value.startsWith('template:') ? value.slice('template:'.length) : null;
 
 // The templates the setting `ultra.templates` lists: by name, in the order each first appears, each its rows as the mode's
 // parameter `subagents` has them. A row with no name or no agent is none.
@@ -21,8 +24,9 @@ export function templates(rows) {
 // The mode's parameters with the templates there are to choose among, and the hand-made list beside them; the first is
 // what entering takes.
 export function withTemplates(declared, names) {
-  return { ...declared, properties: { ...declared.properties,
-    template: { ...declared.properties.template, enum: [...names, CUSTOM], default: names[0] ?? CUSTOM } } };
+  return { ...declared, properties: { ...declared.properties, template: { ...declared.properties.template,
+    enum: [...names.map(templateValue), CUSTOM], enumItemLabels: [...names.map(name => [...name].slice(0, 100).join('')), '自定义'],
+    default: names.length ? templateValue(names[0]) : CUSTOM } } };
 }
 
 // One sub-agent as spawn takes it: its agent, model, effort, approval mode and options, then when it is the one.

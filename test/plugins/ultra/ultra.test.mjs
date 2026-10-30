@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { pluginDir } from '../plugin.mjs';
 import { activate } from '../../../plugins/ultra/main.mjs';
-import { CUSTOM, OFF, STILL_ON, on, templates } from '../../../plugins/ultra/ultra.mjs';
+import { CUSTOM, OFF, STILL_ON, on, templateValue, templates } from '../../../plugins/ultra/ultra.mjs';
 
 const rows = [
   { template: '均衡', who: { agent: 'claude-sdk', model: 'claude-opus-5-5', effort: 'xhigh' }, when: '界面' },
@@ -37,25 +37,32 @@ test('the templates are the setting\'s rows by name, in the order each first com
 test('entering offers the templates, the first chosen and its list filled in; none set, the list is the user\'s own', async () => {
   const { ultra } = plugin();
   const entered = await ultra.enter({ session, values: {}, parameters });
-  assert.deepEqual(entered.parameters.properties.template.enum, ['均衡', '快', CUSTOM]);
-  assert.equal(entered.parameters.properties.template.default, '均衡');
+  assert.deepEqual(entered.parameters.properties.template.enum, [templateValue('均衡'), templateValue('快'), CUSTOM]);
+  assert.deepEqual(entered.parameters.properties.template.enumItemLabels, ['均衡', '快', '自定义']);
+  assert.equal(entered.parameters.properties.template.default, templateValue('均衡'));
   assert.deepEqual(entered.parameters.properties.subagents.items.properties.when, { title: '什么时候派给它', type: 'string' }, 'the rest as declared');
-  assert.deepEqual([entered.values.template, entered.values.subagents.map(r => r.who.agent)], ['均衡', ['claude-sdk', 'codex']]);
+  assert.deepEqual([entered.values.template, entered.values.subagents.map(r => r.who.agent)], [templateValue('均衡'), ['claude-sdk', 'codex']]);
   const none = await plugin({}).ultra.enter({ session, values: {}, parameters });
   assert.deepEqual([none.values.template, none.values.subagents, none.parameters.properties.template.enum], [CUSTOM, [], [CUSTOM]]);
 });
 
 test('choosing a template fills the list; changing the list makes it the user\'s own', async () => {
   const { ultra } = plugin();
-  const values = { template: '快', subagents: [] };
+  const values = { template: templateValue('快'), subagents: [] };
   assert.deepEqual((await ultra.change({ session, values, changed: 'template' })).values.subagents, [{ who: { agent: 'codex', effort: 'low', mode: 'agent' } }]);
-  assert.deepEqual((await ultra.change({ session, values: { template: '均衡', subagents: [] }, changed: 'subagents' })).values.template, CUSTOM);
+  assert.deepEqual((await ultra.change({ session, values: { template: templateValue('均衡'), subagents: [] }, changed: 'subagents' })).values.template, CUSTOM);
   assert.deepEqual((await ultra.change({ session, values: { template: CUSTOM, subagents: [1] }, changed: 'template' })).values.subagents, [1], 'its own list stays its own');
+  // A template named as the hand-made list is shown is still a template of its own: choosing 自定义 keeps the list.
+  const named = plugin({ 'ultra.templates': [{ template: '自定义', who: { agent: 'kimi' } }, { template: 'custom', who: { agent: 'kimi' } }] }).ultra;
+  assert.deepEqual((await named.enter({ session, values: {}, parameters })).parameters.properties.template.enumItemLabels, ['自定义', 'custom', '自定义']);
+  assert.deepEqual((await named.change({ session, values: { template: CUSTOM, subagents: [1] }, changed: 'template' })).values.subagents, [1]);
+  assert.deepEqual((await named.change({ session, values: { template: templateValue('custom'), subagents: [1] }, changed: 'template' })).values.subagents,
+    [{ who: { agent: 'kimi' } }]);
 });
 
 test('the agent is told it is on with the first message and whenever the list changed, reminded every ten, and told it is off only once told it was on', async () => {
   const { ultra, told } = plugin();
-  const list = templates(rows).get('均衡'), values = { template: '均衡', subagents: list };
+  const list = templates(rows).get('均衡'), values = { template: templateValue('均衡'), subagents: list };
   await ultra.send({ session, values, sent: 0 });
   assert.deepEqual(told.splice(0), [['s1', on(list)]]);
   assert.match(on(list), /- agent=codex model=gpt-6\.1-sol effort=ultra options=\{"service-tier":"priority"\}: 调研/);

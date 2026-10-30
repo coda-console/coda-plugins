@@ -1,7 +1,7 @@
 // The Ultra plugin's module (README.md): the composer mode's hooks. Entering offers the templates the setting lists; choosing
 // one fills the list, changing the list makes it the user's own. The agent is told it is on with the first message sent in
 // it and whenever the list changed since, reminded every ten messages, and told it is off as the mode is left.
-import { CUSTOM, OFF, REMIND_EVERY, STILL_ON, on, templates, withTemplates } from './ultra.mjs';
+import { CUSTOM, OFF, REMIND_EVERY, STILL_ON, on, templateName, templateValue, templates, withTemplates } from './ultra.mjs';
 
 export function activate(coda) {
   // What each session's agent was last told the list is: told again once it is another. Lost with the host, it is told again.
@@ -11,11 +11,12 @@ export function activate(coda) {
     // Its parameters as declared, the templates among them those the setting lists now.
     async enter({ session, parameters }) {
       const all = await read(session.projectId), [first] = all.keys();
-      return { parameters: withTemplates(parameters, [...all.keys()]), values: { template: first ?? CUSTOM, subagents: all.get(first) ?? [] } };
+      return { parameters: withTemplates(parameters, [...all.keys()]),
+        values: { template: first === undefined ? CUSTOM : templateValue(first), subagents: all.get(first) ?? [] } };
     },
     async change({ session, values, changed }) {
       if (changed !== 'template') return { values: { ...values, template: CUSTOM } };
-      const rows = (await read(session.projectId)).get(values.template);
+      const name = templateName(values.template), rows = name === null ? undefined : (await read(session.projectId)).get(name);
       return { values: rows ? { ...values, subagents: rows } : values };
     },
     async send({ session, values, sent }) {
