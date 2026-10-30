@@ -1,9 +1,0 @@
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://coda.pub/schemas/plugin/v1/services.json",
-  "title": "contributes.services：开启随包服务",
-  "description": "随后端包的独立服务的 ID；没有已安装插件开启的服务不运行。",
-  "type": "array",
-  "uniqueItems": true,
-  "items": {"$ref": "common.json#/$defs/name"}
-}

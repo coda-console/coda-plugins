@@ -1,6 +1,6 @@
 // Plugins (docs/plugins.md): what Coda installs once for every project, the way VS Code installs an extension. A plugin
 // is a directory with a VS Code style `package.json`, and the workflows it brings in `.coda/workflows/`. What it may write
-// there is the schemas' to say (plugin-schema.mjs, schemas/): each key of `contributes` is a type with a JSON Schema of its
+// there is the protocol's to say (@coda-console/protocol, coda-console/coda-protocol): each key of `contributes` is a type with a JSON Schema of its
 // own, and a manifest is right when it is of the types it names. This module reads one that is into what Coda keeps of it:
 // its settings (`contributes.configuration`, declared in JSON Schema), with a value for every project (the plugin's
 // settings) that a project may override, as user and workspace settings do in VS Code, which workflows read as `vars`
@@ -18,7 +18,7 @@ import { isDuration } from '../../domain/duration.mjs';
 import { AGENT_ID } from '../../domain/values.mjs';
 import { agentDeclarations } from './agent-plugins.mjs';
 import { checkCatalog, extensionsFor } from './plugin-extensions.mjs';
-import { manifestProblem, TYPES, valueProblem } from './plugin-schema.mjs';
+import { manifestProblem, TYPES, valueProblem } from '@coda-console/protocol/validate';
 import { claims, COMMIT, INTEGRITY, NPM_VERSION, npmPluginId, repoAddress, sourcePath } from './plugin-source-rules.mjs';
 import { readSkillDocument } from './skill-document.mjs';
 import { executorLabels } from '../workflows/executor-labels.mjs';

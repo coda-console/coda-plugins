@@ -1,7 +1,0 @@
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://coda.pub/schemas/plugin/v1/setup.json",
-  "title": "contributes.setup：准备运行环境",
-  "description": "用户安装或更新插件后运行的一行命令。",
-  "$ref": "common.json#/$defs/commandHolder"
-}
