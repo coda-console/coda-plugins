@@ -8,7 +8,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { cleared } from './coda/components/plugins/plugin-rules.mjs';
 import { RETRY_DELAYS, continuationPrompt, serviceFailure } from './coda/components/prompt-recovery/prompt-recovery.mjs';
-import { NOT_STEERED, OPEN_LIMIT, SIGNED_OUT, STEERED, STEERING, STOP_LIMIT, TERM_GRACE, clientCapabilities, currentModel, steeringParams, supportsSteering, systemPrompt,
+import { NOT_STEERED, OPEN_LIMIT, REMOTE_CODE, SIGNED_OUT, STEERED, STEERING, STOP_LIMIT, TERM_GRACE, clientCapabilities, currentModel, steeringParams, supportsSteering, systemPrompt,
   takesInstructions } from './coda/domain/agent-protocol.mjs';
 import { agentErrorMessage } from './coda/kernel/agent-failures.mjs';
 import { temporary } from './leftovers.mjs';
@@ -151,6 +151,18 @@ class Session {
         this.proc.respond(m.id, { action: 'decline' });
         this.at.info('request.elicitation', `提问「${short(m.params.message ?? '')}」：检查一律回 decline`);
       }
+      return;
+    }
+    // A code binding the place a remote agent works (docs/agent-protocol.md「远端入口」): Coda answers it for the agent's own
+    // session only, here with a code that binds nothing and no address, as on a machine in no tailnet.
+    if (m.method === REMOTE_CODE) {
+      if (m.params?.sessionId !== this.sessionId) {
+        this.at.fail('request.session', `绑定码请求说的会话 ${m.params?.sessionId} 不是本会话：Coda 只为本会话发绑定码`);
+        this.proc.respondError(m.id, -32603, '只能为本会话请求');
+        return;
+      }
+      this.proc.respond(m.id, { code: randomBytes(12).toString('base64url'), expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(), addresses: [] });
+      this.at.info('request.remote-code', '绑定码：检查给一个绑不上任何东西的码，没有入口地址');
       return;
     }
     // Coda handles nothing else an agent asks: its ACP SDK answers that the method is not found.
