@@ -37,59 +37,56 @@ test('the templates are the setting\'s rows by name, in the order each first com
 
 test('entering offers the templates, the first chosen and its list filled in; none set, the list is the user\'s own', async () => {
   const { ultra } = plugin();
-  const entered = await ultra.enter({ session, values: {}, parameters });
+  const entered = await ultra.enter({ session, projectId: 'p1', values: {}, parameters });
   assert.deepEqual(entered.parameters.properties.template.enum, [templateValue('均衡'), templateValue('快'), CUSTOM]);
   assert.deepEqual(entered.parameters.properties.template.enumItemLabels, ['均衡', '快', '自定义']);
   assert.equal(entered.parameters.properties.template.default, templateValue('均衡'));
   assert.deepEqual(entered.parameters.properties.subagents.items.properties.when, { title: '什么时候派给它', type: 'string' }, 'the rest as declared');
   assert.deepEqual([entered.values.template, entered.values.subagents.map(r => r.who.agent)], [templateValue('均衡'), ['claude-sdk', 'codex']]);
   // What it gives Coda reads, however long a template's name: one of emoji is cut short in whole characters.
-  const emoji = '😀'.repeat(51), long = await plugin({ 'ultra.templates': [{ template: emoji, who: { agent: 'kimi' } }] }).ultra.enter({ session, values: {}, parameters });
+  const emoji = '😀'.repeat(51), long = await plugin({ 'ultra.templates': [{ template: emoji, who: { agent: 'kimi' } }] }).ultra.enter({ session, projectId: 'p1', values: {}, parameters });
   assert.equal(modeParameters(long.parameters, 'ultra').properties.template.enumItemLabels[0], '😀'.repeat(50));
-  const none = await plugin({}).ultra.enter({ session, values: {}, parameters });
+  const none = await plugin({}).ultra.enter({ session, projectId: 'p1', values: {}, parameters });
   assert.deepEqual([none.values.template, none.values.subagents, none.parameters.properties.template.enum], [CUSTOM, [], [CUSTOM]]);
 });
 
 test('choosing a template fills the list; changing the list makes it the user\'s own', async () => {
   const { ultra } = plugin();
   const values = { template: templateValue('快'), subagents: [] };
-  assert.deepEqual((await ultra.change({ session, values, changed: 'template' })).values.subagents, [{ who: { agent: 'codex', effort: 'low', mode: 'agent' } }]);
-  assert.deepEqual((await ultra.change({ session, values: { template: templateValue('均衡'), subagents: [] }, changed: 'subagents' })).values.template, CUSTOM);
-  assert.deepEqual((await ultra.change({ session, values: { template: CUSTOM, subagents: [1] }, changed: 'template' })).values.subagents, [1], 'its own list stays its own');
+  assert.deepEqual((await ultra.change({ session, projectId: 'p1', values, changed: 'template' })).values.subagents, [{ who: { agent: 'codex', effort: 'low', mode: 'agent' } }]);
+  assert.deepEqual((await ultra.change({ session, projectId: 'p1', values: { template: templateValue('均衡'), subagents: [] }, changed: 'subagents' })).values.template, CUSTOM);
+  assert.deepEqual((await ultra.change({ session, projectId: 'p1', values: { template: CUSTOM, subagents: [1] }, changed: 'template' })).values.subagents, [1], 'its own list stays its own');
   // A template named as the hand-made list is shown is still a template of its own: choosing 自定义 keeps the list.
   const named = plugin({ 'ultra.templates': [{ template: '自定义', who: { agent: 'kimi' } }, { template: 'custom', who: { agent: 'kimi' } }] }).ultra;
-  assert.deepEqual((await named.enter({ session, values: {}, parameters })).parameters.properties.template.enumItemLabels, ['自定义', 'custom', '自定义']);
-  assert.deepEqual((await named.change({ session, values: { template: CUSTOM, subagents: [1] }, changed: 'template' })).values.subagents, [1]);
-  assert.deepEqual((await named.change({ session, values: { template: templateValue('custom'), subagents: [1] }, changed: 'template' })).values.subagents,
+  assert.deepEqual((await named.enter({ session, projectId: 'p1', values: {}, parameters })).parameters.properties.template.enumItemLabels, ['自定义', 'custom', '自定义']);
+  assert.deepEqual((await named.change({ session, projectId: 'p1', values: { template: CUSTOM, subagents: [1] }, changed: 'template' })).values.subagents, [1]);
+  assert.deepEqual((await named.change({ session, projectId: 'p1', values: { template: templateValue('custom'), subagents: [1] }, changed: 'template' })).values.subagents,
     [{ who: { agent: 'kimi' } }]);
 });
 
-test('the agent is told it is on with the first message and whenever the list changed, reminded every ten, and told it is off only once told it was on', async () => {
+test('the agent is told it is on with the first message and whenever the parameters changed since the last, reminded every ten, and told it is off only once told it was on', async () => {
   const { ultra, told } = plugin();
   const list = templates(rows).get('均衡'), values = { template: templateValue('均衡'), subagents: list };
-  await ultra.send({ session, values, sent: 0 });
-  assert.deepEqual(told.splice(0), [['s1', on(list)]]);
+  // What goes with a message, Coda tells once it is taken: none the plugin keeps of its own.
+  const said = async (sent, changedSinceSent = false, chosen = values) => (await ultra.send({ session, projectId: 'p1', values: chosen, sent, changedSinceSent }))?.tell ?? null;
+  assert.equal(await said(0), on(list));
   assert.match(on(list), /- agent=codex model=gpt-6\.1-sol effort=ultra options=\{"service-tier":"priority"\}: 调研/);
-  for (const sent of [1, 2, 9]) await ultra.send({ session, values, sent });
-  assert.deepEqual(told.splice(0), []);
-  await ultra.send({ session, values, sent: 10 });
-  assert.deepEqual(told.splice(0), [['s1', STILL_ON]]);
+  for (const sent of [1, 2, 9]) assert.equal(await said(sent), null);
+  assert.equal(await said(10), STILL_ON);
   const other = { template: CUSTOM, subagents: [list[1]] };
-  await ultra.send({ session, values: other, sent: 11 });
-  assert.deepEqual(told.splice(0), [['s1', on([list[1]])]]);
-  await ultra.exit({ session, sent: 12 });
+  assert.equal(await said(11, true, other), on([list[1]]));
+  await ultra.exit({ session, projectId: 'p1', sent: 12 });
   assert.deepEqual(told.splice(0), [['s1', OFF]]);
-  await ultra.exit({ session: { id: 's2' }, sent: 0 });
+  await ultra.exit({ session: { id: 's2' }, projectId: 'p1', sent: 0 });
   assert.deepEqual(told, [], 'left before anything was sent: nothing to take back');
   assert.match(on([]), /your own agent and model/);
 });
 
-test('a list the agent could not be told refuses the message, and the same list sent again is told again', async () => {
+test('in a new task\'s composer, with no session yet, it reads the project\'s templates and its first message tells the list', async () => {
   const { ultra, told } = plugin();
-  const short = [{ who: { agent: 'codex' }, when: '调研' }], long = [{ who: { agent: 'codex' }, when: '长'.repeat(4000) }];
-  await ultra.send({ session, values: { subagents: short }, sent: 0 });
-  for (let i = 0; i < 2; i++) await assert.rejects(ultra.send({ session, values: { subagents: long }, sent: 1 }), /4000/);
-  const shorter = [{ who: { agent: 'codex' }, when: '短了' }];
-  await ultra.send({ session, values: { subagents: shorter }, sent: 1 });
-  assert.deepEqual(told.map(([, text]) => text), [on(short), on(shorter)]);
+  const entered = await ultra.enter({ session: null, projectId: 'p1', values: {}, parameters });
+  assert.deepEqual(entered.values.template, templateValue('均衡'));
+  assert.equal((await ultra.send({ session: null, projectId: 'p1', values: entered.values, sent: 0, changedSinceSent: false })).tell, on(entered.values.subagents));
+  await ultra.exit({ session: null, projectId: 'p1', sent: 0 });
+  assert.deepEqual(told, []);
 });
