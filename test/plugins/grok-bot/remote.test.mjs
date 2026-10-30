@@ -24,6 +24,7 @@ async function endpoint(t) {
       if (!sessionId) { response.writeHead(401); response.end(JSON.stringify({ error: { code: 'unauthorized', message: 'invalid token' } })); return; }
       if (body.method === 'fail') { response.writeHead(409); response.end(JSON.stringify({ error: { code: 'archived', message: '会话已归档' } })); return; }
       const result = body.method === 'hello' ? { sessionId, instructions: 'Be concise' }
+        : body.method === 'input' ? { turn: body.params.turn, kind: 'result', text: '完整正文'.repeat(2000) }
         : body.method === 'tool' ? { content: [{ type: 'text', text: JSON.stringify(body.params) }] } : { echo: body, sessionId };
       response.end(JSON.stringify({ result }));
     }
@@ -69,7 +70,7 @@ test('MCP initialize/list/call map every named tool through HTTP and check net b
   for (const tool of TOOLS) {
     assert.ok(listed.some(t => t.name === tool.name && t.description));
     const args = { turn: 'webhook-turn' };
-    for (const key of tool.inputSchema.required) args[key] = key === 'query' ? {} : key === 'kind' ? 'network' : `${key}-value`;
+    for (const key of tool.inputSchema.required) if (!(key in args)) args[key] = key === 'query' ? {} : key === 'kind' ? 'network' : `${key}-value`;
     const result = await rpc.request('tools/call', { name: tool.name, arguments: args });
     assert.equal(result.isError, undefined, tool.name);
     const sent = remote.calls.at(-1).body;
@@ -80,10 +81,16 @@ test('MCP initialize/list/call map every named tool through HTTP and check net b
       assert.equal(sent.params.arguments.turn, undefined);
       assert.deepEqual(result.content, [{ type: 'text', text: JSON.stringify(sent.params) }]);
     }
+    if (tool.name === 'coda_input') assert.deepEqual(JSON.parse(result.content[0].text), {
+      turn: 'webhook-turn', kind: 'result', text: '完整正文'.repeat(2000),
+    });
   }
   assert.equal(checks, TOOLS.length);
   const failure = await rpc.request('tools/call', { name: 'coda_say', arguments: {} });
   assert.equal(failure.isError, true);
+  const before = remote.calls.length;
+  assert.equal((await rpc.request('tools/call', { name: 'coda_input', arguments: {} })).isError, true);
+  assert.equal(remote.calls.length, before, 'input without turn is not sent');
   await assert.rejects(rpc.request('tools/call', { name: 'shell', arguments: {} }), /Unknown tool/);
 });
 

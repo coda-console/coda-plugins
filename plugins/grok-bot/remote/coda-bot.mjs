@@ -17,9 +17,11 @@ const anyObject = { type: 'object', additionalProperties: true };
 const proxy = (name, description, properties = {}, required = []) => ({ name: `coda_${name}`, description,
   inputSchema: schema({ ...properties, turn }, required), method: 'tool', tool: name });
 export const TOOLS = [
+  { name: 'coda_input', description: '每次收到 Webhook 后先调用：用其中的 turn 获取本轮完整正文和 kind，preview 只是预览。输入保留到下一轮开始，旧 turn 不可读取。',
+    inputSchema: schema({ turn }, ['turn']), method: 'input' },
   { name: 'coda_say', description: '向这个 Coda 会话汇报。处理 Webhook 必须带 turn；巡检发现问题才首次省略 turn，开启自主轮次，记下返回的 turn。没问题不调用。',
     inputSchema: schema({ text: string('给用户看的简明正文'), turn }, ['text']), method: 'say' },
-  { name: 'coda_done', description: '本轮的最后一步：所有工具与审批返回后调用，结束回复。Webhook 与自主轮次都必须收尾；轮次已结束时不要重试说话。',
+  { name: 'coda_done', description: '本轮的最后一步：工具返回（含「已提交」回执）后调用，结束回复；收到回执无需继续等审批。Webhook 与自主轮次都必须收尾；轮次已结束时不要重试说话。',
     inputSchema: schema({ turn }), method: 'done' },
   proxy('machines', '读取空间各机器的在线、版本、更新和运行告警，不开启轮次。'),
   proxy('machine_diagnostics', '读取指定机器的网络/客户端性能诊断。network 的 from/to 选择 Unix 毫秒时间范围的分钟样本（最多一天），否则 days/limit/client/verdict 筛选客户端探测；client-performance 只支持 days。',
@@ -35,12 +37,12 @@ export const TOOLS = [
   proxy('read_thread', '读取会话消息与工具摘要；完整工具结果用 coda_read_tool_call。', { reference: string('会话 ID 或 coda://threads/ 地址'), before: { type: 'integer' }, limit: { type: 'integer' }, historyVersion: { type: 'integer' }, tools: { type: 'boolean' } }, ['reference']),
   proxy('read_tool_call', '读取会话的一次工具调用及完整结果。', { reference: string('工具条目引用或 ID'), offset: { type: 'integer' }, maxBytes: { type: 'integer' } }, ['reference']),
   proxy('agents', '列出可派遣 Agent、模型及项目，用于选择修复任务的目录。', { project: string('项目名称或 ID') }),
-  proxy('status', '读取本会话和子会话状态；副作用工具的 turn 票据由适配器内部取得，不要自行填写。', { childId: string('要读取结果的子会话') }),
+  proxy('status', '读取本会话和子会话状态；等待批准的子会话可能不在 children 中，这不代表派活失败，不要据此重复 spawn/send 或轮询。副作用工具的 turn 票据由适配器内部取得，不要自行填写。', { childId: string('要读取结果的子会话') }),
   proxy('workflow_status', '查看工作流运行的状态和失败证据。', { runId: string('工作流运行 ID 或 coda://workflow-runs/ 地址'), project: string('项目名称或 ID') }),
   proxy('workflow_list', '列出项目的工作流程。', { project: string('项目名称或 ID') }),
-  proxy('spawn', '必须指定有代码的目标 project，开 Agent 由 Coda 的授权卡片批准；不要在 Bot 的空目录开任务。结果由 Coda 送回，不轮询。',
+  proxy('spawn', '必须指定有代码的目标 project，开 Agent 由 Coda 的授权卡片批准；不要在 Bot 的空目录开任务。可能先返回「已提交」；审批期间 status 看不到子会话不代表失败。结果作为新消息送回，不要重试、改写任务重复派出或轮询；无其他工作就 done。',
     { agent: string('Agent ID'), prompt: string('任务、证据、影响、重点检查项与验收条件'), title: string('任务标题'), project: string('必填：目标项目名称或 ID'), model: string('模型'), effort: string('推理强度'), options: anyObject }, ['agent', 'prompt', 'project']),
-  proxy('send', '给别的会话发消息由 Coda 的授权卡片批准；给自己开出的子会话补充属于已批准任务的延续，不另问。', { childId: string('目标会话 ID 或引用'), prompt: string('消息正文') }, ['childId', 'prompt']),
+  proxy('send', '给别的会话发消息由 Coda 的授权卡片批准；给自己开出的子会话补充属于已批准任务的延续，不另问。可能先返回「已提交」；审批期间 status 看不到子会话不代表失败。结果作为新消息送回，不要重试或轮询；无其他工作就 done。', { childId: string('目标会话 ID 或引用'), prompt: string('消息正文') }, ['childId', 'prompt']),
   proxy('cancel', '只能停止自己开出的子会话，由 Coda 校验归属，不另问。', { childId: string('自己开出的子会话 ID 或引用') }, ['childId']),
 ];
 

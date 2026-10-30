@@ -4,6 +4,7 @@ import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { harness, http, mailbox, temporary } from './helpers.mjs';
 import { bind } from '../../../plugins/grok-bot/remote/coda-bot.mjs';
 import { schemas } from '../../../check/schema.mjs';
+import { SUBMISSION_WAIT_MS } from '../../../plugins/grok-bot/agent/session.mjs';
 
 test('unbound instructions carry one-time code, commands and missing-address explanation', async t => {
   const h = await harness(t);
@@ -24,6 +25,38 @@ test('old Coda gets an upgrade explanation without sending unknown requests', as
   assert.equal(h.events.some(e => e.method === '_coda/remote/code'), false);
 });
 
+test('new/load advertise child approval modes; Coda can reapply auto and switch back without saving plugin state', async t => {
+  const h = await harness(t, { mcpFactory: () => ({ list: async () => ({ tools: [] }), close() {} }) });
+  const modes = h.created.modes;
+  assert.equal(modes.currentModeId, 'manual');
+  assert.deepEqual(modes.availableModes.map(mode => mode.id), ['manual', 'auto']);
+  assert.deepEqual(schemas.zNewSessionResponse.parse(h.created).modes, modes);
+  const manifest = JSON.parse(readFileSync(new URL('../../../plugins/grok-bot/package.json', import.meta.url), 'utf8'));
+  assert.deepEqual(manifest.contributes.agents[0].modes, { title: '派出的 Agent', unset: '要你批准', auto: 'auto' });
+  const setMode = modeId => h.client.request('session/set_mode', { sessionId: h.sessionId, modeId });
+  const assertMode = mode => {
+    const event = h.events.at(-1);
+    assert.equal(event.params.update.sessionUpdate, 'current_mode_update');
+    assert.equal(event.params.update.currentModeId, mode);
+    assert.ok(schemas.zSessionNotification.safeParse(event.params).success);
+  };
+  assert.deepEqual(await setMode('auto'), {});
+  assertMode('auto');
+  h.adapter.close();
+  h.adapter.sessions.clear();
+  const loaded = await h.client.request('session/load', { ...h.open, sessionId: h.sessionId });
+  assert.deepEqual(schemas.zLoadSessionResponse.parse(loaded).modes, modes);
+  await setMode('auto'); // Coda reapplies the saved session setting after load.
+  assertMode('auto');
+  await setMode('manual');
+  assertMode('manual');
+  const count = h.events.length;
+  await assert.rejects(setMode('full'), /未知的派出 Agent 档位/);
+  assert.equal(h.events.length, count);
+  assert.equal(h.adapter.session(h.sessionId).mode, 'manual');
+  assert.deepEqual(readdirSync(h.root).filter(file => file.endsWith('.json')), [], 'mode changes do not persist binding files');
+});
+
 async function bound(t, extra = {}) {
   const deliveries = mailbox();
   const webhook = await http(t, (request, response, body) => {
@@ -42,7 +75,7 @@ test('prompt -> Webhook -> say -> done; bearer secret, traces and subsequent chi
   const pending = h.prompt('inspect');
   const { body, request } = await h.deliveries.next();
   assert.equal(request.headers.authorization, 'Bearer secret-for-fixture');
-  assert.deepEqual({ ...body, turn: 'ID' }, { source: 'coda', sessionId: h.sessionId, turn: 'ID', text: '<coda-session-instructions>\nsession instructions marker\n</coda-session-instructions>\n\ninspect' });
+  assert.deepEqual({ ...body, turn: 'ID' }, { source: 'coda', sessionId: h.sessionId, turn: 'ID', kind: 'message', preview: 'inspect' });
   await assert.rejects(h.remote('say', { text: 'missing ID' }), /必须带/);
   await h.remote('say', { text: 'report', turn: body.turn });
   await h.remote('tool', { name: 'read_thread', arguments: { reference: 'thread' }, turn: body.turn });
@@ -55,7 +88,9 @@ test('prompt -> Webhook -> say -> done; bearer secret, traces and subsequent chi
   for (const e of updates) assert.ok(schemas.zSessionNotification.safeParse(e.params).success, JSON.stringify(e.params));
   const child = h.prompt('Child session completed: fixed');
   const next = (await h.deliveries.next()).body;
-  assert.match(next.text, /Child session completed/);
+  assert.match(next.preview, /Child session completed/);
+  assert.equal(next.kind, 'result');
+  assert.equal((await h.remote('input', { turn: next.turn })).text, 'Child session completed: fixed');
   assert.notEqual(next.turn, body.turn);
   await assert.rejects(h.remote('say', { text: 'late', turn: body.turn }), /轮次已结束/);
   await h.remote('done', { turn: next.turn });
@@ -73,6 +108,66 @@ test('autonomous say registers handling before output and done returns recurring
   assert.equal(events[2].params.state, 'waiting');
   assert.equal(events[2].params.recurring, true);
   assert.equal(h.adapter.clock.size, 0);
+});
+
+test('Webhook previews a long child result; input retains full text until the next turn starts', async t => {
+  const h = await bound(t);
+  const text = '[Coda] 以下子会话已结束，结果自动送达，不需要查询或等待。\n\n' + '完整结果😀'.repeat(2000);
+  const pending = h.prompt(text);
+  const { body } = await h.deliveries.next();
+  assert.deepEqual(body, { source: 'coda', sessionId: h.sessionId, turn: body.turn, kind: 'result',
+    preview: [...text].slice(0, 500).join('') + '……（完整内容用 coda_input 取）' });
+  assert.doesNotMatch(JSON.stringify(body), /coda-session-instructions|session instructions marker/);
+  const expected = { turn: body.turn, kind: 'result', text };
+  assert.deepEqual(await h.remote('input', { turn: body.turn }), expected);
+  await assert.rejects(h.remote('input'), /必须带/);
+  await assert.rejects(h.remote('input', { turn: 'wrong-turn' }), /不存在或已被下一轮替换/);
+  await h.remote('done', { turn: body.turn });
+  await pending;
+  const count = h.events.length;
+  assert.deepEqual(await h.remote('input', { turn: body.turn }), expected);
+  assert.equal(h.events.length, count, 'reading finished input does not start a turn');
+  const next = h.prompt('next task');
+  const nextBody = (await h.deliveries.next()).body;
+  await assert.rejects(h.remote('input', { turn: body.turn }), /不存在或已被下一轮替换/);
+  assert.equal((await h.remote('input', { turn: nextBody.turn })).text, 'next task');
+  await h.remote('done', { turn: nextBody.turn });
+  await next;
+  const autonomous = await h.remote('say', { text: 'routine report' });
+  await assert.rejects(h.remote('input', { turn: nextBody.turn }), /不存在或已被下一轮替换/);
+  await assert.rejects(h.remote('input', { turn: autonomous.turn }), /不存在或已被下一轮替换/);
+  await h.remote('done');
+});
+
+test('preview counts Unicode characters, marks truncation, and falls back to message for unknown content', async t => {
+  const h = await bound(t);
+  for (const [text, kind, preview] of [
+    ['😀'.repeat(500), 'message', '😀'.repeat(500)],
+    ['😀'.repeat(501), 'message', '😀'.repeat(500) + '……（完整内容用 coda_input 取）'],
+    ['[Coda] 流程巡检交给你一个任务', 'notification', '[Coda] 流程巡检交给你一个任务'],
+    ['请检查子会话的结果', 'message', '请检查子会话的结果'],
+  ]) {
+    const pending = h.prompt(text);
+    const { body } = await h.deliveries.next();
+    assert.equal(body.kind, kind);
+    assert.equal(body.preview, preview);
+    assert.deepEqual(await h.remote('input', { turn: body.turn }), { turn: body.turn, kind, text });
+    await h.remote('done', { turn: body.turn });
+    await pending;
+  }
+});
+
+test('cancel and timeout retain readable input without allowing late output', async t => {
+  const h = await bound(t);
+  for (const action of ['cancel', 'timeout']) {
+    const pending = h.prompt(action);
+    const { body } = await h.deliveries.next();
+    if (action === 'cancel') await h.client.request('session/cancel', { sessionId: h.sessionId });
+    else h.adapter.clock.expire();
+    await pending;
+    assert.equal((await h.remote('input', { turn: body.turn })).text, action);
+    await assert.rejects(h.remote('say', { turn: body.turn, text: 'late' }), /轮次已结束/);
+  }
 });
 
 test('all read tools proxy outside a turn with logs only; disallowed tools never reach MCP', async t => {
@@ -122,6 +217,26 @@ test('spawn with project starts a turn and proxies with a fresh ticket and reque
   await h.remote('done');
 });
 
+test('auto/manual modes keep Bot spawn/send authorization with Coda and preserve refusals', async t => {
+  const h = await bound(t);
+  for (const modeId of ['auto', 'manual']) {
+    await h.client.request('session/set_mode', { sessionId: h.sessionId, modeId });
+    await assert.rejects(h.remote('tool', { name: 'spawn', arguments: { prompt: 'fix' } }), /必须指定目标 project/);
+    for (const [name, args] of [['spawn', { project: 'app', prompt: 'fix', error: true }], ['send', { childId: 'other', prompt: 'inspect', error: true }]]) {
+      const result = await h.remote('tool', { name, arguments: args });
+      assert.equal(result.isError, true);
+      const forwarded = h.calls().at(-1).arguments;
+      const { turn, requestId, ...original } = forwarded;
+      assert.deepEqual(original, args);
+      assert.equal(turn, 'coda-ticket');
+      assert.match(requestId, /^[0-9a-f-]{36}$/);
+    }
+    await h.remote('done');
+  }
+  assert.deepEqual(h.calls().map(call => call.name), ['status', 'spawn', 'status', 'send', 'status', 'spawn', 'status', 'send']);
+  assert.equal(h.events.some(event => event.method === 'session/request_permission'), false);
+});
+
 test('send and cancel delegate authorization to Coda and preserve its refusal without retry', async t => {
   const h = await bound(t);
   const ids = new Set();
@@ -138,6 +253,112 @@ test('send and cancel delegate authorization to Coda and preserve its refusal wi
   assert.deepEqual(h.calls().map(c => c.name), ['status', 'send', 'status', 'send', 'status', 'cancel', 'status', 'cancel', 'status', 'spawn']);
   assert.equal(h.events.some(e => e.method === 'session/request_permission'), false);
   await h.remote('done');
+});
+
+test('writes reuse requestId for equivalent JSON in a turn, but separate names, arguments and turns', async t => {
+  const h = await bound(t);
+  const args = { agent: 'codex', project: 'coda', prompt: 'fix', options: { z: 1, a: [{ y: 2, x: 3 }, 'tail'] } };
+  const reordered = { options: { a: [{ x: 3, y: 2 }, 'tail'], z: 1 }, prompt: 'fix', project: 'coda', agent: 'codex' };
+  for (const name of ['spawn', 'send', 'cancel']) {
+    await h.remote('tool', { name, arguments: { ...args, turn: 'forged-a', requestId: 'forged-a' } });
+    await h.remote('tool', { name, arguments: { ...reordered, turn: 'forged-b', requestId: 'forged-b' } });
+  }
+  const first = h.calls().filter(c => c.name !== 'status');
+  for (let i = 0; i < first.length; i += 2) {
+    assert.equal(first[i].arguments.requestId, first[i + 1].arguments.requestId);
+    assert.match(first[i].arguments.requestId, /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    assert.equal(first[i].arguments.turn, 'coda-ticket');
+  }
+  assert.equal(new Set(first.map(c => c.arguments.requestId)).size, 3);
+  await h.remote('tool', { name: 'spawn', arguments: { ...args, prompt: 'different task' } });
+  const different = h.calls().at(-1).arguments.requestId;
+  assert.notEqual(different, first[0].arguments.requestId);
+  await h.remote('tool', { name: 'spawn', arguments: { ...args, options: { z: 1, a: ['tail', { y: 2, x: 3 }] } } });
+  assert.notEqual(h.calls().at(-1).arguments.requestId, first[0].arguments.requestId, 'array order matters');
+  await h.remote('done');
+  await h.remote('tool', { name: 'spawn', arguments: args });
+  assert.notEqual(h.calls().at(-1).arguments.requestId, first[0].arguments.requestId);
+  await h.remote('done');
+});
+
+async function pendingDispatch(t, name, options = {}) {
+  const started = mailbox(), answer = Promise.withResolvers();
+  const h = await harness(t, { ...options, mcpFactory: () => ({
+    list: async () => ({ tools: ['status', 'spawn', 'send'].map(name => ({ name })) }),
+    call(tool, args, signal) {
+      if (tool === 'status') return Promise.resolve({ structuredContent: { turn: 'ticket' } });
+      started.push({ args, signal });
+      return answer.promise;
+    },
+    close() {},
+  }), diagnostics: false });
+  await h.remote('hello');
+  const result = h.remote('tool', { name, arguments: { project: 'coda', agent: 'codex', prompt: 'fix', childId: 'child' } });
+  const dispatched = await started.next();
+  const call = h.events.find(e => e.params.update?.title === `Coda · ${name}`).params.update;
+  return { ...h, result, answer, dispatched, call };
+}
+
+async function toolUpdate(h) {
+  for (;;) {
+    const event = await h.messages.next();
+    if (event.params.update?.sessionUpdate === 'tool_call_update' && event.params.update.toolCallId === h.call.toolCallId)
+      return event.params.update;
+  }
+}
+
+test('slow spawn/send acknowledge submission at the deadline and update the trace only on actual completion', async t => {
+  assert.equal(SUBMISSION_WAIT_MS, 20_000);
+  for (const name of ['spawn', 'send']) {
+    const h = await pendingDispatch(t, name);
+    assert.equal(h.dispatched.signal, null, 'submitted request must outlive the turn and MCP default timeout');
+    await assert.rejects(h.remote('done'), /仍有工具/);
+    h.adapter.clock.advance(SUBMISSION_WAIT_MS);
+    const submitted = await h.result;
+    assert.match(submitted.content[0].text, /已提交.*Coda 卡片.*新消息.*不要重试或轮询/);
+    assert.equal(h.events.some(e => e.params.update?.toolCallId === h.call.toolCallId && e.params.update.sessionUpdate === 'tool_call_update'), false);
+    const actual = { content: [{ type: 'text', text: 'Coda approval result' }] };
+    h.answer.resolve(actual);
+    const update = await toolUpdate(h);
+    assert.equal(update.status, 'completed');
+    assert.deepEqual(update.rawOutput, actual);
+    await h.remote('done');
+    assert.equal(h.adapter.clock.size, 0);
+  }
+});
+
+test('fast dispatch returns the original result and clears its submission timer', async t => {
+  for (const isError of [false, true]) {
+    const h = await pendingDispatch(t, 'spawn');
+    h.adapter.clock.advance(SUBMISSION_WAIT_MS - 1);
+    const actual = { isError, content: [{ type: 'text', text: isError ? 'declined' : 'childId: child' }] };
+    h.answer.resolve(actual);
+    assert.deepEqual(await h.result, actual);
+    assert.equal((await toolUpdate(h)).status, isError ? 'failed' : 'completed');
+    assert.equal(h.adapter.clock.size, 1, 'only the turn timeout remains');
+    await h.remote('done');
+  }
+});
+
+test('background dispatch survives done, cancel and timeout; late success/failure only logs', async t => {
+  for (const outcome of ['success', 'error', 'rejection']) {
+    const logged = mailbox();
+    const h = await pendingDispatch(t, 'spawn', { submissionWaitMs: 7, log: text => logged.push(JSON.parse(text)) });
+    h.adapter.clock.advance(7);
+    await h.result;
+    if (outcome === 'success') await h.remote('done');
+    else if (outcome === 'error') await h.client.request('session/cancel', { sessionId: h.sessionId });
+    else h.adapter.clock.expire();
+    await h.remote('say', { text: 'next turn' });
+    const count = h.events.length;
+    if (outcome === 'rejection') h.answer.reject(new Error('MCP connection failed'));
+    else h.answer.resolve({ isError: outcome === 'error', content: [{ type: 'text', text: 'late result' }] });
+    const entry = await logged.next();
+    assert.equal(entry.toolCallId, h.call.toolCallId);
+    assert.equal(entry.state, outcome === 'success' ? 'completed' : 'failed');
+    assert.equal(h.events.length, count, 'old completion must not enter the new turn');
+    await h.remote('done');
+  }
 });
 
 test('cancel while obtaining a turn ticket never dispatches the write', async t => {
@@ -203,7 +424,8 @@ test('session/load preserves Bot binding and re-registers timer; invalid instruc
   assert.equal(loaded.configOptions[1].currentValue, 'inspector');
   const pending = h.prompt('after load');
   const { body } = await h.deliveries.next();
-  assert.match(body.text, /session instructions marker[\s\S]*after load/);
+  assert.equal(body.preview, 'after load');
+  assert.equal((await h.remote('input', { turn: body.turn })).text, 'after load');
   await h.remote('done', { turn: body.turn });
   await pending;
   const before = h.adapter.sessions.size;
@@ -241,7 +463,9 @@ test('session/load takes instructions only from Coda without persisting them or 
     assert.deepEqual(JSON.parse(readFileSync(file)), { bot: 'inspector', bound: true });
     const pending = h.prompt('inspect');
     const { body } = await h.deliveries.next();
-    assert.equal(body.text, expected ? `<coda-session-instructions>\n${expected}\n</coda-session-instructions>\n\ninspect` : 'inspect');
+    assert.equal(body.preview, 'inspect');
+    assert.equal(body.text, undefined);
+    assert.equal((await h.remote('input', { turn: body.turn })).text, 'inspect');
     await h.remote('done', { turn: body.turn });
     assert.equal((await pending).stopReason, 'end_turn');
   }

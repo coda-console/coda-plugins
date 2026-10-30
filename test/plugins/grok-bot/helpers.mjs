@@ -33,8 +33,13 @@ export function temporary(t) {
 }
 export function fakeClock() {
   const timers = new Map();
-  return { setTimeout(fn) { const id = Symbol(); timers.set(id, fn); return id; }, clearTimeout(id) { timers.delete(id); },
-    expire() { for (const [id, fn] of [...timers]) { timers.delete(id); fn(); } }, get size() { return timers.size; } };
+  let now = 0;
+  return { setTimeout(fn, ms) { const id = Symbol(); timers.set(id, { fn, at: now + ms }); return id; }, clearTimeout(id) { timers.delete(id); },
+    advance(ms) {
+      now += ms;
+      for (const [id, timer] of [...timers]) if (timer.at <= now && timers.delete(id)) timer.fn();
+    },
+    expire() { for (const [id, timer] of [...timers]) if (timers.delete(id)) timer.fn(); }, get size() { return timers.size; } };
 }
 export async function harness(t, { settings = {}, root = temporary(t), diagnostics = true, capabilities = { waits: {}, remote: {} }, ...options } = {}) {
   const events = [], logs = [], messages = mailbox();
