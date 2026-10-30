@@ -122,7 +122,7 @@
         }
       }
     },
-    "instructions": "gh pr create 开出即评审；依赖其他 PR、升锁或发布的开草稿（-R 在 --draft 前），满足后 gh pr ready。只合并进默认分支；合并前验证声明为流程步骤或 GitHub 必需检查。正常结束只更新状态，任务与失败交回本会话，不轮询。手动用 workflow_run 发起 pull-request，必填 pr（编号或链接）；同一 PR 复用未结束的运行，沿用参数与接收会话。"
+    "instructions": "gh pr create 开出即评审；等其他 PR、升锁或发布的开草稿（-R 在 --draft 前），满足后 gh pr ready。只合并进默认分支；合并前验证声明为流程步骤或 GitHub 必需检查。正常结束只更新状态，任务与失败回本会话，不轮询。手动用 workflow_run 发起 pull-request 前用 gh pr view 取得完整地址传 pr；同 PR 复用未结束运行。"
   },
   "license": "MIT",
   "repository": {

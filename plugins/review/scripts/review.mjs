@@ -32,7 +32,7 @@ const event = json('PULL_REQUEST', null), automatic = !!event?.head?.sha;
 let pr = event;
 if (!automatic) {
   const asked = (process.env.PR ?? '').trim();
-  if (!asked) fail('请填写要评审的 PR 编号或 GitHub 地址');
+  if (!asked) fail('请填写 GitHub 返回的完整 PR 地址');
   let view;
   try { view = JSON.parse(execFileSync('gh', ['pr', 'view', asked, '--json', 'number,url,title,body,headRefOid,headRefName,baseRefOid,baseRefName'], { encoding: 'utf8' })); }
   catch (e) { fail(`读不到 PR ${asked}：${e.stderr?.toString().trim() || e.message}`); }

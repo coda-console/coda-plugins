@@ -10,17 +10,19 @@ import { evaluate } from 'feelin';
 
 const script = fileURLToPath(new URL('../../../plugins/review/scripts/review.mjs', import.meta.url));
 
-test('PR numbers and GitHub URLs have the same key as events, distinct from other repositories and PRs', () => {
+test('GitHub-returned PR URLs share the event key without deriving repository identity from origin', () => {
   const source = readFileSync(new URL('../../../plugins/review/.coda/workflows/pull-request.bpmn', import.meta.url), 'utf8');
   const expression = /coda:key='=([^']+)'/.exec(source)?.[1];
   assert.ok(expression);
   const key = (pr, event = {}, repository = 'Owner/Repo') => evaluate(expression, { inputs: { pr }, github: { event, repository } }).value;
   const expected = 'https://github.com/owner/repo/pull/402';
-  for (const pr of ['402', expected, 'https://GitHub.com/OWNER/Repo/pull/402/', `${expected}?tab=checks#comment`]) assert.equal(key(pr), expected, pr);
+  for (const pr of [expected, 'https://GitHub.com/OWNER/Repo/pull/402']) assert.equal(key(pr), expected, pr);
   assert.equal(key('', { number: 402, pull_request: { html_url: expected } }), expected);
-  assert.notEqual(key('403'), expected);
-  assert.notEqual(key('402', {}, 'Other/Repo'), expected);
-  for (const pr of ['', '0', '00402', 'main', 'https://other.example/owner/repo/pull/402', 'https://github.com/owner/repo/issues/402'])
+  assert.equal(key(expected, {}, 'Old/Repository'), expected);
+  assert.notEqual(key('https://github.com/owner/repo/pull/403'), expected);
+  assert.notEqual(key('https://github.com/other/repo/pull/402'), expected);
+  for (const pr of ['', '402', '00402', 'main', `${expected}/`, `${expected}?tab=checks#comment`,
+    'https://other.example/owner/repo/pull/402', 'https://github.com/owner/repo/issues/402'])
     assert.equal(key(pr), null, pr);
 });
 
@@ -40,7 +42,7 @@ test('manual review uses the explicit PR and rejects a missing one', t => {
   };
   assert.deepEqual(review('https://github.com/acme/app/pull/4'), { code: 1, said: '读不到 PR https://github.com/acme/app/pull/4：no pull request https://github.com/acme/app/pull/4',
     summary: '交叉评审没有进行：读不到 PR https://github.com/acme/app/pull/4：no pull request https://github.com/acme/app/pull/4' });
-  assert.deepEqual([review().code, review().said], [1, '请填写要评审的 PR 编号或 GitHub 地址']);
+  assert.deepEqual([review().code, review().said], [1, '请填写 GitHub 返回的完整 PR 地址']);
 });
 
 test('the session that opened the pull request is given the rules the reviewer was given, word for word', t => {
