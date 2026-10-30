@@ -34,6 +34,6 @@ for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => process.exi
 const dir = resolve(positionals[0]);
 const { report, plugin } = await checkPlugin(dir, { agent: values.agent ?? null, manifestOnly: !!values.manifest, live: !!values.live, prompt: values.prompt });
 const shown = positionals[0];
-console.log(format(report, { title: `coda-plugin-check ${pkg.version} · 插件 ${plugin?.id ?? '?'}（${shown}）· 规则是 Coda ${contract.commit.slice(0, 7)} 的代码 · ACP 协议版本 ${ACP_PROTOCOL_VERSION}` }));
-console.log('清单照一台刚装好的 Coda 读（只有它自带与默认装的插件）；装进别的 Coda 时，版本或已装的插件不同，以那台「设置 › 插件 › 从仓库添加…」的读取为准。');
+console.log(format(report, { title: `coda-plugin-check ${pkg.version} · 插件 ${plugin?.id ?? '?'}（${shown}）· 类型是 Coda ${contract.commit.slice(0, 7)} 的 schema · ACP 协议版本 ${ACP_PROTOCOL_VERSION}` }));
+console.log('清单只查是否合乎它用到的类型；装到一台 Coda 上时，仓库、npm 锁文件与那台已装插件的冲突由那台在安装时说。');
 process.exit(report.ok ? 0 : 1);

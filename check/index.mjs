@@ -1,5 +1,6 @@
 // The contract check of one plugin directory: the manifest, then each agent's handshake (and with `live`, a turn) and each
-// panel's reading. The rules are Coda's own code (check/coda/), run where a plugin is written.
+// panel's reading. The manifest is checked against Coda's schemas of its types, the rest by Coda's own code (check/coda/), run where
+// a plugin is written.
 import { resolve } from 'node:path';
 import { checkAgent } from './agent.mjs';
 import { checkManifest } from './manifest.mjs';
