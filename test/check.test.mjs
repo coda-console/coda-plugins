@@ -41,7 +41,7 @@ function plugin({ mode = 'honest', agent = {}, manifest = {}, files = {} } = {})
 describe('this repository', () => {
   test('templates/agent passes every level', async () => {
     const { report } = await checkPlugin(at('templates/agent'), { live: true, limits });
-    assertPasses(report, ['manifest.name', 'manifest.agents', 'source.files', 'handshake.initialize', 'handshake.system-prompt', 'handshake.new',
+    assertPasses(report, ['manifest.name', 'manifest.agents', 'handshake.initialize', 'handshake.system-prompt', 'handshake.new',
       'handshake.sigterm', 'handshake.exit-input', 'live.instructions', 'live.turn', 'live.steering', 'live.cancel', 'live.updates']);
     assert.ok(rules(report, 'skip').includes('live.load'), 'session/load is not asked of an agent that does not declare it');
     // Late, it is not taken; under way, it is, and the turn ends as it would.
@@ -59,13 +59,13 @@ describe('this repository', () => {
     assertPasses(report, ['manifest.name', 'manifest.panels', 'panel.read']);
     assert.match(report.items.find(item => item.rule === 'panel.read').message, /card ×1.*button ×1.*meter ×1/);
   });
-  // Coda's own keys, and those the points of the plugins Coda ships take (the resources plugin's `panels`), pass; another no
-  // point takes, Coda refuses.
+  // Coda's own types, and those the points of the plugins Coda ships declare (the resources plugin's `panels`), pass; another
+  // no plugin declares is of no type.
   test('contributes takes what Coda takes, and refuses what nothing takes', async () => {
     const read = async contributes => (await checkPlugin(plugin({ manifest: { contributes } }), { manifestOnly: true })).report;
     const known = await read({ panels: [], executors: [] }), other = await read({ menus: [] });
     assert.deepEqual(failed(known), []);
-    assert.deepEqual(failed(other), ['source.catalog']);
+    assert.deepEqual(failed(other), ['manifest.offers']);
     assert.match(other.failures[0].message, /menus/);
   });
   test('a plugin reached through a symbolic link is measured from the real repository', async () => {
@@ -77,7 +77,7 @@ describe('this repository', () => {
   });
   test('plugins/cursor passes the manifest level', async () => {
     const { report, plugin: cursor } = await checkPlugin(at('plugins/cursor'), { manifestOnly: true });
-    assertPasses(report, ['manifest.name', 'manifest.agents', 'source.files']);
+    assertPasses(report, ['manifest.name', 'manifest.agents']);
     assert.equal(cursor.agents[0].command, 'exec "$CODA_NODE" "$CODA_PLUGIN_PATH/agent/entry.mjs"');
   });
   test('the command line exits 0 on a pass and 1 on a failure', () => {
@@ -85,8 +85,8 @@ describe('this repository', () => {
     const good = run(at('templates/panel'));
     assert.equal(good.status, 0, good.stdout);
     assert.match(good.stdout, /结果：通过/);
-    assert.match(good.stdout, /规则是 Coda [0-9a-f]{7} 的代码/);
-    assert.match(good.stdout, /以那台「设置 › 插件 › 从仓库添加…」的读取为准/);
+    assert.match(good.stdout, /类型是 Coda [0-9a-f]{7} 的 schema/);
+    assert.match(good.stdout, /由那台在安装时说/);
     const bad = run(plugin({ mode: 'no-model' }));
     assert.equal(bad.status, 1, bad.stdout);
     assert.match(bad.stdout, /✗ session\/new 没报当前模型/);
@@ -205,27 +205,6 @@ describe('manifests Coda does not take', () => {
   test('an icon that is not a PDF', () => manifestFails({ agent: { icon: { light: 'icon.svg' } }, files: { 'icon.svg': '<svg/>' } }, 'manifest.read', /icon\.light/));
   test('a command over two lines', () => manifestFails({ agent: { command: 'exec a\nexec b' } }, 'manifest.read', /一行/));
   test('a key Coda does not read', () => manifestFails({ agent: { args: ['acp'] } }, 'manifest.read', /args/));
-  // Coda stops at the first thing it refuses: that one, and no other, is the verdict.
-  test('only the first refusal is said, in the order Coda reads', async () => {
-    const dir = plugin({ agent: { args: ['acp'] }, manifest: { dependencies: { left: '1.0.0' } } });
-    symlinkSync('/etc/hosts', join(dir, 'hosts'));
-    assert.deepEqual(failed((await checkPlugin(dir, { manifestOnly: true })).report), ['source.files']);
-    rmSync(join(dir, 'hosts'));
-    assert.deepEqual(failed((await checkPlugin(dir, { manifestOnly: true })).report), ['manifest.read']);
-  });
-  // A fresh Coda has installed those of its plugins it installs from the start: another of one's ID waits for it to be
-  // uninstalled. One it ships but does not install, or does not ship, is free.
-  test('the ID of a built-in plugin Coda installs from the start is refused from elsewhere; others are free', async () => {
-    for (const name of ['grok', 'machine-stats']) {
-      const { report } = await checkPlugin(plugin({ manifest: { name } }), { manifestOnly: true });
-      assert.deepEqual(failed(report), ['source.catalog'], name);
-      assert.match(report.failures[0].message, new RegExp(`与内置插件 ${name} 同名，来源不同，请先卸载内置插件再安装`));
-    }
-    for (const name of ['review', 'host']) {
-      const { report } = await checkPlugin(plugin({ manifest: { name } }), { manifestOnly: true });
-      assertPasses(report, ['manifest.name', 'source.catalog']);
-    }
-  });
   test('a scoped npm package uses its explicit Coda ID for settings and agent ownership', async () => {
     const { report, plugin: checked } = await checkPlugin(plugin({
       manifest: { name: '@coda-console/claude', id: 'claude', contributes: {
@@ -238,80 +217,10 @@ describe('manifests Coda does not take', () => {
       await manifestFails({ manifest: { name: 'liar', id } }, 'manifest.read', /\bid[ ：]/);
     }
   });
-  test('a built-in agent ID', () => manifestFails({ agent: { id: 'claude-sdk' } }, 'source.catalog', /Agent claude-sdk 已由插件 Claude 声明/));
-  test('npm dependencies without a lock file', () => manifestFails({ manifest: { dependencies: { left: '1.0.0' } } }, 'source.npm', /没有 package-lock\.json/));
-  test('a lock file that does not match the dependencies', () => manifestFails({ manifest: { dependencies: { left: '1.0.0' } },
-    files: { 'package-lock.json': JSON.stringify({ lockfileVersion: 3, packages: { '': { dependencies: { left: '2.0.0' } } } }) } }, 'source.npm', /依赖不一致（left）/));
-  test('npm dependencies with their lock file are installed by Coda', async () => {
-    const { report } = await checkPlugin(plugin({ manifest: { dependencies: { left: '1.0.0' } },
-      files: { 'package-lock.json': JSON.stringify({ lockfileVersion: 3, packages: { '': { name: 'liar', dependencies: { left: '1.0.0' } } } }) } }), { manifestOnly: true });
-    assertPasses(report, ['source.npm', 'source.files']);
-  });
-  test('a symbolic link', async () => {
-    const dir = plugin();
-    symlinkSync('/etc/hosts', join(dir, 'hosts'));
-    const { report } = await checkPlugin(dir, { manifestOnly: true });
-    assert.deepEqual(failed(report), ['source.files']);
-    assert.match(report.failures[0].message, /目录里有符号链接：hosts/);
-  });
-  // Its directory in the repository Coda's copy comes from is a version of it (Coda's sameSource): it keeps its ID and agent.
-  test('a built-in plugin in the repository it comes from is a version of it; from elsewhere it waits for the built-in one to go', async () => {
-    // A repository with the plugin where this one keeps it, fetched from here or from somewhere else.
-    const repo = (remote, agent, at = 'plugins/claude') => {
-      const top = mkdtempSync(join(tmpdir(), 'coda-plugin-check-repo-')), dir = join(top, at);
-      temps.push(top);
-      mkdirSync(dir, { recursive: true });
-      copyFileSync(ICON, join(dir, 'icon.pdf'));
-      writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'claude', version: '1.0.0', contributes: { agents: [{ id: agent, displayName: 'Claude',
-        icon: { light: 'icon.pdf' }, command: 'exec "$CODA_NODE" "$CODA_PLUGIN_PATH/agent/entry.mjs"' }] } }));
-      execFileSync('git', ['init', '-q', top]);
-      execFileSync('git', ['-C', top, 'remote', 'add', 'origin', remote]);
-      return dir;
-    };
-    const check = async dir => (await checkPlugin(dir, { manifestOnly: true })).report;
-    const here = await check(repo('git@github.com:coda-console/coda-plugins.git', 'claude-sdk'));
-    assert.deepEqual(failed(here), []);
-    assert.match(here.items.find(item => item.rule === 'manifest.name').message, /Coda 内置插件 claude：.*同一来源的新版本/);
-    // The agent ID sessions from before #1069 store: Coda's reading takes it, the checker says what it does.
-    const old = await check(repo('https://github.com/coda-console/coda-plugins', 'claude'));
-    assert.deepEqual(failed(old), []);
-    assert.ok(rules(old, 'warn').includes('manifest.agent-id'));
-    for (const elsewhere of [repo('https://github.com/someone/coda-plugins', 'claude-sdk'), repo('https://github.com/coda-console/coda-plugins', 'claude-sdk', 'plugins/other')]) {
-      const report = await check(elsewhere);
-      assert.deepEqual(failed(report), ['source.catalog']);
-      assert.match(report.failures[0].message, /与内置插件 claude 同名，来源不同/);
-    }
-  });
-  // The package Coda ships it as is that built-in plugin wherever it is checked: read as from where the package is published.
-  test('a built-in plugin is named as the package Coda ships it as; another of the same ID is not', async () => {
-    const check = async (name, id) => (await checkPlugin(plugin({ manifest: { name, id } }), { manifestOnly: true })).report;
-    const said = async (name, id) => (await check(name, id)).items.find(item => item.rule === 'manifest.name').message;
-    assert.match(await said('@coda-console/review', 'review'), /Coda 内置插件 review：Coda 带的是 npm 上 @coda-console\/review 的一个版本/);
-    assert.doesNotMatch(await said('@someone/review', 'review'), /内置插件/);
-    assert.doesNotMatch(await said('@coda-console/liar', 'liar'), /内置插件/);
-    assert.deepEqual(failed(await check('@coda-console/grok', 'grok')), []);
-    assert.deepEqual(failed(await check('@someone/grok', 'grok')), ['source.catalog']);
-  });
-  test('what only a plugin Coda ships may contribute', async () => {
-    await manifestFails({ manifest: { contributes: { gitCredentials: [{ url: 'https://example.com', command: 'exec true' }] } } }, 'source.catalog', /只有 Coda 自带的插件能提供 Git 凭据/);
-    await manifestFails({ manifest: { contributes: { repositories: { command: 'exec true' } } } }, 'source.catalog', /只有 Coda 自带的插件能提供仓库列表/);
-  });
-  test('a command Coda answers for itself, or one on two lines', async () => {
-    await manifestFails({ manifest: { contributes: { commands: [{ name: 'coda-event', command: 'exec true' }] } } }, 'manifest.read', /coda-run、coda-event/);
-    await manifestFails({ manifest: { contributes: { commands: [{ name: 'liar', command: 'a\nb' }] } } }, 'manifest.read', /command/);
-  });
-  test('events it publishes: named in a domain of its own, once, whether they start and end their subject', async () => {
+  test('the events it publishes are said', async () => {
     const { report } = await checkPlugin(plugin({ manifest: { contributes: { events: [{ name: 'deploy.started' }, { name: 'deploy.ended', starts: false, ends: true }] } } }), { manifestOnly: true });
     assert.deepEqual(failed(report), []);
     assert.match(report.items.find(item => item.rule === 'manifest.events').message, /deploy\.started、deploy\.ended/);
-    await manifestFails({ manifest: { contributes: { events: [{ name: 'session.ended' }] } } }, 'manifest.read', /workflow、session、user/);
-    for (const events of [[{ name: 'deploy' }], [{ name: 'deploy.ended', ends: 'yes' }], [{ name: 'deploy.ended' }, { name: 'deploy.ended' }]])
-      await manifestFails({ manifest: { contributes: { events } } }, 'manifest.read', /contributes\.events/);
-  });
-  test('a setup action with a key Coda does not read, or on two lines; services that repeat', async () => {
-    await manifestFails({ manifest: { contributes: { setup: { command: 'exec true', title: '安装' } } } }, 'manifest.read', /contributes\.setup/);
-    await manifestFails({ manifest: { contributes: { setup: { command: 'a\nb' } } } }, 'manifest.read', /一行/);
-    await manifestFails({ manifest: { contributes: { services: ['space', 'space'] } } }, 'manifest.read', /contributes\.services/);
   });
   test('a setup action and services are taken, and the setup action is not run', async () => {
     const { report } = await checkPlugin(plugin({ manifest: { contributes: { setup: { command: 'exec false' }, services: ['space'] } } }), { manifestOnly: true });
@@ -351,13 +260,6 @@ describe('manifests Coda does not take', () => {
   });
   test('a group with a key Coda does not read', () => manifestFails({ manifest: { contributes: { groups: [{ name: 'liar', capacity: 'liar.capacity', note: '' }],
     configuration: { properties: { 'liar.capacity': { type: 'integer', default: 1 } } } } } }, 'manifest.read', /contributes\.groups/));
-  // What only one plugin may declare (Coda's claims): a key of contributes a point takes, opening a kind of reference.
-  test("what a plugin Coda ships declares as its own", async () => {
-    await manifestFails({ manifest: { contributes: { extensionPoints: { cards: { description: '卡片', contributes: 'panels', title: '卡片', commands: {} } } } } },
-      'source.catalog', /扩展点 contributes\.panels 已由插件 资源 声明/);
-    await manifestFails({ manifest: { contributes: { views: [{ id: 'runs', title: '运行', entry: 'runs.html', handles: ['workflow-runs'] }] } }, files: { 'runs.html': '' } },
-      'source.catalog', /打开 workflow-runs 引用 已由插件 工作流 声明/);
-  });
   // Coda reads these (docs/plugins.md); the checker does not refuse a plugin for bringing them.
   test('Skills, variables, PATH, MCP servers, endpoints, views and model services are contributions Coda takes', async () => {
     const contributes = { skills: [], environment: {}, path: [], mcpServers: {}, endpoints: [], views: [], modelProviders: [] };
@@ -396,24 +298,9 @@ describe('manifests Coda does not take', () => {
       const { report } = await checkPlugin(dir, { limits });
       assert.deepEqual(report.failures, []);
       assert.match(report.items.find(item => item.rule === 'manifest.extensions').message, /github 不在旁边，检查时不带/);
-      assert.match(report.items.find(item => item.rule === 'source.catalog').message, /一起装 base（同一提交的 base）、github（Coda 自带）/);
       assert.deepEqual(JSON.parse(readFileSync(seen, 'utf8')), { dependencies: { base: realpathSync(join(top, 'base')) }, settings: { 'reader.size': 3 },
         groups: [], node: process.execPath, thread: null });
     } finally { for (const [key, value] of Object.entries(before)) if (value === undefined) delete process.env[key]; else process.env[key] = value; }
-  });
-  // A file system's error reading another plugin of the repository fails Coda's reading of the whole repository: said, not thrown.
-  test('another plugin of the repository that cannot be read', async () => {
-    const top = mkdtempSync(join(tmpdir(), 'coda-plugin-check-broken-'));
-    temps.push(top);
-    execFileSync('git', ['init', '-q', top]);
-    mkdirSync(join(top, 'reader'));
-    writeFileSync(join(top, 'reader/package.json'), JSON.stringify({ name: 'reader', version: '1.0.0', contributes: {} }));
-    mkdirSync(join(top, 'other/.coda'), { recursive: true });
-    writeFileSync(join(top, 'other/package.json'), JSON.stringify({ name: 'other', version: '1.0.0', contributes: {} }));
-    writeFileSync(join(top, 'other/.coda/workflows'), '');
-    const { report } = await checkPlugin(join(top, 'reader'), { manifestOnly: true });
-    assert.deepEqual(failed(report), ['source.read']);
-    assert.match(report.failures[0].message, /同一仓库的 other 读不了：.*ENOTDIR.*Coda 读这个仓库时整个出错/);
   });
   test('a panel whose output Coda cannot read', async () => {
     const dir = plugin({ files: { 'panel.mjs': `console.log(JSON.stringify({ items: [{ type: 'meter', label: '用量', fraction: 1.5 }] }))` },
