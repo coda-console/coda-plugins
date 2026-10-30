@@ -3,6 +3,9 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CodaMcp } from './mcp.mjs';
 import { bindingGuide } from './setup.mjs';
+import { NativeAuth } from './auth.mjs';
+import { NativeWatch } from './watch.mjs';
+import { RoutineWatch } from './routines.mjs';
 
 const MODEL = { id: 'model', name: '模型', category: 'model', type: 'select', currentValue: 'grok-bot', options: [{ value: 'grok-bot', name: 'Grok Bot' }] };
 const READ = new Set(['read_thread', 'read_tool_call', 'agents', 'status', 'workflow_status', 'workflow_list', 'machines', 'machine_diagnostics']);
@@ -10,11 +13,6 @@ const WRITE = new Set(['new_session', 'send']);
 const DIAGNOSTICS = new Set(['machines', 'machine_diagnostics']);
 const fail = message => { throw Object.assign(new Error(message), { code: -32602 }); };
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
-function inputKind(text) {
-  if (/^\s*(?:Child session completed:|\[Coda\] (?:以下子会话(?:已结束|交回结果)|以下会话回复|你请求(?:派到其他(?:项目|目录)的子会话|发给其他会话的消息)))/u.test(text)) return 'result';
-  if (/^\s*(?:\[Coda\]\s*)?(?:已开出|用户拒绝了|未能开出|这张卡片已失效，没有开出)[：:]/u.test(text)) return 'notification';
-  return /^\s*\[Coda\]/u.test(text) ? 'notification' : 'message';
-}
 export const SUBMISSION_WAIT_MS = 20_000;
 function canonical(value) {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
@@ -43,10 +41,12 @@ function url(value) {
 }
 
 export class Adapter {
-  constructor({ rpc, env = process.env, fetcher = fetch, clock = { setTimeout, clearTimeout }, submissionWaitMs = SUBMISSION_WAIT_MS, log = text => console.error(text), mcpFactory = (server, cwd) => new CodaMcp(server, cwd) }) {
+  constructor({ rpc, env = process.env, fetcher = fetch, clock = { setTimeout, clearTimeout, now: Date.now }, submissionWaitMs = SUBMISSION_WAIT_MS, log = text => console.error(text), mcpFactory = (server, cwd) => new CodaMcp(server, cwd) }) {
     Object.assign(this, { rpc, env, fetcher, clock, submissionWaitMs, log, mcpFactory });
     this.settings = JSON.parse(env.CODA_PLUGIN_SETTINGS || '{}');
-    this.secrets = JSON.parse(env.CODA_PLUGIN_SECRETS || '{}');
+    this.now = () => this.clock.now ? this.clock.now() : Date.now();
+    this.auth = new NativeAuth({ root: env.CODA_PLUGIN_STATE, fetcher, clock });
+    this.bots = [];
     this.sessions = new Map();
     this.timeout = duration(this.settings['grok-bot.turnTimeout']);
   }
@@ -62,11 +62,16 @@ export class Adapter {
   }
   session(id) { return this.sessions.get(id) ?? fail('会话尚未加载'); }
   configs(s) {
-    const bots = Object.keys(this.settings['grok-bot.bots'] ?? {});
     return [MODEL, { id: 'bot', name: '这是哪个 Bot', type: 'select', currentValue: s.saved.bot,
-      options: [{ value: '', name: '请选择 Bot' }, ...[...new Set([...bots, s.saved.bot].filter(Boolean))].map(value => ({ value, name: value }))] }];
+      options: [{ value: '', name: '请选择 Bot（先发送 /login 登录）' }, ...this.bots.map(bot => ({ value: bot.agentId, name: `${bot.name || bot.agentId} (${bot.agentId})` })),
+        ...(!this.bots.some(b => b.agentId === s.saved.bot) && s.saved.bot ? [{ value: s.saved.bot, name: s.saved.bot }] : [])] }];
   }
-  wait(s, state) { if (this.waits) this.rpc.notify('_coda/wait', { sessionId: s.id, waitId: 'grok-bot-routines', kind: 'timer', recurring: true, title: 'Grok Bot 的定时任务', state }); }
+  wait(s, state) { if (this.waits) this.rpc.notify('_coda/wait', { sessionId: s.id, waitId: s.subscriptionId ?? 'grok-native', kind: 'task', title: 'Grok 主会话订阅', state }); }
+  async refreshBots() {
+    if (!this.auth.client) return;
+    const result = await this.auth.client.request('ListGrokBotAgents', {});
+    this.bots = result.agents ?? [];
+  }
   update(s, update) { this.rpc.notify('session/update', { sessionId: s.id, update }); }
   say(s, text) { this.update(s, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } }); }
   start(s, autonomous) {
@@ -74,12 +79,13 @@ export class Adapter {
     if (autonomous && !this.waits) fail('Coda 未声明 waits，不能开启自主轮次');
     const turn = { id: randomUUID(), autonomous, controller: new AbortController(), tools: new Map() };
     turn.result = new Promise(resolve => { turn.resolve = resolve; });
-    s.input = null;
+
     s.turn = turn;
     if (autonomous) this.wait(s, 'handling');
     turn.timer = this.clock.setTimeout(() => {
       if (s.turn !== turn) return;
-      this.say(s, `等待 Grok Bot 超过 ${this.settings['grok-bot.turnTimeout'] ?? 'PT30M'}，本轮已结束；云端任务未必停止。迟到的本轮消息会被拒绝。`);
+      turn.failed = true;
+      this.say(s, `等待 Grok Bot 超过 ${this.settings['grok-bot.turnTimeout'] ?? 'PT30M'}，本轮已结束；云端任务未必停止。之后收到的原生消息将标为补充消息。`);
       this.finish(s, 'end_turn');
     }, this.timeout);
     return turn;
@@ -90,15 +96,15 @@ export class Adapter {
     for (const [toolCallId, call] of turn.tools) if (!call.background)
       this.update(s, { sessionUpdate: 'tool_call_update', toolCallId, status: 'failed', rawOutput: '本轮已结束，远端操作结果未确认' });
     this.clock.clearTimeout(turn.timer);
+    if (turn.activityId) this.update(s, { sessionUpdate: 'tool_call_update', toolCallId: turn.activityId, status: stopReason === 'cancelled' || turn.failed ? 'failed' : 'completed' });
+    if (turn.nativeId) s.closedRuns.add(turn.nativeId);
     s.turn = null;
     turn.controller.abort();
-    if (turn.autonomous) this.wait(s, 'waiting');
+    if (turn.autonomous) this.wait(s, s.watch ? 'waiting' : 'done');
     turn.resolve({ stopReason });
   }
-  active(s, turn, create = false) {
-    if (turn !== undefined && (typeof turn !== 'string' || s.turn?.id !== turn)) fail('轮次已结束或不匹配；迟到的消息不再接收');
-    // Webhook runs must carry their ID, including after a cancellation and a new prompt.
-    if (turn === undefined && s.turn && !s.turn.autonomous) fail('处理 Coda 消息必须带 Webhook 中的 turn');
+  active(s, id, create = false) {
+    if (id !== undefined && id !== s.turn?.id) fail('轮次已结束或不匹配');
     if (!s.turn && create) return this.start(s, true);
     return s.turn;
   }
@@ -112,13 +118,13 @@ export class Adapter {
     let saved = { bot: '', bound: false };
     if (load) {
       try {
-        const { bot, bound } = JSON.parse(readFileSync(this.file(id), 'utf8'));
-        saved = { bot, bound };
+        saved = JSON.parse(readFileSync(this.file(id), 'utf8'));
+        if (typeof saved.bot !== 'string' || typeof saved.bound !== 'boolean') fail('无效的 Bot 会话状态');
+        delete saved.instructions;
       }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
     }
-    const instructions = systemPrompt?.content.map(b => b.text).join('\n') ?? '';
-    const s = { id, saved, instructions, diagnosticsEnabled: mcpServers.some(server => server.name === 'diagnostics'), clients: [], routes: new Map(), unavailable: new Map(), turn: null };
+    const s = { id, saved, sent: new Map(), closedRuns: new Set(), texts: new Map(), widgets: new Set(), diagnosticsEnabled: mcpServers.some(server => server.name === 'diagnostics'), clients: [], routes: new Map(), unavailable: new Map(), turn: null };
     // Coda and the optional built-in diagnostics plugin are separate stdio MCP servers. Discover
     // both at load time; never treat a tool name returned by a server as authority
     // to expand the whitelist, or fall back to coda for absent diagnostics tools.
@@ -145,41 +151,207 @@ export class Adapter {
       s.routes.set(tool.name, catalog.client);
     }
     this.sessions.set(id, s);
-    this.wait(s, 'waiting');
+    if (this.auth.client) {
+      try { await this.refreshBots(); if (saved.bot) await this.attach(s); }
+      catch (error) { s.setupError = error.message; this.log(error.message); }
+    }
     return { ...(load ? {} : { sessionId: id }), configOptions: this.configs(s) };
   }
   async prompt(s, prompt) {
-    if (!Array.isArray(prompt) || prompt.some(block => block.type !== 'text' || typeof block.text !== 'string')) fail('Grok Bot 目前只接受文本；请在文本里提供可读取的附件路径');
-    const turn = this.start(s, false);
+    if (!Array.isArray(prompt) || prompt.some(b => b.type !== 'text' || typeof b.text !== 'string')) fail('Grok Bot 目前只接受文本');
     const text = prompt.map(b => b.text).join('\n');
-    s.input = { turn: turn.id, kind: inputKind(text), text };
-    // Return the turn promise immediately; cancellation also finishes while code/webhook is in flight.
+    if (!text.trim()) fail('消息不能为空');
+    const turn = this.start(s, false);
     void (async () => {
-      if (!s.saved.bound || text.trim() === '/bind') {
-        if (!this.remote) throw new Error('请先升级到支持远端 Agent 入口的 Coda，再绑定 Grok Bot。');
+      if (!this.auth.client || text.trim() === '/login') {
+        this.beginLogin(s); this.finish(s, 'end_turn'); return;
+      }
+      if (text.trim() === '/bind') {
+        if (!this.remote) throw new Error('请升级到支持远端 Agent 入口的 Coda');
         const code = await this.rpc.request('_coda/remote/code', { sessionId: s.id }, { signal: turn.controller.signal });
-        if (s.turn !== turn) return;
-        this.say(s, bindingGuide(s.id, code));
-        this.finish(s, 'end_turn');
+        if (s.turn === turn) { this.say(s, bindingGuide(s.id, code)); this.finish(s, 'end_turn'); }
         return;
       }
-      const bot = this.settings['grok-bot.bots']?.[s.saved.bot];
-      const keyPath = this.secrets['grok-bot.bots']?.[s.saved.bot]?.key;
-      if (!bot?.webhook || !keyPath) throw new Error('请在插件设置的 bots 表填写这个 Bot 的 Webhook 与密文 key，并在会话里选择它。');
-      const key = readFileSync(keyPath, 'utf8').trim();
-      if (!key) throw new Error('这个 Bot 的 Webhook key 为空');
-      const characters = [...text];
-      const preview = characters.slice(0, 500).join('') + (characters.length > 500 ? '……（完整内容用 coda_input 取）' : '');
-      const response = await this.fetcher(url(bot.webhook), { method: 'POST', redirect: 'error', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-        body: JSON.stringify({ source: 'coda', sessionId: s.id, turn: turn.id, kind: s.input.kind, preview }), signal: turn.controller.signal });
-      if (!response.ok) throw new Error(`Grok Webhook 返回 HTTP ${response.status}；未确认云端是否开始处理，不自动重发。`);
-      await response.body?.cancel();
-    })().catch(error => {
-      if (s.turn !== turn) return;
-      this.say(s, `消息未能完成：${error.message}`);
-      this.finish(s, 'end_turn');
-    });
+      if (!s.saved.bot) { this.say(s, '请在「这是哪个 Bot」中按名字或 ID 选择 Bot，再发送消息。'); this.finish(s, 'end_turn'); return; }
+      if (!s.watch) await this.attach(s);
+      if (s.turn === turn) await this.sendNative(s, turn, text);
+    })().catch(error => { if (s.turn === turn) { this.say(s, `消息未能完成：${error.message}；未自动重发。认证失效请发送 /login。`); this.finish(s, 'end_turn'); } });
     return turn.result;
+  }
+  beginLogin(s) {
+    const login = this.auth.login();
+    this.say(s, `请打开官方登录链接：${login.url}\n手机可能停在「Completing sign-in」，请再点一次 Continue。登录完成后会自动显示 Bot 列表。`);
+    if (this.loginTask) return;
+    const waitId = `grok-login-${randomUUID()}`;
+    this.rpc.notify('_coda/wait', { sessionId: s.id, waitId, kind: 'task', state: 'waiting', title: '等待 Grok 官方登录' });
+    this.loginTask = login.promise.then(async () => {
+      await this.refreshBots();
+      for (const session of this.sessions.values()) {
+        this.update(session, { sessionUpdate: 'config_option_update', configOptions: this.configs(session) });
+        if (session.saved.bot) { session.routines?.close(); session.watch?.close(); this.wait(session, 'done'); session.watch = null; await this.attach(session); }
+      }
+      this.rpc.notify('_coda/wait', { sessionId: s.id, waitId, state: 'handling' });
+      this.say(s, 'Grok 登录成功，请在「这是哪个 Bot」选择 Bot。');
+      this.rpc.notify('_coda/wait', { sessionId: s.id, waitId, state: 'done' });
+    }).catch(error => {
+      if (this.closed) return;
+      this.rpc.notify('_coda/wait', { sessionId: s.id, waitId, state: 'handling' });
+      this.say(s, `登录未完成：${error.message}；请发送 /login 重试。`);
+      this.rpc.notify('_coda/wait', { sessionId: s.id, waitId, state: 'failed' });
+    }).finally(() => { this.loginTask = null; });
+  }
+  nativeError(s, error) {
+    this.log(JSON.stringify({ sessionId: s.id, nativeError: error.message }));
+    if (s.lastNativeError === error.message) return;
+    s.lastNativeError = error.message;
+    const own = !s.turn; if (own) this.start(s, true);
+    this.say(s, `Grok 订阅：${error.message}。认证失效请发送 /login；其他断线按游标重连，不重发消息。`);
+    if (own) this.finish(s, 'end_turn');
+  }
+  async attach(s) {
+    if (!this.waits) throw new Error('当前 Coda 不支持 waits，无法保持原生订阅与自主轮次');
+    s.subscriptionId = `grok-native-${randomUUID()}`;
+    this.wait(s, 'waiting');
+    const watch = new NativeWatch({ client: this.auth.client, bot: s.saved.bot, saved: s.saved, clock: this.clock,
+      commit: () => { if (s.watch === watch) this.save(s); }, event: event => { if (s.watch === watch) return this.nativeEvent(s, event); }, error: error => {
+        if (s.watch !== watch) return;
+        this.nativeError(s, error);
+      } });
+    s.watch = watch;
+    s.routines?.close();
+    s.routines = new RoutineWatch({ client: this.auth.client, bot: s.saved.bot, saved: s.saved, clock: this.clock,
+      commit: () => this.save(s), notify: event => this.rpc.notify('_coda/wait', { sessionId: s.id, ...event }),
+      error: error => this.nativeError(s, error) });
+    try { await watch.start(); void s.routines.hint(); }
+    catch (error) { watch.close(); s.watch = null; this.wait(s, 'failed'); throw error; }
+  }
+  async sendNative(s, turn, text) {
+    turn.messageId = randomUUID();
+    s.sent.set(turn.messageId, turn.id);
+    const result = await this.auth.client.request('SendGrokBotUserMessage', { agentId: s.saved.bot, sessionId: '', messageId: turn.messageId, text,
+      sentAtMs: String(this.now()), source: 1, initiator: 1, sendSource: 1 }, { signal: turn.controller.signal });
+    if (!result.dispatched) throw new Error('Grok 未确认主会话开始执行');
+  }
+  async nativeEvent(s, event) {
+    if (this.closed) return;
+    if (event.connected) { if (s.connected) void s.routines.hint(); s.connected = true; return; }
+    if (event.routinesChanged) { void s.routines.hint(); return; }
+    if (event.heartbeat) s.lastNativeError = null;
+    if (event.entry) {
+      const { row, body } = event.entry;
+      if (body.kind === 'message' && body.role === 'user') {
+        if (s.sent.has(body.clientNonce)) {
+          if (s.sent.get(body.clientNonce) === s.turn?.id) s.turn.nativeId = body.requestId;
+          else s.closedRuns.add(body.requestId);
+        }
+        else {
+          if (s.turn?.settlement && s.turn.nativeId !== body.requestId) this.finish(s, 'end_turn');
+          if (!s.turn) this.start(s, true);
+          if (!s.turn.nativeId) s.turn.nativeId = body.requestId;
+          this.update(s, { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: body.content ?? '' } });
+        }
+        return;
+      }
+      if (body.kind !== 'send-message') return;
+      if (body.message?.type === 'widget' && (body.respondedValue !== undefined || body.widgetSkipped)) return;
+      const late = s.closedRuns.has(body.requestId);
+      if (!late && s.turn?.autonomous && s.turn.hasReply && s.turn.nativeId && s.turn.nativeId !== body.requestId) this.finish(s, 'end_turn');
+      if (!s.turn) {
+        this.start(s, true);
+        if (late) { this.say(s, 'Grok 上一轮补充消息：'); s.turn.settlement = { turnId: body.requestId, outcome: 'success', settledAtMs: String(this.now()) }; }
+      }
+      const turn = s.turn;
+      if (!turn.nativeId && !(late && turn.messageId)) turn.nativeId = body.requestId;
+      // Preserve late native output as an explicit supplement, never silently drop it.
+      if (body.requestId && turn.nativeId !== body.requestId) this.say(s, 'Grok 上一轮补充消息：');
+      if (turn.nativeId === body.requestId) {
+        turn.hasReply = true;
+        if (s.lastSettlement?.turnId === body.requestId) turn.settlement = s.lastSettlement;
+      }
+      if (body.message?.type === 'text') {
+        const text = body.message.content ?? '', previous = s.texts.get(row.entryId) ?? '';
+        if (text !== previous) this.say(s, text.startsWith(previous) ? text.slice(previous.length) : `\nGrok 修订消息：${text}`);
+        s.texts.set(row.entryId, text);
+      } else if (body.message?.type === 'widget') {
+        if (!s.widgets.has(row.entryId)) { s.widgets.add(row.entryId); void this.widget(s, turn, row.entryId, body.message.widget); }
+      } else this.say(s, `Grok 返回未支持的消息类型 ${body.message?.type ?? 'unknown'}，请在 Grok 客户端查看。`);
+      return;
+    }
+    if (event.live) {
+      const live = event.live;
+      if (live.hasRunningSubagents || s.hadSubagents) void s.routines.hint(!!live.hasRunningSubagents);
+      s.hadSubagents = !!live.hasRunningSubagents;
+      if (live.isRunning && !s.turn) this.start(s, true);
+      if (live.isRunning && s.turn) {
+        s.turn.nativeRunning = true;
+        if (live.activity?.kind === 'thinking' && !s.turn.thinking) {
+          s.turn.thinking = true;
+          this.update(s, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'Grok 正在思考（原生状态，未提供思考正文）' } });
+        }
+        if (live.activity?.kind === 'tool') {
+          const title = live.activity.detail || live.activity.tool || 'Grok 活动';
+          if (title !== s.turn.activityTitle) {
+            if (s.turn.activityId) this.update(s, { sessionUpdate: 'tool_call_update', toolCallId: s.turn.activityId, status: 'completed' });
+            s.turn.activityTitle = title; s.turn.activityId = randomUUID();
+            this.update(s, { sessionUpdate: 'tool_call', toolCallId: s.turn.activityId, title, kind: 'other', status: 'in_progress' });
+          }
+        }
+      }
+      if (live.awaiting) {
+        this.log(JSON.stringify({ sessionId: s.id, nativeAwaiting: live.awaiting }));
+        if (!s.awaiting) { if (!s.turn) this.start(s, true); this.say(s, 'Grok 正在等待原生审批，请到 Grok 客户端处理。'); }
+      }
+      s.awaiting = !!live.awaiting;
+      const settlement = live.lastTurnSettlement;
+      if (settlement && !live.isRunning) s.lastSettlement = settlement;
+      if (!live.isRunning && settlement && !s.closedRuns.has(settlement.turnId) && !(event.snapshot && !s.turn)) {
+        if (!s.turn) this.start(s, true);
+        if (!s.turn.nativeId) s.turn.nativeId = settlement.turnId;
+        if (s.turn.nativeId === settlement.turnId) {
+          s.turn.settlement = settlement; s.turn.nativeRunning = false;
+          if (settlement.outcome === 'cancelled') this.finish(s, 'cancelled');
+          else if (settlement.outcome !== 'success') { s.turn.failed = true; this.say(s, `Grok 运行结束：${settlement.outcome}`); this.finish(s, 'end_turn'); }
+        }
+      }
+    }
+    if (event.failed) {
+      const id = event.failed.turnId;
+      if (s.turn?.nativeId && id && s.turn.nativeId !== id) {
+        this.say(s, `Grok 其他轮次 ${id} 失败（${event.failed.code ?? 'unknown'}）`);
+      } else {
+        if (!s.turn) this.start(s, true);
+        s.turn.failed = true;
+        this.say(s, `Grok 运行失败（${event.failed.code ?? 'unknown'}）`);
+        this.finish(s, 'end_turn');
+      }
+    }
+    // Settlement can precede the final row. A later stream heartbeat plus a
+    // history reconciliation drains rows before returning the ACP prompt.
+    // There is no native "last body" bit: extremely late rows remain visible
+    // as a new autonomous supplement rather than being discarded.
+    if (event.heartbeat && s.turn?.settlement && !s.turn.widgetPending) {
+      const turn = s.turn;
+      if (BigInt(event.heartbeat.serverTimeMs ?? 0) < BigInt(turn.settlement.settledAtMs ?? 0)) return;
+      await s.watch.reconcile();
+      if (s.turn === turn && !turn.widgetPending && turn.hasReply) {
+        this.finish(s, 'end_turn');
+      }
+    }
+  }
+  async widget(s, turn, entryId, widget) {
+    turn.widgetPending = (turn.widgetPending ?? 0) + 1;
+    try {
+      if (!Array.isArray(widget?.options) || !widget.options.length) throw new Error('widget 没有可选项，请到 Grok 客户端处理');
+      const options = widget.options.map((option, index) => ({ optionId: String(index), name: option.label ?? String(option.value), kind: 'allow_once' }));
+      const answer = await this.rpc.request('session/request_permission', { sessionId: s.id,
+        toolCall: { toolCallId: `widget:${entryId}`, title: widget.prompt || 'Grok 提问', status: 'pending', kind: 'other' }, options }, { signal: turn.controller.signal });
+      if (answer.outcome?.outcome !== 'selected') return;
+      const choice = options.findIndex(o => o.optionId === answer.outcome.optionId);
+      if (choice < 0) throw new Error('未知 widget 选项');
+      const result = await this.auth.client.request('RespondGrokBotWidget', { agentId: s.saved.bot, sessionId: '', entryId, value: widget.options[choice].value });
+      if (!result.accepted) throw new Error('Grok 未接受 widget 回答');
+    } catch (error) { if (s.turn === turn) this.say(s, `Grok 卡片未完成：${error.message}`); }
+    finally { turn.widgetPending--; }
   }
   async trace(s, name, args, operation, replyAfter) {
     const turn = s.turn, toolCallId = randomUUID();
@@ -233,6 +405,7 @@ export class Adapter {
     if (name === 'new_session' && (typeof args.project !== 'string' || !args.project.trim()))
       fail('new_session 必须指定目标 project；Bot 所在的空目录没有代码，请选择要修复的项目');
     this.provider(s, name);
+    const local = !s.turn;
     const turn = this.active(s, id, WRITE.has(name));
     const signal = turn?.controller.signal;
     let forwarded = args;
@@ -249,7 +422,9 @@ export class Adapter {
     // Approval calls outlive a Coda turn and must not inherit its abort signal
     // or the MCP client's default 60-second timeout (null disables both).
     return this.trace(s, name, args, () => this.provider(s, name).call(name, forwarded, mayWaitForApproval ? null : signal),
-      mayWaitForApproval ? this.submissionWaitMs : undefined);
+      mayWaitForApproval ? this.submissionWaitMs : undefined).finally(() => {
+        if (local && turn && s.turn === turn && !turn.nativeRunning && !turn.nativeId) this.finish(s, 'end_turn');
+      });
   }
   provider(s, name) {
     const client = s.routes.get(name);
@@ -286,18 +461,27 @@ export class Adapter {
     const s = this.session(p.sessionId);
     if (method === 'session/set_config_option') {
       if (p.configId === 'model' && p.value === 'grok-bot') return { configOptions: this.configs(s) };
-      if (p.configId !== 'bot' || typeof p.value !== 'string' || (p.value !== '' && !Object.hasOwn(this.settings['grok-bot.bots'] ?? {}, p.value))) fail('未知的 Bot 配置');
-      if (p.value !== s.saved.bot) {
-        if (s.turn) fail('请先结束本轮再切换 Bot');
-        if (s.saved.bot) s.saved.bound = false;
-        s.saved.bot = p.value;
-        this.save(s);
-      }
+      if (p.configId !== 'bot' || typeof p.value !== 'string') fail('未知的 Bot 配置');
+      await this.refreshBots();
+      const bot = this.bots.find(b => b.agentId === p.value || b.name === p.value);
+      if (p.value && !bot) fail('未找到 Bot，请先 /login 并刷新列表');
+      if (s.turn) fail('请先结束本轮再切换 Bot');
+      if ((bot?.agentId ?? '') === s.saved.bot) return { configOptions: this.configs(s) };
+      if (s.watch) { s.watch.close(); this.wait(s, 'done'); s.watch = null; }
+      s.routines?.close();
+      s.saved = { bot: bot?.agentId ?? '', bound: false };
+      s.closedRuns.clear(); s.texts.clear(); s.widgets.clear(); s.sent.clear();
+      s.connected = false; s.hadSubagents = false; s.lastSettlement = null; s.awaiting = false;
+      this.save(s);
+      if (bot) await this.attach(s);
       return { configOptions: this.configs(s) };
     }
     if (method === 'session/prompt') return this.prompt(s, p.prompt);
     if (method === 'session/cancel') {
-      if (s.turn) { this.say(s, '本轮已取消；Grok 云端任务未必停止，迟到的本轮消息不会加入后续轮次。'); this.finish(s, 'cancelled'); }
+      if (s.turn && s.saved.bot && this.auth.client) {
+        await this.auth.client.request('InterruptGrokBotAgentRun', { agentId: s.saved.bot, sessionId: '' });
+      }
+      if (s.turn) this.finish(s, 'cancelled');
       return {};
     }
     const args = p.params ?? {};
@@ -305,32 +489,13 @@ export class Adapter {
     if (p.method === 'hello') {
       s.saved.bound = true;
       this.save(s);
-      // The HTTP response can be lost after this request succeeds. Keep the
-      // instructions available to every bind (including a different Bot).
-      return { sessionId: s.id, bot: s.saved.bot, instructions: s.instructions };
+      // Idempotent confirmation of the authenticated Coda tool binding.
+      return { sessionId: s.id, bot: s.saved.bot };
     }
     if (!s.saved.bound) fail('Bot 尚未完成绑定，请先运行 bind');
-    if (p.method === 'input') {
-      if (typeof args.turn !== 'string' || !args.turn) fail('input 必须带 Webhook 的 turn');
-      if (!s.input || s.input.turn !== args.turn) fail('本轮输入不存在或已被下一轮替换；请使用最新 Webhook 的 turn');
-      return { ...s.input, instructions: s.instructions };
-    }
-    if (p.method === 'say') {
-      if (typeof args.text !== 'string' || !args.text.trim()) fail('say 需要非空 text');
-      const turn = this.active(s, args.turn, true);
-      this.say(s, args.text);
-      return { turn: turn.id };
-    }
-    if (p.method === 'done') {
-      const turn = this.active(s, args.turn);
-      if (!turn) fail('没有正在进行的轮次');
-      if (turn.tools.size) fail('仍有工具调用或审批在进行，请等待结果再 done');
-      this.finish(s, 'end_turn');
-      return {};
-    }
     if (p.method === 'tool') return this.tool(s, args);
     if (p.method === 'telemetry') return this.telemetry(s, args);
     fail(`未知的远端方法：${p.method}`);
   }
-  close() { for (const s of this.sessions.values()) { this.finish(s, 'cancelled'); for (const client of s.clients) client.close(); } }
+  close() { this.closed = true; this.auth.close(); for (const s of this.sessions.values()) { s.routines?.close(); s.watch?.close(); this.finish(s, 'cancelled'); for (const client of s.clients) client.close(); } }
 }

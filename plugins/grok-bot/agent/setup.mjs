@@ -18,7 +18,8 @@ curl -fL ${quote(`${RAW}/SKILL.md`)} -o /workspace/.coda-bot/SKILL.md
 net 若打印 Tailscale 登录链接，请让我完成登录，把云电脑加入能访问 Coda 后端的 tailnet；然后重新执行 bind。密钥需要时使用 Grok 的密钥卡片，不贴到聊天。
 
 在 Bot 设置里添加命令启动的自定义 MCP 服务：\`node /workspace/.coda-bot/coda-bot.mjs mcp\`。同账号多个 Bot 共用云电脑时，每个 Bot 必须在命令末尾追加自己的会话 ID：\`${sessionId}\`，避免串用绑定。
-读取并安装 /workspace/.coda-bot/SKILL.md 为此 Bot 的 Skill；bind 输出的会话指令也要遵守。
-建立两个 Routine：一个 Webhook 触发，保留请求 JSON 的 sessionId 与 turn，每次先用 coda_input(turn) 取完整正文再做事，preview 只是预览，最后 coda_done；一个定时巡检，按 Skill 检查性能、稳定性与逻辑问题，没问题不说话。
-把 Webhook 地址告诉我，key 经密钥卡片处理；我会把它们填到 Coda 插件 grok-bot.bots 表的同一行（行名为你的 Bot 名），并在会话「这是哪个 Bot」里选择这一行。Webhook 的 HTTP 200 只表示启动，最终答复须通过 coda_say / coda_done 送回 Coda。`;
+读取并安装 /workspace/.coda-bot/SKILL.md 为此 Bot 的 Skill。
+正常消息与回复走原生主会话，定时任务仍由 Grok Routine 执行。
+升级旧 Bot：不再需要 Coda 消息（coda）Webhook Routine。保留 Coda 巡检（coda-2）定时 Routine；请先让我确认，再将旧指令中的 coda_input、coda_say、coda_done 改成「有发现就在对话里告诉用户」。更新脚本和 Skill 后重启 MCP。
+这些工具只提供 Coda 数据和经卡片授权的操作，Bot 的正常回复会自动镜像到 Coda。`;
 }

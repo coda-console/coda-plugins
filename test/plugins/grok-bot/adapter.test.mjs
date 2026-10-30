@@ -1,652 +1,345 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { PassThrough } from 'node:stream';
-import { Rpc } from '../../../plugins/grok-bot/agent/rpc.mjs';
-import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { harness, http, mailbox, temporary } from './helpers.mjs';
-import { bind } from '../../../plugins/grok-bot/remote/coda-bot.mjs';
+import { readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import { Adapter, SUBMISSION_WAIT_MS } from '../../../plugins/grok-bot/agent/session.mjs';
+import { FakeNative } from './native-fixture.mjs';
+import { fakeClock, mailbox, temporary, harness } from './helpers.mjs';
 import { schemas } from '../../../check/schema.mjs';
-import { SUBMISSION_WAIT_MS } from '../../../plugins/grok-bot/agent/session.mjs';
 
-test('unbound instructions carry one-time code, commands and missing-address explanation', async t => {
-  const h = await harness(t);
-  assert.deepEqual(h.initialized.agentCapabilities._meta.coda.remote, {});
-  assert.equal(h.created.configOptions[0].currentValue, 'grok-bot');
-  assert.equal((await h.prompt('hello')).stopReason, 'end_turn');
-  for (const text of ['single-use-code', 'http://100.88.214.15:8080', '/workspace/.coda-bot/', 'coda-bot.mjs net', 'coda-bot.mjs bind', 'coda-bot.mjs mcp', 'SKILL.md', 'Routine']) assert.ok(h.text().includes(text), text);
-  assert.equal(h.events.filter(e => e.method === '_coda/remote/code').length, 1);
-  assert.equal(h.adapter.clock.size, 0);
-  const { bindingGuide } = await import('../../../plugins/grok-bot/agent/setup.mjs');
-  assert.match(bindingGuide('s', { code: 'code', expiresAt: '2030-01-01T00:00:00Z', addresses: [] }), /尚未提供远端入口地址/);
-});
-
-test('old Coda gets an upgrade explanation without sending unknown requests', async t => {
-  const h = await harness(t, { capabilities: { waits: {} } });
-  await h.prompt('hello');
-  assert.match(h.text(), /升级/);
-  assert.equal(h.events.some(e => e.method === '_coda/remote/code'), false);
-});
-
-test('new/load no longer expose Bot approval modes or accept session/set_mode', async t => {
-  const h = await harness(t, { mcpFactory: () => ({ list: async () => ({ tools: [] }), close() {} }) });
-  const manifest = JSON.parse(readFileSync(new URL('../../../plugins/grok-bot/package.json', import.meta.url), 'utf8'));
-  assert.equal(manifest.contributes.agents[0].modes, undefined);
-  h.adapter.close();
-  h.adapter.sessions.clear();
-  const loaded = await h.client.request('session/load', { ...h.open, sessionId: h.sessionId });
-  for (const response of [h.created, loaded]) {
-    assert.equal(response.modes, undefined);
-    assert.equal(response.configOptions.some(option => option.category === 'mode'), false);
-  }
-  for (const modeId of ['auto', 'manual']) await assert.rejects(
-    h.client.request('session/set_mode', { sessionId: h.sessionId, modeId }), /Method not found/);
-  assert.equal(h.events.some(event => event.params.update?.sessionUpdate === 'current_mode_update'), false);
-});
-
-async function bound(t, extra = {}) {
-  const deliveries = mailbox();
-  const webhook = await http(t, (request, response, body) => {
-    deliveries.push({ request, body });
-    response.writeHead(extra.status ?? 200); response.end('{}');
-  });
-  const h = await harness(t, { ...extra, settings: { 'grok-bot.bots': { inspector: { webhook, key: null } }, ...extra.settings } });
-  await h.select();
-  const hello = await h.remote('hello');
-  assert.equal(hello.instructions, 'session instructions marker');
-  return { ...h, deliveries };
+async function setup(t, { auth = true, settings = {}, root = temporary(t), mcp, permission, native = new FakeNative() } = {}) {
+  if (auth) writeFileSync(join(root, 'native-auth.json'), JSON.stringify({ accessToken: 'fixture' }), { mode: 0o600 });
+  const events = [], logs = [], processed = mailbox(), calls = [], requests = mailbox();
+  const clock = fakeClock();
+  const adapter = new Adapter({ env: { CODA_PLUGIN_STATE: root, CODA_PLUGIN_SETTINGS: JSON.stringify(settings) }, fetcher: native.fetch, clock,
+    rpc: { notify(method, params) { events.push({ method, params }); }, async request(method, params) { requests.push({ method, params });
+      if (method === '_coda/remote/code') return { code: 'bind-code', addresses: ['http://100.64.0.1:8080'] };
+      if (method === 'session/request_permission') return permission ? permission(params) : { outcome: { outcome: 'selected', optionId: '1' } };
+      throw new Error(method);
+    } }, log: text => logs.push(text), mcpFactory: server => ({
+      list: async () => ({ tools: (server.name === 'diagnostics' ? ['machines', 'machine_diagnostics'] : ['status', 'read_thread', 'read_tool_call', 'agents', 'workflow_status', 'workflow_list', 'new_session', 'send', 'spawn', 'cancel', 'exec']).map(name => ({ name })) }),
+      call: async (name, args, signal) => { calls.push({ name, args, server: server.name }); if (mcp) return mcp(name, args, signal);
+        return { content: [{ type: 'text', text: JSON.stringify(name === 'status' ? { turn: 'coda-ticket' } : { name, args }) }] }; }, close() {} }) });
+  const original = adapter.nativeEvent.bind(adapter);
+  adapter.nativeEvent = async (s, e) => { await original(s, e); processed.push(e); };
+  t.after(() => adapter.close());
+  await adapter.handle('initialize', { clientCapabilities: { _meta: { coda: { waits: {}, remote: {} } } } });
+  const open = { cwd: root, mcpServers: [{ name: 'coda' }, { name: 'diagnostics' }], systemPrompt: { mode: 'append', content: [{ type: 'text', text: 'DO NOT INJECT THIS' }] } };
+  const result = await adapter.handle('session/new', open), id = result.sessionId;
+  const s = adapter.session(id);
+  const h = { adapter, s, id, result, root, native, clock, events, logs, calls, requests, open,
+    text: () => events.filter(e => e.params.update?.sessionUpdate === 'agent_message_chunk').map(e => e.params.update.content.text).join('\n'),
+    select: () => adapter.handle('session/set_config_option', { sessionId: id, configId: 'bot', value: 'inspector' }),
+    prompt: text => adapter.handle('session/prompt', { sessionId: id, prompt: [{ type: 'text', text }] }),
+    remote: (method, params = {}) => adapter.handle('_coda/remote', { sessionId: id, method, params }),
+    until: async predicate => { for (;;) { const e = await processed.next(); if (predicate(e)) return e; } },
+    async emit(e) { native.emit(e); const key = e.rows ? 'entry' : Object.keys(e)[0] === 'agentState' ? 'live' : Object.keys(e)[0]; return this.until(x => x[key]); },
+  };
+  return h;
 }
+const live = value => ({ agentState: { live: [{ agentId: 'inspector', ...value }] } });
+const settle = id => live({ lastTurnSettlement: { turnId: id, outcome: 'success', settledAtMs: '100' } });
+const heartbeat = { heartbeat: { serverTimeMs: '200' } };
+async function connected(t, options) { const h = await setup(t, options); await h.select(); await h.until(e => e.connected); await h.remote('hello'); await h.s.routines.flight; return h; }
+async function sent(h, text = '原样正文') {
+  const done = h.prompt(text), request = await h.native.next('SendGrokBotUserMessage');
+  await h.emit(h.native.row(`u${h.native.entries.length}`, { kind: 'message', role: 'user', content: text, clientNonce: request.params.messageId, requestId: request.params.messageId }));
+  return { done, id: request.params.messageId, request };
+}
+async function reply(h, id, text = '42', entry = 'reply') { await h.emit(h.native.row(entry, { kind: 'send-message', requestId: id, message: { type: 'text', content: text } })); }
 
-test('prompt -> Webhook -> say -> done; bearer secret, traces and subsequent child-result prompt', async t => {
-  const h = await bound(t);
-  const pending = h.prompt('inspect');
-  const { body, request } = await h.deliveries.next();
-  assert.equal(request.headers.authorization, 'Bearer secret-for-fixture');
-  assert.deepEqual({ ...body, turn: 'ID' }, { source: 'coda', sessionId: h.sessionId, turn: 'ID', kind: 'message', preview: 'inspect' });
-  await assert.rejects(h.remote('say', { text: 'missing ID' }), /必须带/);
-  await h.remote('say', { text: 'report', turn: body.turn });
-  await h.remote('tool', { name: 'read_thread', arguments: { reference: 'thread' }, turn: body.turn });
-  await h.remote('done', { turn: body.turn });
-  assert.equal((await pending).stopReason, 'end_turn');
-  assert.match(h.text(), /report/);
-  assert.equal((await h.remote('hello')).instructions, 'session instructions marker');
-  const updates = h.events.filter(e => e.method === 'session/update');
-  assert.ok(updates.some(e => e.params.update.sessionUpdate === 'tool_call_update'));
-  for (const e of updates) assert.ok(schemas.zSessionNotification.safeParse(e.params).success, JSON.stringify(e.params));
-  const child = h.prompt('Child session completed: fixed');
-  const next = (await h.deliveries.next()).body;
-  assert.match(next.preview, /Child session completed/);
-  assert.equal(next.kind, 'result');
-  assert.equal((await h.remote('input', { turn: next.turn })).text, 'Child session completed: fixed');
-  assert.notEqual(next.turn, body.turn);
-  await assert.rejects(h.remote('say', { text: 'late', turn: body.turn }), /轮次已结束/);
-  await h.remote('done', { turn: next.turn });
-  await child;
+test('new/load probes leave no state files; selected Bot and binding persist without instructions', async t => {
+  const h = await setup(t, { auth: false });
+  for (let i = 0; i < 4; i++) await h.adapter.open(h.open, false);
+  await h.adapter.open({ ...h.open, sessionId: 'never-persisted' }, true);
+  assert.deepEqual(readdirSync(h.root), []);
+  await h.remote('hello');
+  assert.equal(readdirSync(h.root).length, 1);
+  assert.doesNotMatch(readFileSync(h.adapter.file(h.id), 'utf8'), /instructions|DO NOT/);
 });
 
-test('autonomous say registers handling before output and done returns recurring timer to waiting', async t => {
-  const h = await bound(t);
+test('native send is unchanged; settlement before reply waits; events are valid ACP and tool details are not invented', async t => {
+  const h = await connected(t), run = await sent(h, '正文😀'.repeat(2000));
+  assert.equal(run.request.params.text, '正文😀'.repeat(2000));
+  assert.equal(run.request.params.sessionId, '');
+  assert.doesNotMatch(JSON.stringify(run.request), /DO NOT INJECT|coda-session-instructions/);
+  await h.emit(live({ isRunning: true, activity: { kind: 'thinking' } }));
+  await h.emit(live({ isRunning: true, activity: { kind: 'tool', tool: 'SetStatus', detail: '检查机器' } }));
+  await h.emit(settle(run.id));
+  await h.emit(heartbeat);
+  assert.ok(h.s.turn, 'terminal state alone is not a reply');
+  await reply(h, run.id); await h.emit(heartbeat);
+  assert.equal((await run.done).stopReason, 'end_turn');
+  assert.match(h.text(), /42/);
+  const tool = h.events.find(e => e.params.update?.title === '检查机器').params.update;
+  assert.equal(tool.rawInput, undefined); assert.equal(tool.rawOutput, undefined);
+  assert.ok(h.events.some(e => e.params.update?.toolCallId === tool.toolCallId && e.params.update.status === 'completed'));
+  for (const e of h.events.filter(e => e.method === 'session/update')) assert.equal(schemas.zSessionNotification.safeParse(e.params).success, true, JSON.stringify(e.params));
+});
+
+test('reply before settlement, duplicate rows, and history reconciliation deliver text once', async t => {
+  const h = await connected(t), run = await sent(h);
+  const event = h.native.row('answer', { kind: 'send-message', requestId: run.id, message: { type: 'text', content: 'unique-answer' } });
+  await h.emit(event); h.native.emit(event);
+  await h.emit(settle(run.id)); await h.emit(heartbeat); await run.done;
+  assert.equal(h.text().match(/unique-answer/g).length, 1);
+});
+
+test('desktop-initiated main run is autonomous', async t => {
+  const h = await connected(t);
   const start = h.events.length;
-  const { turn } = await h.remote('say', { text: 'found a problem' });
-  await h.remote('done', { turn });
+  await h.emit(live({ isRunning: true }));
+  await h.emit(h.native.row('desktop', { kind: 'message', role: 'user', content: 'desktop input', requestId: 'desktop-run' }));
+  await reply(h, 'desktop-run', 'desktop response'); await h.emit(settle('desktop-run')); await h.emit(heartbeat);
   const events = h.events.slice(start);
   assert.equal(events[0].params.state, 'handling');
-  assert.equal(events[1].params.update.content.text, 'found a problem');
-  assert.equal(events[2].params.state, 'waiting');
-  assert.equal(events[2].params.recurring, true);
-  assert.equal(h.adapter.clock.size, 0);
+  assert.equal(events.at(-1).params.state, 'waiting');
 });
 
-test('Webhook previews a long child result; input retains full text until the next turn starts', async t => {
-  const h = await bound(t);
-  const text = '[Coda] 以下子会话已结束，结果自动送达，不需要查询或等待。\n\n' + '完整结果😀'.repeat(2000);
-  const pending = h.prompt(text);
-  const { body } = await h.deliveries.next();
-  assert.deepEqual(body, { source: 'coda', sessionId: h.sessionId, turn: body.turn, kind: 'result',
-    preview: [...text].slice(0, 500).join('') + '……（完整内容用 coda_input 取）' });
-  assert.doesNotMatch(JSON.stringify(body), /coda-session-instructions|session instructions marker/);
-  const expected = { turn: body.turn, kind: 'result', text, instructions: 'session instructions marker' };
-  assert.deepEqual(await h.remote('input', { turn: body.turn }), expected);
-  await assert.rejects(h.remote('input'), /必须带/);
-  await assert.rejects(h.remote('input', { turn: 'wrong-turn' }), /不存在或已被下一轮替换/);
-  await h.remote('done', { turn: body.turn });
-  await pending;
-  const count = h.events.length;
-  assert.deepEqual(await h.remote('input', { turn: body.turn }), expected);
-  assert.equal(h.events.length, count, 'reading finished input does not start a turn');
-  const next = h.prompt('next task');
-  const nextBody = (await h.deliveries.next()).body;
-  await assert.rejects(h.remote('input', { turn: body.turn }), /不存在或已被下一轮替换/);
-  assert.equal((await h.remote('input', { turn: nextBody.turn })).text, 'next task');
-  await h.remote('done', { turn: nextBody.turn });
-  await next;
-  const autonomous = await h.remote('say', { text: 'routine report' });
-  await assert.rejects(h.remote('input', { turn: nextBody.turn }), /不存在或已被下一轮替换/);
-  await assert.rejects(h.remote('input', { turn: autonomous.turn }), /不存在或已被下一轮替换/);
-  await h.remote('done');
+test('widget maps options to Coda permission and selected value to native Respond', async t => {
+  const h = await connected(t), run = await sent(h);
+  await h.emit(h.native.row('widget1', { kind: 'send-message', requestId: run.id, message: { type: 'widget', widget: { prompt: '选择', options: [{ label: 'A', value: 'a' }, { label: 'B', value: 'b' }] } } }));
+  const permission = await h.requests.next();
+  assert.equal(permission.method, 'session/request_permission');
+  assert.deepEqual(permission.params.options.map(o => o.name), ['A', 'B']);
+  assert.deepEqual((await h.native.next('RespondGrokBotWidget')).params, { agentId: 'inspector', sessionId: '', entryId: 'widget1', value: 'b' });
+  await h.emit(settle(run.id)); await h.emit(heartbeat); await run.done;
 });
 
-test('preview counts Unicode characters, marks truncation, and falls back to message for unknown content', async t => {
-  const h = await bound(t);
-  for (const [text, kind, preview] of [
-    ['😀'.repeat(500), 'message', '😀'.repeat(500)],
-    ['😀'.repeat(501), 'message', '😀'.repeat(500) + '……（完整内容用 coda_input 取）'],
-    ['[Coda] 流程巡检交给你一个任务', 'notification', '[Coda] 流程巡检交给你一个任务'],
-    ['请检查子会话的结果', 'message', '请检查子会话的结果'],
-  ]) {
-    const pending = h.prompt(text);
-    const { body } = await h.deliveries.next();
-    assert.equal(body.kind, kind);
-    assert.equal(body.preview, preview);
-    assert.deepEqual(await h.remote('input', { turn: body.turn }), { turn: body.turn, kind, text, instructions: 'session instructions marker' });
-    await h.remote('done', { turn: body.turn });
-    await pending;
-  }
+test('interrupt calls native service; late output remains visible without reopening a closed prompt', async t => {
+  const h = await connected(t), run = await sent(h);
+  await h.adapter.handle('session/cancel', { sessionId: h.id });
+  assert.equal((await run.done).stopReason, 'cancelled');
+  assert.equal((await h.native.next('InterruptGrokBotAgentRun')).params.sessionId, '');
+  await reply(h, run.id, 'late reply');
+  assert.equal(h.s.turn.autonomous, true); assert.match(h.text(), /late reply/);
 });
 
-test('inputKind recognizes both project/directory wording and independent-session notifications', async t => {
-  const h = await bound(t);
-  for (const [text, kind] of [
-    ['[Coda] 你请求派到其他项目的子会话：已批准', 'result'],
-    ['[Coda] 你请求派到其他目录的子会话：已批准', 'result'],
-    ['[Coda] 已开出：[修复](coda://threads/independent)', 'notification'],
-    ['已开出：[修复](coda://threads/independent)', 'notification'],
-    ['[Coda] 用户拒绝了：修复', 'notification'],
-    ['用户拒绝了：修复', 'notification'],
-    ['未能开出：修复（目录已删除）', 'notification'],
-    ['这张卡片已失效，没有开出：修复', 'notification'],
-    ['我说已开出只是一个例子', 'message'],
-  ]) {
-    const pending = h.prompt(text);
-    const { body } = await h.deliveries.next();
-    assert.equal(body.kind, kind);
-    assert.equal((await h.remote('input', { turn: body.turn })).kind, kind);
-    await h.remote('done', { turn: body.turn });
-    await pending;
-  }
+test('awaiting is explained in Coda and logged without pretending to resolve auto-review', async t => {
+  const h = await connected(t);
+  await h.emit(live({ isRunning: true, awaiting: { approvalId: 'sample' } }));
+  assert.match(h.text(), /Grok 客户端/);
+  assert.ok(h.logs.some(x => x.includes('approvalId')));
+  assert.equal(h.native.requests.some(r => r.method.includes('Resolve')), false);
 });
 
-test('cancel and timeout retain readable input without allowing late output', async t => {
-  const h = await bound(t);
-  for (const action of ['cancel', 'timeout']) {
-    const pending = h.prompt(action);
-    const { body } = await h.deliveries.next();
-    if (action === 'cancel') await h.client.request('session/cancel', { sessionId: h.sessionId });
-    else h.adapter.clock.expire();
-    await pending;
-    assert.equal((await h.remote('input', { turn: body.turn })).text, action);
-    await assert.rejects(h.remote('say', { turn: body.turn, text: 'late' }), /轮次已结束/);
-  }
+test('login polls officially, includes Continue hint, writes private credentials and refreshes Bot options', async t => {
+  const h = await setup(t, { auth: false });
+  await h.prompt('hello'); await h.native.next('poll');
+  assert.match(h.text(), /loginDeepControl/); assert.match(h.text(), /Continue/);
+  await h.clock.untilTimer(2000); h.clock.advance(2000); await h.native.next('poll');
+  await h.adapter.loginTask;
+  assert.equal(statSync(join(h.root, 'native-auth.json')).mode & 0o777, 0o600);
+  assert.equal(h.adapter.bots[0].agentId, 'inspector');
+  assert.doesNotMatch(h.text(), /fixture-access/);
 });
 
-test('all read tools proxy outside a turn with logs only; disallowed tools never reach MCP', async t => {
-  const h = await bound(t);
-  assert.deepEqual(h.discovered().sort(), ['coda', 'diagnostics']);
-  const start = h.events.length;
-  for (const name of ['read_thread', 'read_tool_call', 'agents', 'status', 'workflow_status', 'workflow_list', 'machines', 'machine_diagnostics']) {
-    const result = await h.remote('tool', { name, arguments: { reference: 'reference', machine: 'machine', kind: 'network' } });
-    assert.ok(result.content.length);
-  }
-  assert.equal(h.calls().length, 8);
-  assert.deepEqual(h.calls().map(c => [c.name, c.server]).slice(-2), [['machines', 'diagnostics'], ['machine_diagnostics', 'diagnostics']]);
-  assert.equal(h.events.length, start);
-  assert.equal(h.logs.length, 16);
-  for (const name of ['exec', 'workflow_run', 'tools/call', '__proto__', 'forbidden_tool', 'spawn', 'cancel']) await assert.rejects(h.remote('tool', { name }), /不允许代理/);
-  assert.equal(h.calls().length, 8);
+test('disconnect reconnects with committed cursor; expired cursor replays by entry ID without repeats', async t => {
+  const h = await connected(t), run = await sent(h);
+  await reply(h, run.id, 'once', 'dedup');
+  h.native.drop();
+  // Wait for the adapter's synchronous error report, then advance retry time.
+  await new Promise(resolve => { const old = h.adapter.log; h.adapter.log = value => { old(value); resolve(); }; if (h.logs.length) resolve(); });
+  await h.clock.untilTimer(1000); h.clock.advance(1000); await h.native.next('WatchGrokBotTranscripts');
+  await h.until(e => e.connected);
+  const requests = h.native.requests.filter(r => r.method === 'WatchGrokBotTranscripts');
+  assert.equal(requests.at(-1).params.cursors[0].afterUpdatedSeq, '2');
+  h.native.emit({ cursorTooOld: {} });
+  await h.native.next('ListGrokBotTranscriptEntries');
+  // A connection that fails again before a heartbeat increases the backoff.
+  await h.clock.untilTimer(2000); h.clock.advance(2000);
+  await h.native.next('WatchGrokBotTranscripts'); await h.until(e => e.connected);
+  await h.emit(settle(run.id)); await h.emit(heartbeat); await run.done;
+  assert.equal(h.text().match(/once/g).length, 1);
 });
 
-test('missing diagnostics reports diagnostics unavailable while coda reads still work', async t => {
-  const h = await bound(t, { diagnostics: false });
-  assert.deepEqual(h.discovered(), ['coda']);
-  for (const name of ['machines', 'machine_diagnostics']) await assert.rejects(h.remote('tool', { name }), /这两个工具需要在 Coda 里安装并为这个目录启用『机器诊断』插件/);
-  await h.remote('tool', { name: 'read_thread', arguments: { reference: 'thread' } });
-  assert.deepEqual(h.calls().map(c => [c.name, c.server]), [['read_thread', 'coda']]);
-});
-
-test('new_session requires a target project before starting a turn or calling MCP', async t => {
-  const h = await bound(t);
-  const start = h.events.length;
-  for (const project of [undefined, null, '', '  ', 123])
-    await assert.rejects(h.remote('tool', { name: 'new_session', arguments: { agent: 'codex', prompt: 'fix', project } }), /必须指定目标 project/);
-  assert.deepEqual(h.calls(), []);
-  assert.equal(h.events.length, start);
-});
-
-test('new_session with project starts a turn and proxies with a fresh ticket and requestId, without extra approval', async t => {
-  const h = await bound(t);
-  const result = await h.remote('tool', { name: 'new_session', arguments: { agent: 'codex', project: 'app', mode: 'agent', model: 'model-id', effort: 'high', options: { custom: true }, title: 'Fix issue', prompt: 'fix', turn: 'forged', requestId: 'forged' } });
-  const { args } = JSON.parse(result.content[0].text);
-  assert.deepEqual(args, { agent: 'codex', project: 'app', mode: 'agent', model: 'model-id', effort: 'high', options: { custom: true }, title: 'Fix issue', prompt: 'fix', turn: 'coda-ticket', requestId: args.requestId });
-  assert.match(result.content[0].text, /已请用户批准/);
-  assert.equal(args.turn, 'coda-ticket');
-  assert.notEqual(args.requestId, 'forged');
-  assert.deepEqual(h.calls().map(c => c.name), ['status', 'new_session']);
-  assert.equal(h.events.some(e => e.method === 'session/request_permission'), false);
-  const handling = h.events.findIndex(e => e.params.state === 'handling');
-  assert.ok(handling >= 0 && handling < h.events.findIndex(e => e.params.update?.sessionUpdate === 'tool_call'));
-  await h.remote('done');
-});
-
-test('new_session and send preserve Coda refusal without retry or adapter approval', async t => {
-  const h = await bound(t);
-  for (const [name, args] of [['new_session', { project: 'app', agent: 'codex', mode: 'agent', prompt: 'fix', error: true }], ['send', { childId: 'independent', prompt: 'inspect', error: true }]]) {
-    const result = await h.remote('tool', { name, arguments: args });
-    assert.equal(result.isError, true);
-    const { turn, requestId, ...forwarded } = h.calls().at(-1).arguments;
-    assert.deepEqual(forwarded, args);
-    assert.equal(turn, 'coda-ticket');
-    assert.match(requestId, /^[0-9a-f-]{36}$/);
-  }
-  assert.deepEqual(h.calls().map(call => call.name), ['status', 'new_session', 'status', 'send']);
-  assert.equal(h.events.some(event => event.method === 'session/request_permission'), false);
-  await h.remote('done');
-});
-
-test('missing new_session reports unavailable without falling back to spawn or starting a turn', async t => {
-  const calls = [];
-  const h = await bound(t, { mcpFactory: () => ({
-    list: async () => ({ tools: ['status', 'spawn', 'cancel'].map(name => ({ name })) }),
-    call: async (...args) => { calls.push(args); return {}; }, close() {},
-  }) });
-  const count = h.events.length;
-  await assert.rejects(h.remote('tool', { name: 'new_session', arguments: { project: 'app', agent: 'codex', prompt: 'fix' } }), /new_session 不可用/);
-  for (const name of ['spawn', 'cancel']) await assert.rejects(h.remote('tool', { name }), /不允许代理/);
-  assert.deepEqual(calls, []);
-  assert.equal(h.events.length, count);
-});
-
-test('writes reuse requestId for equivalent JSON in a turn, but separate names, arguments and turns', async t => {
-  const h = await bound(t);
-  const args = { agent: 'codex', mode: 'agent', project: 'coda', prompt: 'fix', options: { z: 1, a: [{ y: 2, x: 3 }, 'tail'] } };
-  const reordered = { options: { a: [{ x: 3, y: 2 }, 'tail'], z: 1 }, prompt: 'fix', project: 'coda', agent: 'codex', mode: 'agent' };
-  for (const name of ['new_session', 'send']) {
-    await h.remote('tool', { name, arguments: { ...args, turn: 'forged-a', requestId: 'forged-a' } });
-    await h.remote('tool', { name, arguments: { ...reordered, turn: 'forged-b', requestId: 'forged-b' } });
-  }
-  const first = h.calls().filter(c => c.name !== 'status');
-  for (let i = 0; i < first.length; i += 2) {
-    assert.equal(first[i].arguments.requestId, first[i + 1].arguments.requestId);
-    assert.match(first[i].arguments.requestId, /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
-    assert.equal(first[i].arguments.turn, 'coda-ticket');
-  }
-  assert.equal(new Set(first.map(c => c.arguments.requestId)).size, 2);
-  await h.remote('tool', { name: 'new_session', arguments: { ...args, prompt: 'different task' } });
-  const different = h.calls().at(-1).arguments.requestId;
-  assert.notEqual(different, first[0].arguments.requestId);
-  await h.remote('tool', { name: 'new_session', arguments: { ...args, options: { z: 1, a: ['tail', { y: 2, x: 3 }] } } });
-  assert.notEqual(h.calls().at(-1).arguments.requestId, first[0].arguments.requestId, 'array order matters');
-  await h.remote('done');
+test('Coda tools preserve whitelist, routing, authorization ticket and stable request ID', async t => {
+  const h = await connected(t), run = await sent(h);
+  for (const name of ['read_thread', 'machines', 'machine_diagnostics']) await h.remote('tool', { name });
+  assert.equal(h.calls.find(c => c.name === 'machines').server, 'diagnostics');
+  for (const name of ['spawn', 'cancel', 'exec']) await assert.rejects(h.remote('tool', { name }), /不允许代理/);
+  for (const method of ['input', 'say', 'done']) await assert.rejects(h.remote(method), /未知的远端方法/);
+  await assert.rejects(h.remote('tool', { name: 'new_session', arguments: {} }), /project/);
+  const args = { project: 'code', agent: 'codex', prompt: 'fix' };
   await h.remote('tool', { name: 'new_session', arguments: args });
-  assert.notEqual(h.calls().at(-1).arguments.requestId, first[0].arguments.requestId);
-  await h.remote('done');
+  await h.remote('tool', { name: 'new_session', arguments: { prompt: 'fix', agent: 'codex', project: 'code' } });
+  const writes = h.calls.filter(c => c.name === 'new_session');
+  assert.equal(writes[0].args.turn, 'coda-ticket'); assert.equal(writes[0].args.requestId, writes[1].args.requestId);
+  await reply(h, run.id); await h.emit(settle(run.id)); await h.emit(heartbeat); await run.done;
 });
 
-async function pendingDispatch(t, name, options = {}) {
-  const started = mailbox(), answer = Promise.withResolvers();
-  const h = await harness(t, { ...options, mcpFactory: () => ({
-    list: async () => ({ tools: ['status', 'new_session', 'send'].map(name => ({ name })) }),
-    call(tool, args, signal) {
-      if (tool === 'status') return Promise.resolve({ structuredContent: { turn: 'ticket' } });
-      started.push({ args, signal });
-      return answer.promise;
-    },
-    close() {},
-  }), diagnostics: false });
-  await h.remote('hello');
-  const result = h.remote('tool', { name, arguments: { project: 'coda', agent: 'codex', prompt: 'fix', childId: 'child' } });
-  const dispatched = await started.next();
-  const call = h.events.find(e => e.params.update?.title === `Coda · ${name}`).params.update;
-  return { ...h, result, answer, dispatched, call };
-}
-
-async function toolUpdate(h) {
-  for (;;) {
-    const event = await h.messages.next();
-    if (event.params.update?.sessionUpdate === 'tool_call_update' && event.params.update.toolCallId === h.call.toolCallId)
-      return event.params.update;
-  }
-}
-
-test('slow send acknowledge submission at the deadline and update the trace only on actual completion', async t => {
-  assert.equal(SUBMISSION_WAIT_MS, 20_000);
-  for (const name of ['send']) {
-    const h = await pendingDispatch(t, name);
-    assert.equal(h.dispatched.signal, null, 'submitted request must outlive the turn and MCP default timeout');
-    await assert.rejects(h.remote('done'), /仍有工具/);
-    h.adapter.clock.advance(SUBMISSION_WAIT_MS);
-    const submitted = await h.result;
-    assert.match(submitted.content[0].text, /已提交.*Coda 卡片.*新消息.*不要重试或轮询/);
-    assert.equal(h.events.some(e => e.params.update?.toolCallId === h.call.toolCallId && e.params.update.sessionUpdate === 'tool_call_update'), false);
-    const actual = { content: [{ type: 'text', text: 'Coda approval result' }] };
-    h.answer.resolve(actual);
-    const update = await toolUpdate(h);
-    assert.equal(update.status, 'completed');
-    assert.deepEqual(update.rawOutput, actual);
-    await h.remote('done');
-    assert.equal(h.adapter.clock.size, 0);
-  }
+test('slow send registers background before cancel and reports late failure visibly', async t => {
+  let reject, entered = mailbox();
+  const h = await connected(t, { mcp: async name => {
+    if (name === 'status') return { structuredContent: { turn: 'ticket' } };
+    entered.push(true); return new Promise((_, no) => { reject = no; });
+  } });
+  const run = await sent(h);
+  const pending = h.remote('tool', { name: 'send', arguments: { childId: 'other', prompt: 'fix' } });
+  await entered.next();
+  assert.ok(h.events.some(e => e.params.title === 'Coda · send 等待结果' && e.params.state === 'waiting'));
+  h.clock.advance(SUBMISSION_WAIT_MS); assert.match(JSON.stringify(await pending), /已提交/);
+  await h.adapter.handle('session/cancel', { sessionId: h.id }); await run.done;
+  reject(new Error('RPC connection closed'));
+  // Complete the rejected operation through the promise microtask queue.
+  await h.emit(live({}));
+  assert.match(h.text(), /后台调用失败/);
+  assert.ok(h.events.some(e => e.params.update?.status === 'failed' && e.params.update.rawOutput === 'RPC connection closed'));
 });
 
-test('new_session returns the Coda approval receipt directly and never uses the send submission timer', async t => {
-  const h = await pendingDispatch(t, 'new_session');
-  assert.ok(h.dispatched.signal instanceof AbortSignal);
-  assert.equal(h.adapter.clock.size, 1, 'only the turn timeout, no submission timer');
-  h.adapter.clock.advance(SUBMISSION_WAIT_MS);
-  await assert.rejects(h.remote('done'), /仍有工具/);
-  const actual = { content: [{ type: 'text', text: '已请用户批准；结果会作为新消息告诉你' }] };
-  h.answer.resolve(actual);
-  assert.deepEqual(await h.result, actual);
-  assert.deepEqual((await toolUpdate(h)).rawOutput, actual);
-  await h.remote('done');
-  assert.equal(h.adapter.clock.size, 0);
+test('telemetry rejects normalization traversal and missing diagnostics is actionable', async t => {
+  const h = await connected(t);
+  await assert.rejects(h.remote('telemetry', { path: '/api/.\n./.\t./admin' }), /只允许/);
+  h.s.diagnosticsEnabled = false; h.s.routes.delete('machines');
+  await assert.rejects(h.remote('tool', { name: 'machines' }), /安装并为这个目录启用/);
 });
 
-test('fast dispatch returns the original result and clears its submission timer', async t => {
-  for (const isError of [false, true]) {
-    const h = await pendingDispatch(t, 'send');
-    h.adapter.clock.advance(SUBMISSION_WAIT_MS - 1);
-    const actual = { isError, content: [{ type: 'text', text: isError ? 'declined' : 'message delivered' }] };
-    h.answer.resolve(actual);
-    assert.deepEqual(await h.result, actual);
-    assert.equal((await toolUpdate(h)).status, isError ? 'failed' : 'completed');
-    await backgroundResult(h);
-    assertBackgroundTrace(h, isError ? 'failed' : 'completed');
-    assert.equal(h.text(), '', 'a fast result is returned directly without a duplicate message');
-    assert.equal(h.adapter.clock.size, 1, 'only the turn timeout remains');
-    await h.remote('done');
-  }
+test('updatedSeq changes and process reload do not redisplay an already delivered body', async t => {
+  const h = await connected(t), run = await sent(h);
+  await reply(h, run.id, 'persisted-once', 'persistent-entry'); await h.emit(settle(run.id)); await h.emit(heartbeat); await run.done;
+  h.s.watch.close(); h.s.routines.close(); h.adapter.sessions.delete(h.id);
+  await h.adapter.open({ ...h.open, sessionId: h.id }, true); await h.until(e => e.connected);
+  const row = { ...h.native.entries.find(e => e.entryId === 'persistent-entry'), updatedSeq: '99' };
+  h.native.entries = h.native.entries.map(e => e.entryId === row.entryId ? row : e);
+  h.native.emit({ rows: { agentId: 'inspector', entries: [row] } });
+  await h.emit(live({ hasRunningSubagents: true }));
+  assert.equal(h.text().match(/persisted-once/g).length, 1);
+  assert.equal(h.adapter.session(h.id).saved.stream.afterUpdatedSeq, '99');
 });
 
-async function backgroundResult(h) {
-  for (;;) {
-    const event = await h.messages.next();
-    if (event.method === '_coda/wait' && event.params.waitId === h.call.toolCallId && ['done', 'failed'].includes(event.params.state)) return event.params;
-  }
-}
-
-function assertBackgroundTrace(h, status) {
-  const events = h.events.filter(e => e.params.waitId === h.call.toolCallId || e.params.update?.toolCallId === h.call.toolCallId);
-  assert.deepEqual(events.map(e => e.params.state ?? e.params.update.status), ['pending', 'waiting', 'handling', status, status === 'failed' ? 'failed' : 'done']);
-  assert.equal(events[1].params.toolCallId, h.call.toolCallId, 'activity protects the original tool record from premature closure');
-  assert.equal(events[1].params.kind, 'task');
-  return events[3].params.update;
-}
-
-test('approval activities belong to the initiating turn even when cancelled or timed out before acknowledgement', async t => {
-  for (const action of ['cancel', 'timeout']) for (const completion of ['before-receipt', 'after-receipt']) {
-    const h = await pendingDispatch(t, 'send', { settings: { 'grok-bot.turnTimeout': action === 'timeout' ? 'PT15S' : 'PT30S' } });
-    const registered = h.events.findIndex(e => e.method === '_coda/wait' && e.params.waitId === h.call.toolCallId);
-    assert.ok(registered >= 0, 'activity must already be registered when the MCP call is dispatched');
-    assert.equal(h.events[registered].params.state, 'waiting');
-    assert.equal(h.events[registered].params.toolCallId, h.call.toolCallId);
-    const elapsed = action === 'timeout' ? 15_000 : 10_000;
-    h.adapter.clock.advance(elapsed);
-    if (action === 'cancel') await h.client.request('session/cancel', { sessionId: h.sessionId });
-    assert.equal(h.adapter.session(h.sessionId).turn, null);
-    // Await the next ACP exchange so timeout notifications have reached the
-    // fake Coda peer before asserting their order.
-    const { turn } = await h.remote('say', { text: 'new work' });
-    assert.equal(h.events.some(e => e.params.update?.toolCallId === h.call.toolCallId && e.params.update.status === 'failed'), false,
-      'ending the turn must not mark a still-running background call as failed');
-    const oldTurnEnded = h.events.findIndex((e, i) => i > registered && e.method === '_coda/wait' && e.params.waitId === 'grok-bot-routines' && e.params.state === 'waiting');
-    assert.ok(oldTurnEnded > registered, 'Coda sees registration before the initiating turn ends');
-    if (completion === 'after-receipt') {
-      h.adapter.clock.advance(SUBMISSION_WAIT_MS - elapsed);
-      assert.match((await h.result).content[0].text, /已提交/);
-      h.answer.reject(new Error('late MCP failure'));
-    } else {
-      const actual = { content: [{ type: 'text', text: 'completed before receipt' }] };
-      h.answer.resolve(actual);
-      assert.deepEqual(await h.result, actual);
-    }
-    await backgroundResult(h);
-    const failed = completion === 'after-receipt';
-    assertBackgroundTrace(h, failed ? 'failed' : 'completed');
-    assert.match(h.text(), failed ? /后台调用失败：late MCP failure/ : /后台调用已返回/);
-    assert.equal(h.adapter.session(h.sessionId).turn.id, turn);
-    assert.equal(h.adapter.clock.size, 1, 'only the new turn timeout remains');
-    await h.remote('done', { turn });
-    assert.equal(h.adapter.clock.size, 0);
-  }
+test('old settlement does not terminate a new native run and missing reply waits until the configured turn timeout', async t => {
+  const h = await connected(t), run = await sent(h);
+  await h.emit(live({ isRunning: true, lastTurnSettlement: { turnId: 'previous', outcome: 'success', settledAtMs: '1' } }));
+  assert.equal(h.s.turn.nativeId, run.id); assert.equal(h.s.turn.settlement, undefined);
+  await h.emit(settle(run.id)); await h.emit(heartbeat);
+  assert.ok(h.s.turn);
+  await h.emit(heartbeat); assert.ok(h.s.turn);
+  h.clock.advance(h.adapter.timeout);
+  assert.equal((await run.done).stopReason, 'end_turn');
+  assert.match(h.text(), /本轮已结束/);
 });
 
-test('acknowledged background results remain visible after done, cancel or timeout, including during a new turn', async t => {
-  for (const outcome of ['success', 'error', 'rejection']) {
-    const h = await pendingDispatch(t, 'send');
-    h.adapter.clock.advance(SUBMISSION_WAIT_MS);
-    await h.result;
-    if (outcome === 'success') await h.remote('done');
-    else if (outcome === 'error') await h.client.request('session/cancel', { sessionId: h.sessionId });
-    else h.adapter.clock.expire();
-    const { turn } = await h.remote('say', { text: 'next turn' });
-    const actual = { isError: outcome === 'error', content: [{ type: 'text', text: 'late result' }] };
-    if (outcome === 'rejection') h.answer.reject(new Error('MCP connection failed'));
-    else h.answer.resolve(actual);
-    const terminal = await backgroundResult(h);
-    assert.equal(terminal.state, outcome === 'success' ? 'done' : 'failed');
-    const update = assertBackgroundTrace(h, outcome === 'success' ? 'completed' : 'failed');
-    assert.deepEqual(update.rawOutput, outcome === 'rejection' ? 'MCP connection failed' : actual);
-    assert.match(h.text(), outcome === 'success' ? /后台调用已返回/ : /后台调用失败/);
-    assert.equal(h.adapter.session(h.sessionId).turn.id, turn, 'completion must not end or replace the active Bot turn');
-    await h.remote('done', { turn });
-    assert.equal(h.adapter.clock.size, 0);
-  }
+test('login HTTP failure is visible and can be retried without leaving a fake successful credential', async t => {
+  const native = new FakeNative(); native.pollAnswers = [500];
+  const h = await setup(t, { auth: false, native });
+  await h.prompt('hello'); await h.adapter.loginTask;
+  assert.match(h.text(), /登录未完成/);
+  assert.equal(readdirSync(h.root).includes('native-auth.json'), false);
+  native.pollAnswers = [{ accessToken: 'retry-token' }];
+  await h.prompt('/login'); await h.adapter.loginTask;
+  assert.equal(statSync(join(h.root, 'native-auth.json')).mode & 0o777, 0o600);
 });
 
-test('acknowledgement -> done -> real RPC close reports failure and terminates the original tool and activity', async t => {
-  for (const name of ['send']) {
-    const input = new PassThrough(), output = new PassThrough(), started = mailbox();
-    const rpc = new Rpc(input, output);
-    const peer = new Rpc(output, input, async (method, params) => {
-      if (params.name === 'status') return { structuredContent: { turn: 'ticket' } };
-      started.push(params);
-      return new Promise(() => {}); // Coda has accepted the call but has not replied.
-    });
-    t.after(() => { rpc.close(); peer.close(); input.end(); output.end(); });
-    const h = await harness(t, { diagnostics: false, mcpFactory: () => ({
-      list: async () => ({ tools: ['status', 'new_session', 'send'].map(name => ({ name })) }),
-      call: (name, args, signal) => rpc.request('tools/call', { name, arguments: args }, { signal }),
-      close: () => rpc.close(),
-    }) });
-    await h.remote('hello');
-    const result = h.remote('tool', { name, arguments: { project: 'coda', agent: 'codex', prompt: 'fix', childId: 'child' } });
-    await started.next();
-    h.call = h.events.find(e => e.params.update?.title === `Coda · ${name}`).params.update;
-    h.adapter.clock.advance(SUBMISSION_WAIT_MS);
-    assert.match((await result).content[0].text, /已提交/);
-    await h.remote('done');
-    rpc.close();
-    await backgroundResult(h);
-    assert.equal(assertBackgroundTrace(h, 'failed').rawOutput, 'RPC connection closed');
-    assert.match(h.text(), /后台调用失败：RPC connection closed/);
-    assert.equal(h.adapter.session(h.sessionId).turn, null);
-    assert.equal(h.adapter.clock.size, 0);
-  }
+test('stdio ACP and both real MCP clients integrate with the fake native transport', async t => {
+  const root = temporary(t), native = new FakeNative();
+  writeFileSync(join(root, 'native-auth.json'), JSON.stringify({ accessToken: 'fixture' }), { mode: 0o600 });
+  const h = await harness(t, { root, fetcher: native.fetch });
+  await h.select(); await h.remote('hello');
+  await h.remote('tool', { name: 'read_thread', arguments: { reference: 'thread' } });
+  await h.remote('tool', { name: 'machines' });
+  assert.deepEqual(h.discovered().sort(), ['coda', 'diagnostics']);
+  assert.deepEqual(h.calls().map(c => [c.name, c.server]), [['read_thread', 'coda'], ['machines', 'diagnostics']]);
+  const done = h.prompt('stdio input'), request = await native.next('SendGrokBotUserMessage');
+  const id = request.params.messageId;
+  native.emit(native.row('rpc-user', { kind: 'message', role: 'user', clientNonce: id, requestId: id }));
+  native.emit(native.row('rpc-answer', { kind: 'send-message', requestId: id, message: { type: 'text', content: 'stdio reply' } }));
+  native.emit(settle(id)); native.emit(heartbeat);
+  assert.equal((await done).stopReason, 'end_turn');
+  assert.match(h.text(), /stdio reply/);
 });
 
-test('cancel while obtaining a turn ticket never dispatches the write', async t => {
-  const answer = Promise.withResolvers(), started = Promise.withResolvers();
-  const h = await bound(t);
-  const provider = h.adapter.provider(h.adapter.session(h.sessionId), 'status');
-  const call = provider.call.bind(provider);
-  provider.call = (name, args, signal) => {
-    if (name !== 'status') return call(name, args, signal);
-    started.resolve();
-    return answer.promise;
-  };
-  const operation = h.remote('tool', { name: 'new_session', arguments: { project: 'app', agent: 'codex', prompt: 'fix' } });
-  const rejected = assert.rejects(operation, /没有有效的 Coda turn 票据/);
-  await started.promise;
-  await assert.rejects(h.remote('done'), /仍有工具/);
-  await h.client.request('session/cancel', { sessionId: h.sessionId });
-  answer.resolve({ content: [{ type: 'text', text: JSON.stringify({ turn: 'stale-ticket' }) }] });
-  await rejected;
-  assert.deepEqual(h.calls(), []);
-  assert.equal(h.events.some(e => e.method === 'session/request_permission'), false);
-  assert.equal(h.events.filter(e => e.method === '_coda/wait').at(-1).params.state, 'waiting');
+const automation = runs => [{ automationId: 'automation', recordJson: JSON.stringify({ name: 'Coda 巡检', runs }) }];
+const routineEvents = h => h.events.filter(e => e.params.waitId?.startsWith('grok-routine:')).map(e => e.params);
+
+test('Routine records follow executor/run IDs, stop polling at completion, and its main conclusion is autonomous', async t => {
+  const h = await connected(t);
+  const calls = h.native.requests.length;
+  h.clock.advance(3600000);
+  assert.equal(h.native.requests.length, calls, 'idle has no polling or patrol dispatch');
+  const run = { id: 'routine-run', status: 'running', startedAt: h.clock.now(), finishedAt: null };
+  h.native.automations = automation([run]);
+  h.native.subagents = [{ subagentId: 'sand-subagent-routine-run', subagentType: 'executor' }];
+  await h.emit(live({ hasRunningSubagents: true })); await h.s.routines.flight;
+  assert.equal(h.s.turn, null, 'a run record does not create an empty conversation turn');
+  assert.equal(h.s.saved.runs[run.id].executorId, h.native.subagents[0].subagentId);
+  assert.deepEqual(routineEvents(h).map(e => e.state), ['waiting']);
+  run.status = 'ok'; run.finishedAt = run.startedAt + 7000;
+  h.native.automations = automation([run]); h.native.subagents = [];
+  h.clock.advance(5000); await h.s.routines.flight;
+  assert.deepEqual(routineEvents(h).map(e => e.state), ['waiting', 'done']);
+  assert.match(routineEvents(h).at(-1).title, /成功（7 秒）/);
+  const end = h.native.requests.length; h.clock.advance(60000);
+  assert.equal(h.native.requests.length, end);
+  await h.emit(live({ isRunning: true, activity: { kind: 'thinking' } }));
+  assert.equal(h.s.turn.autonomous, true);
+  await h.emit(settle('main-completion')); await h.emit(heartbeat);
+  assert.ok(h.s.turn, 'Routine completion is not a substitute for its main reply');
+  await reply(h, 'main-completion', 'COMPLETION_PATH_PROBE'); await h.emit(heartbeat);
+  assert.equal(h.s.turn, null); assert.match(h.text(), /COMPLETION_PATH_PROBE/);
+  assert.equal(h.native.requests.some(r => r.method === 'SendGrokBotUserMessage'), false);
+  assert.ok(h.native.requests.filter(r => r.method === 'WatchGrokBotTranscripts').every(r => r.params.includeUnlistedAgents));
+  assert.ok(h.native.requests.every(r => r.headers['x-cursor-client-version'] === '0.78.1'));
 });
 
-test('cancelled and timed-out webhook turns reject late output even during a subsequent turn', async t => {
-  const h = await bound(t);
-  for (const action of ['cancel', 'timeout']) {
-    const pending = h.prompt('work');
-    const { body } = await h.deliveries.next();
-    if (action === 'cancel') await h.client.request('session/cancel', { sessionId: h.sessionId });
-    else h.adapter.clock.expire();
-    assert.equal((await pending).stopReason, action === 'cancel' ? 'cancelled' : 'end_turn');
-    const next = h.prompt('new');
-    const delivery = (await h.deliveries.next()).body;
-    await assert.rejects(h.remote('say', { turn: body.turn, text: 'late' }), /轮次已结束/);
-    await assert.rejects(h.remote('done', { turn: body.turn }), /轮次已结束/);
-    await h.remote('done', { turn: delivery.turn });
-    await next;
-  }
-  assert.match(h.text(), /未必停止/);
-  assert.match(h.text(), /超过 PT30M/);
-  assert.doesNotMatch(h.text(), /late/);
+test('Routine baseline is quiet; changed notifications reveal failed runs once, including after reload', async t => {
+  const native = new FakeNative();
+  const old = { id: 'old', startedAt: 1, finishedAt: 2, status: 'ok' };
+  native.automations = automation([old]);
+  const h = await connected(t, { native });
+  assert.deepEqual(routineEvents(h), []);
+  native.automations = automation([old, { id: 'failed', startedAt: 10, finishedAt: 1010, status: 'failed' }]);
+  native.emit({ agentStateChanged: { agentId: 'inspector', families: ['automations'] } });
+  await h.until(e => e.routinesChanged); await h.s.routines.flight;
+  assert.deepEqual(routineEvents(h).map(e => e.state), ['waiting', 'failed']);
+  h.s.watch.close(); h.s.routines.close(); h.adapter.sessions.delete(h.id);
+  await h.adapter.open({ ...h.open, sessionId: h.id }, true); await h.until(e => e.connected);
+  await h.adapter.session(h.id).routines.flight;
+  assert.deepEqual(routineEvents(h).map(e => e.state), ['waiting', 'failed']);
 });
 
-test('autonomous timeout and cancel return to waiting; failed Webhook completes with honest error', async t => {
-  const h = await bound(t, { status: 503 });
-  await h.prompt('work');
-  assert.match(h.text(), /HTTP 503/);
-  const { turn } = await h.remote('say', { text: 'problem' });
-  h.adapter.clock.expire();
-  await assert.rejects(h.remote('done', { turn }), /轮次已结束/);
-  await h.remote('say', { text: 'different problem' });
-  await h.client.request('session/cancel', { sessionId: h.sessionId });
-  assert.equal(h.events.filter(e => e.method === '_coda/wait').at(-1).params.state, 'waiting');
+test('expired login requests reauthentication without resending a message', async t => {
+  const h = await connected(t);
+  h.native.handler = async method => method === 'SendGrokBotUserMessage' ? new Response('{}', { status: 401 }) : undefined;
+  assert.equal((await h.prompt('once')).stopReason, 'end_turn');
+  assert.match(h.text(), /401.*认证失效请发送 \/login/);
+  assert.equal(h.native.requests.filter(r => r.method === 'SendGrokBotUserMessage').length, 1);
 });
 
-test('session/load preserves Bot binding and re-registers timer; invalid instructions rejected', async t => {
-  const h = await bound(t);
-  h.adapter.close();
-  h.adapter.sessions.clear();
-  const loaded = await h.client.request('session/load', { ...h.open, sessionId: h.sessionId });
-  assert.deepEqual(h.discovered().sort(), ['coda', 'coda', 'diagnostics', 'diagnostics']);
-  assert.equal(loaded.configOptions[1].currentValue, 'inspector');
-  const pending = h.prompt('after load');
-  const { body } = await h.deliveries.next();
-  assert.equal(body.preview, 'after load');
-  assert.equal((await h.remote('input', { turn: body.turn })).text, 'after load');
-  await h.remote('done', { turn: body.turn });
-  await pending;
-  const before = h.adapter.sessions.size;
-  await assert.rejects(h.client.request('session/new', { systemPrompt: { mode: 'replace', content: [] } }), /只支持 append/);
-  assert.equal(h.adapter.sessions.size, before);
-  await h.prompt('/bind');
-  assert.match(h.text(), /single-use-code/);
+test('expired cursor pages past 1000 rows and resumes at the recovered cursor without duplicating the missed reply', async t => {
+  const h = await connected(t);
+  h.native.row('missed', { kind: 'send-message', requestId: 'missed-run', message: { type: 'text', content: 'older-page-reply' } }, 1);
+  for (let n = 2; n <= 1001; n++) h.native.row(`record-${n}`, { kind: 'record' }, n);
+  h.native.emit({ cursorTooOld: { agentId: 'inspector' } });
+  await h.clock.untilTimer(1000); h.clock.advance(1000); await h.until(e => e.connected);
+  assert.equal(h.text().match(/older-page-reply/g).length, 1);
+  const requests = h.native.requests.filter(r => r.method === 'ListGrokBotTranscriptEntries');
+  assert.ok(requests.some(r => r.params.beforeSeq === '2'));
+  assert.equal(h.native.requests.filter(r => r.method === 'WatchGrokBotTranscripts').at(-1).params.cursors[0].afterUpdatedSeq, '1001');
+  await h.emit(settle('missed-run')); await h.emit(heartbeat);
+  assert.equal(h.text().match(/older-page-reply/g).length, 1);
 });
 
-test('session/load takes instructions only from Coda without persisting them or rewriting legacy state', async t => {
-  const h = await bound(t);
-  const file = h.adapter.file(h.sessionId);
-  writeFileSync(file, JSON.stringify({ bot: 'inspector', bound: true, instructions: 'legacy instructions' }));
-  const replacement = { mode: 'append', content: [
-    { type: 'text', text: 'new project instructions' },
-    { type: 'text', text: 'enabled plugin instructions' },
-  ] };
-  for (const [systemPrompt, expected] of [
-    [undefined, ''],
-    [replacement, 'new project instructions\nenabled plugin instructions'],
-    [undefined, ''],
-    [{ mode: 'append', content: [] }, ''],
-    [undefined, ''],
-  ]) {
-    h.adapter.close();
-    h.adapter.sessions.clear();
-    const before = readFileSync(file, 'utf8');
-    const { systemPrompt: _old, ...open } = h.open;
-    const loaded = await h.client.request('session/load', {
-      ...open, sessionId: h.sessionId, ...(systemPrompt === undefined ? {} : { systemPrompt }),
-    });
-    assert.equal(loaded.configOptions[1].currentValue, 'inspector');
-    assert.equal(readFileSync(file, 'utf8'), before, 'load must not write state');
-    const pending = h.prompt('inspect');
-    const { body } = await h.deliveries.next();
-    assert.equal(body.preview, 'inspect');
-    assert.equal(body.text, undefined);
-    assert.deepEqual(await h.remote('input', { turn: body.turn }), { turn: body.turn, kind: 'message', text: 'inspect', instructions: expected });
-    assert.equal(readFileSync(file, 'utf8'), before, 'input delivers current instructions without rebinding or rewriting state');
-    assert.equal((await h.remote('hello')).instructions, expected);
-    await h.remote('done', { turn: body.turn });
-    assert.equal((await pending).stopReason, 'end_turn');
-  }
+test('Routine disappearance without a retained result ends its activity as unconfirmed, not success', async t => {
+  const h = await connected(t);
+  h.native.automations = automation([{ id: 'lost', status: 'running', startedAt: 10 }]);
+  h.native.subagents = [{ subagentId: 'sand-subagent-lost' }];
+  await h.emit(live({ hasRunningSubagents: true })); await h.s.routines.flight;
+  h.native.automations = []; h.native.subagents = [];
+  await h.emit(live({ hasRunningSubagents: false })); await h.s.routines.flight;
+  assert.deepEqual(routineEvents(h).map(e => e.state), ['waiting', 'failed']);
+  assert.match(routineEvents(h).at(-1).title, /无法确认结果/);
+  const calls = h.native.requests.length; h.clock.advance(60000);
+  assert.equal(h.native.requests.length, calls);
 });
 
-test('model/config probes leave no files; an unwritten session loads unbound and hello persists only binding', async t => {
-  const h = await harness(t, { mcpFactory: () => ({ list: async () => ({ tools: [] }), close() {} }) });
-  const files = () => readdirSync(h.root).filter(name => name.endsWith('.json'));
-  for (let i = 0; i < 5; i++) {
-    const created = await h.client.request('session/new', { ...h.open, mcpServers: [] });
-    assert.equal(created.configOptions[0].currentValue, 'grok-bot');
-    assert.equal(created.configOptions[1].currentValue, '');
-  }
-  assert.deepEqual(files(), []);
-  h.adapter.close();
-  h.adapter.sessions.clear();
-  const loaded = await h.client.request('session/load', { ...h.open, mcpServers: [], sessionId: h.sessionId });
-  assert.equal(loaded.configOptions[0].currentValue, 'grok-bot');
-  assert.equal(loaded.configOptions[1].currentValue, '');
-  await assert.rejects(h.remote('say', { text: 'not bound' }), /尚未完成绑定/);
-  assert.equal((await h.prompt('hello')).stopReason, 'end_turn');
-  assert.match(h.text(), /single-use-code/);
-  assert.deepEqual(files(), []);
-  assert.equal((await h.remote('hello')).instructions, 'session instructions marker');
-  assert.equal(files().length, 1);
-  assert.deepEqual(JSON.parse(readFileSync(h.adapter.file(h.sessionId))), { bot: '', bound: true });
-});
-
-test('selecting and changing Bot persist selection without instructions', async t => {
-  const h = await harness(t, { settings: { 'grok-bot.bots': { inspector: {}, replacement: {} } },
-    mcpFactory: () => ({ list: async () => ({ tools: [] }), close() {} }) });
-  const file = h.adapter.file(h.sessionId);
-  assert.throws(() => readFileSync(file), { code: 'ENOENT' });
-  await h.select();
-  assert.deepEqual(JSON.parse(readFileSync(file)), { bot: 'inspector', bound: false });
-  await h.remote('hello');
-  assert.deepEqual(JSON.parse(readFileSync(file)), { bot: 'inspector', bound: true });
-  await h.client.request('session/set_config_option', { sessionId: h.sessionId, configId: 'bot', value: 'replacement' });
-  assert.deepEqual(JSON.parse(readFileSync(file)), { bot: 'replacement', bound: false });
-});
-
-test('telemetry preserves JSON, query and base path; refuses traversal, redirects and missing config', async t => {
-  const queries = mailbox();
-  const base = await http(t, (request, response) => {
-    queries.push({ url: request.url, method: request.method });
-    if (request.url.endsWith('/redirect')) response.writeHead(302, { Location: '/private' });
-    response.end(JSON.stringify({ raw: ['evidence', 1] }));
-  });
-  const h = await bound(t, { settings: { 'grok-bot.telemetry': `${base}/dashboard` } });
-  assert.deepEqual(await h.remote('telemetry', { path: '/api/overview', query: { days: 7 } }), { raw: ['evidence', 1] });
-  assert.deepEqual(await queries.next(), { url: '/dashboard/api/overview?days=7', method: 'GET' });
-  for (const path of ['/admin', '//evil/api/', '/api/../admin', '/api/%2e%2e/admin', '/api/\\admin', '/api/events?x=1', '/api/.\n./.\t./admin', '/api/\r../admin', '/api/events\0', '/api/events\x7f'])
-    await assert.rejects(h.remote('telemetry', { path }), /只允许/);
-  await assert.rejects(h.remote('telemetry', { path: '/api/redirect' }));
-  const missing = await bound(t);
-  await assert.rejects(missing.remote('telemetry', { path: '/api/tags' }), /尚未设置/);
-});
-
-test('lost hello response can be rebound after load or Bot switch without losing instructions', async t => {
-  const h = await harness(t, { settings: { 'grok-bot.bots': { inspector: {}, replacement: {} } } });
-  await h.select();
-  const home = temporary(t);
-  let loseResponse = true;
-  const fetcher = async (address, init) => {
-    if (address.pathname.endsWith('/bind')) return Response.json({ token: 'replacement-token', session: {} });
-    const { method, params } = JSON.parse(init.body);
-    const result = await h.remote(method, params);
-    if (loseResponse) { loseResponse = false; throw new Error('HTTP response lost'); }
-    return Response.json({ result });
-  };
-  await assert.rejects(bind('http://coda', 'code-1', { home, fetcher }), /HTTP response lost/);
-  h.adapter.close();
-  h.adapter.sessions.clear();
-  await h.client.request('session/load', { ...h.open, sessionId: h.sessionId });
-  await h.prompt('/bind');
-  assert.match(h.text(), /single-use-code/);
-  const rebound = await bind('http://coda', 'code-2', { home, fetcher });
-  assert.equal(rebound.instructions, 'session instructions marker');
-  assert.equal((await h.remote('hello')).instructions, rebound.instructions);
-  await h.client.request('session/set_config_option', { sessionId: h.sessionId, configId: 'bot', value: 'replacement' });
-  assert.equal((await bind('http://coda', 'code-3', { home, fetcher })).instructions, rebound.instructions);
+test('native failure terminates activity as failed; an old failure cannot close another run', async t => {
+  const h = await connected(t), run = await sent(h);
+  await h.emit(live({ isRunning: true, activity: { kind: 'tool', tool: 'SetStatus', detail: '检查连接' } }));
+  h.native.emit({ turnFailed: { agentId: 'inspector', turnId: 'old-run', code: 'old_failure' } });
+  await h.until(e => e.failed);
+  assert.equal(h.s.turn.nativeId, run.id);
+  h.native.emit({ turnFailed: { agentId: 'inspector', turnId: run.id, code: 'connection_failed' } });
+  await h.until(e => e.failed); await run.done;
+  const tool = h.events.find(e => e.params.update?.title === '检查连接').params.update;
+  assert.ok(h.events.some(e => e.params.update?.toolCallId === tool.toolCallId && e.params.update.status === 'failed'));
 });

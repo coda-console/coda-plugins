@@ -23,8 +23,7 @@ async function endpoint(t) {
       const sessionId = [...tokens].find(([, token]) => request.headers.authorization === `Bearer ${token}`)?.[0];
       if (!sessionId) { response.writeHead(401); response.end(JSON.stringify({ error: { code: 'unauthorized', message: 'invalid token' } })); return; }
       if (body.method === 'fail') { response.writeHead(409); response.end(JSON.stringify({ error: { code: 'archived', message: '会话已归档' } })); return; }
-      const result = body.method === 'hello' ? { sessionId, instructions: 'Be concise' }
-        : body.method === 'input' ? { turn: body.params.turn, kind: 'result', text: '完整正文'.repeat(2000), instructions: 'Current Coda instructions' }
+      const result = body.method === 'hello' ? { sessionId }
         : body.method === 'tool' ? { content: [{ type: 'text', text: JSON.stringify(body.params) }] } : { echo: body, sessionId };
       response.end(JSON.stringify({ result }));
     }
@@ -35,20 +34,20 @@ async function endpoint(t) {
 test('bind stores token privately, replaces just that session and keeps multiple Bots isolated', async t => {
   const home = temporary(t), remote = await endpoint(t);
   const result = await bind(remote.address, 'first:code', { home });
-  assert.deepEqual(result, { sessionId: 'first', instructions: 'Be concise', message: '已绑定；token 已保存，未打印。' });
+  assert.deepEqual(result, { sessionId: 'first', message: '已绑定；token 已保存，未打印。' });
   const path = join(home, 'config.json');
   assert.equal(statSync(path).mode & 0o777, 0o600);
   const old = JSON.parse(readFileSync(path)).sessions.first.token;
   await bind(remote.address, 'second:code', { home });
-  await assert.rejects(call('say', { text: 'ambiguous' }, { home }), /多个 Bot/);
+  await assert.rejects(call('telemetry', { text: 'ambiguous' }, { home }), /多个 Bot/);
   await bind(remote.address, 'first:new-code', { home });
   const saved = JSON.parse(readFileSync(path));
   assert.notEqual(saved.sessions.first.token, old);
   assert.equal(Object.keys(saved.sessions).length, 2);
-  const reply = await call('say', { text: 'hello' }, { home, session: 'first' });
+  const reply = await call('telemetry', { text: 'hello' }, { home, session: 'first' });
   assert.equal(reply.sessionId, 'first');
   assert.equal(remote.calls.at(-1).authorization, `Bearer ${saved.sessions.first.token}`);
-  assert.equal((await call('say', { text: 'other' }, { home, session: 'second' })).sessionId, 'second');
+  assert.equal((await call('telemetry', { text: 'other' }, { home, session: 'second' })).sessionId, 'second');
   await assert.rejects(call('fail', {}, { home, session: 'first' }), /会话已归档/);
   writeFileSync(join(home, 'config.lock'), '');
   await assert.rejects(bind(remote.address, 'first:code', { home }), /配置正在写入/);
@@ -69,28 +68,25 @@ test('MCP initialize/list/call map every named tool through HTTP and check net b
   assert.equal(checks, 0);
   for (const tool of TOOLS) {
     assert.ok(listed.some(t => t.name === tool.name && t.description));
-    const args = { turn: 'webhook-turn' };
+    const args = {};
     for (const key of tool.inputSchema.required) if (!(key in args)) args[key] = key === 'query' ? {} : key === 'kind' ? 'network' : `${key}-value`;
     const result = await rpc.request('tools/call', { name: tool.name, arguments: args });
     assert.equal(result.isError, undefined, tool.name);
     const sent = remote.calls.at(-1).body;
     assert.equal(sent.method, tool.method);
-    assert.equal(sent.params.turn, 'webhook-turn');
     if (tool.tool) {
       assert.equal(sent.params.name, tool.tool);
       assert.equal(sent.params.arguments.turn, undefined);
       assert.deepEqual(result.content, [{ type: 'text', text: JSON.stringify(sent.params) }]);
     }
-    if (tool.name === 'coda_input') assert.deepEqual(JSON.parse(result.content[0].text), {
-      turn: 'webhook-turn', kind: 'result', text: '完整正文'.repeat(2000), instructions: 'Current Coda instructions',
-    });
+
   }
   assert.equal(checks, TOOLS.length);
-  const failure = await rpc.request('tools/call', { name: 'coda_say', arguments: {} });
+  const failure = await rpc.request('tools/call', { name: 'coda_new_session', arguments: {} });
   assert.equal(failure.isError, true);
   const before = remote.calls.length;
-  assert.equal((await rpc.request('tools/call', { name: 'coda_input', arguments: {} })).isError, true);
-  assert.equal(remote.calls.length, before, 'input without turn is not sent');
+  for (const name of ['coda_input', 'coda_say', 'coda_done']) await assert.rejects(rpc.request('tools/call', { name, arguments: {} }), /Unknown tool/);
+  assert.equal(remote.calls.length, before);
   await assert.rejects(rpc.request('tools/call', { name: 'shell', arguments: {} }), /Unknown tool/);
 });
 
@@ -114,7 +110,7 @@ test('diagnostics exposes Coda filter types and forwards flat parameters unchang
   t.after(() => { rpc.close(); lines.close(); input.end(); output.end(); });
   const tools = (await rpc.request('tools/list', {})).tools;
   const schema = tools.find(t => t.name === 'coda_machine_diagnostics').inputSchema;
-  assert.deepEqual(Object.keys(schema.properties).sort(), ['machine', 'kind', 'from', 'to', 'days', 'limit', 'client', 'verdict', 'turn'].sort());
+  assert.deepEqual(Object.keys(schema.properties).sort(), ['machine', 'kind', 'from', 'to', 'days', 'limit', 'client', 'verdict'].sort());
   assert.deepEqual(schema.required, ['machine', 'kind']);
   assert.equal(schema.additionalProperties, false);
   for (const key of ['from', 'to']) {
@@ -126,8 +122,8 @@ test('diagnostics exposes Coda filter types and forwards flat parameters unchang
   assert.equal(schema.properties.client.type, 'string');
   assert.deepEqual(schema.properties.verdict.enum, ['ok', 'offline', 'internet_unreachable', 'server_unreachable', 'service_unavailable', 'ssh_failed', 'slow_network', 'slow_server']);
   const args = { machine: 'unique-machine-name', kind: 'network', from: 1000, to: 2000, days: 7, limit: 100, client: 'ios:fixture', verdict: 'slow_server' };
-  await rpc.request('tools/call', { name: 'coda_machine_diagnostics', arguments: { ...args, turn: 'webhook-turn' } });
-  assert.deepEqual(calls, [{ method: 'tool', params: { name: 'machine_diagnostics', arguments: args, turn: 'webhook-turn' } }]);
+  await rpc.request('tools/call', { name: 'coda_machine_diagnostics', arguments: args });
+  assert.deepEqual(calls, [{ method: 'tool', params: { name: 'machine_diagnostics', arguments: args } }]);
 
 });
 
@@ -139,11 +135,11 @@ test('MCP new_session exposes independent-session parameters and removes spawn/c
   const tools = (await rpc.request('tools/list', {})).tools;
   const create = tools.find(tool => tool.name === 'coda_new_session');
   assert.deepEqual(create.inputSchema.required, ['project', 'agent', 'prompt']);
-  assert.deepEqual(Object.keys(create.inputSchema.properties).sort(), ['project', 'agent', 'prompt', 'title', 'model', 'effort', 'mode', 'options', 'turn'].sort());
+  assert.deepEqual(Object.keys(create.inputSchema.properties).sort(), ['project', 'agent', 'prompt', 'title', 'model', 'effort', 'mode', 'options'].sort());
   assert.equal((await rpc.request('tools/call', { name: create.name, arguments: { agent: 'codex', prompt: 'fix' } })).isError, true);
   const args = { project: 'remote-project-id', agent: 'codex', mode: 'agent', model: 'model-id', effort: 'high', title: 'Fix issue', prompt: 'Evidence and PR acceptance', options: { custom: true } };
-  await rpc.request('tools/call', { name: create.name, arguments: { ...args, turn: 'webhook-turn' } });
-  assert.deepEqual(calls, [{ method: 'tool', params: { name: 'new_session', arguments: args, turn: 'webhook-turn' } }]);
+  await rpc.request('tools/call', { name: create.name, arguments: args });
+  assert.deepEqual(calls, [{ method: 'tool', params: { name: 'new_session', arguments: args } }]);
   for (const name of ['coda_spawn', 'coda_cancel']) {
     assert.equal(tools.some(tool => tool.name === name), false);
     await assert.rejects(rpc.request('tools/call', { name, arguments: {} }), /Unknown tool/);
