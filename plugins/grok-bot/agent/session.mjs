@@ -10,6 +10,10 @@ const WRITE = new Set(['spawn', 'send', 'cancel']);
 const DIAGNOSTICS = new Set(['machines', 'machine_diagnostics']);
 const fail = message => { throw Object.assign(new Error(message), { code: -32602 }); };
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
+function inputKind(text) {
+  if (/^\s*(?:Child session completed:|\[Coda\] (?:以下子会话(?:已结束|交回结果)|以下会话回复|你请求(?:派到其他项目的子会话|发给其他会话的消息)))/u.test(text)) return 'result';
+  return /^\s*\[Coda\]/u.test(text) ? 'notification' : 'message';
+}
 export const SUBMISSION_WAIT_MS = 20_000;
 function canonical(value) {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
@@ -69,6 +73,7 @@ export class Adapter {
     if (autonomous && !this.waits) fail('Coda 未声明 waits，不能开启自主轮次');
     const turn = { id: randomUUID(), autonomous, controller: new AbortController(), tools: new Map() };
     turn.result = new Promise(resolve => { turn.resolve = resolve; });
+    s.input = null;
     s.turn = turn;
     if (autonomous) this.wait(s, 'handling');
     turn.timer = this.clock.setTimeout(() => {
@@ -144,9 +149,11 @@ export class Adapter {
   async prompt(s, prompt) {
     if (!Array.isArray(prompt) || prompt.some(block => block.type !== 'text' || typeof block.text !== 'string')) fail('Grok Bot 目前只接受文本；请在文本里提供可读取的附件路径');
     const turn = this.start(s, false);
+    const text = prompt.map(b => b.text).join('\n');
+    s.input = { turn: turn.id, kind: inputKind(text), text };
     // Return the turn promise immediately; cancellation also finishes while code/webhook is in flight.
     void (async () => {
-      if (!s.saved.bound || prompt.map(b => b.text).join('\n').trim() === '/bind') {
+      if (!s.saved.bound || text.trim() === '/bind') {
         if (!this.remote) throw new Error('请先升级到支持远端 Agent 入口的 Coda，再绑定 Grok Bot。');
         const code = await this.rpc.request('_coda/remote/code', { sessionId: s.id }, { signal: turn.controller.signal });
         if (s.turn !== turn) return;
@@ -159,11 +166,10 @@ export class Adapter {
       if (!bot?.webhook || !keyPath) throw new Error('请在插件设置的 bots 表填写这个 Bot 的 Webhook 与密文 key，并在会话里选择它。');
       const key = readFileSync(keyPath, 'utf8').trim();
       if (!key) throw new Error('这个 Bot 的 Webhook key 为空');
-      const text = prompt.map(b => b.text).join('\n');
-      const instructions = s.instructions;
+      const characters = [...text];
+      const preview = characters.slice(0, 500).join('') + (characters.length > 500 ? '……（完整内容用 coda_input 取）' : '');
       const response = await this.fetcher(url(bot.webhook), { method: 'POST', redirect: 'error', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-        body: JSON.stringify({ source: 'coda', sessionId: s.id, turn: turn.id,
-          text: instructions ? `<coda-session-instructions>\n${instructions}\n</coda-session-instructions>\n\n${text}` : text }), signal: turn.controller.signal });
+        body: JSON.stringify({ source: 'coda', sessionId: s.id, turn: turn.id, kind: s.input.kind, preview }), signal: turn.controller.signal });
       if (!response.ok) throw new Error(`Grok Webhook 返回 HTTP ${response.status}；未确认云端是否开始处理，不自动重发。`);
       await response.body?.cancel();
     })().catch(error => {
@@ -286,6 +292,11 @@ export class Adapter {
       return { sessionId: s.id, bot: s.saved.bot, instructions: s.instructions };
     }
     if (!s.saved.bound) fail('Bot 尚未完成绑定，请先运行 bind');
+    if (p.method === 'input') {
+      if (typeof args.turn !== 'string' || !args.turn) fail('input 必须带 Webhook 的 turn');
+      if (!s.input || s.input.turn !== args.turn) fail('本轮输入不存在或已被下一轮替换；请使用最新 Webhook 的 turn');
+      return s.input;
+    }
     if (p.method === 'say') {
       if (typeof args.text !== 'string' || !args.text.trim()) fail('say 需要非空 text');
       const turn = this.active(s, args.turn, true);

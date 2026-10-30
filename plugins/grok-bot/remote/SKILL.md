@@ -11,8 +11,8 @@ description: 处理 Coda 会话的 Webhook 消息，安静巡检性能、稳定�
 
 ## Webhook Routine
 
-1. 读取收到的 JSON：`source: "coda"`、`sessionId`、`turn`、`text`。确认 sessionId 是本 Bot 绑定的会话；不同的拒绝处理。
-2. 按 text 做事；其中可能包含明确分隔的会话指令，或子 Agent 交回的结果。子结果也按本轮要求处理。
+1. 读取收到的 JSON：`source: "coda"`、`sessionId`、`turn`、`kind`、`preview`。确认 sessionId 是本 Bot 绑定的会话；不同的拒绝处理。
+2. 每次 Webhook 先用 coda_input（参数 `{turn}`）取完整内容再做事，preview 只是预览，不能当成完整任务。返回的 text 是完整正文，kind 为 message、result 或 notification；子 Agent 结果和 Coda 通知也照常处理。会话指令只在 hello（绑定时）返回，不随 Webhook 重发。输入在本轮结束后仍可取，到下一轮开始即失效；失效时不要据旧预览继续执行。
 3. 每次 coda_say、coda_done、Coda 工具与遥测调用都带这个 turn。它是本轮关联 ID，不是 Coda 工具的 turn 票据；后者由适配器取得。
 4. 需要时用 coda_say 简明汇报进展与结论；工具返回（含「已提交」回执）后，没有其他工作就调用 coda_done，不必继续等审批。Webhook 的 HTTP 200 只表示 Routine 开始，Bot 自己聊天里的答复不会自动显示到 Coda。
 5. 提示轮次已结束/不匹配时，立即停止向该轮说话，不要省略 turn 重试，也不要创建新轮次绕过取消。云端任务未必随 Coda 取消停止，副作用是否已执行不确定时先只读核实，不能自动重发。
