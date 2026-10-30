@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://coda.pub/schemas/plugin/v1/groups.json",
+  "title": "contributes.groups：并发组",
+  "description": "有名字、有容量的锁：name 是任何进程都能拿的组名，capacity 是本插件的一项整数设置，说同时放进几个。",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "properties": {
+      "name": {"description": "组名：1–100 个非空白字符", "type": "string", "pattern": "^\\S{1,100}$"},
+      "capacity": {
+        "description": "capacity 是本插件声明的一项整数设置",
+        "type": "string",
+        "x-ref": {"pointer": "/contributes/configuration/properties", "match": {"properties": {"type": {"const": "integer"}}, "required": ["type"]}}
+      }
+    },
+    "required": ["name", "capacity"],
+    "additionalProperties": false
+  },
+  "x-unique-by": ["name"]
+}

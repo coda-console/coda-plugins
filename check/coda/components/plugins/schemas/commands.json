@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://coda.pub/schemas/plugin/v1/commands.json",
+  "title": "contributes.commands：放在会话与步骤 PATH 最前的命令",
+  "description": "命令名 → 由 sh 运行的一行命令（带上参数）。",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "description": "命令名：小写字母、数字和「-」，以字母开头，不能是 Coda 自己的 coda-run、coda-event、coda-resources",
+        "$ref": "common.json#/$defs/id",
+        "not": {"enum": ["coda-run", "coda-event", "coda-resources"]}
+      },
+      "command": {"$ref": "common.json#/$defs/command"}
+    },
+    "required": ["name", "command"],
+    "additionalProperties": false
+  },
+  "x-unique-by": ["name"]
+}

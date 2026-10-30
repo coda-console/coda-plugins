@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://coda.pub/schemas/plugin/v1/mcp-servers.json",
+  "title": "contributes.mcpServers：给 Agent 的 MCP 服务器",
+  "description": "服务器名 → { command, args, env }，照 Claude Code 的 .mcp.json：Agent 在本机启动、经标准输入输出说话的程序（stdio），不经 shell。command 与 args 里可以写 ${CODA_PLUGIN_PATH}、${CODA_PLUGIN_STATE}、${CODA_NODE}；设置经 env 交给它（写法同 contributes.environment）。",
+  "type": "object",
+  "maxProperties": 20,
+  "propertyNames": {"description": "服务器名只用小写字母、数字和「-」，以字母开头，至多 40 个字符，不能是 Coda 自己的 coda", "$ref": "common.json#/$defs/id", "not": {"const": "coda"}},
+  "additionalProperties": {
+    "type": "object",
+    "properties": {
+      "type": {"description": "现在只支持由 Agent 在本机启动的服务器（stdio）", "const": "stdio"},
+      "command": {"$ref": "#/$defs/word"},
+      "args": {"description": "不超过 100 项", "type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/word"}},
+      "env": {"$ref": "environment.json"}
+    },
+    "required": ["command"],
+    "additionalProperties": false
+  },
+  "$defs": {
+    "word": {
+      "description": "一行不超过 4096 字的文字；${…} 只能是 CODA_PLUGIN_PATH、CODA_PLUGIN_STATE 或 CODA_NODE，设置经 env 交给它",
+      "type": "string",
+      "maxLength": 4096,
+      "pattern": "^[^\\u0000\\r\\n]+$",
+      "x-placeholders": {"names": ["CODA_PLUGIN_PATH", "CODA_PLUGIN_STATE", "CODA_NODE"]}
+    }
+  }
+}

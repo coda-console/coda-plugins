@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://coda.pub/schemas/plugin/v1/path.json",
+  "title": "contributes.path：放上 PATH 的目录",
+  "description": "插件目录里的目录（相对路径），或它在后端的状态目录 ${CODA_PLUGIN_STATE} 下的目录（setup 可以建它）。",
+  "type": "array",
+  "maxItems": 20,
+  "items": {
+    "type": "string",
+    "minLength": 1,
+    "pattern": "^[^\\u0000:\\n]*$",
+    "if": {"pattern": "^\\$\\{CODA_PLUGIN_STATE\\}"},
+    "then": {"description": "${CODA_PLUGIN_STATE} 下的目录：不离开它", "pattern": "^\\$\\{CODA_PLUGIN_STATE\\}(/(?!(.*/)?\\.\\.(/|$))[^$]*)?$"},
+    "else": {"description": "插件目录里的目录（相对路径，不离开插件目录）", "pattern": "^(?!/)(?!(.*/)?\\.\\.(/|$))(?!\\.?/*$)[^$]*$", "x-file": {"type": "directory"}}
+  }
+}

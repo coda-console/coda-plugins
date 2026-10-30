@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://coda.pub/schemas/plugin/v1/configuration.json",
+  "title": "contributes.configuration：插件的设置",
+  "description": "照 VS Code 的 contributes.configuration：properties 是设置名 → 声明（setting.json），设置名以「<插件 ID>.」开头；required 是缺了就不能用的设置。",
+  "type": "object",
+  "properties": {
+    "title": {"type": "string"},
+    "properties": {
+      "description": "设置名 → 声明；单值设置是一组，至多一个模型地址（coda-model-url）：检查可用模型按组找它",
+      "type": "object",
+      "propertyNames": {"description": "设置名是插件 ID 加「.」再加字母和数字", "pattern": "^[a-z][a-z0-9-]*(\\.[a-z][A-Za-z0-9]*)+$"},
+      "additionalProperties": {"$ref": "setting.json"},
+      "x-max-contains": {"match": {"properties": {"format": {"const": "coda-model-url"}}, "required": ["format"]}, "max": 1}
+    },
+    "required": {
+      "description": "contributes.configuration.required 是本插件声明过的设置名，不重复",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"description": "contributes.configuration.required 是本插件声明过的设置名，不重复", "type": "string", "x-ref": {"pointer": "2/properties"}}
+    }
+  }
+}
