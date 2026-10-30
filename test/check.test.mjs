@@ -104,6 +104,7 @@ describe('a liar fails on the rule it breaks', () => {
     ['wait-no-params', 'wait.invalid', { live: true }],
     ['after-terminal', 'wait.after-terminal', { live: true }],
     ['permission-outside', 'request.outside-turn', { live: true }],
+    ['remote-code-foreign', 'request.session', { live: true }],
     ['ignore-cancel', 'live.cancel', { live: true }],
     ['keep-going', 'live.cancel-reason', { live: true }],
     ['slow-end-turn', 'live.cancel-reason', { live: true }],
@@ -144,6 +145,12 @@ describe('a liar fails on the rule it breaks', () => {
     const { report } = await checkPlugin(plugin({ mode: 'permission' }), { live: true, limits });
     assertPasses(report, ['live.turn']);
     assert.match(report.items.find(item => item.rule === 'live.turn').message, /审批答复 \{"outcome":\{"outcome":"selected","optionId":"no"\}\}/);
+  });
+  test('a remote agent asking for a binding code of its own session is answered as Coda answers it', async () => {
+    const { report } = await checkPlugin(plugin({ mode: 'remote-code' }), { live: true, limits });
+    assert.deepEqual(failed(report), [], JSON.stringify(report.failures, null, 1));
+    assertPasses(report, ['live.instructions', 'live.turn']);
+    assert.match(report.items.find(item => item.rule === 'live.turn').message, /绑定码字段 addresses,code,expiresAt/);
   });
   test('waits said while the session opens are kept for it', async () => {
     const { report } = await checkPlugin(plugin({ mode: 'wait-while-loading' }), { limits });

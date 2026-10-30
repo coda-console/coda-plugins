@@ -98,7 +98,7 @@ export function firstMessage(value) {
     ...reply,
     ...outside,
     requestId: text(value.requestId, '请求标识', 100),
-    projectId: text(value.projectId, '项目标识', 100),
+    projectId: text(value.projectId, '目录标识', 100),
     title: text(value.title ?? message.trim().slice(0, 80), '会话标题'),
     agent: value.agent,
     checkout: checkout.kind === 'worktree' ? { kind: 'worktree', baseRef: checkout.baseRef } : { kind: checkout.kind },

@@ -1,5 +1,5 @@
 {
-  "commit": "04fd85113f83823020febc7ffc647f10d15a2ddc",
+  "commit": "8cb72bb25f7be7db272feea0cd15d7c4a610834a",
   "packages": {
     "@0dep/piso": "5.2.0",
     "@agentclientprotocol/sdk": "1.4.0",
@@ -13,9 +13,9 @@
     "check/coda/components/plugins/plugin-source-rules.mjs": "e03606bf3056061ee3a78494d34dae9dfbe35d6fb2f139880fab5891663cbedc",
     "check/coda/components/plugins/skill-document.mjs": "c5b5e815c42cd836572f7b60e22a46af6ac607fd9df0170fa36f955825636ce6",
     "check/coda/components/prompt-recovery/prompt-recovery.mjs": "f43f21d24c19a58113d3304f9248225b12080ab00ed15eab74bf7b94642732de",
-    "check/coda/components/session-config/commands.mjs": "2ccc0c089d88b3f76d9098876dc60bd7e06348931773da131732c0d6c6c7a6cf",
+    "check/coda/components/session-config/commands.mjs": "b59772a8216d8d97d0e0fb4f094c194b3e602ef3aeca2ea3eba5919f481f791c",
     "check/coda/components/workflows/executor-labels.mjs": "dceca6ae60c0a4f3c3cc72a6c84f1489831790774c93caab96e4ddb493bc89e1",
-    "check/coda/domain/agent-protocol.mjs": "7337cf0af97a9592bbcad98a0e4f3837d8bb4d48b53c22846a8c56a0c88a4630",
+    "check/coda/domain/agent-protocol.mjs": "e85866b88c802de1204d4215f7c10d345d76aa9900854d5e2d615f2d1c8f30b7",
     "check/coda/domain/duration.mjs": "15dd64ef9b02342ad521c66e5968a569432a89dc7568d11afd3e6f3fe37e104b",
     "check/coda/domain/errors.mjs": "773c641309a0d19b93c0b3457428d74ecf636454d9fe91cacf3d944b952831dc",
     "check/coda/domain/values.mjs": "01cc72b8d9c09e3fe16c93ec332ca01148bba859b1c672586d9d07444d7816c4",
@@ -24,7 +24,7 @@
     "check/coda/resources/plugins/resources/panels/panels.mjs": "aee040febb37fd6eebaf1a1da5b3299d2b6a9dfc982e649d9a628291af298179",
     "check/coda/resources/plugins/resources/panels/rules.mjs": "c024c5ede7c1516877128aa6d6796fbe5fd0e14642741b0745481bb1c5ca41d3",
     "check/coda/resources/plugins/resources/panels/sign-in.mjs": "1271a24e33b1b882a1fb9bee03b8e240db8b9bee1b5208f0e1c84499cfb1be7e",
-    "check/coda/builtin.json": "add6de7df1f74456223275750a76919c983fd3eba2f4c0750077f7b998d9d3fc",
-    "docs/agent-protocol.md": "2a40fac029e93bc512d0405105c9d74fa3e5a59e92788b6951dba182775875c1"
+    "check/coda/builtin.json": "72a401da2d169559fb2fa18460dceb56f0ae219eb88b0b83caa52f7cf1bb3e9e",
+    "docs/agent-protocol.md": "322271992a6c95db24fa4f8fbddf8bec23ca9dc9e7d00e5f8bdb4258a30e1cd7"
   }
 }
