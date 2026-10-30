@@ -1,0 +1,58 @@
+{
+  "name": "@coda-console/grok-bot",
+  "id": "grok-bot",
+  "displayName": "Grok Bot",
+  "description": "把 Grok 云端 Bot 接到 Coda 的长期会话：Webhook 消息、定时巡检与用户审批。",
+  "version": "0.1.0",
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "categories": ["Agent"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coda-console/coda-plugins.git",
+    "directory": "plugins/grok-bot"
+  },
+  "publishConfig": { "access": "public" },
+  "files": ["agent", "remote", "icons"],
+  "contributes": {
+    "agents": [{
+      "id": "grok-bot",
+      "displayName": "Grok Bot",
+      "icon": { "light": "icons/grok.pdf", "template": true },
+      "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/agent/entry.mjs\"",
+      "setupHint": "需要支持远端 Agent 入口的 Coda。先发一条消息获取绑定说明，再配置 Bot 的 Routine Webhook。"
+    }],
+    "configuration": {
+      "title": "Grok Bot",
+      "properties": {
+        "grok-bot.bots": {
+          "title": "Bots",
+          "description": "一行一个 Bot，行名为 Bot 名；填 Webhook Routine 地址与 Bearer key。会话中选择对应的 Bot。",
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "webhook": { "title": "Webhook 地址", "type": "string" },
+              "key": { "title": "Bearer key", "type": "string", "writeOnly": true }
+            },
+            "required": ["webhook"]
+          }
+        },
+        "grok-bot.telemetry": {
+          "title": "遥测看板地址",
+          "description": "可选的遥测看板 HTTP(S) 基地址。未配置时遥测工具明确报错。",
+          "type": "string"
+        },
+        "grok-bot.turnTimeout": {
+          "title": "本轮等待上限",
+          "description": "等待 Bot 完成本轮的最长时间（ISO 8601 周、日、时、分、秒，须大于零且不超过 24 天）。超时结束 Coda 轮次，云端未必停下。",
+          "type": "string",
+          "format": "duration",
+          "default": "PT30M"
+        }
+      }
+    }
+  }
+}
