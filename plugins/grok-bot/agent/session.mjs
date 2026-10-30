@@ -175,15 +175,15 @@ export class Adapter {
   async tool(s, { name, arguments: args = {}, turn: id }) {
     if (!READ.has(name) && !WRITE.has(name)) fail(`不允许代理工具：${name}`);
     if (!object(args)) fail('arguments 必须是对象');
+    if (name === 'spawn' && (typeof args.project !== 'string' || !args.project.trim()))
+      fail('spawn 必须指定目标 project；Bot 所在的空目录没有代码，请选择要修复的项目');
     this.provider(s, name);
     this.active(s, id, WRITE.has(name));
-    return this.trace(s, name, args, async (toolCall, turn) => {
+    return this.trace(s, name, args, async (_toolCall, turn) => {
       const signal = turn?.controller.signal;
       if (WRITE.has(name)) {
-        const permission = await this.rpc.request('session/request_permission', { sessionId: s.id, toolCall,
-          options: [{ optionId: 'allow', name: '仅允许本次操作', kind: 'allow_once' }, { optionId: 'deny', name: '拒绝', kind: 'reject_once' }] }, { signal });
-        if (s.turn !== turn) fail('轮次已结束，操作未执行');
-        if (permission?.outcome?.outcome !== 'selected' || permission.outcome.optionId !== 'allow') fail('用户未批准此操作');
+        // Coda owns authorization: cross-project spawn and messages to other
+        // sessions use its cards; follow-ups/cancel of our children use its ownership checks.
         const status = await this.trace(s, 'status', {}, () => this.provider(s, 'status').call('status', {}, signal));
         if (status.isError) throw new Error('无法取得 Coda turn 票据');
         const ticket = (status.structuredContent ?? JSON.parse(status.content.find(b => b.type === 'text').text)).turn;

@@ -36,8 +36,8 @@ export function fakeClock() {
   return { setTimeout(fn) { const id = Symbol(); timers.set(id, fn); return id; }, clearTimeout(id) { timers.delete(id); },
     expire() { for (const [id, fn] of [...timers]) { timers.delete(id); fn(); } }, get size() { return timers.size; } };
 }
-export async function harness(t, { settings = {}, root = temporary(t), permission, space = true, capabilities = { waits: {}, remote: {} }, ...options } = {}) {
-  const requests = mailbox(), events = [], logs = [], messages = mailbox();
+export async function harness(t, { settings = {}, root = temporary(t), space = true, capabilities = { waits: {}, remote: {} }, ...options } = {}) {
+  const events = [], logs = [], messages = mailbox();
   const toAgent = new PassThrough(), fromAgent = new PassThrough();
   const keyPath = join(root, 'webhook-key');
   writeFileSync(keyPath, 'secret-for-fixture');
@@ -47,7 +47,7 @@ export async function harness(t, { settings = {}, root = temporary(t), permissio
     events.push({ method, params });
     messages.push({ method, params });
     if (method === '_coda/remote/code') return { code: 'single-use-code', expiresAt: '2030-01-01T00:00:00.000Z', addresses: ['http://100.88.214.15:8080'] };
-    if (method === 'session/request_permission') { requests.push(params); return permission ? permission(params) : { outcome: { outcome: 'selected', optionId: 'allow' } }; }
+    if (method === 'session/request_permission') throw new Error('Adapter must delegate authorization to Coda MCP');
     return {};
   });
   const running = serve(toAgent, fromAgent, { env, clock: fakeClock(), log: text => logs.push(text), ...options });
@@ -61,7 +61,7 @@ export async function harness(t, { settings = {}, root = temporary(t), permissio
   const created = await client.request('session/new', open);
   const sessionId = created.sessionId;
   const remote = (method, params = {}) => client.request('_coda/remote', { sessionId, method, params });
-  return { ...running, client, sessionId, remote, initialized, created, events, logs, requests, messages, open, env, root,
+  return { ...running, client, sessionId, remote, initialized, created, events, logs, messages, open, env, root,
     text: () => events.filter(e => e.params.update?.sessionUpdate === 'agent_message_chunk').map(e => e.params.update.content.text).join('\n'),
     calls: () => { try { return readFileSync(callsFile, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse); } catch { return []; } },
     discovered: () => readFileSync(discoveryFile, 'utf8').trim().split('\n'),

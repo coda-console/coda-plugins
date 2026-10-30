@@ -96,42 +96,66 @@ test('missing space reports diagnostics unavailable while coda reads still work'
   assert.deepEqual(h.calls().map(c => [c.name, c.server]), [['read_thread', 'coda']]);
 });
 
-test('spawn starts an autonomous turn, asks permission then obtains a fresh ticket and requestId', async t => {
+test('spawn requires a target project before starting a turn or calling MCP', async t => {
+  const h = await bound(t);
+  const start = h.events.length;
+  for (const project of [undefined, null, '', '  ', 123])
+    await assert.rejects(h.remote('tool', { name: 'spawn', arguments: { agent: 'codex', prompt: 'fix', project } }), /必须指定目标 project/);
+  assert.deepEqual(h.calls(), []);
+  assert.equal(h.events.length, start);
+});
+
+test('spawn with project starts a turn and proxies with a fresh ticket and requestId, without extra approval', async t => {
   const h = await bound(t);
   const result = await h.remote('tool', { name: 'spawn', arguments: { agent: 'codex', project: 'app', prompt: 'fix', turn: 'forged', requestId: 'forged' } });
   const { args } = JSON.parse(result.content[0].text);
+  assert.equal(args.project, 'app');
   assert.equal(args.turn, 'coda-ticket');
   assert.notEqual(args.requestId, 'forged');
   assert.deepEqual(h.calls().map(c => c.name), ['status', 'spawn']);
-  const approval = await h.requests.next();
-  assert.ok(schemas.zRequestPermissionRequest.safeParse(approval).success);
-  assert.deepEqual(approval.options.map(o => o.kind), ['allow_once', 'reject_once']);
+  assert.equal(h.events.some(e => e.method === 'session/request_permission'), false);
   const handling = h.events.findIndex(e => e.params.state === 'handling');
-  assert.ok(handling >= 0 && handling < h.events.findIndex(e => e.method === 'session/request_permission'));
+  assert.ok(handling >= 0 && handling < h.events.findIndex(e => e.params.update?.sessionUpdate === 'tool_call'));
   await h.remote('done');
 });
 
-test('denial prevents every side effect, including same-directory spawn, send and cancel', async t => {
-  const h = await bound(t, { permission: () => ({ outcome: { outcome: 'selected', optionId: 'deny' } }) });
-  for (const name of ['spawn', 'send', 'cancel']) await assert.rejects(h.remote('tool', { name, arguments: { childId: 'other' } }), /未批准/);
-  assert.deepEqual(h.calls(), []);
+test('send and cancel delegate authorization to Coda and preserve its refusal without retry', async t => {
+  const h = await bound(t);
+  const ids = new Set();
+  for (const [name, args] of [['send', { childId: 'own-child', prompt: 'continue' }], ['send', { childId: 'other', prompt: 'inspect' }],
+    ['cancel', { childId: 'own-child' }], ['cancel', { childId: 'not-owned', error: true }], ['spawn', { project: 'app', agent: 'codex', prompt: 'fix', error: true }]]) {
+    const result = await h.remote('tool', { name, arguments: args });
+    assert.equal(!!result.isError, !!args.error);
+    const forwarded = JSON.parse(result.content[0].text).args;
+    assert.equal(forwarded.turn, 'coda-ticket');
+    assert.equal(typeof forwarded.requestId, 'string');
+    ids.add(forwarded.requestId);
+  }
+  assert.equal(ids.size, 5);
+  assert.deepEqual(h.calls().map(c => c.name), ['status', 'send', 'status', 'send', 'status', 'cancel', 'status', 'cancel', 'status', 'spawn']);
+  assert.equal(h.events.some(e => e.method === 'session/request_permission'), false);
   await h.remote('done');
 });
 
-test('cancel while awaiting approval withdraws card and never dispatches the write', async t => {
-  const answer = Promise.withResolvers();
-  const h = await bound(t, { permission: () => answer.promise });
-  const operation = h.remote('tool', { name: 'spawn', arguments: { agent: 'codex', prompt: 'fix' } });
-  const rejected = assert.rejects(operation, /Turn ended/);
-  await h.requests.next();
+test('cancel while obtaining a turn ticket never dispatches the write', async t => {
+  const answer = Promise.withResolvers(), started = Promise.withResolvers();
+  const h = await bound(t);
+  const provider = h.adapter.provider(h.adapter.session(h.sessionId), 'status');
+  const call = provider.call.bind(provider);
+  provider.call = (name, args, signal) => {
+    if (name !== 'status') return call(name, args, signal);
+    started.resolve();
+    return answer.promise;
+  };
+  const operation = h.remote('tool', { name: 'spawn', arguments: { project: 'app', agent: 'codex', prompt: 'fix' } });
+  const rejected = assert.rejects(operation, /没有有效的 Coda turn 票据/);
+  await started.promise;
   await assert.rejects(h.remote('done'), /仍有工具/);
   await h.client.request('session/cancel', { sessionId: h.sessionId });
-  answer.resolve({ outcome: { outcome: 'selected', optionId: 'allow' } });
+  answer.resolve({ content: [{ type: 'text', text: JSON.stringify({ turn: 'stale-ticket' }) }] });
   await rejected;
-  const withdrawal = h.events.find(e => e.method === '$/cancel_request');
-  assert.equal(typeof withdrawal?.params.requestId, 'string');
-  assert.equal(withdrawal.params.id, undefined);
   assert.deepEqual(h.calls(), []);
+  assert.equal(h.events.some(e => e.method === 'session/request_permission'), false);
   assert.equal(h.events.filter(e => e.method === '_coda/wait').at(-1).params.state, 'waiting');
 });
 

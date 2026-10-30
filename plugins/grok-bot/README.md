@@ -4,7 +4,7 @@
 
 ## 前提与安装
 
-依赖 Coda 仓库的「远端 Agent 入口」PR（链接待补）：远端能力协商、绑定码、HTTP 入口与 `_coda/remote` 转发。机器诊断工具和遥测 JSON 接口也由 Coda 配套 PR 提供。本插件可独立通过握手检查，旧版 Coda 发消息时会提示升级。
+依赖 Coda 仓库的[远端 Agent 入口 #2006](https://github.com/coda-console/coda/pull/2006)：远端能力协商、绑定码、HTTP 入口与 `_coda/remote` 转发；[遥测 JSON 接口 #2004](https://github.com/coda-console/coda/pull/2004) 与[机器诊断工具 #2003](https://github.com/coda-console/coda/pull/2003) 配套提供观测数据，诊断工具改由内置空间插件的 `space` MCP 服务提供。本插件可独立通过握手检查，旧版 Coda 发消息时会提示升级。
 
 在 Coda 从仓库 `https://github.com/coda-console/coda-plugins.git` 安装 `plugins/grok-bot`；发布后也可安装 `@coda-console/grok-bot`。
 创建一个名为「Bot」的空目录，添加到 Coda，每个 Bot 在其中建立一个 Grok Bot 会话。Coda 运行机需要 Node 24（使用 Coda 自带 Node）；云电脑脚本需要 Node 22 或以上。
@@ -33,7 +33,7 @@
 取消会立即回 `cancelled`；超时说明原因后结束本轮。两者都不保证云端停止。旧 turn 被拒绝；Coda 发起的轮次必须带 turn，省略它不会混入新一轮。
 
 会话加载时登记 recurring timer。Bot 主动 say 先报 handling，再输出；done 回 waiting。只读调用若没有轮次只写标准错误审计，不开启空轮次；轮内通过 `tool_call` / `tool_call_update` 留下输入与结果。
-所有副作用调用均先用 ACP `session/request_permission` 发仅本次允许/拒绝卡片，批准后向 coda MCP 的 status 取 turn 票据并生成 requestId。Coda 原有的跨项目/跨会话授权仍生效，可能出现第二张卡片。工具范围之外全部拒绝。
+副作用调用由适配器向 coda MCP 的 status 取 turn 票据并生成 requestId，授权与通知复用 Coda 会话机制。`spawn` 必须指定目标 `project`，缺失直接拒绝（Bot 的空目录没有代码）；开 Agent、给别的会话发消息由 Coda 的授权卡片批准。给自己开出的子会话补充是已批准任务的延续，不另问；`cancel` 只能停自己开出的子会话，由 Coda 校验归属，不另问。适配器不另发审批卡片，工具范围之外全部拒绝。
 
 ## 远端协议与调试
 
@@ -50,6 +50,8 @@ Coda 将 HTTP 调用包装成 `_coda/remote {sessionId,method,params}`；插件�
 
 会话建立与恢复时，从 mcpServers 启动 `coda` 和 `space` 两个 stdio MCP 客户端，用各自 `tools/list` 建立路由，只保留白名单。`machines`、`machine_diagnostics` 由 Coda 内置空间插件的 `space` 提供；space 不存在或没列出工具时明确报不可用，不转给 coda。其余只读工具：read_thread、read_tool_call、agents、status、workflow_status、workflow_list；副作用工具：spawn、send、cancel。工具名冲突拒绝调用。Bot MCP 以 `coda_` 前缀暴露这些工具，加 coda_say、coda_done、coda_telemetry。
 调试：`node coda-bot.mjs call <method> '<JSON>' [sessionId]`。本轮 ID 与 status 的 Coda turn 票据不同，Bot 只传前者，适配器取得后者。
+
+`coda_machine_diagnostics` 的参数直接传入：`machine` 为 ID 或唯一名字，`kind` 为 network / client-performance；`from`、`to` 为 Unix 毫秒数，`days` 为 1–30 的整数，另有 `limit`（1–500）、`client`、`verdict`。client-performance 只支持 days；network 的 from/to 选择分钟样本，其余参数筛选探测报告。
 
 `net` 快速检查本地 Tailscale；未安装时运行[官方安装脚本](https://tailscale.com/install.sh)，无守护进程时按 [tailscaled 参数](https://tailscale.com/docs/reference/tailscaled) 用 `/workspace/.coda-bot/tailscale/` 存状态，首次从 `/var/lib/tailscale` 复制状态。需要免密 sudo；状态恢复使用 flock 协调同账号多个 Bot。登录链接写给用户，MCP 标准输出只有 JSON-RPC。每个 MCP 工具调用前做检查。
 

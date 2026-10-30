@@ -97,6 +97,33 @@ test('MCP returns net and remote failures as tool errors without corrupting stdi
   assert.deepEqual(await rpc.request('ping', {}), {});
 });
 
+test('diagnostics exposes Coda filter types and forwards flat parameters unchanged', async t => {
+  const input = new PassThrough(), output = new PassThrough(), calls = [];
+  const lines = serveMcp({ input, output, ensureNet: async () => {}, invoke: async (method, params) => { calls.push({ method, params }); return {}; } });
+  const rpc = new Rpc(output, input);
+  t.after(() => { rpc.close(); lines.close(); input.end(); output.end(); });
+  const tools = (await rpc.request('tools/list', {})).tools;
+  const schema = tools.find(t => t.name === 'coda_machine_diagnostics').inputSchema;
+  assert.deepEqual(Object.keys(schema.properties).sort(), ['machine', 'kind', 'from', 'to', 'days', 'limit', 'client', 'verdict', 'turn'].sort());
+  assert.deepEqual(schema.required, ['machine', 'kind']);
+  assert.equal(schema.additionalProperties, false);
+  for (const key of ['from', 'to']) {
+    assert.equal(schema.properties[key].type, 'number');
+    assert.equal(schema.properties[key].minimum, 0);
+  }
+  assert.deepEqual([schema.properties.days.type, schema.properties.days.minimum, schema.properties.days.maximum], ['integer', 1, 30]);
+  assert.deepEqual([schema.properties.limit.type, schema.properties.limit.minimum, schema.properties.limit.maximum, schema.properties.limit.default], ['integer', 1, 500, 50]);
+  assert.equal(schema.properties.client.type, 'string');
+  assert.deepEqual(schema.properties.verdict.enum, ['ok', 'offline', 'internet_unreachable', 'server_unreachable', 'service_unavailable', 'ssh_failed', 'slow_network', 'slow_server']);
+  const args = { machine: 'unique-machine-name', kind: 'network', from: 1000, to: 2000, days: 7, limit: 100, client: 'ios:fixture', verdict: 'slow_server' };
+  await rpc.request('tools/call', { name: 'coda_machine_diagnostics', arguments: { ...args, turn: 'webhook-turn' } });
+  assert.deepEqual(calls, [{ method: 'tool', params: { name: 'machine_diagnostics', arguments: args, turn: 'webhook-turn' } }]);
+  const spawn = tools.find(t => t.name === 'coda_spawn');
+  assert.ok(spawn.inputSchema.required.includes('project'));
+  assert.equal((await rpc.request('tools/call', { name: 'coda_spawn', arguments: { agent: 'codex', prompt: 'fix' } })).isError, true);
+  assert.equal(calls.length, 1);
+});
+
 test('net fast check does not install or restart a running daemon', async () => {
   const commands = [];
   const result = await net({ run: async (command, args) => { commands.push([command, args]); return { stdout: JSON.stringify({ BackendState: 'Running' }) }; }, pause: () => assert.fail('no wait') });
