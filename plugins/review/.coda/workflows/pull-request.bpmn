@@ -292,11 +292,11 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
 「合并」以 {{vars.review.mergeMethod}} 方式合并提交 {{reviewing.head}}{{if kinds.premerge then "，先在它上面跑项目的合并前检查，都通过才合并" else ""}}。没合并成（合并前检查没通过，或 GitHub 没合并：冲突、检查没过等）就交给开 PR 的会话处理，它推送的新版本评审通过后按这次的选择合并，不再问你；评审要求修改则这次批准作废。</documentation>
         <extensionElements>
           <coda:choice id="merge" name="合并" primary="true">
-            <coda:option id="deleteBranch" name="合并后删除远程分支" detail="删除这个 PR 的远程源分支，本地分支和工作树保留" />
-            <coda:option id="deploy" name="部署" detail="调用项目里的部署流程" coda:shown="=kinds.deploy" />
-            <coda:option id="preview" name="发布预览版" detail="调用项目里的预览发布流程" coda:shown="=kinds.preview" />
-            <coda:option id="release" name="发布正式版" detail="调用项目里的正式发布流程" coda:shown="=kinds.release" />
-            <coda:option id="notify" name="全部完成后通知 Agent" detail="合并及所选删除分支、部署、发布结束后通知" />
+            <coda:option default='=list contains(vars.review.mergeOptions, "deleteBranch")' id="deleteBranch" name="合并后删除远程分支" detail="删除这个 PR 的远程源分支，本地分支和工作树保留" />
+            <coda:option default='=list contains(vars.review.mergeOptions, "deploy")' id="deploy" name="部署" detail="调用项目里的部署流程" coda:shown="=kinds.deploy" />
+            <coda:option default='=list contains(vars.review.mergeOptions, "preview")' id="preview" name="发布预览版" detail="调用项目里的预览发布流程" coda:shown="=kinds.preview" />
+            <coda:option default='=list contains(vars.review.mergeOptions, "release")' id="release" name="发布正式版" detail="调用项目里的正式发布流程" coda:shown="=kinds.release" />
+            <coda:option default='=list contains(vars.review.mergeOptions, "notify")' id="notify" name="全部完成后通知 Agent" detail="合并及所选删除分支、部署、发布结束后通知" />
           </coda:choice>
           <coda:choice id="send" name="让 Agent 处理评审意见" />
           <coda:choice id="close" name="关闭 PR" detail="不合并，在 GitHub 上关闭这个 PR" />
