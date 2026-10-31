@@ -1,9 +1,9 @@
 {
-  "commit": "24631031f629cae0f395ec7c04ede6a036d49f5a",
+  "commit": "b4280e88dedb17190fd84e3d0678bd5b838214c2",
   "packages": {
     "@0dep/piso": "5.2.0",
     "@agentclientprotocol/sdk": "1.4.0",
-    "@coda-console/protocol": "1.7.0",
+    "@coda-console/protocol": "1.9.0",
     "yaml": "2.9.1"
   },
   "files": {
@@ -13,13 +13,13 @@
     "check/coda/components/plugins/plugin-source-rules.mjs": "d894d55a3272df5ef3b108b68820c64aefdf6b69346404b58954f2a3503cb4a5",
     "check/coda/components/plugins/skill-document.mjs": "c5b5e815c42cd836572f7b60e22a46af6ac607fd9df0170fa36f955825636ce6",
     "check/coda/components/prompt-recovery/prompt-recovery.mjs": "f43f21d24c19a58113d3304f9248225b12080ab00ed15eab74bf7b94642732de",
-    "check/coda/components/session-config/commands.mjs": "be07377c153f812a648deb60f023269c1f0a49b91cf2e4516f05b7eac09c28de",
+    "check/coda/components/session-config/commands.mjs": "5d6139f1e5814422dab5f9d69f0b31967bf08f49c51c40ff91d9282dfc642dd9",
     "check/coda/components/workflows/executor-labels.mjs": "dceca6ae60c0a4f3c3cc72a6c84f1489831790774c93caab96e4ddb493bc89e1",
-    "check/coda/domain/agent-protocol.mjs": "09243f47df4112d6484b05d6baeb646d9b511b5e21ee58a3f65803b177d5232e",
+    "check/coda/domain/agent-protocol.mjs": "769cc10dc21b3cef7718f94272aaef2d17d4882d42617b408cb47357abfc3bcb",
     "check/coda/domain/duration.mjs": "15dd64ef9b02342ad521c66e5968a569432a89dc7568d11afd3e6f3fe37e104b",
     "check/coda/domain/errors.mjs": "ddc00aef9bb6f9a56845a9926c82200628a906230d31212d88fcde48e36dfd36",
     "check/coda/domain/values.mjs": "01cc72b8d9c09e3fe16c93ec332ca01148bba859b1c672586d9d07444d7816c4",
-    "check/coda/kernel/agent-failures.mjs": "e435b9a1710b8a7c0ee243f04a556464f50b1a5605fb7bb59af21b78fca1b637",
+    "check/coda/kernel/agent-failures.mjs": "cbc215e2403d86f0acc765c2077197e0b529fc01e213db465c388361238ea8ce",
     "check/coda/resources/plugins/resources/panels/command.mjs": "606f28bf87f87dded9df2db892bc7624c770d795ffab88f2409998346920ae42",
     "check/coda/resources/plugins/resources/panels/panels.mjs": "9e25cfbc16ed9f68101fc7bfc34b8056c13a29d2368c5561e65e333233eb921e",
     "check/coda/resources/plugins/resources/panels/rules.mjs": "8418ed83b796f18047c154d8dea8dca7d98244af8ddfe3ddf188520c59324ee8",
