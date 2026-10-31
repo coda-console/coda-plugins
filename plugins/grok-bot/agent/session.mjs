@@ -425,9 +425,9 @@ export class Adapter {
   async trace(s, name, args, operation, replyAfter) {
     const turn = s.turn, toolCallId = randomUUID();
     const background = replyAfter !== undefined && !!this.waits;
-    // ACP read denotes data inspection here, not a claim of a local file read.
-    // These tools have no file locations; telemetry performs an HTTP fetch.
-    const kind = READ.has(name) ? 'read' : name === 'telemetry' ? 'fetch' : 'other';
+    // Coda counts read calls without locations as files. Data queries are
+    // other tools, not file reads; telemetry performs an HTTP fetch.
+    const kind = name === 'telemetry' ? 'fetch' : 'other';
     const toolCall = { toolCallId, title: `Coda · ${name}`, kind, status: 'pending', rawInput: args };
     if (turn) { turn.tools.set(toolCallId, { background }); this.update(s, { sessionUpdate: 'tool_call', ...toolCall }); }
     else this.log(JSON.stringify({ sessionId: s.id, toolCallId, name, arguments: args, state: 'started' }));

@@ -209,7 +209,7 @@ test('native free-form summaries stay other, preserve detail, and distinguish ca
   await reply(h, run.id); await h.emit(settle(run.id)); await run.done;
 });
 
-test('proxied Coda queries report read, telemetry fetch, and session actions other with full input/output', async t => {
+test('proxied Coda queries and session actions report other, telemetry fetch, with full input/output', async t => {
   const h = await connected(t, { settings: { 'grok-bot.telemetry': 'https://telemetry.invalid' } }), run = await sent(h);
   const reads = ['status', 'read_thread', 'read_tool_call', 'agents', 'workflow_status', 'workflow_list', 'machines', 'machine_diagnostics'];
   for (const name of reads) await h.remote('tool', { name, arguments: { sample: name } });
@@ -220,7 +220,7 @@ test('proxied Coda queries report read, telemetry fetch, and session actions oth
   const calls = h.events.filter(e => e.params.update?.sessionUpdate === 'tool_call').map(e => e.params.update);
   for (const call of calls) {
     const name = call.title.slice('Coda · '.length);
-    assert.equal(call.kind, reads.includes(name) ? 'read' : name === 'telemetry' ? 'fetch' : 'other');
+    assert.equal(call.kind, name === 'telemetry' ? 'fetch' : 'other');
     assert.ok(call.rawInput); assert.equal(call.locations, undefined);
     assert.ok(h.events.some(e => e.params.update?.toolCallId === call.toolCallId && e.params.update.rawOutput));
     assert.equal(schemas.zSessionNotification.safeParse({ sessionId: h.id, update: call }).success, true);
