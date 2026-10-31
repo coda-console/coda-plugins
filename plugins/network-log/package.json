@@ -3,7 +3,7 @@
   "id": "network-log",
   "displayName": "网络记录",
   "description": "按需采集网络记录，默认关闭。在插件设置中开启后记录建连等待与定时探测，关闭后仍可查看历史。保留 30 天，一页看全空间，Agent 用 network-log 命令查。",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "categories": [
     "机器与资源"
   ],

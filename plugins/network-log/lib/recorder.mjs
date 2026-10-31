@@ -1,6 +1,6 @@
 // The recorder: every second the machine's TCP table read for connections that hang, every minute each target probed,
-// each finding written to the log and given to whoever listens (the open pages). Collection is opt-in; while off only
-// the local settings are checked, so changing the switch does not require a backend restart or an open page.
+// each finding written to the log and given to whoever listens (the open pages). Collection is opt-in; while off local
+// settings and pending history are maintained, without requiring a backend restart or an open page.
 // Nothing is blocked or changed: the table is the system's, the probes are requests of their own.
 import { Tracker } from './tracker.mjs';
 import { commandOf, interfaceOf, settle, sockets } from './sockets.mjs';
@@ -56,10 +56,11 @@ export class Recorder {
     };
     next();
   }
-  // The settings, and mihomo's TUN as it is now: what went out of it went through mihomo.
+  // Local maintenance runs regardless of the collection switch; mihomo is queried only while collecting.
   async refresh({ network = true } = {}) {
     this.current = await this.settings();
     if (this.stopped) return;
+    if (this.unwritten.length) this.flush();
     const enabled = this.current.enabled === true, changed = enabled !== this.status.enabled;
     if (changed) {
       this.capture = enabled ? {} : null;
@@ -93,7 +94,7 @@ export class Recorder {
     this.listen({ collection: 'status', id: 'recorder', object: this.status });
   }
   // An event written to the log, then shown. One the log does not take (the disk full) waits, those after it behind it in
-  // turn, and is written as the log takes them again (`flush`, every reading); meanwhile the status says why.
+  // turn, and is written as the log takes them again (`flush`, every maintenance pass); meanwhile the status says why.
   write(event) {
     this.unwritten.push(event);
     this.flush();
@@ -126,7 +127,6 @@ export class Recorder {
     const list = await this.readSockets();
     if (!this.recording(capture)) return;
     if (!list) { this.setStatus({ supported: false }); return; }
-    if (this.unwritten.length) this.flush();
     const now = this.now(), { began, ended } = this.tracker.read(list, now);
     // The minute past settled first: what it did not write is counted in the log whether or not more hang now.
     if (now - this.minute.start >= 60_000) {

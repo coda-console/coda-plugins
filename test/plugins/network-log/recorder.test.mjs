@@ -151,11 +151,46 @@ test('what the log does not take (the disk full) waits in turn, is shown meanwhi
   assert.equal(log.read().filter(e => e.kind === 'hang-end').length, 0);
   assert.deepEqual([...made.summary.hangs.values()].map(h => h.end?.outcome), ['gone', 'gone']);
   assert.deepEqual(made.status.unwritten, { count: 2, error: 'ENOSPC' });
-  // Room again: the next reading writes them, in turn.
+  // Room again: local maintenance writes them, in turn.
   full = false;
-  after(1000); await made.sample();
+  await made.refresh({ network: false });
   assert.deepEqual(log.read().filter(e => e.kind === 'hang-end').map(e => e.at), [Date.parse('2026-10-24T03:00:04+08:00'), Date.parse('2026-10-24T03:00:04+08:00')]);
   assert.equal(made.status.unwritten, null);
+});
+
+for (const failedAt of ['hang', 'hang-end']) test(`history retries while collection is off after writing ${failedAt} failed`, async t => {
+  const settings = { enabled: true };
+  const { made, log, after } = recorder(t, { settings, table: () => [socket(9001)] });
+  let full = failedAt === 'hang';
+  log.appendFile = (file, text) => {
+    if (full) throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' });
+    appendFileSync(file, text);
+  };
+  await made.refresh();
+  await made.sample(); after(3000); await made.sample();
+  full = true;
+  settings.enabled = false;
+  await made.refresh({ network: false });
+  assert.equal(made.status.enabled, false);
+  assert.deepEqual(made.status.unwritten, { count: failedAt === 'hang' ? 2 : 1, error: 'ENOSPC' });
+  assert.equal(log.read().length, failedAt === 'hang' ? 0 : 1);
+
+  // The disk recovers with collection still off. Local maintenance saves both the history and its interrupted end.
+  const unexpected = async () => assert.fail('collection must remain off');
+  made.readSockets = made.request = unexpected;
+  made.mihomo = { tunDevice: unexpected, connectionFrom: unexpected };
+  full = false;
+  await made.refresh({ network: false });
+  const saved = log.read();
+  assert.deepEqual(saved.map(event => event.kind), ['hang', 'hang-end']);
+  assert.equal(saved[1].id, saved[0].id);
+  assert.equal(saved[1].outcome, 'unknown');
+  assert.equal(made.status.unwritten, null);
+  assert.equal(made.status.enabled, false);
+  await made.refresh({ network: false });
+  await made.sample();
+  await made.probeAll();
+  assert.deepEqual(log.read(), saved, 'subsequent maintenance neither duplicates history nor collects new records');
 });
 
 test('probes are written with the interface they went out of; a system without a table is said once, its probes go on', async t => {
