@@ -1,5 +1,7 @@
 # Ultra
 
+> Ultra 已并入 [`@coda-console/composer`](../composer/README.md)（输入框模式）。本包暂时保留，待 Coda 完成设置迁移后再处理；新插件的模板设置为 `composer.templates`。
+
 输入框的 Ultra 协调模式（Coda 的[输入框模式](https://github.com/coda-console/coda/blob/main/docs/plugins.md#输入框模式)）：在保持质量的前提下，节省主 Agent 的 Token 和上下文。
 主 Agent 负责定义任务、困难决策、调度和验收，非微小任务的主要执行工作按名单用 `spawn` 派给 Coda 子会话；关键路径和需要串行执行的任务也委派。
 只有整个请求已经明确、简短答复或一次显然的局部操作就能完成时，主 Agent 才直接做，例如已知位置的错字或简单状态查询。

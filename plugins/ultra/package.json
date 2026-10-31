@@ -3,7 +3,7 @@
   "id": "ultra",
   "displayName": "Ultra",
   "description": "输入框的 Ultra 协调模式：节省主 Agent 的 Token 和上下文，非微小任务的执行默认交给 Coda 子会话，串行任务也委派。主 Agent 负责决策、调度和验收。名单在模式参数里改，常用的存成模板。",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "categories": ["工作流程"],
   "license": "MIT",
   "repository": {

@@ -1,0 +1,161 @@
+{
+  "name": "@coda-console/composer",
+  "id": "composer",
+  "displayName": "输入框模式",
+  "description": "输入框的四种模式：交接到新会话、创建子会话、打 ! 执行命令，以及 Ultra 协调模式。Ultra 的主 Agent 负责决策、调度和验收，非微小任务交给 Coda 子会话执行。",
+  "version": "2.0.0",
+  "categories": [
+    "工作流程"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coda-console/coda-plugins.git",
+    "directory": "plugins/composer"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "main.mjs",
+    "ultra.mjs",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "main": "main.mjs",
+  "contributes": {
+    "configuration": {
+      "title": "输入框模式",
+      "properties": {
+        "composer.templates": {
+          "title": "模板",
+          "description": "进入 Ultra 时可选的名单，一行一个子 Agent：同一个模板名的几行是一个模板，排第一的模板是进入时的默认。默认没有模板，子 Agent 名单为空时沿用当前会话的 Agent 和模型。",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "template": {
+                "title": "模板",
+                "type": "string",
+                "order": 0
+              },
+              "who": {
+                "title": "Agent",
+                "type": "object",
+                "format": "coda-agent",
+                "order": 1
+              },
+              "when": {
+                "title": "什么时候派给它",
+                "type": "string",
+                "order": 2
+              }
+            },
+            "required": [
+              "template",
+              "who"
+            ]
+          },
+          "default": []
+        }
+      }
+    },
+    "composerModes": [
+      {
+        "id": "handoff",
+        "title": "交接到新会话",
+        "icon": "arrow.right.square",
+        "hint": "新会话承接这里的上下文，共享当前工作目录及其中的文件；这个会话保留，仍可继续使用。",
+        "placeholder": "接下来要完成什么？",
+        "sendLabel": "交接",
+        "agent": "own"
+      },
+      {
+        "id": "subagent",
+        "title": "子会话",
+        "icon": "arrow.triangle.branch",
+        "hint": "承接父会话近期上下文，沿用父会话工作目录；只启动子会话，不向父 Agent 发送这段要求。",
+        "placeholder": "描述交给子会话的任务…",
+        "sendLabel": "启动子会话",
+        "agent": "own",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "replyTo": {
+              "title": "回报对象",
+              "type": "string",
+              "enum": [
+                "parent",
+                "sender"
+              ],
+              "enumItemLabels": [
+                "完成后回报父会话",
+                "完成后回报你"
+              ],
+              "enumDescriptions": [
+                "结果交给父 Agent，由它接着处理",
+                "做完提醒你，不叫醒父 Agent"
+              ],
+              "default": "parent"
+            }
+          }
+        }
+      },
+      {
+        "id": "shell",
+        "title": "执行命令",
+        "icon": "terminal",
+        "hint": "在会话工作目录执行，命令和结果作为这条消息发给 Agent。",
+        "placeholder": "输入要执行的命令…",
+        "sendLabel": "执行",
+        "agent": "off",
+        "trigger": "!",
+        "in": [
+          "session",
+          "new"
+        ]
+      },
+      {
+        "id": "ultra",
+        "title": "Ultra",
+        "icon": "square.stack.3d.up",
+        "hint": "节省主 Agent 的 Token，非微小任务交给子会话执行",
+        "placeholder": "要完成什么？",
+        "agent": "session",
+        "in": [
+          "session",
+          "new"
+        ],
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "template": {
+              "title": "模板",
+              "type": "string"
+            },
+            "subagents": {
+              "title": "子 Agent",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "who": {
+                    "title": "Agent",
+                    "type": "object",
+                    "format": "coda-agent"
+                  },
+                  "when": {
+                    "title": "什么时候派给它",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "who"
+                ]
+              }
+            }
+          }
+        }
+      }
+    ]
+  }
+}
