@@ -87,7 +87,9 @@ export function firstMessage(value) {
     return { threadId: value.threadId, extensionParent: { caller: text(p.caller, '调用方', 200), threadId: text(p.threadId, '父会话', 100),
       title: typeof p.title === 'string' ? p.title.slice(0, 200) : '', ...(typeof p.location === 'string' && p.location ? { location: p.location.slice(0, 200) } : {}) } };
   })();
-  check(value.threadId === undefined || value.extensionParent !== undefined, 'invalid_input', '只有扩展发起的子会话可以指定会话标识');
+  check(value.threadId === undefined || value.extensionParent !== undefined || value.initiatedBy !== undefined,
+    'invalid_input', '只有 Agent 发起的会话可以指定会话标识');
+  if (value.threadId !== undefined) check(UUID.test(value.threadId), 'invalid_input', '会话标识须为 UUID');
   const checkout = object(value.checkout, '工作位置');
   keys(checkout, ['kind', 'baseRef']);
   check(['original', 'worktree', 'handoff'].includes(checkout.kind), 'invalid_input', '工作位置无效');
@@ -105,6 +107,7 @@ export function firstMessage(value) {
     ...parent,
     ...reply,
     ...outside,
+    ...(value.threadId === undefined ? {} : { threadId: value.threadId }),
     requestId: text(value.requestId, '请求标识', 100),
     projectId: text(value.projectId, '目录标识', 100),
     title: text(value.title ?? message.trim().slice(0, 80), '会话标题'),

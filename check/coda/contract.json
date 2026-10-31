@@ -1,5 +1,5 @@
 {
-  "commit": "b4280e88dedb17190fd84e3d0678bd5b838214c2",
+  "commit": "e4529e4b2b25423e791f657111709381dc4708a7",
   "packages": {
     "@0dep/piso": "5.2.0",
     "@agentclientprotocol/sdk": "1.4.0",
@@ -13,7 +13,7 @@
     "check/coda/components/plugins/plugin-source-rules.mjs": "d894d55a3272df5ef3b108b68820c64aefdf6b69346404b58954f2a3503cb4a5",
     "check/coda/components/plugins/skill-document.mjs": "c5b5e815c42cd836572f7b60e22a46af6ac607fd9df0170fa36f955825636ce6",
     "check/coda/components/prompt-recovery/prompt-recovery.mjs": "f43f21d24c19a58113d3304f9248225b12080ab00ed15eab74bf7b94642732de",
-    "check/coda/components/session-config/commands.mjs": "5d6139f1e5814422dab5f9d69f0b31967bf08f49c51c40ff91d9282dfc642dd9",
+    "check/coda/components/session-config/commands.mjs": "9114c880704253dce4f6b049ab10b2265067db4224916605a3209ff8d347fcac",
     "check/coda/components/workflows/executor-labels.mjs": "dceca6ae60c0a4f3c3cc72a6c84f1489831790774c93caab96e4ddb493bc89e1",
     "check/coda/domain/agent-protocol.mjs": "769cc10dc21b3cef7718f94272aaef2d17d4882d42617b408cb47357abfc3bcb",
     "check/coda/domain/duration.mjs": "15dd64ef9b02342ad521c66e5968a569432a89dc7568d11afd3e6f3fe37e104b",
