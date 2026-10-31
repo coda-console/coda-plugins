@@ -3,7 +3,7 @@
   "id": "ultra",
   "displayName": "Ultra",
   "description": "输入框的 Ultra 模式：主 Agent 主动把能并行的活拆出去，按名单派给 Coda 子会话，自己做卡住的那一步，结果回来后汇总、验证。名单在模式的参数里改，常用的存成设置里的模板。",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "categories": ["工作流程"],
   "license": "MIT",
   "repository": {
