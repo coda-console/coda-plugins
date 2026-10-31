@@ -1,6 +1,7 @@
-// What a panel is (docs/plugins.md「面板」): how a plugin declares one (`contributes.panels`) and what its command may
-// print, checked here, where the panels are read, the way a task's card is drawn from its fields. Nothing here knows what
-// a panel is about: CPU, an account's quota and a disk are all meters and figures.
+// What a panel is (docs/plugins.md「面板」): how a plugin declares one (`contributes.panels`, of the schema the resources
+// plugin declares for its point, schema.json, checked where the plugin is installed) and what its command may print,
+// checked here, where the panels are read, the way a task's card is drawn from its fields. Nothing here knows what a panel
+// is about: CPU, an account's quota and a disk are all meters and figures.
 
 // What is not as it must be: the panel says so where it would show.
 export class PanelError extends Error {
@@ -10,23 +11,18 @@ function check(condition, code, message) {
   if (!condition) throw new PanelError(code, message);
   return condition;
 }
-// An ISO 8601 duration as panels write their `maxAge` (`PT5M`, `P1D`): weeks, days and time, not years or months.
+// An ISO 8601 duration as panels write their `maxAge` (`PT5M`, `P1D`), in milliseconds: weeks, days and time.
 const DURATION = /^P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?$/;
-export function isDuration(text) {
-  const m = typeof text === 'string' && text.length <= 200 && DURATION.exec(text);
-  return !!m && text !== 'P' && !text.endsWith('T');
-}
-export function durationMs(text) {
+function durationMs(text) {
   const [, w = 0, d = 0, h = 0, min = 0, s = 0] = DURATION.exec(text);
   return ((((+w * 7 + +d) * 24 + +h) * 60 + +min) * 60 + +s) * 1000;
 }
 
-const NAME = /^[a-z][a-z0-9-]{0,63}$/;
 export const ITEM_TYPES = ['card', 'meter', 'stat', 'markdown', 'button', 'error'];
 // What a panel's command may print: past these, the reading fails rather than being cut short.
 export const OUTPUT_LIMIT = 64 * 1024;
 export const ARGS_LIMIT = 4 * 1024;
-const ITEMS = 50, CARD_ITEMS = 20, TITLE = 40, LABEL = 80, IDENTITY = 200, MARKDOWN = 4000, ERROR = 500, CONFIRM = 200;
+const ITEMS = 50, CARD_ITEMS = 20, LABEL = 80, IDENTITY = 200, MARKDOWN = 4000, ERROR = 500, CONFIRM = 200;
 const fail = (code, message) => check(false, code, message);
 const keys = (value, allowed, where, code) => {
   const extra = Object.keys(value).filter(k => !allowed.includes(k));
@@ -41,73 +37,10 @@ const text = (value, max, where, code, { need = true, line = true } = {}) => {
 const object = (value, where, code) => check(value && typeof value === 'object' && !Array.isArray(value), code, `${where} 须为对象`);
 
 // ---- Declarations (`contributes.panels`) ----
-// One panel as the plugin declares it: what it is called, the command that reads it, how long a reading may be shown
-// again without asking, the actions its buttons may take, each a command of its own with what to ask first, and how to
-// sign in to what it shows from Coda.
-function declaration(raw, where) {
-  const code = 'invalid_plugin';
-  object(raw, where, code);
-  keys(raw, ['id', 'title', 'command', 'maxAge', 'actions', 'signIn', 'displaySetting'], where, code);
-  check(typeof raw.id === 'string' && NAME.test(raw.id), code, `${where} 的 id 只能用小写字母、数字和「-」，以字母开头`);
-  const at = `面板 ${raw.id}`;
-  check(raw.maxAge === undefined || (typeof raw.maxAge === 'string' && isDuration(raw.maxAge)), code, `${at} 的 maxAge 须为 ISO 8601 时长，如 PT5M`);
-  const actions = {};
-  if (raw.actions !== undefined) {
-    object(raw.actions, `${at} 的 actions`, code);
-    for (const [name, action] of Object.entries(raw.actions)) {
-      check(NAME.test(name), code, `${at} 的动作名只能用小写字母、数字和「-」，以字母开头：${name}`);
-      object(action, `${at} 的动作 ${name}`, code);
-      keys(action, ['command', 'confirm'], `${at} 的动作 ${name}`, code);
-      actions[name] = { command: text(action.command, 4000, `${at} 的动作 ${name} 的 command`, code),
-        ...(action.confirm !== undefined ? { confirm: text(action.confirm, CONFIRM, `${at} 的动作 ${name} 的 confirm`, code, { line: false }) } : {}) };
-    }
-  }
-  return { id: raw.id, title: text(raw.title, TITLE, `${at} 的 title`, code), command: text(raw.command, 4000, `${at} 的 command`, code),
-    ...(raw.maxAge !== undefined ? { maxAge: raw.maxAge, maxAgeMs: durationMs(raw.maxAge) } : {}), actions,
-    ...(raw.displaySetting !== undefined ? { displaySetting: text(raw.displaySetting, LABEL, `${at} 的 displaySetting`, code) } : {}),
-    ...(raw.signIn !== undefined ? { signIn: signIn(raw.signIn, `${at} 的 signIn`) } : {}) };
-}
-// Signing in from Coda (adapters/sign-in.mjs): a login command that prints a link to
-// confirm on any device (with a code, or asking for the authorization code the page shows, which goes to its standard
-// input), and where Coda may install what it needs, a quick check that it is there and the command that installs it.
-function signIn(raw, where) {
-  const code = 'invalid_plugin';
-  object(raw, where, code);
-  keys(raw, ['command', 'installed', 'install', 'input', 'note'], where, code);
-  check(raw.input === undefined || raw.input === 'authorizationCode', code, `${where} 的 input 只能是 authorizationCode`);
-  check(raw.install === undefined || raw.installed !== undefined, code, `${where}：写了 install 就要写 installed，Coda 才知道装没装好`);
-  return { command: text(raw.command, 4000, `${where} 的 command`, code),
-    ...(raw.installed !== undefined ? { installed: text(raw.installed, 4000, `${where} 的 installed`, code) } : {}),
-    ...(raw.install !== undefined ? { install: text(raw.install, 4000, `${where} 的 install`, code) } : {}),
-    ...(raw.input ? { input: raw.input } : {}),
-    ...(raw.note !== undefined ? { note: text(raw.note, CONFIRM, `${where} 的 note`, code, { line: false }) } : {}) };
-}
-// A plugin's panels as it declares them, each on its own: one Coda cannot read is kept with why, under the id and title it
-// wrote (or its place and the plugin's name), for the page to say so where it would show.
-export function panelEntries(raw, pluginName) {
-  if (raw === undefined) return [];
-  if (!Array.isArray(raw)) return [{ invalid: { id: 'panels', title: pluginName, error: 'contributes.panels 须为数组' } }];
-  const seen = new Set();
-  return raw.map((item, i) => {
-    // An ID is the first one's that writes it, read or not; one whose ID is not one, or another's, goes by its place.
-    const named = typeof item?.id === 'string' && NAME.test(item.id), again = named && seen.has(item.id);
-    const id = named && !again ? item.id : `#${i + 1}`;
-    if (named) seen.add(item.id);
-    try {
-      check(!again, 'invalid_plugin', `contributes.panels 里有重复的 id：${item.id}`);
-      return { panel: declaration(item, `contributes.panels[${i}]`) };
-    } catch (e) {
-      if (!(e instanceof PanelError)) throw e;
-      return { invalid: { id, title: typeof item?.title === 'string' && item.title.trim() ? item.title.slice(0, 40) : pluginName, error: e.message } };
-    }
-  });
-}
-export function panelDeclarations(raw) {
-  if (raw === undefined) return [];
-  check(Array.isArray(raw), 'invalid_plugin', 'contributes.panels 须为数组');
-  const panels = raw.map((p, i) => declaration(p, `contributes.panels[${i}]`));
-  check(new Set(panels.map(p => p.id)).size === panels.length, 'invalid_plugin', 'contributes.panels 里有重复的 id');
-  return panels;
+// A plugin's panels as it declares them, in its order, each with the actions its buttons may take (none when it declares
+// none) and, with a `maxAge`, how long a reading may be shown again without asking.
+export function panelDeclarations(raw = []) {
+  return raw.map(panel => ({ ...panel, actions: panel.actions ?? {}, ...(panel.maxAge ? { maxAgeMs: durationMs(panel.maxAge) } : {}) }));
 }
 
 // ---- What a panel's command prints ----

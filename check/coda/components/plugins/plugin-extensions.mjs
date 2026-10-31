@@ -2,8 +2,9 @@
 // may plug into a point one of them declares for it (`contributes.extensionPoints` there, `contributes.extensions` here).
 // Coda checks the names and hands each plugin what is plugged into its points, as declared: what passes between the two
 // is the extended plugin's own contract, which Coda neither reads nor shapes. A point may instead take what any plugin
-// writes under a key of its `contributes` (`contributes` there, as the resources plugin's `panels`): kept as written, for
-// the declaring plugin to read, only the commands in it listed where installing confirms them.
+// writes under a key of its `contributes` (`contributes` there, as the resources plugin's `panels`): of the schema the point
+// declares, kept as written, for the declaring plugin to read, only the commands in it listed where installing confirms them.
+import { pointProblem } from '@coda-console/protocol/validate';
 import { requireCondition as check } from '../../domain/errors.mjs';
 
 const code = 'invalid_plugin';
@@ -55,11 +56,17 @@ export function checkCatalog(plugins) {
   return plugins;
 }
 // Why what a plugin writes under the keys of `contributes` not Coda's own cannot be taken here (`plugins`: the catalog
-// beside it), or null: no point takes one of them.
+// beside it), or null: no point takes one of them, or what it writes is not of the schema the point declares.
 export function offerProblem(plugin, plugins) {
-  const others = new Map([...plugins, [plugin.id, plugin]]);
-  const unknown = Object.keys(plugin.offers ?? {}).filter(key => !offerPoint(others, key));
-  return unknown.length ? `contributes 里的 ${unknown.join('、')} 不是 Coda 的类型，也没有插件的扩展点声明它` : null;
+  const others = new Map([...plugins, [plugin.id, plugin]]), offers = Object.entries(plugin.offers ?? {});
+  const unknown = offers.map(([key]) => key).filter(key => !offerPoint(others, key));
+  if (unknown.length) return `contributes 里的 ${unknown.join('、')} 不是 Coda 的类型，也没有插件的扩展点声明它`;
+  for (const [key, value] of offers) {
+    const { schema } = offerPoint(others, key).declared;
+    const problem = schema !== undefined ? pointProblem(schema, value, `contributes.${key}`, plugin.dir) : null;
+    if (problem) return problem;
+  }
+  return null;
 }
 // What installing a plugin installs: what it needs, before it, then it.
 export function withDependencies(catalog, id) {
