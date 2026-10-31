@@ -17,6 +17,7 @@ import { chosenServices, listedModels, serviceSettings } from './providers.mjs';
 import { SessionTitle } from './titles.mjs';
 import { MODEL_EFFORT, MODES, claudeModels, configOptions, reportedModel } from './models.mjs';
 import { permissionRequest } from './permissions.mjs';
+import { toolCallFields, ToolCallCache } from './tools.mjs';
 import { elicitationForm, questionForm } from './questions.mjs';
 import { ClaudeWaits } from './waits.mjs';
 import { CacheUse } from './compaction.mjs';
@@ -81,7 +82,7 @@ export class ClaudeSession {
     this.services = chosenServices(env); this.serviceModel = null;
     this.models = []; this.commands = []; this.terminal = null; this.current = { mode: 'default', model: undefined, effort: null };
     // Streamed text by API message, so that the complete message adds only what was not streamed; tool calls said.
-    this.streams = new Map(); this.streamed = new Map(); this.tools = new Set(); this.children = new Set(); this.early = new Map(); this.compaction = null;
+    this.streams = new Map(); this.streamed = new Map(); this.tools = new ToolCallCache(); this.children = new Set(); this.early = new Map(); this.compaction = null;
     this.waits = new ClaudeWaits({ say: (params, sessionId = this.sessionId) => this.notify('_coda/wait', { sessionId, ...params }),
       going: () => this.prompts.size > 0 || this.waits.handling, registered: sessionId => this.registered(sessionId) });
     // What is told of the main thread's cache (compaction.mjs); while a compaction Coda asked for goes, its input and answer; and
@@ -547,8 +548,9 @@ export class ClaudeSession {
     }
     for (const block of m.message?.content ?? []) {
       if (block.type === 'tool_use') {
-        this.tools.add(block.id);
-        this.update(sessionId, { sessionUpdate: 'tool_call', toolCallId: block.id, title: block.name, rawInput: block.input, status: 'in_progress' });
+        const fields = toolCallFields(block.name, block.input);
+        this.tools.start(block.id, block.name, fields.content ?? []);
+        this.update(sessionId, { sessionUpdate: 'tool_call', toolCallId: block.id, ...fields, status: 'in_progress' });
       } else if (['text', 'thinking'].includes(block.type)) {
         const said = block.text ?? block.thinking ?? '';
         // One complete packet carries one block of the message: the first streamed one of its kind not yet confirmed.
@@ -561,10 +563,13 @@ export class ClaudeSession {
   }
   toolResults(m, parent) {
     for (const block of Array.isArray(m.message?.content) ? m.message.content : []) {
-      if (block.type !== 'tool_result' || !this.tools.has(block.tool_use_id)) continue;
+      if (block.type !== 'tool_result') continue;
+      const content = this.tools.finish(block.tool_use_id, m.tool_use_result, block.is_error);
+      if (!content) continue;
       const said = text(block.content);
       this.update(parent ?? this.sessionId, { sessionUpdate: 'tool_call_update', toolCallId: block.tool_use_id, status: block.is_error ? 'failed' : 'completed',
-        rawOutput: m.tool_use_result ?? block.content, content: [{ type: 'content', content: { type: 'text', text: said } }] });
+        // ACP content updates replace the list: keep the latest diffs alongside the result text.
+        rawOutput: m.tool_use_result ?? block.content, content: [...content, { type: 'content', content: { type: 'text', text: said } }] });
       // Claude Code says where a command it put in the background writes in the launch's result.
       const path = said.match(/Output is being written to: (\S+?\.output)\b/)?.[1];
       if (path) this.waits.outputFile(block.tool_use_id, path);

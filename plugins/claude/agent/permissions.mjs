@@ -3,6 +3,7 @@
 // can change Claude's permissions.
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
+import { toolCallFields } from './tools.mjs';
 
 const deny = { behavior: 'deny', message: '用户未批准此操作' };
 
@@ -12,8 +13,8 @@ export function permissionRequest({ sessionId, toolName, input, context = {} }) 
   const options = [{ optionId: 'allow-once', name: '仅允许本次', kind: 'allow_once' },
     ...suggestions.map((change, i) => ({ optionId: `suggestion-${i}`, name: describeChange(change, input), kind: 'allow_always' })),
     { optionId: 'deny', name: '拒绝', kind: 'reject_once' }];
-  const params = { sessionId, options, toolCall: { toolCallId: context.toolUseID ?? randomUUID(), title: toolName, rawInput: input, status: 'pending',
-    ...(context.decisionReason ? { content: [{ type: 'content', content: { type: 'text', text: context.decisionReason } }] } : {}) } };
+  const params = { sessionId, options, toolCall: { toolCallId: context.toolUseID ?? randomUUID(), status: 'pending',
+    ...toolCallFields(toolName, input, context.decisionReason ? [{ type: 'content', content: { type: 'text', text: context.decisionReason } }] : []) } };
   const answer = response => {
     const { outcome, optionId } = response?.outcome ?? {};
     if (outcome !== 'selected') return deny;
