@@ -4,6 +4,8 @@
 
 ## 安装与登录
 
+此插件仍在内部调试，清单限定 `coda.channels: ["preview"]`，只供预览版 Coda 后端安装和更新。以目标后端的通道为准，不是 Mac / iPhone 客户端的版本；正式版后端会显示限制原因。该约束需要支持通道校验的 Coda 后端，公开 npm 包及未声明限制的旧版本仍可被直接下载。
+
 1. 在 Coda 安装 Grok Bot，在空目录（例如 Bot）新建 Grok Bot 会话。
 2. 发送 `/login`，打开会话中的官方登录链接完成账号登录。手机可能停在 **Completing sign-in**，请再点 **Continue**。适配器会轮询并更新 Bot 列表。
 3. 在「这是哪个 Bot」按名称或 ID 选择。一个 Bot 对应一个 Coda 会话，避免重复镜像。
