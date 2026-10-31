@@ -513,7 +513,7 @@
     "id": "resources",
     "displayName": "资源",
     "description": "资源页：这台电脑（看一组电脑时是每一台）上已安装插件的面板，如账号与额度，按插件排列；可以隐藏、从 Coda 登录、选择显示的指标。",
-    "version": "1.1.0",
+    "version": "1.2.0",
     "category": "机器与资源",
     "source": {
       "kind": "builtin"
@@ -554,6 +554,114 @@
           "signIn.command": "登录",
           "signIn.installed": "安装检查",
           "signIn.install": "安装"
+        },
+        "schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "contributes.panels：资源页上的面板",
+          "description": "面板的数组：每个面板一条读取命令，它打印的 { items } 由资源页画出来（docs/plugins.md「面板」）",
+          "type": "array",
+          "x-unique-by": [
+            "id"
+          ],
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "$ref": "common.json#/$defs/name"
+              },
+              "title": {
+                "$ref": "common.json#/$defs/line40"
+              },
+              "command": {
+                "$ref": "common.json#/$defs/command"
+              },
+              "maxAge": {
+                "description": "读数不重读还能再显示多久：ISO 8601 时长，如 PT5M（周、天与时分秒，不用年和月）",
+                "type": "string",
+                "maxLength": 200,
+                "pattern": "^P(?!$)(?:\\d+W)?(?:\\d+D)?(?:T(?=\\d)(?:\\d+H)?(?:\\d+M)?(?:\\d+(?:\\.\\d+)?S)?)?$"
+              },
+              "actions": {
+                "description": "动作名 → { command, confirm }：面板上的按钮执行的命令，和执行前问的话",
+                "type": "object",
+                "propertyNames": {
+                  "$ref": "common.json#/$defs/name"
+                },
+                "additionalProperties": {
+                  "type": "object",
+                  "properties": {
+                    "command": {
+                      "$ref": "common.json#/$defs/command"
+                    },
+                    "confirm": {
+                      "$ref": "#/$defs/question"
+                    }
+                  },
+                  "required": [
+                    "command"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "signIn": {
+                "description": "从 Coda 登录：command 打印一个链接，在任一设备上确认；installed 查装没装好，install 装上它",
+                "type": "object",
+                "properties": {
+                  "command": {
+                    "$ref": "common.json#/$defs/command"
+                  },
+                  "installed": {
+                    "$ref": "common.json#/$defs/command"
+                  },
+                  "install": {
+                    "$ref": "common.json#/$defs/command"
+                  },
+                  "input": {
+                    "description": "登录页给出授权码要贴回来时写 authorizationCode：贴的交给 command 的标准输入",
+                    "const": "authorizationCode"
+                  },
+                  "note": {
+                    "$ref": "#/$defs/question"
+                  }
+                },
+                "required": [
+                  "command"
+                ],
+                "additionalProperties": false,
+                "if": {
+                  "required": [
+                    "install"
+                  ]
+                },
+                "then": {
+                  "description": "写了 install 就要写 installed：Coda 才知道装没装好",
+                  "required": [
+                    "installed"
+                  ]
+                }
+              },
+              "displaySetting": {
+                "description": "本插件声明的布尔值表格设置的键，用来逐项选择面板显示哪些数值",
+                "type": "string",
+                "maxLength": 80,
+                "pattern": "^(?=.*\\S)[^\\u0000\\r\\n]*$"
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "$defs": {
+            "question": {
+              "description": "不超过 200 字，可以分行",
+              "type": "string",
+              "maxLength": 200,
+              "pattern": "^(?=[\\s\\S]*\\S)[^\\u0000]*$"
+            }
+          }
         }
       }
     },

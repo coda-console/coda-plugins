@@ -146,7 +146,7 @@ export function readPlugin(dir, source) {
     ...(contributes.composerModes?.length ? { composerModes: composerModes(contributes.composerModes) } : {}),
     ...(Object.keys(offers).length ? { offers } : {}),
     agents: agentDeclarations(contributes.agents, dir),
-    dependencies: [...dependencies], extensionPoints: extensionPoints(contributes.extensionPoints),
+    dependencies: [...dependencies], extensionPoints: extensionPoints(contributes.extensionPoints, dir),
     extensions: Object.entries(contributes.extensions ?? {}).map(([key, value]) => { const [plugin, point] = key.split('/'); return { plugin, point, command: value.command }; }),
     ...(contributes.instructions ? { instructions: contributes.instructions.trim() } : {}), ...(contributes.setup ? { setup: { command: contributes.setup.command } } : {}),
     ...(contributes.skills?.length ? { skills: skills(contributes.skills, dir) } : {}),
@@ -160,9 +160,11 @@ export function readPlugin(dir, source) {
       labels: executorLabels(e.labels, `执行环境 ${e.id} 的 labels`, 'invalid_plugin'), command: e.command })) } : {}),
     ...(contributes.repositories ? { repositories: { command: contributes.repositories.command } } : {}) };
 }
-// Its extension points (schemas/extension-points.json), each with what it says of itself.
-const extensionPoints = (raw = {}) => Object.fromEntries(Object.entries(raw).map(([name, value]) => [name, value.contributes === undefined
-  ? { description: value.description } : { description: value.description, contributes: value.contributes, title: value.title, commands: { ...(value.commands ?? {}) } }]));
+// Its extension points (schemas/extension-points.json), each with what it says of itself: the schema of what others write for
+// one, read from its file.
+const extensionPoints = (raw = {}, dir) => Object.fromEntries(Object.entries(raw).map(([name, value]) => [name, value.contributes === undefined
+  ? { description: value.description } : { description: value.description, contributes: value.contributes, title: value.title, commands: { ...(value.commands ?? {}) },
+    ...(value.schema ? { schema: JSON.parse(readFileSync(join(dir, value.schema), 'utf8')) } : {}) }]));
 // The directories it puts on the PATH of what starts in a project it applies to: one of its own (relative, as a Skill's),
 // or one in its state on the backend (`${CODA_PLUGIN_STATE}/…`), which its setup may make.
 function pathEntry(entry) {

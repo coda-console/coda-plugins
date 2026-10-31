@@ -11,7 +11,7 @@ import { readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runCommand, ended, outcome } from './command.mjs';
-import { PanelError, panelEntries, panelItems, actionArgs, shownItems, displayOptions, keepMissingMetrics } from './rules.mjs';
+import { PanelError, panelDeclarations, panelItems, actionArgs, shownItems, displayOptions, keepMissingMetrics } from './rules.mjs';
 import { SignIn, authorizationLink, deviceCode } from './sign-in.mjs';
 
 const fail = (code, message) => { throw new PanelError(code, message); };
@@ -61,13 +61,10 @@ export class Panels {
     renameSync(next, this.file);
   }
   // The installed plugins' panels, by plugin id, each plugin's in the order it declares them. A project disabling a plugin
-  // does not take its panels away: the page is the machine's, not a project's. One Coda cannot read is kept with why.
+  // does not take its panels away: the page is the machine's, not a project's.
   installed() {
     return [...this.plugins.values()].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0).flatMap(plugin =>
-      panelEntries(plugin.contributes?.panels, plugin.name).map(entry => {
-        const panel = entry.panel ?? { id: entry.invalid.id, title: entry.invalid.title, actions: {} };
-        return { plugin, panel, key: `${plugin.id}/${panel.id}`, ...(entry.invalid ? { invalid: entry.invalid.error } : {}) };
-      }));
+      panelDeclarations(plugin.contributes?.panels).map(panel => ({ plugin, panel, key: `${plugin.id}/${panel.id}` })));
   }
   find(key) {
     return this.installed().find(e => e.key === key) ?? fail('not_found', `没有面板 ${key}`);
@@ -85,7 +82,7 @@ export class Panels {
       configurable: !!panel.displaySetting, signsIn: !!panel.signIn, hidden: this.hidden.has(key), index,
       signIn: panel.signIn ? this.login(entry).view() : null,
       reading: shown ? this.present(entry, shown) : null,
-      busy: this.reading.has(key), failure: entry.invalid ? `声明无效：${entry.invalid}` : this.failures.get(key) ?? null,
+      busy: this.reading.has(key), failure: this.failures.get(key) ?? null,
       acting: this.acting.get(key)?.button ?? null, actionError: this.acting.get(key)?.error ?? null };
   }
   list() { return this.installed().map((entry, index) => [entry.key, this.view(entry, index)]); }
@@ -112,7 +109,6 @@ export class Panels {
   // `{ items, readAt }`, or with `error` when this reading failed: then the last good items with `stale`, or none.
   read(key, { force = false } = {}) {
     const entry = this.find(key);
-    if (entry.invalid) return Promise.resolve({ items: [], error: `声明无效：${entry.invalid}` });
     const pending = this.reading.get(key);
     if (pending) return pending;
     const last = this.last.get(key);
