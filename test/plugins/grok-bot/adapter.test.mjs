@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { Adapter, SUBMISSION_WAIT_MS, SETTLEMENT_GRACE_MS } from '../../../plugins/grok-bot/agent/session.mjs';
+import { Adapter, SUBMISSION_WAIT_MS, SETTLEMENT_GRACE_MS, ACTIVITY_REPLY_GRACE_MS } from '../../../plugins/grok-bot/agent/session.mjs';
 import { TRANSCRIPT_CACHE_LIMIT } from '../../../plugins/grok-bot/agent/watch.mjs';
 import { RUN_CACHE_LIMIT } from '../../../plugins/grok-bot/agent/routines.mjs';
 import { FakeNative } from './native-fixture.mjs';
@@ -87,6 +87,148 @@ test('reply before settlement, duplicate rows, and history reconciliation delive
   assert.equal(h.text().match(/unique-answer/g).length, 1);
 });
 
+test('t7s0 → memory activity → settlement → t7s1 stays in one turn, including identical speech', async t => {
+  const h = await connected(t), run = await sent(h), turn = h.s.turn;
+  const text = '明白。以后先开归因会话再谈修复；这类偶发负载过高暂不立项解决。已记下。';
+  await reply(h, run.id, text, 't7s0');
+  await h.emit(live({ isRunning: true, activity: { kind: 'tool', tool: 'SetStatus', detail: '记录归因规则' } }));
+  const activity = h.events.find(e => e.params.update?.title === '记录归因规则').params.update;
+  await h.emit(settle(run.id));
+  await h.emit(heartbeat);
+  h.clock.advance(8000);
+  assert.equal(h.s.turn, turn);
+  assert.equal(h.s.closedRuns.has(run.id), false);
+  assert.equal(h.events.some(e => e.params.update?.toolCallId === activity.toolCallId && e.params.update.status === 'completed'), false);
+  await reply(h, run.id, text, 't7s1');
+  await run.done;
+  assert.equal(h.text(), `${text}\n${text}`);
+  assert.equal(h.events.some(e => e.params.state === 'handling'), false, 'no second autonomous turn');
+  assert.ok(h.events.some(e => e.params.update?.toolCallId === activity.toolCallId && e.params.update.status === 'completed'));
+});
+
+test('tool then final reply settles immediately even with independent subagents', async t => {
+  const h = await connected(t), run = await sent(h);
+  await h.emit(live({ isRunning: true, activity: { kind: 'tool', tool: 'SetStatus', detail: '检查机器' } }));
+  await reply(h, run.id, '最终结论');
+  await h.emit(live({ hasRunningSubagents: true, lastTurnSettlement: { turnId: run.id, outcome: 'success', settledAtMs: '100' } }));
+  await run.done;
+  assert.equal(h.s.turn, null, 'no grace clock advance for an ordinary final reply');
+});
+
+test('activity without a further reply finishes after bounded reconciliation; very late output stays plain', async t => {
+  const h = await connected(t), run = await sent(h);
+  await reply(h, run.id, '先回答', 'first');
+  await h.emit(live({ isRunning: true, activity: { kind: 'tool', tool: 'SetStatus', detail: '写记忆' } }));
+  await h.emit(settle(run.id));
+  h.clock.advance(ACTIVITY_REPLY_GRACE_MS);
+  await run.done;
+  await reply(h, run.id, '稍后结论', 'late'); await h.s.turn?.result;
+  assert.equal(h.s.turn, null);
+  assert.equal(h.text(), '先回答\n稍后结论');
+});
+
+test('grace reconciles a final reply missing from the stream into the same prompt', async t => {
+  const h = await connected(t), run = await sent(h);
+  await reply(h, run.id, 'first', 'first');
+  await h.emit(live({ isRunning: true, activity: { kind: 'tool', tool: 'SetStatus', detail: '记录' } }));
+  await h.emit(settle(run.id));
+  // Persisted history is ahead of the subscription; no rows event is emitted.
+  h.native.row('history-final', { kind: 'send-message', requestId: run.id, message: { type: 'text', content: 'final' } });
+  h.clock.advance(ACTIVITY_REPLY_GRACE_MS);
+  await run.done;
+  assert.equal(h.text(), 'first\nfinal');
+  assert.equal(h.events.some(e => e.params.state === 'handling'), false);
+});
+
+test('a fresh settlement during history reconciliation retains the fallback', async t => {
+  const h = await connected(t), run = await sent(h);
+  await reply(h, run.id, 'first');
+  await h.emit(live({ isRunning: true })); await h.emit(settle(run.id));
+  let release;
+  const requested = mailbox();
+  h.native.handler = async method => {
+    if (method === 'ListGrokBotTranscriptEntries') {
+      h.native.handler = undefined;
+      return new Promise(resolve => {
+        release = () => resolve(Response.json({ entries: h.native.entries }));
+        requested.push(true);
+      });
+    }
+  };
+  h.clock.advance(ACTIVITY_REPLY_GRACE_MS); await requested.next();
+  await h.emit(settle(run.id));
+  release();
+  await h.clock.untilTimer(ACTIVITY_REPLY_GRACE_MS); h.clock.advance(ACTIVITY_REPLY_GRACE_MS);
+  await run.done;
+  assert.equal(h.s.turn, null);
+});
+
+test('timeout explains continued delivery; late speech cannot settle a newer prompt', async t => {
+  const h = await connected(t, { settings: { 'grok-bot.turnTimeout': 'PT1M' } }), old = await sent(h);
+  h.clock.advance(60000); await old.done;
+  assert.match(h.text(), /之后收到的原生消息仍会显示/);
+  assert.doesNotMatch(h.text(), /补充消息/);
+  const next = await sent(h), turn = h.s.turn;
+  await reply(h, old.id, 'old final', 'old-final'); await h.emit(heartbeat);
+  assert.equal(h.s.turn, turn); assert.equal(turn.hasReply, undefined);
+  await reply(h, next.id, 'new final', 'new-final'); await h.emit(settle(next.id)); await next.done;
+  assert.match(h.text(), /old final\nnew final$/);
+  assert.doesNotMatch(h.text(), /上一轮/);
+});
+
+for (const state of [{ isRunning: true }, { isComposingMessage: true }, { isRetrying: true },
+  { activity: { kind: 'thinking' } }]) {
+  test(`main activity ${Object.keys(state)[0]} invalidates settlement and its timer`, async t => {
+    const h = await connected(t), run = await sent(h), turn = h.s.turn;
+    await reply(h, run.id, 'first', 'first');
+    await h.emit(live({ isRunning: true }));
+    await h.emit(settle(run.id));
+    await h.emit(live({ ...state, lastTurnSettlement: { turnId: run.id, outcome: 'success', settledAtMs: '100' } }));
+    h.clock.advance(ACTIVITY_REPLY_GRACE_MS); await h.emit(heartbeat);
+    assert.equal(h.s.turn, turn);
+    await reply(h, run.id, 'final', 'final'); await h.emit(heartbeat);
+    assert.equal(h.s.turn, turn, 'a remembered settlement cannot close active work');
+    await h.emit(settle(run.id)); await run.done;
+    assert.equal(h.text(), 'first\nfinal');
+  });
+}
+
+test('native free-form summaries stay other, preserve detail, and distinguish call IDs without invented locations', async t => {
+  const h = await connected(t), run = await sent(h);
+  for (const [tool, callId] of [['SetStatus', 'a'], ['SetStatus', 'b'], ['unverified-tool', 'c']]) {
+    const event = live({ isRunning: true, activity: { kind: 'tool', tool, callId, detail: '读取文件', target: '/unverified-target' } });
+    await h.emit(event); await h.emit(event);
+  }
+  const calls = h.events.filter(e => e.params.update?.sessionUpdate === 'tool_call').map(e => e.params.update);
+  assert.equal(calls.length, 3);
+  for (const call of calls) {
+    assert.equal(call.kind, 'other'); assert.equal(call.title, '读取文件');
+    assert.equal(call.locations, undefined); assert.equal(call.rawInput, undefined); assert.equal(call.rawOutput, undefined);
+    assert.equal(schemas.zSessionNotification.safeParse({ sessionId: h.id, update: call }).success, true);
+  }
+  await reply(h, run.id); await h.emit(settle(run.id)); await run.done;
+});
+
+test('proxied Coda queries report read, telemetry fetch, and session actions other with full input/output', async t => {
+  const h = await connected(t, { settings: { 'grok-bot.telemetry': 'https://telemetry.invalid' } }), run = await sent(h);
+  const reads = ['status', 'read_thread', 'read_tool_call', 'agents', 'workflow_status', 'workflow_list', 'machines', 'machine_diagnostics'];
+  for (const name of reads) await h.remote('tool', { name, arguments: { sample: name } });
+  await h.remote('tool', { name: 'new_session', arguments: { project: 'code', prompt: '归因' } });
+  await h.remote('tool', { name: 'send', arguments: { childId: 'requester', replyTo: 'request', prompt: 'result' } });
+  h.adapter.fetcher = async () => Response.json({ result: 'telemetry' });
+  await h.remote('telemetry', { path: '/api/overview' });
+  const calls = h.events.filter(e => e.params.update?.sessionUpdate === 'tool_call').map(e => e.params.update);
+  for (const call of calls) {
+    const name = call.title.slice('Coda · '.length);
+    assert.equal(call.kind, reads.includes(name) ? 'read' : name === 'telemetry' ? 'fetch' : 'other');
+    assert.ok(call.rawInput); assert.equal(call.locations, undefined);
+    assert.ok(h.events.some(e => e.params.update?.toolCallId === call.toolCallId && e.params.update.rawOutput));
+    assert.equal(schemas.zSessionNotification.safeParse({ sessionId: h.id, update: call }).success, true);
+  }
+  assert.ok(calls.some(c => c.kind === 'fetch'));
+  await reply(h, run.id); await h.emit(settle(run.id)); await run.done;
+});
+
 test('desktop-initiated main run is autonomous', async t => {
   const h = await connected(t);
   const start = h.events.length;
@@ -115,7 +257,7 @@ test('interrupt calls native service; late output remains visible without reopen
   assert.equal((await h.native.next('InterruptGrokBotAgentRun')).params.sessionId, '');
   await reply(h, run.id, 'late reply');
   await h.s.turn?.result;
-  assert.equal(h.s.turn, null); assert.match(h.text(), /上一轮补充消息[\s\S]*late reply/);
+  assert.equal(h.s.turn, null); assert.equal(h.text(), 'late reply');
 });
 
 test('awaiting is explained in Coda and logged without pretending to resolve auto-review', async t => {
@@ -216,7 +358,7 @@ test('updatedSeq changes and process reload do not redisplay an already delivere
   assert.equal(h.adapter.session(h.id).saved.stream.afterUpdatedSeq, '99');
 });
 
-test('old settlement does not terminate a new native run and silent success ends on a newer heartbeat and late text is a supplement', async t => {
+test('old settlement cannot close a new run; heartbeat is not a transcript watermark; late text stays plain', async t => {
   const h = await connected(t), run = await sent(h);
   await h.emit(live({ isRunning: true, lastTurnSettlement: { turnId: 'previous', outcome: 'success', settledAtMs: '1' } }));
   assert.equal(h.s.turn.nativeId, run.id); assert.equal(h.s.turn.settlement, undefined);
@@ -224,10 +366,12 @@ test('old settlement does not terminate a new native run and silent success ends
   await h.emit({ heartbeat: { serverTimeMs: '100' } });
   assert.ok(h.s.turn, 'equal timestamp is not a later heartbeat');
   await h.emit(heartbeat);
+  assert.ok(h.s.turn, 'a newer heartbeat does not prove that output has drained');
+  h.clock.advance(SETTLEMENT_GRACE_MS);
   assert.equal((await run.done).stopReason, 'end_turn');
   assert.doesNotMatch(h.text(), /超过|未返回正文/);
   await reply(h, run.id, 'late-silent-result'); await h.until(e => e.checkpoint);
-  assert.match(h.text(), /上一轮补充消息[\s\S]*late-silent-result/);
+  assert.equal(h.text(), 'late-silent-result');
 });
 
 test('login HTTP failure is visible and can be retried without leaving a fake successful credential', async t => {
@@ -564,6 +708,7 @@ for (const outcome of ['success', 'cancelled', 'failed']) {
     assert.equal(turn.nativeId, undefined);
     await h.emit(h.native.row('matching-echo', { kind: 'message', role: 'user', clientNonce: request.params.messageId, requestId: 'matching-native-id' }));
     await h.emit(heartbeat);
+    if (outcome === 'success') h.clock.advance(SETTLEMENT_GRACE_MS);
     assert.equal((await done).stopReason, outcome === 'cancelled' ? 'cancelled' : 'end_turn');
     assert.equal(h.s.turn, null);
     if (outcome === 'failed') assert.match(h.text(), /Grok 运行结束：failed/);
