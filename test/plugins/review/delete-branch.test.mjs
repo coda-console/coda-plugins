@@ -138,14 +138,16 @@ process.exit(done.status ?? 1);\n`);
   assert.equal(c.ref(), c.next);
 });
 
-test('merging preserves the selected cleanup for the workflow without deleting before confirmation', t => {
+test('the approval keeps the selected cleanup for the workflow, and merging deletes nothing before confirmation', t => {
   const c = setup(t);
   // baseOf asks gh for these two fields; the same fixture can supply them alongside the PR fields.
   c.pr.base = 'main'; c.pr.main = 'main';
   for (const options of [{}, { deleteBranch: false }, { deleteBranch: true, deploy: true }]) {
-    const done = c.run('merge', { APPROVED: JSON.stringify({ options }) });
+    const approved = c.run('approval', { APPROVED: JSON.stringify({ options }) });
+    assert.equal(approved.status, 0, approved.stderr);
+    assert.match(approved.outputs, new RegExp(`deleteBranch<<EOF_deleteBranch\n${options.deleteBranch === true}\nEOF_deleteBranch`));
+    const done = c.run('merge', { WHAT: '合并' });
     assert.equal(done.status, 0, done.stderr);
-    assert.match(done.outputs, new RegExp(`deleteBranch<<EOF_deleteBranch\n${options.deleteBranch === true}\nEOF_deleteBranch`));
     assert.equal(c.ref(), c.head);
   }
   const calls = readFileSync(c.calls, 'utf8').trim().split('\n').map(JSON.parse);
