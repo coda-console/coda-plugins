@@ -69,6 +69,13 @@ Coda 插件页的「商店」列出 Coda 自带的插件，以及 npm 上 `@coda
 带依赖的插件各有自己的 `package-lock.json`（`node_modules` 不提交）；Coda 在插件的版本目录里 `npm ci` 装它们，
 这几个插件不是本仓库根的 npm workspaces（根包是契约检查，装它不该带上 Codex、Claude 的平台二进制）。
 
+### 紧凑显示名
+
+模型与模式的 `_meta.coda.shortName` 供 Coda 的工具栏使用，完整名称仍供选择面板与辅助功能读取，执行始终使用原 ID。
+Claude 的短名取 SDK 的显示名（不再附上完整 ID），保留模型版本与上下文变体；Codex 的模型短名去掉重复的 GPT 前缀，审批模式提供中文短名。
+Kimi 的模式提供中文短名，高速模型缩短 Highspeed 文案但保留 2×用量；Grok 声明自己的审批模式名称。
+OpenCode 已按来源分组去掉模型的 provider 前缀，沿用现有名称；build／plan 是它的 Agent 模式，不改称审批。
+
 ### 会话指令与设置动作
 
 Coda 的会话指令（`systemPrompt`）各插件都声明并接受，只接受 `append` 模式的文本块，其他回 -32602、不建立会话：

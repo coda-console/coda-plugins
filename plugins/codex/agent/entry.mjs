@@ -25,6 +25,7 @@ import { CodexWaits } from './waits.mjs';
 import { CodexReviews } from './reviews.mjs';
 import { explainCodexError, reportedCodexFailures } from './errors.mjs';
 import { reportedCodexSleeps } from './sleep.mjs';
+import { codexDisplayNames } from './display.mjs';
 
 const env = process.env;
 // A session starts read-only, unless its machine's configuration says otherwise.
@@ -50,7 +51,7 @@ if (!env.CODEX_PATH && accountSource(env) && env.CODA_PLUGIN_STATE) {
 const version = codexVersion();
 const waits = new CodexWaits({ agentInfo: version ? { name: 'codex', version } : null }), parse = line => { try { return JSON.parse(line); } catch { return null; } };
 const reviews = new CodexReviews(), say = message => process.stdout.write(`${JSON.stringify(message)}\n`);
-listen(line => { for (const message of waits.fromAgent(parse(line))) for (const each of reviews.fromAgent(message)) say(explainCodexError(each)); });
+listen(line => { for (const message of waits.fromAgent(parse(line))) for (const each of reviews.fromAgent(message)) say(codexDisplayNames(explainCodexError(each))); });
 readLines(process.stdin).on('line', line => {
   const message = parse(line);
   if (!message || typeof message !== 'object') return;

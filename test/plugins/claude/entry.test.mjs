@@ -80,8 +80,8 @@ test('session/new lists the concrete models the SDK resolves its rows to, and se
   const option = id => opened.configOptions.find(o => o.id === id);
   // An alias and the model it resolves to are one model, under the ID it runs as; a context variant is another.
   assert.deepEqual(option('model').options, [
-    { value: 'fixture-model-v1', name: 'Fixture model (fixture-model-v1)' }, { value: 'other-model', name: 'Other model (other-model)' },
-    { value: 'fixture-model-v1[1m]', name: 'Fixture long context (fixture-model-v1[1m])' }, { value: 'claude-custom-1', name: 'Custom (claude-custom-1)' }]);
+    { value: 'fixture-model-v1', name: 'Fixture model (fixture-model-v1)', _meta: { coda: { shortName: 'Fixture model' } } }, { value: 'other-model', name: 'Other model (other-model)', _meta: { coda: { shortName: 'Other model' } } },
+    { value: 'fixture-model-v1[1m]', name: 'Fixture long context (fixture-model-v1[1m])', _meta: { coda: { shortName: 'Fixture long context [1m]' } } }, { value: 'claude-custom-1', name: 'Custom (claude-custom-1)', _meta: { coda: { shortName: 'Custom' } } }]);
   assert.deepEqual([option('model').category, option('model').currentValue], ['model', 'fixture-model-v1']);
   // Until one is chosen the model has its own, the choice marked as the agent's default.
   assert.deepEqual([option('effort').category, option('effort').currentValue, option('effort').options.map(o => o.value)], ['thought_level', 'default', ['default', 'low', 'high']]);
@@ -947,7 +947,7 @@ test('the chosen model service\'s models are listed beside Claude\'s own; a turn
   const opened = await c.open(), first = queries.get(c.sessionId);
   // Grouped by where they come from: Claude's own, then the service's under its title, each named by the model alone.
   const groups = opened.configOptions.find(o => o.id === 'model').options;
-  assert.deepEqual(groups.map(g => [g.group, g.name, g.options.at(-1)]), [['claude', 'Claude', { value: 'claude-custom-1', name: 'Custom (claude-custom-1)' }],
+  assert.deepEqual(groups.map(g => [g.group, g.name, g.options.at(-1)]), [['claude', 'Claude', { value: 'claude-custom-1', name: 'Custom (claude-custom-1)', _meta: { coda: { shortName: 'Custom' } } }],
     ['magpie/anthropic', 'Magpie · Anthropic', { value: 'magpie/anthropic/fake/beta', name: 'fake/beta' }]]);
   assert.deepEqual(groups[1].options.map(o => o.value), ['magpie/anthropic/fake/alpha', 'magpie/anthropic/fake/beta']);
   assert.deepEqual(service.asked, ['/models?limit=1000']);
