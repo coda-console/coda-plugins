@@ -1365,14 +1365,14 @@
     "id": "review",
     "displayName": "PR 生命流程",
     "description": "会话开的 PR 从开出来起一条流程：每个新版本先跑项目声明的检查，再请另一家 Agent 评审，要求修改时交给开 PR 的会话处理、有分歧时交给你仲裁；通过后请你批准合并，跑过项目的合并前检查再合并，合并后按你的选择删除远程分支、调用项目的部署和发布流程，PR 合并或关闭时结束。",
-    "version": "2.8.1",
+    "version": "2.9.0",
     "category": "工作流程",
     "source": {
       "kind": "builtin",
       "package": "@coda-console/review",
       "tag": "latest",
-      "version": "2.8.1",
-      "integrity": "sha512-E66oq5q8uSHo/n5LFHdUuFMimLYJ15hbBae3PdBol/N6ccR0m9OQXcztvNyEVywlppvJYh+o4w+b0b5vdEQ2SQ==",
+      "version": "2.9.0",
+      "integrity": "sha512-lFc7bipZ48OBkVU2Eknfsq4BNFshE2FgfE+oLZn/HsNsbMHPldyXepLJQTs6aW03cl7KUdMWTn+BkoDz8VwMiw==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/review"
     },
@@ -1479,6 +1479,43 @@
         "title": "合并方式",
         "order": 5,
         "default": "squash"
+      },
+      "review.mergeOptions": {
+        "type": "array",
+        "description": "合并卡片初始勾选这些选项，直接点「合并」也按此执行。每次合并前可以调整；目录可以覆盖，且只显示该目录可用的选项。",
+        "title": "合并时默认勾选",
+        "order": 6,
+        "options": [
+          {
+            "value": "deleteBranch",
+            "title": "合并后删除远程分支",
+            "description": "删除这个 PR 的远程源分支，本地分支和工作树保留"
+          },
+          {
+            "value": "deploy",
+            "title": "部署",
+            "description": "调用项目里的部署流程",
+            "workflowKind": "deploy"
+          },
+          {
+            "value": "preview",
+            "title": "发布预览版",
+            "description": "调用项目里的预览发布流程",
+            "workflowKind": "preview"
+          },
+          {
+            "value": "release",
+            "title": "发布正式版",
+            "description": "调用项目里的正式发布流程",
+            "workflowKind": "release"
+          },
+          {
+            "value": "notify",
+            "title": "全部完成后通知 Agent",
+            "description": "合并及所选删除分支、部署、发布结束后通知"
+          }
+        ],
+        "default": []
       }
     },
     "workflows": [
