@@ -350,7 +350,17 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
           <coda:param name="commit" value="=reviewing.head" />
         </extensionElements>
       </serviceTask>
-      <sequenceFlow id="premerged" sourceRef="premerge" targetRef="merge" />
+      <sequenceFlow id="premerged" sourceRef="premerge" targetRef="handing" />
+      <!-- 记下交给 GitHub 的是哪个提交：合并期间送到的关闭，合进去的是它才是这条运行交出去的合并（「是批准的合并吗」）。
+           合并前检查没过、还在等人处理时，这一步没跑过。 -->
+      <scriptTask id="handing" name="交给 GitHub" coda:timeout="5" coda:checkout="false" scriptFormat="bash">
+        <extensionElements>
+          <coda:env name="HEAD" value="=reviewing.head" />
+          <coda:output name="head" />
+        </extensionElements>
+        <script>echo "head=$HEAD" >> "$GITHUB_OUTPUT"</script>
+      </scriptTask>
+      <sequenceFlow id="handed-over" sourceRef="handing" targetRef="merge" />
       <boundaryEvent id="premerge-broke" name="没通过" attachedToRef="premerge"><errorEventDefinition /></boundaryEvent>
       <sequenceFlow id="premerge-to-fix" sourceRef="premerge-broke" targetRef="fix-premerge" />
       <userTask id="fix-premerge" name="合并前检查没通过：处理后答复" coda:status="合并前检查没通过：开 PR 的会话处理中" coda:completeLabel="已处理，再跑检查" coda:rejectLabel="处理不了">
@@ -434,11 +444,11 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
     <sequenceFlow id="merging-rebased" sourceRef="rebased-while-merging" targetRef="opening" />
     <boundaryEvent id="closed-while-merging" name="PR 关闭" attachedToRef="merging"><messageEventDefinition messageRef="closed" /></boundaryEvent>
     <sequenceFlow id="merging-ended" sourceRef="closed-while-merging" targetRef="approved-merged" />
-    <!-- 合并步骤把 PR 交给 GitHub 后，GitHub 的关闭可能先于这一步结束送到：合进去的是评审过的这个版本、你的批准也还算数，
-         就是你批准的合并，照你的选择接着删分支、部署、发布；否则是别处合并或关闭的。 -->
+    <!-- 合并步骤把 PR 交给 GitHub 后，GitHub 的关闭可能先于这一步结束送到：合进去的正是「交给 GitHub」记下的那个提交，
+         就是你批准、也过了合并前检查的合并，照你的选择接着删分支、部署、发布；否则是别处合并或关闭的。 -->
     <exclusiveGateway id="approved-merged" name="是批准的合并吗" default="not-approved" />
     <sequenceFlow id="as-approved-merged" sourceRef="approved-merged" targetRef="deleting-or-not">
-      <conditionExpression xsi:type="tFormalExpression">=github.event.pull_request.merged and github.event.pull_request.head.sha = reviewing.head and number(approval.at) > number(review.changesAt)</conditionExpression>
+      <conditionExpression xsi:type="tFormalExpression">=github.event.pull_request.merged and github.event.pull_request.head.sha = handing.head</conditionExpression>
     </sequenceFlow>
     <sequenceFlow id="not-approved" sourceRef="approved-merged" targetRef="ended" />
     <sequenceFlow id="to-after-merging" sourceRef="merging" targetRef="after-merging" />
