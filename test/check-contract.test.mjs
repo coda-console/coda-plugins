@@ -14,7 +14,7 @@ after(() => { for (const dir of temps) rmSync(dir, { recursive: true, force: tru
 function copy() {
   const dir = mkdtempSync(join(tmpdir(), 'coda-plugin-contract-'));
   temps.push(dir);
-  for (const path of ['check/coda', 'docs', 'package.json']) cpSync(join(root, path), join(dir, path), { recursive: true });
+  for (const path of ['check/coda', 'package.json']) cpSync(join(root, path), join(dir, path), { recursive: true });
   return dir;
 }
 
