@@ -46,6 +46,8 @@ node /workspace/.coda-bot/coda-bot.mjs mcp <Coda-sessionId>
 
 工具包括 `read_thread`、`read_tool_call`、`agents`、`status`、`workflow_status`、`workflow_list`、`telemetry`、`machines`、`machine_diagnostics`、`new_session`、`send`（MCP 名加 `coda_` 前缀）。Coda 工具调用保留完整输入输出；轮外只读调用仅写日志，不开启空轮次。`new_session` 在目标目录开独立会话，`send` 给已有会话发消息，均由 Coda 授权卡片批准；稳定 requestId、turn 票据和后台 send 结果由适配器处理。
 
+巡检按远端 Skill 先开只归因的独立会话（不改代码、不开 PR），prompt 写清现象、证据、时间和版本，要求结论、证据链、置信度与是否建议修复。下次巡检读取结论，确认需要修复的代码问题才开修复会话，引用归因会话与结论并走完仓库 PR 流程；偶发、外部因素或用户暂不处理的问题只记忆。用户指定的 Agent、暂不处理事项等也写进记忆，开会话前先读取遵守，不在 Skill 固定模型或推理强度。卡片审批、不重复开会话、不轮询等规则照旧；GitHub 只读限制只约束 Bot 自己。
+
 诊断工具需在 Coda 安装并为目录启用内置「机器诊断」插件（`diagnostics` MCP），参见 [诊断工具](https://github.com/coda-console/coda/pull/2003)；遥测端点参见 [遥测 JSON 接口](https://github.com/coda-console/coda/pull/2004)。没有 new_session 的旧 Coda 会如实报不可用。
 
 ## 从 0.1.7 升级
@@ -62,9 +64,11 @@ node /workspace/.coda-bot/coda-bot.mjs mcp <Coda-sessionId>
 
 这是未获稳定性保证的私有接口，上游升级可能使登录、字段或接口失效；错误会显示在会话中。[Cursor 服务条款 §1.5](https://cursor.com/terms-of-service) 限制逆向工程等行为（法律不允许此限制的情况除外），使用前需评估该条款风险。
 
-- SetStatus 只提供名称/说明，映射为 tool_call 标题和状态，不伪造云端工具输入输出。thinking 只显示“正在思考”，不是思考正文。
-- 按 requestId/turnId 归并，成功结束且已有正文时立即核对历史并收尾；没有正文时，等到 serverTimeMs 晚于 settledAtMs 的心跳或 5 秒宽限期，再核对历史并收尾，不把正常的静默运行挂到 turnTimeout。上游没有“最后正文已落盘”标志，极迟消息仍作为补充显示，不静默丢弃。
+- 原生活动标题保留 detail，按 callId/tool/target/detail 识别活动。0.78.1 的 tool/target 是自由字符串；已有只读记录的 43 条 tool 活动均为 SetStatus，它只报告说明，不能据此推断底层命令或文件操作，因此 SetStatus 与未经验证的名称均报 ACP `other`。target 没有已验证的文件路径语义，不编造 locations 或输入输出。thinking 只显示“正在思考”，不是思考正文。
+- Coda 代理工具的 kind：read_thread、read_tool_call、agents、status、workflow_status、workflow_list、machines、machine_diagnostics → `other`（数据查询，显示「调用 N 个工具」；Coda 会把没有路径的 `read` 调用也计为文件，不能用于这些查询）；telemetry → `fetch`（「联网 N 次」）；new_session、send → `other`。保留完整输入输出，没有文件位置就不报 locations。
+- 按 requestId/turnId 归并。成功结算且主 Agent 无运行、撰写、重试、activity 或 awaiting 状态时才考虑收尾；再次出现主 Agent 活动会撤销待收尾状态。最后正文之后没有活动，立即核对历史并收尾；先回复又出现活动则等待后文，最多宽限 10 秒，再核对历史；完全无正文仍用 5 秒宽限。后文到达即可完成，不必等满宽限。hasRunningSubagents 属于独立 Routine 观测，不阻塞主轮次；heartbeat.serverTimeMs 只有时间，没有正文游标，不作为正文交付完成的保证。上游没有“最后正文已落盘”标志，超出宽限或取消/超时后的消息仍原样显示为 Bot 的话，不加前缀，不按正文去重。
+- 10 秒宽限依据：2026-10-31 的 requestId `11223fc4-fbff-4364-a6d7-47911999652b`，只读历史中 t7s0/t7s1 正文时间为 15:34:39.339 / 15:34:51.225（SGT），相差 11.886 秒；Coda 的中间活动在 15:34:43.694 被收尾，t7s1 在 15:34:51.495 到达，晚 7.801 秒。历史不保留该次 settlement，不能把本地收尾时间当精确的原生 settledAtMs；10 秒是覆盖已知约 8 秒延迟的兜底，不是上游保证。正常“工具→最终正文→结算”不增加等待。
 - entryId、updatedSeq 和正文摘要只保留按 updatedSeq 排序的最近 2000 条，每批条目合并写盘；更早条目若被服务端修订，会当作新条目呈现。断线按游标重连，游标失效分页读历史补齐并去重，不重发用户消息。首次选择只建立历史基线，不灌入旧聊天。正文被服务端省略或消息类型不支持时明确提示去 Grok 客户端查看。
 - Stop 调 InterruptGrokBotAgentRun。widget 选项变成 Coda 卡片，选择后交回 RespondGrokBotWidget；未选择则不代答。auto-review 尚未实测，收到 awaiting 时提示去 Grok 客户端处理，并记事件日志。
 
-实机已验证官方登录、Bot 列表、原生发送/状态/活动/回复、Interrupt、widget 选择交回、Routine run 与 executor ID 的关联，以及无需任何 Coda 汇报工具也会出现的主会话结论（结束状态比正文早 121 ms）。完整新适配器尚未真机部署；自动续期、auto-review、executor 内部过程未实测。适配器测试使用假原生服务端与假时钟。
+实机已验证官方登录、Bot 列表、原生发送/状态/活动/回复、Interrupt、widget 选择交回、Routine run 与 executor ID 的关联，以及无需任何 Coda 汇报工具也会出现的主会话结论（结束状态比正文早 121 ms）。完整新适配器尚未真机部署；自动续期、auto-review、executor 内部过程未实测。适配器测试使用假原生服务端与假时钟。0.3.1 仅只读核对原生历史、订阅及已有协议/观察记录，没有向真实 Bot 发消息或运行新版适配器，也没有更新云电脑与 Routine。

@@ -14,6 +14,9 @@ const DIAGNOSTICS = new Set(['machines', 'machine_diagnostics']);
 const fail = message => { throw Object.assign(new Error(message), { code: -32602 }); };
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
 export const SETTLEMENT_GRACE_MS = 5000;
+// Observed t7s1 arrived 7.8 s after Coda closed a successful run whose first
+// reply preceded a tool activity. There is no transcript-drained marker.
+export const ACTIVITY_REPLY_GRACE_MS = 10_000;
 export const SUBMISSION_WAIT_MS = 20_000;
 function canonical(value) {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
@@ -86,7 +89,7 @@ export class Adapter {
     turn.timer = this.clock.setTimeout(() => {
       if (s.turn !== turn) return;
       turn.failed = true;
-      this.say(s, `等待 Grok Bot 超过 ${this.settings['grok-bot.turnTimeout'] ?? 'PT30M'}，本轮已结束；云端任务未必停止。之后收到的原生消息将标为补充消息。`);
+      this.say(s, `等待 Grok Bot 超过 ${this.settings['grok-bot.turnTimeout'] ?? 'PT30M'}，本轮已结束；云端任务未必停止。之后收到的原生消息仍会显示。`);
       this.finish(s, 'end_turn');
     }, this.timeout);
     return turn;
@@ -261,14 +264,14 @@ export class Adapter {
       if (!late && s.turn?.autonomous && s.turn.hasReply && s.turn.nativeId && s.turn.nativeId !== body.requestId) this.finish(s, 'end_turn');
       if (!s.turn) {
         this.start(s, true);
-        if (late) { this.say(s, 'Grok 上一轮补充消息：'); s.turn.settlement = { turnId: body.requestId, outcome: 'success', settledAtMs: String(this.now()) }; }
+        if (late) s.turn.settlement = { turnId: body.requestId, outcome: 'success', settledAtMs: String(this.now()) };
       }
       const turn = s.turn;
       if (!turn.nativeId && !(late && turn.messageId)) turn.nativeId = body.requestId;
-      // Preserve late native output as an explicit supplement, never silently drop it.
-      if (body.requestId && turn.nativeId !== body.requestId) this.say(s, 'Grok 上一轮补充消息：');
+      // Late output remains the Bot's own speech, even during another prompt.
       if (turn.nativeId === body.requestId) {
         turn.hasReply = true;
+        turn.awaitingReply = false;
         if (s.lastSettlement?.turnId === body.requestId)
           (turn.pendingSettlements ??= new Map()).set(body.requestId, s.lastSettlement);
       }
@@ -285,30 +288,42 @@ export class Adapter {
       const live = event.live;
       if (live.hasRunningSubagents || s.hadSubagents) void s.routines.hint(!!live.hasRunningSubagents);
       s.hadSubagents = !!live.hasRunningSubagents;
-      if (live.isRunning && !s.turn) this.start(s, true);
-      if (live.isRunning && s.turn) {
+      // Subagents can run independently; heartbeat serverTimeMs is not a
+      // transcript watermark. Only main-agent activity affects this turn.
+      const busy = !!(live.isRunning || live.isComposingMessage || live.isRetrying || live.activity || live.awaiting);
+      if (busy && !s.turn) this.start(s, true);
+      if (busy && s.turn) {
         s.turn.nativeRunning = true;
+        if (s.turn.hasReply) s.turn.awaitingReply = true;
+        delete s.turn.settlement;
+        this.clock.clearTimeout(s.turn.settlementTimer);
+        s.turn.settlementTimer = null;
         if (live.activity?.kind === 'thinking' && !s.turn.thinking) {
           s.turn.thinking = true;
           this.update(s, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'Grok 正在思考（原生状态，未提供思考正文）' } });
         }
         if (live.activity?.kind === 'tool') {
           const title = live.activity.detail || live.activity.tool || 'Grok 活动';
-          if (title !== s.turn.activityTitle) {
+          const activityKey = JSON.stringify([live.activity.callId, live.activity.tool, live.activity.target, title]);
+          if (activityKey !== s.turn.activityKey) {
             if (s.turn.activityId) this.update(s, { sessionUpdate: 'tool_call_update', toolCallId: s.turn.activityId, status: 'completed' });
-            s.turn.activityTitle = title; s.turn.activityId = randomUUID();
+            s.turn.activityKey = activityKey; s.turn.activityId = randomUUID();
+            // 0.78.1 defines tool/target as free strings. Observed SetStatus
+            // carries a prose summary, not the operation it describes. Keep
+            // it (and unverified names) as other; target is not a file path.
             this.update(s, { sessionUpdate: 'tool_call', toolCallId: s.turn.activityId, title, kind: 'other', status: 'in_progress' });
           }
         }
       }
+      if (!busy && s.turn) s.turn.nativeRunning = false;
       if (live.awaiting) {
         this.log(JSON.stringify({ sessionId: s.id, nativeAwaiting: live.awaiting }));
         if (!s.awaiting) { if (!s.turn) this.start(s, true); this.say(s, 'Grok 正在等待原生审批，请到 Grok 客户端处理。'); }
       }
       s.awaiting = !!live.awaiting;
       const settlement = live.lastTurnSettlement;
-      if (settlement && !live.isRunning) s.lastSettlement = settlement;
-      if (!live.isRunning && settlement && !s.closedRuns.has(settlement.turnId) && !(event.snapshot && !s.turn)) {
+      if (settlement && !busy) s.lastSettlement = settlement;
+      if (!busy && settlement && !s.closedRuns.has(settlement.turnId) && !(event.snapshot && !s.turn)) {
         if (!s.turn) this.start(s, true);
         // An outgoing prompt needs its echo/reply to identify the native run.
         // Autonomous runs have no outgoing message and may settle silently.
@@ -349,14 +364,13 @@ export class Adapter {
     }
     const turn = s.turn;
     if (turn?.settlement?.outcome === 'success') {
-      const afterSettlement = event.heartbeat && BigInt(event.heartbeat.serverTimeMs ?? 0) > BigInt(turn.settlement.settledAtMs ?? 0);
-      if (turn.hasReply || afterSettlement) await this.completeSettled(s, turn, !!afterSettlement);
+      if (turn.hasReply && !turn.awaitingReply) await this.completeSettled(s, turn);
       else this.settlementGrace(s, turn);
     }
   }
   applySettlement(s, settlement) {
+    if (settlement.outcome === 'success' && s.turn.nativeRunning) return;
     s.turn.settlement = settlement;
-    s.turn.nativeRunning = false;
     if (settlement.outcome === 'cancelled') this.finish(s, 'cancelled');
     else if (settlement.outcome !== 'success') {
       s.turn.failed = true;
@@ -365,7 +379,7 @@ export class Adapter {
     }
   }
   settlementGrace(s, turn) {
-    if (turn.settlementTimer || s.turn !== turn) return;
+    if (turn.settlementTimer || turn.reconciling || turn.nativeRunning || s.turn !== turn) return;
     turn.settlementTimer = this.clock.setTimeout(() => {
       turn.settlementTimer = null;
       void this.completeSettled(s, turn, true).catch(error => {
@@ -373,15 +387,22 @@ export class Adapter {
         s.watch.health.failure(error);
         this.settlementGrace(s, turn);
       });
-    }, SETTLEMENT_GRACE_MS);
+    }, turn.awaitingReply ? ACTIVITY_REPLY_GRACE_MS : SETTLEMENT_GRACE_MS);
   }
-  async completeSettled(s, turn, allowEmpty) {
-    if (s.turn !== turn || turn.reconciling || turn.widgetPending || (!turn.hasReply && !allowEmpty)) return;
+  async completeSettled(s, turn, allowPending = false) {
+    if (s.turn !== turn || turn.reconciling || turn.widgetPending || turn.nativeRunning || !turn.settlement ||
+      ((!turn.hasReply || turn.awaitingReply) && !allowPending)) return;
+    const settlement = turn.settlement;
     turn.reconciling = true;
     try {
       await s.watch.reconcile();
-      if (s.turn === turn && !turn.widgetPending) this.finish(s, 'end_turn');
-    } finally { turn.reconciling = false; }
+      if (s.turn === turn && !turn.widgetPending && !turn.nativeRunning && turn.settlement === settlement) this.finish(s, 'end_turn');
+    } finally {
+      turn.reconciling = false;
+      // A newer idle snapshot or a widget can arrive while history is read.
+      // If it prevented finishing, keep the bounded fallback alive.
+      if (s.turn === turn && turn.settlement?.outcome === 'success') this.settlementGrace(s, turn);
+    }
   }
   async widget(s, turn, entryId, widget) {
     turn.widgetPending = (turn.widgetPending ?? 0) + 1;
@@ -404,7 +425,10 @@ export class Adapter {
   async trace(s, name, args, operation, replyAfter) {
     const turn = s.turn, toolCallId = randomUUID();
     const background = replyAfter !== undefined && !!this.waits;
-    const toolCall = { toolCallId, title: `Coda · ${name}`, kind: 'other', status: 'pending', rawInput: args };
+    // Coda counts read calls without locations as files. Data queries are
+    // other tools, not file reads; telemetry performs an HTTP fetch.
+    const kind = name === 'telemetry' ? 'fetch' : 'other';
+    const toolCall = { toolCallId, title: `Coda · ${name}`, kind, status: 'pending', rawInput: args };
     if (turn) { turn.tools.set(toolCallId, { background }); this.update(s, { sessionUpdate: 'tool_call', ...toolCall }); }
     else this.log(JSON.stringify({ sessionId: s.id, toolCallId, name, arguments: args, state: 'started' }));
     // Register while the initiating turn is still active, before dispatch. The
