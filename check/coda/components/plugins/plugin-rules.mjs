@@ -132,6 +132,7 @@ export function readPlugin(dir, source) {
   const offers = Object.fromEntries(Object.entries(contributes).filter(([key]) => !TYPES.includes(key)));
   return { id, displayName, description: typeof manifest.description === 'string' ? manifest.description : '', version: String(manifest.version ?? ''),
     category: manifestCategory(manifest), source, dir, title: typeof configuration.title === 'string' ? configuration.title : displayName, properties,
+    ...(manifest.coda !== undefined ? { coda: manifest.coda } : {}),
     ...(manifest.main ? { main: posix.normalize(manifest.main) } : {}), ...(activation.includes('onStartupFinished') ? { startup: true } : {}),
     ...(required.length ? { required: [...required] } : {}), workflows: files('.coda/workflows'),
     capabilities: [...(contributes.capabilities ?? [])].sort(), services: [...(contributes.services ?? [])],

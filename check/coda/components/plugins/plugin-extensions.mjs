@@ -4,7 +4,7 @@
 // is the extended plugin's own contract, which Coda neither reads nor shapes. A point may instead take what any plugin
 // writes under a key of its `contributes` (`contributes` there, as the resources plugin's `panels`): of the schema the point
 // declares, kept as written, for the declaring plugin to read, only the commands in it listed where installing confirms them.
-import { pointProblem } from '@coda-console/protocol/validate';
+import { pointProblem, valueProblem } from '@coda-console/protocol/validate';
 import { requireCondition as check } from '../../domain/errors.mjs';
 
 const code = 'invalid_plugin';
@@ -79,6 +79,25 @@ export function withDependencies(catalog, id) {
   };
   visit(id);
   return order;
+}
+// A channel restriction is the target backend's, never the client's. An unknown channel cannot satisfy an explicit list.
+// The store reads registry metadata; installation reads the package itself. Both use the same schema and rule.
+export function pluginChannelProblem(plugin, channel) {
+  if (plugin.coda === undefined) return null;
+  const problem = valueProblem('plugin.json#/properties/coda', plugin.coda, 'coda');
+  if (problem) return problem;
+  const channels = plugin.coda.channels;
+  if (!channels || channels.includes(channel)) return null;
+  const names = channels.map(value => value === 'preview' ? '预览版' : '正式版').join('或');
+  return `此插件仅支持 Coda ${names}后端${channel ? '' : '，当前后端没有发布通道记录'}`;
+}
+// The same dependency closure used by installation, after resolving each dependency to its actual local or source version.
+export function catalogChannelProblem(catalog, id, channel) {
+  for (const each of withDependencies(catalog, id)) {
+    const plugin = catalog.get(each), problem = plugin && pluginChannelProblem(plugin, channel);
+    if (problem) return each === id ? problem : `${each}：${problem}`;
+  }
+  return null;
 }
 // The installed plugins that need this one, directly or through another, by ID.
 export function dependents(catalog, installed, id) {
