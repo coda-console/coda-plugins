@@ -55,6 +55,18 @@ async function setup(t, { env = {}, sdk = fixtureSdk(), ...options } = {}) {
 const system = (subtype, fields = {}) => ({ type: 'system', subtype, ...fields });
 const wait = (c, waitId) => c.waits().filter(w => w.waitId === waitId).map(({ sessionId: _, ...w }) => w);
 
+test('SDK sessions identify as Coda even when their parent supplies another entrypoint', async t => {
+  for (const inherited of [undefined, 'sdk-ts', 'sdk-cli', 'another-client']) {
+    await t.test(inherited ?? 'unset', async t => {
+      const c = await setup(t, { env: { CLAUDE_CODE_ENTRYPOINT: inherited } });
+      await c.open();
+      assert.equal(c.query.options.env.CLAUDE_CODE_ENTRYPOINT, 'coda');
+      assert.equal(c.query.options.env.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS, '1');
+      assert.equal(c.session.env.CLAUDE_CODE_ENTRYPOINT, inherited, 'the parent environment stays unchanged');
+    });
+  }
+});
+
 test('session/new lists the concrete models the SDK resolves its rows to, and settings go to the SDK as chosen', async t => {
   const c = await setup(t);
   const init = (await c.request('initialize', { protocolVersion: 1, clientCapabilities: {} })).result;
@@ -129,11 +141,12 @@ test('session/load resumes the native session it names, and one that is not ther
   const other = await setup(t);
   await other.request('initialize', { protocolVersion: 1, clientCapabilities: {} });
   assert.equal((await other.request('session/load', { sessionId: '00000000-0000-4000-8000-000000000000', cwd: c.cwd, mcpServers: [] })).error.code, -32002);
-  const again = await setup(t);
+  const again = await setup(t, { env: { CLAUDE_CODE_ENTRYPOINT: 'sdk-cli' } });
   await again.request('initialize', { protocolVersion: 1, clientCapabilities: {} });
   const loaded = (await again.request('session/load', { sessionId: first.sessionId, cwd: c.cwd, mcpServers: [] })).result;
   assert.ok(loaded.configOptions.length);
   assert.equal(queries.get(first.sessionId).options.resume, first.sessionId);
+  assert.equal(queries.get(first.sessionId).options.env.CLAUDE_CODE_ENTRYPOINT, 'coda');
   again.sessionId = first.sessionId; again.query = queries.get(first.sessionId);
   await again.prompt('history');
   assert.deepEqual(again.said(), ['one|history']);
@@ -930,7 +943,7 @@ const chosen = provided => ({ CODA_PLUGIN_SETTINGS: JSON.stringify({ 'claude.mod
 
 test('the chosen model service\'s models are listed beside Claude\'s own; a turn on one runs in a query of its own with the service as its API', async t => {
   const service = await modelService(t);
-  const c = await setup(t, { env: service.env });
+  const c = await setup(t, { env: { ...service.env, CLAUDE_CODE_ENTRYPOINT: 'sdk-ts' } });
   const opened = await c.open(), first = queries.get(c.sessionId);
   // Grouped by where they come from: Claude's own, then the service's under its title, each named by the model alone.
   const groups = opened.configOptions.find(o => o.id === 'model').options;
@@ -962,6 +975,7 @@ test('the chosen model service\'s models are listed beside Claude\'s own; a turn
   assert.deepEqual([third.options.model, third.options.settings.env.ANTHROPIC_MODEL], ['fake/beta', 'fake/beta']);
   await set('mode', 'plan'); await set('model', 'other-model'); await set('effort', 'high'); await c.prompt('history');
   const fourth = queries.get(c.sessionId);
+  for (const query of [first, second, third, fourth]) assert.equal(query.options.env.CLAUDE_CODE_ENTRYPOINT, 'coda');
   assert.deepEqual([fourth.options.model, fourth.options.permissionMode, fourth.options.settings], ['other-model', 'plan', { crossSessionInbound: 'refuse', effortLevel: 'high' }]);
   assert.equal(c.said().at(-1), 'hello|again|history', 'one conversation throughout');
   assert.equal(model(), 'other-model');

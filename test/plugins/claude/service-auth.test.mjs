@@ -19,7 +19,9 @@ async function anthropic(t) {
   const server = createServer(async (request, response) => {
     let body = '';
     for await (const chunk of request) body += chunk;
-    asked.push({ path: request.url, authorization: request.headers.authorization, apiKey: request.headers['x-api-key'], secret: request.headers['x-secret'] });
+    const payload = body ? JSON.parse(body) : null;
+    asked.push({ path: request.url, authorization: request.headers.authorization, apiKey: request.headers['x-api-key'], secret: request.headers['x-secret'],
+      billing: payload?.system?.find(block => block.text?.startsWith('x-anthropic-billing-header:'))?.text });
     if (request.url.startsWith('/service/models')) return response.end(JSON.stringify({ data: [{ id: 'fake/alpha' }] }));
     if (!/^\/\w+\/v1\/messages/.test(request.url) || request.url.includes('count_tokens')) return response.end('{}');
     const { model } = JSON.parse(body);
@@ -38,7 +40,7 @@ async function anthropic(t) {
   return { asked, at: `http://127.0.0.1:${server.address().port}` };
 }
 
-test('the real Claude Code sends the service its own token, and none of the machine\'s key, key helper, OAuth token or headers', { timeout: 120_000 }, async t => {
+test('the real Claude Code identifies as Coda and sends the service only its own credentials', { timeout: 120_000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), 'coda-claude-service-auth-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const config = join(root, 'config'), cwd = join(root, 'cwd');
@@ -47,6 +49,7 @@ test('the real Claude Code sends the service its own token, and none of the mach
   await writeFile(join(config, 'settings.json'), JSON.stringify({ env: { ANTHROPIC_API_KEY: 'sk-ant-api03-settings' }, apiKeyHelper: 'echo sk-ant-api03-helper' }));
   const { asked, at } = await anthropic(t);
   const session = new ClaudeSession({ sdk, env: { ...process.env, HOME: root, CLAUDE_CONFIG_DIR: config, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_AUTOUPDATER: '1',
+    CLAUDE_CODE_ENTRYPOINT: 'sdk-ts',
     // The machine's environment: its own way to the API, with a key, an OAuth token and a header of its own.
     ANTHROPIC_BASE_URL: `${at}/native`, ANTHROPIC_API_KEY: 'sk-ant-api03-process', CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-process', ANTHROPIC_CUSTOM_HEADERS: 'X-Secret: process',
     CODA_PLUGIN_SETTINGS: JSON.stringify({ 'claude.modelProviders': ['magpie/anthropic'] }),
@@ -57,5 +60,8 @@ test('the real Claude Code sends the service its own token, and none of the mach
   assert.deepEqual(await session.prompt({ prompt: [{ type: 'text', text: 'hi' }] }), { stopReason: 'end_turn' });
   const sent = asked.filter(request => request.path.startsWith('/service/v1/messages'));
   assert.ok(sent.length, JSON.stringify(asked));
-  for (const request of sent) assert.deepEqual([request.authorization, request.apiKey, request.secret], ['Bearer none', undefined, undefined], request.path);
+  for (const request of sent) {
+    assert.deepEqual([request.authorization, request.apiKey, request.secret], ['Bearer none', undefined, undefined], request.path);
+    assert.match(request.billing ?? '', /\bcc_entrypoint=coda(?:;|\s|$)/);
+  }
 });

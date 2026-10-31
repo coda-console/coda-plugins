@@ -186,6 +186,12 @@ Claude、Codex 与 OpenCode 各有一项设置「模型服务」（`claude.model
   覆盖三种接口的请求、服务与原生模型切换、进程重启后恢复，服务模型的变量模板、用户 JSONC 和 Provider 对象模板配置，以及主会话与子 Agent 里长短两种 `Retry-After`；
   原生子会话另覆盖过程与工具、审批归属、后台完成、独立停止和嵌套父子关系。模型服务全由本地 HTTP fixture 提供。
 
+### Claude 会话来源与订阅额度
+
+Claude 插件启动 SDK 时固定传入 `CLAUDE_CODE_ENTRYPOINT=coda`，覆盖父进程继承的同名变量；新建、恢复会话及切换模型服务后的 SDK 进程都沿用这一标记。
+这是针对上游 [SDK 入口消耗更多 5 小时订阅额度](https://github.com/anthropics/claude-code/issues/97074)的临时处理，额度仍以上游报告为准，不承诺固定节省比例。
+该变量还参与 Claude Code 的功能分类；升级 SDK 时须复核审批、子 Agent 与后台任务的行为。更新插件后，新启动的会话进程才使用新标记。
+
 ### Claude 缓存过期前压缩
 
 Claude 的设置「缓存过期前压缩」（`claude.idleCompaction`，默认关）：会话停下后还要接着用时，在主线程的一小时提示词缓存过期前压缩一次上下文，
