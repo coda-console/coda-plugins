@@ -3,8 +3,10 @@
   "id": "grok",
   "displayName": "Grok",
   "description": "Grok Agent：适配运行机上 Grok CLI 的 ACP 与审批模式；资源页的「Grok」面板显示账号与额度，可从 Coda 安装和登录。",
-  "version": "1.3.2",
-  "categories": ["Agent"],
+  "version": "1.3.3",
+  "categories": [
+    "Agent"
+  ],
   "contributes": {
     "agents": [
       {

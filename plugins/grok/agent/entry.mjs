@@ -5,7 +5,8 @@ import { spawn } from 'node:child_process';
 import { grokBinary } from '../scripts/ask.mjs';
 import { SessionInstructions } from './instructions.mjs';
 
-const modes = [{ id: 'auto', name: '自动审批' }, { id: 'always-approve', name: '全部放行' }];
+const modes = [{ id: 'auto', name: '自动审批', _meta: { coda: { shortName: '自动审批' } } },
+  { id: 'always-approve', name: '全部放行', _meta: { coda: { shortName: '全部放行' } } }];
 const grok = spawn(grokBinary() ?? 'grok', ['agent', '--no-leader', 'stdio'], { stdio: ['pipe', 'pipe', 'inherit'] });
 const send = (stream, message) => stream.write(`${JSON.stringify(message)}\n`);
 const say = message => send(process.stdout, { jsonrpc: '2.0', ...message });

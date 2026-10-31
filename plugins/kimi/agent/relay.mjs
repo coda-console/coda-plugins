@@ -1,3 +1,4 @@
+import { kimiDisplayNames } from './display.mjs';
 // Between Coda and `kimi acp`, a message at a time: everything passes as said, in order, and what Kimi keeps going beside a
 // turn, read from its files (observe.mjs), is told to Coda as waits (waits.mjs). Its files are read once the session is
 // known, again whenever they change, at most once every `every`, and before Kimi's answer to a prompt is passed on, so
@@ -38,7 +39,7 @@ export class KimiRelay {
   }
   fromAgent(message) {
     if (!record(message)) return;
-    message = this.instructions.fromAgent(message);
+    message = kimiDisplayNames(this.instructions.fromAgent(message));
     const answer = 'id' in message && !('method' in message), asked = answer ? this.asked.get(message.id) : undefined;
     if (asked) this.asked.delete(message.id);
     if (asked?.initialize && record(message.result)) {
