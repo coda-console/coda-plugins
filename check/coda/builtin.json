@@ -126,116 +126,6 @@
     ]
   },
   {
-    "id": "composer",
-    "displayName": "输入框模式",
-    "description": "输入框的三种模式：交接到新会话、新建子会话，以及打 ! 执行命令。停用后输入框里没有这几种模式。",
-    "version": "1.1.0",
-    "category": "工作流程",
-    "source": {
-      "kind": "builtin"
-    },
-    "dir": "src/resources/plugins/composer",
-    "title": "输入框模式",
-    "properties": {},
-    "main": "main.mjs",
-    "workflows": [],
-    "capabilities": [],
-    "services": [],
-    "groups": [],
-    "commands": [],
-    "gitCredentials": [],
-    "endpoints": [],
-    "views": [],
-    "composerModes": [
-      {
-        "id": "handoff",
-        "title": "交接到新会话",
-        "icon": "arrow.right.square",
-        "hint": "新会话承接这里的上下文，共享当前工作目录及其中的文件；这个会话保留，仍可继续使用。",
-        "placeholder": "接下来要完成什么？",
-        "sendLabel": "交接",
-        "agent": "own",
-        "in": [
-          "session"
-        ]
-      },
-      {
-        "id": "subagent",
-        "title": "子会话",
-        "icon": "arrow.triangle.branch",
-        "hint": "承接父会话近期上下文，沿用父会话工作目录；只启动子会话，不向父 Agent 发送这段要求。",
-        "placeholder": "描述交给子会话的任务…",
-        "sendLabel": "启动子会话",
-        "agent": "own",
-        "in": [
-          "session"
-        ],
-        "parameters": {
-          "properties": {
-            "replyTo": {
-              "type": "string",
-              "enum": [
-                "parent",
-                "sender"
-              ],
-              "enumItemLabels": [
-                "完成后回报父会话",
-                "完成后回报你"
-              ],
-              "enumDescriptions": [
-                "结果交给父 Agent，由它接着处理",
-                "做完提醒你，不叫醒父 Agent"
-              ],
-              "title": "回报对象",
-              "default": "parent",
-              "order": 0
-            }
-          }
-        },
-        "schema": {
-          "type": "object",
-          "properties": {
-            "replyTo": {
-              "title": "回报对象",
-              "type": "string",
-              "enum": [
-                "parent",
-                "sender"
-              ],
-              "enumItemLabels": [
-                "完成后回报父会话",
-                "完成后回报你"
-              ],
-              "enumDescriptions": [
-                "结果交给父 Agent，由它接着处理",
-                "做完提醒你，不叫醒父 Agent"
-              ],
-              "default": "parent"
-            }
-          }
-        }
-      },
-      {
-        "id": "shell",
-        "title": "执行命令",
-        "icon": "terminal",
-        "hint": "在会话工作目录执行，命令和结果作为这条消息发给 Agent。",
-        "placeholder": "输入要执行的命令…",
-        "sendLabel": "执行",
-        "agent": "off",
-        "trigger": "!",
-        "in": [
-          "session",
-          "new"
-        ]
-      }
-    ],
-    "agents": [],
-    "dependencies": [],
-    "extensionPoints": {},
-    "extensions": []
-  },
-  {
     "id": "diagnostics",
     "displayName": "机器诊断",
     "description": "给巡检会话提供只读工具，查看空间各台机器的健康状态、网络诊断与客户端性能。需要时安装，再按目录启用或用 Tag 限定。",
@@ -899,14 +789,14 @@
     "id": "claude",
     "displayName": "Claude",
     "description": "Claude SDK Agent：Coda 基于 Claude Agent SDK 写的 ACP 入口，一个进程一个 SDK 会话；资源页的「Claude」面板显示会话报告的额度，可从 Coda 登录。",
-    "version": "1.7.7",
+    "version": "1.7.8",
     "category": "Agent",
     "source": {
       "kind": "builtin",
       "package": "@coda-console/claude",
       "tag": "latest",
-      "version": "1.7.7",
-      "integrity": "sha512-iaxeneTsRDPDNSo36hHptm2dDCQt+BtV2f3s5q8MeiDZiYMpbcW00G3CrTuARGJLLvDsrHIPHEWzrVZRzt3GGQ==",
+      "version": "1.7.8",
+      "integrity": "sha512-Ti4gpscvuq1qrx6ti4ZxLw3zu0g1eCD3CHFn6ICGASofyET4qHrWwjB/jr2/ou6SFnyRg5fMo2m88CjjHCUwMQ==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/claude"
     },
@@ -989,14 +879,14 @@
     "id": "codex",
     "displayName": "Codex",
     "description": "Codex Agent：Coda 自带的入口运行 codex-acp，报告子 Agent、后台命令与命令的自动审核。额度与登录由账号来源插件接管；未接入账号来源时使用 Codex 自己的登录面板。",
-    "version": "1.8.5",
+    "version": "1.8.6",
     "category": "Agent",
     "source": {
       "kind": "builtin",
       "package": "@coda-console/codex",
       "tag": "latest",
-      "version": "1.8.5",
-      "integrity": "sha512-5XPcuzapKiTI/jf8V7JADLTgr2nimB1untf961lhujLlMHPevrMO+u5qIgZPeadLNl7IAo6Gez1GARcpAzfmcw==",
+      "version": "1.8.6",
+      "integrity": "sha512-np09xwMCHBzUUOfWTYV1IOo4Ci6Ua5ZVFXA0d/PzyFAhwDYmtll8kU39LxBU88R3ReuiHz7W9kCV2GAT8Kqn6A==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/codex"
     },
@@ -1142,17 +1032,323 @@
     "defaultInstalled": false
   },
   {
+    "id": "composer",
+    "displayName": "输入框模式",
+    "description": "输入框的五种模式：交接到新会话、创建子会话、打 ! 执行命令、Ultra 协调模式，以及按周期重复任务的循环模式。Ultra 的主 Agent 负责决策、调度和验收，非微小任务交给 Coda 子会话执行。",
+    "version": "2.1.0",
+    "category": "工作流程",
+    "source": {
+      "kind": "builtin",
+      "package": "@coda-console/composer",
+      "tag": "latest",
+      "version": "2.1.0",
+      "integrity": "sha512-vFT4hELREpRSTWXmxAyNCAvlWi6MjiXxBj15tyGUMopGLQqY7NzJj8M81kbY0XzoBqXm96wEzPlDZL6IfuRspg==",
+      "repo": "https://github.com/coda-console/coda-plugins.git",
+      "path": "plugins/composer"
+    },
+    "dir": "node_modules/@coda-console/composer",
+    "title": "输入框模式",
+    "properties": {
+      "composer.templates": {
+        "type": "array",
+        "description": "进入 Ultra 时可选的名单，一行一个子 Agent：同一个模板名的几行是一个模板，排第一的模板是进入时的默认。默认没有模板，子 Agent 名单为空时沿用当前会话的 Agent 和模型。",
+        "title": "模板",
+        "rows": {
+          "type": "object",
+          "columns": {
+            "template": {
+              "type": "string",
+              "title": "模板",
+              "order": 0
+            },
+            "who": {
+              "type": "object",
+              "format": "coda-agent",
+              "title": "Agent",
+              "order": 1
+            },
+            "when": {
+              "type": "string",
+              "title": "什么时候派给它",
+              "order": 2
+            }
+          },
+          "required": [
+            "template",
+            "who"
+          ]
+        },
+        "default": []
+      }
+    },
+    "main": "main.mjs",
+    "workflows": [],
+    "capabilities": [],
+    "services": [],
+    "groups": [],
+    "commands": [],
+    "gitCredentials": [],
+    "endpoints": [],
+    "views": [],
+    "composerModes": [
+      {
+        "id": "handoff",
+        "title": "交接到新会话",
+        "icon": "arrow.right.square",
+        "hint": "新会话承接这里的上下文，共享当前工作目录及其中的文件；这个会话保留，仍可继续使用。",
+        "placeholder": "接下来要完成什么？",
+        "sendLabel": "交接",
+        "agent": "own",
+        "in": [
+          "session"
+        ]
+      },
+      {
+        "id": "subagent",
+        "title": "子会话",
+        "icon": "arrow.triangle.branch",
+        "hint": "承接父会话近期上下文，沿用父会话工作目录；只启动子会话，不向父 Agent 发送这段要求。",
+        "placeholder": "描述交给子会话的任务…",
+        "sendLabel": "启动子会话",
+        "agent": "own",
+        "in": [
+          "session"
+        ],
+        "parameters": {
+          "properties": {
+            "replyTo": {
+              "type": "string",
+              "enum": [
+                "parent",
+                "sender"
+              ],
+              "enumItemLabels": [
+                "完成后回报父会话",
+                "完成后回报你"
+              ],
+              "enumDescriptions": [
+                "结果交给父 Agent，由它接着处理",
+                "做完提醒你，不叫醒父 Agent"
+              ],
+              "title": "回报对象",
+              "default": "parent",
+              "order": 0
+            }
+          }
+        },
+        "schema": {
+          "type": "object",
+          "properties": {
+            "replyTo": {
+              "title": "回报对象",
+              "type": "string",
+              "enum": [
+                "parent",
+                "sender"
+              ],
+              "enumItemLabels": [
+                "完成后回报父会话",
+                "完成后回报你"
+              ],
+              "enumDescriptions": [
+                "结果交给父 Agent，由它接着处理",
+                "做完提醒你，不叫醒父 Agent"
+              ],
+              "default": "parent"
+            }
+          }
+        }
+      },
+      {
+        "id": "shell",
+        "title": "执行命令",
+        "icon": "terminal",
+        "hint": "在会话工作目录执行，命令和结果作为这条消息发给 Agent。",
+        "placeholder": "输入要执行的命令…",
+        "sendLabel": "执行",
+        "agent": "off",
+        "trigger": "!",
+        "in": [
+          "session",
+          "new"
+        ]
+      },
+      {
+        "id": "ultra",
+        "title": "Ultra",
+        "icon": "square.stack.3d.up",
+        "hint": "节省主 Agent 的 Token，非微小任务交给子会话执行",
+        "placeholder": "要完成什么？",
+        "agent": "session",
+        "in": [
+          "session",
+          "new"
+        ],
+        "parameters": {
+          "properties": {
+            "template": {
+              "type": "string",
+              "title": "模板",
+              "order": 0
+            },
+            "subagents": {
+              "type": "array",
+              "title": "子 Agent",
+              "rows": {
+                "type": "object",
+                "columns": {
+                  "who": {
+                    "type": "object",
+                    "format": "coda-agent",
+                    "title": "Agent",
+                    "order": 0
+                  },
+                  "when": {
+                    "type": "string",
+                    "title": "什么时候派给它",
+                    "order": 1
+                  }
+                },
+                "required": [
+                  "who"
+                ]
+              },
+              "order": 1
+            }
+          }
+        },
+        "schema": {
+          "type": "object",
+          "properties": {
+            "template": {
+              "title": "模板",
+              "type": "string"
+            },
+            "subagents": {
+              "title": "子 Agent",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "who": {
+                    "title": "Agent",
+                    "type": "object",
+                    "format": "coda-agent"
+                  },
+                  "when": {
+                    "title": "什么时候派给它",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "who"
+                ]
+              }
+            }
+          }
+        }
+      },
+      {
+        "id": "loop",
+        "title": "循环",
+        "icon": "clock.arrow.2.circlepath",
+        "hint": "按周期把同一句话再发给 Agent，每轮做完才开始计时，7 天后自动结束",
+        "placeholder": "每轮要做什么？",
+        "sendLabel": "开始循环",
+        "agent": "session",
+        "in": [
+          "session"
+        ],
+        "parameters": {
+          "properties": {
+            "every": {
+              "type": "string",
+              "format": "duration",
+              "enum": [
+                "PT5M",
+                "PT10M",
+                "PT15M",
+                "PT30M",
+                "PT1H",
+                "PT2H",
+                "PT3H",
+                "PT6H",
+                "PT12H",
+                "P1D"
+              ],
+              "enumItemLabels": [
+                "5 分钟",
+                "10 分钟",
+                "15 分钟",
+                "30 分钟",
+                "1 小时",
+                "2 小时",
+                "3 小时",
+                "6 小时",
+                "12 小时",
+                "1 天"
+              ],
+              "title": "周期",
+              "default": "PT30M",
+              "order": 0
+            }
+          }
+        },
+        "schema": {
+          "type": "object",
+          "properties": {
+            "every": {
+              "title": "周期",
+              "type": "string",
+              "format": "duration",
+              "enum": [
+                "PT5M",
+                "PT10M",
+                "PT15M",
+                "PT30M",
+                "PT1H",
+                "PT2H",
+                "PT3H",
+                "PT6H",
+                "PT12H",
+                "P1D"
+              ],
+              "enumItemLabels": [
+                "5 分钟",
+                "10 分钟",
+                "15 分钟",
+                "30 分钟",
+                "1 小时",
+                "2 小时",
+                "3 小时",
+                "6 小时",
+                "12 小时",
+                "1 天"
+              ],
+              "default": "PT30M"
+            }
+          }
+        }
+      }
+    ],
+    "agents": [],
+    "dependencies": [],
+    "extensionPoints": {},
+    "extensions": [],
+    "defaultInstalled": true
+  },
+  {
     "id": "grok",
     "displayName": "Grok",
     "description": "Grok Agent：适配运行机上 Grok CLI 的 ACP 与审批模式；资源页的「Grok」面板显示账号与额度，可从 Coda 安装和登录。",
-    "version": "1.3.2",
+    "version": "1.3.3",
     "category": "Agent",
     "source": {
       "kind": "builtin",
       "package": "@coda-console/grok",
       "tag": "latest",
-      "version": "1.3.2",
-      "integrity": "sha512-/W3ko6pf/NpDvxJyizz7D1GfOuX+CvvllKdl0RnmC+KrKpytbgCqNJHsd+3UkUbAgiiNIj1fBCA1H4wHsXGt7w==",
+      "version": "1.3.3",
+      "integrity": "sha512-59h5Kp3IjPerRjQJKnZNY1EnVJ+PBSnWK+U7ZfeYe6HeCDMVXmSaXhj1xmg2HY8xMRUGo4O8GqzYYHa5MntH+Q==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/grok"
     },
@@ -1218,14 +1414,14 @@
     "id": "kimi",
     "displayName": "Kimi Code",
     "description": "Kimi Code Agent：Coda 的入口在运行机的 kimi acp 与 Coda 之间转发，读 Kimi 的会话文件报出后台命令与子 Agent；资源页的「Kimi」面板显示账号与额度，可从 Coda 安装和登录。",
-    "version": "1.2.2",
+    "version": "1.2.3",
     "category": "Agent",
     "source": {
       "kind": "builtin",
       "package": "@coda-console/kimi",
       "tag": "latest",
-      "version": "1.2.2",
-      "integrity": "sha512-9F5T2LP6YY+MzP6QlMNoNAwkfsOsir4RcDcRV5qkTGp0Dr35RlTaETcfCBbC4NwmMxynnAcJu7M1pMPoCi0viA==",
+      "version": "1.2.3",
+      "integrity": "sha512-EDIqC/89PfKDrbeRr/Dj4jaaae2U7V+s6mSJllW4ZNvesA7FJNO/pE8S1zQESfQqWdNjkS8cCjXq/d2P2CNZgQ==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/kimi"
     },
