@@ -325,10 +325,20 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
       <boundaryEvent id="not-handled" name="做不了" attachedToRef="handed"><errorEventDefinition /></boundaryEvent>
       <sequenceFlow id="back-to-approve" sourceRef="not-handled" targetRef="approve" />
 
-      <!-- 记下你批准的时刻：之后评审再要求修改（review.changesAt 更晚）这次批准才作废。 -->
+      <!-- 记下你批准的时刻和合并后要做的事：之后评审再要求修改（review.changesAt 更晚）这次批准才作废；
+           合并后的删分支、部署、发布与通知都照这里，不论 Coda 先从合并步骤还是先从 GitHub 得知合并了。 -->
       <scriptTask id="approval" name="记下批准" coda:timeout="5" coda:checkout="false" scriptFormat="bash">
-        <extensionElements><coda:output name="at" /></extensionElements>
-        <script>echo "at=$(node -p 'Date.now()')" >> "$GITHUB_OUTPUT"</script>
+        <extensionElements>
+          <coda:env name="APPROVED" value="=approve" />
+          <coda:output name="at" />
+          <coda:output name="deleteBranch" />
+          <coda:output name="deploy" />
+          <coda:output name="release" />
+          <coda:output name="releaseKinds" />
+          <coda:output name="notify" />
+          <coda:output name="what" />
+        </extensionElements>
+        <script>node "${CODA_PLUGIN_PATH}/scripts/approval.mjs"</script>
       </scriptTask>
       <sequenceFlow id="to-premerge" sourceRef="approval" targetRef="premerge" />
 
@@ -340,7 +350,17 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
           <coda:param name="commit" value="=reviewing.head" />
         </extensionElements>
       </serviceTask>
-      <sequenceFlow id="premerged" sourceRef="premerge" targetRef="merge" />
+      <sequenceFlow id="premerged" sourceRef="premerge" targetRef="handing" />
+      <!-- 记下交给 GitHub 的是哪个提交：合并期间送到的关闭，合进去的是它才是这条运行交出去的合并（「是批准的合并吗」）。
+           合并前检查没过、还在等人处理时，这一步没跑过。 -->
+      <scriptTask id="handing" name="交给 GitHub" coda:timeout="5" coda:checkout="false" scriptFormat="bash">
+        <extensionElements>
+          <coda:env name="HEAD" value="=reviewing.head" />
+          <coda:output name="head" />
+        </extensionElements>
+        <script>echo "head=$HEAD" >> "$GITHUB_OUTPUT"</script>
+      </scriptTask>
+      <sequenceFlow id="handed-over" sourceRef="handing" targetRef="merge" />
       <boundaryEvent id="premerge-broke" name="没通过" attachedToRef="premerge"><errorEventDefinition /></boundaryEvent>
       <sequenceFlow id="premerge-to-fix" sourceRef="premerge-broke" targetRef="fix-premerge" />
       <userTask id="fix-premerge" name="合并前检查没通过：处理后答复" coda:status="合并前检查没通过：开 PR 的会话处理中" coda:completeLabel="已处理，再跑检查" coda:rejectLabel="处理不了">
@@ -370,15 +390,10 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
           <coda:env name="URL" value="=github.event.pull_request.html_url" />
           <coda:env name="HEAD" value="=reviewing.head" />
           <coda:env name="METHOD" value="=vars.review.mergeMethod" />
-          <coda:env name="APPROVED" value="=approve" />
+          <coda:env name="WHAT" value="=approval.what" />
           <coda:output name="merged" />
           <coda:output name="refused" />
           <coda:output name="reason" />
-          <coda:output name="deleteBranch" />
-          <coda:output name="deploy" />
-          <coda:output name="release" />
-          <coda:output name="releaseKinds" />
-          <coda:output name="notify" />
         </extensionElements>
         <script>node "${CODA_PLUGIN_PATH}/scripts/merge.mjs"</script>
       </scriptTask>
@@ -428,7 +443,14 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
     <boundaryEvent id="rebased-while-merging" name="base 变了" attachedToRef="merging"><messageEventDefinition messageRef="edited" /></boundaryEvent>
     <sequenceFlow id="merging-rebased" sourceRef="rebased-while-merging" targetRef="opening" />
     <boundaryEvent id="closed-while-merging" name="PR 关闭" attachedToRef="merging"><messageEventDefinition messageRef="closed" /></boundaryEvent>
-    <sequenceFlow id="merging-ended" sourceRef="closed-while-merging" targetRef="ended" />
+    <sequenceFlow id="merging-ended" sourceRef="closed-while-merging" targetRef="approved-merged" />
+    <!-- 合并步骤把 PR 交给 GitHub 后，GitHub 的关闭可能先于这一步结束送到：合进去的正是「交给 GitHub」记下的那个提交，
+         就是你批准、也过了合并前检查的合并，照你的选择接着删分支、部署、发布；否则是别处合并或关闭的。 -->
+    <exclusiveGateway id="approved-merged" name="是批准的合并吗" default="not-approved" />
+    <sequenceFlow id="as-approved-merged" sourceRef="approved-merged" targetRef="deleting-or-not">
+      <conditionExpression xsi:type="tFormalExpression">=github.event.pull_request.merged and github.event.pull_request.head.sha = handing.head</conditionExpression>
+    </sequenceFlow>
+    <sequenceFlow id="not-approved" sourceRef="approved-merged" targetRef="ended" />
     <sequenceFlow id="to-after-merging" sourceRef="merging" targetRef="after-merging" />
     <exclusiveGateway id="after-merging" name="接下来" default="to-confirming" />
     <sequenceFlow id="merged-to-waiting" sourceRef="after-merging" targetRef="waiting">
@@ -465,7 +487,7 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
 
     <exclusiveGateway id="deleting-or-not" name="删除远程分支吗" default="keep-branch" />
     <sequenceFlow id="to-delete-branch" sourceRef="deleting-or-not" targetRef="delete-branch">
-      <conditionExpression xsi:type="tFormalExpression">=merge.deleteBranch</conditionExpression>
+      <conditionExpression xsi:type="tFormalExpression">=approval.deleteBranch</conditionExpression>
     </sequenceFlow>
     <sequenceFlow id="keep-branch" sourceRef="deleting-or-not" targetRef="delivering-or-not" />
     <scriptTask id="delete-branch" name="删除远程分支" coda:timeout="5" coda:checkout="false" coda:status="已合并：删除远程分支" scriptFormat="bash">
@@ -479,10 +501,10 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
 
     <exclusiveGateway id="delivering-or-not" name="部署或发布吗" default="merged-only" />
     <sequenceFlow id="to-delivering" sourceRef="delivering-or-not" targetRef="delivering">
-      <conditionExpression xsi:type="tFormalExpression">=merge.deploy or merge.release</conditionExpression>
+      <conditionExpression xsi:type="tFormalExpression">=approval.deploy or approval.release</conditionExpression>
     </sequenceFlow>
     <sequenceFlow id="merged-only" sourceRef="delivering-or-not" targetRef="merged-here" />
-    <endEvent id="merged-here" coda:status="已合并" coda:notify="=merge.notify" />
+    <endEvent id="merged-here" coda:status="已合并" coda:notify="=approval.notify" />
 
     <!-- 部署与发布：项目自己声明哪些流程是部署（coda:kind="deploy"）、预览发布（preview）、正式发布（release），这里在合并提交上调用它们；
          项目没有这一类的流程，这一步直接过去。先部署，再请开 PR 的会话写更新说明、发布。失败时运行失败，交回开 PR 的会话。 -->
@@ -491,7 +513,7 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
       <sequenceFlow id="dl-in" sourceRef="delivering-in" targetRef="deploying" />
       <exclusiveGateway id="deploying" name="部署吗" default="not-deploying" />
       <sequenceFlow id="to-deploy" sourceRef="deploying" targetRef="deploy">
-        <conditionExpression xsi:type="tFormalExpression">=merge.deploy</conditionExpression>
+        <conditionExpression xsi:type="tFormalExpression">=approval.deploy</conditionExpression>
       </sequenceFlow>
       <sequenceFlow id="not-deploying" sourceRef="deploying" targetRef="releasing" />
       <serviceTask id="deploy" name="部署" coda:action="run-workflows" coda:status="部署中">
@@ -503,7 +525,7 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
       <sequenceFlow id="deployed" sourceRef="deploy" targetRef="releasing" />
       <exclusiveGateway id="releasing" name="发布吗" default="deploy-only" />
       <sequenceFlow id="to-notes" sourceRef="releasing" targetRef="notes">
-        <conditionExpression xsi:type="tFormalExpression">=merge.release</conditionExpression>
+        <conditionExpression xsi:type="tFormalExpression">=approval.release</conditionExpression>
       </sequenceFlow>
       <sequenceFlow id="deploy-only" sourceRef="releasing" targetRef="delivered" />
       <endEvent id="delivered" coda:status="已合并并部署" />
@@ -537,7 +559,7 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
       <sequenceFlow id="to-publish" sourceRef="publishing" targetRef="publish" />
       <serviceTask id="publish" name="发布" coda:action="run-workflows" coda:status="发布中">
         <extensionElements>
-          <coda:param name="kind" value="=merge.releaseKinds" />
+          <coda:param name="kind" value="=approval.releaseKinds" />
           <coda:param name="commit" value="=github.event.pull_request.merge_commit_sha" />
           <coda:param name="inputs" value="=publishing.inputs" />
         </extensionElements>
@@ -546,6 +568,6 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
       <endEvent id="released-end" coda:status="已发布" />
     </subProcess>
     <sequenceFlow id="to-delivered" sourceRef="delivering" targetRef="delivering-done" />
-    <endEvent id="delivering-done" coda:notify="=merge.notify" />
+    <endEvent id="delivering-done" coda:notify="=approval.notify" />
   </process>
 </definitions>
