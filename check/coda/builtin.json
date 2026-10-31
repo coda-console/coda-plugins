@@ -899,14 +899,14 @@
     "id": "claude",
     "displayName": "Claude",
     "description": "Claude SDK Agent：Coda 基于 Claude Agent SDK 写的 ACP 入口，一个进程一个 SDK 会话；资源页的「Claude」面板显示会话报告的额度，可从 Coda 登录。",
-    "version": "1.7.2",
+    "version": "1.7.6",
     "category": "Agent",
     "source": {
       "kind": "builtin",
       "package": "@coda-console/claude",
       "tag": "latest",
-      "version": "1.7.2",
-      "integrity": "sha512-Ux5uWnF1sBwOIUTIXfeZwbRWbJz9ZVKaxPL0Q2QMD7C5uPDzDU1KQjR6fJPKwmIw9kR5YFSz3cq7GuL3DEo4kg==",
+      "version": "1.7.6",
+      "integrity": "sha512-Gz0U1s8aWTahr+IcJAPtUZu9LLySQWmKgVrgk3qorolZycNG+gez7SbKfu24sgJq6TY89SgupH/xRj8d+VBgLg==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/claude"
     },
