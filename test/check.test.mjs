@@ -10,6 +10,8 @@ import { after, describe, test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { checkPlugin } from '../check/index.mjs';
+import { agentCapabilitiesProblem, agentMessageProblem, agentResultProblem, agentValueProblem } from '@coda-console/protocol/agent';
+import { Waits } from '../check/waits.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const at = path => join(root, path);
@@ -27,14 +29,15 @@ function assertPasses(report, expected) {
   for (const rule of expected) assert.ok(passed.includes(rule), `${rule} passed: ${passed.join(', ')}`);
 }
 // A plugin in a directory of its own outside Git: `agent` is merged into a declared agent that runs the liar in `mode`.
-function plugin({ mode = 'honest', agent = {}, manifest = {}, files = {} } = {}) {
+function plugin({ mode = 'honest', agent = {}, manifest = {}, files = {}, extension } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'coda-plugin-check-test-'));
   temps.push(dir);
   copyFileSync(ICON, join(dir, 'icon.pdf'));
+  if (extension) writeFileSync(join(dir, 'extension.json'), JSON.stringify(extension));
   for (const [name, content] of Object.entries(files)) { mkdirSync(join(dir, name, '..'), { recursive: true }); writeFileSync(join(dir, name), content); }
   writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'liar', displayName: '说错话', version: '1.0.0', ...manifest,
     contributes: { agents: [{ id: 'liar', displayName: '说错话', icon: { light: 'icon.pdf', template: true },
-      command: `exec "$CODA_NODE" "${LIAR}" ${mode}`, ...agent }], ...manifest.contributes } }));
+      command: `exec "$CODA_NODE" "${LIAR}" ${mode}${extension ? ' "$CODA_PLUGIN_PATH/extension.json"' : ''}`, ...agent }], ...manifest.contributes } }));
   return dir;
 }
 
@@ -191,6 +194,128 @@ describe('a liar fails on the rule it breaks', () => {
     const { report } = await checkPlugin(plugin({ agent: { command: 'exec definitely-not-installed-agent acp' } }), { limits });
     assert.deepEqual(failed(report), ['handshake.initialize']);
     assert.match(report.failures[0].message, /进程退出了（退出码 127）/);
+  });
+});
+
+describe('Agent extensions use the shared protocol diagnostics', () => {
+  const model = options => ({ id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: 'liar', options });
+  const choice = coda => ({ value: 'liar', name: 'Liar', _meta: { coda } });
+  const capabilities = meta => ({ sessionCapabilities: { systemPrompt: {} }, _meta: meta });
+  const error = failure => ({ code: -32603, data: { _meta: { coda: { failure } } } });
+  const fast = { ...limits, pause: 10, steerQuiet: 30 };
+  const run = async (extension, live = true, mode = 'honest') => (await checkPlugin(plugin({ extension, mode }), { live, limits: fast })).report;
+
+  test('wait errors keep their rule and protocol text, without echoing the payload', () => {
+    const items = [], waits = new Waits({ fail: (rule, message) => items.push({ rule, message }), warn: () => {} });
+    waits.sessionId = 's';
+    for (const value of [null, {}, { sessionId: 's', waitId: 'w', state: 'running', detail: 'private detail' },
+      { sessionId: 's', waitId: 'w', state: 'waiting', title: '😀'.repeat(251) },
+      { sessionId: 's', waitId: 'w', state: 'waiting', at: 'not a date' }]) {
+      waits.take(value, { turn: true });
+      assert.deepEqual(items.at(-1), { rule: 'wait.invalid', message: agentMessageProblem('_coda/wait', value) });
+    }
+    assert.equal(waits.registered.length, 0);
+    waits.take({ sessionId: 's', waitId: 'w', state: 'waiting', kind: 'future-kind', extra: true }, { turn: true });
+    waits.take({ sessionId: 's', waitId: 'w', state: 'done' }, { turn: false });
+    assert.equal(waits.registered.length, 1);
+    waits.take({ sessionId: 's', waitId: 'w', state: 'handling' }, { turn: false });
+    assert.equal(items.at(-1).rule, 'wait.after-terminal');
+  });
+
+  test('capability objects are checked without changing capability probes', async () => {
+    for (const key of ['waits', 'compact', 'remote']) {
+      const meta = { coda: { [key]: [] } };
+      const report = await run({ initialize: { agentCapabilities: capabilities(meta) } }, false);
+      assert.deepEqual(report.failures.map(({ rule, message }) => ({ rule, message })),
+        [{ rule: 'handshake.initialize', message: agentCapabilitiesProblem(meta) }]);
+      assert.ok(rules(report, 'pass').includes('handshake.new'), 'the session still opens');
+    }
+    const meta = { steering: { supported: 'yes' } };
+    const report = await run({ initialize: { _meta: meta } }, false);
+    assert.deepEqual(report.failures.map(x => x.message), [agentValueProblem('steering.json#/$defs/capabilities', meta, 'initialize result._meta')]);
+  });
+
+  test('review, usage and grouped default markers report under update.schema', async () => {
+    const reviews = [null, { state: 'pending' }, { state: 'denied', reason: 'x'.repeat(4001) }];
+    const usages = [null, [], { text: '界'.repeat(1400) }];
+    const configOptions = [model([{ group: 'g', name: 'Group', options: [choice({ default: 'yes' })] }])];
+    const updates = [
+      ...reviews.map((review, i) => ({ sessionUpdate: i % 2 ? 'tool_call' : 'tool_call_update', toolCallId: 't', title: 'Tool', _meta: { coda: { review } } })),
+      ...usages.map(coda => ({ sessionUpdate: 'usage_update', used: 1, size: 10, _meta: { coda } })),
+      { sessionUpdate: 'config_option_update', configOptions },
+    ];
+    const report = await run({ updates });
+    assert.deepEqual(report.failures.map(x => x.rule), updates.map(() => 'update.schema'));
+    assert.deepEqual(report.failures.map(x => x.message), [
+      ...reviews.map(value => agentValueProblem('review.json', value, 'session/update params.update._meta.coda.review')),
+      ...usages.map(value => agentValueProblem('usage.json', value, 'session/update params.update._meta.coda')),
+      agentValueProblem('default.json', { default: 'yes' }, 'session/update params.update.configOptions[0].options[0].options[0]._meta.coda'),
+    ]);
+    assert.ok(!rules(report, 'pass').includes('live.updates'));
+    assert.ok(rules(report, 'pass').includes('live.turn'), 'invalid metadata does not hide turn activity');
+  });
+
+  test('default markers in new and load results use their existing rules', async () => {
+    const configOptions = [model([choice({ default: 1 })])];
+    const report = await run({ initialize: { agentCapabilities: { ...capabilities({ coda: { waits: {} } }), loadSession: true } },
+      newResult: { configOptions }, loadResult: { configOptions } });
+    assert.deepEqual(report.failures.map(x => x.rule), ['handshake.new', 'handshake.load']);
+    assert.deepEqual(report.failures.map(x => x.message), ['session/new', 'session/load'].map(method =>
+      agentValueProblem('default.json', { default: 1 }, `${method} result.configOptions[0].options[0]._meta.coda`)));
+  });
+
+  test('malformed remote-code parameters are diagnosed before session ownership', async () => {
+    const report = await run({ requests: [{ method: '_coda/remote/code', params: {} }] });
+    assert.deepEqual(report.failures.map(x => x.rule), ['request.schema']);
+    assert.equal(report.failures[0].message, agentMessageProblem('_coda/remote/code', {}));
+  });
+
+  test('malformed execution failures are diagnosed before retry or signed-out handling', async () => {
+    const failure = { kind: 'service_unavailable', input: 'accepted', retryAfterMs: -1 };
+    for (const [field, rule] of [['promptError', 'live.turn'], ['newError', 'handshake.new'], ['loadError', 'handshake.load']]) {
+      const report = await run({ [field]: error(failure), ...(field === 'loadError'
+        ? { initialize: { agentCapabilities: { ...capabilities({}), loadSession: true } } } : {}) });
+      assert.deepEqual(report.failures.map(x => x.rule), [rule]);
+      assert.equal(report.failures[0].message, agentValueProblem('failure.json', failure, 'error.data._meta.coda.failure'));
+      assert.equal(report.items.filter(x => x.rule === 'live.service-retry').length, 0);
+    }
+    const signedOut = await run({ newError: { ...error(null), code: -32000 } });
+    assert.deepEqual(failed(signedOut), ['handshake.new']);
+    assert.equal(signedOut.failures[0].message, agentValueProblem('failure.json', null, 'error.data._meta.coda.failure'));
+  });
+
+  test('steering result shape is shared, while a late injected result still fails the state check', async () => {
+    for (const result of [null, { outcome: 'startedNewTurn' }]) {
+      const report = await run({ steeringResult: result }, true, 'steer');
+      assert.ok(report.failures.length > 0);
+      for (const item of report.failures) {
+        assert.equal(item.rule, 'live.steering');
+        assert.equal(item.message, agentResultProblem('_session/steering', result));
+      }
+    }
+    const report = await run({ steeringResult: { outcome: 'injected' } }, true, 'steer');
+    assert.deepEqual(failed(report), ['live.steering']);
+    assert.match(report.failures[0].message, /一轮已经结束.*要回 promptRequired/);
+    const extra = await run({ steeringResult: { outcome: 'promptRequired', error: 'an unknown field' } }, true, 'steer');
+    assert.deepEqual(failed(extra), [], 'unknown result fields are not checker diagnostics');
+  });
+
+  test('unknown risks and fields, absent metadata and valid default markers remain accepted', async () => {
+    const configOptions = [model([choice({ default: true }), { value: 'other', name: 'Other' }]),
+      { id: 'boolean', name: 'Switch', type: 'boolean', currentValue: true },
+      { ...model([{ group: 'g', name: 'Group', options: [choice({ default: false })] }]), id: 'grouped' }];
+    const report = await run({ initialize: { agentCapabilities: capabilities({ coda: { waits: {}, remote: {}, compact: {} }, future: [] }) },
+      newResult: { configOptions }, updates: [
+        { sessionUpdate: 'tool_call', toolCallId: 't', title: 'Tool', _meta: { coda: { review: { state: 'approved', reason: '', risk: 'future', extra: [] } } } },
+        { sessionUpdate: 'tool_call_update', toolCallId: 't' },
+        { sessionUpdate: 'usage_update', used: 1, size: 10, _meta: { coda: { future: [true, null] } } },
+        { sessionUpdate: 'usage_update', used: 1, size: 10 },
+        { sessionUpdate: 'config_option_update', configOptions },
+      ] });
+    assertPasses(report, ['live.turn', 'live.updates']);
+    const quota = await run({ promptError: error({ kind: 'quota_exhausted', input: 'future', retryAfterMs: -1 }) });
+    assert.deepEqual(failed(quota), ['live.turn']);
+    assert.match(quota.failures[0].message, /额度不足/);
   });
 });
 

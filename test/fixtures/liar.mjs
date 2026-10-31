@@ -1,9 +1,12 @@
 // A fake agent that gets Coda's protocol wrong on purpose, one way per run: `node liar.mjs <mode>`. Without a mode it
 // speaks it right, so each test shows one rule failing and nothing else.
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 
 const mode = process.argv[2] ?? 'honest';
+// Wire extensions supplied by a test, without duplicating the honest ACP conversation.
+const extension = process.argv[3] ? JSON.parse(readFileSync(process.argv[3], 'utf8')) : {};
 const send = message => process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`);
 const notify = (method, params) => send({ method, params });
 const say = (sessionId, text) => notify('session/update', { sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } } });
@@ -28,17 +31,20 @@ const opened = new Set();
 const methods = {
   initialize: () => ({ protocolVersion: mode === 'protocol-version' ? 2 : 1,
     agentCapabilities: { loadSession: mode === 'load-fails' || mode === 'load-forgets', ...(mode === 'no-system-prompt' ? {} : { sessionCapabilities: { systemPrompt: {} } }), _meta: { coda: { waits: {}, ...(mode.startsWith('remote-code') ? { remote: {} } : {}) } } },
-    authMethods: [], ...(STEERS.includes(mode) ? { _meta: { steering: { supported: true } } } : {}) }),
+    authMethods: [], ...(STEERS.includes(mode) ? { _meta: { steering: { supported: true } } } : {}), ...extension.initialize }),
   'session/new': params => {
     if (mode === 'signed-out') throw Object.assign(new Error('Authentication required'), { code: -32000 });
     instructed(params);
     const sessionId = randomUUID();
     opened.add(sessionId);
     if (mode === 'wait-while-loading') wait({ sessionId, waitId: 'early', kind: 'task', state: 'waiting' });
-    return mode === 'no-model' ? { sessionId } : { sessionId, configOptions: [MODEL] };
+    if (extension.newError) throw Object.assign(new Error('Cannot open'), extension.newError);
+    return mode === 'no-model' ? { sessionId } : { sessionId, configOptions: [MODEL], ...extension.newResult };
   },
   // Says whether the instructions came with it; or answers the load and keeps no session for it (OpenCode before 1.0.151).
   'session/load': ({ systemPrompt }) => {
+    if (extension.loadResult) return extension.loadResult;
+    if (extension.loadError) throw Object.assign(new Error('Cannot load'), extension.loadError);
     if (mode === 'load-forgets') return { configOptions: [MODEL] };
     const word = /reply with exactly (\S+) and nothing else/.exec(textOf(systemPrompt?.content))?.[1];
     throw Object.assign(new Error(`会话不见了${word ? `（收到了检查词 ${word} 的会话指令）` : ''}`), { code: -32002 });
@@ -58,6 +64,7 @@ const methods = {
   // Not taken once its turn has ended; or taken, as a turn of its own; or a turn of its own after saying it was not.
   '_session/steering': ({ sessionId }) => {
     afterSteer?.(); afterSteer = null;
+    if (Object.hasOwn(extension, 'steeringResult')) return extension.steeringResult;
     if (running && mode === 'steer') return { outcome: 'injected' };
     if (mode === 'steer-started') { setImmediate(() => say(sessionId, '我自己开了一轮')); return { outcome: 'startedNewTurn' }; }
     if (mode === 'steer-own-turn') setImmediate(() => say(sessionId, '还是说一句'));
@@ -66,6 +73,12 @@ const methods = {
 };
 // A turn, as each mode gets it wrong.
 async function act(sessionId, me, first) {
+  if (first) {
+    for (const update of extension.updates ?? []) notify('session/update', { sessionId, update });
+    for (const params of extension.waits ?? []) wait({ sessionId, ...params });
+    for (const request of extension.requests ?? []) await ask(request.method, request.params);
+    if (extension.promptError) throw Object.assign(new Error('Request failed'), extension.promptError);
+  }
   if (mode === 'quota-exhausted')
     throw Object.assign(new Error('Provider usage allowance exhausted'), { code: -32603,
       data: { _meta: { coda: { failure: { kind: 'quota_exhausted', input: 'accepted' } } } } });
