@@ -60,12 +60,15 @@ function configProblems(configOptions, where) {
   if (!Array.isArray(configOptions)) return problems;
   for (const [i, config] of configOptions.entries()) {
     if (config?.type !== 'select' || !Array.isArray(config.options)) continue;
+    const parsed = schemas.zSessionConfigSelectOptions.safeParse(config.options);
+    if (!parsed.success) continue; // ACP drops a config whose options it cannot read.
     for (const [j, option] of config.options.entries()) {
       const at = `${where}[${i}].options[${j}]`;
-      // ACP choices are flat or grouped once; extra fields on a leaf do not turn it into a group.
-      if (option?.value === undefined && Array.isArray(option?.options))
-        for (const [k, child] of option.options.entries()) check(child, `${at}.options[${k}]`);
-      else check(option, at);
+      // ACP selects a branch for the whole list; extra wire fields do not determine its shape.
+      // Keep the original values and indices, including metadata ACP may drop while parsing.
+      if ('group' in parsed.data[j]) {
+        if (Array.isArray(option.options)) for (const [k, child] of option.options.entries()) check(child, `${at}.options[${k}]`);
+      } else check(option, at);
     }
   }
   return problems;

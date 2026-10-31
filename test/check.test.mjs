@@ -264,6 +264,22 @@ describe('Agent extensions use the shared protocol diagnostics', () => {
       agentValueProblem('default.json', { default: 1 }, `${method} result.configOptions[0].options[0]._meta.coda`)));
   });
 
+  test('grouped defaults follow ACP parsing even with extra value fields', async () => {
+    const configOptions = [model([
+      { group: 'g', name: 'Group', value: null, options: [choice({ default: 'yes' })] },
+      { group: 'h', name: 'Other group', value: 'extra', options: [choice({ default: 'yes' })] },
+    ]), { ...model([{ ...choice({ default: true }), group: 'extra', options: [choice({ default: 'yes' })] }]), id: 'flat' }];
+    const opened = await run({ initialize: { agentCapabilities: { ...capabilities({}), loadSession: true } },
+      newResult: { configOptions }, loadResult: { configOptions } });
+    const updated = await run({ updates: [{ sessionUpdate: 'config_option_update', configOptions }] });
+    for (const [report, sources] of [[opened, [['handshake.new', 'session/new result'], ['handshake.load', 'session/load result']]],
+      [updated, [['update.schema', 'session/update params.update']]]]) {
+      assert.deepEqual(report.failures.map(({ rule, message }) => ({ rule, message })), sources.flatMap(([rule, where]) =>
+        [0, 1].map(i => ({ rule, message: agentValueProblem('default.json', { default: 'yes' },
+          `${where}.configOptions[0].options[${i}].options[0]._meta.coda`) }))));
+    }
+  });
+
   test('malformed remote-code parameters are diagnosed before session ownership', async () => {
     const report = await run({ requests: [{ method: '_coda/remote/code', params: {} }] });
     assert.deepEqual(report.failures.map(x => x.rule), ['request.schema']);
