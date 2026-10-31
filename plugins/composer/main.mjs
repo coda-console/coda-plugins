@@ -33,4 +33,5 @@ export function activate(coda) {
       if (session && sent > 0) await coda.tell(session.id, OFF);
     },
   });
+  coda.composerModes.register('loop', { send: ({ values }) => ({ loop: { every: values.every } }) });
 }
