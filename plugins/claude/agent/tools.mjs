@@ -39,3 +39,26 @@ export function toolCallFields(name, rawInput, content = []) {
     ...(combined.length ? { content: combined } : {}),
   };
 }
+
+// A successful SDK result is authoritative: a Write may overwrite a file, and an Edit may replace
+// many occurrences or be changed by the user. Keep previews only when no structured result is given.
+export function toolResultContent(name, content, result, failed = false) {
+  if (failed || !['Edit', 'MultiEdit', 'Write'].includes(name) || !string(result?.filePath)) return content;
+  let diffs;
+  if (result.staged === true) diffs = []; // SDK: held for review, the file is unchanged.
+  else if (name === 'Write' && string(result.content)
+    && (string(result.originalFile) || (result.type === 'create' && result.originalFile === null))) {
+    diffs = [{ type: 'diff', path: result.filePath, oldText: result.originalFile, newText: result.content }];
+  } else if (Array.isArray(result.structuredPatch)
+    && result.structuredPatch.every(hunk => Array.isArray(hunk?.lines) && hunk.lines.every(string))) {
+    // Each hunk carries both sides, including context. Do not merge distant hunks: that would
+    // invent adjacent lines and can undercount independent replacements. Ignore newline markers.
+    diffs = result.structuredPatch.map(hunk => ({ type: 'diff', path: result.filePath,
+      oldText: hunk.lines.filter(line => line.startsWith(' ') || line.startsWith('-')).map(line => line.slice(1)).join('\n'),
+      newText: hunk.lines.filter(line => line.startsWith(' ') || line.startsWith('+')).map(line => line.slice(1)).join('\n'),
+    }));
+  }
+  // An update whose original text was too large and whose patch is empty has no measurable diff;
+  // in particular, do not keep the input preview that would report it as a newly created file.
+  return diffs === undefined ? content : [...diffs, ...content.filter(block => block.type !== 'diff')];
+}

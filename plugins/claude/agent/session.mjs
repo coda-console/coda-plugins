@@ -17,7 +17,7 @@ import { chosenServices, listedModels, serviceSettings } from './providers.mjs';
 import { SessionTitle } from './titles.mjs';
 import { MODEL_EFFORT, MODES, claudeModels, configOptions, reportedModel } from './models.mjs';
 import { permissionRequest } from './permissions.mjs';
-import { toolCallFields } from './tools.mjs';
+import { toolCallFields, toolResultContent } from './tools.mjs';
 import { elicitationForm, questionForm } from './questions.mjs';
 import { ClaudeWaits } from './waits.mjs';
 import { CacheUse } from './compaction.mjs';
@@ -549,7 +549,7 @@ export class ClaudeSession {
     for (const block of m.message?.content ?? []) {
       if (block.type === 'tool_use') {
         const fields = toolCallFields(block.name, block.input);
-        this.tools.set(block.id, fields.content ?? []);
+        this.tools.set(block.id, { name: block.name, content: fields.content ?? [] });
         this.update(sessionId, { sessionUpdate: 'tool_call', toolCallId: block.id, ...fields, status: 'in_progress' });
       } else if (['text', 'thinking'].includes(block.type)) {
         const said = block.text ?? block.thinking ?? '';
@@ -565,9 +565,11 @@ export class ClaudeSession {
     for (const block of Array.isArray(m.message?.content) ? m.message.content : []) {
       if (block.type !== 'tool_result' || !this.tools.has(block.tool_use_id)) continue;
       const said = text(block.content);
+      const tool = this.tools.get(block.tool_use_id);
+      tool.content = toolResultContent(tool.name, tool.content, m.tool_use_result, block.is_error);
       this.update(parent ?? this.sessionId, { sessionUpdate: 'tool_call_update', toolCallId: block.tool_use_id, status: block.is_error ? 'failed' : 'completed',
-        // ACP content updates replace the list: keep the input's diffs alongside the result text.
-        rawOutput: m.tool_use_result ?? block.content, content: [...this.tools.get(block.tool_use_id), { type: 'content', content: { type: 'text', text: said } }] });
+        // ACP content updates replace the list: keep the latest diffs alongside the result text.
+        rawOutput: m.tool_use_result ?? block.content, content: [...tool.content, { type: 'content', content: { type: 'text', text: said } }] });
       // Claude Code says where a command it put in the background writes in the launch's result.
       const path = said.match(/Output is being written to: (\S+?\.output)\b/)?.[1];
       if (path) this.waits.outputFile(block.tool_use_id, path);

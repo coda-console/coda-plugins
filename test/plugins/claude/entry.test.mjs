@@ -237,6 +237,24 @@ test('tool result updates retain each call\'s diffs with its output, including f
   ], 'a repeated result still carries the diff');
 });
 
+test('a successful write updates the preview from SDK output and repeated text results retain the actual diff', async t => {
+  const c = await setup(t); await c.open();
+  const rawInput = { file_path: '/x', content: 'a\nc\n' };
+  const output = { type: 'update', filePath: '/x', originalFile: 'a\nb\n', content: 'a\nc\n', structuredPatch: [] };
+  const result = { type: 'tool_result', tool_use_id: 'write-update', content: 'saved' };
+  await c.emit({ type: 'assistant', message: { id: 'write', content: [{ type: 'tool_use', id: 'write-update', name: 'Write', input: rawInput }] } },
+    { type: 'user', message: { content: [result] }, tool_use_result: output });
+  const [started, ended] = c.updates().filter(u => u.toolCallId === 'write-update');
+  assert.deepEqual(started.rawInput, rawInput);
+  assert.equal(started.content[0].oldText, null, 'before the result only the input preview is known');
+  assert.equal(ended.status, 'completed');
+  assert.deepEqual(ended.rawOutput, output);
+  const actual = { type: 'diff', path: '/x', oldText: 'a\nb\n', newText: 'a\nc\n' };
+  assert.deepEqual(ended.content, [actual, { type: 'content', content: { type: 'text', text: 'saved' } }]);
+  await c.emit({ type: 'user', message: { content: [{ ...result, content: 'saved again' }] } });
+  assert.deepEqual(c.updates().at(-1).content, [actual, { type: 'content', content: { type: 'text', text: 'saved again' } }]);
+});
+
 const quotaReason = "You've hit your session limit · resets 1am (Asia/Singapore)";
 const apiError = (error, reason, fields = {}) => ({ type: 'assistant', error, ...fields,
   message: { id: 'api-error', model: '<synthetic>', content: [{ type: 'text', text: reason }] } });

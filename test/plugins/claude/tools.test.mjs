@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { toolCallFields } from '../../../plugins/claude/agent/tools.mjs';
+import { toolCallFields, toolResultContent } from '../../../plugins/claude/agent/tools.mjs';
 import { permissionRequest } from '../../../plugins/claude/agent/permissions.mjs';
 
 test('native tools have ACP kinds, including background commands, legacy names and task plans', () => {
@@ -94,4 +94,56 @@ test('permission cards include the diff and the reason, and allowing preserves t
     content: [{ type: 'diff', path: '/x', oldText: 'old', newText: 'new' }, { type: 'content', content: { type: 'text', text: 'outside cwd' } }],
   });
   assert.strictEqual(answer({ outcome: { outcome: 'selected', optionId: 'allow-once' } }).updatedInput, input);
+});
+
+test('Write completion replaces a creation preview with the actual overwritten file and accepted content', () => {
+  const preview = toolCallFields('Write', { file_path: '/x', content: 'proposed\n' }).content;
+  const text = { type: 'content', content: { type: 'text', text: 'saved' } };
+  const result = { type: 'update', filePath: '/x', originalFile: 'a\nb\n', content: 'a\nc\n', structuredPatch: [], userModified: true };
+  assert.deepEqual(toolResultContent('Write', [...preview, text], result), [
+    { type: 'diff', path: '/x', oldText: 'a\nb\n', newText: 'a\nc\n' }, text,
+  ]);
+  assert.deepEqual(toolResultContent('Write', preview, { ...result, type: 'create', originalFile: null }), [
+    { type: 'diff', path: '/x', oldText: null, newText: 'a\nc\n' },
+  ]);
+  assert.deepEqual(toolResultContent('Write', preview, { ...result, originalFile: '', content: '' }), [
+    { type: 'diff', path: '/x', oldText: '', newText: '' },
+  ]);
+});
+
+test('Edit replace_all and MultiEdit completion report every actual patch hunk, not one input replacement', () => {
+  const preview = toolCallFields('Edit', { file_path: '/x', old_string: 'before', new_string: 'proposed', replace_all: true }).content;
+  const result = { filePath: '/x', originalFile: 'before\nmiddle\nbefore', replaceAll: true, userModified: true,
+    structuredPatch: [
+      { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-before', '+accepted'] },
+      { oldStart: 3, oldLines: 1, newStart: 3, newLines: 1, lines: ['-before', '+accepted', '\\ No newline at end of file'] },
+    ] };
+  for (const name of ['Edit', 'MultiEdit']) assert.deepEqual(toolResultContent(name, preview, result), [
+    { type: 'diff', path: '/x', oldText: 'before', newText: 'accepted' },
+    { type: 'diff', path: '/x', oldText: 'before', newText: 'accepted' },
+  ]);
+  assert.deepEqual(toolResultContent('Edit', preview, { ...result, structuredPatch: [
+    { oldStart: 1, oldLines: 3, newStart: 1, newLines: 3, lines: ['-before', '+accepted', ' middle', '-before', '+accepted'] },
+  ] }), [{ type: 'diff', path: '/x', oldText: 'before\nmiddle\nbefore', newText: 'accepted\nmiddle\naccepted' }]);
+});
+
+test('empty or staged actual changes clear previews; a large overwritten file uses its patch when available', () => {
+  const preview = toolCallFields('Write', { file_path: '/x', content: 'new\n' }).content;
+  const result = { type: 'update', filePath: '/x', originalFile: null, content: 'new\n', structuredPatch: [] };
+  assert.deepEqual(toolResultContent('Write', preview, result), [], 'unknown previous contents are not a file creation');
+  assert.deepEqual(toolResultContent('Edit', preview, { filePath: '/x', structuredPatch: [] }), []);
+  assert.deepEqual(toolResultContent('Write', preview, { ...result, staged: true, originalFile: 'old\n' }), []);
+  assert.deepEqual(toolResultContent('Write', preview, { ...result, structuredPatch: [
+    { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-old', '+new'] },
+  ] }), [{ type: 'diff', path: '/x', oldText: 'old', newText: 'new' }]);
+});
+
+test('failed, unstructured or unrelated results retain the last diff without mutating it', () => {
+  const content = Object.freeze([{ type: 'diff', path: '/x', oldText: 'old', newText: 'new' }]);
+  const result = { filePath: '/x', originalFile: 'old', content: 'accepted', structuredPatch: [] };
+  assert.strictEqual(toolResultContent('Write', content, result, true), content);
+  assert.strictEqual(toolResultContent('mcp__server__Write', content, result), content);
+  for (const value of [undefined, 'saved', {}, { filePath: '/x' }, { filePath: '/x', structuredPatch: [null] }]) {
+    assert.strictEqual(toolResultContent('Write', content, value), content);
+  }
 });
