@@ -474,7 +474,8 @@ export class Adapter {
   async tool(s, { name, arguments: args = {}, turn: id }) {
     if (!READ.has(name) && !WRITE.has(name)) fail(`不允许代理工具：${name}`);
     if (!object(args)) fail('arguments 必须是对象');
-    if (name === 'new_session' && (typeof args.project !== 'string' || !args.project.trim()))
+    // An agent's link may name the project itself; Coda refuses one that does not.
+    if (name === 'new_session' && !/^\s*coda:\/\/agents\//i.test(args.agent ?? '') && (typeof args.project !== 'string' || !args.project.trim()))
       fail('new_session 必须指定目标 project；Bot 所在的空目录没有代码，请选择要修复的项目');
     this.provider(s, name);
     const local = !s.turn;

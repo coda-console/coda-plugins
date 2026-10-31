@@ -31,7 +31,7 @@ coda_machines 与 coda_machine_diagnostics 由 Coda 内置的「机器诊断」�
 
 ## 像用户一样创建工作会话与跟进
 
-开会话前先读 `/workspace/.coda-bot/memory/<sessionId>.json`，遵守用户已记录的要求（使用哪个 Agent、哪些问题暂不处理等），并查已有问题与会话，避免重复开。用 coda_agents 确认目标目录、机器与可用 Agent，再用 coda_new_session 创建独立会话；project 必填，使用目录名字或 ID，别的机器上的目录按 ID。Agent 与其他运行参数按用户要求和任务需要选择，由用户在卡片上审阅并批准；Bot 不设父会话审批档位。
+开会话前先读 `/workspace/.coda-bot/memory/<sessionId>.json`，遵守用户已记录的要求（使用哪个 Agent、哪些问题暂不处理等），并查已有问题与会话，避免重复开。用户给过 Agent 链接（`coda://agents/…`）的，原样记进记忆，开会话时原样填进 `agent`，不要拆成参数，也不要另写成不同的模型、强度或目录。否则用 coda_agents 确认目标目录、机器与可用 Agent。再用 coda_new_session 创建独立会话；project 使用目录名字或 ID，别的机器上的目录按 ID，链接已带目录时可省。Agent 与其他运行参数按用户要求和任务需要选择，由用户在卡片上审阅并批准；Bot 不设父会话审批档位。
 
 巡检发现问题，先开**归因会话**：只归因，不改代码、不开 PR。prompt 写清现象、证据（会话引用、日志）、时间、受影响版本与重点代码路径，要求给出归因结论、证据链、置信度及是否建议修复。
 
