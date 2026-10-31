@@ -1,12 +1,9 @@
-const record = value => value && typeof value === 'object' && !Array.isArray(value);
+import { agentValueProblem } from '@coda-console/protocol/agent';
 
 // Only the shared protocol establishes a category; provider codes and error text stay with the plugin.
 export function agentFailure(error) {
   const failure = error?.data?._meta?.coda?.failure;
-  if (!record(failure)) return null;
-  return failure.kind === 'quota_exhausted' ||
-    (failure.kind === 'service_unavailable' && ['accepted', 'not_accepted'].includes(failure.input) &&
-      (failure.retryAfterMs === undefined || (Number.isFinite(failure.retryAfterMs) && failure.retryAfterMs >= 0))) ? failure : null;
+  return agentValueProblem('failure.json', failure) === null ? failure : null;
 }
 
 export function agentErrorMessage(error) {

@@ -125,7 +125,7 @@ export function childSpawn(value) {
   object(value, 'spawn');
   keys(value, ['turn', 'requestId', 'agent', 'prompt', 'title', 'model', 'effort', 'mode', 'options', 'checkout', 'project']);
   check([undefined, 'shared', 'worktree'].includes(value.checkout), 'invalid_input', 'checkout 必须是 shared 或 worktree');
-  check(typeof value.agent === 'string' && AGENT_ID.test(value.agent), 'invalid_input', 'agent 须为 Agent 的 ID（agents 工具列出的）');
+  check(typeof value.agent === 'string' && AGENT_ID.test(value.agent), 'invalid_input', 'agent 须为 Agent 的 ID（agents 工具列出的），或用户给的 Agent 引用 coda://agents/…');
   const prompt = text(value.prompt, 'prompt', 100_000);
   return { turn: text(value.turn, 'turn', 100), requestId: text(value.requestId, 'requestId', 100), agent: value.agent, prompt,
     title: text(value.title ?? prompt.trim().slice(0, 80), 'title'), checkout: value.checkout ?? 'shared',
@@ -133,11 +133,11 @@ export function childSpawn(value) {
     settings: settings(Object.fromEntries(['model', 'effort', 'mode', 'options'].filter(k => value[k] !== undefined).map(k => [k, value[k]]))) };
 }
 
-// A remote client asks the user to open a root session. No checkout or parent is supplied by the agent.
+// A remote client asks the user to open a root session: in the project's own directory (`checkout` shared, the default) or
+// in a new worktree of its default branch (`worktree`). No parent is supplied by the agent.
 export function newSession(value) {
   object(value, 'new_session');
-  keys(value, ['turn', 'requestId', 'project', 'agent', 'prompt', 'title', 'model', 'effort', 'mode', 'options']);
+  keys(value, ['turn', 'requestId', 'project', 'agent', 'prompt', 'title', 'model', 'effort', 'mode', 'options', 'checkout']);
   text(value.project, 'project', 200);
-  const { checkout: _, ...spec } = childSpawn(value);
-  return spec;
+  return childSpawn(value);
 }

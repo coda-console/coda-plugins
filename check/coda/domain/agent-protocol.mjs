@@ -1,3 +1,5 @@
+import { AGENT_SCHEMAS, agentMessageProblem, agentValueProblem } from '@coda-console/protocol/agent';
+
 // What Coda says to an agent and takes from it beside the connection itself (coda-protocol docs/agent-protocol.md): the capabilities it
 // sends, session instructions, steering, the agent's own waits, and how long Coda waits on it. Part of the plugin contract
 // coda-plugins' check is given as written (scripts/plugin-contract.mjs).
@@ -33,21 +35,13 @@ export const steeringParams = (sessionId, text) => ({ sessionId, prompt: [{ type
 export const currentModel = session => session?.configOptions?.find?.(x => x?.category === 'model')?.currentValue ?? session?.models?.currentModelId;
 
 // What an agent may say of a wait of its own (「_coda/wait」); anything else is dropped unread.
-const record = value => value && typeof value === 'object' && !Array.isArray(value);
-export const WAIT_STATES = new Set(['waiting', 'handling', 'done', 'failed', 'cancelled']);
-const fits = (value, limit) => value === undefined || (typeof value === 'string' && value.length <= limit);
-export const validWait = p => record(p) && typeof p.sessionId === 'string' && p.sessionId.length > 0 && p.sessionId.length <= 200
-  && typeof p.waitId === 'string' && p.waitId.length > 0 && p.waitId.length <= 200 && WAIT_STATES.has(p.state)
-  && fits(p.kind, 50) && fits(p.title, 500) && fits(p.detail, 4000) && fits(p.childSessionId, 200) && fits(p.model, 200) && fits(p.outputFile, 4096)
-  && fits(p.toolCallId, 200)
-  && [p.stoppable, p.recurring].every(flag => flag === undefined || typeof flag === 'boolean')
-  && (p.at === undefined || (typeof p.at === 'string' && Number.isFinite(Date.parse(p.at))));
+export const WAIT_STATES = new Set(AGENT_SCHEMAS['wait.json'].properties.state.enum);
+export const validWait = p => agentMessageProblem('_coda/wait', p) === null;
 // What the agent's own check of a tool call said before running it (「工具调用的审核」): `_meta.coda.review` of the call's
 // `tool_call` or `tool_call_update`, as Coda keeps it; null for anything else. A risk it does not know is left out.
-const REVIEW_STATES = new Set(['reviewing', 'approved', 'denied']);
-const RISKS = new Set(['low', 'medium', 'high', 'critical']);
-export const toolReview = r => record(r) && REVIEW_STATES.has(r.state) && fits(r.reason, 4000)
-  ? { state: r.state, ...(r.reason ? { reason: r.reason } : {}), ...(RISKS.has(r.risk) ? { risk: r.risk } : {}) } : null;
+export const toolReview = r => agentValueProblem('review.json', r) === null
+  ? { state: r.state, ...(r.reason ? { reason: r.reason } : {}),
+    ...(agentValueProblem('review.json#/$defs/risk', r.risk) === null ? { risk: r.risk } : {}) } : null;
 
 // Opening a session (initialize, then session/new or session/load) may take this long.
 export const OPEN_LIMIT = 60_000;
