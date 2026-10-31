@@ -1,8 +1,8 @@
 // The Ultra plugin's module (README.md): the composer mode's hooks, in a session's composer or a new task's. Entering offers
 // the templates the setting lists; choosing one fills the list, changing the list makes it the user's own. The agent is
-// told it is on with the first message sent in it and whenever the parameters changed since the last one, reminded every
-// ten messages, and told it is off as the mode is left. What goes with a message Coda tells only once that message is taken.
-import { CUSTOM, OFF, REMIND_EVERY, STILL_ON, on, templateName, templateValue, templates, withTemplates } from './ultra.mjs';
+// told it is on with the first message sent in it and whenever the parameters changed since the last one, reminded with
+// each subsequent message, and told it is off as the mode is left. What goes with a message Coda tells only once that message is taken.
+import { CUSTOM, OFF, STILL_ON, on, templateName, templateValue, templates, withTemplates } from './ultra.mjs';
 
 export function activate(coda) {
   const read = async projectId => templates(JSON.parse((await coda.environment(projectId)).CODA_PLUGIN_SETTINGS ?? '{}')['ultra.templates']);
@@ -20,7 +20,7 @@ export function activate(coda) {
     },
     send({ values, sent, changedSinceSent }) {
       if (sent === 0 || changedSinceSent) return { tell: on(values.subagents ?? []) };
-      return sent % REMIND_EVERY === 0 ? { tell: STILL_ON } : null;
+      return { tell: STILL_ON };
     },
     // Left in a new task's composer nothing was sent: there is no session, nor anything to take back.
     async exit({ session, sent }) {
