@@ -67,7 +67,7 @@ export class Adapter {
       options: [{ value: '', name: '请选择 Bot（先发送 /login 登录）' }, ...this.bots.map(bot => ({ value: bot.agentId, name: `${bot.name || bot.agentId} (${bot.agentId})` })),
         ...(!this.bots.some(b => b.agentId === s.saved.bot) && s.saved.bot ? [{ value: s.saved.bot, name: s.saved.bot }] : [])] }];
   }
-  wait(s, state) { if (this.waits) this.rpc.notify('_coda/wait', { sessionId: s.id, waitId: s.subscriptionId ?? 'grok-native', kind: 'task', title: 'Grok 主会话订阅', state }); }
+  wait(s, state) { if (this.waits) this.rpc.notify('_coda/wait', { sessionId: s.id, waitId: s.subscriptionId ?? 'grok-native', kind: 'observation', title: 'Grok 主会话观测', state }); }
   async refreshBots() {
     if (!this.auth.client) return;
     const result = await this.auth.client.request('ListGrokBotAgents', {});
@@ -466,7 +466,7 @@ export class Adapter {
       if (typeof ticket !== 'string' || !ticket || s.turn !== turn) fail('没有有效的 Coda turn 票据');
       forwarded = { ...args, turn: ticket, requestId: requestId(turn, name, args) };
     }
-    const mayWaitForApproval = name === 'send';
+    const mayWaitForApproval = name === 'send' && args.replyTo === undefined;
     // Approval calls outlive a Coda turn and must not inherit its abort signal
     // or the MCP client's default 60-second timeout (null disables both).
     return this.trace(s, name, args, () => this.provider(s, name).call(name, forwarded, mayWaitForApproval ? null : signal),

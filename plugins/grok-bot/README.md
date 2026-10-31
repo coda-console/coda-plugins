@@ -28,7 +28,9 @@ Coda 的 `systemPrompt` 接受格式校验，但不发送给 Grok、不保存，
 
 订阅正常到期、游标重置后静默重连；暂时失败只写日志并退避。连续 3 次失败才在会话提示一次，认证失效立即提示，恢复后提示一次。Routine 刷新采用相同策略。
 
-主会话订阅用 `_coda/wait` 保持活动；自主运行用 handling/waiting 切换轮次。Coda 的未结束等待项会阻止 Agent 空闲回收；退出、断网或归档时不镜像，重新加载后按游标补齐。Grok 的 Routine 执行不依赖 Coda 在线。
+插件声明 `lifecycle: "external"`，主会话订阅和 Routine 用 `_coda/wait kind: "observation"` 保持观测，Coda 显示呼吸状态；自主运行用 handling/waiting 切换观测到的轮次。Coda 的未结束等待项会阻止 Agent 空闲回收；退出、断网或归档时不镜像，重新加载后按游标补齐。Grok 的 Routine 执行不依赖 Coda 在线。Coda 不根据这些轮次建立自动回复权，也不把巡检文字自动交给委派方。
+
+其他会话通过 `send` 委派时，消息带原请求编号和回传地址。Bot 按任务约定调用 `coda_send`，用 `replyTo` 指定原请求编号并发送结果；`final` 默认 `true`，`false` 用于约定的进展或需要对方处理的问题。回传会唤醒原会话，不再建立反向等待。升级插件后需同步远端的 `coda-bot.mjs` 与本技能，让 Bot 的工具声明包含回传参数。
 
 ## Coda 数据与授权工具（可选）
 

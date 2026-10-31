@@ -35,7 +35,7 @@ export class RoutineWatch {
     return this.flight;
   }
   activity(run, state, title) {
-    this.notify({ waitId: `grok-routine:${this.bot}:${run.id}`, kind: 'task', state, title });
+    this.notify({ waitId: `grok-routine:${this.bot}:${run.id}`, kind: 'observation', state, title });
   }
   async refresh() {
     const signal = AbortSignal.any([this.controller.signal, AbortSignal.timeout(30_000)]);

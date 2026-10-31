@@ -168,6 +168,12 @@ test('Coda tools preserve whitelist, routing, authorization ticket and stable re
   await h.remote('tool', { name: 'new_session', arguments: { prompt: 'fix', agent: 'codex', project: 'code' } });
   const writes = h.calls.filter(c => c.name === 'new_session');
   assert.equal(writes[0].args.turn, 'coda-ticket'); assert.equal(writes[0].args.requestId, writes[1].args.requestId);
+  const report = { childId: 'requester', replyTo: 'inspection', prompt: 'result', final: false };
+  await h.remote('tool', { name: 'send', arguments: report });
+  assert.deepEqual(Object.fromEntries(Object.keys(report).map(k => [k, h.calls.at(-1).args[k]])), report);
+  assert.equal(h.events.some(e => e.params.title === 'Coda · send 等待结果'), false);
+  assert.ok(h.events.some(e => e.method === '_coda/wait' && e.params.kind === 'observation' && e.params.title === 'Grok 主会话观测'));
+
   await reply(h, run.id); await h.emit(settle(run.id)); await h.emit(heartbeat); await run.done;
 });
 
@@ -268,6 +274,7 @@ test('Routine records follow executor/run IDs, stop polling at completion, and i
   assert.equal(h.s.turn, null, 'a run record does not create an empty conversation turn');
   assert.equal(h.s.saved.runs[run.id].executorId, h.native.subagents[0].subagentId);
   assert.deepEqual(routineEvents(h).map(e => e.state), ['waiting']);
+  assert.ok(routineEvents(h).every(e => e.kind === 'observation'));
   run.status = 'ok'; run.finishedAt = run.startedAt + 7000;
   h.native.automations = automation([run]); h.native.subagents = [];
   h.clock.advance(5000); await h.s.routines.flight;
