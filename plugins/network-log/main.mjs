@@ -1,5 +1,5 @@
 // The 网络记录 plugin's module in Coda's plugin host (Coda's docs/plugins.md「插件宿主」). Loaded as the backend starts
-// (`activationEvents: ["onStartupFinished"]`), it records with no page open. A page opened is given what the summary has
+// (`activationEvents: ["onStartupFinished"]`), it watches the opt-in switch with no page open. A page opened gets the history
 // as collections — `hangs`, `targets` and `status` — and each change as the recorder finds more.
 import { join } from 'node:path';
 import { Recorder } from './lib/recorder.mjs';
@@ -20,7 +20,7 @@ export function activate(coda) {
   });
   const started = recorder;
   // What it read of the log before it records: given whole to the pages opened meanwhile.
-  recorder.start().then(() => { if (recorder === started) for (const page of pages) fill(page); }, e => console.error('网络记录没有启动：', e?.message ?? e));
+  return recorder.start().then(() => { if (recorder === started) for (const page of pages) fill(page); }, e => console.error('网络记录没有启动：', e?.message ?? e));
 }
 
 export function deactivate() {
@@ -41,5 +41,6 @@ function put(page, { collection, id, object }) {
 // The settings as they are now.
 async function settingsOf(coda) {
   const settings = JSON.parse((await coda.environment()).CODA_PLUGIN_SETTINGS || '{}');
-  return { targets: settings['network-log.targets'] ?? {}, hangSeconds: settings['network-log.hangSeconds'] ?? 3, mihomo: settings['network-log.mihomo'] ?? '' };
+  return { enabled: settings['network-log.enabled'] === true, targets: settings['network-log.targets'] ?? {},
+    hangSeconds: settings['network-log.hangSeconds'] ?? 3, mihomo: settings['network-log.mihomo'] ?? '' };
 }
