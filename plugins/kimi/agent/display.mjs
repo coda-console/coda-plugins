@@ -1,7 +1,7 @@
 // Compact labels belong to the adapter. Keep native IDs, full names, groups and all unrelated metadata intact.
 const modes = { default: '审批', plan: '规划', auto: '自动审批', yolo: '全部放行' };
 const label = (value, category, id = value.value ?? value.id) => {
-  const shortName = category === 'mode' ? modes[id]
+  const shortName = category === 'mode' ? (Object.hasOwn(modes, id) ? modes[id] : undefined)
     : category === 'thought_level' ? value.name?.replace(/^Thinking /, '')
     : category === 'model' ? value.name?.replace(/Highspeed 2x Usage Cost$/, '高速·2×用量').replace(/Highspeed$/, '高速') : undefined;
   return shortName ? { ...value, _meta: { ...value._meta, coda: { ...value._meta?.coda, shortName } } } : value;
