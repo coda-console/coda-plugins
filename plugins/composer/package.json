@@ -2,8 +2,8 @@
   "name": "@coda-console/composer",
   "id": "composer",
   "displayName": "输入框模式",
-  "description": "输入框的四种模式：交接到新会话、创建子会话、打 ! 执行命令，以及 Ultra 协调模式。Ultra 的主 Agent 负责决策、调度和验收，非微小任务交给 Coda 子会话执行。",
-  "version": "2.0.0",
+  "description": "输入框的五种模式：交接到新会话、创建子会话、打 ! 执行命令、Ultra 协调模式，以及按周期重复任务的循环模式。Ultra 的主 Agent 负责决策、调度和验收，非微小任务交给 Coda 子会话执行。",
+  "version": "2.1.0",
   "categories": [
     "工作流程"
   ],
@@ -152,6 +152,53 @@
                   "who"
                 ]
               }
+            }
+          }
+        }
+      },
+      {
+        "id": "loop",
+        "title": "循环",
+        "icon": "clock.arrow.2.circlepath",
+        "hint": "按周期把同一句话再发给 Agent，每轮做完才开始计时，7 天后自动结束",
+        "placeholder": "每轮要做什么？",
+        "sendLabel": "开始循环",
+        "agent": "session",
+        "in": [
+          "session"
+        ],
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "every": {
+              "title": "周期",
+              "type": "string",
+              "format": "duration",
+              "enum": [
+                "PT5M",
+                "PT10M",
+                "PT15M",
+                "PT30M",
+                "PT1H",
+                "PT2H",
+                "PT3H",
+                "PT6H",
+                "PT12H",
+                "P1D"
+              ],
+              "enumItemLabels": [
+                "5 分钟",
+                "10 分钟",
+                "15 分钟",
+                "30 分钟",
+                "1 小时",
+                "2 小时",
+                "3 小时",
+                "6 小时",
+                "12 小时",
+                "1 天"
+              ],
+              "default": "PT30M"
             }
           }
         }

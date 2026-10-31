@@ -2,6 +2,8 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { checkPlugin } from '../../../check/index.mjs';
 import { activate } from '../../../plugins/composer/main.mjs';
 
 const manifest = JSON.parse(readFileSync(new URL('../../../plugins/composer/package.json', import.meta.url), 'utf8'));
@@ -14,9 +16,9 @@ function plugin() {
   return hooks;
 }
 
-test('清单声明的四个模式都有发送回调', () => {
+test('清单声明的五个模式都有发送回调', () => {
   const hooks = plugin();
-  assert.deepEqual(manifest.contributes.composerModes.map(mode => mode.id), ['handoff', 'subagent', 'shell', 'ultra']);
+  assert.deepEqual(manifest.contributes.composerModes.map(mode => mode.id), ['handoff', 'subagent', 'shell', 'ultra', 'loop']);
   assert.deepEqual([...hooks.keys()], manifest.contributes.composerModes.map(mode => mode.id));
   for (const callbacks of hooks.values()) assert.equal(typeof callbacks.send, 'function');
 });
@@ -42,4 +44,25 @@ test('命令仍由 ! 触发，在会话和新任务中使用，回调不改写�
   for (const session of [null, { id: 's1' }]) {
     assert.deepEqual(plugin().get('shell').send({ session, text: 'pwd', values: {} }), {});
   }
+});
+
+test('循环发送所选周期，交由 Coda 建立循环并退出模式', () => {
+  const loop = plugin().get('loop');
+  for (const every of ['PT5M', 'PT10M', 'PT15M', 'PT30M', 'PT1H', 'PT2H', 'PT3H', 'PT6H', 'PT12H', 'P1D']) {
+    assert.deepEqual(loop.send({ values: { every } }), { loop: { every } });
+  }
+});
+
+test('含循环的清单通过 plugin-check，保留会话限制、时长格式和周期档位', async () => {
+  const { report, plugin: checked } = await checkPlugin(fileURLToPath(new URL('../../../plugins/composer', import.meta.url)), { manifestOnly: true });
+  assert.deepEqual(report.failures, []);
+  const loop = checked.plugin.composerModes.find(mode => mode.id === 'loop');
+  assert.equal(loop.agent, 'session');
+  assert.deepEqual(loop.in, ['session']);
+  const every = loop.parameters.properties.every;
+  assert.equal(every.type, 'string');
+  assert.equal(every.format, 'duration');
+  assert.equal(every.default, 'PT30M');
+  assert.deepEqual(every.enum, ['PT5M', 'PT10M', 'PT15M', 'PT30M', 'PT1H', 'PT2H', 'PT3H', 'PT6H', 'PT12H', 'P1D']);
+  assert.deepEqual(every.enumItemLabels, ['5 分钟', '10 分钟', '15 分钟', '30 分钟', '1 小时', '2 小时', '3 小时', '6 小时', '12 小时', '1 天']);
 });
