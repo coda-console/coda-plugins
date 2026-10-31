@@ -1,6 +1,6 @@
 import { PassThrough } from 'node:stream';
 import { createServer } from 'node:http';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -32,9 +32,14 @@ export function temporary(t) {
   return root;
 }
 export function fakeClock() {
-  const timers = new Map();
-  let now = 0;
-  return { setTimeout(fn, ms) { const id = Symbol(); timers.set(id, { fn, at: now + ms }); return id; }, clearTimeout(id) { timers.delete(id); },
+  const timers = new Map(), listeners = [];
+  let now = Date.now();
+  return { now: () => now, untilTimer(ms) {
+    if ([...timers.values()].some(t => t.ms === ms)) return Promise.resolve();
+    return new Promise(resolve => listeners.push({ ms, resolve }));
+  }, setTimeout(fn, ms) { const id = Symbol(); timers.set(id, { fn, ms, at: now + ms });
+      for (const listener of listeners.splice(0)) if (listener.ms === ms) listener.resolve(); else listeners.push(listener);
+      return id; }, clearTimeout(id) { timers.delete(id); },
     advance(ms) {
       now += ms;
       for (const [id, timer] of [...timers]) if (timer.at <= now && timers.delete(id)) timer.fn();
@@ -44,10 +49,7 @@ export function fakeClock() {
 export async function harness(t, { settings = {}, root = temporary(t), diagnostics = true, capabilities = { waits: {}, remote: {} }, ...options } = {}) {
   const events = [], logs = [], messages = mailbox();
   const toAgent = new PassThrough(), fromAgent = new PassThrough();
-  const keyPath = join(root, 'webhook-key');
-  writeFileSync(keyPath, 'secret-for-fixture');
-  const env = { CODA_PLUGIN_STATE: root, CODA_PLUGIN_SETTINGS: JSON.stringify(settings),
-    CODA_PLUGIN_SECRETS: JSON.stringify({ 'grok-bot.bots': { inspector: { key: keyPath } } }) };
+  const env = { CODA_PLUGIN_STATE: root, CODA_PLUGIN_SETTINGS: JSON.stringify(settings) };
   const client = new Rpc(fromAgent, toAgent, async (method, params) => {
     events.push({ method, params });
     messages.push({ method, params });

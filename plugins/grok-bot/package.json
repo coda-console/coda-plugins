@@ -2,44 +2,45 @@
   "name": "@coda-console/grok-bot",
   "id": "grok-bot",
   "displayName": "Grok Bot",
-  "description": "把 Grok 云端 Bot 接到 Coda 的长期会话：Webhook 消息、定时巡检与用户审批。",
-  "version": "0.1.7",
+  "description": "通过 Grok Bot 原生主会话接入 Coda，镜像回复与 Routine 运行记录。",
+  "version": "0.2.0",
   "type": "module",
-  "engines": { "node": ">=24" },
-  "categories": ["Agent"],
+  "engines": {
+    "node": ">=24"
+  },
+  "categories": [
+    "Agent"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/coda-console/coda-plugins.git",
     "directory": "plugins/grok-bot"
   },
-  "publishConfig": { "access": "public" },
-  "files": ["agent", "remote", "icons"],
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "agent",
+    "remote",
+    "icons"
+  ],
   "contributes": {
-    "agents": [{
-      "id": "grok-bot",
-      "displayName": "Grok Bot",
-      "icon": { "light": "icons/grok.pdf", "template": true },
-      "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/agent/entry.mjs\"",
-      "setupHint": "需要支持远端 Agent 入口的 Coda。先发一条消息获取绑定说明，再配置 Bot 的 Routine Webhook。"
-    }],
+    "agents": [
+      {
+        "id": "grok-bot",
+        "displayName": "Grok Bot",
+        "icon": {
+          "light": "icons/grok.pdf",
+          "template": true
+        },
+        "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/agent/entry.mjs\"",
+        "setupHint": "发送 /login 完成官方登录，选择 Bot；发送 /bind 安装可选 Coda 数据工具。手机登录可能需要点 Continue。"
+      }
+    ],
     "configuration": {
       "title": "Grok Bot",
       "properties": {
-        "grok-bot.bots": {
-          "title": "Bots",
-          "description": "一行一个 Bot，行名为 Bot 名；填 Webhook Routine 地址与 Bearer key。会话中选择对应的 Bot。",
-          "type": "object",
-          "default": {},
-          "additionalProperties": {
-            "type": "object",
-            "properties": {
-              "webhook": { "title": "Webhook 地址", "type": "string" },
-              "key": { "title": "Bearer key", "type": "string", "writeOnly": true }
-            },
-            "required": ["webhook"]
-          }
-        },
         "grok-bot.telemetry": {
           "title": "遥测看板地址",
           "description": "可选的遥测看板 HTTP(S) 基地址。未配置时遥测工具明确报错。",

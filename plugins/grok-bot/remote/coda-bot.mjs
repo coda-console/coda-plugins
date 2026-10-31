@@ -12,17 +12,10 @@ const exec = promisify(execFile);
 export const HOME = '/workspace/.coda-bot';
 const schema = (properties, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
 const string = description => ({ type: 'string', description });
-const turn = string('Webhook 的 turn；主动 say 返回 turn 后沿用它。过期轮次不得省略 turn 重试。');
 const anyObject = { type: 'object', additionalProperties: true };
 const proxy = (name, description, properties = {}, required = []) => ({ name: `coda_${name}`, description,
-  inputSchema: schema({ ...properties, turn }, required), method: 'tool', tool: name });
+  inputSchema: schema(properties, required), method: 'tool', tool: name });
 export const TOOLS = [
-  { name: 'coda_input', description: '每次收到 Webhook 后先调用：用其中的 turn 获取本轮完整正文、kind 和当前 instructions；先用 instructions 替换此前会话指令（为空也替换），再处理正文。preview 只是预览。输入保留到下一轮开始，旧 turn 不可读取。',
-    inputSchema: schema({ turn }, ['turn']), method: 'input' },
-  { name: 'coda_say', description: '向这个 Coda 会话汇报。处理 Webhook 必须带 turn；巡检发现问题才首次省略 turn，开启自主轮次，记下返回的 turn。没问题不调用。',
-    inputSchema: schema({ text: string('给用户看的简明正文'), turn }, ['text']), method: 'say' },
-  { name: 'coda_done', description: '本轮的最后一步：工具返回（含「已提交」回执）后调用，结束回复；收到回执无需继续等审批。Webhook 与自主轮次都必须收尾；轮次已结束时不要重试说话。',
-    inputSchema: schema({ turn }), method: 'done' },
   proxy('machines', '读取空间各机器的在线、版本、更新和运行告警，不开启轮次。'),
   proxy('machine_diagnostics', '读取指定机器的网络/客户端性能诊断。network 的 from/to 选择 Unix 毫秒时间范围的分钟样本（最多一天），否则 days/limit/client/verdict 筛选客户端探测；client-performance 只支持 days。',
     { machine: string('机器 ID 或唯一名字（来自 coda_machines）'), kind: { type: 'string', enum: ['network', 'client-performance'] },
@@ -33,7 +26,7 @@ export const TOOLS = [
       client: string('网络客户端 ID：ios:<ID> 或 macos:<ID>'),
       verdict: { type: 'string', enum: ['ok', 'offline', 'internet_unreachable', 'server_unreachable', 'service_unavailable', 'ssh_failed', 'slow_network', 'slow_server'] } }, ['machine', 'kind']),
   { name: 'coda_telemetry', description: 'GET 已配置看板的 /api/ JSON。常用 /api/overview、/api/installations/<id>、/api/hangs/<id>、/api/events、/api/tags；query 为过滤参数。',
-    inputSchema: schema({ path: string('/api/ 开头的只读路径'), query: anyObject, turn }, ['path']), method: 'telemetry' },
+    inputSchema: schema({ path: string('/api/ 开头的只读路径'), query: anyObject }, ['path']), method: 'telemetry' },
   proxy('read_thread', '读取会话消息与工具摘要；完整工具结果用 coda_read_tool_call。', { reference: string('会话 ID 或 coda://threads/ 地址'), before: { type: 'integer' }, limit: { type: 'integer' }, historyVersion: { type: 'integer' }, tools: { type: 'boolean' } }, ['reference']),
   proxy('read_tool_call', '读取会话的一次工具调用及完整结果。', { reference: string('工具条目引用或 ID'), offset: { type: 'integer' }, maxBytes: { type: 'integer' } }, ['reference']),
   proxy('agents', '列出可用 Agent、模型及目录，用于创建独立会话。', { project: string('项目名称或 ID') }),
@@ -42,7 +35,7 @@ export const TOOLS = [
   proxy('workflow_list', '列出项目的工作流程。', { project: string('项目名称或 ID') }),
   proxy('new_session', '像用户一样在目标目录开一个独立会话，每次要用户在 Coda 卡片上批准；不是你的子会话。立即返回请用户批准的回执，只会收到已开出/被拒绝/未能开出通知，工作结果不会推给你；记下会话引用，之后用 coda_read_thread 跟进，不要重复开同一任务。任务写清证据、重点代码路径、验收方式、按仓库惯例开 PR 并走完 PR 流程直到评审通过（含检查、交叉评审和自动评审评论）。GitHub 只读限制仅约束 Bot 自己，不要转述进任务或限制会话走 PR 流程。',
     { project: string('必填：目标目录名字或 ID；别的机器上的目录按 ID'), agent: string('Agent ID，默认选择 codex'), prompt: string('证据、重点代码路径、验收方式；按仓库惯例提交、开 PR 并走 PR 流程直到评审通过'), title: string('会话标题'), model: string('模型'), effort: string('推理强度'), mode: string('独立会话的审批档位，codex 默认选择 agent；用户在卡片上批准'), options: anyObject }, ['project', 'agent', 'prompt']),
-  proxy('send', '给已有会话发消息，每次由 Coda 授权卡片批准。可能先返回「已提交」；不要重试或轮询，无其他工作就 done。', { childId: string('目标会话 ID 或引用（沿用 Coda 参数名，不表示子会话）'), prompt: string('消息正文') }, ['childId', 'prompt']),
+  proxy('send', '给已有会话发消息，每次由 Coda 授权卡片批准。可能先返回「已提交」；不要重试或轮询。', { childId: string('目标会话 ID 或引用（沿用 Coda 参数名，不表示子会话）'), prompt: string('消息正文') }, ['childId', 'prompt']),
 ];
 
 async function jsonPost(address, path, body, token, fetcher = fetch) {
@@ -76,7 +69,7 @@ export async function bind(address, code, { home = HOME, fetcher = fetch } = {})
     const temporary = join(home, `config.${randomUUID()}.tmp`);
     await writeFile(temporary, `${JSON.stringify(saved, null, 2)}\n`, { mode: 0o600 });
     await rename(temporary, join(home, 'config.json'));
-    return { sessionId: result.sessionId, instructions: result.instructions, message: '已绑定；token 已保存，未打印。' };
+    return { sessionId: result.sessionId, message: '已绑定；token 已保存，未打印。' };
   } finally { await lock.close(); await rm(join(home, 'config.lock')); }
 }
 export async function call(method, params, { home = HOME, session, fetcher = fetch } = {}) {
@@ -194,8 +187,7 @@ export function serveMcp({ input = process.stdin, output = process.stdout, ensur
       const args = params.arguments ?? {};
       if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('arguments 必须是对象');
       for (const key of tool.inputSchema.required) if (!(key in args)) throw new Error(`缺少参数 ${key}`);
-      const { turn: turnId, ...rest } = args;
-      const result = await invoke(tool.method, tool.tool ? { name: tool.tool, arguments: rest, ...(turnId === undefined ? {} : { turn: turnId }) } : args);
+      const result = await invoke(tool.method, tool.tool ? { name: tool.tool, arguments: args } : args);
       // MCP tool results from Coda retain their content and isError flag.
       return tool.tool && Array.isArray(result?.content) ? result : { content: [{ type: 'text', text: JSON.stringify(result) }] };
     } catch (error) { return { isError: true, content: [{ type: 'text', text: error.message }] }; }

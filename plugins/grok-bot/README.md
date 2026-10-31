@@ -1,76 +1,66 @@
 # Grok Bot
 
-让运行在 xAI 云电脑上的 Grok Bot 作为有主体性的客户端，拥有 Coda 中长期保留的会话；它像用户一样创建独立工作会话并跟进。插件与 Agent ID 都是 `grok-bot`，与已有的 Grok CLI 插件 `grok` 分开。
+把 xAI 云端 Grok Bot 的**原生主会话**接到 Coda。Coda 消息原样发送；回复、运行状态、活动摘要和选择卡片自动镜像，不需要 Bot 调用专门的汇报工具。定时任务仍由 Grok Routine 执行。与 Grok CLI 插件 `grok` 无关，本插件与 Agent ID 均为 `grok-bot`。
 
-## 前提与安装
+## 安装与登录
 
-依赖 Coda 仓库的[远端 Agent 入口 #2006](https://github.com/coda-console/coda/pull/2006)：远端能力协商、绑定码、HTTP 入口与 `_coda/remote` 转发；[遥测 JSON 接口 #2004](https://github.com/coda-console/coda/pull/2004) 与[机器诊断工具 #2003](https://github.com/coda-console/coda/pull/2003) 配套提供观测数据，诊断工具由不默认安装的 Coda 内置插件「机器诊断」提供，MCP 服务器名为 `diagnostics`；需要在 Coda 里安装并为 Bot 所在目录启用。本插件可独立通过握手检查，旧版 Coda 发消息时会提示升级。
+1. 在 Coda 安装 Grok Bot，在空目录（例如 Bot）新建 Grok Bot 会话。
+2. 发送 `/login`，打开会话中的官方登录链接完成账号登录。手机可能停在 **Completing sign-in**，请再点 **Continue**。适配器会轮询并更新 Bot 列表。
+3. 在「这是哪个 Bot」按名称或 ID 选择。一个 Bot 对应一个 Coda 会话，避免重复镜像。
+4. 正常发送消息。Grok 客户端里的主会话消息，以及 Routine 结束后主 Agent 自然发送的结论，都会作为 Coda 自主轮次呈现。
 
-在 Coda 从仓库 `https://github.com/coda-console/coda-plugins.git` 安装 `plugins/grok-bot`；发布后也可安装 `@coda-console/grok-bot`。
-创建一个名为「Bot」的空目录，添加到 Coda，每个 Bot 在其中建立一个 Grok Bot 会话。Coda 运行机需要 Node 24（使用 Coda 自带 Node）；云电脑脚本需要 Node 22 或以上。
+凭据保存在 `CODA_PLUGIN_STATE/native-auth.json`，权限 0600；不读取桌面客户端凭据库。收到认证拒绝时，用本插件登录所得的 refreshToken 尝试官方 OAuth 续期并保存轮换凭据；没有 refreshToken 或续期失败时提示 `/login` 重新登录。续期仅用假服务端测试，尚未实测真实 token 到期。配置项探测不会自动登录，也不为未选择 Bot 的会话留下状态文件。
 
-1. 给会话发消息，取得十分钟有效的绑定码和可直接贴给 Grok Bot 的安装说明。入口地址为空时先在 Coda 配好远端入口，再取新码。
-2. Bot 下载 `remote/coda-bot.mjs` 到 `/workspace/.coda-bot/coda-bot.mjs`，运行 `node coda-bot.mjs net`，按需完成 Tailscale 登录，然后 `node coda-bot.mjs bind <address> <code>`。后端入口需在云电脑可达的 tailnet 中。
-3. 在 Bot 设置中添加自定义 MCP 服务，命令 `node /workspace/.coda-bot/coda-bot.mjs mcp`；读取并安装同目录的 `remote/SKILL.md`。
-4. 可选：在 Grok Bot 的应用里连接 GitHub。巡检定位问题时，Skill 会用它读 coda、coda-state、coda-plugins 的代码并在汇报里写明文件与行号；Skill 只让它读，需要改代码时经 Coda 卡片批准后创建独立工作会话，由该会话的 Agent 按仓库惯例提交、开 PR 并完成评审。
-5. 建两个 Routine：Webhook 触发处理 Coda 消息；定时巡检按 Skill 调只读工具，没发现问题不说话。
-6. 把 Webhook 地址与 Bearer key 填到插件设置 `grok-bot.bots` 的同一行，行名为 Bot 名，key 是 writeOnly 密文。会话选择「这是哪个 Bot」。key 需要传递时使用 Grok 密钥卡片，不贴聊天。设置变更后重开会话，让进程读到新的设置环境。
+Coda 的 `systemPrompt` 接受格式校验，但不发送给 Grok、不保存，也不拼进用户消息。Bot 的设定和 Skill 留在 Grok，避免改变原生会话的设定与截断用户正文；Coda 工具的授权由后端实施。
 
-同账号的 Bot 共用电脑。`config.json` 保存多会话绑定；多个绑定时每个 MCP 命令必须追加自己的 `sessionId`，例如 `node /workspace/.coda-bot/coda-bot.mjs mcp <sessionId>`；不指定时明确报错，绝不任选一个。重新 bind 同一会话会撤销旧 token，并原子更新对应记录。文件权限 0600，目录 0700。切换到另一个已命名 Bot 后需重新绑定。
-已绑定会话可发送 `/bind` 获取新绑定码，例如云端配置丢失后重新接入。
+## 设置与运行记录
 
-脚本与 Skill 的默认下载地址是本仓库 main 的 GitHub raw URL；草稿 PR 验证时改成这个 PR 的提交 SHA，合并前 main 没有这些文件。新 npm 包首次发布须按仓库 README 的 bootstrap/Trusted Publishing 步骤配置，由维护者执行。
-
-升级到 0.1.5 时，已绑定 Bot 也须更新云电脑上的 `coda-bot.mjs` 与 Skill，并重启 MCP 服务以切换到 `coda_new_session`；旧的 `coda_spawn`、`coda_cancel` 已删除。只更新适配器会让旧工具调用明确失败。更新后的 coda_input 同时返回当前 instructions，Bot 每次先应用它再处理正文。
-
-## 设置与生命周期
-
-创建工作需要 Coda 内核提供 `new_session` MCP 工具（仅向声明 `_meta.coda.remote` 的会话提供）。缺失时适配器如实报 `new_session 不可用`，不回退到 spawn；只读巡检仍可用。安装前请确认 Coda 版本支持该工具。
-
-工作会话是独立根会话。用 `coda_new_session` 明确指定 project、agent、prompt，可选 model、effort、mode、options、title；其他机器上的目录使用 ID。Skill 默认选择 Codex（`agent: "codex", mode: "agent"`），用户在卡片上批准。Bot 会话不再提供「派出的 Agent」档位，独立会话的 mode 直接随创建请求提交。
-
-| 设置 | 作用 |
+| 设置 | 含义 |
 | --- | --- |
-| `grok-bot.bots` | Bot 名到 `{webhook, key}` 的表格；key 经 `CODA_PLUGIN_SECRETS` 中的文件路径读取 |
-| `grok-bot.telemetry` | 看板 HTTP(S) 基地址，无默认值；只允许 GET `/api/` 路径，不跟随重定向 |
-| `grok-bot.turnTimeout` | 默认 `PT30M`；从消息开始或自主轮次开始计时，包含 Webhook、审批与工具等待 |
+| `grok-bot.telemetry` | 可选看板基地址，只能读取其 `/api/` 路径 |
+| `grok-bot.turnTimeout` | 默认 `PT30M`，Coda 等待一轮的上限；超时不自动重发，云端未必停止 |
 
-仅在绑定或选择、切换 Bot 时，将 Bot 选择与绑定状态写入 `CODA_PLUGIN_STATE`；创建和恢复会话不写文件，读取模型和配置项的探测不会留下状态文件。恢复没有状态文件的会话时按未绑定处理。会话指令只保留在内存，由 Coda 在 session/new、session/load 时提供，不落盘。初始化声明 `loadSession`、`sessionCapabilities.systemPrompt`、`_meta.coda.waits` 和 `_meta.coda.remote`。
-会话指令经 `hello`（绑定时）及每次 `coda_input` 的 instructions 字段返回；Bot 应应用当前指令，替换之前保存的版本（包括清空），无需重新绑定。响应丢失、重新绑定或切换 Bot 都不会清空指令，不再随 Webhook 发送。
-消息以 `{source:"coda", sessionId, turn, kind, preview}` POST 到 Routine。preview 只含正文前 500 个 Unicode 字符，截断时追加「……（完整内容用 coda_input 取）」；kind 根据可识别的 Coda 前缀区分 result、notification，其余为 message。Bot 每次必须先用 `coda_input(turn)` 取完整正文，再做事。完整输入只在内存中保留，轮次结束后仍可读，下一轮（包括自主轮次）开始即替换；进程重启后不可恢复。Bearer key 只送到配置的地址，禁止重定向。HTTP 200 只确认触发，`say` 输出、`done` 完成本轮。失败不自动重发，避免重复操作。
-取消会立即回 `cancelled`；超时说明原因后结束本轮。两者都不保证云端停止。旧 turn 的输出被拒绝；Coda 发起的轮次必须带 turn，省略它不会混入新一轮。
+巡检日程与内容在 Grok Routine 中配置，Coda 不创建巡检计时器。收到 subagents/automations 变化通知或 `hasRunningSubagents` 时刷新运行记录；活动期间每 5 秒核对，空闲时不持续轮询。首次连接只建立已结束记录的基线，重连补齐新记录。只保存最近 200 条已结束记录及仍运行的记录，已淘汰的旧历史不会反复显示。
 
-会话加载时登记 recurring timer。Bot 主动 say 先报 handling，再输出；done 回 waiting。只读调用若没有轮次只写标准错误审计，不开启空轮次；轮内通过 `tool_call` / `tool_call_update` 留下输入与结果。
-副作用只放行 `new_session` 和 `send`，必须在一轮内调用；没有轮次时先开自主轮次。适配器向 coda MCP 的 status 取 turn 票据，并由本轮 ID、工具名和规范化参数的 SHA-256 生成稳定 requestId。对象键递归排序，数组顺序保留，参数顶层 turn/requestId 不参与计算；同轮等价重试复用 ID，不同参数或轮次是新调用。
+每个 Routine run 显示一条活动，例如「定时任务「Coda 巡检」运行中 → 成功（72 秒）」；失败或记录丢失会明确说明。run ID 对应 executor ID `sand-subagent-<runId>`。executor 内部正文、命令与输出不追踪。主会话结论的 requestId 与 automation run 的 requestId 不同，没有验证到直接关联字段，所以不把并发结论猜测归属到某条 run。
 
-`new_session` 必须指定目标 project。Coda 每次在 Bot 会话出允许／拒绝卡片，工具立即返回请求批准的回执，适配器原样返回，不使用 20 秒提前回执逻辑。批准后开出独立会话，仅通知 Bot「已开出：引用与标题」「用户拒绝了：标题」，或没开出的「未能开出：标题（原因）」「这张卡片已失效，没有开出：标题」；不会自动推送该会话之后的工作结果。Bot 记录引用，下次巡检用 `coda_read_thread` 跟进，不重复开同一任务。
+订阅正常到期、游标重置后静默重连；暂时失败只写日志并退避。连续 3 次失败才在会话提示一次，认证失效立即提示，恢复后提示一次。Routine 刷新采用相同策略。
 
-`send` 给已有会话发消息，由 Coda 授权卡片批准；保留超过 20 秒先回「已提交」的逻辑（阈值 `SUBMISSION_WAIT_MS`），原 MCP 调用继续等待。提交调用时就在原轮次内以 toolCallId 登记 `_coda/wait` task，20 秒只控制提前回执；回执前取消或超时也不把仍在运行的工具标为失败；实际返回或 MCP 断连时，活动报 handling，补交结果、终结原工具记录并报 done/failed。原轮次已结束时由 Coda 开自主轮次汇报，失败对用户可见，不自动重试。没有 waits 能力时继续等待实际结果，不提前回执。Bot 收到回执后可 done，不重试或轮询。适配器不另发审批卡片，不再代理 spawn/cancel。
+主会话订阅用 `_coda/wait` 保持活动；自主运行用 handling/waiting 切换轮次。Coda 的未结束等待项会阻止 Agent 空闲回收；退出、断网或归档时不镜像，重新加载后按游标补齐。Grok 的 Routine 执行不依赖 Coda 在线。
 
-Skill 的 GitHub 只读限制只约束 Bot 自己使用 GitHub 应用，不能转述给工作会话。任务需写清证据、重点代码路径、验收方式，并要求按仓库惯例提交、开 PR、走完 PR 流程到评审通过；检查、交叉评审及自动评审评论都是正常流程。
+## Coda 数据与授权工具（可选）
 
-## 远端协议与调试
+发送 `/bind`，按返回说明让 Bot 下载 `remote/coda-bot.mjs` 和 `remote/SKILL.md` 到 `/workspace/.coda-bot/`，执行 `net`、`bind <address> <code>`。绑定需要 [Coda 远端 Agent 入口](https://github.com/coda-console/coda/pull/2006)。
 
-绑定：`POST /v1/remote-agent/bind {code}` 得到 token；脚本再经带 Bearer token 的 `POST /v1/remote-agent {method:"hello",params:{}}` 确认绑定、取 sessionId 和初始会话指令。token 不进终端输出。
-Coda 将 HTTP 调用包装成 `_coda/remote {sessionId,method,params}`；插件结果和 JSON-RPC 错误原样交回。脚本不重试 401、409、502、504 或其他失败。
+在 Grok Bot 设置添加自定义 stdio MCP：
 
-| 方法 | 参数与返回 |
-| --- | --- |
-| `hello` | `{}` → `{sessionId, bot, instructions}`，bind 完成时调用；幂等读取指令 |
-| `input` | `{turn}` → `{turn, kind, text, instructions}`，读取完整正文与当前会话指令，不开启轮次 |
-| `say` | `{text, turn?}` → `{turn}`，首次主动汇报可省略 turn |
-| `done` | `{turn?}` → `{}`，等待工具全部返回后调用 |
-| `tool` | `{name, arguments, turn?}` → Coda MCP 工具结果 |
-| `telemetry` | `{path, query?, turn?}` → 看板 JSON 原样返回 |
+```sh
+node /workspace/.coda-bot/coda-bot.mjs mcp <Coda-sessionId>
+```
 
-会话建立与恢复时，仅为 mcpServers 中收到的 `coda` 和 `diagnostics` 启动 stdio MCP 客户端，用各自 `tools/list` 建立路由，只保留白名单。`machines`、`machine_diagnostics` 由「机器诊断」插件的 `diagnostics` 提供；未收到该服务器时不启动额外进程，调用这两个工具会提示「这两个工具需要在 Coda 里安装并为这个目录启用『机器诊断』插件」。服务没列出工具时明确报不可用，不转给 coda。其余只读工具：read_thread、read_tool_call、agents、status、workflow_status、workflow_list；副作用工具：new_session、send。工具名冲突拒绝调用。Bot MCP 以 `coda_` 前缀暴露这些工具，加 coda_input、coda_say、coda_done、coda_telemetry。
-调试：`node coda-bot.mjs call <method> '<JSON>' [sessionId]`。本轮 ID 与 status 的 Coda turn 票据不同，Bot 只传前者，适配器取得后者。
+`net` 将 Tailscale 状态放在 `/workspace/.coda-bot/tailscale/`；缺软件时安装，恢复守护进程，必要时显示登录链接。多个 Bot 共用云电脑，MCP 命令必须指定各自的 Coda sessionId。`bind` 只确认工具绑定，不再向 Bot 交付 Coda systemPrompt。
 
-`coda_machine_diagnostics` 的参数直接传入：`machine` 为 ID 或唯一名字，`kind` 为 network / client-performance；`from`、`to` 为 Unix 毫秒数，`days` 为 1–30 的整数，另有 `limit`（1–500）、`client`、`verdict`。client-performance 只支持 days；network 的 from/to 选择分钟样本，其余参数筛选探测报告。
+工具包括 `read_thread`、`read_tool_call`、`agents`、`status`、`workflow_status`、`workflow_list`、`telemetry`、`machines`、`machine_diagnostics`、`new_session`、`send`（MCP 名加 `coda_` 前缀）。Coda 工具调用保留完整输入输出；轮外只读调用仅写日志，不开启空轮次。`new_session` 在目标目录开独立会话，`send` 给已有会话发消息，均由 Coda 授权卡片批准；稳定 requestId、turn 票据和后台 send 结果由适配器处理。
 
-`net` 只通过 `/workspace/.coda-bot/tailscale/tailscaled.sock` 检查持久守护进程；未安装时运行[官方安装脚本](https://tailscale.com/install.sh)。首次接入会停止系统 tailscaled 服务与原进程，等状态写完后从 `/var/lib/tailscale` 迁移到 `/workspace/.coda-bot/tailscale/`，按 [tailscaled 参数](https://tailscale.com/docs/reference/tailscaled) 从该目录启动；后续登录也写入这里。已有的持久登录状态在系统目录丢失后仍可恢复。需要 Debian 自带的 start-stop-daemon 和免密 sudo；状态恢复使用 flock 协调同账号多个 Bot。登录链接写给用户，MCP 标准输出只有 JSON-RPC。每个 MCP 工具调用前做检查。Running 快速路径额外检查一次持久状态文件；若副本缺失且系统状态文件存在，在同一 flock 锁内重新检查并复制，已有副本不覆盖。
+诊断工具需在 Coda 安装并为目录启用内置「机器诊断」插件（`diagnostics` MCP），参见 [诊断工具](https://github.com/coda-console/coda/pull/2003)；遥测端点参见 [遥测 JSON 接口](https://github.com/coda-console/coda/pull/2004)。没有 new_session 的旧 Coda 会如实报不可用。
 
-## 验证范围
+## 从 0.1.7 升级
 
-`test/plugins/grok-bot/` 使用假的 ACP Coda 对端、独立的 coda/diagnostics stdio MCP 服务、HTTP Webhook/远端入口和注入时钟；不需要账号或真实业务等待。仓库契约测试包含新插件握手。回归覆盖 hello 响应丢失后重新绑定、切换 Bot、遥测控制字符与路径越界；Tailscale 恢复脚本在假的系统命令下实际运行，验证已登录状态迁移、迁移后登录、系统目录丢失后的恢复和停止失败，不启动真实守护进程。
-回归还覆盖：new_session 的参数透传、轮次票据与稳定 requestId、未提供工具时明确报错、旧 spawn/cancel 拒绝代理、new/load 不再报告审批档位、new_session 不使用 send 的 20 秒计时器，以及新旧 Coda 目录文案和创建／拒绝通知的分类；同时保留 send 后台收尾、done 后真实 Rpc.close() 的可见失败、恢复后无需重新绑定即可获取新指令的回归。本次尚未与配套 new_session 内核及真 Grok Bot 联调；真实卡片、独立根会话创建与通知需要配套 PR 就绪后验证。
+1. 删除不再需要的「Coda 消息」Webhook Routine（`coda`）。
+2. **保留「Coda 巡检」定时 Routine（`coda-2`）**。先由用户确认，再通过原生消息让 Bot 自己把 Routine 指令中的 `coda_input`、`coda_say`、`coda_done` 改成「有发现就在对话里告诉用户」。
+3. 升级插件、完成原生登录并重新选择 Bot。在云电脑重新下载 `coda-bot.mjs`、`SKILL.md`，重启 MCP；按 `/bind` 说明核对工具绑定。
+
+旧 Webhook bots 表不再使用；`coda_input`、`coda_say`、`coda_done` 及适配器对应远端方法已移除。本次代码更新不会自行修改线上 Routine。
+
+## 协议与验证边界
+
+使用 Grok Bot **0.78.1** 的私有 Connect 协议（`api2.cursor.sh`），请求带客户端版本头，协议客户端独立在 `agent/native.mjs`，以后可替换正式接口。只读参考社区 [grok-bot-sdk 协议说明](https://github.com/RongleCat/grok-bot-sdk/blob/main/docs/api/protocol.md)（MIT），未复制其实现或厂商代码。
+
+这是未获稳定性保证的私有接口，上游升级可能使登录、字段或接口失效；错误会显示在会话中。[Cursor 服务条款 §1.5](https://cursor.com/terms-of-service) 限制逆向工程等行为（法律不允许此限制的情况除外），使用前需评估该条款风险。
+
+- SetStatus 只提供名称/说明，映射为 tool_call 标题和状态，不伪造云端工具输入输出。thinking 只显示“正在思考”，不是思考正文。
+- 按 requestId/turnId 归并，成功结束且已有正文时立即核对历史并收尾；没有正文时，等到 serverTimeMs 晚于 settledAtMs 的心跳或 5 秒宽限期，再核对历史并收尾，不把正常的静默运行挂到 turnTimeout。上游没有“最后正文已落盘”标志，极迟消息仍作为补充显示，不静默丢弃。
+- entryId、updatedSeq 和正文摘要只保留按 updatedSeq 排序的最近 2000 条，每批条目合并写盘；更早条目若被服务端修订，会当作新条目呈现。断线按游标重连，游标失效分页读历史补齐并去重，不重发用户消息。首次选择只建立历史基线，不灌入旧聊天。正文被服务端省略或消息类型不支持时明确提示去 Grok 客户端查看。
+- Stop 调 InterruptGrokBotAgentRun。widget 选项变成 Coda 卡片，选择后交回 RespondGrokBotWidget；未选择则不代答。auto-review 尚未实测，收到 awaiting 时提示去 Grok 客户端处理，并记事件日志。
+
+实机已验证官方登录、Bot 列表、原生发送/状态/活动/回复、Interrupt、widget 选择交回、Routine run 与 executor ID 的关联，以及无需任何 Coda 汇报工具也会出现的主会话结论（结束状态比正文早 121 ms）。完整新适配器尚未真机部署；自动续期、auto-review、executor 内部过程未实测。适配器测试使用假原生服务端与假时钟。
