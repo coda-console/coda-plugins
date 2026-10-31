@@ -1,35 +1,5 @@
-// Ultra 的模板、参数和进入／持续／退出提示（见 README.md）。主会话负责协调，Coda 子会话负责执行。
-// 委派规则改编自 oh-my-claudecode 的 docs/CLAUDE.md，见 THIRD_PARTY_NOTICES.md；与 Coda 的交互在 main.mjs。
-
-// 模板参数区分命名模板与手动名单，避免模板名与「自定义」选项冲突。
-export const CUSTOM = 'custom';
-export const templateValue = name => `template:${name}`;
-export const templateName = value => typeof value === 'string' && value.startsWith('template:') ? value.slice('template:'.length) : null;
-
-// composer.templates 按名称和首次出现的顺序分组，生成 subagents 参数；忽略没有名称或 Agent 的行。
-export function templates(rows) {
-  const out = new Map();
-  for (const row of Array.isArray(rows) ? rows : []) {
-    if (typeof row?.template !== 'string' || !row.template.trim() || typeof row.who?.agent !== 'string' || !row.who.agent) continue;
-    const name = row.template.trim();
-    if (!out.has(name)) out.set(name, []);
-    out.get(name).push({ who: row.who, ...(typeof row.when === 'string' && row.when.trim() ? { when: row.when.trim() } : {}) });
-  }
-  return out;
-}
-
-// 参数选项包含模板和自定义名单，默认选择第一个模板。
-// 选项标签按完整字符截断到 Coda 接受的 100 个 UTF-16 单元。
-const label = name => {
-  let out = '';
-  for (const character of name) { if (out.length + character.length > 100) break; out += character; }
-  return out;
-};
-export function withTemplates(declared, names) {
-  return { ...declared, properties: { ...declared.properties, template: { ...declared.properties.template,
-    enum: [...names.map(templateValue), CUSTOM], enumItemLabels: [...names.map(label), '自定义'],
-    default: names.length ? templateValue(names[0]) : CUSTOM } } };
-}
+// Ultra 的开启、持续与关闭提示（见 README.md）。
+// 委派规则改编自 oh-my-claudecode 的 docs/CLAUDE.md，见 THIRD_PARTY_NOTICES.md。
 
 // 按 spawn 接受的格式列出子 Agent、模型、推理强度、审批模式、配置项及适用任务。
 function line({ who, when }) {

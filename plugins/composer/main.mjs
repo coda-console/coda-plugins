@@ -1,37 +1,45 @@
-// 输入框模式：交接和子会话沿用 Coda 内置实现，Ultra 的模板与提示逻辑来自原 Ultra 插件。
-import { CUSTOM, OFF, STILL_ON, on, templateName, templateValue, templates, withTemplates } from './ultra.mjs';
+// 模式只补充发出的一条；参数、预设、发送计数和去向执行由 Coda 维护。
+import { OFF, STILL_ON, on } from './ultra.mjs';
 
 export function activate(coda) {
-  coda.composerModes.register('handoff', { send: () => ({ create: { handoff: true } }) });
-  coda.composerModes.register('subagent', {
-    enter({ session }) {
-      if (session.parentThreadId) throw new Error('请从根会话创建子会话');
-    },
-    send: ({ values }) => ({ create: { handoff: true, parent: true, replyTo: values.replyTo ?? 'parent' } }),
+  const register = (id, handler) => coda.protocols.register('submissions', id, ({ spec }) => {
+    const mode = spec.modes.find(mode => mode.mode === `composer/${id}`);
+    return mode ? handler(spec, mode) : null;
   });
-  // ! 的命令执行由 Coda 处理，回调不改写发送结果。
-  coda.composerModes.register('shell', { send: () => ({}) });
-  const read = async projectId => templates(JSON.parse((await coda.environment(projectId)).CODA_PLUGIN_SETTINGS ?? '{}')['composer.templates']);
-  coda.composerModes.register('ultra', {
-    // 参数沿用清单声明，模板选项从当前设置读取。
-    async enter({ projectId, parameters }) {
-      const all = await read(projectId), [first] = all.keys();
-      return { parameters: withTemplates(parameters, [...all.keys()]),
-        values: { template: first === undefined ? CUSTOM : templateValue(first), subagents: all.get(first) ?? [] } };
-    },
-    async change({ projectId, values, changed }) {
-      if (changed !== 'template') return { values: { ...values, template: CUSTOM } };
-      const name = templateName(values.template), rows = name === null ? undefined : (await read(projectId)).get(name);
-      return { values: rows ? { ...values, subagents: rows } : values };
-    },
-    send({ values, sent, changedSinceSent }) {
-      if (sent === 0 || changedSinceSent) return { tell: on(values.subagents ?? []) };
-      return { tell: STILL_ON };
-    },
-    // 新任务里还未发送就退出时，没有会话，也不需要撤销提示。
-    async exit({ session, sent }) {
-      if (session && sent > 0) await coda.tell(session.id, OFF);
-    },
+  // 空 Agent 不写进目标，由会话办事员沿用 spec.agent（含 settings）。
+  const agent = values => values.agent == null ? {} : { agent: values.agent };
+  register('handoff', ({ thread }, { values }) => ({
+    divert: true,
+    targets: [{ kind: 'thread', handoffSource: thread, ...agent(values), open: true }],
+  }));
+  register('subagent', ({ thread }, { values }) => ({
+    divert: true,
+    targets: [{ kind: 'thread', handoffSource: thread, parentThreadId: thread,
+      replyTo: values.replyTo, ...agent(values), open: true }],
+  }));
+  register('shell', ({ thread }) => ({
+    divert: true,
+    targets: [thread ? { kind: 'message', thread, run: true } : { kind: 'thread', run: true, open: true }],
+  }));
+  register('ultra', (_spec, { values, sent, changedSinceSent }) => {
+    if (sent === 0 || changedSinceSent) return { tell: on(values.subagents ?? []) };
+    return sent % 10 === 0 ? { tell: STILL_ON } : null;
   });
-  coda.composerModes.register('loop', { send: ({ values }) => ({ loop: { every: values.every } }) });
+  register('loop', ({ thread }, { values }) => ({
+    divert: true,
+    targets: [{ kind: 'loop', thread, every: values.every }],
+  }));
+
+  const previous = new Map();
+  return coda.watch('composers', async ({ type, id, object }) => {
+    const before = previous.get(id);
+    // 删除输入框只释放记忆；关闭说明针对仍存在的会话输入框退出 Ultra。
+    if (type === 'DELETED') { previous.delete(id); return; }
+    const active = object.spec.modes.some(mode => mode.mode === 'composer/ultra');
+    if (active) previous.set(id, object); else previous.delete(id);
+    if (before && !active && before.spec.thread &&
+        before.status.modes.some(mode => mode.mode === 'composer/ultra' && mode.sent > 0)) {
+      await coda.tell(before.spec.thread, OFF);
+    }
+  });
 }

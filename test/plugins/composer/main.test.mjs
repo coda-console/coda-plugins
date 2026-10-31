@@ -1,68 +1,89 @@
-// 迁入后的模式通过同一个 activate 注册，保持会话关系、回报对象与命令发送行为。
+// 表格只验证插件补充；去向执行、预设解析与模式计数由 Coda 的测试覆盖。
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { fileURLToPath } from 'node:url';
-import { checkPlugin } from '../../../check/index.mjs';
 import { activate } from '../../../plugins/composer/main.mjs';
+import { STILL_ON, on } from '../../../plugins/composer/ultra.mjs';
 
 const manifest = JSON.parse(readFileSync(new URL('../../../plugins/composer/package.json', import.meta.url), 'utf8'));
 function plugin() {
-  const hooks = new Map();
-  activate({ composerModes: { register(id, callbacks) {
-    assert.ok(!hooks.has(id), `模式 ${id} 不应重复注册`);
-    hooks.set(id, callbacks);
-  } } });
-  return hooks;
+  const handlers = new Map();
+  activate({ protocols: { register(kind, id, handler) {
+    assert.equal(kind, 'submissions');
+    assert.ok(!handlers.has(id), `模式 ${id} 不应重复注册`);
+    handlers.set(id, handler);
+  } }, watch: async () => ({ dispose() {} }) });
+  return handlers;
 }
-
-test('清单声明的五个模式都有发送回调', () => {
-  const hooks = plugin();
-  assert.deepEqual(manifest.contributes.composerModes.map(mode => mode.id), ['handoff', 'subagent', 'shell', 'ultra', 'loop']);
-  assert.deepEqual([...hooks.keys()], manifest.contributes.composerModes.map(mode => mode.id));
-  for (const callbacks of hooks.values()) assert.equal(typeof callbacks.send, 'function');
+const chosen = { agent: 'codex', model: 'gpt-6.1-sol', effort: 'ultra', options: { 'service-tier': 'priority' } };
+const subagents = [{ who: chosen, when: '调研' }];
+function submission(id, { thread = 'child', values = {}, sent = 0, changedSinceSent = false } = {}) {
+  return { kind: 'submissions', id: 'request-1', revision: 1, status: {}, spec: {
+    composer: thread ?? 'new:p1', thread, projectId: 'p1', text: '原始正文',
+    attachments: ['/tmp/example.txt'], quotes: ['引用'],
+    agent: { agent: 'claude-sdk', settings: { model: 'claude-opus-5-5' } },
+    // 目标模式不在首项，另有同名的其他插件模式；按完整 mode ID 取快照。
+    modes: [{ mode: `other/${id}`, values: { agent: 'wrong' }, sent: 99, changedSinceSent: true },
+      { mode: `composer/${id}`, values, sent, changedSinceSent }],
+    defaultTarget: thread ? { kind: 'message', thread } : { kind: 'thread', open: true },
+  } };
+}
+const cases = [
+  ['交接指定 Agent', 'handoff', { values: { agent: chosen } }, { divert: true,
+    targets: [{ kind: 'thread', handoffSource: 'child', agent: chosen, open: true }] }],
+  ...[undefined, null].map(agent => [`交接空 Agent ${agent}`, 'handoff', { values: { agent } }, { divert: true,
+    targets: [{ kind: 'thread', handoffSource: 'child', open: true }] }]),
+  ...['parent', 'sender'].map(replyTo => [`子会话回报 ${replyTo}`, 'subagent', { values: { agent: chosen, replyTo } }, { divert: true,
+    targets: [{ kind: 'thread', handoffSource: 'child', parentThreadId: 'child', replyTo, agent: chosen, open: true }] }]),
+  ['子会话沿用执行者', 'subagent', { values: { agent: null, replyTo: 'parent' } }, { divert: true,
+    targets: [{ kind: 'thread', handoffSource: 'child', parentThreadId: 'child', replyTo: 'parent', open: true }] }],
+  ['会话执行命令', 'shell', {}, { divert: true, targets: [{ kind: 'message', thread: 'child', run: true }] }],
+  ['新任务执行命令', 'shell', { thread: null }, { divert: true, targets: [{ kind: 'thread', run: true, open: true }] }],
+  ...['PT5M', 'PT10M', 'PT15M', 'PT30M', 'PT1H', 'PT2H', 'PT3H', 'PT6H', 'PT12H', 'P1D']
+    .map(every => [`循环 ${every}`, 'loop', { values: { every } }, { divert: true, targets: [{ kind: 'loop', thread: 'child', every }] }]),
+  ['Ultra 首条名单', 'ultra', { values: { subagents } }, { tell: on(subagents) }],
+  ['Ultra 新任务空名单', 'ultra', { thread: null }, { tell: on([]) }],
+  ['Ultra 改参数', 'ultra', { values: { subagents }, sent: 11, changedSinceSent: true }, { tell: on(subagents) }],
+  ['Ultra 改参数优先于周期提醒', 'ultra', { values: { subagents }, sent: 10, changedSinceSent: true }, { tell: on(subagents) }],
+  ...[1, 2, 9, 11, 19, 21].map(sent => [`Ultra 已收下 ${sent} 条不提醒`, 'ultra', { sent }, null]),
+  ...[10, 20, 30].map(sent => [`Ultra 已收下 ${sent} 条提醒`, 'ultra', { sent }, { tell: STILL_ON }]),
+];
+for (const [name, id, input, expected] of cases) test(name, async () => {
+  const object = submission(id, input), before = structuredClone(object);
+  assert.deepEqual(await plugin().get(id)(object), expected);
+  assert.deepEqual(object, before, '不改正文、附件、引用、执行者或模式快照');
 });
 
-test('交接承接当前上下文，子会话只从根会话创建并保留回报对象', () => {
-  const hooks = plugin();
-  assert.deepEqual(hooks.get('handoff').send(), { create: { handoff: true } });
-  const child = hooks.get('subagent');
-  assert.doesNotThrow(() => child.enter({ session: { id: 'root', parentThreadId: null } }));
-  assert.throws(() => child.enter({ session: { id: 'child', parentThreadId: 'root' } }), /请从根会话创建子会话/);
-  for (const replyTo of [undefined, 'parent', 'sender']) {
-    assert.deepEqual(child.send({ values: { replyTo } }), {
-      create: { handoff: true, parent: true, replyTo: replyTo ?? 'parent' },
-    });
+test('清单的五个模式注册 submissions 参与者，未开模式不补充', async () => {
+  const handlers = plugin();
+  assert.deepEqual([...handlers.keys()], manifest.contributes.composerModes.map(mode => mode.id));
+  for (const [id, handler] of handlers) {
+    const object = submission(id);
+    object.spec.modes = [];
+    assert.equal(await handler(object), null);
   }
 });
 
-test('命令仍由 ! 触发，在会话和新任务中使用，回调不改写消息', () => {
-  const shell = manifest.contributes.composerModes.find(mode => mode.id === 'shell');
-  assert.equal(shell.trigger, '!');
-  assert.equal(shell.agent, 'off');
-  assert.deepEqual(shell.in, ['session', 'new']);
-  for (const session of [null, { id: 's1' }]) {
-    assert.deepEqual(plugin().get('shell').send({ session, text: 'pwd', values: {} }), {});
+test('模式声明：一次性模式、可选执行者、Ultra 预设和命令入口', () => {
+  const modes = Object.fromEntries(manifest.contributes.composerModes.map(mode => [mode.id, mode]));
+  for (const mode of Object.values(modes)) assert.equal(Object.hasOwn(mode, 'agent'), false);
+  for (const id of ['handoff', 'subagent', 'loop']) assert.equal(modes[id].once, true);
+  for (const id of ['shell', 'ultra']) assert.notEqual(modes[id].once, true);
+  for (const id of ['handoff', 'subagent']) {
+    const { parameters } = modes[id];
+    assert.equal(parameters.properties.agent.type, 'object');
+    assert.equal(parameters.properties.agent.format, 'coda-agent');
+    assert.ok(!parameters.required?.includes('agent'));
   }
-});
-
-test('循环发送所选周期，交由 Coda 建立循环并退出模式', () => {
-  const loop = plugin().get('loop');
-  for (const every of ['PT5M', 'PT10M', 'PT15M', 'PT30M', 'PT1H', 'PT2H', 'PT3H', 'PT6H', 'PT12H', 'P1D']) {
-    assert.deepEqual(loop.send({ values: { every } }), { loop: { every } });
-  }
-});
-
-test('含循环的清单通过 plugin-check，保留会话限制、时长格式和周期档位', async () => {
-  const { report, plugin: checked } = await checkPlugin(fileURLToPath(new URL('../../../plugins/composer', import.meta.url)), { manifestOnly: true });
-  assert.deepEqual(report.failures, []);
-  const loop = checked.plugin.composerModes.find(mode => mode.id === 'loop');
-  assert.equal(loop.agent, 'session');
-  assert.deepEqual(loop.in, ['session']);
-  const every = loop.parameters.properties.every;
-  assert.equal(every.type, 'string');
+  assert.equal(modes.shell.trigger, '!');
+  assert.deepEqual(modes.shell.in, ['session', 'new']);
+  assert.deepEqual(modes.ultra.in, ['session', 'new']);
+  assert.equal(Object.hasOwn(modes.ultra.parameters.properties, 'template'), false);
+  assert.deepEqual(modes.ultra.parameters.properties.subagents.presets, { from: 'composer.templates', by: 'template' });
+  assert.deepEqual(manifest.contributes.configuration.properties['composer.templates'].default, []);
+  assert.deepEqual(modes.loop.in, ['session']);
+  const every = modes.loop.parameters.properties.every;
   assert.equal(every.format, 'duration');
   assert.equal(every.default, 'PT30M');
   assert.deepEqual(every.enum, ['PT5M', 'PT10M', 'PT15M', 'PT30M', 'PT1H', 'PT2H', 'PT3H', 'PT6H', 'PT12H', 'P1D']);
-  assert.deepEqual(every.enumItemLabels, ['5 分钟', '10 分钟', '15 分钟', '30 分钟', '1 小时', '2 小时', '3 小时', '6 小时', '12 小时', '1 天']);
 });
