@@ -113,18 +113,18 @@ test('Write completion replaces a creation preview with the actual overwritten f
 
 test('Edit replace_all and MultiEdit completion report every actual patch hunk, not one input replacement', () => {
   const preview = toolCallFields('Edit', { file_path: '/x', old_string: 'before', new_string: 'proposed', replace_all: true }).content;
-  const result = { filePath: '/x', originalFile: 'before\nmiddle\nbefore', replaceAll: true, userModified: true,
+  const result = { filePath: '/x', originalFile: 'before\nmiddle\nbefore\n', replaceAll: true, userModified: true,
     structuredPatch: [
       { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-before', '+accepted'] },
       { oldStart: 3, oldLines: 1, newStart: 3, newLines: 1, lines: ['-before', '+accepted', '\\ No newline at end of file'] },
     ] };
   for (const name of ['Edit', 'MultiEdit']) assert.deepEqual(toolResultContent(name, preview, result), [
-    { type: 'diff', path: '/x', oldText: 'before', newText: 'accepted' },
-    { type: 'diff', path: '/x', oldText: 'before', newText: 'accepted' },
+    { type: 'diff', path: '/x', oldText: 'before\n', newText: 'accepted\n' },
+    { type: 'diff', path: '/x', oldText: 'before\n', newText: 'accepted' },
   ]);
   assert.deepEqual(toolResultContent('Edit', preview, { ...result, structuredPatch: [
     { oldStart: 1, oldLines: 3, newStart: 1, newLines: 3, lines: ['-before', '+accepted', ' middle', '-before', '+accepted'] },
-  ] }), [{ type: 'diff', path: '/x', oldText: 'before\nmiddle\nbefore', newText: 'accepted\nmiddle\naccepted' }]);
+  ] }), [{ type: 'diff', path: '/x', oldText: 'before\nmiddle\nbefore\n', newText: 'accepted\nmiddle\naccepted\n' }]);
 });
 
 test('empty or staged actual changes clear previews; a large overwritten file uses its patch when available', () => {
@@ -135,7 +135,7 @@ test('empty or staged actual changes clear previews; a large overwritten file us
   assert.deepEqual(toolResultContent('Write', preview, { ...result, staged: true, originalFile: 'old\n' }), []);
   assert.deepEqual(toolResultContent('Write', preview, { ...result, structuredPatch: [
     { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-old', '+new'] },
-  ] }), [{ type: 'diff', path: '/x', oldText: 'old', newText: 'new' }]);
+  ] }), [{ type: 'diff', path: '/x', oldText: 'old\n', newText: 'new\n' }]);
 });
 
 test('failed, unstructured or unrelated results retain the last diff without mutating it', () => {
@@ -145,5 +145,28 @@ test('failed, unstructured or unrelated results retain the last diff without mut
   assert.strictEqual(toolResultContent('mcp__server__Write', content, result), content);
   for (const value of [undefined, 'saved', {}, { filePath: '/x' }, { filePath: '/x', structuredPatch: [null] }]) {
     assert.strictEqual(toolResultContent('Write', content, value), content);
+  }
+});
+
+test('structured patches preserve each side\'s final newline, including context and empty files', () => {
+  const noNewline = '\\ No newline at end of file';
+  const cases = [
+    { oldText: 'foo', newText: 'foo\n', lines: ['-foo', noNewline, '+foo'] },
+    { oldText: 'foo\n', newText: 'foo', lines: ['-foo', '+foo', noNewline] },
+    { oldText: 'foo', newText: 'bar', lines: ['-foo', noNewline, '+bar', noNewline] },
+    { oldText: 'foo\n', newText: 'bar\n', lines: ['-foo', '+bar'] },
+    { oldText: 'foo\ntail', newText: 'bar\ntail', lines: ['-foo', '+bar', ' tail', noNewline] },
+    { oldText: '', newText: 'foo\n', lines: ['+foo'] },
+    { oldText: '', newText: 'foo', lines: ['+foo', noNewline] },
+    { oldText: 'foo', newText: '', lines: ['-foo', noNewline] },
+    { oldText: 'foo\n', newText: 'foo\n\n', lines: [' foo', '+'] },
+    { oldText: 'foo\r\n', newText: 'bar\r\n', lines: ['-foo\r', '+bar\r'] },
+  ];
+  for (const { oldText, newText, lines } of cases) {
+    const preview = toolCallFields('Edit', { file_path: '/x', old_string: oldText, new_string: newText }).content;
+    const result = { filePath: '/x', structuredPatch: [{ lines }] };
+    for (const name of ['Edit', 'MultiEdit', 'Write']) assert.deepEqual(toolResultContent(name, preview, result), [
+      { type: 'diff', path: '/x', oldText, newText },
+    ], `${name}: ${JSON.stringify({ oldText, newText })}`);
   }
 });

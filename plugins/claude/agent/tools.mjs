@@ -40,6 +40,13 @@ export function toolCallFields(name, rawInput, content = []) {
   };
 }
 
+// A patch line includes its newline unless the immediately following marker says otherwise.
+// Context belongs to both sides; a marker after '-' or '+' only applies to that side.
+function patchText(lines, side) {
+  return lines.map((line, i) => line.startsWith(side) || line.startsWith(' ')
+    ? line.slice(1) + (lines[i + 1] === '\\ No newline at end of file' ? '' : '\n') : '').join('');
+}
+
 // A successful SDK result is authoritative: a Write may overwrite a file, and an Edit may replace
 // many occurrences or be changed by the user. Keep previews only when no structured result is given.
 export function toolResultContent(name, content, result, failed = false) {
@@ -52,10 +59,9 @@ export function toolResultContent(name, content, result, failed = false) {
   } else if (Array.isArray(result.structuredPatch)
     && result.structuredPatch.every(hunk => Array.isArray(hunk?.lines) && hunk.lines.every(string))) {
     // Each hunk carries both sides, including context. Do not merge distant hunks: that would
-    // invent adjacent lines and can undercount independent replacements. Ignore newline markers.
+    // invent adjacent lines and can undercount independent replacements.
     diffs = result.structuredPatch.map(hunk => ({ type: 'diff', path: result.filePath,
-      oldText: hunk.lines.filter(line => line.startsWith(' ') || line.startsWith('-')).map(line => line.slice(1)).join('\n'),
-      newText: hunk.lines.filter(line => line.startsWith(' ') || line.startsWith('+')).map(line => line.slice(1)).join('\n'),
+      oldText: patchText(hunk.lines, '-'), newText: patchText(hunk.lines, '+'),
     }));
   }
   // An update whose original text was too large and whose patch is empty has no measurable diff;
