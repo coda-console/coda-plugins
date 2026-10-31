@@ -275,3 +275,18 @@ test('Running without system state does not fabricate a workspace snapshot', asy
   assert.throws(() => readFileSync(f.state), { code: 'ENOENT' });
   assert.equal(f.read().starts, undefined);
 });
+
+test('MCP send exposes explicit return parameters and forwards them unchanged', async t => {
+  const home = temporary(t), remote = await endpoint(t);
+  await bind(remote.address, 'only:code', { home });
+  const input = new PassThrough(), output = new PassThrough();
+  const lines = serveMcp({ input, output, ensureNet: async () => {}, invoke: (method, params) => call(method, params, { home }) });
+  const rpc = new Rpc(output, input);
+  t.after(() => { rpc.close(); lines.close(); input.end(); output.end(); });
+  const tool = TOOLS.find(t => t.name === 'coda_send');
+  assert.equal(tool.inputSchema.properties.replyTo.type, 'string');
+  assert.equal(tool.inputSchema.properties.final.type, 'boolean');
+  const args = { childId: 'requester', replyTo: 'inspection', prompt: 'done', final: true };
+  await rpc.request('tools/call', { name: tool.name, arguments: args });
+  assert.deepEqual(remote.calls.at(-1).body.params.arguments, args);
+});

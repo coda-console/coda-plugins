@@ -35,7 +35,11 @@ export const TOOLS = [
   proxy('workflow_list', '列出项目的工作流程。', { project: string('项目名称或 ID') }),
   proxy('new_session', '像用户一样在目标目录开一个独立会话，每次要用户在 Coda 卡片上批准；不是你的子会话。立即返回请用户批准的回执，只会收到已开出/被拒绝/未能开出通知，工作结果不会推给你；记下会话引用，之后用 coda_read_thread 跟进，不要重复开同一任务。任务写清证据、重点代码路径、验收方式、按仓库惯例开 PR 并走完 PR 流程直到评审通过（含检查、交叉评审和自动评审评论）。GitHub 只读限制仅约束 Bot 自己，不要转述进任务或限制会话走 PR 流程。',
     { project: string('必填：目标目录名字或 ID；别的机器上的目录按 ID'), agent: string('Agent ID，默认选择 codex'), prompt: string('证据、重点代码路径、验收方式；按仓库惯例提交、开 PR 并走 PR 流程直到评审通过'), title: string('会话标题'), model: string('模型'), effort: string('推理强度'), mode: string('独立会话的审批档位，codex 默认选择 agent；用户在卡片上批准'), options: anyObject }, ['project', 'agent', 'prompt']),
-  proxy('send', '给已有会话发消息，每次由 Coda 授权卡片批准。可能先返回「已提交」；不要重试或轮询。', { childId: string('目标会话 ID 或引用（沿用 Coda 参数名，不表示子会话）'), prompt: string('消息正文') }, ['childId', 'prompt']),
+  proxy('send', '给已有会话发消息，由 Coda 授权。明确回传委派结果时带 replyTo，直接唤醒原请求方，不建立反向等待。可能先返回「已提交」；不要轮询。', {
+    childId: string('目标会话 ID 或引用（沿用 Coda 参数名，不表示子会话）；回传时用原委派附带的地址'), prompt: string('消息或回传正文'),
+    replyTo: string('原委派附带的请求编号，只能回传给该请求的发起方'),
+    final: { type: 'boolean', description: '仅回传时使用，默认 true 表示委派完成；约定的进展或需要对方处理的问题用 false' },
+  }, ['childId', 'prompt']),
 ];
 
 async function jsonPost(address, path, body, token, fetcher = fetch) {
