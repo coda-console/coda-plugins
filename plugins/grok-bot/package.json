@@ -3,7 +3,10 @@
   "id": "grok-bot",
   "displayName": "Grok Bot",
   "description": "通过 Grok Bot 原生主会话接入 Coda，镜像回复与 Routine 运行记录。",
-  "version": "0.2.0",
+  "version": "0.2.1",
+  "coda": {
+    "channels": ["preview"]
+  },
   "type": "module",
   "engines": {
     "node": ">=24"
