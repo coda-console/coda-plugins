@@ -7,7 +7,7 @@
 import { createHash } from 'node:crypto';
 import { normalize } from 'node:path';
 import { requireCondition as check } from '../../domain/errors.mjs';
-import { offerPoint, offeredCommands, offerProblem, withDependencies } from './plugin-extensions.mjs';
+import { catalogChannelProblem, offerPoint, offeredCommands, offerProblem, withDependencies } from './plugin-extensions.mjs';
 
 export const COMMIT = /^[0-9a-f]{40}$/;
 const ID = /^[a-z][a-z0-9-]{0,39}$/;
@@ -168,7 +168,7 @@ export function npmManifest(id, own, skills) {
   }
   if (!Object.keys(contributes).length) return { problem: '这个 npm 包读不成插件：package.json 没有 contributes，没有 Skill 目录，也不是写了 mcpName 的 MCP 服务器' };
   return { manifest: { name: id, displayName: own.name, description: typeof own.description === 'string' ? own.description.slice(0, 500) : '',
-    version: String(own.version ?? ''), contributes } };
+    version: String(own.version ?? ''), ...(own.coda !== undefined ? { coda: own.coda } : {}), contributes } };
 }
 // The packages npm installs for a package from npm, by name with the range it asks for: its dependencies are not pinned
 // (docs/plugins.md「从 npm 安装」), unless it brings an `npm-shrinkwrap.json`, whose versions they then are. Among them the
@@ -352,7 +352,7 @@ export const manifestId = manifest => manifest?.id ?? manifest?.name;
 // rows, the built-in plugins): what it is, the one of its ID installed here, why it cannot be installed, what comes along
 // with it (`siblings`: the other plugins of the same commit, by ID) and what it brings. `manifest`: what is known of it
 // when it does not read as a plugin, its ID `fallback` without a name.
-export function candidate({ path, manifest, plugin, problem, fallback }, { catalog, installed, builtin }, siblings) {
+export function candidate({ path, manifest, plugin, problem, fallback }, { catalog, installed, builtin, channel }, siblings) {
   const id = plugin?.id ?? (typeof manifestId(manifest) === 'string' ? manifestId(manifest) : fallback);
   const row = installed.get(id), along = plugin ? together(plugin, { catalog, installed, siblings }) : [];
   const missing = along.filter(each => each.from === 'missing').map(each => each.id);
@@ -361,7 +361,7 @@ export function candidate({ path, manifest, plugin, problem, fallback }, { catal
   return { path, id, displayName: plugin?.displayName ?? (typeof manifest?.displayName === 'string' ? manifest.displayName : id),
     description: plugin?.description ?? (typeof manifest?.description === 'string' ? manifest.description : ''), version: plugin?.version ?? '',
     installed: row ? row.source ?? builtin.get(id)?.source ?? { kind: 'builtin' } : null,
-    problem: problem ?? (plugin ? catalogProblem(plugin, catalog, builtin, installed) ?? offerProblem(plugin, after) : null)
+    problem: problem ?? (plugin ? catalogChannelProblem(after, id, channel) ?? catalogProblem(plugin, catalog, builtin, installed) ?? offerProblem(plugin, after) : null)
       ?? (missing.length ? `要一起装的 ${missing.join('、')} 不在这台机器上${plugin.source?.kind === 'npm' ? '' : '，也不在这个提交里'}` : null),
     together: along.filter(each => each.from !== 'missing'),
     ...(plugin ? { contributes: contributions(plugin, after) } : {}) };
