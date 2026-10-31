@@ -22,8 +22,8 @@ export function activate(coda) {
     targets: [thread ? { kind: 'message', thread, run: true } : { kind: 'thread', run: true, open: true }],
   }));
   register('ultra', (_spec, { values, sent, changedSinceSent }) => {
-    if (sent === 0 || changedSinceSent) return { tell: on(values.subagents ?? []) };
-    return sent % 10 === 0 ? { tell: STILL_ON } : null;
+    if (sent === 0 || changedSinceSent) return { tell: [on(values.subagents ?? [])] };
+    return sent % 10 === 0 ? { tell: [STILL_ON] } : null;
   });
   register('loop', ({ thread }, { values }) => ({
     divert: true,
