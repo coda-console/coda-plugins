@@ -207,8 +207,34 @@ test('streamed text is said as it streams, and the complete message adds only wh
     { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'unknown', content: 'x' }] } });
   assert.deepEqual(c.updates().slice(-3), [
     { sessionUpdate: 'agent_thought_chunk', messageId: 'm2', content: { type: 'text', text: '想一下' } },
-    { sessionUpdate: 'tool_call', toolCallId: 'read-1', title: 'Read', rawInput: { file_path: '/x' }, status: 'in_progress' },
+    { sessionUpdate: 'tool_call', toolCallId: 'read-1', title: '读取 /x', kind: 'read', locations: [{ path: '/x' }], rawInput: { file_path: '/x' }, status: 'in_progress' },
     { sessionUpdate: 'tool_call_update', toolCallId: 'read-1', status: 'completed', rawOutput: { file: '/x' }, content: [{ type: 'content', content: { type: 'text', text: '内容' } }] }]);
+});
+
+test('tool result updates retain each call\'s diffs with its output, including failed edits', async t => {
+  const c = await setup(t); await c.open();
+  const calls = [
+    { type: 'tool_use', id: 'edit-ok', name: 'Edit', input: { file_path: '/x', old_string: 'old', new_string: 'new' } },
+    { type: 'tool_use', id: 'write-failed', name: 'Write', input: { file_path: '/y', content: 'new file' } },
+  ];
+  await c.emit({ type: 'assistant', message: { id: 'edits', content: calls } },
+    { type: 'user', message: { content: [
+      { type: 'tool_result', tool_use_id: 'write-failed', is_error: true, content: 'permission denied' },
+      { type: 'tool_result', tool_use_id: 'edit-ok', content: 'saved' },
+    ] } });
+  for (const [i, call] of calls.entries()) {
+    const [started, ended] = c.updates().filter(u => u.toolCallId === call.id);
+    assert.equal(started.kind, 'edit');
+    assert.equal(started.content[0].path, call.input.file_path);
+    assert.equal(ended.status, i ? 'failed' : 'completed');
+    assert.equal(ended.rawOutput, i ? 'permission denied' : 'saved');
+    assert.deepEqual(ended.content, [...started.content, { type: 'content', content: { type: 'text', text: ended.rawOutput } }]);
+  }
+  await c.emit({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'edit-ok', content: 'duplicate' }] } });
+  assert.deepEqual(c.updates().at(-1).content, [
+    { type: 'diff', path: '/x', oldText: 'old', newText: 'new' },
+    { type: 'content', content: { type: 'text', text: 'duplicate' } },
+  ], 'a repeated result still carries the diff');
 });
 
 const quotaReason = "You've hit your session limit · resets 1am (Asia/Singapore)";
@@ -624,7 +650,7 @@ test('approvals offer allow once, each suggested rule by its whole sentence, and
     { optionId: 'suggestion-3', name: '允许以此开头的命令 npm test（本会话）', kind: 'allow_always' },
     { optionId: 'suggestion-4', name: '替换现有规则为：允许访问 example.com（所有项目）', kind: 'allow_always' },
     { optionId: 'deny', name: '拒绝', kind: 'reject_once' }]);
-  assert.deepEqual(request.params.toolCall, { toolCallId: 'bash-1', title: 'Bash', rawInput: { command: 'ls x' }, status: 'pending',
+  assert.deepEqual(request.params.toolCall, { toolCallId: 'bash-1', title: 'ls x', kind: 'execute', rawInput: { command: 'ls x' }, status: 'pending',
     content: [{ type: 'content', content: { type: 'text', text: 'outside cwd' } }] });
   c.answer(request.id, { outcome: { outcome: 'selected', optionId: 'suggestion-3' } });
   assert.deepEqual(await asking, { behavior: 'allow', updatedInput: { command: 'ls x' }, updatedPermissions: [suggestions[4]] });

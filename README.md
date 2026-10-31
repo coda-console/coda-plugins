@@ -82,6 +82,11 @@ Claude 把一轮进行中的插话标上 `priority: 'next'` 交给 Claude Code�
 这一轮被停止或失败时，还没并进去的插话随之撤掉（`interrupt` 带 `cancelQueued`），不会在之后再跑，原来的 `session/prompt` 等撤掉了才答复。
 结果最多列出 64 条它接收的消息，所以同时在途的插话最多 32 条，再多的回 `promptRequired`，由 Coda 在这一轮结束后作为下一轮发出。
 
+Claude 的工具调用与审批卡片按原生工具名报告 ACP `kind`，读写文件带 `locations`，Read 的 `offset` 对应起始行。
+执行标题取命令第一行，搜索与联网标题取模式、查询或 URL（最多 200 字符）；没有相应输入时保留工具名，`rawInput` 始终原样保留。
+Edit、MultiEdit 与 Write 的输入生成标准 `diff`，工具结果更新同时保留 diff 与原有结果文本；NotebookEdit 只报告路径，不把单元格源码当成整个笔记本的 diff。
+计划工具归 `think`，Task/Agent 子 Agent、MCP 与未知工具归 `other`，子 Agent 的活动卡片沿用原有报告。
+
 Claude 的额度耗尽按[执行失败](https://github.com/coda-console/coda-protocol/blob/main/docs/agent-protocol.md#额度不足)报 `quota_exhausted`，保留上游给出的重置时间；
 只认明确的额度原因，或本轮 `rate_limit` 错误配合订阅窗口的 `rejected`，不把普通 429、登录失败或额度预警算进去。
 SDK 作为 `assistant` 消息发来的 API 错误不当成回复正文；由本轮 `result` 报告失败。
