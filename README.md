@@ -86,6 +86,7 @@ Claude 的工具调用与审批卡片按原生工具名报告 ACP `kind`，读�
 执行标题取命令第一行，搜索与联网标题取模式、查询或 URL（最多 200 字符）；没有相应输入时保留工具名，`rawInput` 始终原样保留。
 Edit、MultiEdit 与 Write 的输入生成标准 `diff` 预览；成功结果用 SDK 的写入前后全文或 `structuredPatch` 修正 diff，覆盖写入与多处替换均按实际结果报告，同时保留结果文本。NotebookEdit 只报告路径，不把单元格源码当成整个笔记本的 diff。
 计划工具归 `think`，Task/Agent 子 Agent、MCP 与未知工具归 `other`，子 Agent 的活动卡片沿用原有报告。
+进行中的工具保留到结果到达；为处理重复结果，已完成调用仅缓存最近 128 条，且估算字符串存储不超过 4 MiB。超限 diff 正常发送但不缓存，淘汰后忽略重复结果，不覆盖客户端已有的 diff。
 
 Claude 的额度耗尽按[执行失败](https://github.com/coda-console/coda-protocol/blob/main/docs/agent-protocol.md#额度不足)报 `quota_exhausted`，保留上游给出的重置时间；
 只认明确的额度原因，或本轮 `rate_limit` 错误配合订阅窗口的 `rejected`，不把普通 429、登录失败或额度预警算进去。

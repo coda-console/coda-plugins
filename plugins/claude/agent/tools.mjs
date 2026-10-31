@@ -62,3 +62,35 @@ export function toolResultContent(name, content, result, failed = false) {
   // in particular, do not keep the input preview that would report it as a newly created file.
   return diffs === undefined ? content : [...diffs, ...content.filter(block => block.type !== 'diff')];
 }
+
+// Pending calls must survive other tools finishing. Completed calls only serve repeated SDK results:
+// keep the most recently completed 128 calls, with at most 4 MiB of estimated string storage.
+// Evicted results are ignored, so they cannot overwrite the diff already sent to the client.
+export class ToolCallCache {
+  #pending = new Map(); #completed = new Map(); #bytes = 0;
+  constructor({ maxCompleted = 128, maxBytes = 4 * 1024 * 1024 } = {}) {
+    this.maxCompleted = maxCompleted; this.maxBytes = maxBytes;
+  }
+  #forget(id) {
+    const entry = this.#completed.get(id);
+    if (entry) { this.#bytes -= entry.bytes; this.#completed.delete(id); }
+  }
+  start(id, name, content) {
+    this.#forget(id);
+    this.#pending.set(id, { name, content });
+  }
+  finish(id, result, failed = false) {
+    const previous = this.#pending.get(id) ?? this.#completed.get(id)?.tool;
+    if (!previous) return undefined;
+    const tool = { name: previous.name, content: toolResultContent(previous.name, previous.content, result, failed) };
+    this.#pending.delete(id); this.#forget(id);
+    // Two bytes per UTF-16 code unit, including ID and serialized field names; the count limit also
+    // bounds object overhead. An oversized result is delivered once without evicting smaller entries.
+    const bytes = 2 * (id.length + JSON.stringify(tool).length);
+    if (bytes <= this.maxBytes) {
+      this.#completed.set(id, { tool, bytes }); this.#bytes += bytes;
+      while (this.#completed.size > this.maxCompleted || this.#bytes > this.maxBytes) this.#forget(this.#completed.keys().next().value);
+    }
+    return tool.content;
+  }
+}

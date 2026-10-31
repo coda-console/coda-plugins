@@ -17,6 +17,7 @@ import { nextRun } from '../../../plugins/claude/agent/waits.mjs';
 import { sdkEnvironment } from '../../../plugins/claude/agent/auth.mjs';
 import { serviceSettings } from '../../../plugins/claude/agent/providers.mjs';
 import { SessionTitle } from '../../../plugins/claude/agent/titles.mjs';
+import { ToolCallCache } from '../../../plugins/claude/agent/tools.mjs';
 import { ClaudeSessionLimits, accountHash } from '../../../plugins/claude/agent/limits.mjs';
 import { fixtureSdk, queries } from './fixture-sdk.mjs';
 import { substituted } from '../substitute.mjs';
@@ -253,6 +254,20 @@ test('a successful write updates the preview from SDK output and repeated text r
   assert.deepEqual(ended.content, [actual, { type: 'content', content: { type: 'text', text: 'saved' } }]);
   await c.emit({ type: 'user', message: { content: [{ ...result, content: 'saved again' }] } });
   assert.deepEqual(c.updates().at(-1).content, [actual, { type: 'content', content: { type: 'text', text: 'saved again' } }]);
+});
+
+test('an evicted tool result cannot overwrite the diff already sent to the client', async t => {
+  const c = await setup(t); await c.open();
+  c.session.tools = new ToolCallCache({ maxCompleted: 1 });
+  for (const id of ['first', 'second']) {
+    await c.emit({ type: 'assistant', message: { id, content: [{ type: 'tool_use', id, name: 'Write', input: { file_path: '/x', content: id } }] } },
+      { type: 'user', tool_use_result: { type: 'update', filePath: '/x', originalFile: 'old', content: id, structuredPatch: [] },
+        message: { content: [{ type: 'tool_result', tool_use_id: id, content: 'saved' }] } });
+  }
+  const count = c.updates().length;
+  await c.emit({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'first', content: 'late duplicate' }] } });
+  assert.equal(c.updates().length, count);
+  assert.deepEqual(c.updates().findLast(u => u.toolCallId === 'first').content[0], { type: 'diff', path: '/x', oldText: 'old', newText: 'first' });
 });
 
 const quotaReason = "You've hit your session limit · resets 1am (Asia/Singapore)";
