@@ -1,21 +1,9 @@
-// `_coda/wait` as Coda takes it: Coda's validWait first (check/coda/domain/agent-protocol.mjs), then the rules of
+// `_coda/wait` as Coda takes it: the shared protocol's shape check first, then the stateful rules of
 // docs/agent-protocol.md「Agent 活动」. Where Coda drops a report without a word, the checker fails it: an agent that relies
 // on it is not heard.
-import { validWait, WAIT_STATES } from './coda/domain/agent-protocol.mjs';
+import { agentMessageProblem } from '@coda-console/protocol/agent';
 
 export const TERMINAL = new Set(['done', 'failed', 'cancelled']);
-const LIMITS = { sessionId: 200, waitId: 200, kind: 50, title: 500, detail: 4000, childSessionId: 200, model: 200, outputFile: 4096, toolCallId: 200 };
-
-// The first part of validWait a report fails, in words (validWait decides; this only says why).
-export function whyInvalid(p) {
-  if (!p || typeof p !== 'object' || Array.isArray(p)) return 'params 须为对象';
-  for (const key of ['sessionId', 'waitId']) if (typeof p[key] !== 'string' || !p[key]) return `缺 ${key}`;
-  if (!WAIT_STATES.has(p.state)) return `state 只能是 ${[...WAIT_STATES].join('、')}，现为 ${JSON.stringify(p.state)}`;
-  for (const [key, max] of Object.entries(LIMITS)) if (p[key] !== undefined && (typeof p[key] !== 'string' || p[key].length > max)) return `${key} 须为不超过 ${max} 字的文本`;
-  for (const key of ['stoppable', 'recurring']) if (p[key] !== undefined && typeof p[key] !== 'boolean') return `${key} 须为 true 或 false`;
-  if (p.at !== undefined && !(typeof p.at === 'string' && Number.isFinite(Date.parse(p.at)))) return `at 读不出时间：${JSON.stringify(p.at)}`;
-  return '不合 validWait';
-}
 
 export class Waits {
   constructor(say) {
@@ -27,7 +15,8 @@ export class Waits {
   get handling() { return this.open.filter(w => w.state === 'handling'); }
   // One report, in order with the session's updates; `turn`: whether a turn of Coda's was under way as it came.
   take(p, { turn }) {
-    if (!validWait(p)) { this.say.fail('wait.invalid', `_coda/wait 被 Coda 丢弃：${whyInvalid(p)}（${(JSON.stringify(p) ?? String(p)).slice(0, 160)}）`); return; }
+    const problem = agentMessageProblem('_coda/wait', p);
+    if (problem) { this.say.fail('wait.invalid', problem); return; }
     if (!this.owns(p.sessionId)) { this.say.fail('wait.session', `_coda/wait 说的会话 ${p.sessionId} 不是本会话，也不是登记过的子会话：Coda 丢弃`); return; }
     const key = `${p.sessionId}\0${p.waitId}`, known = this.waits.get(key);
     if (known && TERMINAL.has(known.state)) {
