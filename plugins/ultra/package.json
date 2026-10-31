@@ -2,8 +2,8 @@
   "name": "@coda-console/ultra",
   "id": "ultra",
   "displayName": "Ultra",
-  "description": "输入框的 Ultra 协调模式：主 Agent 负责拆解、调度和验收，实现、深入排查及测试交给 Coda 子会话执行，关键路径也委派。名单在模式的参数里改，常用的存成设置里的模板。",
-  "version": "1.2.0",
+  "description": "输入框的 Ultra 协调模式：节省主 Agent 的 Token 和上下文，非微小任务的执行默认交给 Coda 子会话，串行任务也委派。主 Agent 负责决策、调度和验收。名单在模式参数里改，常用的存成模板。",
+  "version": "1.2.1",
   "categories": ["工作流程"],
   "license": "MIT",
   "repository": {
@@ -14,7 +14,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "files": ["main.mjs", "ultra.mjs"],
+  "files": ["main.mjs", "ultra.mjs", "THIRD_PARTY_NOTICES.md"],
   "main": "main.mjs",
   "contributes": {
     "configuration": {
@@ -42,7 +42,7 @@
         "id": "ultra",
         "title": "Ultra",
         "icon": "square.stack.3d.up",
-        "hint": "主 Agent 负责拆解、调度和验收，子会话负责实现、排查和测试",
+        "hint": "节省主 Agent 的 Token，非微小任务交给子会话执行",
         "placeholder": "要完成什么？",
         "agent": "session",
         "in": ["session", "new"],

@@ -64,15 +64,14 @@ test('choosing a template fills the list; changing the list makes it the user\'s
     [{ who: { agent: 'kimi' } }]);
 });
 
-test('the agent is told it is on with the first message and whenever the parameters changed since the last, reminded every ten, and told it is off only once told it was on', async () => {
+test('the agent gets the full rules on the first message and parameter changes, a reminder on every unchanged follow-up, and off only once told it was on', async () => {
   const { ultra, told } = plugin();
   const list = templates(rows).get('均衡'), values = { template: templateValue('均衡'), subagents: list };
   // What goes with a message, Coda tells once it is taken: none the plugin keeps of its own.
   const said = async (sent, changedSinceSent = false, chosen = values) => (await ultra.send({ session, projectId: 'p1', values: chosen, sent, changedSinceSent }))?.tell ?? null;
   assert.equal(await said(0), on(list));
   assert.match(on(list), /- agent=codex model=gpt-6\.1-sol effort=ultra options=\{"service-tier":"priority"\}: 调研/);
-  for (const sent of [1, 2, 9]) assert.equal(await said(sent), null);
-  assert.equal(await said(10), STILL_ON);
+  for (const sent of [1, 2, 9, 10, 11]) assert.equal(await said(sent), STILL_ON);
   const other = { template: CUSTOM, subagents: [list[1]] };
   assert.equal(await said(11, true, other), on([list[1]]));
   await ultra.exit({ session, projectId: 'p1', sent: 12 });
