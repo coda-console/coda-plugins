@@ -224,7 +224,8 @@ describe('manifests Coda does not take', () => {
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0" targetNamespace="https://coda.pub/test">
   <process id="p" isExecutable="true"><startEvent id="start" />${body}</process>
 </definitions>`;
-    const good = flow('<scriptTask id="say" coda:timeout="1" scriptFormat="bash"><script>echo hi</script></scriptTask>');
+    const good = flow('<sequenceFlow id="to-say" sourceRef="start" targetRef="say" /><scriptTask id="say" coda:timeout="1" scriptFormat="bash"><script>echo hi</script></scriptTask>'
+      + '<sequenceFlow id="to-end" sourceRef="say" targetRef="end" /><endEvent id="end" />');
     const { report } = await checkPlugin(plugin({ files: { '.coda/workflows/hello.bpmn': good } }), { manifestOnly: true });
     assertPasses(report, ['manifest.workflows']);
     assert.match(report.items.find(item => item.rule === 'manifest.workflows').message, /流程 hello：合乎 Coda 的流程方言/);
