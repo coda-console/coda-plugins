@@ -73,3 +73,16 @@ printf '%s\\n' '\`\`\`review' '{"findings":[{"severity":"P1","title":"t"}]}' '\`
   for (const part of ['项目准则：只跑相关测试。', '只报可操作的发现', '**测试**', 'P3 低优']) assert.ok(rules.includes(part), part);
   assert.doesNotMatch(rules, /<!--|\{\{/);
 });
+
+// The plugin binds its saved preference to each card option; Coda separately tests defaults, overrides and hidden options.
+test('merge options default to the configured selection, including an explicit empty selection', () => {
+  const manifest = JSON.parse(readFileSync(new URL('../../../plugins/review/package.json', import.meta.url), 'utf8'));
+  const setting = manifest.contributes.configuration.properties['review.mergeOptions'];
+  const source = readFileSync(new URL('../../../plugins/review/.coda/workflows/pull-request.bpmn', import.meta.url), 'utf8');
+  const options = [...source.matchAll(/<coda:option default='=([^']+)' id="([^"]+)"/g)];
+  const selected = values => options.filter(([, expression]) => evaluate(expression, { vars: { review: { mergeOptions: values } } }).value === true).map(([, , id]) => id);
+  assert.deepEqual(selected(setting.default), []);
+  assert.deepEqual(selected(['deleteBranch', 'notify']), ['deleteBranch', 'notify']);
+  assert.deepEqual(selected(['deploy', 'preview', 'release']), ['deploy', 'preview', 'release']);
+  assert.deepEqual(selected([]), []);
+});
