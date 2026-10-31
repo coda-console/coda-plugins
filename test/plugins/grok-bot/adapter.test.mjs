@@ -310,6 +310,11 @@ test('Coda tools preserve whitelist, routing, authorization ticket and stable re
   await h.remote('tool', { name: 'new_session', arguments: { prompt: 'fix', agent: 'codex', project: 'code' } });
   const writes = h.calls.filter(c => c.name === 'new_session');
   assert.equal(writes[0].args.turn, 'coda-ticket'); assert.equal(writes[0].args.requestId, writes[1].args.requestId);
+  // An agent's link may name the project itself: it goes to Coda as it is, for Coda to resolve or refuse.
+  await assert.rejects(h.remote('tool', { name: 'new_session', arguments: { agent: 'codex', prompt: 'fix' } }), /project/);
+  const link = 'coda://agents/49655620-928e-4b1f-a783-7b1f306d998b?model=gpt-6-astra&project=code';
+  await h.remote('tool', { name: 'new_session', arguments: { agent: link, prompt: 'fix' } });
+  assert.deepEqual([h.calls.at(-1).name, h.calls.at(-1).args.agent, h.calls.at(-1).args.project], ['new_session', link, undefined]);
   const report = { childId: 'requester', replyTo: 'inspection', prompt: 'result', final: false };
   await h.remote('tool', { name: 'send', arguments: report });
   assert.deepEqual(Object.fromEntries(Object.keys(report).map(k => [k, h.calls.at(-1).args[k]])), report);

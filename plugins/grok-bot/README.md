@@ -44,7 +44,7 @@ node /workspace/.coda-bot/coda-bot.mjs mcp <Coda-sessionId>
 
 `net` 将 Tailscale 状态放在 `/workspace/.coda-bot/tailscale/`；缺软件时安装，恢复守护进程，必要时显示登录链接。多个 Bot 共用云电脑，MCP 命令必须指定各自的 Coda sessionId。`bind` 只确认工具绑定，不再向 Bot 交付 Coda systemPrompt。
 
-工具包括 `read_thread`、`read_tool_call`、`agents`、`status`、`workflow_status`、`workflow_list`、`telemetry`、`machines`、`machine_diagnostics`、`new_session`、`send`（MCP 名加 `coda_` 前缀）。Coda 工具调用保留完整输入输出；轮外只读调用仅写日志，不开启空轮次。`new_session` 在目标目录开独立会话，`send` 给已有会话发消息，均由 Coda 授权卡片批准；稳定 requestId、turn 票据和后台 send 结果由适配器处理。
+工具包括 `read_thread`、`read_tool_call`、`agents`、`status`、`workflow_status`、`workflow_list`、`telemetry`、`machines`、`machine_diagnostics`、`new_session`、`send`（MCP 名加 `coda_` 前缀）。Coda 工具调用保留完整输入输出；轮外只读调用仅写日志，不开启空轮次。`new_session` 在目标目录开独立会话（`agent` 可原样填用户给的 Agent 链接 `coda://agents/…`，由 Coda 解析出 Agent、机器与参数，需要支持链接的 Coda 后端），`send` 给已有会话发消息，均由 Coda 授权卡片批准；稳定 requestId、turn 票据和后台 send 结果由适配器处理。
 
 巡检按远端 Skill 先开只归因的独立会话（不改代码、不开 PR），prompt 写清现象、证据、时间和版本，要求结论、证据链、置信度与是否建议修复。下次巡检读取结论，确认需要修复的代码问题才开修复会话，引用归因会话与结论并走完仓库 PR 流程；偶发、外部因素或用户暂不处理的问题只记忆。用户指定的 Agent、暂不处理事项等也写进记忆，开会话前先读取遵守，不在 Skill 固定模型或推理强度。卡片审批、不重复开会话、不轮询等规则照旧；GitHub 只读限制只约束 Bot 自己。
 

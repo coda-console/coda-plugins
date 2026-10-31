@@ -134,9 +134,10 @@ test('MCP new_session exposes independent-session parameters and removes spawn/c
   t.after(() => { rpc.close(); lines.close(); input.end(); output.end(); });
   const tools = (await rpc.request('tools/list', {})).tools;
   const create = tools.find(tool => tool.name === 'coda_new_session');
-  assert.deepEqual(create.inputSchema.required, ['project', 'agent', 'prompt']);
-  assert.deepEqual(Object.keys(create.inputSchema.properties).sort(), ['project', 'agent', 'prompt', 'title', 'model', 'effort', 'mode', 'options'].sort());
-  assert.equal((await rpc.request('tools/call', { name: create.name, arguments: { agent: 'codex', prompt: 'fix' } })).isError, true);
+  // project may be left to the agent's link that names it; Coda refuses a call that names none.
+  assert.deepEqual(create.inputSchema.required, ['agent', 'prompt']);
+  assert.deepEqual(Object.keys(create.inputSchema.properties).sort(), ['project', 'agent', 'prompt', 'title', 'model', 'effort', 'mode', 'options', 'checkout'].sort());
+  assert.equal((await rpc.request('tools/call', { name: create.name, arguments: { prompt: 'fix' } })).isError, true);
   const args = { project: 'remote-project-id', agent: 'codex', mode: 'agent', model: 'model-id', effort: 'high', title: 'Fix issue', prompt: 'Evidence and PR acceptance', options: { custom: true } };
   await rpc.request('tools/call', { name: create.name, arguments: args });
   assert.deepEqual(calls, [{ method: 'tool', params: { name: 'new_session', arguments: args } }]);
