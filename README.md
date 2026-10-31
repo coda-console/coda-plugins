@@ -18,7 +18,7 @@ plugins/codex-accounts/  Codex 多账号：管理登录、自动续期与账号�
 plugins/cursor/          Cursor：在运行机的 cursor-agent acp 与 Coda 之间转发，送入会话指令
 plugins/host/            宿主资源：Xcode 构建、Apple 模拟器与项目要求排队的命令共用这台机器的一组名额（组 host、持锁执行 run-held、host-sim），面板「构建与模拟器名额」
 plugins/magpie/          Magpie：把本机的 Magpie 网关作为模型服务提供给 Pi 等插件，安装时装好 Magpie 并让网关常驻
-plugins/network-log/     网络记录：只记录不拦截，每秒读连接表记下建连卡住的连接（进程、对端、网卡、mihomo 有没有收到），每分钟分段探测常用服务
+plugins/network-log/     网络记录：默认关闭，按需开启建连等待与定时探测采集；关闭后仍可查看历史
 plugins/review/          PR 生命流程：会话开的 PR 先跑项目的检查、再交叉评审，你批准后合并、部署与发布；也是写 PR 流程的样例
 plugins/testbed/         测试机：长插在 Mac 上的 iPhone、iPad 只经 use-testbed 使用，排到后装 App、交给会话操作、用完切黑屏；依赖宿主资源
 plugins/ultra/           Ultra：输入框的 Ultra 模式，主 Agent 主动把能并行的活按名单派给子会话，汇总后验证；名单与模板在模式参数和设置里
@@ -399,7 +399,7 @@ gh workflow run publish.yml --repo coda-console/coda-plugins --ref main
 
 ## 契约检查
 
-扮演 Coda 去读一个插件目录：清单对 Coda 的类型 schema 校验，Agent 照 Coda 的样子启动、说 Coda 说的话，面板由 Coda 的资源插件模块读一次。
+扮演 Coda 去读一个插件目录：清单对 Coda 的类型 schema 校验，流程按 Coda 的流程方言读，Agent 照 Coda 的样子启动、说 Coda 说的话，面板由 Coda 的资源插件模块读一次。
 插件写的合乎它用到的类型就对：清单的写法只在协议包 `@coda-console/protocol`（[coda-console/coda-protocol](https://github.com/coda-console/coda-protocol)）的 schema 里，由 Coda 自己用的同一个校验器判，
 检查包不另写规则，Coda 加字段只是改 schema。`check/coda/` 是 Coda 文件的原样副本（见[契约副本](#契约副本)），检查包手写的只有怎样扮演 Coda、怎样判。
 只在装到一台机器上才知道的（仓库里扫不扫得到、npm 锁文件、和那台已装插件冲突）是那台 Coda 安装时说的，不是插件类型的问题，检查不跑。
@@ -414,7 +414,7 @@ npx github:coda-console/coda-plugins#<提交> <插件目录>
 
 | 级 | 要不要登录 | 查什么 |
 | --- | --- | --- |
-| 清单（总是） | 不要 | `package.json` 对 Coda 的类型 schema 校验（`manifestProblem`），再照 Coda 读成插件（`readPlugin`：ID、设置名在 ID 之下）；写给别的插件扩展点的键，要有 Coda 自带的或旁边依赖的插件声明这个类型。另有只提醒的：分类、版本、图标页面太小、旧的 Agent ID `claude`。面板声明由资源插件的 `panelEntries` 读 |
+| 清单（总是） | 不要 | `package.json` 对 Coda 的类型 schema 校验（`manifestProblem`），再照 Coda 读成插件（`readPlugin`：ID、设置名在 ID 之下）；写给别的插件扩展点的键，要有 Coda 自带的或旁边依赖的插件声明这个类型。面板写法按资源插件给扩展点 `panels` 带的 schema 查。`.coda/workflows/` 里的每个流程（含能力）按协议的流程方言读（`workflowProblem`）：不是 BPMN、认不出的 `coda:` 属性或元素、没有的动作或动作不接受的参数都算失败。另有只提醒的：分类、版本、图标页面太小、旧的 Agent ID `claude` |
 | 握手（默认） | 不要 | `sh -c` 启动 `command`（环境是 Coda 的 `pluginEnv` 给的：`CODA_NODE`、`CODA_PLUGIN_PATH`、临时的 `CODA_PLUGIN_STATE`、设置默认值的 `CODA_PLUGIN_SETTINGS`；依赖的插件在旁边（同一个父目录里同名的目录）时 `CODA_PLUGIN_DEPENDENCIES` 给它的目录，Coda 自带的不在这里、不给），发与 Coda 相同的 `initialize`，要求 `protocolVersion` 为 1、声明会话指令（`sessionCapabilities.systemPrompt`，没声明算失败）；`session/new` 带会话指令，给出会话与当前模型，回 -32000 记为未登录、跳过后面的检查（不算失败）；像 Coda 一样对进程组发 SIGTERM，5 秒内要退出（超过 0.8 秒提醒）；另起一个进程，关掉标准输入后 5 秒内不退出只提醒。面板由 Coda 资源插件的 `Panels` 读一次（30 秒），输出合格式 |
 | 一轮（`--live`） | 要 | 第一轮问会话指令里的检查词（一个随机词），回复里要有它；再发一轮提示词（默认「只回复 ok」）收到 `stopReason`；每条 `session/update` 过 ACP SDK 的 schema；`_coda/wait` 按 Coda 的 `validWait` 与协议的规则核对（子 Agent 不带 `childSessionId`、定时不带 `at` 只提醒）；审批与提问一律回拒绝，在一轮之外发来的算失败；再发一轮并 `session/cancel`，30 秒内要结束，读到取消后还在做事或拖过 5 秒才答复却不回 `cancelled` 算失败（见下）；有自主轮次的也取消一次；声明插话的，一轮结束后插话要回 `promptRequired` 且不自己另开一轮，一轮进行中插话要回 `injected` 或 `promptRequired`（`injected` 的那一轮照常回 `stopReason`）；声明 `loadSession` 的，新开进程 `session/load`（同样带会话指令）要成功，随后在新进程里再跑一轮也要收到 `stopReason` |
 

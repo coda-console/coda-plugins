@@ -1,15 +1,15 @@
 {
-  "commit": "576291d3c0d5400f7e89db50711aa98f5c4f6447",
+  "commit": "7a6850681534da5b80d166865fbc2f5ba356b3b6",
   "packages": {
     "@0dep/piso": "5.2.0",
     "@agentclientprotocol/sdk": "1.4.0",
-    "@coda-console/protocol": "1.1.0",
+    "@coda-console/protocol": "1.4.0",
     "yaml": "2.9.1"
   },
   "files": {
-    "check/coda/components/plugins/agent-plugins.mjs": "e4b05f8c5601d812eba278bed21e0fee13ce6760c812162c76f1ab253cdd4e4f",
+    "check/coda/components/plugins/agent-plugins.mjs": "d117702f83c988aa89c2e5ae26aafd6ae3e8ba0829adaeedf9e8640f5f8282be",
     "check/coda/components/plugins/plugin-extensions.mjs": "91badae3de3c5a015d83d425def2593ffcd451576fb5f07309888f09d3157b52",
-    "check/coda/components/plugins/plugin-rules.mjs": "f91c2426eb655091c3ac2df5d99efe726de66ec318186f40f657c6edf683ddbe",
+    "check/coda/components/plugins/plugin-rules.mjs": "eb4ba82ea871c03116a4edfe84ef6e423d15a17bcd66c56e732af6255f9624dd",
     "check/coda/components/plugins/plugin-source-rules.mjs": "4eedfd024c0824b1fed78be106f1a2827ffc3dd35ac0c69b8b0c61a59af42efd",
     "check/coda/components/plugins/skill-document.mjs": "c5b5e815c42cd836572f7b60e22a46af6ac607fd9df0170fa36f955825636ce6",
     "check/coda/components/prompt-recovery/prompt-recovery.mjs": "f43f21d24c19a58113d3304f9248225b12080ab00ed15eab74bf7b94642732de",
@@ -24,6 +24,6 @@
     "check/coda/resources/plugins/resources/panels/panels.mjs": "9e25cfbc16ed9f68101fc7bfc34b8056c13a29d2368c5561e65e333233eb921e",
     "check/coda/resources/plugins/resources/panels/rules.mjs": "8418ed83b796f18047c154d8dea8dca7d98244af8ddfe3ddf188520c59324ee8",
     "check/coda/resources/plugins/resources/panels/sign-in.mjs": "1271a24e33b1b882a1fb9bee03b8e240db8b9bee1b5208f0e1c84499cfb1be7e",
-    "check/coda/builtin.json": "de593e6240f9c5e4881a7142facc4ed13abdc6921ad3cdba0c4e962a15e277e0"
+    "check/coda/builtin.json": "65375d1d8bd394ff5ffb6c3f803b53dffa3c9e17bfdc35b44daefd5dcf9e1790"
   }
 }

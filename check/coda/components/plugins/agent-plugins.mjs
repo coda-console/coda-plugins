@@ -14,6 +14,7 @@ export function agentDeclarations(raw = [], dir) {
     id: agent.id, displayName: agent.displayName,
     icon: { light: icon(dir, agent.icon.light), ...(agent.icon.dark !== undefined ? { dark: icon(dir, agent.icon.dark) } : {}), template: agent.icon.template === true },
     command: agent.command,
+    ...(agent.lifecycle !== undefined ? { lifecycle: agent.lifecycle } : {}),
     modes: Object.fromEntries(MODES.filter(key => agent.modes?.[key] !== undefined).map(key => [key, agent.modes[key]])),
     ...(agent.skillsDir !== undefined ? { skillsDir: normalize(agent.skillsDir) } : {}),
     configFiles: [...(agent.configFiles ?? [])],

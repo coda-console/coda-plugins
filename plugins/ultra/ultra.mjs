@@ -46,16 +46,20 @@ export function on(subagents) {
   return [
     'The user turned on proactive delegation (Ultra). Any earlier instruction to start Coda sessions only when asked no longer applies; ' +
       'it stays on until you are told it is off. What the user asks in a message overrides it.',
+    'While Ultra is on, delegate only through Coda\'s `spawn`, even when using your own agent and model. ' +
+      'Do not use the runtime\'s native subagent or delegation tools unless the user explicitly requests them. ' +
+      'If Coda\'s `spawn` is unavailable or refuses because too many sessions are at work, do the work yourself or wait for an existing Coda session to finish; ' +
+      'do not fall back to native subagents.',
     'When part of the work can run alongside yours and handing it off saves time or improves quality, start a Coda session for it with `spawn`. ' +
       'First make a short plan: keep the step you are blocked on, hand off side tasks. Give each session a concrete, self-contained task; for code, ' +
-      'a write scope no other session touches. Go on with your own part while they work; results come back on their own. Do not redo what a session did. ' +
-      'A spawn refused because too many sessions are at work is yours to do, or to start again once one is done.',
+      'a write scope no other session touches. Go on with your own part while they work; results come back on their own. Do not redo what a session did.',
     subagents.length
       ? `Choose each session's agent from this list by what the task is, giving spawn these values; for work it does not cover, use your own agent and model:\n${subagents.map(line).join('\n')}`
-      : 'Start each session with your own agent and model.',
+      : 'Start each Coda session with `spawn` using your own agent and model.',
   ].join('\n\n');
 }
-export const STILL_ON = 'Proactive delegation (Ultra) is still on.';
-export const OFF = 'The user turned off proactive delegation (Ultra): start Coda sessions only when the user, AGENTS.md or a skill asks for it.';
+export const STILL_ON = 'Proactive delegation (Ultra) is still on: delegate only through Coda\'s `spawn`, not native subagent tools, unless the user explicitly requests them.';
+export const OFF = 'The user turned off proactive delegation (Ultra): its Coda-only delegation rule no longer applies; follow the usual delegation instructions. ' +
+  'Start Coda sessions only when the user, AGENTS.md or a skill asks for it.';
 // How many messages go by between reminders that it is still on.
 export const REMIND_EVERY = 10;

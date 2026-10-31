@@ -53,6 +53,7 @@ function problems() {
   for (const machine of coda.machines) if (machine.unreachable) lines.push(`读不到 ${machine.name}：${machine.unreachable}`);
   for (const { machine, object } of store.status.values()) {
     const who = several() ? `${machine.name}：` : '';
+    lines.push(`${who}${object.enabled ? '正在采集网络记录' : '采集已关闭，可在插件设置中打开「采集网络记录」。历史记录仍可查看'}`);
     if (object.supported === false) lines.push(`${who}这台的系统不支持读连接表，只做定时探测`);
     if (object.mihomo && object.mihomo !== 'ok' && object.mihomo !== 'off') lines.push(`${who}问不到 mihomo（${object.mihomo}），记不了连接有没有经过它`);
     if (object.unwritten) lines.push(`${who}记录写不进磁盘（${object.unwritten.error}），${object.unwritten.count} 条先留在内存里，能写时补上`);
@@ -64,7 +65,7 @@ function hangsSection(from, now) {
   const hangs = [...store.hangs.values()].filter(({ object }) => object.at >= from).sort((a, b) => b.object.at - a.object.at);
   return h('section', {}, h('h2', {}, '建连卡住', hangs.length ? h('span', { class: 'count' }, String(hangs.length)) : null),
     hangs.length ? h('ul', { class: 'list' }, hangs.map(({ machine, object }) => hangRow(machine, object, now)))
-      : h('p', { class: 'empty' }, `${range.label}内没有卡住的连接`));
+      : h('p', { class: 'empty' }, `${range.label}内没有建连等待记录`));
 }
 function hangRow(machine, hang, now) {
   const ended = endText(hang) ?? `还在等，已 ${seconds(now - hang.at)}`;
@@ -84,7 +85,7 @@ function probesSection(from, now) {
   const targets = [...store.targets.values()].sort((a, b) => machineName(a.machine.id).localeCompare(machineName(b.machine.id)) || a.object.target.localeCompare(b.object.target));
   return h('section', {}, h('h2', {}, '定时探测'),
     targets.length ? h('ul', { class: 'list' }, targets.map(({ machine, object }) => targetRow(machine, object, from, now)))
-      : h('p', { class: 'empty' }, '还没有探测记录：插件每分钟探测设置里的地址'));
+      : h('p', { class: 'empty' }, '还没有探测记录；开启采集后每分钟探测设置里的地址'));
 }
 function targetRow(machine, target, from, now) {
   const buckets = target.buckets.filter(b => b[0] + 600_000 > from), total = buckets.reduce((n, b) => n + b[1], 0), failed = buckets.reduce((n, b) => n + b[2], 0);

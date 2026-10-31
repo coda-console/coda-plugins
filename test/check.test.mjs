@@ -217,6 +217,23 @@ describe('manifests Coda does not take', () => {
       await manifestFails({ manifest: { name: 'liar', id } }, 'manifest.read', /\bid[ ：]/);
     }
   });
+  // Its workflows are read with Coda's dialect of BPMN (the protocol's): one written in it passes, and each thing the
+  // dialect does not have fails, on the workflow's own line.
+  test('its workflows are of Coda\'s dialect of BPMN', async () => {
+    const flow = body => `<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0" targetNamespace="https://coda.pub/test">
+  <process id="p" isExecutable="true"><startEvent id="start" />${body}</process>
+</definitions>`;
+    const good = flow('<scriptTask id="say" coda:timeout="1" scriptFormat="bash"><script>echo hi</script></scriptTask>');
+    const { report } = await checkPlugin(plugin({ files: { '.coda/workflows/hello.bpmn': good } }), { manifestOnly: true });
+    assertPasses(report, ['manifest.workflows']);
+    assert.match(report.items.find(item => item.rule === 'manifest.workflows').message, /流程 hello：合乎 Coda 的流程方言/);
+    await manifestFails({ files: { '.coda/workflows/typo.bpmn': flow('<scriptTask id="say" coda:timout="1" scriptFormat="bash"><script>echo hi</script></scriptTask>') } },
+      'manifest.workflows', /^typo\.bpmn 有无法识别的内容：unknown attribute <coda:timout>/);
+    await manifestFails({ files: { '.coda/workflows/act.bpmn': flow('<serviceTask id="go" coda:action="deploy-everything" />') } },
+      'manifest.workflows', /^go：coda:action 只能是 /);
+    await manifestFails({ files: { '.coda/workflows/broken.bpmn': '<definitions' } }, 'manifest.workflows', /^broken\.bpmn 不是有效的 BPMN 2\.0/);
+  });
   test('the events it publishes are said', async () => {
     const { report } = await checkPlugin(plugin({ manifest: { contributes: { events: [{ name: 'deploy.started' }, { name: 'deploy.ended', starts: false, ends: true }] } } }), { manifestOnly: true });
     assert.deepEqual(failed(report), []);
