@@ -1,6 +1,6 @@
 // What Ultra tells the agent, and how its parameters move (README.md): the templates the setting lists, the parameters a
-// mode entered offers, and the three things said — on, still on, off — modelled on Codex's proactive multi-agent mode and
-// Claude Code's Ultracode. Nothing here talks to Coda: main.mjs does.
+// mode entered offers, and the three things said — on, still on, off. Ultra makes this session the coordinator and its
+// Coda child sessions the executors. Nothing here talks to Coda: main.mjs does.
 
 // What the parameter 模板 holds: a template, by its name, or the list made by hand. Apart, so that no name a template is
 // given is taken for the hand-made list; each is shown by its label, the hand-made one as 自定义.
@@ -44,22 +44,32 @@ function line({ who, when }) {
 
 export function on(subagents) {
   return [
-    'The user turned on proactive delegation (Ultra). Any earlier instruction to start Coda sessions only when asked no longer applies; ' +
-      'it stays on until you are told it is off. What the user asks in a message overrides it.',
+    'The user turned on Ultra coordinator mode for this session. It stays on until you are told it is off. ' +
+      'Any earlier instruction to start Coda sessions only when asked no longer applies. Explicit user instructions override these rules; ' +
+      'an ordinary request to implement work does not itself override your coordinator role.',
+    'Your work is to understand requirements, decompose tasks, define interfaces and acceptance criteria, dispatch workers, inspect their evidence, ' +
+      'assign follow-ups and summarize results. Delegate implementation, detailed investigation, test writing, test/build execution and failure fixes, ' +
+      'including critical-path work. Do not edit deliverable files or take worker tasks back under integration or verification. ' +
+      'Small targeted reads and read-only spot checks for planning or acceptance are allowed; broader exploration, integration edits and validation go to workers.',
     'While Ultra is on, delegate only through Coda\'s `spawn`, even when using your own agent and model. ' +
-      'Do not use the runtime\'s native subagent or delegation tools unless the user explicitly requests them. ' +
-      'If Coda\'s `spawn` is unavailable or refuses because too many sessions are at work, do the work yourself or wait for an existing Coda session to finish; ' +
-      'do not fall back to native subagents.',
-    'When part of the work can run alongside yours and handing it off saves time or improves quality, start a Coda session for it with `spawn`. ' +
-      'First make a short plan: keep the step you are blocked on, hand off side tasks. Give each session a concrete, self-contained task; for code, ' +
-      'a write scope no other session touches. Go on with your own part while they work; results come back on their own. Do not redo what a session did.',
+      'Do not use the runtime\'s native subagent or delegation tools unless the user explicitly requests them.',
+    'Make a short plan and delegate worker tasks even when they must run sequentially. Give each child a concrete, self-contained task, ' +
+      'acceptance criteria and a write scope no other active session touches. In its task, explicitly tell it to act as an executor: ' +
+      'do the assigned work itself, do not inherit your coordinator-only role, and do not delegate further unless explicitly assigned to do so; ' +
+      'any further delegation must also use Coda. Results come back on their own. Review the evidence and assign fixes to workers; do not redo their work.',
+    'If `spawn` refuses because concurrency is full, wait for an existing Coda session to finish and free a slot. ' +
+      'If `spawn` is unavailable, report the blocker and continue only coordination that does not depend on it. ' +
+      'Neither case permits taking over worker tasks or falling back to native subagents.',
     subagents.length
       ? `Choose each session's agent from this list by what the task is, giving spawn these values; for work it does not cover, use your own agent and model:\n${subagents.map(line).join('\n')}`
       : 'Start each Coda session with `spawn` using your own agent and model.',
   ].join('\n\n');
 }
-export const STILL_ON = 'Proactive delegation (Ultra) is still on: delegate only through Coda\'s `spawn`, not native subagent tools, unless the user explicitly requests them.';
-export const OFF = 'The user turned off proactive delegation (Ultra): its Coda-only delegation rule no longer applies; follow the usual delegation instructions. ' +
+export const STILL_ON = 'Ultra coordinator mode is still on: keep planning, dispatch and acceptance in this session; ' +
+  'delegate implementation, detailed investigation, tests/builds and fixes, including critical-path work, only through Coda\'s `spawn`. ' +
+  'Tell children to execute their tasks, not inherit your coordinator role. Wait when concurrency is full; report unavailable spawn. ' +
+  'Do not take over worker tasks or use native subagent tools unless the user explicitly overrides these rules.';
+export const OFF = 'The user turned off Ultra: its coordinator-only role and Coda-only delegation rule no longer apply; follow the usual execution and delegation instructions. ' +
   'Start Coda sessions only when the user, AGENTS.md or a skill asks for it.';
 // How many messages go by between reminders that it is still on.
 export const REMIND_EVERY = 10;
