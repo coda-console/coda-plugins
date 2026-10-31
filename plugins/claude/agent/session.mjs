@@ -165,8 +165,9 @@ export class ClaudeSession {
         settings: { crossSessionInbound: 'refuse' },
         includePartialMessages: true, forwardSubagentText: true, cwd: dir,
         ...(Object.keys(servers).length ? { mcpServers: servers } : {}), ...(additionalDirectories.length ? { additionalDirectories } : {}),
+        // Identify Coda even when a parent supplied an SDK label (anthropics/claude-code#97074).
         // Claude Code reports running and idle only when asked: idle is what ends a task's wait.
-        env: { ...environment, CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1' },
+        env: { ...environment, CLAUDE_CODE_ENTRYPOINT: 'coda', CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1' },
         // Stop supplies the complete list of scheduled wakeups. A CronCreate result alone cannot tell whether one was later
         // deleted or fired.
         hooks: { Stop: [{ hooks: [async input => {
