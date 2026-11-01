@@ -60,7 +60,7 @@ Coda 插件页的「商店」列出 Coda 自带的插件，以及 npm 上 `@coda
 | 插件 | npm 依赖（与 Coda 后端同版本） | 运行机上另要 |
 | --- | --- | --- |
 | `codex` | `@agentclientprotocol/codex-acp` 1.12.0、`@openai/codex` 0.165.0；`overrides` 让 codex-acp 用同一个 `@openai/codex` | — |
-| `claude` | `@agentclientprotocol/sdk` 1.4.0、`@anthropic-ai/claude-agent-sdk` 0.3.296（平台二进制是 SDK 自己的可选依赖） | — |
+| `claude` | `@agentclientprotocol/sdk` 1.4.0、`@anthropic-ai/claude-agent-sdk` 0.3.312（平台二进制是 SDK 自己的可选依赖） | — |
 | `codex-accounts` | `proper-lockfile` 4.1.2；用依赖插件 `codex` 的 Codex CLI | 无；依赖 `codex` 插件 |
 | `kimi` | 无 | Kimi CLI 2.1.1 及以上（设置动作安装或升级；面板可从 Coda 安装、登录） |
 | `grok` | 无 | Grok CLI 1.0.52 及以上（设置动作安装或升级；面板可从 Coda 安装、登录） |
