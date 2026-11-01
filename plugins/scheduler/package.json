@@ -8,7 +8,8 @@
   "type": "module",
   "main": "main.mjs",
   "activationEvents": ["onStartupFinished"],
-  "contributes": { "skills": ["skills/execution-scheduling"] },
+  "contributes": {
+    "protocolImplementations": [{ "kind": "execution", "version": 1 }], "skills": ["skills/execution-scheduling"] },
   "engines": { "node": ">=24" },
   "license": "MIT",
   "repository": {

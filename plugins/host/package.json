@@ -71,6 +71,13 @@
     },
     "skills": [
       "skills/host-slots"
+    ],
+    "protocolImplementations": [
+      {
+        "kind": "executor",
+        "version": 1,
+        "id": "host"
+      }
     ]
   },
   "license": "MIT",
@@ -94,7 +101,7 @@
     "onStartupFinished"
   ],
   "dependencies": {
-    "@coda-console/protocol": "2.2.0"
+    "@coda-console/protocol": "2.3.0"
   },
   "extensionDependencies": [
     "git"

@@ -1,6 +1,6 @@
 # 执行调度
 
-`scheduler` 通过 `startScheduler(coda)` 在请求持有后端进程内装配；插件宿主入口复用同一实现。依赖 Coda 登记的 `executor` / `execution` 公共协议，不依赖安装 host。
+`scheduler` 通过 `startScheduler(coda)` 在请求持有后端进程内装配；插件宿主入口复用同一实现。依赖 Coda 登记的 `executor` / `execution` 公共协议，不依赖安装 host。清单声明 `contributes.protocolImplementations: [{kind: "execution", version: 1}]`；Coda 按协议和主版本授权，不认 scheduler 插件名。
 只对 `execution` 的 `local` 集合登记办事员；读取 `executor` 的 `available` 集合，并用 `local` 集合识别本机候选。
 引用是 `{kind,id}`，插件不解析引用中的机器归属，也不读取空间配置。它不提供另一套运行队列、名额账本或执行进程。
 

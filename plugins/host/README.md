@@ -2,7 +2,7 @@
 
 ## 运行器与执行请求
 
-Coda 持有公共 `executor`／`execution` 类型并创建、取消执行请求。host 通过 `protocols.implement({kind: 'executor', id: 'host'})` 增强 Coda 已有的本机运行器，不创建第二个名额池；仅执行从其他持有方收到、绑定给这个运行器的请求。本机正本由 Coda 现有 runner 执行，不经过 host worker。需要协议包 2.2.0、Coda 的公共类型与 `implement` 接口、git 插件及本机资源账本。
+Coda 持有公共 `executor`／`execution` 类型并创建、取消执行请求。host 在清单声明 `contributes.protocolImplementations: [{kind: "executor", version: 1, id: "host"}]`，通过 `protocols.implement({kind: 'executor', id: 'host'})` 增强 Coda 已有的本机运行器，不创建第二个名额池；仅执行从其他持有方收到、绑定给这个运行器的请求。本机正本由 Coda 现有 runner 执行，不经过 host worker。需要协议包 2.3.0、Coda 的公共类型与 `implement` 接口、git 插件及本机资源账本。
 
 `host.enabled` 控制是否接活，默认 true；`host.capacity` 配置名额数；`host.labels` 是逗号分隔的自定义标签。系统／CPU、Node、Xcode、可用模拟器 runtime 与图形会话由本机探测，每分钟刷新，不启动模拟器。容量和占用订阅 `concurrency-groups`，包括流程与 run-held，公布值不构成预留。Coda 本机命名资源组的数据保留在同一个 executor 上；跨机请求不映射命名组。停止接活不终止已接收的任务。
 
