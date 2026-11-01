@@ -3,7 +3,7 @@
   "id": "host",
   "displayName": "宿主资源",
   "description": "本机运行器：公布能力与名额，执行绑定给本机的请求；Xcode 构建、模拟器和项目命令共用本实例名额，保留 run-held 与 host-sim。",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "categories": [
     "机器与资源"
   ],
