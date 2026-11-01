@@ -69,10 +69,34 @@ for (const createdAt of ['2026-11-01T00:00:00Z', '2026-10-31T00:00:00Z']) {
 
 test('pending assignments consume estimates, admission is not double counted, exclusive blocks successors', () => {
   const e = executor('local', 2), pending = assigned();
-  assert.equal(budget([e], [pending]).get('local'), 1);
+  assert.equal(budget([e], [pending]).get('local').slots, 1);
   const running = assigned({ assignmentId: 'a', admission: { slots: [0] }, phase: 'running' });
-  assert.equal(budget([executor('local', 1, { capacity: { slots: 2 }, occupied: { slots: 1 } })], [running]).get('local'), 1);
-  assert.equal(budget([e], [running, pending]).get('local'), 0);
-  assert.equal(budget([e], [assigned({}, { exclusiveResources: ['slots'] })]).get('local'), 0);
-  assert.equal(budget([e], [assigned({ phase: 'finished', outcome: 'rejected', assignmentId: 'a' })]).get('local'), 2);
+  assert.equal(budget([executor('local', 1, { capacity: { slots: 2 }, occupied: { slots: 1 } })], [running]).get('local').slots, 1);
+  assert.equal(budget([e], [running, pending]).get('local').slots, 0);
+  assert.equal(budget([e], [assigned({}, { exclusiveResources: ['slots'] })]).get('local').slots, 0);
+  assert.equal(budget([e], [assigned({ phase: 'finished', outcome: 'rejected', assignmentId: 'a' })]).get('local').slots, 2);
+});
+
+
+test('placement never falls back; named groups are local and each capability must be advertised', () => {
+  const enhanced = executor('local', 0, { executionFeatures: { exclusive: true, noResources: true, namedResources: true, context: true },
+    capacity: { slots: 1, 'group:device': 1 }, available: { slots: 0, 'group:device': 1 }, occupied: { slots: 1, 'group:device': 0 } });
+  const remote = executor('remote', 5);
+  for (const placement of [{ locality: 'local' }, { executor: { kind: 'executor', id: 'local' } }])
+    assert.equal(choose({ ...spec, placement }, [enhanced, remote], { local }).reason.code, 'capacity');
+  assert.equal(choose({ ...spec, placement: { executor: { kind: 'executor', id: 'missing' } } }, [enhanced, remote], { local }).reason.code, 'placement_unavailable');
+  assert.equal(choose({ ...spec, resources: {} }, [enhanced, remote], { local }).executor.id, 'local');
+  assert.equal(choose({ ...spec, resources: {} }, [remote], { local }).reason.code, 'execution_features_unavailable');
+  assert.equal(choose({ ...spec, context: { outputNames: ['answer'] } }, [remote], { local }).reason.code, 'execution_features_unavailable');
+  assert.equal(choose({ ...spec, resources: { 'group:device': 1 } }, [enhanced, remote], { local }).executor.id, 'local');
+  assert.equal(choose({ ...spec, resources: { 'group:device': 1 } }, [remote], { local }).reason.code, 'named_resource_local_only');
+  assert.equal(choose({ ...spec, resources: {}, exclusiveResources: ['slots'] }, [enhanced], { local }).reason.code, 'unsupported_resources');
+});
+
+test('unmetered assignments consume no slot and named groups have separate capacity estimates', () => {
+  const e = executor('local', 2, { capacity: { slots: 2, 'group:device': 1 }, available: { slots: 2, 'group:device': 1 } });
+  const unmetered = assigned({}, { resources: {} });
+  const device = assigned({}, { resources: { 'group:device': 1 }, exclusiveResources: ['group:device'] });
+  assert.deepEqual(budget([e], [unmetered]).get('local'), { slots: 2, 'group:device': 1 });
+  assert.deepEqual(budget([e], [unmetered, device]).get('local'), { slots: 2, 'group:device': 0 });
 });

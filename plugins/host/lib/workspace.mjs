@@ -30,14 +30,16 @@ export async function inside(root, path = '.') {
 // sourceKey includes the source work-copy instance, NOT its origin URL, snapshot or commit.
 // The slot comes from the host ledger. No local counter or scheduler guess can allocate it.
 export async function prepareWorkspace({ root, source, slot, attempt, signal, runGit = git, prepared = async () => {} }) {
-  if (!Number.isSafeInteger(slot) || slot < 0) throw new Error('账本未提供有效名额序号');
+  if (slot !== null && (!Number.isSafeInteger(slot) || slot < 0)) throw new Error('账本未提供有效名额序号');
   const key = source ? source.key : `empty:${attempt}`;
   if (typeof key !== 'string' || !key) throw new Error('源码缺少工作副本身份');
-  const workspace = join(root, 'workspaces', digest(key), String(slot));
+  // Unmetered attempts cannot share a slot cache: each receives its own isolated workspace.
+  const parts = slot === null ? ['attempts', digest(attempt), 'workspace'] : ['workspaces', digest(key), String(slot)];
+  const workspace = join(root, ...parts);
   await mkdir(workspace, { recursive: true });
   // Check the cache root itself before running destructive git operations (a previous task can leave links).
   const safeRoot = await realpath(root), safePath = await realpath(workspace);
-  if (safePath !== join(safeRoot, 'workspaces', digest(key), String(slot))) throw new Error('缓存目录不能由符号链接重定向');
+  if (safePath !== join(safeRoot, ...parts)) throw new Error('缓存目录不能由符号链接重定向');
   await prepared(workspace);
   if (!source) return workspace;
   if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(source.commit)) throw new Error('源码须为完整提交号');

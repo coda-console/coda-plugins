@@ -1,15 +1,15 @@
 # 执行调度
 
-`scheduler` 运行在请求持有后端的插件宿主，依赖 `host` 登记的 `executor` / `execution` 公共协议。
+`scheduler` 通过 `startScheduler(coda)` 在请求持有后端进程内装配；插件宿主入口复用同一实现。依赖 Coda 登记的 `executor` / `execution` 公共协议，不依赖安装 host。
 只对 `execution` 的 `local` 集合登记办事员；读取 `executor` 的 `available` 集合，并用 `local` 集合识别本机候选。
 引用是 `{kind,id}`，插件不解析引用中的机器归属，也不读取空间配置。它不提供另一套运行队列、名额账本或执行进程。
 
 ## 选择政策
 
 - 依序处理请求；没有满足条件的候选时保持未绑定，写 `queued` 和原因。不满足某个请求的运行器仍可处理其他请求。
-- executor 必须启用、满足全部需求标签（配置标签与探测标签的并集），且 status 报告 `accepting: true` 与足够的 `available.slots`。
-- 有空位时本机优先；同属本机或同属其他后端时，选空位最多的，再以不透明引用 ID 稳定排序。
-- 首版仅 `slots: 1`；独占须报告支持独占，且无占用、所有名额空闲。未完成的本机绑定会保守扣减调度估计，避免同一旧状态被这一持有端反复填满。
+- executor 必须启用、满足全部需求标签（配置标签与探测标签的并集），且 status 报告 `accepting: true` 与所申请资源的足够可用量。
+- `placement.locality: local` 和 `placement.executor` 是硬约束，没有候选就排队，不隐式放宽；符合约束且有空位时本机优先；同属本机或同属其他后端时，选空位最多的，再以不透明引用 ID 稳定排序。
+- 资源可为 `{}`、`{slots: 1}` 或一个 `group:<name>: 1`；无资源请求不扣名额，命名组只选择本机。运行器须明确声明支持无资源、命名组及运行上下文。独占须报告支持独占，且无占用、所有名额空闲。未完成的本机绑定会保守扣减调度估计，避免同一旧状态被这一持有端反复填满。
 - 容量状态不是预留，scheduler 不获取名额；执行方开跑前仍经本机账本最终准入。没有基于时钟的在线推断。
 
 严格 FIFO 只采用持有方赋予对象信封的只读 `creationSequence`，不使用首次观察顺序、对象 ID、revision 或插件计数器替代。
@@ -29,7 +29,7 @@
 host 当前可能在最终准入冲突时报告已绑定的 `queued/capacity`；这种回答会继续等待原执行方，并不触发改派。
 
 未绑定时收到 `spec.cancel: true`，直接写 `finished/cancelled`；已绑定时保留取消意图，由执行方处理进程、收尾及结果。
-生产方经 host 的本机取消入口写单向意图（`POST /v1/plugins/host/services/execution/requests/<id>/cancel`，正文带当前 `revision`）。
+生产方由 Coda 在请求正本写取消意图，host 不提供创建／取消入口。
 scheduler 不伪造绑定后的 status，包括绑给本机的请求。CAS 冲突重新观察，不拿新 revision 重交旧决定。
 
 ## 排队原因
@@ -45,9 +45,12 @@ scheduler 不伪造绑定后的 status，包括绑给本机的请求。CAS 冲�
 | `exclusive_unsupported` | 没有候选支持所需独占 |
 | `capacity` | 合格候选没有空闲名额，或未完全空闲以供独占 |
 | `admission_rejected` | 合格候选的当前状态已经被拒，等待新状态 |
-| `unsupported_resources` | 请求不在首版单名额／独占范围内（正常 Provider 会先拒绝不合法 spec） |
+| `unsupported_resources` | 请求不在无资源／单资源一单位的范围内 |
+| `placement_unavailable` | 硬定位约束下没有候选 |
+| `named_resource_local_only` | 命名资源没有本机候选 |
+| `execution_features_unavailable` | 候选未声明支持请求需要的资源或上下文 |
 
-状态变化触发重新调度；5 秒定时仅重试失败的控制写入，不把等待时间当成改派许可。写入相同排队原因不会推进 revision。
+状态变化触发重新调度；不设置空转定时器。启动订阅失败明确报错，控制写入失败报告错误、在下次观察变化时重试。写入相同排队原因不会推进 revision。
 
 ## 验证边界
 
