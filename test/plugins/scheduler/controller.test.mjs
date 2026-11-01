@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import { providerAPI } from '../../../check/coda/adapters/provider-api.mjs';
 import { providerDefinition } from '../../../check/coda/components/protocols/provider-definition.mjs';
 import { ProtocolTypes, validate } from '../../../check/coda/components/protocols/types.mjs';
+import { creationOf, checkCreationReadOnly } from '../../../check/coda/components/protocols/creation.mjs';
 import { Scheduler } from '../../../plugins/scheduler/lib/scheduler.mjs';
 
 // The host provider owns the public definitions. Use its locked dependency, not a duplicate schema.
@@ -30,14 +31,14 @@ function executor(id, available = 1) {
   } };
 }
 
-async function fixture(t, initial = [], { local = ['local'], order, root: reuseRoot } = {}) {
+async function fixture(t, initial = [], { local = ['local'], allowInvalidCreation = false, root: reuseRoot } = {}) {
   const root = reuseRoot ?? await mkdtemp(join(tmpdir(), 'scheduler-'));
   if (!reuseRoot) t.after(() => rm(root, { recursive: true, force: true }));
   const types = new ProtocolTypes(), objects = new Map(), subscriptions = [], calls = [], errors = [];
   for (const definition of [EXECUTOR_PROTOCOL, { ...EXECUTION_PROTOCOL, controllers: ['scheduler'] }]) {
     types.register({ ...providerDefinition(definition), participants: () => [] });
   }
-  let revision = 0, nextAssignment = 0;
+  let revision = 0, nextAssignment = 0, nextCreation = 0;
   const visible = (sub, object) => sub.kind === object.kind && (sub.scope !== 'local' ||
     (object.kind === 'executor' ? local.includes(object.id) : object.id !== 'foreign-request'));
   const emit = (object, type = 'MODIFIED') => {
@@ -45,6 +46,10 @@ async function fixture(t, initial = [], { local = ['local'], order, root: reuseR
   };
   const save = (object, notify = true) => {
     object = structuredClone(object);
+    if (!Object.hasOwn(object, 'createdAt')) object.createdAt = stamp;
+    if (!Object.hasOwn(object, 'creationSequence')) object.creationSequence = ++nextCreation;
+    if (Number.isSafeInteger(object.creationSequence)) nextCreation = Math.max(nextCreation, object.creationSequence);
+    if (!allowInvalidCreation) creationOf(object);
     const type = types.get(object.kind); validate(type.spec, object.spec, `${object.kind}.spec`); validate(type.status, object.status, `${object.kind}.status`);
     object.revision = `opaque-${++revision}`; objects.set(`${object.kind}/${object.id}`, object);
     if (notify) emit(object);
@@ -60,6 +65,7 @@ async function fixture(t, initial = [], { local = ['local'], order, root: reuseR
       calls.push({ method, args: structuredClone(args) });
       assert.ok(['update', 'setStatus'].includes(method), 'scheduler is a controller, never a provider or supplement');
       const [kind, id, value, observed] = args;
+      checkCreationReadOnly(value);
       assert.equal(kind, 'execution'); assert.notEqual(id, 'foreign-request');
       if (f.beforeWrite) await f.beforeWrite(method, args);
       const object = f.get(id);
@@ -84,9 +90,7 @@ async function fixture(t, initial = [], { local = ['local'], order, root: reuseR
     },
     report: (_, error) => errors.push(error),
   }) };
-  // Tests of policy/transport supply order explicitly until the real envelope contract is synced.
-  // Production deliberately has no observation-order fallback.
-  f.scheduler = new Scheduler(coda, { order: order ?? (() => 1), interval: () => null,
+  f.scheduler = new Scheduler(coda, { interval: () => null,
     assignment: () => `new-${++nextAssignment}`, now: () => stamp, report: (_, error) => errors.push(error) });
   t.after(() => f.scheduler.stop());
   f.flush = async () => { await f.scheduler.wake(); await f.scheduler.wake(); };
@@ -104,9 +108,10 @@ test('public controller takes local requests only, waits for the initial snapsho
 });
 
 test('FIFO across IDs and pending assignments prevent filling the same stale free slot twice', async t => {
-  const f = await fixture(t, [executor('local'), execution('a-new'), execution('z-old')], {
-    order: object => object.id === 'z-old' ? 1 : 2,
-  });
+  const f = await fixture(t, [executor('local'),
+    { ...execution('a-new'), creationSequence: 30, createdAt: '2026-10-31T00:00:00.000Z' },
+    { ...execution('z-old'), creationSequence: 10, createdAt: stamp },
+  ]);
   await f.scheduler.start(); await f.flush();
   assert.equal(f.get('z-old').spec.executor.id, 'local');
   assert.equal(f.get('a-new').spec.executor, null);
@@ -211,8 +216,9 @@ test('first install retries provider registration after disposing partial subscr
 for (const missing of [null, undefined, 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
   test(`missing/invalid creation order (${missing}) blocks all new bindings but not cancellation`, async t => {
     const f = await fixture(t, [executor('local', 2), execution('unknown-order'), execution('known-order'), execution('cancelled', { cancel: true })], {
-      order: object => object.id === 'unknown-order' ? missing : 10,
+      allowInvalidCreation: true,
     });
+    f.save({ ...f.get('unknown-order'), creationSequence: missing });
     await f.scheduler.start(); await f.flush();
     for (const id of ['unknown-order', 'known-order']) {
       assert.equal(f.get(id).spec.executor, null);
@@ -225,12 +231,64 @@ for (const missing of [null, undefined, 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]
 }
 
 test('creation order becomes available through observation and scheduling resumes in that order', async t => {
-  const f = await fixture(t, [executor('local'), execution('a-new'), execution('z-old')], { order: () => null });
+  const f = await fixture(t, [executor('local'),
+    { ...execution('a-new'), creationSequence: 20 },
+    { ...execution('z-old'), creationSequence: undefined },
+  ], { allowInvalidCreation: true });
   await f.scheduler.start(); await f.flush();
   assert.equal(f.get('a-new').spec.executor, null);
-  f.scheduler.order = object => object.id === 'z-old' ? 1 : 2;
-  f.save({ ...f.get('z-old') }); await f.flush();
+  f.save({ ...f.get('z-old'), creationSequence: 10 }); await f.flush();
   assert.equal(f.get('z-old').spec.executor.id, 'local');
   assert.equal(f.get('a-new').spec.executor, null);
   assert.deepEqual(f.errors, []);
+});
+
+test('restart sorts a reversed initial snapshot by holder sequence without plugin ordering state', async t => {
+  const f = await fixture(t, [execution('a-new'), execution('z-old')]);
+  // Persisted holder order opposes both IDs and the delivery order. Time is deliberately identical.
+  f.save({ ...f.get('a-new'), creationSequence: 20 });
+  f.save({ ...f.get('z-old'), creationSequence: 10 });
+  await f.scheduler.start(); await f.flush(); await f.scheduler.stop();
+  const restored = await fixture(t, [executor('local'), f.get('a-new'), f.get('z-old')], { root: f.root });
+  await restored.scheduler.start(); await restored.flush();
+  assert.equal(restored.get('z-old').spec.executor.id, 'local');
+  assert.equal(restored.get('a-new').spec.executor, null);
+  assert.deepEqual(restored.scheduler.state.data.entries, {}, 'no plugin-owned ordering ledger');
+  assert.deepEqual(creationOf(restored.get('z-old')), { createdAt: stamp, creationSequence: 10 });
+  assert.deepEqual([...f.errors, ...restored.errors], []);
+});
+
+test('updates and out-of-order incremental events preserve the holder creation order', async t => {
+  const f = await fixture(t, [execution('old'), execution('new')]);
+  const oldCreation = creationOf(f.get('old')), newCreation = creationOf(f.get('new'));
+  await f.scheduler.start(); await f.flush();
+  f.save({ ...f.get('new') }); f.save({ ...f.get('old') }); await f.flush();
+  f.save(executor('local')); await f.flush();
+  assert.equal(f.get('old').spec.executor.id, 'local'); assert.equal(f.get('new').spec.executor, null);
+  assert.deepEqual(creationOf(f.get('old')), oldCreation); assert.deepEqual(creationOf(f.get('new')), newCreation);
+  assert.deepEqual(f.errors, []);
+});
+
+test('same ID recreated with a new holder sequence queues behind surviving requests', async t => {
+  const f = await fixture(t, [execution('a-recreated'), execution('z-survives')]);
+  await f.scheduler.start(); await f.flush();
+  const oldCreation = creationOf(f.get('a-recreated'));
+  f.remove('a-recreated');
+  f.save({ ...execution('a-recreated'), instance: 'new-instance' }); await f.flush();
+  assert.ok(f.get('a-recreated').creationSequence > oldCreation.creationSequence);
+  f.save(executor('local')); await f.flush();
+  assert.equal(f.get('z-survives').spec.executor.id, 'local'); assert.equal(f.get('a-recreated').spec.executor, null);
+  assert.deepEqual(f.errors, []);
+});
+
+test('a CAS conflict on the older request cannot let a younger request take its free slot', async t => {
+  const f = await fixture(t, [executor('local'), execution('old'), execution('new')]);
+  f.beforeWrite = async (method, [, id]) => {
+    if (method !== 'update' || id !== 'old') return;
+    f.beforeWrite = null;
+    f.save({ ...f.get('old'), status: { phase: 'queued', assignmentId: null, reason: { code: 'changed', message: 'changed' } } });
+  };
+  await f.scheduler.start(); await f.flush();
+  assert.equal(f.get('old').spec.executor.id, 'local'); assert.equal(f.get('new').spec.executor, null);
+  assert.equal(f.errors.length, 1); assert.match(f.errors[0].message, /conflict/);
 });

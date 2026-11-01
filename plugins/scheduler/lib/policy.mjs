@@ -15,7 +15,7 @@ export function disposition({ spec, status }) {
 }
 
 export function inOrder(entries) {
-  return [...entries].sort((a, b) => compare(a.order, b.order) || compare(a.object.id, b.object.id));
+  return [...entries].sort((a, b) => compare(a.creationSequence, b.creationSequence));
 }
 
 // Consume only reported facts. This is a scheduling estimate, never an admission lease.

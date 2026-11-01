@@ -58,11 +58,14 @@ for (const [name, object, expected] of [
   ['finished failure never retries', assigned({ phase: 'finished', assignmentId: 'a', outcome: 'failed' }), 'done'],
 ]) test(`disposition: ${name}`, () => assert.equal(disposition(object), expected));
 
-test('FIFO sorts by supplied durable creation order, not ID or event arrival', () => {
-  const entries = [{ order: 30, object: { id: 'a' } }, { order: 10, object: { id: 'z' } }];
-  assert.deepEqual(inOrder(entries).map(e => e.object.id), ['z', 'a']);
-  assert.equal(entries[0].object.id, 'a');
-});
+for (const createdAt of ['2026-11-01T00:00:00Z', '2026-10-31T00:00:00Z']) {
+  test(`FIFO uses envelope creationSequence even with equal or regressed time (${createdAt})`, () => {
+    const entries = [{ creationSequence: 30, id: 'a', createdAt },
+      { creationSequence: 10, id: 'z', createdAt: '2026-11-01T00:00:00Z' }];
+    assert.deepEqual(inOrder(entries).map(e => e.id), ['z', 'a']);
+    assert.equal(entries[0].id, 'a');
+  });
+}
 
 test('pending assignments consume estimates, admission is not double counted, exclusive blocks successors', () => {
   const e = executor('local', 2), pending = assigned();

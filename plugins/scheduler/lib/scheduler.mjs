@@ -3,12 +3,10 @@ import { budget, choose, disposition, inOrder } from './policy.mjs';
 import { SchedulingState } from './state.mjs';
 
 export class Scheduler {
-  // The envelope reader will be connected after Coda's creation metadata contract is merged and synced.
-  // Until then fail closed; observation order and IDs cannot substitute for creation order.
-  constructor(coda, { state = new SchedulingState(coda.plugin.state), order = () => null,
+  constructor(coda, { state = new SchedulingState(coda.plugin.state),
     assignment = randomUUID, now = () => new Date().toISOString(), report = console.error,
     interval = setInterval } = {}) {
-    Object.assign(this, { coda, state, order, assignment, now, report, interval });
+    Object.assign(this, { coda, state, assignment, now, report, interval });
     this.executions = new Map(); this.executors = new Map(); this.local = new Set(); this.subscriptions = [];
     this.ready = false; this.closed = false; this.dirty = false; this.running = null;
   }
@@ -68,17 +66,18 @@ export class Scheduler {
       try { await this.advance(object); }
       catch (error) { this.report(`[scheduler execution ${object.id}]`, error); }
     }
-    const entries = [...this.executions.values()].filter(object => disposition(object) === 'schedule')
-      .map(object => ({ object, order: this.order(object) }));
-    const missingOrder = entries.some(entry => !Number.isSafeInteger(entry.order) || entry.order < 1);
-    for (const { object } of inOrder(entries)) {
+    const entries = [...this.executions.values()].filter(object => disposition(object) === 'schedule');
+    // Sequence is holder-owned, immutable and comparable only within this local collection.
+    const missingOrder = entries.some(object => !Number.isSafeInteger(object.creationSequence) || object.creationSequence < 1);
+    for (const object of inOrder(entries)) {
       if (this.closed) return;
-      if (this.executions.get(object.id)?.revision !== object.revision) continue;
+      // Re-evaluate a changed older request before a younger request can take its candidate.
+      if (this.executions.get(object.id)?.revision !== object.revision) { this.dirty = true; break; }
       try {
         if (missingOrder) await this.queue(object, { code: 'creation_order_unavailable', message: '等待持有方提供完整的创建序号，保持 FIFO 排队' });
         else await this.advance(object);
       }
-      catch (error) { this.report(`[scheduler execution ${object.id}]`, error); }
+      catch (error) { this.report(`[scheduler execution ${object.id}]`, error); break; }
     }
     this.state.retain(new Set([...this.executions.values()].filter(o => disposition(o) !== 'done').map(o => o.instance)));
   }

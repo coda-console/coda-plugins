@@ -12,8 +12,9 @@
 - 首版仅 `slots: 1`；独占须报告支持独占，且无占用、所有名额空闲。未完成的本机绑定会保守扣减调度估计，避免同一旧状态被这一持有端反复填满。
 - 容量状态不是预留，scheduler 不获取名额；执行方开跑前仍经本机账本最终准入。没有基于时钟的在线推断。
 
-严格 FIFO 只采用持有方赋予对象信封的只读创建序号，不使用首次观察顺序、对象 ID、revision 或插件计数器替代。
-本草稿等待 Coda 的通用创建信息接口合并并同步契约；当前生产入口尚未接入序号读取，因此暂不分配新请求。
+严格 FIFO 只采用持有方赋予对象信封的只读 `creationSequence`，不使用首次观察顺序、对象 ID、revision 或插件计数器替代。
+依赖 Coda #2083 的通用创建信息接口（plugin-check 0.5.29、同步自 88ade66）；`createdAt` 仅供展示，相同时间或时钟回退不影响排序。
+序号只在同一持有方内可比较，所以请求只读取 local 集合。更新及重启不改变顺序，删除同名重建后以新序号重新排队。
 任何待分配请求缺少有效序号时，所有待分配请求保持排队并报告 `creation_order_unavailable`，避免已知序号的请求越过顺序未知的请求。
 取消及明确拒绝的处理不依赖排序，继续进行；已绑定请求仍由执行方处理并恢复观察。插件持久状态只保存拒绝记录，不保存排序正本。
 
@@ -51,5 +52,6 @@ scheduler 不伪造绑定后的 status，包括绑给本机的请求。CAS 冲�
 ## 验证边界
 
 `test/plugins/scheduler/policy.test.mjs` 表驱动验证纯政策；`controller.test.mjs` 使用 plugin-check 同步的 `providerAPI`、
-`providerDefinition`、`ProtocolTypes` 及 host 锁定的协议包，验证控制接线、scope、CAS、初始快照、取消与恢复。
+`providerDefinition`、`ProtocolTypes`、`creationOf` 及 host 锁定的协议包，验证控制接线、scope、CAS、初始快照、取消与恢复，
+以及乱序快照／增量事件、时钟回退、重启和同名重建后的创建顺序。
 夹具不代替真实后端、名额账本或联邦端到端验收。流程创建 execution 的接入及真实跨机端到端留给 coda#2078 第 7 步以后。

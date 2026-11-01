@@ -9,7 +9,7 @@ scheduler 只调度本机持有的 execution；本机与可见的其他运行器
 
 - 全部需求标签必须满足，运行器须启用，status 须显示接活及有名额。有空位时本机优先，同等时选空位多的。
 - 首版每请求 `slots: 1`，可独占 slots；独占须运行器支持且全部空闲。容量只是调度依据，执行方的本机账本负责最终准入。
-- 严格按持有方赋予信封的创建序号排序，不能用首次观察顺序或对象 ID 代替。当前草稿等待通用接口与契约同步，尚未接入序号读取。
+- 严格按持有方赋予信封的 `creationSequence` 排序，不能用首次观察顺序、`createdAt` 或对象 ID 代替。需要支持 Coda #2083 创建信息接口的后端。
   `creation_order_unavailable` 表示缺少有效创建序号，暂停新绑定；取消及恢复观察继续进行，不手工补造序号。
 - 未绑定时看 `status.reason.code`：`no_executor` 无运行器，`labels_unavailable` 标签不符，`not_accepting` 不接活或状态未到，
   `exclusive_unsupported` 不支持独占，`capacity` 名额不足，`admission_rejected` 等拒绝方的新状态，`unsupported_resources` 资源请求不支持。
