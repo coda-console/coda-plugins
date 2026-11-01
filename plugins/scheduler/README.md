@@ -20,7 +20,7 @@
 
 ## 绑定、拒绝与恢复
 
-通过 `protocols.update` 携观察到的 revision 同次替换 `executor` 和新的 `assignmentId`；不登记补充者，不改变任务、源码、资源、attempt 或取消意图。
+通过 `protocols.update` 携观察到的 revision 同次替换 `executor` 和新的 `assignmentId`；新 assignmentId 原样取该 revision，由 Coda 核验，插件不解析或自行计数；不登记补充者，不改变任务、源码、资源、attempt 或取消意图。
 只有与当前 assignment 对齐的 `finished/rejected` 才释放旧绑定，再选择新候选。协议首版没有另一种单独的“已确认撤销且从未启动”凭证，
 所以不从 `queued`、缺 `startedAt`、空 status、节点消失或超时推断它。已开始或是否开始不明的请求保留绑定、运行引用与执行方结果，继续订阅观察，不重跑。
 
@@ -28,7 +28,7 @@
 其他合格候选可立即接手，原候选更新 status 后可再次参与。重启保留这项抑制，删除或终结请求后回收记录。
 host 当前可能在最终准入冲突时报告已绑定的 `queued/capacity`；这种回答会继续等待原执行方，并不触发改派。
 
-拒绝后解除绑定再排队时，queued 的 `status.assignmentId` 保留上次拒绝的值，不能清空或替换，防止重新绑定复用旧 token。新 assignment 仍由绑定 CAS 生成。
+Coda 的对象 revision 在每次成功绑定后持久推进，并包含对象实例，任何早先 assignment 都不能再次匹配。拒绝后解除绑定再排队可将 status.assignmentId 置为 null；防重不依赖最新 status、插件内存或另一份历史表。
 
 未绑定时收到 `spec.cancel: true`，直接写 `finished/cancelled`；已绑定时保留取消意图，由执行方处理进程、收尾及结果。
 生产方由 Coda 在请求正本写取消意图，host 不提供创建／取消入口。

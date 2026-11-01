@@ -1,11 +1,10 @@
-import { randomUUID } from 'node:crypto';
 import { budget, choose, disposition, inOrder } from './policy.mjs';
 import { SchedulingState } from './state.mjs';
 
 export class Scheduler {
   constructor(coda, { state = new SchedulingState(coda.plugin.state),
-    assignment = randomUUID, now = () => new Date().toISOString(), report = console.error } = {}) {
-    Object.assign(this, { coda, state, assignment, now, report });
+    now = () => new Date().toISOString(), report = console.error } = {}) {
+    Object.assign(this, { coda, state, now, report });
     this.executions = new Map(); this.executors = new Map(); this.local = new Set(); this.subscriptions = [];
     this.ready = false; this.closed = false; this.dirty = false; this.running = null;
   }
@@ -107,7 +106,8 @@ export class Scheduler {
     const decision = choose(object.spec, executors, { local: this.local,
       remaining: budget(executors, [...this.executions.values()]), rejected: this.state.get(object)?.rejected ?? {} });
     if (decision.action === 'bind') {
-      await this.setBinding(object, decision.executor, this.assignment());
+      // The holder validates this opaque durable generation; it cannot match any earlier successful binding.
+      await this.setBinding(object, decision.executor, object.revision);
     } else {
       await this.queue(object, decision.reason);
     }
@@ -119,8 +119,7 @@ export class Scheduler {
     if (this.executions.get(object.id)?.revision === object.revision) this.executions.set(object.id, updated);
   }
   async queue(object, reason) {
-    // Retain the last refused assignment while unbound; Coda rejects clearing or replacing this evidence.
-    const status = { phase: 'queued', assignmentId: object.status.assignmentId ?? null, reason };
+    const status = { phase: 'queued', assignmentId: null, reason };
     if (JSON.stringify(object.status) !== JSON.stringify(status)) await this.coda.protocols.setStatus('execution', object.id, status, object.revision);
   }
   async stop() {
