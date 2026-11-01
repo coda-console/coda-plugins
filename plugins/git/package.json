@@ -3,7 +3,7 @@
   "id": "git",
   "displayName": "Git 源与快照",
   "description": "登记本机 Git 仓库，创建提交或工作树快照，按运行回收临时引用，提供只读 smart HTTP。",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "categories": ["机器与资源"],
   "type": "module",
   "main": "main.mjs",

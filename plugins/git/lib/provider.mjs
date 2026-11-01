@@ -8,20 +8,23 @@ import { smartHTTP, readBody, reply } from './http.mjs';
 const idOK = id => typeof id === 'string' && /^[a-zA-Z0-9_-]{1,100}$/.test(id);
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const url = id => `/v1/plugins/git/services/repository/repos/${id}`;
+const sameRepository = (a, b) => a.path === b.path && a.gitDir === b.gitDir && a.commonDir === b.commonDir;
 const ended = run => run?.finishedAt != null || ['succeeded', 'failed', 'cancelled'].includes(run?.state);
 
 export class GitProvider {
   constructor(coda) {
     this.coda = coda;
     this.sources = new Map(); this.snapshots = new Map(); this.runs = new Map(); this.runWatches = new Map();
-    this.repositories = new Map(); this.subscriptions = []; this.records = {}; this.queue = Promise.resolve();
+    this.identities = {}; this.repositories = new Map(); this.subscriptions = []; this.records = {}; this.queue = Promise.resolve();
     this.active = false; this.stopped = false;
     this.file = join(coda.plugin.state, 'snapshots.json');
+    this.identitiesFile = join(coda.plugin.state, 'sources.json');
     this.http = smartHTTP({ lookup: id => this.lookup(id), environment: () => coda.environment() });
   }
   async start() {
     await mkdir(this.coda.plugin.state, { recursive: true });
     try { this.records = JSON.parse(await readFile(this.file, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    try { this.identities = JSON.parse(await readFile(this.identitiesFile, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     for (const definition of definitions) await this.coda.protocols.define(definition);
     for (const [kind, map] of [[SOURCE, this.sources], [SNAPSHOT, this.snapshots]]) {
       this.subscriptions.push(await this.coda.protocols.observe(kind, event => {
@@ -46,6 +49,11 @@ export class GitProvider {
     await writeFile(`${this.file}.tmp`, `${JSON.stringify(this.records)}\n`, { mode: 0o600 });
     await rename(`${this.file}.tmp`, this.file);
   }
+  async saveIdentities(next) {
+    await writeFile(`${this.identitiesFile}.tmp`, `${JSON.stringify(next)}\n`, { mode: 0o600 });
+    await rename(`${this.identitiesFile}.tmp`, this.identitiesFile);
+    this.identities = next; // Only a durable binding may authorize reads or new snapshot refs.
+  }
   async status(object, value) {
     // Always carry the observed version; do not relabel an old result with a newer revision.
     if (JSON.stringify(object.status) !== JSON.stringify(value))
@@ -57,27 +65,37 @@ export class GitProvider {
       await watcher.dispose(); this.runWatches.delete(id); this.runs.delete(id);
     }
     for (const id of needed) if (!this.runWatches.has(id)) {
-      let watcher;
+      let watcher, generation = 0;
       try { watcher = await this.coda.watch('workflow-runs', event => {
         if (event.id !== id) return; // The filtered collection can also contain child runs.
+        generation++;
         this.runs.set(id, event.type === 'DELETED' ? { state: 'cancelled' } : event.object);
         void this.schedule().catch(() => {});
-      }, { run: id }); } catch (error) { this.runs.set(id, { error: error.message }); continue; }
+      }, { run: id }); } catch (error) { if (generation === 0) this.runs.set(id, { error: error.message }); continue; }
       this.runWatches.set(id, watcher);
       if (!this.runs.has(id)) {
         // Confirm old runs that no longer appear in the default recent-runs list. A failed lookup is not completion.
-        try { this.runs.set(id, await this.coda.api(`workflow-runs/${encodeURIComponent(id)}`)); }
-        catch (error) { this.runs.set(id, { error: error.message }); }
+        const observed = generation;
+        try {
+          const run = await this.coda.api(`workflow-runs/${encodeURIComponent(id)}`);
+          if (generation === observed) this.runs.set(id, run);
+        } catch (error) { if (generation === observed) this.runs.set(id, { error: error.message }); }
       }
     }
   }
   async reconcile() {
     const env = await this.coda.environment();
     await this.followRuns();
+    const instances = new Set([...this.sources.values()].map(source => source.instance));
+    const retained = Object.fromEntries(Object.entries(this.identities).filter(([instance]) => instances.has(instance)));
+    if (Object.keys(retained).length !== Object.keys(this.identities).length) await this.saveIdentities(retained);
     for (const source of this.sources.values()) {
       try {
         const repo = await repository(source.spec.path, env);
         if (this.sources.get(source.id)?.revision !== source.revision) continue;
+        const identity = this.identities[source.instance];
+        if (identity && !sameRepository(identity, repo)) throw new Error('源路径已指向另一仓库，请删除源后重新登记');
+        if (!identity) await this.saveIdentities({ ...this.identities, [source.instance]: { path: repo.path, gitDir: repo.gitDir, commonDir: repo.commonDir } });
         this.repositories.set(source.id, { ...repo, instance: source.instance, pathSpec: source.spec.path });
         await this.status(source, { ready: true, url: url(source.id) });
       } catch (error) {
@@ -132,7 +150,7 @@ export class GitProvider {
     if (!source || !repo || source.instance !== repo.instance || source.spec.path !== repo.pathSpec) return null;
     // Do not follow a registered path after it is replaced by a symlink to another repository.
     const now = await repository(source.spec.path, await this.coda.environment());
-    if (now.path !== repo.path || now.gitDir !== repo.gitDir) return null;
+    if (!sameRepository(now, repo)) return null;
     const refs = new Set();
     for (const [token, record] of Object.entries(this.records)) {
       const item = this.snapshots.get(record.id);
