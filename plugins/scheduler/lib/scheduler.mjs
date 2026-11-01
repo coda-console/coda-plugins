@@ -9,7 +9,6 @@ export class Scheduler {
     Object.assign(this, { coda, state, assignment, now, report, interval });
     this.executions = new Map(); this.executors = new Map(); this.local = new Set(); this.subscriptions = [];
     this.ready = false; this.closed = false; this.dirty = false; this.running = null;
-    this.candidatesVersion = 0;
   }
   async start() {
     // Startup modules activate concurrently; extensionDependencies orders installation, not provider registration.
@@ -27,12 +26,10 @@ export class Scheduler {
     try {
       this.subscriptions.push(await protocols.observe('executor', event => {
         if (event.type === 'DELETED') this.local.delete(event.id); else this.local.add(event.id);
-        this.candidatesVersion++;
         void this.wake();
       }, 'local'));
       this.subscriptions.push(await protocols.observe('executor', event => {
         if (event.type === 'DELETED') this.executors.delete(event.id); else this.executors.set(event.id, event.object);
-        this.candidatesVersion++;
         void this.wake();
       }, 'available'));
       this.subscriptions.push(await protocols.control('execution', event => {
@@ -63,14 +60,20 @@ export class Scheduler {
   }
   async reconcile() {
     // Cancellation and proven rejection do not need an ordering key and must remain responsive during an upgrade.
+    let releaseFailed = false;
     for (const object of this.executions.values()) {
       if (this.closed) return;
-      if (!['cancel', 'release'].includes(disposition(object))) continue;
+      const action = disposition(object);
+      if (!['cancel', 'release'].includes(action)) continue;
       try { await this.advance(object); }
-      catch (error) { this.report(`[scheduler execution ${object.id}]`, error); }
+      catch (error) {
+        this.report(`[scheduler execution ${object.id}]`, error);
+        if (action === 'release') releaseFailed = true;
+      }
     }
+    // A failed release must not hide an older request from FIFO. Finish cancellations, then await observation/retry.
+    if (releaseFailed) return;
     const entries = [...this.executions.values()].filter(object => disposition(object) === 'schedule');
-    const candidatesVersion = this.candidatesVersion;
     // Sequence is holder-owned, immutable and comparable only within this local collection.
     const missingOrder = entries.some(object => !Number.isSafeInteger(object.creationSequence) || object.creationSequence < 1);
     for (const object of inOrder(entries)) {
@@ -82,8 +85,9 @@ export class Scheduler {
         else await this.advance(object);
       }
       catch (error) { this.report(`[scheduler execution ${object.id}]`, error); break; }
-      // A newly eligible offer belongs to the earliest waiting request, not the next item in this batch.
-      if (this.candidatesVersion !== candidatesVersion) { this.dirty = true; break; }
+      // Any observation during IO can change eligibility, estimated capacity or the queue itself.
+      // Reuse wake's pending pass to reconsider the earliest request, including after our own writes.
+      if (this.dirty) break;
     }
     this.state.retain(new Set([...this.executions.values()].filter(o => disposition(o) !== 'done').map(o => o.instance)));
   }

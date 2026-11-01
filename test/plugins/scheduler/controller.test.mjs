@@ -331,3 +331,60 @@ test('a CAS conflict on the older request cannot let a younger request take its 
   assert.equal(f.get('old').spec.executor.id, 'local'); assert.equal(f.get('new').spec.executor, null);
   assert.equal(f.errors.length, 1); assert.match(f.errors[0].message, /conflict/);
 });
+
+for (const change of ['finished', 'deleted']) {
+  test(`execution changes invalidate the batch when a pending binding is ${change}`, async t => {
+    const f = await fixture(t, [executor('local'), execution('pending', {
+      executor: { kind: 'executor', id: 'local' }, assignmentId: 'pending-assignment',
+    }, {}), execution('old'), execution('new')]);
+    const writing = Promise.withResolvers(), resume = Promise.withResolvers();
+    f.beforeWrite = async (method, [, id, status]) => {
+      if (method !== 'setStatus' || id !== 'old') return;
+      f.beforeWrite = null;
+      assert.equal(status.reason.code, 'capacity');
+      writing.resolve(); await resume.promise;
+    };
+    const starting = f.scheduler.start();
+    await writing.promise;
+    if (change === 'deleted') f.remove('pending');
+    else f.save({ ...f.get('pending'), status: {
+      phase: 'finished', assignmentId: 'pending-assignment', outcome: 'cancelled', finishedAt: stamp,
+    } });
+    resume.resolve();
+    await starting; await f.flush();
+    assert.equal(f.get('old').spec.executor?.id, 'local');
+    assert.equal(f.get('new').spec.executor, null);
+    assert.equal(f.get('new').status.reason.code, 'capacity');
+    assert.deepEqual(f.errors, []);
+  });
+}
+
+for (const failure of ['conflict', 'persistence']) {
+  test(`release failure (${failure}) blocks younger bindings while allowing cancellation and later recovery`, async t => {
+    const f = await fixture(t, [executor('local', 0), executor('remote'), execution('old', {
+      executor: { kind: 'executor', id: 'local' }, assignmentId: 'rejected-assignment',
+    }, { phase: 'finished', assignmentId: 'rejected-assignment', outcome: 'rejected', finishedAt: stamp }),
+    execution('new'), execution('cancelled', { cancel: true })]);
+    const originalPath = f.scheduler.state.path;
+    if (failure === 'persistence') f.scheduler.state.path = join(f.root, 'missing', 'scheduling.json');
+    else f.beforeWrite = async (method, [, id]) => {
+      if (method !== 'update' || id !== 'old') return;
+      f.beforeWrite = null;
+      const current = f.get('old');
+      f.save({ ...current, status: { ...current.status, reason: { code: 'capacity', message: 'still full' } } });
+    };
+    await f.scheduler.start(); await f.flush();
+    assert.equal(f.get('cancelled').status.outcome, 'cancelled');
+    assert.equal(f.get('new').spec.executor, null);
+    assert.ok(f.errors.length > 0);
+    assert.ok(f.errors.every(error => failure === 'conflict' ? /conflict/.test(error.message) : error.code === 'ENOENT'));
+    if (failure === 'persistence') {
+      assert.equal(f.get('old').spec.assignmentId, 'rejected-assignment');
+      f.scheduler.state.path = originalPath;
+      await f.flush();
+    }
+    assert.equal(f.get('old').spec.executor?.id, 'remote');
+    assert.equal(f.get('new').spec.executor, null);
+    assert.equal(f.get('new').status.reason.code, 'capacity');
+  });
+}
