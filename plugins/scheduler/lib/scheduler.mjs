@@ -9,6 +9,7 @@ export class Scheduler {
     Object.assign(this, { coda, state, assignment, now, report, interval });
     this.executions = new Map(); this.executors = new Map(); this.local = new Set(); this.subscriptions = [];
     this.ready = false; this.closed = false; this.dirty = false; this.running = null;
+    this.candidatesVersion = 0;
   }
   async start() {
     // Startup modules activate concurrently; extensionDependencies orders installation, not provider registration.
@@ -26,10 +27,12 @@ export class Scheduler {
     try {
       this.subscriptions.push(await protocols.observe('executor', event => {
         if (event.type === 'DELETED') this.local.delete(event.id); else this.local.add(event.id);
+        this.candidatesVersion++;
         void this.wake();
       }, 'local'));
       this.subscriptions.push(await protocols.observe('executor', event => {
         if (event.type === 'DELETED') this.executors.delete(event.id); else this.executors.set(event.id, event.object);
+        this.candidatesVersion++;
         void this.wake();
       }, 'available'));
       this.subscriptions.push(await protocols.control('execution', event => {
@@ -67,6 +70,7 @@ export class Scheduler {
       catch (error) { this.report(`[scheduler execution ${object.id}]`, error); }
     }
     const entries = [...this.executions.values()].filter(object => disposition(object) === 'schedule');
+    const candidatesVersion = this.candidatesVersion;
     // Sequence is holder-owned, immutable and comparable only within this local collection.
     const missingOrder = entries.some(object => !Number.isSafeInteger(object.creationSequence) || object.creationSequence < 1);
     for (const object of inOrder(entries)) {
@@ -78,6 +82,8 @@ export class Scheduler {
         else await this.advance(object);
       }
       catch (error) { this.report(`[scheduler execution ${object.id}]`, error); break; }
+      // A newly eligible offer belongs to the earliest waiting request, not the next item in this batch.
+      if (this.candidatesVersion !== candidatesVersion) { this.dirty = true; break; }
     }
     this.state.retain(new Set([...this.executions.values()].filter(o => disposition(o) !== 'done').map(o => o.instance)));
   }
@@ -87,7 +93,7 @@ export class Scheduler {
     if (action === 'release') {
       this.state.reject(object, this.executors.get(object.spec.executor.id));
       // The current executor's terminal rejection is the proof. Never edit its status while still bound.
-      await protocols.update('execution', object.id, { ...object.spec, executor: null, assignmentId: null }, object.revision);
+      await this.setBinding(object, null, null);
       return;
     }
     if (action === 'cancel') {
@@ -99,14 +105,16 @@ export class Scheduler {
     const decision = choose(object.spec, executors, { local: this.local,
       remaining: budget(executors, [...this.executions.values()]), rejected: this.state.get(object)?.rejected ?? {} });
     if (decision.action === 'bind') {
-      // One CAS replaces both scalar fields; task, source, resources, cancellation and attempt remain intact.
-      const updated = await protocols.update('execution', object.id, { ...object.spec,
-        executor: decision.executor, assignmentId: this.assignment() }, object.revision);
-      // Account for the successful binding even if the watch notification has not arrived yet. Never overwrite a newer event.
-      if (this.executions.get(object.id)?.revision === object.revision) this.executions.set(object.id, updated);
+      await this.setBinding(object, decision.executor, this.assignment());
     } else {
       await this.queue(object, decision.reason);
     }
+  }
+  async setBinding(object, executor, assignmentId) {
+    // One CAS replaces both scalar fields; task, source, resources, cancellation and attempt remain intact.
+    const updated = await this.coda.protocols.update('execution', object.id, { ...object.spec, executor, assignmentId }, object.revision);
+    // Both binding and release affect this pass before their watch event arrives. Never overwrite a newer event.
+    if (this.executions.get(object.id)?.revision === object.revision) this.executions.set(object.id, updated);
   }
   async queue(object, reason) {
     const status = { phase: 'queued', assignmentId: null, reason };

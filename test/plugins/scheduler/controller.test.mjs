@@ -57,6 +57,7 @@ async function fixture(t, initial = [], { local = ['local'], allowInvalidCreatio
   };
   for (const object of initial) save(object, false);
   const f = { root, objects, subscriptions, calls, errors, save, beforeWrite: null, beforeWatch: null,
+    notifyWrite: () => true,
     get: (id, kind = 'execution') => objects.get(`${kind}/${id}`),
     remove(id, kind = 'execution') { const object = this.get(id, kind); objects.delete(`${kind}/${id}`); emit(object, 'DELETED'); },
   };
@@ -76,7 +77,7 @@ async function fixture(t, initial = [], { local = ['local'], allowInvalidCreatio
         assert.deepEqual(after, before, 'binding preserves task, cancellation, source and attempt');
         assert.equal(newExecutor === null, newAssignment === null, 'binding fields are replaced atomically');
         if (oldExecutor) assert.equal(object.status.outcome, 'rejected', 'no ambiguous reassignment');
-        return save({ ...object, spec: value });
+        return save({ ...object, spec: value }, f.notifyWrite(method, args));
       }
       assert.equal(object.spec.executor, null, 'scheduler never writes a bound status, including a local binding');
       return save({ ...object, status: value });
@@ -137,6 +138,44 @@ test('current refusal releases by CAS, chooses another offer, and never overwrit
   assert.deepEqual(f.calls.map(c => c.method), ['update', 'update']);
   assert.deepEqual(f.errors, []);
 });
+
+test('FIFO includes a released older request before its unbinding notification arrives', async t => {
+  const f = await fixture(t, [executor('local', 0), executor('remote'),
+    execution('old', { executor: { kind: 'executor', id: 'local' }, assignmentId: 'old-assignment' }, {
+      phase: 'finished', assignmentId: 'old-assignment', outcome: 'rejected', finishedAt: stamp,
+    }), execution('new'),
+  ]);
+  // The holder replies to the CAS immediately, but the unbinding watch event is still in transit.
+  f.notifyWrite = (method, [, , spec]) => !(method === 'update' && spec.executor === null);
+  await f.scheduler.start(); await f.flush();
+  assert.equal(f.get('old').spec.executor?.id, 'remote');
+  assert.equal(f.get('new').spec.executor, null);
+  assert.equal(f.get('new').status.reason.code, 'capacity');
+  assert.deepEqual(f.errors, []);
+});
+
+for (const initialOffer of [false, true]) {
+  test(`FIFO restarts when an executor ${initialOffer ? 'frees capacity' : 'appears'} during an older queue write`, async t => {
+    const f = await fixture(t, [...(initialOffer ? [executor('remote', 0)] : []), execution('old'), execution('new')]);
+    const writing = Promise.withResolvers(), resume = Promise.withResolvers();
+    f.beforeWrite = async (method, [, id, status]) => {
+      if (method !== 'setStatus' || id !== 'old') return;
+      f.beforeWrite = null;
+      assert.equal(status.reason.code, initialOffer ? 'capacity' : 'no_executor');
+      writing.resolve();
+      await resume.promise;
+    };
+    const starting = f.scheduler.start();
+    await writing.promise;
+    f.save(executor('remote'));
+    resume.resolve();
+    await starting; await f.flush();
+    assert.equal(f.get('old').spec.executor?.id, 'remote');
+    assert.equal(f.get('new').spec.executor, null);
+    assert.equal(f.get('new').status.reason.code, 'capacity');
+    assert.deepEqual(f.errors, []);
+  });
+}
 
 test('refusal survives restart and only a fresh offer allows the same executor again', async t => {
   const f = await fixture(t, [executor('local'), execution('request', { executor: { kind: 'executor', id: 'local' }, assignmentId: 'old' }, {
