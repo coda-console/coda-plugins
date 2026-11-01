@@ -157,6 +157,40 @@ test('管理接口仅接受本机身份，更新须携带版本，错误符合 c
   assert.equal(get(h, SOURCE, 'source').revision, old.revision);
 });
 
+test('源暂时不可用保留活跃快照，重启恢复复用原提交，运行结束仍回收', async t => {
+  const dir = await fixture(t), path = join(dir, '.git', 'source-link');
+  await symlink(dir, path);
+  const h = host(join(dir, '.git', 'state'));
+  const provider = new GitProvider(h.coda); t.after(() => provider.stop()); await provider.start();
+  h.run('run'); await put(h, SOURCE, 'source', { path });
+  await writeFile(join(dir, 'new'), 'captured');
+  await put(h, SNAPSHOT, 'snapshot', { source: 'source', mode: 'worktree', run: 'run' }); await idle(provider);
+  const first = get(h, SNAPSHOT, 'snapshot').status;
+  assert.equal(first.ready, true);
+  const ledger = await readFile(join(h.coda.plugin.state, 'snapshots.json'), 'utf8');
+  await unlink(path); await provider.schedule(); await idle(provider);
+  assert.equal(get(h, SOURCE, 'source').status.ready, false);
+  assert.equal(get(h, SNAPSHOT, 'snapshot').status.ready, false);
+  assert.equal(await provider.lookup('source'), null);
+  assert.equal(await command(dir, ['rev-parse', '--verify', first.ref]), first.commit);
+  assert.equal(await readFile(join(h.coda.plugin.state, 'snapshots.json'), 'utf8'), ledger);
+  await writeFile(join(dir, 'new'), 'changed while unavailable');
+  await provider.stop();
+  const restarted = new GitProvider(h.coda); t.after(() => restarted.stop()); await restarted.start(); await idle(restarted);
+  assert.equal(await restarted.lookup('source'), null);
+  assert.equal(await command(dir, ['rev-parse', '--verify', first.ref]), first.commit);
+  await symlink(dir, path); await restarted.schedule(); await idle(restarted);
+  assert.deepEqual(get(h, SNAPSHOT, 'snapshot').status, first);
+  assert.equal(await command(dir, ['show', `${first.ref}:new`]), 'captured');
+  assert.equal((await restarted.lookup('source')).refs.has(first.ref), true);
+  await unlink(path); await restarted.schedule(); await idle(restarted);
+  h.run('run', 'succeeded'); await idle(restarted);
+  assert.equal(get(h, SNAPSHOT, 'snapshot').status.released, true);
+  assert.equal(await command(dir, ['for-each-ref', first.ref]), '');
+  assert.deepEqual(JSON.parse(await readFile(join(h.coda.plugin.state, 'snapshots.json'), 'utf8')), {});
+  assert.deepEqual(h.failures, []);
+});
+
 test('源符号链接换仓库后拒绝访问和快照，重启仍须重新登记，两个仓库均无遗留 ref', async t => {
   const a = await fixture(t), b = await fixture(t), path = join(a, '.git', 'source-link');
   await symlink(a, path);

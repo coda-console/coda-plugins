@@ -37,7 +37,7 @@ POST `…/snapshots/<id>/delete` 删除快照；POST `…/sources/<id>/delete` �
 
 工作树路径依次执行临时 `GIT_INDEX_FILE` → `read-tree HEAD` → `add -A` → `write-tree` → `commit-tree -p HEAD` → `update-ref`。保留执行位、符号链接，真实 index 与工作区均不修改；提交身份沿用父提交，不设置 Git 用户配置。制作过程中用户仍可编辑文件，因此它是 Git 逐文件读取的结果，不保证跨文件事务一致性。
 
-临时引用为 `refs/coda/snapshots/<sha256>`，标识包含快照实例、spec 与源实例，避免删除重建或修改请求复用旧结果。相同请求只生成一次；后续工作树变化需新快照 ID。插件状态目录 `snapshots.json` 在写 ref 前记账，宿主重启保留活跃运行快照；对象删除、源删除或关联运行结束后回收 ref。按运行 ID 订阅 `workflow-runs`，不会把掉出最近运行列表当作完成；旧运行可单独读取，读取失败报告失败；查询期间若订阅收到新事件，丢弃该查询的旧响应（含错误），保留订阅状态。启动时对账并回收停机期间产生的孤立 ref；清理失败保留账本并报日志，下次对象变化或宿主重启再次尝试。Git 的不可达对象由正常 Git GC 回收。
+临时引用为 `refs/coda/snapshots/<sha256>`，标识包含快照实例、spec 与源实例，避免删除重建或修改请求复用旧结果。相同请求只生成一次；后续工作树变化需新快照 ID。源暂时不可用时撤下读取并报告失败，但保留活跃请求的账本与 ref；源恢复并再次对账时复用原提交，宿主重启也不重新捕获工作树。插件状态目录 `snapshots.json` 在写 ref 前记账，宿主重启保留活跃运行快照；对象删除、源删除或关联运行结束后回收 ref。按运行 ID 订阅 `workflow-runs`，不会把掉出最近运行列表当作完成；旧运行可单独读取，读取失败报告失败；查询期间若订阅收到新事件，丢弃该查询的旧响应（含错误），保留订阅状态。启动时对账并回收停机期间产生的孤立 ref；清理失败保留账本并报日志，下次对象变化或宿主重启再次尝试。Git 的不可达对象由正常 Git GC 回收。
 
 ## 只读 smart HTTP
 
@@ -62,4 +62,4 @@ node bin/check.mjs plugins/git --manifest
 node scripts/check-contract.mjs
 ```
 
-真实 Coda 插件宿主、空间代理／tailnet／DERP 与运行器整合属于后续步骤，不能用脚本测试替代。新包首发依照仓库根 README「npm 发布」：维护者 `npm login` 后执行 bootstrap 配置信任，再由 main 的 `publish.yml` 发布 `0.1.1`。本步骤不修改 Coda 的版本钉选或默认安装。
+真实 Coda 插件宿主、空间代理／tailnet／DERP 与运行器整合属于后续步骤，不能用脚本测试替代。新包首发依照仓库根 README「npm 发布」：维护者 `npm login` 后执行 bootstrap 配置信任，再由 main 的 `publish.yml` 发布 `0.1.2`。本步骤不修改 Coda 的版本钉选或默认安装。

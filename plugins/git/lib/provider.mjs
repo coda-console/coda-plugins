@@ -103,11 +103,12 @@ export class GitProvider {
         await this.status(source, { ready: false, reason: error.message });
       }
     }
-    const desired = new Map();
+    // Availability gates reads and creation, not the lifetime of an existing snapshot.
+    const desired = new Set();
     for (const item of this.snapshots.values()) {
-      const source = this.sources.get(item.spec.source), repo = this.repositories.get(item.spec.source);
+      const source = this.sources.get(item.spec.source);
       const token = hash([item.id, item.instance, item.spec, source?.instance, source?.spec]);
-      if (repo && !ended(this.runs.get(item.spec.run))) desired.set(token, { item, repo });
+      if (source && !ended(this.runs.get(item.spec.run))) desired.add(token);
     }
     // The journal precedes ref creation, so deleting objects while the host is down leaves recoverable cleanup work.
     for (const [token, record] of Object.entries(this.records)) if (!desired.has(token)) {
