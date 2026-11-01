@@ -3,7 +3,7 @@
   "id": "codex",
   "displayName": "Codex",
   "description": "Codex Agent：Coda 自带的入口运行 codex-acp，报告子 Agent、后台命令与命令的自动审核。额度与登录由账号来源插件接管；未接入账号来源时使用 Codex 自己的登录面板。",
-  "version": "1.8.7",
+  "version": "1.9.0",
   "categories": [
     "Agent"
   ],
@@ -28,7 +28,7 @@
         "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/agent/entry.mjs\"",
         "modes": {
           "title": "审批模式",
-          "unset": "人工审批",
+          "unset": "完全访问",
           "auto": "agent",
           "full": "agent-full-access"
         },
