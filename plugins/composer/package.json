@@ -2,8 +2,8 @@
   "name": "@coda-console/composer",
   "id": "composer",
   "displayName": "输入框模式",
-  "description": "输入框的五种模式：交接到新会话、创建子会话、打 ! 执行命令、Ultra 协调模式，以及按周期重复任务的循环模式。Ultra 的主 Agent 负责决策、调度和验收，非微小任务交给 Coda 子会话执行。",
-  "version": "2.1.0",
+  "description": "输入框可同时开启的五种模式：交接到新会话、从任意会话创建子会话、打 ! 执行命令、Ultra 协调模式，以及按周期重复任务的循环模式。Ultra 的主 Agent 负责决策、调度和验收，非微小任务交给 Coda 子会话执行。",
+  "version": "3.0.0",
   "categories": [
     "工作流程"
   ],
@@ -22,6 +22,9 @@
     "THIRD_PARTY_NOTICES.md"
   ],
   "main": "main.mjs",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "contributes": {
     "configuration": {
       "title": "输入框模式",
@@ -64,22 +67,38 @@
         "id": "handoff",
         "title": "交接到新会话",
         "icon": "arrow.right.square",
-        "hint": "新会话承接这里的上下文，共享当前工作目录及其中的文件；这个会话保留，仍可继续使用。",
+        "hint": "新会话承接这里的上下文，共享当前工作目录；可选择执行者，留空沿用输入框的执行者。可与其他模式同时开启，发送后退出交接模式。",
         "placeholder": "接下来要完成什么？",
         "sendLabel": "交接",
-        "agent": "own"
+        "once": true,
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "agent": {
+              "title": "Agent",
+              "description": "留空沿用输入框的执行者。",
+              "type": "object",
+              "format": "coda-agent"
+            }
+          }
+        }
       },
       {
         "id": "subagent",
         "title": "子会话",
         "icon": "arrow.triangle.branch",
-        "hint": "承接父会话近期上下文，沿用父会话工作目录；只启动子会话，不向父 Agent 发送这段要求。",
+        "hint": "从当前会话创建子会话，承接近期上下文并沿用工作目录；子会话也可继续创建子会话。可选择执行者和回报对象，发送后退出本模式。",
         "placeholder": "描述交给子会话的任务…",
         "sendLabel": "启动子会话",
-        "agent": "own",
         "parameters": {
           "type": "object",
           "properties": {
+            "agent": {
+              "title": "Agent",
+              "description": "留空沿用输入框的执行者。",
+              "type": "object",
+              "format": "coda-agent"
+            },
             "replyTo": {
               "title": "回报对象",
               "type": "string",
@@ -98,7 +117,8 @@
               "default": "parent"
             }
           }
-        }
+        },
+        "once": true
       },
       {
         "id": "shell",
@@ -107,7 +127,6 @@
         "hint": "在会话工作目录执行，命令和结果作为这条消息发给 Agent。",
         "placeholder": "输入要执行的命令…",
         "sendLabel": "执行",
-        "agent": "off",
         "trigger": "!",
         "in": [
           "session",
@@ -118,9 +137,8 @@
         "id": "ultra",
         "title": "Ultra",
         "icon": "square.stack.3d.up",
-        "hint": "节省主 Agent 的 Token，非微小任务交给子会话执行",
+        "hint": "节省主 Agent 的 Token，非微小任务交给子会话执行；可与其他模式同时开启，点 × 退出。",
         "placeholder": "要完成什么？",
-        "agent": "session",
         "in": [
           "session",
           "new"
@@ -128,10 +146,6 @@
         "parameters": {
           "type": "object",
           "properties": {
-            "template": {
-              "title": "模板",
-              "type": "string"
-            },
             "subagents": {
               "title": "子 Agent",
               "type": "array",
@@ -151,6 +165,10 @@
                 "required": [
                   "who"
                 ]
+              },
+              "presets": {
+                "from": "composer.templates",
+                "by": "template"
               }
             }
           }
@@ -160,10 +178,9 @@
         "id": "loop",
         "title": "循环",
         "icon": "clock.arrow.2.circlepath",
-        "hint": "按周期把同一句话再发给 Agent，每轮做完才开始计时，7 天后自动结束",
+        "hint": "按周期把同一句话再发给 Agent，每轮做完才开始计时，7 天后自动结束；可与其他模式同时开启，发送后退出循环模式。",
         "placeholder": "每轮要做什么？",
         "sendLabel": "开始循环",
-        "agent": "session",
         "in": [
           "session"
         ],
@@ -201,7 +218,8 @@
               "default": "PT30M"
             }
           }
-        }
+        },
+        "once": true
       }
     ]
   }
