@@ -1,13 +1,28 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { activate } from '../../../plugins/composer/main.mjs';
-import { OFF, on } from '../../../plugins/composer/ultra.mjs';
+import { OFF, STILL_ON, on } from '../../../plugins/composer/ultra.mjs';
 
-test('Ultra 名单保留 spawn 的 Agent、模型、强度、模式、选项和分工', () => {
+test('Ultra 名单保留开发执行者与只读 spawn 的选择和分工', () => {
   assert.match(on([{ who: { agent: 'codex', model: 'gpt-6.1-sol', effort: 'ultra', mode: 'agent',
     options: { 'service-tier': 'priority' } }, when: '调研' }]),
   /- agent=codex model=gpt-6\.1-sol effort=ultra mode=agent options=\{"service-tier":"priority"\}: 调研/);
   assert.match(on([]), /your own agent and model/);
+});
+
+
+test('Ultra 把代码修改交给 develop，主 Agent 亲审，spawn 仅做只读工作', () => {
+  const full = on([]);
+  for (const text of ['workflow="develop"', 'ALL code changes', 'independently deliverable', 'concurrently', 'sequential',
+    'agent, model, effort and mode', 'Personally inspect the diff', 'architecture and implementation',
+    'minimal', 'defensive or redundant', 'unrelated', 'concrete corrections', 'same executor session',
+    'spawn` ONLY', 'do not change code', 'mac-preview-install', 'ios-preview-install', 'exact lane commit']) assert.ok(full.includes(text), text);
+  for (const text of ['workflow_run develop', 'Personally review', 'concrete corrections', 'spawn only', 'without code changes']) assert.ok(STILL_ON.includes(text), text);
+  const paragraphs = full.split('\n\n');
+  assert.match(paragraphs[1], /Small targeted reads for framing and your own architecture and implementation review belong here/);
+  assert.doesNotMatch(paragraphs.find(p => p.startsWith("Use Coda's `spawn`")), /Small targeted reads/);
+  assert.ok(full.length < 4000, '默认说明给执行者名单留下空间');
+  assert.doesNotMatch(full + STILL_ON, /trivial-work exception|delegate only through Coda.*spawn/);
 });
 
 

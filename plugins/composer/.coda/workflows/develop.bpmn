@@ -1,0 +1,182 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="develop-definitions" targetNamespace="https://coda.pub/plugins/composer">
+  <process id="develop" name="开发" isExecutable="true" coda:title="开发：{{inputs.title}}">
+    <extensionElements>
+      <coda:input name="title" label="功能名" required="true" />
+      <coda:input name="task" label="第一项任务" required="true" />
+      <coda:input name="agent" label="执行者" default="" description="留空用发起会话的 Agent" />
+      <coda:input name="model" label="模型" default="" description="留空用 Agent 默认值" />
+      <coda:input name="effort" label="推理强度" default="" description="留空用 Agent 默认值" />
+      <coda:input name="mode" label="模式" default="" description="留空用 Agent 默认值" />
+      <coda:input name="base" label="目标分支" default="" description="留空用仓库默认分支" />
+    </extensionElements>
+    <startEvent id="start" />
+    <sequenceFlow id="start-lane" sourceRef="start" targetRef="lane" />
+    <scriptTask id="lane" name="建泳道" scriptFormat="bash" coda:timeout="5">
+      <extensionElements>
+        <coda:env name="TITLE" value="=inputs.title" />
+        <coda:env name="TASK" value="=inputs.task" />
+        <coda:env name="BASE" value="=inputs.base" />
+      </extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" lane</script>
+    </scriptTask>
+    <sequenceFlow id="lane-execute" sourceRef="lane" targetRef="execute" />
+    <scriptTask id="execute" name="执行一项任务" scriptFormat="bash">
+      <extensionElements>
+        <coda:env name="AGENT" value='=if inputs.agent != "" then inputs.agent else github.event.coda.session.agent' />
+        <coda:env name="MODEL" value="=inputs.model" />
+        <coda:env name="EFFORT" value="=inputs.effort" />
+        <coda:env name="MODE" value="=inputs.mode" />
+      </extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" execute</script>
+    </scriptTask>
+    <sequenceFlow id="execute-report" sourceRef="execute" targetRef="report" />
+    <scriptTask id="report" name="整理审查材料" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements>
+        <coda:output name="session" /><coda:output name="branch" /><coda:output name="head" />
+        <coda:output name="answer" /><coda:output name="lane" /><coda:output name="feedback" />
+      </extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" review</script>
+    </scriptTask>
+    <sequenceFlow id="report-review" sourceRef="report" targetRef="review" />
+    <userTask id="review" name="主 Agent 审查" coda:noteLabel="修改意见或下一项任务">
+      <documentation>请发起运行的主 Agent 亲自审查架构和实现方式，不以执行者的回答或检查通过代替读代码。
+执行会话：{{report.session}}
+分支：{{report.branch}}
+head：{{report.head}}
+泳道：{{report.lane}}
+在仓库中看改动：git diff {{report.lane}}...{{report.head}}
+
+执行者回答：
+{{report.answer}}
+
+待处理反馈：
+{{report.feedback}}
+
+审查要点：架构是否得当、改动是否最小、有没有防御性或冗余代码、有没有无关改动，实际验证是否足够。
+选择「退回修改」时备注必填，给具体意见；同一个执行会话继续修改。
+选择「通过，再派一项」时备注必填，写自足的下一项任务；先合进泳道，再开新的执行会话。
+选择「通过，可以验收」进入设备验收；若是在处理检查失败，先重跑检查。
+执行者已通过的 head 已在泳道上时 diff 为空；请结合反馈和本运行先前的通过记录审查。</documentation>
+      <extensionElements>
+        <coda:choice id="revise" name="退回修改" />
+        <coda:choice id="next" name="通过，再派一项" />
+        <coda:choice id="accept" name="通过，可以验收" primary="true" />
+      </extensionElements>
+    </userTask>
+    <sequenceFlow id="review-decide" sourceRef="review" targetRef="decide" />
+    <scriptTask id="decide" name="读取审查意见" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements><coda:env name="REVIEW" value="=review" /><coda:output name="route" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" decide</script>
+    </scriptTask>
+    <sequenceFlow id="decide-how" sourceRef="decide" targetRef="how" />
+    <exclusiveGateway id="how" name="审查结论" default="how-accept" />
+    <sequenceFlow id="how-note" sourceRef="how" targetRef="report"><conditionExpression xsi:type="tFormalExpression">=decide.route = "review"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="how-revise" sourceRef="how" targetRef="revise"><conditionExpression xsi:type="tFormalExpression">=decide.route = "revise"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="how-accept" sourceRef="how" targetRef="accept" />
+    <scriptTask id="revise" name="同一执行会话修改" scriptFormat="bash">
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" revise</script>
+    </scriptTask>
+    <sequenceFlow id="revise-report" sourceRef="revise" targetRef="report" />
+    <scriptTask id="accept" name="快进泳道并推送" scriptFormat="bash" coda:timeout="5">
+      <extensionElements><coda:output name="head" /><coda:output name="lane" /><coda:output name="route" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" accept</script>
+    </scriptTask>
+    <sequenceFlow id="accept-after" sourceRef="accept" targetRef="after-accept" />
+    <exclusiveGateway id="after-accept" name="继续执行还是验收" default="accept-preview" />
+    <sequenceFlow id="accept-next" sourceRef="after-accept" targetRef="execute"><conditionExpression xsi:type="tFormalExpression">=accept.route = "execute"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="accept-check" sourceRef="after-accept" targetRef="pr"><conditionExpression xsi:type="tFormalExpression">=accept.route = "pr"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="accept-preview" sourceRef="after-accept" targetRef="preview" />
+    <userTask id="preview" name="安装预览版" coda:noteLabel="安装结果或跳过原因">
+      <documentation>主 Agent：泳道 {{accept.lane}} 的最新提交是 {{accept.head}}。
+请用 workflow_run 分别发起 mac-preview-install 和 ios-preview-install，两次都传 commit="{{accept.head}}"。等两项成功安装后答复；有失败先处理，不能把发起当作装好。
+没有客户端改动可以选「无客户端改动，跳过」，在备注中说明。预览只装客户端，不从泳道部署后端。</documentation>
+      <extensionElements>
+        <coda:choice id="installed" name="已装好" primary="true" />
+        <coda:choice id="skip" name="无客户端改动，跳过" />
+      </extensionElements>
+    </userTask>
+    <sequenceFlow id="preview-device" sourceRef="preview" targetRef="device" />
+    <userTask id="device" name="设备验收" coda:assignee="user" coda:handback="false" coda:noteLabel="验收意见">
+      <documentation>功能：{{inputs.title}}
+泳道：{{accept.lane}}，提交：{{accept.head}}
+主 Agent 的安装结果：{{preview.note}}
+{{if device-result.feedback = null then "" else device-result.feedback}}
+请在设备上验收；没有客户端改动时确认本次功能结果。选「不行」必须在备注中写具体意见，交回主 Agent 审查。</documentation>
+      <extensionElements><coda:choice id="yes" name="通过" primary="true" /><coda:choice id="no" name="不行" /></extensionElements>
+    </userTask>
+    <sequenceFlow id="device-result-flow" sourceRef="device" targetRef="device-result" />
+    <scriptTask id="device-result" name="读取验收意见" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements><coda:env name="DEVICE" value="=device" /><coda:output name="route" /><coda:output name="feedback" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" device</script>
+    </scriptTask>
+    <sequenceFlow id="device-route" sourceRef="device-result" targetRef="after-device" />
+    <exclusiveGateway id="after-device" name="验收结论" default="device-pr" />
+    <sequenceFlow id="device-note" sourceRef="after-device" targetRef="device"><conditionExpression xsi:type="tFormalExpression">=device-result.route = "device"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="device-review" sourceRef="after-device" targetRef="report"><conditionExpression xsi:type="tFormalExpression">=device-result.route = "review"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="device-pr" sourceRef="after-device" targetRef="pr" />
+    <scriptTask id="pr" name="开 PR 或更新汇总" scriptFormat="bash" coda:timeout="5">
+      <extensionElements><coda:output name="url" /><coda:output name="head" /><coda:output name="summary" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" pr</script>
+    </scriptTask>
+    <sequenceFlow id="pr-check" sourceRef="pr" targetRef="checks" />
+    <serviceTask id="checks" name="项目检查" coda:action="run-workflows">
+      <extensionElements><coda:param name="kind" value="check" /><coda:param name="commit" value="=pr.head" /></extensionElements>
+    </serviceTask>
+    <boundaryEvent id="checks-failed" attachedToRef="checks"><errorEventDefinition /></boundaryEvent>
+    <sequenceFlow id="checks-feedback" sourceRef="checks-failed" targetRef="check-feedback" />
+    <scriptTask id="check-feedback" name="交回检查失败" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements><coda:env name="STEP" value="项目检查" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" check-failed</script>
+    </scriptTask>
+    <sequenceFlow id="checks-review" sourceRef="check-feedback" targetRef="report" />
+    <sequenceFlow id="checks-kinds" sourceRef="checks" targetRef="kinds" />
+    <serviceTask id="kinds" name="项目部署选项" coda:action="workflow-kinds">
+      <extensionElements><coda:param name="commit" value="=pr.head" /></extensionElements>
+    </serviceTask>
+    <sequenceFlow id="kinds-approve" sourceRef="kinds" targetRef="approve" />
+    <userTask id="approve" name="批准合并" coda:assignee="user" coda:handback="false">
+      <documentation>PR：{{pr.url}}
+提交：{{pr.head}}
+设备验收和项目检查已通过。批准后先在此提交上跑合并前检查，再 squash 合入目标分支；勾选部署则在确认合并后部署一次。
+部署选项与现有 PR 批准卡相同：仅项目有 kind=deploy 的流程时显示，勾选后调用该类全部流程；默认不勾选。
+
+各次审查通过的改动：
+{{pr.summary}}</documentation>
+      <extensionElements>
+        <coda:choice id="merge" name="合并" primary="true"><coda:option id="deploy" name="部署" detail="调用项目里的部署流程" coda:shown="=kinds.deploy" /></coda:choice>
+        <coda:choice id="stop" name="暂不合并" />
+      </extensionElements>
+    </userTask>
+    <sequenceFlow id="approve-route" sourceRef="approve" targetRef="after-approval" />
+    <exclusiveGateway id="after-approval" name="是否合并" default="approval-premerge" />
+    <sequenceFlow id="approval-stop" sourceRef="after-approval" targetRef="stopped"><conditionExpression xsi:type="tFormalExpression">=approve.chose.stop</conditionExpression></sequenceFlow>
+    <sequenceFlow id="approval-premerge" sourceRef="after-approval" targetRef="premerge" />
+    <endEvent id="stopped" name="暂不合并" />
+    <serviceTask id="premerge" name="合并前检查" coda:action="run-workflows">
+      <extensionElements><coda:param name="kind" value="premerge" /><coda:param name="commit" value="=pr.head" /></extensionElements>
+    </serviceTask>
+    <boundaryEvent id="premerge-failed" attachedToRef="premerge"><errorEventDefinition /></boundaryEvent>
+    <sequenceFlow id="premerge-feedback-flow" sourceRef="premerge-failed" targetRef="premerge-feedback" />
+    <scriptTask id="premerge-feedback" name="交回合并前检查失败" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements><coda:env name="STEP" value="合并前检查" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" check-failed</script>
+    </scriptTask>
+    <sequenceFlow id="premerge-review" sourceRef="premerge-feedback" targetRef="report" />
+    <sequenceFlow id="premerge-merge" sourceRef="premerge" targetRef="merge" />
+    <scriptTask id="merge" name="Squash 合并" scriptFormat="bash" coda:timeout="10">
+      <extensionElements><coda:output name="commit" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" merge</script>
+    </scriptTask>
+    <sequenceFlow id="merge-deploy-choice" sourceRef="merge" targetRef="deploy-choice" />
+    <exclusiveGateway id="deploy-choice" name="是否部署" default="merged-only" />
+    <sequenceFlow id="merged-deploy" sourceRef="deploy-choice" targetRef="deploy"><conditionExpression xsi:type="tFormalExpression">=approve.options.deploy</conditionExpression></sequenceFlow>
+    <sequenceFlow id="merged-only" sourceRef="deploy-choice" targetRef="done" />
+    <serviceTask id="deploy" name="部署" coda:action="run-workflows">
+      <extensionElements><coda:param name="kind" value="deploy" /><coda:param name="commit" value="=merge.commit" /></extensionElements>
+    </serviceTask>
+    <sequenceFlow id="deployed" sourceRef="deploy" targetRef="done" />
+    <endEvent id="done" name="已完成"><extensionElements><coda:output name="pr" value="=pr.url" /><coda:output name="commit" value="=merge.commit" /></extensionElements></endEvent>
+  </process>
+</definitions>
