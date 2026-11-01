@@ -76,7 +76,7 @@ Ultra 消失且此前 `sent > 0` 时用 `coda.tell` 告知关闭一次，恢复�
 4. 主 Agent 用 `workflow_run` 带泳道的精确 `commit` 安装 `mac-preview-install`、`ios-preview-install`，安装成功后答复；没有客户端改动可跳过安装。随后用户答复「设备验收」，「不行」须附意见并回主 Agent 审查，修好后重新安装与验收。
 5. 设备验收通过后开泳道到 base 的 PR，正文汇总各次审查通过的任务、回答和提交。`run-workflows kind=check` 在泳道最新提交上执行；失败交回主 Agent，材料给出失败阶段、提交和运行链接，由主 Agent 用 `workflow_status` 读取失败详情，再退回最近的执行会话。修好后更新同一个 PR 并重跑检查。
 6. 用户批准卡仅在项目有 `kind=deploy` 时显示「部署」，默认不勾；与现有 PR 批准卡一样，选中后运行这一类的全部流程。v1 不提供预览发布或正式发布。批准后在同一 head 跑 `kind=premerge`，失败同样回审查，修好后重新检查与批准。
-7. 用 `gh pr merge --squash --match-head-commit` 合并，向 GitHub 确认已合并的 head，再在实际合并提交上按勾选运行一次部署。GitHub 尚未合并（例如进入合并队列）时流程失败，不提前部署。
+7. 用 `gh pr merge --squash --match-head-commit` 合并，成功后读取合并提交、删除远端泳道分支，再在合并提交上按勾选运行一次部署。
 
 每步独立工作区，进度与已通过的改动暂存于 `$CODA_ARTIFACTS/develop.json`；长期结果在泳道提交与 PR 中。执行者的分支/head 必须在本机仓库可读；`coda-agent --json` 标准输出是一行 `{session, branch, head, answer}`，`--continue` 保留同一会话并遵守首次的退出码约定。需要支持这两个接口的 Coda 版本。
 

@@ -14,7 +14,8 @@ export function on(subagents) {
       'Any earlier instruction to delegate only when asked no longer applies. Explicit user instructions override these rules; ' +
       'an ordinary implementation request does not override your coordinator role.',
     'Conserve the lead agent\'s tokens and context while preserving quality. Keep task framing, difficult decisions, dispatch, ' +
-      'architecture and implementation review, and acceptance in this session.',
+      'architecture and implementation review, and acceptance in this session. ' +
+      'Small targeted reads for framing and your own architecture and implementation review belong here.',
     'Delegate ALL code changes through `workflow_run` with workflow="develop". Start one development run per independently deliverable feature; ' +
       'independent features may run concurrently. Give it a self-contained title and first task, context, acceptance criteria and a separate write scope. ' +
       'Tasks within one run are sequential. Pass the selected executor as the develop inputs agent, model, effort and mode; ' +
@@ -28,7 +29,7 @@ export function on(subagents) {
       'asks for user approval and deployment choices, runs premerge checks, squash-merges and deploys once.',
     'Use Coda\'s `spawn` ONLY for research, investigation and verification that do not change code. ' +
       'Give these workers a concrete, self-contained task and ask for concise conclusions, sources and actual evidence. ' +
-      'Do not repeat their routine work. Small targeted reads for framing and your own architecture and implementation review belong here. ' +
+      'Do not repeat their routine work. ' +
       'Do not use native subagents unless explicitly requested. If concurrency is full, wait; if the required workflow or spawn is unavailable, report the blocker, ' +
       'without falling back to direct implementation or another delegation channel.',
     subagents.length

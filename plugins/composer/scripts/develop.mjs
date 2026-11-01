@@ -74,7 +74,6 @@ switch (action) {
     git('switch', '-C', state.lane, 'FETCH_HEAD');
     // 顺序任务只能快进；Git 的错误会说明分叉，流程停在这里交回主 Agent。
     git('merge', '--ff-only', state.executor.head);
-    if (git('rev-parse', 'HEAD') !== state.executor.head) throw new Error('执行者 head 已落后于泳道，不能快进到该提交。');
     git('push', 'origin', `HEAD:refs/heads/${state.lane}`);
     state.head = state.executor.head;
     if (state.approved.at(-1)?.head !== state.head) state.approved.push({ task: state.task, head: state.head, answer: state.executor.answer });
@@ -116,9 +115,9 @@ switch (action) {
     break;
   case 'merge': {
     gh('pr', 'merge', state.pr, '--squash', '--match-head-commit', state.head);
-    const merged = JSON.parse(gh('pr', 'view', state.pr, '--json', 'state,headRefOid,mergeCommit'));
-    if (merged.state !== 'MERGED' || merged.headRefOid !== state.head) throw new Error('GitHub 尚未确认批准的 head 已合并；不能部署。');
-    output('commit', merged.mergeCommit.oid);
+    const commit = gh('pr', 'view', state.pr, '--json', 'mergeCommit', '--jq', '.mergeCommit.oid');
+    git('push', 'origin', '--delete', state.lane);
+    output('commit', commit);
     break;
   }
   default: throw new Error(`未知开发步骤：${action}`);

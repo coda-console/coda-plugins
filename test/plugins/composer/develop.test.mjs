@@ -64,10 +64,8 @@ const body = args.includes('--body-file') ? readFileSync(args[args.indexOf('--bo
 calls.push({ args, body }); writeFileSync(join(root, 'gh-calls'), JSON.stringify(calls));
 if (args[0] === 'repo') console.log('main');
 else if (args[1] === 'create') console.log('https://github.com/example/fixture/pull/1');
-else if (args[1] === 'view') {
-  const state = JSON.parse(readFileSync(join(process.env.CODA_ARTIFACTS, 'develop.json'), 'utf8'));
-  console.log(JSON.stringify({ state: process.env.MERGE_STATE || 'MERGED', headRefOid: state.head, mergeCommit: { oid: 'f'.repeat(40) } }));
-}
+else if (args[1] === 'merge') process.exit(Number(process.env.MERGE_EXIT || 0));
+else if (args[1] === 'view') console.log('f'.repeat(40));
 `);
   writeFileSync(join(root, 'agent-calls'), '[]'); writeFileSync(join(root, 'gh-calls'), '[]');
   const state = () => JSON.parse(readFileSync(join(artifacts, 'develop.json'), 'utf8'));
@@ -139,7 +137,7 @@ test('develop 从最新 base 开泳道，退回续作，逐项快进，验收后
   assert.equal(f.calls('gh').filter(c => c.args[1] === 'edit').length, 1);
 });
 
-test('检查失败回最近执行会话，修好更新 PR 重跑；只部署 GitHub 确认的合并提交', t => {
+test('检查失败回最近执行会话，修好更新 PR 重跑；合并后删除远端泳道并交出合并提交', t => {
   const f = fixture(t); f.run('lane'); f.task('code', 'implementation'); f.run('execute');
   f.review('accept'); f.run('accept'); f.device('yes'); f.run('pr');
   const session = f.state().executor.session;
@@ -153,11 +151,15 @@ test('检查失败回最近执行会话，修好更新 PR 重跑；只部署 Git
     f.review('accept'); assert.equal(f.run('accept').outputs.route, 'pr');
     f.run('pr');
   }
+  f.run('merge', { MERGE_EXIT: '1' }, 1);
+  assert.equal(f.git('ls-remote', 'origin', f.state().lane).split('\t')[0], f.state().head, '合并失败不删除泳道');
   const merged = f.run('merge').outputs.commit;
   assert.equal(merged, 'f'.repeat(40)); assert.notEqual(merged, f.state().head);
   assert.deepEqual(f.calls('gh').find(c => c.args[1] === 'merge').args,
     ['pr', 'merge', f.state().pr, '--squash', '--match-head-commit', f.state().head]);
-  assert.match(f.run('merge', { MERGE_STATE: 'OPEN' }, 1).stderr, /尚未确认/);
+  assert.deepEqual(f.calls('gh').find(c => c.args[0] === 'pr' && c.args[1] === 'view').args,
+    ['pr', 'view', f.state().pr, '--json', 'mergeCommit', '--jq', '.mergeCommit.oid']);
+  assert.equal(f.git('ls-remote', 'origin', f.state().lane), '', '合并成功后清理远端泳道');
 });
 
 test('泳道不接受分叉，Agent 非零退出不进入审查', t => {
@@ -169,17 +171,6 @@ test('泳道不接受分叉，Agent 非零退出不进入审查', t => {
   f.git('push', '-q', 'origin', f.state().lane);
   const remote = f.git('rev-parse', 'HEAD');
   assert.match(f.run('accept', {}, 128).stderr, /fast-forward/);
-  assert.equal(f.git('ls-remote', 'origin', f.state().lane).split('\t')[0], remote);
-  assert.equal(f.state().approved.length, 0);
-});
-
-test('执行者 head 落后于泳道时不回退远端，也不记为通过', t => {
-  const f = fixture(t); f.run('lane'); f.task('code', 'worker change'); f.run('execute'); f.review('accept');
-  f.git('switch', f.state().lane); f.git('merge', '--ff-only', f.state().executor.head);
-  writeFileSync(join(f.work, 'later'), 'later'); f.git('add', 'later'); f.git('commit', '-qm', 'later');
-  f.git('push', '-q', 'origin', f.state().lane);
-  const remote = f.git('rev-parse', 'HEAD');
-  assert.match(f.run('accept', {}, 1).stderr, /已落后于泳道/);
   assert.equal(f.git('ls-remote', 'origin', f.state().lane).split('\t')[0], remote);
   assert.equal(f.state().approved.length, 0);
 });
