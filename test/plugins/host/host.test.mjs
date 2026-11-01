@@ -9,7 +9,6 @@ import { basename, join } from 'node:path';
 import { test } from 'node:test';
 import { serveSimulatorStatus, runFinished } from '../../../plugins/host/lib/simulator-status.mjs';
 import { registerSimulator, registrations } from '../../../plugins/host/lib/simulators.mjs';
-import { setTimeout as delay } from 'node:timers/promises';
 import { pluginDir } from '../plugin.mjs';
 import { declaredPanel, manifest, pluginEnv, run } from '../command.mjs';
 
@@ -28,13 +27,14 @@ const env = (extra = {}) => {
 };
 const hostSim = (args, extra) => run(`${manifest('host').contributes.commands.find(c => c.name === 'host-sim').command} ${args}`, env(extra));
 // A simulator tool standing in for xcrun: `simctl` keeps its devices in a file and logs what it was asked.
-function simctl(t, devices = []) {
+function simctl(t, devices = [], { cancelDuringCleanup = false } = {}) {
   const at = temporary(t), state = join(at, 'devices'), log = join(at, 'simctl.log'), tool = join(at, 'simctl');
   writeFileSync(state, devices.map(d => `${d}\n`).join(''));
   writeFileSync(tool, `#!${process.execPath}
 const fs = require('node:fs'), args = process.argv.slice(2).filter(a => a !== 'simctl');
 const read = () => fs.readFileSync(${JSON.stringify(state)}, 'utf8').split('\\n').filter(Boolean);
 fs.appendFileSync(${JSON.stringify(log)}, args.join(' ') + '\\n');
+if (${cancelDuringCleanup} && args[0] === 'shutdown') process.kill(process.ppid, 'SIGTERM');
 if (args[0] === 'list') process.stdout.write(JSON.stringify({ devices: { r: read().map(udid => ({ udid, name: udid, state: 'Booted' })) } }));
 if (args[0] === 'delete' && args[1] !== 'STUCK') fs.writeFileSync(${JSON.stringify(state)}, read().filter(u => u !== args[1]).map(u => u + '\\n').join(''));
 `, { mode: 0o755 });
@@ -109,9 +109,12 @@ function held(t, inputs, extra = {}) {
     env: env({ HELD_COMMAND: inputs.command, HELD_CWD: inputs.cwd ?? at, HELD_WHAT: inputs.what ?? '构建', RUNNER_TEMP: at, GITHUB_OUTPUT: output,
       CODA_PLUGIN_STATE: join(at, 'state'), CODA_ARTIFACTS: at, GITHUB_WORKSPACE: at, ...extra }) });
   let out = '', err = '';
-  child.stdout.on('data', d => { out += d; }); child.stderr.on('data', d => { err += d; });
+  const ready = inputs.ready ? Promise.withResolvers() : null;
+  child.stdout.on('data', d => { out += d; if (ready && out.includes(inputs.ready)) ready.resolve(); });
+  child.stderr.on('data', d => { err += d; });
+  child.on('close', () => { if (ready && !out.includes(inputs.ready)) ready.reject(new Error(`命令未就绪就退出：${err}`)); });
   const ended = new Promise(resolve => child.on('close', code => resolve({ code, out, err, outputs: readFileSync(output, 'utf8') })));
-  return { at, child, ended };
+  return { at, child, ended, ready: ready?.promise };
 }
 
 test('持锁执行 runs the command where it was told, with the project\'s environment and the slot as its own, and deletes what it bound', async t => {
@@ -134,13 +137,26 @@ test('持锁执行 runs the command where it was told, with the project\'s envir
 
 test('持锁执行 cancelled still deletes the simulators its command bound before it ends', async t => {
   const sims = simctl(t, ['FAKE-2']);
-  const { at, child, ended } = held(t, { command: `echo FAKE-2 >> "$HOST_SIM_DEVICES"; touch bound; sleep 60`, what: '模拟器' }, { HOST_SIM_SIMCTL: sims.tool });
-  for (let i = 0; i < 500 && !existsSync(join(at, 'bound')); i++) await delay(10);
+  const { child, ended, ready } = held(t, { command: `echo FAKE-2 >> "$HOST_SIM_DEVICES"; echo bound; exec sleep 60`, what: '模拟器', ready: 'bound\n' }, { HOST_SIM_SIMCTL: sims.tool });
+  await ready;
   // As the step runner cancels a step: its whole process group is asked to stop.
   process.kill(-child.pid, 'SIGTERM');
-  const { code, outputs } = await ended;
-  assert.equal(code, 143); assert.equal(outputs, 'exit_code=143\n');
+  const result = await ended;
+  const { code, outputs } = result;
+  assert.equal(code, 143, JSON.stringify(result)); assert.equal(outputs, 'exit_code=143\n');
   assert.equal(sims.log(), 'shutdown FAKE-2\ndelete FAKE-2\n');
+});
+
+test('持锁执行 retains cancellation when child exit is observed before TERM during simulator cleanup', async t => {
+  // The child receives TERM first. simctl then delivers TERM to the wrapper while it is cleaning up:
+  // no scheduler luck or sleep is needed to expose a pending signal hidden by synchronous cleanup.
+  const sims = simctl(t, ['FAKE-3'], { cancelDuringCleanup: true });
+  const result = await held(t, { command: 'echo FAKE-3 >> "$HOST_SIM_DEVICES"; kill -TERM $$', what: '模拟器' },
+    { SHELL: '/bin/sh', HOST_SIM_SIMCTL: sims.tool }).ended;
+  assert.equal(result.code, 143, JSON.stringify(result));
+  assert.equal(result.outputs, 'exit_code=143\n');
+  assert.equal(sims.log(), 'shutdown FAKE-3\ndelete FAKE-3\n');
+  assert.deepEqual(sims.devices(), []);
 });
 
 // Exercise the script with the real module bridge, public workflow responses and a fake simctl.

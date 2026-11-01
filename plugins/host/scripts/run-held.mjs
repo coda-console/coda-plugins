@@ -4,10 +4,12 @@
 // simulator one of them registers (`host-sim bind`) is written to `HOST_SIM_DEVICES` and deleted here once the command is
 // over, cancelled or not. The command's exit status is the step's output `exit_code`, and the step fails as the command
 // does: the agent is told a failure, with the end of what it printed.
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import { appendFileSync, existsSync, readFileSync, statSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { constants } from 'node:os';
+import { promisify } from 'node:util';
+const exec = promisify(execFile);
 
 const { HELD_COMMAND: command, HELD_CWD: cwd, HELD_WHAT: what } = process.env;
 const devices = join(process.env.RUNNER_TEMP, 'host-sim-devices');
@@ -18,24 +20,32 @@ Object.assign(env, { HOST_SIM_LEASE: `coda-run:${what === '模拟器' ? 'simulat
 const simctl = env.HOST_SIM_SIMCTL ?? 'xcrun';
 
 let ending = false;
+// Register before launching the command, and keep cancellation authoritative through cleanup and exit.
+// A signal callback may arrive after the child's close callback, even for the same group-wide TERM.
+for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(signal, () => { ending = true; process.exitCode = 143; });
 if (!isAbsolute(cwd ?? '') || !existsSync(cwd) || !statSync(cwd).isDirectory()) {
   process.stderr.write(`cwd 须为存在的目录的绝对路径：${cwd}\n`);
-  done(2);
+  await done(2);
 } else {
   const child = spawn(env.SHELL || '/bin/sh', ['-c', command], { cwd, env, stdio: 'inherit' });
   // Cancelled: the step's process group is asked to stop, the command with it; the simulators still go before the step ends.
-  for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(signal, () => { ending = true; });
-  child.on('error', error => { process.stderr.write(`执行不了：${error.message}\n`); done(127); });
-  child.on('close', (code, signal) => done(code ?? 128 + (constants.signals[signal] ?? 0)));
+  const status = await new Promise(resolve => {
+    child.on('error', error => { process.stderr.write(`执行不了：${error.message}\n`); resolve(127); });
+    child.on('close', (code, signal) => resolve(code ?? 128 + (constants.signals[signal] ?? 0)));
+  });
+  await done(status);
 }
 
-function done(status) {
+async function done(status) {
   for (const udid of existsSync(devices) ? new Set(readFileSync(devices, 'utf8').split('\n').filter(Boolean)) : []) {
     for (const action of ['shutdown', 'delete']) {
-      const result = spawnSync(simctl, ['simctl', action, udid], { encoding: 'utf8' });
-      if (action === 'delete') process.stdout.write(result.status === 0 ? `已删除模拟器 ${udid}\n` : `删除模拟器 ${udid} 失败：${(result.stderr || result.error?.message || '').trim()}\n`);
+      // Leave the event loop free to receive cancellation while simctl is running.
+      let failure;
+      try { await exec(simctl, ['simctl', action, udid]); } catch (error) { failure = error; }
+      if (action === 'delete') process.stdout.write(!failure ? `已删除模拟器 ${udid}\n` : `删除模拟器 ${udid} 失败：${(failure.stderr || failure.message).trim()}\n`);
     }
   }
   appendFileSync(process.env.GITHUB_OUTPUT, `exit_code=${status}\n`);
-  process.exit(ending ? 143 : status === 0 ? 0 : 1);
+  // Let pending signal callbacks and output drain instead of synchronously exiting inside close.
+  process.exitCode = ending ? 143 : status === 0 ? 0 : 1;
 }
