@@ -2,10 +2,13 @@
   "name": "@coda-console/composer",
   "id": "composer",
   "displayName": "输入框模式",
-  "description": "输入框可同时开启的五种模式：交接到新会话、从任意会话创建子会话、打 ! 执行命令、Ultra 协调模式，以及按周期重复任务的循环模式。Ultra 的主 Agent 负责决策、调度和验收，非微小任务交给 Coda 子会话执行。",
-  "version": "3.0.0",
+  "description": "输入框可同时开启的五种模式：交接到新会话、从任意会话创建子会话、打 ! 执行命令、Ultra 协调模式，以及按周期重复任务的循环模式。Ultra 通过开发流程委派代码修改，主 Agent 亲自审查架构与实现，设备验收后检查、批准、合并并部署。",
+  "version": "3.1.0",
   "categories": [
     "工作流程"
+  ],
+  "extensionDependencies": [
+    "github"
   ],
   "license": "MIT",
   "repository": {
@@ -19,6 +22,8 @@
   "files": [
     "main.mjs",
     "ultra.mjs",
+    ".coda/workflows",
+    "scripts",
     "THIRD_PARTY_NOTICES.md"
   ],
   "main": "main.mjs",
@@ -31,7 +36,7 @@
       "properties": {
         "composer.templates": {
           "title": "模板",
-          "description": "进入 Ultra 时可选的名单，一行一个子 Agent：同一个模板名的几行是一个模板，排第一的模板是进入时的默认。默认没有模板，子 Agent 名单为空时沿用当前会话的 Agent 和模型。",
+          "description": "进入 Ultra 时可选的名单，一行一个执行者：同一个模板名的几行是一个模板，排第一的模板是进入时的默认。默认没有模板，执行者名单为空时沿用当前会话的 Agent 和模型。",
           "type": "array",
           "items": {
             "type": "object",
@@ -137,7 +142,7 @@
         "id": "ultra",
         "title": "Ultra",
         "icon": "square.stack.3d.up",
-        "hint": "节省主 Agent 的 Token，非微小任务交给子会话执行；可与其他模式同时开启，点 × 退出。",
+        "hint": "通过开发流程委派代码修改，主 Agent 亲自审查与验收；可与其他模式同时开启，点 × 退出。",
         "placeholder": "要完成什么？",
         "in": [
           "session",
@@ -147,7 +152,7 @@
           "type": "object",
           "properties": {
             "subagents": {
-              "title": "子 Agent",
+              "title": "执行者",
               "type": "array",
               "items": {
                 "type": "object",
