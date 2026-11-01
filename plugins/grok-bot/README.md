@@ -2,6 +2,8 @@
 
 把 xAI 云端 Grok Bot 的**原生主会话**接到 Coda。Coda 消息原样发送；回复、运行状态、活动摘要和选择卡片自动镜像，不需要 Bot 调用专门的汇报工具。定时任务仍由 Grok Routine 执行。与 Grok CLI 插件 `grok` 无关，本插件与 Agent ID 均为 `grok-bot`。
 
+Coda 中用 Grok Bot 的双眼圆脸机器人图标标识本插件，与 Grok CLI 的标志区分。图标随文字颜色适配浅深色，使用静态图形。
+
 ## 安装与登录
 
 此插件仍在内部调试，清单限定 `coda.channels: ["preview"]`，只供预览版 Coda 后端安装和更新。以目标后端的通道为准，不是 Mac / iPhone 客户端的版本；正式版后端会显示限制原因。该约束需要支持通道校验的 Coda 后端，公开 npm 包及未声明限制的旧版本仍可被直接下载。

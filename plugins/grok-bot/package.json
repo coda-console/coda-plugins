@@ -3,7 +3,7 @@
   "id": "grok-bot",
   "displayName": "Grok Bot",
   "description": "通过 Grok Bot 原生主会话接入 Coda，镜像回复与 Routine 运行记录。",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "coda": {
     "channels": ["preview"]
   },
@@ -35,7 +35,7 @@
         "lifecycle": "external",
         "displayName": "Grok Bot",
         "icon": {
-          "light": "icons/grok.pdf",
+          "light": "icons/grok-bot.pdf",
           "template": true
         },
         "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/agent/entry.mjs\"",
