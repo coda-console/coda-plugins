@@ -63,6 +63,7 @@ export function mergeContributions(type, spec, answers) {
   validate(type.base, spec, `${type.kind}.spec`);
   checkParticipants(answers);
   const replies = structuredClone(answers);
+  for (const reply of replies) if (reply.value === null) reply.value = {};
   for (const { plugin, key, value } of replies) validate(type.answer, value, `插件 ${plugin}（${key}）的补充`);
   const result = structuredClone(spec);
   for (const { value } of replies.sort((a, b) => compare(a.plugin, b.plugin) || compare(a.key, b.key))) {
