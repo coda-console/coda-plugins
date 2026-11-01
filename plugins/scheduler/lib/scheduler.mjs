@@ -119,7 +119,8 @@ export class Scheduler {
     if (this.executions.get(object.id)?.revision === object.revision) this.executions.set(object.id, updated);
   }
   async queue(object, reason) {
-    const status = { phase: 'queued', assignmentId: null, reason };
+    // Retain the last refused assignment while unbound; Coda rejects clearing or replacing this evidence.
+    const status = { phase: 'queued', assignmentId: object.status.assignmentId ?? null, reason };
     if (JSON.stringify(object.status) !== JSON.stringify(status)) await this.coda.protocols.setStatus('execution', object.id, status, object.revision);
   }
   async stop() {

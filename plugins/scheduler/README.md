@@ -28,6 +28,8 @@
 其他合格候选可立即接手，原候选更新 status 后可再次参与。重启保留这项抑制，删除或终结请求后回收记录。
 host 当前可能在最终准入冲突时报告已绑定的 `queued/capacity`；这种回答会继续等待原执行方，并不触发改派。
 
+拒绝后解除绑定再排队时，queued 的 `status.assignmentId` 保留上次拒绝的值，不能清空或替换，防止重新绑定复用旧 token。新 assignment 仍由绑定 CAS 生成。
+
 未绑定时收到 `spec.cancel: true`，直接写 `finished/cancelled`；已绑定时保留取消意图，由执行方处理进程、收尾及结果。
 生产方由 Coda 在请求正本写取消意图，host 不提供创建／取消入口。
 scheduler 不伪造绑定后的 status，包括绑给本机的请求。CAS 冲突重新观察，不拿新 revision 重交旧决定。

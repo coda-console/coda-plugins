@@ -183,10 +183,12 @@ test('refusal survives restart and only a fresh offer allows the same executor a
   })]);
   await f.scheduler.start(); await f.flush();
   assert.equal(f.get('request').status.reason.code, 'admission_rejected');
+  assert.equal(f.get('request').status.assignmentId, 'old');
   await f.scheduler.stop();
   const restored = await fixture(t, [...f.objects.values()], { root: f.root });
   await restored.scheduler.start(); await restored.flush();
   assert.equal(restored.get('request').spec.executor, null);
+  assert.equal(restored.get('request').status.assignmentId, 'old');
   restored.save(executor('local')); await restored.flush();
   assert.equal(restored.get('request').spec.executor.id, 'local');
   assert.deepEqual([...f.errors, ...restored.errors], []);
