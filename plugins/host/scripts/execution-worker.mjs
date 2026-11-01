@@ -24,14 +24,14 @@ record.phase = 'preparing'; record.startedAt = new Date().toISOString(); journal
 let timer;
 if (spec.timeoutMs) timer = setTimeout(() => signal.abort(new Error('执行超时')), Math.min(spec.timeoutMs, 2 ** 31 - 1));
 try {
-  const result = await executeHooks({ root, directory: journal.directory(key), attempt: key, source, slot: record.admission.slot,
+  const result = await executeHooks({ root, directory: journal.directory(key), attempt: key, source, slot: record.admission?.slot ?? null,
     spec, env, signal: signal.signal, checkpoint: async patch => {
       // startedAt is the beginning of preparation, not just the script: preparation can have side effects too.
       const { startedAt, ...rest } = patch; Object.assign(record, rest); journal.save(record);
       if (patch.phase) process.stdout.write(`${JSON.stringify({ execution: key, phase: patch.phase })}\n`);
     } });
   let files = {};
-  try { files = await resultFiles(journal.directory(key)); }
+  try { files = await resultFiles(journal.directory(key), spec.context?.outputNames); }
   catch (error) { result.outcome = 'failed'; result.reason = { code: 'invalid_outputs', message: error.message }; }
   record.result = { ...result, ...files, finishedAt: new Date().toISOString() };
 } catch (error) {

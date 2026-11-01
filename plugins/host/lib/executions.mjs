@@ -69,11 +69,11 @@ export class Executions {
         record.released = true; this.journal.save(record);
       }
       {
-        const run = { kind: 'hostExecution', id: record.key };
+        const run = { kind: 'hostExecutionV2', id: record.key };
         const status = { phase: record.phase === 'finished' ? 'finished' : record.phase === 'claimed' ? 'queued'
           : record.phase === 'running' || record.phase === 'cleanup' ? 'running' : 'preparing', assignmentId: record.assignmentId,
           ...(record.startedAt ? { startedAt: record.startedAt } : {}), executionRun: run,
-          ...(record.admission ? { admission: { lease: record.admission.lease, slots: [record.admission.slot] } } : {}),
+          admission: record.admission ? { lease: record.admission.lease, slots: [record.admission.slot] } : null,
           ...(record.result ?? {}), logs: [{ ref: run }] };
         if (record.phase !== 'finished' && !await this.control(record)) {
           status.reason = { code: 'result_unknown', message: '执行结果未明，保留绑定与名额；恢复原执行记录，不自动重跑' };
@@ -92,7 +92,10 @@ export class Executions {
     });
     if (spec.cancel) return refuse('cancelled', '开始前已取消', 'cancelled');
     if (!offered?.status.accepting) return refuse('not_accepting', '运行器已停止接活');
-    if (Object.keys(spec.resources).length !== 1 || spec.resources.slots !== 1 || (spec.exclusiveResources ?? []).some(k => k !== 'slots')) return refuse('unsupported_resources', '只支持 slots: 1 或 slots 独占');
+    const metered = Object.keys(spec.resources).length !== 0;
+    if ((metered && (Object.keys(spec.resources).length !== 1 || spec.resources.slots !== 1)) ||
+        (spec.exclusiveResources ?? []).some(k => !metered || k !== 'slots')) return refuse('unsupported_resources', '只支持无资源请求、slots: 1 或 slots 独占');
+    if (spec.context?.plugin || spec.context?.audience === 'user') return refuse('unsupported_context', '插件环境和仅用户可见的步骤须在发起机执行');
     const labels = new Set([...offered.spec.labels, ...offered.status.detectedLabels]);
     if (!spec.requirements.labels.every(label => labels.has(label))) return refuse('labels_unavailable', '运行器不满足所需能力');
     let source;
@@ -104,17 +107,17 @@ export class Executions {
     const current = this.objects.get(id);
     if (!current || current.instance !== object.instance || taskFingerprint(current.spec) !== taskFingerprint(spec) || current.spec.cancel) return;
     if (!this.offered()?.status.accepting) return refuse('not_accepting', '运行器已停止接活');
-    const admission = await this.coda.resources.acquire({ requestId: `execution:${key}`, group: 'host', resources: { slots: 1 }, exclusive: spec.exclusiveResources?.includes('slots') ?? false });
+    const admission = metered ? await this.coda.resources.acquire({ requestId: `execution:${key}`, group: 'host', resources: { slots: 1 }, exclusive: spec.exclusiveResources?.includes('slots') ?? false }) : null;
     const latest = this.objects.get(id);
     if (!latest || latest.instance !== object.instance || taskFingerprint(latest.spec) !== taskFingerprint(spec) || latest.spec.cancel) {
-      if (admission.admitted) await this.coda.resources.release(admission.lease);
+      if (admission?.admitted) await this.coda.resources.release(admission.lease);
       return;
     }
     if (!this.offered()?.status.accepting) {
-      if (admission.admitted) await this.coda.resources.release(admission.lease);
+      if (admission?.admitted) await this.coda.resources.release(admission.lease);
       return refuse('not_accepting', '运行器已停止接活');
     }
-    if (!admission.admitted) return this.reply(object, { phase: 'queued', assignmentId: spec.assignmentId, reason: { code: 'capacity', message: '等待本机名额' } });
+    if (metered && !admission.admitted) return this.reply(object, { phase: 'queued', assignmentId: spec.assignmentId, reason: { code: 'capacity', message: '等待本机名额' } });
     const record = { key, id, instance: object.instance, assignmentId: spec.assignmentId, fingerprint: taskFingerprint(spec), admission, phase: 'claimed' };
     this.journal.save(record);
     try { await this.launch({ root: this.root, key, source, spec, env }, this.journal.directory(key)); }
@@ -126,11 +129,11 @@ export class Executions {
   async publishRun(record, status) {
     const held = this.runs?.get(record.key);
     if (!held) {
-      await this.coda.protocols.put({ kind: 'hostExecution', id: record.key,
+      await this.coda.protocols.put({ kind: 'hostExecutionV2', id: record.key,
         spec: { execution: { kind: 'execution', id: record.id }, assignmentId: record.assignmentId }, status });
-    } else if (canonical(held.status) !== canonical(status)) await this.coda.protocols.setStatus('hostExecution', held.id, status, held.revision);
+    } else if (canonical(held.status) !== canonical(status)) await this.coda.protocols.setStatus('hostExecutionV2', held.id, status, held.revision);
     // Creation and publication can be interrupted separately; also repair publication of recovered local receipts.
-    await this.coda.protocols.publish('hostExecution', record.key);
+    await this.coda.protocols.publish('hostExecutionV2', record.key);
   }
   async stop() { this.stopped = true; await Promise.allSettled(this.busy.values()); }
 }

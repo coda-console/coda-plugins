@@ -10,7 +10,7 @@ import { ProtocolTypes, validate } from '../../../check/coda/components/protocol
 import { creationOf, checkCreationReadOnly } from '../../../check/coda/components/protocols/creation.mjs';
 import { Scheduler } from '../../../plugins/scheduler/lib/scheduler.mjs';
 
-// The host provider owns the public definitions. Use its locked dependency, not a duplicate schema.
+// Use the locked public definitions shared with the execution implementation, not a duplicate schema.
 const require = createRequire(new URL('../../../plugins/host/package.json', import.meta.url));
 const { EXECUTOR_PROTOCOL, EXECUTION_PROTOCOL } = await import(require.resolve('@coda-console/protocol/executor'));
 const stamp = '2026-11-01T00:00:00.000Z';
@@ -38,7 +38,7 @@ async function fixture(t, initial = [], { local = ['local'], allowInvalidCreatio
   for (const definition of [EXECUTOR_PROTOCOL, { ...EXECUTION_PROTOCOL, controllers: ['scheduler'] }]) {
     types.register({ ...providerDefinition(definition), participants: () => [] });
   }
-  let revision = 0, nextAssignment = 0, nextCreation = 0;
+  let revision = 0, nextCreation = 0;
   const visible = (sub, object) => sub.kind === object.kind && (sub.scope !== 'local' ||
     (object.kind === 'executor' ? local.includes(object.id) : object.id !== 'foreign-request'));
   const emit = (object, type = 'MODIFIED') => {
@@ -77,6 +77,7 @@ async function fixture(t, initial = [], { local = ['local'], allowInvalidCreatio
         assert.deepEqual(after, before, 'binding preserves task, cancellation, source and attempt');
         assert.equal(newExecutor === null, newAssignment === null, 'binding fields are replaced atomically');
         if (oldExecutor) assert.equal(object.status.outcome, 'rejected', 'no ambiguous reassignment');
+        else if (newExecutor) assert.equal(newAssignment, observed, 'every new binding uses the observed durable generation');
         return save({ ...object, spec: value }, f.notifyWrite(method, args));
       }
       assert.equal(object.spec.executor, null, 'scheduler never writes a bound status, including a local binding');
@@ -91,8 +92,8 @@ async function fixture(t, initial = [], { local = ['local'], allowInvalidCreatio
     },
     report: (_, error) => errors.push(error),
   }) };
-  f.scheduler = new Scheduler(coda, { interval: () => null,
-    assignment: () => `new-${++nextAssignment}`, now: () => stamp, report: (_, error) => errors.push(error) });
+  f.scheduler = new Scheduler(coda, {
+    now: () => stamp, report: (_, error) => errors.push(error) });
   t.after(() => f.scheduler.stop());
   f.flush = async () => { await f.scheduler.wake(); await f.scheduler.wake(); };
   return f;
@@ -183,10 +184,12 @@ test('refusal survives restart and only a fresh offer allows the same executor a
   })]);
   await f.scheduler.start(); await f.flush();
   assert.equal(f.get('request').status.reason.code, 'admission_rejected');
+  assert.equal(f.get('request').status.assignmentId, null);
   await f.scheduler.stop();
   const restored = await fixture(t, [...f.objects.values()], { root: f.root });
   await restored.scheduler.start(); await restored.flush();
   assert.equal(restored.get('request').spec.executor, null);
+  assert.equal(restored.get('request').status.assignmentId, null);
   restored.save(executor('local')); await restored.flush();
   assert.equal(restored.get('request').spec.executor.id, 'local');
   assert.deepEqual([...f.errors, ...restored.errors], []);
@@ -243,13 +246,13 @@ test('deactivate disposes every watch; subsequent events do not schedule', async
   f.save(executor('local')); await f.flush(); assert.equal(f.calls.length, count);
 });
 
-test('first install retries provider registration after disposing partial subscriptions', async t => {
+test('startup failure propagates and disposes subscriptions before an explicit restart', async t => {
   const f = await fixture(t, [executor('local'), execution('request')]);
   f.beforeWatch = collection => { if (collection === 'provider:execution') throw new Error('kind not registered yet'); };
-  await f.scheduler.start(); assert.equal(f.scheduler.ready, false); assert.equal(f.subscriptions.length, 0);
+  await assert.rejects(f.scheduler.start(), /not registered/); assert.equal(f.scheduler.ready, false); assert.equal(f.subscriptions.length, 0);
   f.beforeWatch = null; await f.scheduler.connect(); await f.flush();
   assert.equal(f.get('request').spec.executor.id, 'local'); assert.equal(f.subscriptions.length, 3);
-  assert.equal(f.errors.length, 1); assert.match(f.errors[0].message, /not registered/);
+  assert.deepEqual(f.errors, []);
 });
 
 for (const missing of [null, undefined, 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {

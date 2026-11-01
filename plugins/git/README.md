@@ -33,6 +33,8 @@ const subscription = await coda.protocols.observe('sourceSnapshot', event => {
 
 POST `…/snapshots/<id>/delete` 删除快照；POST `…/sources/<id>/delete` 撤下源并回收其快照 ref。POST `…/<sources|snapshots>/<id>/publish` `{ enabled: true|false }` 显式发布／撤下协议镜像；默认仅本机，不自动广播本地路径。跨机引用与入口由空间 Provider 映射，调用方不往本插件传机器参数。
 
+Coda 可用 `startGitProvider(coda, {readRun})` 在进程内装配同一 provider；`readRun` 注入直接账本读取。`ensureSource(id, path)`、`ensureSnapshot(id, spec)` 直接创建并对账，返回同一公开对象，不经过 localhost HTTP。相同 ID 只复用相同 spec，不能偷偷更换源码请求；消费者仍须检查 `status.ready`。
+
 ## 快照与回收
 
 工作树路径依次执行临时 `GIT_INDEX_FILE` → `read-tree HEAD` → `add -A` → `write-tree` → `commit-tree -p HEAD` → `update-ref`。保留执行位、符号链接，真实 index 与工作区均不修改；提交身份沿用父提交，不设置 Git 用户配置。制作过程中用户仍可编辑文件，因此它是 Git 逐文件读取的结果，不保证跨文件事务一致性。
@@ -62,4 +64,4 @@ node bin/check.mjs plugins/git --manifest
 node scripts/check-contract.mjs
 ```
 
-真实 Coda 插件宿主、空间代理／tailnet／DERP 与运行器整合属于后续步骤，不能用脚本测试替代。新包首发依照仓库根 README「npm 发布」：维护者 `npm login` 后执行 bootstrap 配置信任，再由 main 的 `publish.yml` 发布 `0.1.3`。本步骤不修改 Coda 的版本钉选或默认安装。
+真实 Coda 插件宿主、空间代理／tailnet／DERP 与运行器整合属于后续步骤，不能用脚本测试替代。新包首发依照仓库根 README「npm 发布」：维护者 `npm login` 后执行 bootstrap 配置信任，再由 main 的 `publish.yml` 发布清单中的版本。本步骤不修改 Coda 的版本钉选或默认安装。

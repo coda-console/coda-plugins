@@ -1,19 +1,15 @@
-import { randomUUID } from 'node:crypto';
 import { budget, choose, disposition, inOrder } from './policy.mjs';
 import { SchedulingState } from './state.mjs';
 
 export class Scheduler {
   constructor(coda, { state = new SchedulingState(coda.plugin.state),
-    assignment = randomUUID, now = () => new Date().toISOString(), report = console.error,
-    interval = setInterval } = {}) {
-    Object.assign(this, { coda, state, assignment, now, report, interval });
+    now = () => new Date().toISOString(), report = console.error } = {}) {
+    Object.assign(this, { coda, state, now, report });
     this.executions = new Map(); this.executors = new Map(); this.local = new Set(); this.subscriptions = [];
     this.ready = false; this.closed = false; this.dirty = false; this.running = null;
   }
   async start() {
-    // Startup modules activate concurrently; extensionDependencies orders installation, not provider registration.
-    // A first install may see host's kinds a moment later. Keep the module alive and retry the subscription.
-    this.timer = this.interval(() => void this.connect().then(() => this.wake()), 5000); this.timer?.unref?.();
+    // Coda registers the public kinds before assembling controllers. Startup failure is explicit, not a polling loop.
     await this.connect();
   }
   connect() {
@@ -44,7 +40,7 @@ export class Scheduler {
     } catch (error) {
       for (const subscription of this.subscriptions.splice(0)) await subscription.dispose();
       this.executions.clear(); this.executors.clear(); this.local.clear(); this.ready = false;
-      this.report('[scheduler observe]', error);
+      throw error;
     }
   }
   wake() {
@@ -110,7 +106,8 @@ export class Scheduler {
     const decision = choose(object.spec, executors, { local: this.local,
       remaining: budget(executors, [...this.executions.values()]), rejected: this.state.get(object)?.rejected ?? {} });
     if (decision.action === 'bind') {
-      await this.setBinding(object, decision.executor, this.assignment());
+      // The holder validates this opaque durable generation; it cannot match any earlier successful binding.
+      await this.setBinding(object, decision.executor, object.revision);
     } else {
       await this.queue(object, decision.reason);
     }
@@ -126,7 +123,7 @@ export class Scheduler {
     if (JSON.stringify(object.status) !== JSON.stringify(status)) await this.coda.protocols.setStatus('execution', object.id, status, object.revision);
   }
   async stop() {
-    this.closed = true; clearInterval(this.timer);
+    this.closed = true;
     await this.connecting;
     for (const subscription of this.subscriptions.splice(0)) await subscription.dispose();
     await this.running;

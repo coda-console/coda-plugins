@@ -2,28 +2,30 @@
 
 ## 运行器与执行请求
 
-从 1.2.0 起，host 实现公共 `executor`／`execution` 协议：配置意图、能力和名额在本机持有，执行请求由发起端持有，只有绑定给本机 `executor/host` 的请求才执行。协议 schema 来自 `@coda-console/protocol/executor`，不在插件里维护副本；需要 git 插件与 Coda 的 `protocols.resolve`、`resources.acquire/release/list` 接口。`run-held` 的流程入口仍保持原路径，第 9 步再切到执行请求。
+Coda 持有公共 `executor`／`execution` 类型并创建、取消执行请求。host 通过 `protocols.implement({kind: 'executor', id: 'host'})` 增强 Coda 已有的本机运行器，不创建第二个名额池；仅执行从其他持有方收到、绑定给这个运行器的请求。本机正本由 Coda 现有 runner 执行，不经过 host worker。需要协议包 2.2.0、Coda 的公共类型与 `implement` 接口、git 插件及本机资源账本。
 
-插件启动登记类型，公布一个本实例的 `executor/host`。`host.enabled` 控制是否接活，默认 true；`host.capacity` 配置名额数；`host.labels` 是逗号分隔的自定义标签。系统／CPU、Node、Xcode、可用模拟器 runtime 与图形会话由本机探测，每分钟刷新，不启动模拟器。容量和占用订阅 `concurrency-groups`，包括旧流程与 run-held，公布值不构成预留。停止接活不终止已接收的任务。
+`host.enabled` 控制是否接活，默认 true；`host.capacity` 配置名额数；`host.labels` 是逗号分隔的自定义标签。系统／CPU、Node、Xcode、可用模拟器 runtime 与图形会话由本机探测，每分钟刷新，不启动模拟器。容量和占用订阅 `concurrency-groups`，包括流程与 run-held，公布值不构成预留。Coda 本机命名资源组的数据保留在同一个 executor 上；跨机请求不映射命名组。停止接活不终止已接收的任务。
 
-资源首版只接受 `{slots: 1}`；`exclusiveResources: ['slots']` 表示独占，默认不独占。host 将 slots 映射到本机组 host，开跑前通过同一名额账本最终准入，账本返回稳定名额序号。其他资源量不能模拟为多次申请；scheduler 只读能力、资源量并修改单值绑定，不负责本机预留。
+资源接受 `{}` 或 `{slots: 1}`；`exclusiveResources: ['slots']` 表示独占。host 将 slots 映射到本机组 host，开跑前通过同一账本准入，取得稳定名额序号；无资源请求不申请名额，status 明确写 `admission: null`。其他资源不能模拟为多次申请；scheduler 只修改单值绑定，不负责预留。
 
-**创建与取消**：本机插件经服务 `plugins/host/services/execution` 操作。POST `/requests/<id>` 的正文为 `{spec}`，只能创建未绑定请求（`executor` 和 `assignmentId` 都为 null），重复 ID 拒绝；GET 同路径读本机正本。scheduler 带观察到的 revision 更新完整 spec 中的绑定及 assignmentId；绑定后 host 才发布该请求。POST `/requests/<id>/cancel` 带 `{revision}`，只把 `spec.cancel` 改为 true。远端调用者不能通过这些入口创建或取消本机请求。任务、源码、需求在首次绑定后不再修改，重试创建新 ID／attempt。
+请求的创建、取消及发布由 Coda 负责；host 不再提供 `/requests` 管理入口。任务、源码、需求在首次绑定后不再修改，重试创建新 ID／attempt。绑定与结果均带 assignmentId，对同一次分配回应。
 
 **源码**：提交端先用 git 插件创建 ready 的 sourceSnapshot，或引用 gitSource 加完整 commit。跨机时须发布快照及所属源；host 经 `protocols.observe` 看对象，经 `protocols.resolve(ref, 'repository')` 获得鉴权到达，不拼机器 ID 或 `/forward`。快照的 source ID 在其持有者范围内解释。代理鉴权头只传给本次 Git 子进程，不进入对象、日志、持久记录或 `.git/config`。
 
-固定目录为 `<插件状态>/workspaces/<来源工作副本身份及 instance 的散列>/<账本名额序号>`，不同来源工作副本、不同名额隔离；快照或提交改变不会丢掉同源缓存。fetch 后校验 commit，执行 `reset --hard` 和 `clean -fd`，保留被忽略缓存。cwd 必须在该工作根内，拒绝路径穿越和符号链接逃逸。没有源码的任务使用每次尝试的隔离目录。源码获取不改变发布／部署的准入政策。
+固定目录为 `<插件状态>/workspaces/<来源工作副本身份及 instance 的散列>/<账本名额序号>`，不同来源工作副本、不同名额隔离；快照或提交改变不会丢掉同源缓存。fetch 后校验 commit，执行 `reset --hard` 和 `clean -fd`，保留被忽略缓存。cwd 必须在该工作根内，拒绝路径穿越和符号链接逃逸。没有源码或没有申请名额的任务使用每次尝试的隔离目录；无名额请求不会冒用 HOST_SIM_LEASE。源码获取不改变发布／部署的准入政策。
+
+流程 `context.workflow` 重建 GitHub 风格的运行变量，`context.outputNames` 限定回填输出；不接收发起机路径或插件宿主密文。插件环境及 `audience: user` 步骤须显式留本机，host 收到这类远端请求明确拒绝。结果协议中的产物引用不代表已实现文件传输。
 
 **三段 hook 与恢复**：`prepare_job / run_script_step / cleanup_job` 使用原 JSON envelope，prepare 的 state 即使伴随失败也会收尾；命令退出码原样返回，cleanup 失败记日志。声明变量与执行器变量分开，取消先停止当前进程组、在收尾期限内 cleanup，确认完成后才释放名额。每次尝试在启动前持久记账；独立 worker 继续运行，不随插件宿主重启而重复启动。重启后跟随已有 worker；worker 不可达且无最终记录时报告 `result_unknown`，保留绑定与名额，绝不把丢失响应当作安全重试。取消通过带随机 token 的 loopback 控制通道交给原 worker，不对可能已被复用的 PID 盲发信号。
 
-本机 `hostExecution` 是这一次执行的持久结果引用和日志入口，没有另一个任务队列。`execution.status.executionRun`／`logs[].ref` 指向它，经 `protocols.resolve(ref, 'execution')` 取得服务基址；GET `/runs/<解析后的 id>` 读结果，GET `/runs/<id>/log?offset=<字节位置>` 每次最多读 64 KiB。结果保留有界 outputs、summary 和日志末尾；产物字节传输留给 artifacts 插件。请求改派或删除后，旧 worker 的最终结果仍保存到自己的记录，不能写入新绑定。
+本机 `hostExecutionV2` 是这一次执行的持久结果引用和日志入口，没有另一个任务队列。`execution.status.executionRun`／`logs[].ref` 指向它，经 `protocols.resolve(ref, 'execution')` 取得服务基址；GET `/runs/<解析后的 id>` 读结果，GET `/runs/<id>/log?offset=<字节位置>` 每次最多读 64 KiB。结果保留有界 outputs、summary 和日志末尾；产物字节传输留给 artifacts 插件。请求改派或删除后，旧 worker 的最终结果仍保存到自己的记录，不能写入新绑定。
 
 **验证**：纯规则、Git 目录、hook、取消竞态与重启记录在 `test/plugins/host/`；公共形状直接用 host 安装的协议包和同步的 provider 校验器测试。真实 Coda 存储／节点镜像／资源账本装配留 Coda 仓库验证。包含 host-sim 的完整插件测试经会话的 `workflow_run` → `run-held` 运行，不启动真实模拟器。
 
 ## 现有持锁执行与模拟器工具
 
 这个后端实例的 Apple 模拟器、Xcode 构建和项目要求排队的命令共用一组名额，会话里的这类命令经这个插件排队与执行。名额是流程引擎的[并发组](https://github.com/coda-console/coda/blob/main/docs/workflows.md#并发组) `host`，
-每个[后端实例](https://github.com/coda-console/coda/blob/main/docs/deployment.md#后端实例)各有一组，同一台 Mac 上的两个实例互不相干；插件只说它装的是什么、能同时进几个，Coda 内核不认识它。
+每个[后端实例](https://github.com/coda-console/coda/blob/main/docs/deployment.md#后端实例)各有一组，同一台 Mac 上的两个实例互不相干；Coda 提供默认本机运行器，host 增强容量、能力发现和跨机执行。
 
 从 Coda 的商店安装（npm 包 `@coda-console/host`，分类「机器与资源」），不随 Coda 默认装上；没装时流程步骤写 `coda:group="host"` 照样排队，容量按 1，
 会话里也没有 `host-sim`。用法给 Agent 的部分在 Skill `host-slots`（`skills/host-slots/SKILL.md`）。

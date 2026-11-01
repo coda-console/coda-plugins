@@ -11,7 +11,8 @@ import { executeHooks } from '../../../plugins/host/lib/hooks.mjs';
 import { Journal, identity, taskFingerprint } from '../../../plugins/host/lib/journal.mjs';
 import { Executions } from '../../../plugins/host/lib/executions.mjs';
 import { Sources } from '../../../plugins/host/lib/source.mjs';
-import { outputs } from '../../../plugins/host/lib/results.mjs';
+import { executionEnvironment } from '../../../plugins/host/lib/environment.mjs';
+import { outputs, resultFiles } from '../../../plugins/host/lib/results.mjs';
 
 const exec = promisify(execFile);
 async function temporary(t) { const root = await mkdtemp(join(tmpdir(), 'host-executor-')); t.after(() => rm(root, { recursive: true, force: true })); return root; }
@@ -118,7 +119,7 @@ for (const changed of [false, true]) {
         stored.set(id, { ...stored.get(id), status, revision: 'r2' });
       },
       publish: async (kind, id) => {
-        assert.equal(kind, 'hostExecution'); assert.ok(stored.has(id));
+        assert.equal(kind, 'hostExecutionV2'); assert.ok(stored.has(id));
         if (interrupted) throw new Error('publication interrupted');
         published.add(id);
       },
@@ -245,4 +246,49 @@ test('outputs support multiline values and reject malformed or excessive results
   assert.deepEqual({ ...outputs('one=yes\ntwo<<END\na\nb\nEND\n') }, { one: 'yes', two: 'a\nb' });
   assert.throws(() => outputs('two<<END\nmissing'), /结束标记/);
   assert.throws(() => outputs(`one=${'x'.repeat(4097)}`), /限制/);
+});
+
+
+test('unmetered requests launch with no lease and publish null admission; named groups and private context refuse explicitly', async t => {
+  const root = await temporary(t), f = engine(root);
+  f.host.coda.resources.acquire = async () => { throw new Error('unmetered request must not acquire'); };
+  const object = request(); object.spec.resources = {};
+  await f.host.observe({ type: 'ADDED', id: object.id, object });
+  assert.equal(f.launches.length, 1);
+  assert.equal(f.host.journal.get(identity(object)).admission, null);
+  await f.host.tick();
+  assert.equal(f.writes.findLast(w => w.kind === 'execution').status.admission, null);
+  for (const patch of [{ resources: { 'group:project-build': 1 } }, { context: { audience: 'user' } },
+    { context: { plugin: { id: 'host', version: '1.3.0' } } }]) {
+    const rejected = request(); rejected.id = JSON.stringify(patch); Object.assign(rejected.spec, patch);
+    await f.host.observe({ type: 'ADDED', id: rejected.id, object: rejected });
+    assert.equal(f.writes.at(-1).status.outcome, 'rejected');
+  }
+  assert.equal(f.launches.length, 1);
+});
+
+test('unmetered workspace is isolated per attempt and outputs obey declared names', async t => {
+  const root = await temporary(t);
+  const prepare = attempt => prepareWorkspace({ root, source: null, slot: null, attempt });
+  const first = await prepare('first'), second = await prepare('second');
+  assert.notEqual(first, second); assert.equal(await prepare('first'), first);
+  await writeFile(join(first, 'output'), 'visible=yes\nundeclared=hidden\n');
+  assert.deepEqual((await resultFiles(first, ['visible'])).outputs, { visible: 'yes' });
+  assert.deepEqual((await resultFiles(first, [])).outputs, {});
+});
+
+
+test('workflow context rebuilds identity and local paths without plugin secrets or a fake unmetered lease', () => {
+  const input = { runtime: { PATH: '/bin', HOME: '/home', CODA_TOKEN: 'secret' }, declared: { INPUT: 'value' },
+    workflow: { name: 'checks', job: 'backend', runId: 'run', runAttempt: 2, sha: 'a'.repeat(40), ref: 'main', repository: 'owner/repo' },
+    workspace: '/executor/work', directory: '/executor/attempt', devices: '/executor/devices', metered: false,
+    files: { output: '/executor/output', summary: '/executor/summary' } };
+  const env = executionEnvironment(input);
+  assert.equal(env.GITHUB_WORKFLOW, 'checks'); assert.equal(env.GITHUB_RUN_ATTEMPT, '2');
+  assert.equal(env.GITHUB_WORKSPACE, '/executor/work'); assert.equal(env.RUNNER_TEMP, '/executor/attempt/tmp');
+  assert.equal(env.INPUT, 'value'); assert.equal(env.CODA_TOKEN, undefined); assert.equal(env.HOST_SIM_LEASE, undefined);
+  assert.equal(executionEnvironment({ ...input, metered: true }).HOST_SIM_LEASE, 'coda-run:build');
+  for (const name of ['CODA_TOKEN', 'HOST_SIM_LEASE', 'RUNNER_TEMP', 'GITHUB_OUTPUT']) {
+    assert.throws(() => executionEnvironment({ ...input, declared: { [name]: 'foreign' } }), /不能覆盖/);
+  }
 });

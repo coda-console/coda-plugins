@@ -276,3 +276,21 @@ for (const result of ['running', 'error']) test(`运行订阅终态先于旧查�
   assert.equal(get(h, SNAPSHOT, 'snapshot').status.released, true);
   assert.equal(await command(dir, ['for-each-ref', 'refs/coda/snapshots/']), '');
 });
+
+
+test('in-process producer creates the same source and snapshot objects without API transport', async t => {
+  const dir = await fixture(t), h = host(join(dir, '.git', 'in-process'));
+  h.coda.api = async () => { throw new Error('no HTTP API in process'); };
+  const provider = new GitProvider(h.coda, { readRun: async id => ({ id, state: 'running' }) });
+  t.after(() => provider.stop()); await provider.start();
+  const source = await provider.ensureSource('source', dir);
+  assert.equal(source.status.ready, true);
+  await writeFile(join(dir, 'new'), 'in-process snapshot');
+  const spec = { source: 'source', mode: 'worktree', run: 'run' };
+  const snapshot = await provider.ensureSnapshot('snapshot', spec);
+  assert.equal(snapshot.status.ready, true);
+  assert.equal(await command(dir, ['show', `${snapshot.status.commit}:new`]), 'in-process snapshot');
+  assert.equal((await provider.ensureSnapshot('snapshot', spec)).instance, snapshot.instance);
+  await assert.rejects(provider.ensureSnapshot('snapshot', { ...spec, run: 'another' }), /不能更换/);
+  assert.deepEqual(h.failures, []);
+});

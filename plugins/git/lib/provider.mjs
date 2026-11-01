@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -12,8 +13,8 @@ const sameRepository = (a, b) => a.path === b.path && a.gitDir === b.gitDir && a
 const ended = run => run?.finishedAt != null || ['succeeded', 'failed', 'cancelled'].includes(run?.state);
 
 export class GitProvider {
-  constructor(coda) {
-    this.coda = coda;
+  constructor(coda, { readRun = id => coda.api(`workflow-runs/${encodeURIComponent(id)}`) } = {}) {
+    this.coda = coda; this.readRun = readRun;
     this.sources = new Map(); this.snapshots = new Map(); this.runs = new Map(); this.runWatches = new Map();
     this.identities = {}; this.repositories = new Map(); this.subscriptions = []; this.records = {}; this.queue = Promise.resolve();
     this.active = false; this.stopped = false;
@@ -83,7 +84,7 @@ export class GitProvider {
         // Confirm old runs absent from the recent list; retry failed lookups on subsequent reconciliations.
         const observed = watcher.generation;
         try {
-          const run = await this.coda.api(`workflow-runs/${encodeURIComponent(id)}`);
+          const run = await this.readRun(id);
           if (watcher.generation === observed) this.runs.set(id, run);
         } catch (error) { if (watcher.generation === observed) this.runs.set(id, { error: error.message }); }
       }
@@ -167,6 +168,23 @@ export class GitProvider {
     }
     return { ...repo, refs };
   }
+  // Trusted in-process producer uses the same validated objects, without calling a localhost HTTP service.
+  async ensureSource(id, path) { return this.ensure(SOURCE, id, { path }); }
+  async ensureSnapshot(id, spec) { return this.ensure(SNAPSHOT, id, spec); }
+  async ensure(kind, id, spec) {
+    if (!idOK(id)) throw new Error('对象须为本机 ID');
+    const map = kind === SOURCE ? this.sources : this.snapshots, before = map.get(id);
+    if (before) {
+      if (!isDeepStrictEqual(before.spec, spec)) throw new Error('已有对象不能更换源码请求');
+    } else await this.put(kind, id, { spec });
+    await this.schedule();
+    return map.get(id);
+  }
+  async put(kind, id, data) {
+    if (kind === SNAPSHOT && (!idOK(data.spec?.source) || !idOK(data.spec?.run))) throw new Error('source 与 run 须为本机 ID');
+    if (kind === SOURCE) await repository(data.spec?.path ?? '', await this.coda.environment());
+    return this.coda.protocols.put({ kind, id, spec: data.spec, ...(data.revision ? { revision: data.revision } : {}) });
+  }
   async manage(req, res, caller) {
     // Registration accepts filesystem paths and creates objects: only a local Coda API caller can do this.
     if (caller?.local !== true) return reply(res, 403, { error: '管理入口仅供本机调用' });
@@ -180,11 +198,7 @@ export class GitProvider {
       const data = JSON.parse((await readBody(req, 65536)).toString() || '{}');
       if (action === 'delete') await this.coda.protocols.delete(kind, id);
       else if (action === 'publish') await this.coda.protocols.publish(kind, id, data.enabled !== false);
-      else {
-        if (kind === SNAPSHOT && (!idOK(data.spec?.source) || !idOK(data.spec?.run))) throw new Error('source 与 run 须为本机 ID');
-        if (kind === SOURCE) await repository(data.spec?.path ?? '', await this.coda.environment());
-        await this.coda.protocols.put({ kind, id, spec: data.spec, ...(data.revision ? { revision: data.revision } : {}) });
-      }
+      else await this.put(kind, id, data);
       reply(res, 200, { kind, id });
     } catch (error) { reply(res, error.status ?? 400, { error: error.message }); }
   }
