@@ -94,7 +94,7 @@
     "onStartupFinished"
   ],
   "dependencies": {
-    "@coda-console/protocol": "https://github.com/coda-console/coda-protocol/archive/ffb772a4f4e2aebd47ec367f74f134c03a054f08.tar.gz"
+    "@coda-console/protocol": "2.1.0"
   },
   "extensionDependencies": [
     "git"
