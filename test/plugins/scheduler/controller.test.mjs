@@ -332,6 +332,31 @@ test('a CAS conflict on the older request cannot let a younger request take its 
   assert.equal(f.errors.length, 1); assert.match(f.errors[0].message, /conflict/);
 });
 
+test('a rejection arriving during cancellation is reconsidered before any new binding', async t => {
+  const f = await fixture(t, [executor('local', 0), executor('remote'), execution('old', {
+    executor: { kind: 'executor', id: 'local' }, assignmentId: 'old-assignment',
+  }, {}), execution('cancelled', { cancel: true }), execution('new')]);
+  const cancelling = Promise.withResolvers(), resume = Promise.withResolvers();
+  f.beforeWrite = async (method, [, id]) => {
+    if (method !== 'setStatus' || id !== 'cancelled') return;
+    f.beforeWrite = null;
+    cancelling.resolve(); await resume.promise;
+  };
+  const starting = f.scheduler.start();
+  await cancelling.promise;
+  // The scan already passed this unknown binding before awaiting cancellation of another request.
+  f.save({ ...f.get('old'), status: {
+    phase: 'finished', assignmentId: 'old-assignment', outcome: 'rejected', finishedAt: stamp,
+  } });
+  resume.resolve();
+  await starting; await f.flush();
+  assert.equal(f.get('cancelled').status.outcome, 'cancelled');
+  assert.equal(f.get('old').spec.executor?.id, 'remote');
+  assert.equal(f.get('new').spec.executor, null);
+  assert.equal(f.get('new').status.reason.code, 'capacity');
+  assert.deepEqual(f.errors, []);
+});
+
 for (const change of ['finished', 'deleted']) {
   test(`execution changes invalidate the batch when a pending binding is ${change}`, async t => {
     const f = await fixture(t, [executor('local'), execution('pending', {

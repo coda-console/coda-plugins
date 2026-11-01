@@ -72,7 +72,8 @@ export class Scheduler {
       }
     }
     // A failed release must not hide an older request from FIFO. Finish cancellations, then await observation/retry.
-    if (releaseFailed) return;
+    // The scan can have passed an object before IO delivered its rejection. Revisit it before allocating.
+    if (releaseFailed || this.dirty) return;
     const entries = [...this.executions.values()].filter(object => disposition(object) === 'schedule');
     // Sequence is holder-owned, immutable and comparable only within this local collection.
     const missingOrder = entries.some(object => !Number.isSafeInteger(object.creationSequence) || object.creationSequence < 1);
