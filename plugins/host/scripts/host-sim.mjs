@@ -10,7 +10,7 @@
 import { spawn } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
 import { constants as system } from 'node:os';
-import { join } from 'node:path';
+import { registerSimulator } from '../lib/simulators.mjs';
 
 const args = process.argv.slice(2), command = args[0];
 const option = name => { const at = args.indexOf(name); return at >= 0 ? args[at + 1] : undefined; };
@@ -42,7 +42,7 @@ else if (command === 'run' && held) {
   if (!udid) fail('用法：host-sim bind <udid>', 2);
   // This environment's simulators (Coda's docs/deployment.md「后端实例」), in this plugin's state: 持锁执行 deletes the ones its command
   // registered as soon as it ends (`HOST_SIM_DEVICES`), 清点模拟器 what is left.
-  appendFileSync(join(process.env.CODA_PLUGIN_STATE, 'simulators'), `${udid}\n`, { mode: 0o600 });
+  registerSimulator(process.env.CODA_PLUGIN_STATE, udid, process.env.HOST_SIM_RUN_ID || process.env.GITHUB_RUN_ID);
   if (process.env.HOST_SIM_DEVICES) appendFileSync(process.env.HOST_SIM_DEVICES, `${udid}\n`);
   else process.stderr.write(`host-sim：模拟器 ${udid} 由宿主资源插件定时清点时删除\n`);
 } else if (!['run', 'check', 'bind'].includes(command)) {

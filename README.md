@@ -16,13 +16,13 @@ plugins/grok-bot/        Grok Bot：把 xAI 云端 Bot 接成长期会话，原�
 plugins/opencode/        OpenCode：在运行机的 opencode acp 与 Coda 之间转发，送入会话指令与所选模型服务，模型按来源分组
 plugins/codex-accounts/  Codex 多账号：管理登录、自动续期与账号选择，接管 Codex 额度面板
 plugins/cursor/          Cursor：在运行机的 cursor-agent acp 与 Coda 之间转发，送入会话指令
+plugins/git/             Git 源与快照：本机仓库 provider、运行关联的工作树／提交快照、临时 ref 回收与只读 smart HTTP v2
 plugins/host/            宿主资源：Xcode 构建、Apple 模拟器与项目要求排队的命令共用这台机器的一组名额（组 host、持锁执行 run-held、host-sim），面板「构建与模拟器名额」
 plugins/magpie/          Magpie：把本机的 Magpie 网关作为模型服务提供给 Pi 等插件，安装时装好 Magpie 并让网关常驻
 plugins/network-log/     网络记录：默认关闭，按需开启建连等待与定时探测采集；关闭后仍可查看历史
 plugins/review/          PR 生命流程：会话开的 PR 先跑项目的检查、再交叉评审，你批准后合并、部署与发布；也是写 PR 流程的样例
 plugins/testbed/         测试机：长插在 Mac 上的 iPhone、iPad 只经 use-testbed 使用，排到后装 App、交给会话操作、用完切黑屏；依赖宿主资源
-plugins/composer/        输入框模式：交接到新会话、子会话、! 执行命令、Ultra 与 /loop 循环；Ultra 模板设置为 composer.templates
-plugins/ultra/           Ultra（已并入 @coda-console/composer，暂时保留旧包）：输入框的协调模式，主 Agent 负责拆解、调度和验收，子会话负责实现、排查和测试；名单与模板在模式参数和设置里
+plugins/composer/        输入框模式 3.0：五个模式可同时开启，通过 submissions 协议补充去向与提示；Ultra 预设引用 composer.templates
 templates/agent/         最小的 Agent 插件：手写 ACP 的回声 Agent，演示会话指令、插话、Agent 活动与自主轮次
 templates/panel/         最小的面板插件：一张卡片、一条进度条、一个按钮
 bin/、check/             契约检查（仓库根的 package.json 就是它，@coda-console/plugin-check）；check/coda/ 是 Coda 同步来的规则副本，不要手改

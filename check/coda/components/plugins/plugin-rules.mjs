@@ -18,7 +18,7 @@ import { isDuration } from '../../domain/duration.mjs';
 import { AGENT_ID } from '../../domain/values.mjs';
 import { agentDeclarations } from './agent-plugins.mjs';
 import { checkCatalog, extensionsFor } from './plugin-extensions.mjs';
-import { manifestProblem, TYPES, valueProblem } from '@coda-console/protocol/validate';
+import { manifestProblem, TYPES } from '@coda-console/protocol/validate';
 import { claims, COMMIT, INTEGRITY, NPM_VERSION, npmPluginId, repoAddress, sourcePath } from './plugin-source-rules.mjs';
 import { readSkillDocument } from './skill-document.mjs';
 import { executorLabels } from '../workflows/executor-labels.mjs';
@@ -78,12 +78,11 @@ const TELL_LIMIT = 4000;
 export const checkTold = text => check(typeof text === 'string' && text.trim() && text.length <= TELL_LIMIT && !text.includes('\0'), 'invalid_input',
   `要告诉的话须为不超过 ${TELL_LIMIT} 字的文字`);
 // The modes a composer can be put in (docs/plugins.md「输入框模式」, schemas/composer-modes.json), each with the composers
-// that offer it (`in`, a session's by default) and whom what is sent is for (`agent`, the session's by default); its
-// parameters read as settings are, and as written (JSON Schema), which its hooks are given (components/composer-modes).
+// that offer it (`in`, a session's by default), whether it leaves after acceptance (`once`), and declarative parameters.
 const MODE_PLACES = ['session', 'new'];
 const composerModes = (modes = []) => modes.map((m, i) => ({ id: m.id, title: m.title.trim(), icon: m.icon,
   ...(m.hint ? { hint: m.hint.trim() } : {}), ...(m.placeholder ? { placeholder: m.placeholder.trim() } : {}),
-  ...(m.sendLabel ? { sendLabel: m.sendLabel.trim() } : {}), agent: m.agent ?? 'session', ...(m.trigger ? { trigger: m.trigger } : {}),
+  ...(m.sendLabel ? { sendLabel: m.sendLabel.trim() } : {}), once: m.once === true, ...(m.trigger ? { trigger: m.trigger } : {}),
   in: m.in ? MODE_PLACES.filter(place => m.in.includes(place)) : ['session'],
   ...(m.parameters !== undefined ? { parameters: parametersOf(m.parameters, `contributes.composerModes[${i}].parameters`), schema: structuredClone(m.parameters) } : {}) }));
 // A mode's parameters as read: each a setting, in the order written, which the clients show them in (JSON's objects keep
@@ -92,17 +91,10 @@ function parametersOf(value, where) {
   const ordered = fields => Object.fromEntries(Object.entries(fields).map(([name, spec], i) => [name, { ...spec, order: spec.order ?? i }]));
   const properties = Object.fromEntries(Object.entries(value.properties).map(([name, p], i) => {
     const read = setting(p, `${where}.properties.${name}`);
-    return [name, { ...read, ...(read.rows ? { rows: { ...read.rows, columns: ordered(read.rows.columns) } } : {}), order: read.order ?? i }];
+    return [name, { ...read, ...(p.presets ? { presets: structuredClone(p.presets) } : {}), ...(read.rows ? { rows: { ...read.rows, columns: ordered(read.rows.columns) } } : {}), order: read.order ?? i }];
   }));
   return { properties, ...(value.required?.length ? { required: [...value.required] } : {}) };
 }
-// Parameters a mode's hook gives while it runs, checked against the same schema a manifest's are.
-export function modeParameters(value, where) {
-  const problem = valueProblem('composer-modes.json#/$defs/parameters', value, where);
-  check(!problem, 'invalid_plugin', problem);
-  return parametersOf(value, where);
-}
-
 // The category it is listed under (docs/plugins.md「商店」): the first of its manifest's `categories`, as VS Code's are
 // written; empty when it names none.
 export const manifestCategory = manifest => Array.isArray(manifest?.categories) && typeof manifest.categories[0] === 'string' ? manifest.categories[0].trim().slice(0, 32) : '';

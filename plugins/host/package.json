@@ -2,8 +2,8 @@
   "name": "@coda-console/host",
   "id": "host",
   "displayName": "宿主资源",
-  "description": "Apple 模拟器、Xcode 构建和项目要求排队的命令共用这个后端实例的一组名额：会话的 Agent 用 workflow_run 调用持锁执行把命令交来，排到名额后在给定目录里执行，结束时删掉它登记的模拟器；定时清点被强杀的命令留下的。",
-  "version": "1.1.0",
+  "description": "本机运行器：公布能力与名额，执行绑定给本机的请求；Xcode 构建、模拟器和项目命令共用本实例名额，保留 run-held 与 host-sim。",
+  "version": "1.2.2",
   "categories": [
     "机器与资源"
   ],
@@ -35,7 +35,7 @@
         "description": "host-sim 的其他 --kind（如测试机的设备名）：host-sim 把整条命令交给接在这里的第一个命令，参数原样附在后面"
       }
     },
-    "instructions": "Xcode 构建、用 Apple 模拟器的命令和会调用 host-sim 的项目脚本不要直接跑，用 workflow_run 执行：workflow 为 run-held，inputs 给 command 与 cwd（绝对路径），用模拟器另给 what 为 模拟器；排队与执行由 Coda 管。原生子 Agent 不能申请，要并行就用 spawn 派子会话。别的命令直接执行，除非项目说明要求排队。",
+    "instructions": "Xcode 构建、模拟器及调用 host-sim 的脚本用 workflow_run 调 run-held，inputs 给 command、cwd（绝对路径）；模拟器另给 what=模拟器。时限：模拟器 60 分钟、其他 600 分钟，可用 timeoutMinutes 调高，加 5 分钟收尾。原生子 Agent 不可申请，交回主会话或 spawn 子会话。其他命令直接执行，除非项目要求排队。",
     "configuration": {
       "title": "宿主资源",
       "properties": {
@@ -53,7 +53,19 @@
           "type": "string",
           "order": 2,
           "default": "R/P1D",
-          "description": "多久清点一次：等名额全部空出后，删掉本实例登记过、还没删的模拟器（被强杀的命令留下的）。ISO 8601 重复间隔，R/P1D 是每天一次，从 Coda 第一次登记这个周期起算；最短 5 分钟。"
+          "description": "多久清点一次：不占名额，只删本实例登记且归属运行与收尾已结束的模拟器；使用中或归属未知的跳过。ISO 8601 重复间隔，R/P1D 是每天一次，从 Coda 第一次登记这个周期起算；最短 5 分钟。"
+        },
+        "host.enabled": {
+          "title": "接收执行请求",
+          "type": "boolean",
+          "default": true,
+          "description": "公布本机运行器并接收绑定给本机的执行请求；关闭后仍可创建请求交给其他运行器。"
+        },
+        "host.labels": {
+          "title": "运行器标签",
+          "type": "string",
+          "default": "",
+          "description": "逗号分隔的自定义能力标签；系统、CPU、Xcode、模拟器与 Node 标签由本机探测。"
         }
       }
     },
@@ -73,6 +85,18 @@
   "files": [
     ".coda",
     "scripts",
-    "skills"
+    "skills",
+    "lib",
+    "main.mjs"
+  ],
+  "main": "main.mjs",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "dependencies": {
+    "@coda-console/protocol": "2.1.0"
+  },
+  "extensionDependencies": [
+    "git"
   ]
 }

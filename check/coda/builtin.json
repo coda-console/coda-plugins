@@ -126,116 +126,6 @@
     ]
   },
   {
-    "id": "composer",
-    "displayName": "输入框模式",
-    "description": "输入框的三种模式：交接到新会话、新建子会话，以及打 ! 执行命令。停用后输入框里没有这几种模式。",
-    "version": "1.1.0",
-    "category": "工作流程",
-    "source": {
-      "kind": "builtin"
-    },
-    "dir": "src/resources/plugins/composer",
-    "title": "输入框模式",
-    "properties": {},
-    "main": "main.mjs",
-    "workflows": [],
-    "capabilities": [],
-    "services": [],
-    "groups": [],
-    "commands": [],
-    "gitCredentials": [],
-    "endpoints": [],
-    "views": [],
-    "composerModes": [
-      {
-        "id": "handoff",
-        "title": "交接到新会话",
-        "icon": "arrow.right.square",
-        "hint": "新会话承接这里的上下文，共享当前工作目录及其中的文件；这个会话保留，仍可继续使用。",
-        "placeholder": "接下来要完成什么？",
-        "sendLabel": "交接",
-        "agent": "own",
-        "in": [
-          "session"
-        ]
-      },
-      {
-        "id": "subagent",
-        "title": "子会话",
-        "icon": "arrow.triangle.branch",
-        "hint": "承接父会话近期上下文，沿用父会话工作目录；只启动子会话，不向父 Agent 发送这段要求。",
-        "placeholder": "描述交给子会话的任务…",
-        "sendLabel": "启动子会话",
-        "agent": "own",
-        "in": [
-          "session"
-        ],
-        "parameters": {
-          "properties": {
-            "replyTo": {
-              "type": "string",
-              "enum": [
-                "parent",
-                "sender"
-              ],
-              "enumItemLabels": [
-                "完成后回报父会话",
-                "完成后回报你"
-              ],
-              "enumDescriptions": [
-                "结果交给父 Agent，由它接着处理",
-                "做完提醒你，不叫醒父 Agent"
-              ],
-              "title": "回报对象",
-              "default": "parent",
-              "order": 0
-            }
-          }
-        },
-        "schema": {
-          "type": "object",
-          "properties": {
-            "replyTo": {
-              "title": "回报对象",
-              "type": "string",
-              "enum": [
-                "parent",
-                "sender"
-              ],
-              "enumItemLabels": [
-                "完成后回报父会话",
-                "完成后回报你"
-              ],
-              "enumDescriptions": [
-                "结果交给父 Agent，由它接着处理",
-                "做完提醒你，不叫醒父 Agent"
-              ],
-              "default": "parent"
-            }
-          }
-        }
-      },
-      {
-        "id": "shell",
-        "title": "执行命令",
-        "icon": "terminal",
-        "hint": "在会话工作目录执行，命令和结果作为这条消息发给 Agent。",
-        "placeholder": "输入要执行的命令…",
-        "sendLabel": "执行",
-        "agent": "off",
-        "trigger": "!",
-        "in": [
-          "session",
-          "new"
-        ]
-      }
-    ],
-    "agents": [],
-    "dependencies": [],
-    "extensionPoints": {},
-    "extensions": []
-  },
-  {
     "id": "diagnostics",
     "displayName": "机器诊断",
     "description": "给巡检会话提供只读工具，查看空间各台机器的健康状态、网络诊断与客户端性能。需要时安装，再按目录启用或用 Tag 限定。",
@@ -899,14 +789,14 @@
     "id": "claude",
     "displayName": "Claude",
     "description": "Claude SDK Agent：Coda 基于 Claude Agent SDK 写的 ACP 入口，一个进程一个 SDK 会话；资源页的「Claude」面板显示会话报告的额度，可从 Coda 登录。",
-    "version": "1.7.7",
+    "version": "1.7.8",
     "category": "Agent",
     "source": {
       "kind": "builtin",
       "package": "@coda-console/claude",
       "tag": "latest",
-      "version": "1.7.7",
-      "integrity": "sha512-iaxeneTsRDPDNSo36hHptm2dDCQt+BtV2f3s5q8MeiDZiYMpbcW00G3CrTuARGJLLvDsrHIPHEWzrVZRzt3GGQ==",
+      "version": "1.7.8",
+      "integrity": "sha512-Ti4gpscvuq1qrx6ti4ZxLw3zu0g1eCD3CHFn6ICGASofyET4qHrWwjB/jr2/ou6SFnyRg5fMo2m88CjjHCUwMQ==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/claude"
     },
@@ -989,14 +879,14 @@
     "id": "codex",
     "displayName": "Codex",
     "description": "Codex Agent：Coda 自带的入口运行 codex-acp，报告子 Agent、后台命令与命令的自动审核。额度与登录由账号来源插件接管；未接入账号来源时使用 Codex 自己的登录面板。",
-    "version": "1.8.5",
+    "version": "1.8.6",
     "category": "Agent",
     "source": {
       "kind": "builtin",
       "package": "@coda-console/codex",
       "tag": "latest",
-      "version": "1.8.5",
-      "integrity": "sha512-5XPcuzapKiTI/jf8V7JADLTgr2nimB1untf961lhujLlMHPevrMO+u5qIgZPeadLNl7IAo6Gez1GARcpAzfmcw==",
+      "version": "1.8.6",
+      "integrity": "sha512-np09xwMCHBzUUOfWTYV1IOo4Ci6Ua5ZVFXA0d/PzyFAhwDYmtll8kU39LxBU88R3ReuiHz7W9kCV2GAT8Kqn6A==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/codex"
     },
@@ -1145,14 +1035,14 @@
     "id": "grok",
     "displayName": "Grok",
     "description": "Grok Agent：适配运行机上 Grok CLI 的 ACP 与审批模式；资源页的「Grok」面板显示账号与额度，可从 Coda 安装和登录。",
-    "version": "1.3.2",
+    "version": "1.3.3",
     "category": "Agent",
     "source": {
       "kind": "builtin",
       "package": "@coda-console/grok",
       "tag": "latest",
-      "version": "1.3.2",
-      "integrity": "sha512-/W3ko6pf/NpDvxJyizz7D1GfOuX+CvvllKdl0RnmC+KrKpytbgCqNJHsd+3UkUbAgiiNIj1fBCA1H4wHsXGt7w==",
+      "version": "1.3.3",
+      "integrity": "sha512-59h5Kp3IjPerRjQJKnZNY1EnVJ+PBSnWK+U7ZfeYe6HeCDMVXmSaXhj1xmg2HY8xMRUGo4O8GqzYYHa5MntH+Q==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/grok"
     },
@@ -1218,14 +1108,14 @@
     "id": "kimi",
     "displayName": "Kimi Code",
     "description": "Kimi Code Agent：Coda 的入口在运行机的 kimi acp 与 Coda 之间转发，读 Kimi 的会话文件报出后台命令与子 Agent；资源页的「Kimi」面板显示账号与额度，可从 Coda 安装和登录。",
-    "version": "1.2.2",
+    "version": "1.2.3",
     "category": "Agent",
     "source": {
       "kind": "builtin",
       "package": "@coda-console/kimi",
       "tag": "latest",
-      "version": "1.2.2",
-      "integrity": "sha512-9F5T2LP6YY+MzP6QlMNoNAwkfsOsir4RcDcRV5qkTGp0Dr35RlTaETcfCBbC4NwmMxynnAcJu7M1pMPoCi0viA==",
+      "version": "1.2.3",
+      "integrity": "sha512-EDIqC/89PfKDrbeRr/Dj4jaaae2U7V+s6mSJllW4ZNvesA7FJNO/pE8S1zQESfQqWdNjkS8cCjXq/d2P2CNZgQ==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/kimi"
     },
@@ -1365,14 +1255,14 @@
     "id": "review",
     "displayName": "PR 生命流程",
     "description": "会话开的 PR 从开出来起一条流程：每个新版本先跑项目声明的检查，再请另一家 Agent 评审，要求修改时交给开 PR 的会话处理、有分歧时交给你仲裁；通过后请你批准合并，跑过项目的合并前检查再合并，合并后按你的选择删除远程分支、调用项目的部署和发布流程，PR 合并或关闭时结束。",
-    "version": "2.9.0",
+    "version": "2.9.1",
     "category": "工作流程",
     "source": {
       "kind": "builtin",
       "package": "@coda-console/review",
       "tag": "latest",
-      "version": "2.9.0",
-      "integrity": "sha512-lFc7bipZ48OBkVU2Eknfsq4BNFshE2FgfE+oLZn/HsNsbMHPldyXepLJQTs6aW03cl7KUdMWTn+BkoDz8VwMiw==",
+      "version": "2.9.1",
+      "integrity": "sha512-gbg46xKbJv8TTnjfQpae5+bGE+Jt22m2nB3JWkpmMWwQdtLoHcODWdel1MJvJ8DHkITHvUAJmeImvi9bS40aZQ==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/review"
     },
