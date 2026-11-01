@@ -124,12 +124,13 @@ export class Executions {
     }
   }
   async publishRun(record, status) {
-    let held = this.runs?.get(record.key);
+    const held = this.runs?.get(record.key);
     if (!held) {
-      held = await this.coda.protocols.put({ kind: 'hostExecution', id: record.key,
+      await this.coda.protocols.put({ kind: 'hostExecution', id: record.key,
         spec: { execution: { kind: 'execution', id: record.id }, assignmentId: record.assignmentId }, status });
-      await this.coda.protocols.publish('hostExecution', record.key);
     } else if (canonical(held.status) !== canonical(status)) await this.coda.protocols.setStatus('hostExecution', held.id, status, held.revision);
+    // Creation and publication can be interrupted separately; also repair publication of recovered local receipts.
+    await this.coda.protocols.publish('hostExecution', record.key);
   }
   async stop() { this.stopped = true; await Promise.allSettled(this.busy.values()); }
 }

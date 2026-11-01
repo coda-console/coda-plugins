@@ -106,6 +106,37 @@ function engine(root, changes = {}) {
   return { host, coda, writes, released, launches, cancels };
 }
 
+for (const changed of [false, true]) {
+  test(`recovering an existing receipt repairs interrupted publication with ${changed ? 'changed' : 'unchanged'} status`, async () => {
+    const stored = new Map(), published = new Set(), record = { key: 'receipt', id: 'job', assignmentId: 'binding' };
+    const initial = { phase: 'running' }, final = changed ? { phase: 'finished', outcome: 'succeeded' } : initial;
+    let interrupted = true, puts = 0;
+    const coda = { protocols: {
+      put: async object => { puts++; stored.set(object.id, { ...object, revision: 'r1' }); return stored.get(object.id); },
+      setStatus: async (kind, id, status, revision) => {
+        assert.equal(revision, stored.get(id).revision);
+        stored.set(id, { ...stored.get(id), status, revision: 'r2' });
+      },
+      publish: async (kind, id) => {
+        assert.equal(kind, 'hostExecution'); assert.ok(stored.has(id));
+        if (interrupted) throw new Error('publication interrupted');
+        published.add(id);
+      },
+    } };
+    await assert.rejects(Executions.prototype.publishRun.call({ coda, runs: new Map() }, record, initial), /publication interrupted/);
+    assert.ok(stored.has(record.key)); assert.equal(published.has(record.key), false);
+    // A restarted provider's local watch restores the durable object even though it was never published.
+    const recovered = { coda, runs: new Map(stored) }; interrupted = false;
+    await Executions.prototype.publishRun.call(recovered, record, final);
+    const remoteReceipt = published.has(record.key) ? stored.get(record.key) : undefined;
+    assert.deepEqual(remoteReceipt?.status, final);
+    assert.equal(puts, 1, 'recovery publishes the existing receipt without replacing it');
+    recovered.runs = new Map(stored);
+    await Executions.prototype.publishRun.call(recovered, record, final);
+    assert.deepEqual(published, new Set([record.key])); assert.equal(puts, 1);
+  });
+}
+
 test('assigned controller starts once, accepts cancel while running, and restart never reruns a durable claim', async t => {
   const root = await temporary(t), first = engine(root), object = request();
   await first.host.observe({ type: 'ADDED', id: object.id, object });
