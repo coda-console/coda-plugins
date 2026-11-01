@@ -87,3 +87,22 @@ test('模式声明：一次性模式、可选执行者、Ultra 预设和命令�
   assert.equal(every.default, 'PT30M');
   assert.deepEqual(every.enum, ['PT5M', 'PT10M', 'PT15M', 'PT30M', 'PT1H', 'PT2H', 'PT3H', 'PT6H', 'PT12H', 'P1D']);
 });
+
+for (const sent of [0, 1, 10, 11]) for (const targets of [
+  ['handoff'], ['subagent'], ['handoff', 'subagent'],
+]) test(`Ultra 已发 ${sent} 条后组合 ${targets.join('+')}，新会话仍收到完整说明`, async () => {
+  const handlers = plugin(), object = submission('ultra', { values: { subagents }, sent });
+  object.spec.modes.push(...targets.map(id => ({ mode: `composer/${id}`, values: { replyTo: 'parent' }, sent: 0, changedSinceSent: false })));
+  assert.deepEqual(await handlers.get('ultra')(object), { tell: [on(subagents)] });
+  for (const id of targets) {
+    const contribution = await handlers.get(id)(object);
+    assert.equal(contribution.divert, true);
+    assert.equal(contribution.targets[0].kind, 'thread');
+  }
+});
+
+test('默认去向创建新会话时，已有 Ultra 计数不省略完整说明', async () => {
+  const object = submission('ultra', { values: { subagents }, sent: 11 });
+  object.spec.defaultTarget = { kind: 'thread', open: true };
+  assert.deepEqual(await plugin().get('ultra')(object), { tell: [on(subagents)] });
+});

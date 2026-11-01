@@ -21,8 +21,11 @@ export function activate(coda) {
     divert: true,
     targets: [thread ? { kind: 'message', thread, run: true } : { kind: 'thread', run: true, open: true }],
   }));
-  register('ultra', (_spec, { values, sent, changedSinceSent }) => {
-    if (sent === 0 || changedSinceSent) return { tell: [on(values.subagents ?? [])] };
+  register('ultra', (spec, { values, sent, changedSinceSent }) => {
+    // 本插件的交接、子会话或默认新任务会创建会话，第一条必须带完整规则。
+    const createsThread = spec.defaultTarget.kind === 'thread' || spec.modes.some(({ mode }) =>
+      mode === 'composer/handoff' || mode === 'composer/subagent');
+    if (createsThread || sent === 0 || changedSinceSent) return { tell: [on(values.subagents ?? [])] };
     return sent % 10 === 0 ? { tell: [STILL_ON] } : null;
   });
   register('loop', ({ thread }, { values }) => ({

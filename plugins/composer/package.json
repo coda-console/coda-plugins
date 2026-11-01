@@ -22,6 +22,9 @@
     "THIRD_PARTY_NOTICES.md"
   ],
   "main": "main.mjs",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "contributes": {
     "configuration": {
       "title": "输入框模式",
