@@ -2,8 +2,8 @@
   "name": "@coda-console/host",
   "id": "host",
   "displayName": "宿主资源",
-  "description": "Apple 模拟器、Xcode 构建和项目要求排队的命令共用这个后端实例的一组名额：会话的 Agent 用 workflow_run 调用持锁执行把命令交来，排到名额后在给定目录里执行，结束时删掉它登记的模拟器；定时清点被强杀的命令留下的。",
-  "version": "1.1.0",
+  "description": "本机运行器：公布能力与名额，执行绑定给本机的请求；Xcode 构建、模拟器和项目命令共用本实例名额，保留 run-held 与 host-sim。",
+  "version": "1.2.0",
   "categories": [
     "机器与资源"
   ],
@@ -54,6 +54,18 @@
           "order": 2,
           "default": "R/P1D",
           "description": "多久清点一次：等名额全部空出后，删掉本实例登记过、还没删的模拟器（被强杀的命令留下的）。ISO 8601 重复间隔，R/P1D 是每天一次，从 Coda 第一次登记这个周期起算；最短 5 分钟。"
+        },
+        "host.enabled": {
+          "title": "接收执行请求",
+          "type": "boolean",
+          "default": true,
+          "description": "公布本机运行器并接收绑定给本机的执行请求；关闭后仍可创建请求交给其他运行器。"
+        },
+        "host.labels": {
+          "title": "运行器标签",
+          "type": "string",
+          "default": "",
+          "description": "逗号分隔的自定义能力标签；系统、CPU、Xcode、模拟器与 Node 标签由本机探测。"
         }
       }
     },
@@ -73,6 +85,18 @@
   "files": [
     ".coda",
     "scripts",
-    "skills"
+    "skills",
+    "lib",
+    "main.mjs"
+  ],
+  "main": "main.mjs",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "dependencies": {
+    "@coda-console/protocol": "https://github.com/coda-console/coda-protocol/archive/ffb772a4f4e2aebd47ec367f74f134c03a054f08.tar.gz"
+  },
+  "extensionDependencies": [
+    "git"
   ]
 }
