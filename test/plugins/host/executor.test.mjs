@@ -145,6 +145,61 @@ test('a cancellation during source resolution prevents ledger admission and proc
   assert.equal(fixture.writes.at(-1).status.outcome, 'cancelled');
 });
 
+test('a current journal record cannot skip cancellation or lease release of a later old binding', async t => {
+  const root = await temporary(t), object = request(), cancelled = [];
+  const fixture = engine(root, { control: async (record, action) => {
+    if (action === 'cancel') cancelled.push(record.key);
+    return true;
+  } });
+  const current = { key: identity(object), id: object.id, instance: object.instance, assignmentId: object.spec.assignmentId,
+    fingerprint: taskFingerprint(object.spec), phase: 'running', admission: { lease: 'current-lease', slot: 0 } };
+  const oldObject = { ...object, spec: { ...object.spec, assignmentId: 'old-binding' } };
+  const old = { ...current, key: identity(oldObject), assignmentId: oldObject.spec.assignmentId,
+    fingerprint: taskFingerprint(oldObject.spec), admission: { lease: 'old-lease', slot: 1 } };
+  fixture.host.journal.save(current); fixture.host.journal.save(old);
+  // Exercise the problematic order explicitly, independent of filesystem directory ordering.
+  fixture.host.journal.list = () => [current.key, old.key].map(key => fixture.host.journal.get(key));
+  await fixture.host.observe({ type: 'ADDED', id: object.id, object });
+  assert.deepEqual(cancelled, [old.key]); assert.deepEqual(fixture.released, []);
+  old.phase = 'finished'; old.result = { outcome: 'cancelled', exitCode: 143, finishedAt: new Date().toISOString() };
+  fixture.host.journal.save(old);
+  await fixture.host.tick(); await fixture.host.tick();
+  assert.deepEqual(fixture.released, ['old-lease']);
+  assert.equal(fixture.host.journal.get(old.key).released, true);
+  assert.equal(fixture.host.journal.get(current.key).released, undefined);
+  assert.equal(fixture.launches.length, 0);
+  const replies = fixture.writes.filter(write => write.kind === 'execution');
+  assert.ok(replies.length > 0);
+  assert.ok(replies.every(write => write.status.assignmentId === current.assignmentId && write.status.phase === 'running'));
+});
+
+for (const stage of ['source', 'environment', 'admitted', 'denied']) {
+  test(`pausing acceptance while awaiting ${stage} rejects without a claim and releases any acquired lease`, async t => {
+    const root = await temporary(t), object = request(), entered = Promise.withResolvers(), resume = Promise.withResolvers();
+    const offered = { spec: { labels: [] }, status: { accepting: true, detectedLabels: ['linux'] } };
+    const wait = async value => { entered.resolve(); await resume.promise; return value; };
+    const fixture = engine(root, { offered: () => offered,
+      sources: { resolve: () => stage === 'source' ? wait(null) : Promise.resolve(null) },
+      environment: () => stage === 'environment' ? wait({}) : Promise.resolve({}),
+    });
+    let acquired = 0;
+    fixture.coda.resources.acquire = async () => {
+      acquired++;
+      const result = stage === 'denied' ? { admitted: false } : { admitted: true, lease: 'lease', slot: 0 };
+      return ['admitted', 'denied'].includes(stage) ? wait(result) : result;
+    };
+    const pending = fixture.host.observe({ type: 'ADDED', id: object.id, object });
+    await entered.promise; offered.status.accepting = false; resume.resolve(); await pending;
+    assert.equal(fixture.launches.length, 0);
+    assert.deepEqual(fixture.host.journal.list(), []);
+    assert.equal(acquired, ['admitted', 'denied'].includes(stage) ? 1 : 0);
+    assert.deepEqual(fixture.released, stage === 'admitted' ? ['lease'] : []);
+    const status = fixture.writes.at(-1).status;
+    assert.equal(status.phase, 'finished'); assert.equal(status.outcome, 'rejected');
+    assert.equal(status.reason.code, 'not_accepting');
+  });
+}
+
 test('snapshot source identity is scoped to its provider endpoint, not the holder-local source ID', async () => {
   const locations = { snap: 'http://localhost:1/a/', wrong: 'http://localhost:1/b/', right: 'http://localhost:1/a/' };
   const sources = new Sources({ protocols: { resolve: async ref => ({ resource: { kind: ref.kind, id: ref.id === 'snap' ? 'snapshot' : 'same-id' }, url: locations[ref.id], headers: { authorization: 'Bearer test' } }) } });

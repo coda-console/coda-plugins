@@ -59,8 +59,10 @@ export class Executions {
   async advance(id) {
     if (this.stopped) return;
     const object = this.objects.get(id), records = this.journal.list().filter(r => r.id === id);
+    let hasCurrent = false;
     for (const record of records) {
       const current = object && record.key === identity(object) && record.fingerprint === taskFingerprint(object.spec);
+      if (current) hasCurrent = true;
       if ((!current || object.spec.cancel) && record.phase !== 'finished') await this.control(record, 'cancel');
       if (record.phase === 'finished' && !record.released) {
         if (record.admission) await this.coda.resources.release(record.admission.lease);
@@ -77,10 +79,11 @@ export class Executions {
           status.reason = { code: 'result_unknown', message: '执行结果未明，保留绑定与名额；恢复原执行记录，不自动重跑' };
         }
         await this.publishRun(record, status);
-        if (current) { await this.reply(object, status); return; }
+        if (current) await this.reply(object, status);
       }
     }
-    if (!this.matches(object)) return;
+    // Old bindings still need cancellation and lease release even when the current binding already exists.
+    if (hasCurrent || !this.matches(object)) return;
     // An already-terminal answer without a journal is not permission to rerun.
     if (object.status.assignmentId === object.spec.assignmentId && object.status.phase === 'finished') return;
     const { spec } = object, offered = this.offered();
@@ -100,12 +103,18 @@ export class Executions {
     // Any asynchronous source lookup may race cancellation, deletion or re-binding. Re-read before admission.
     const current = this.objects.get(id);
     if (!current || current.instance !== object.instance || taskFingerprint(current.spec) !== taskFingerprint(spec) || current.spec.cancel) return;
+    if (!this.offered()?.status.accepting) return refuse('not_accepting', '运行器已停止接活');
     const admission = await this.coda.resources.acquire({ requestId: `execution:${key}`, group: 'host', resources: { slots: 1 }, exclusive: spec.exclusiveResources?.includes('slots') ?? false });
-    if (!admission.admitted) return this.reply(object, { phase: 'queued', assignmentId: spec.assignmentId, reason: { code: 'capacity', message: '等待本机名额' } });
     const latest = this.objects.get(id);
     if (!latest || latest.instance !== object.instance || taskFingerprint(latest.spec) !== taskFingerprint(spec) || latest.spec.cancel) {
-      await this.coda.resources.release(admission.lease); return;
+      if (admission.admitted) await this.coda.resources.release(admission.lease);
+      return;
     }
+    if (!this.offered()?.status.accepting) {
+      if (admission.admitted) await this.coda.resources.release(admission.lease);
+      return refuse('not_accepting', '运行器已停止接活');
+    }
+    if (!admission.admitted) return this.reply(object, { phase: 'queued', assignmentId: spec.assignmentId, reason: { code: 'capacity', message: '等待本机名额' } });
     const record = { key, id, instance: object.instance, assignmentId: spec.assignmentId, fingerprint: taskFingerprint(spec), admission, phase: 'claimed' };
     this.journal.save(record);
     try { await this.launch({ root: this.root, key, source, spec, env }, this.journal.directory(key)); }
