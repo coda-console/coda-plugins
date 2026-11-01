@@ -1,10 +1,11 @@
-// Periodic cleanup without holding host slots. See lib/simulators.mjs for ownership checks.
+// Periodic cleanup without holding host slots. Coda supplies the run's final state through our module.
 import { execFile } from 'node:child_process';
 import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { registrations, runFinished } from '../lib/simulators.mjs';
+import { registrations } from '../lib/simulators.mjs';
+import { runFinished } from '../lib/simulator-status.mjs';
 const exec = promisify(execFile);
 
 // `set: null` is the user's default device set, where `simctl` works without --set.
@@ -38,7 +39,7 @@ export async function cleanSimulators(state) {
     try {
       // Re-read before each device: binds made during this sweep must also be checked.
       const owners = registrations(state).filter(record => record.udid === udid);
-      if (!owners.length || registered(state).includes(udid) || !owners.every(owner => runFinished(state, owner.runId))) {
+      if (!owners.length || registered(state).includes(udid) || !(await Promise.all(owners.map(owner => runFinished(state, owner.runId)))).every(Boolean)) {
         console.log(`跳过模拟器 ${udid}：运行仍在进行、收尾中或归属无法确认`);
         continue;
       }

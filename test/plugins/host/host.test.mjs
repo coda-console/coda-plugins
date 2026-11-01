@@ -3,11 +3,11 @@
 // engine queues them (hold-group, coda:group) is Coda's own to test; a simulator tool here is a stand-in's.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { test } from 'node:test';
-import { DatabaseSync } from 'node:sqlite';
+import { serveSimulatorStatus, runFinished } from '../../../plugins/host/lib/simulator-status.mjs';
 import { registerSimulator, registrations } from '../../../plugins/host/lib/simulators.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pluginDir } from '../plugin.mjs';
@@ -143,32 +143,31 @@ test('持锁执行 cancelled still deletes the simulators its command bound befo
   assert.equal(sims.log(), 'shutdown FAKE-2\ndelete FAKE-2\n');
 });
 
-// The lowest layer: a disposable instance ledger plus a fake simctl, never a real simulator.
-function ledger(t) {
-  const root = temporary(t), state = join(root, 'plugins', 'host');
-  mkdirSync(state, { recursive: true });
-  const db = new DatabaseSync(join(root, 'product.sqlite'));
-  db.exec(`CREATE TABLE workflow_runs (id TEXT PRIMARY KEY, state TEXT);
-    CREATE TABLE workflow_jobs (run_id TEXT, state TEXT);
-    CREATE TABLE group_holds (run_id TEXT, state TEXT);`);
-  t.after(() => db.close());
-  const owner = (id, status) => db.prepare('INSERT INTO workflow_runs VALUES (?, ?)').run(id, status);
-  return { state, db, owner };
+// Exercise the script with the real module bridge, public workflow responses and a fake simctl.
+async function hostStatus(t) {
+  const state = temporary(t), runs = new Map();
+  const bridge = await serveSimulatorStatus({ plugin: { state }, api: async path => {
+    assert.match(path, /^workflow-runs\//);
+    const id = decodeURIComponent(path.slice('workflow-runs/'.length));
+    if (!runs.has(id)) throw new Error('运行不存在或宿主暂不可用');
+    return { runId: id, state: runs.get(id) };
+  } });
+  t.after(() => bridge.dispose());
+  return { state, owner: (id, status) => runs.set(id, status) };
 }
 
 test('清点模拟器 deletes only finished owners; live, cancelling, unknown and legacy registrations stay', async t => {
-  const { state, db, owner } = ledger(t);
+  const { state, owner } = await hostStatus(t);
   const sims = simctl(t, ['LEFT', 'FAILED', 'CANCELLED', 'LIVE', 'STOPPING', 'DRAIN', 'HELD', 'UNKNOWN', 'LEGACY', 'SHARED', 'OTHER']);
-  for (const [id, status] of Object.entries({ done: 'succeeded', failed: 'failed', cancelled: 'cancelled', live: 'running', stopping: 'cancelling', drain: 'failed', held: 'succeeded' })) owner(id, status);
-  db.prepare('INSERT INTO workflow_jobs VALUES (?, ?)').run('drain', 'running');
-  db.prepare('INSERT INTO group_holds VALUES (?, ?)').run('held', 'leaving');
+  for (const [id, status] of Object.entries({ done: 'succeeded', failed: 'failed', cancelled: 'cancelled', live: 'running', stopping: 'cancelling', drain: 'running', held: 'cancelling' })) owner(id, status);
   for (const [udid, runId] of [['LEFT', 'done'], ['GONE', 'done'], ['FAILED', 'failed'], ['CANCELLED', 'cancelled'], ['LIVE', 'live'], ['STOPPING', 'stopping'], ['DRAIN', 'drain'], ['HELD', 'held'], ['UNKNOWN', 'missing'], ['SHARED', 'done'], ['SHARED', 'live']]) registerSimulator(state, udid, runId);
   writeFileSync(join(state, 'simulators'), 'LEGACY\n');
   const clean = extra => run('node "$CODA_PLUGIN_PATH/scripts/clean-simulators.mjs"', env({ CODA_PLUGIN_STATE: state, HOST_SIM_SIMCTL: sims.tool, ...extra }));
   assert.equal((await clean({})).code, 0);
   assert.equal(sims.log(), '');
   const own = await clean({ CODA_ARBITER: '1' });
-  assert.equal(own.code, 0, own.stderr);
+  assert.equal(own.code, 1, own.stderr);
+  assert.match(own.stderr, /运行不存在或宿主暂不可用/);
   assert.deepEqual(sims.devices(), ['LIVE', 'STOPPING', 'DRAIN', 'HELD', 'UNKNOWN', 'LEGACY', 'SHARED', 'OTHER']);
   assert.deepEqual(registrations(state).map(r => r.udid).sort(), ['DRAIN', 'HELD', 'LIVE', 'SHARED', 'SHARED', 'STOPPING', 'UNKNOWN']);
   assert.doesNotMatch(sims.log(), /shutdown|delete (LIVE|STOPPING|DRAIN|HELD|UNKNOWN|LEGACY|SHARED|OTHER)/);
@@ -176,7 +175,7 @@ test('清点模拟器 deletes only finished owners; live, cancelling, unknown an
 });
 
 test('清点模拟器 skips in-use failures and preserves registrations made during deletion', async t => {
-  const { state, owner } = ledger(t); owner('done', 'succeeded'); owner('live', 'running');
+  const { state, owner } = await hostStatus(t); owner('done', 'succeeded'); owner('live', 'running');
   registerSimulator(state, 'BUSY', 'done'); registerSimulator(state, 'LEFT', 'done');
   const tool = join(temporary(t), 'simctl'), calls = join(temporary(t), 'calls');
   writeFileSync(tool, `#!${process.execPath}
@@ -198,7 +197,7 @@ if (args[1] === 'list') {
   assert.deepEqual(registrations(state).map(r => r.udid).sort(), ['BUSY', 'NEW']);
 });
 
-test('清点模拟器 never deletes when the instance ledger is missing or unreadable', async t => {
+test('清点模拟器 never deletes when the plugin module is unavailable', async t => {
   const state = join(temporary(t), 'plugins', 'host');
   registerSimulator(state, 'KEEP', 'missing');
   const sims = simctl(t, ['KEEP']);
@@ -206,4 +205,18 @@ test('清点模拟器 never deletes when the instance ledger is missing or unrea
   assert.equal(result.code, 1);
   assert.equal(sims.log(), '');
   assert.equal(registrations(state).length, 1);
+});
+
+test('cleanup eligibility follows a fresh public run state, including reruns, and never guesses unknown states', async t => {
+  const { state, owner } = await hostStatus(t);
+  owner('run', 'succeeded');
+  assert.equal(await runFinished(state, 'run'), true);
+  owner('run', 'running');
+  assert.equal(await runFinished(state, 'run'), false);
+  owner('run', 'cancelling');
+  assert.equal(await runFinished(state, 'run'), false);
+  owner('run', 'future-state');
+  assert.equal(await runFinished(state, 'run'), false);
+  assert.equal(await runFinished(state, null), false);
+  await assert.rejects(runFinished(state, 'missing'), /运行不存在/);
 });
