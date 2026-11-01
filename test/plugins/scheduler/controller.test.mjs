@@ -84,7 +84,9 @@ async function fixture(t, initial = [], { local = ['local'], order, root: reuseR
     },
     report: (_, error) => errors.push(error),
   }) };
-  f.scheduler = new Scheduler(coda, { ...(order ? { order } : {}), interval: () => null,
+  // Tests of policy/transport supply order explicitly until the real envelope contract is synced.
+  // Production deliberately has no observation-order fallback.
+  f.scheduler = new Scheduler(coda, { order: order ?? (() => 1), interval: () => null,
     assignment: () => `new-${++nextAssignment}`, now: () => stamp, report: (_, error) => errors.push(error) });
   t.after(() => f.scheduler.stop());
   f.flush = async () => { await f.scheduler.wake(); await f.scheduler.wake(); };
@@ -204,4 +206,31 @@ test('first install retries provider registration after disposing partial subscr
   f.beforeWatch = null; await f.scheduler.connect(); await f.flush();
   assert.equal(f.get('request').spec.executor.id, 'local'); assert.equal(f.subscriptions.length, 3);
   assert.equal(f.errors.length, 1); assert.match(f.errors[0].message, /not registered/);
+});
+
+for (const missing of [null, undefined, 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+  test(`missing/invalid creation order (${missing}) blocks all new bindings but not cancellation`, async t => {
+    const f = await fixture(t, [executor('local', 2), execution('unknown-order'), execution('known-order'), execution('cancelled', { cancel: true })], {
+      order: object => object.id === 'unknown-order' ? missing : 10,
+    });
+    await f.scheduler.start(); await f.flush();
+    for (const id of ['unknown-order', 'known-order']) {
+      assert.equal(f.get(id).spec.executor, null);
+      assert.equal(f.get(id).status.reason.code, 'creation_order_unavailable');
+    }
+    assert.equal(f.get('cancelled').status.outcome, 'cancelled');
+    assert.deepEqual(f.errors, []);
+    const calls = f.calls.length; await f.flush(); assert.equal(f.calls.length, calls);
+  });
+}
+
+test('creation order becomes available through observation and scheduling resumes in that order', async t => {
+  const f = await fixture(t, [executor('local'), execution('a-new'), execution('z-old')], { order: () => null });
+  await f.scheduler.start(); await f.flush();
+  assert.equal(f.get('a-new').spec.executor, null);
+  f.scheduler.order = object => object.id === 'z-old' ? 1 : 2;
+  f.save({ ...f.get('z-old') }); await f.flush();
+  assert.equal(f.get('z-old').spec.executor.id, 'local');
+  assert.equal(f.get('a-new').spec.executor, null);
+  assert.deepEqual(f.errors, []);
 });

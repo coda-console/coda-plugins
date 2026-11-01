@@ -3,7 +3,9 @@ import { budget, choose, disposition, inOrder } from './policy.mjs';
 import { SchedulingState } from './state.mjs';
 
 export class Scheduler {
-  constructor(coda, { state = new SchedulingState(coda.plugin.state), order = object => state.remember(object).order,
+  // The envelope reader will be connected after Coda's creation metadata contract is merged and synced.
+  // Until then fail closed; observation order and IDs cannot substitute for creation order.
+  constructor(coda, { state = new SchedulingState(coda.plugin.state), order = () => null,
     assignment = randomUUID, now = () => new Date().toISOString(), report = console.error,
     interval = setInterval } = {}) {
     Object.assign(this, { coda, state, order, assignment, now, report, interval });
@@ -59,12 +61,23 @@ export class Scheduler {
     return this.running;
   }
   async reconcile() {
-    const entries = [...this.executions.values()].filter(object => disposition(object) !== 'done')
+    // Cancellation and proven rejection do not need an ordering key and must remain responsive during an upgrade.
+    for (const object of this.executions.values()) {
+      if (this.closed) return;
+      if (!['cancel', 'release'].includes(disposition(object))) continue;
+      try { await this.advance(object); }
+      catch (error) { this.report(`[scheduler execution ${object.id}]`, error); }
+    }
+    const entries = [...this.executions.values()].filter(object => disposition(object) === 'schedule')
       .map(object => ({ object, order: this.order(object) }));
+    const missingOrder = entries.some(entry => !Number.isSafeInteger(entry.order) || entry.order < 1);
     for (const { object } of inOrder(entries)) {
       if (this.closed) return;
       if (this.executions.get(object.id)?.revision !== object.revision) continue;
-      try { await this.advance(object); }
+      try {
+        if (missingOrder) await this.queue(object, { code: 'creation_order_unavailable', message: '等待持有方提供完整的创建序号，保持 FIFO 排队' });
+        else await this.advance(object);
+      }
       catch (error) { this.report(`[scheduler execution ${object.id}]`, error); }
     }
     this.state.retain(new Set([...this.executions.values()].filter(o => disposition(o) !== 'done').map(o => o.instance)));
@@ -85,7 +98,7 @@ export class Scheduler {
     }
     const executors = [...this.executors.values()];
     const decision = choose(object.spec, executors, { local: this.local,
-      remaining: budget(executors, [...this.executions.values()]), rejected: this.state.remember(object).rejected });
+      remaining: budget(executors, [...this.executions.values()]), rejected: this.state.get(object)?.rejected ?? {} });
     if (decision.action === 'bind') {
       // One CAS replaces both scalar fields; task, source, resources, cancellation and attempt remain intact.
       const updated = await protocols.update('execution', object.id, { ...object.spec,
@@ -93,9 +106,12 @@ export class Scheduler {
       // Account for the successful binding even if the watch notification has not arrived yet. Never overwrite a newer event.
       if (this.executions.get(object.id)?.revision === object.revision) this.executions.set(object.id, updated);
     } else {
-      const status = { phase: 'queued', assignmentId: null, reason: decision.reason };
-      if (JSON.stringify(object.status) !== JSON.stringify(status)) await protocols.setStatus('execution', object.id, status, object.revision);
+      await this.queue(object, decision.reason);
     }
+  }
+  async queue(object, reason) {
+    const status = { phase: 'queued', assignmentId: null, reason };
+    if (JSON.stringify(object.status) !== JSON.stringify(status)) await this.coda.protocols.setStatus('execution', object.id, status, object.revision);
   }
   async stop() {
     this.closed = true; clearInterval(this.timer);

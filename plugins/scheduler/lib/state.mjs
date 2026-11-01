@@ -1,14 +1,14 @@
 import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-// Scheduling metadata only. Execution status and admission remain owned by their providers.
+// Rejected offers only. Creation order is authoritative envelope data, never plugin-owned state.
 export class SchedulingState {
   constructor(root) {
     mkdirSync(root, { recursive: true });
     this.root = root; this.path = join(root, 'scheduling.json');
     try { this.data = JSON.parse(readFileSync(this.path, 'utf8')); }
-    catch (error) { if (error.code !== 'ENOENT') throw error; this.data = { next: 0, entries: {} }; }
-    if (!Number.isSafeInteger(this.data.next) || this.data.next < 0 || !this.data.entries || typeof this.data.entries !== 'object') {
+    catch (error) { if (error.code !== 'ENOENT') throw error; this.data = { entries: {} }; }
+    if (!this.data.entries || typeof this.data.entries !== 'object' || Array.isArray(this.data.entries)) {
       throw new Error('scheduler 持久状态无效');
     }
   }
@@ -20,18 +20,15 @@ export class SchedulingState {
     this.data = data;
   }
   get(object) { return Object.hasOwn(this.data.entries, object.instance) ? this.data.entries[object.instance] : undefined; }
-  remember(object) {
-    if (!this.get(object)) {
-      const data = structuredClone(this.data);
-      Object.defineProperty(data.entries, object.instance, { enumerable: true, configurable: true, writable: true,
-        value: { order: ++data.next, rejected: {}, lastRejected: null } });
-      this.save(data);
-    }
-    return this.get(object);
-  }
   reject(object, executor) {
-    if (this.remember(object).lastRejected === object.spec.assignmentId) return;
-    const data = structuredClone(this.data), entry = data.entries[object.instance];
+    if (this.get(object)?.lastRejected === object.spec.assignmentId) return;
+    const data = structuredClone(this.data);
+    if (!this.get(object)) {
+      // This private copy is committed only after the complete refusal record reaches disk.
+      Object.defineProperty(data.entries, object.instance, { enumerable: true, configurable: true, writable: true,
+        value: { rejected: {}, lastRejected: null } });
+    }
+    const entry = data.entries[object.instance];
     entry.lastRejected = object.spec.assignmentId;
     // Remember before clearing the binding. A restart must not immediately pick the same rejected offer.
     Object.defineProperty(entry.rejected, object.spec.executor.id, { enumerable: true, configurable: true, writable: true,
