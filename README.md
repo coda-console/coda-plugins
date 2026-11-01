@@ -239,6 +239,24 @@ Codex 调用 `clock.sleep` 时，会话底部显示一个后台等待项（例�
 Codex 没有只取消单个 sleep 的接口，因此等待项不提供单独的停止按钮。正常结束、插话唤醒、整轮取消或失败都会了结等待，
 子 Agent 的等待归它自己的会话。
 
+### Codex 权限默认值与 Coda 工具
+
+从 codex 插件 1.9.0 起，未指定模式的会话默认「完全访问」（`agent-full-access`）：Codex 原生轮次使用
+`approvalPolicy: never`、`dangerFullAccess`，不再叠加 Codex 自己的文件与网络沙箱或自动审核。
+显式的 `INITIAL_AGENT_MODE`、Coda 保存或用户选择的模式仍优先；更新不强改已有会话的选择。
+这遵循「Agent 与它委派的流程命令统一由 Coda 约束」的方向。风险是 Codex 自身不再提供第二层隔离，
+实际能访问的文件、网络与执行命令取决于 Coda 的权限约束和运行机权限；离开 Coda 单独运行这个入口，也会得到该默认值。
+
+另一个独立变化是：Coda 通过 ACP 注入的保留名 `coda`、使用当前 Node 和 `src/adapters/mcp-shim.mjs`
+传输形状的 stdio MCP，设置 `default_tools_approval_mode = "approve"`。包括 `workflow_run` 发起批准卡在内的
+Coda 工具调用直接到达 Coda，即使用户显式选了 Codex 自动审批模式，也不会先被 Codex 自动审核拦下。
+放行的是发起请求，Coda 的命令约束、流程审批及必须本人答复的卡片照常执行；这不是批准所请求的命令。
+其他 MCP 服务、同名 HTTP 服务，以及 codex-acp 去重时选用的已有原生配置服务不获得该例外。
+风险是 Coda 工具不再经过 Codex 的额外风险判断，因此依赖可信 ACP 宿主保留 `coda` 名称并由 Coda 正确执行权限边界。
+
+每台运行机在「设置 › 插件」更新 Codex 后，新启动的 Agent 进程才加载这些行为；正在运行的进程不变。
+已有会话保存了人工／自动审批模式时仍沿用，需要改变的在会话里手动选择「完全访问」。
+
 ### Codex 自动审核
 
 Codex 在运行一条命令或工具调用之前，可能先让自动审核判断风险、决定放不放行（codex-acp 报成一个叫「Guardian Review」的工具调用）。
@@ -486,7 +504,7 @@ CI 先装各插件的依赖再跑全部测试，`plugins/*` 只查清单：真�
 
 MIT，见 [LICENSE](LICENSE)。各插件的品牌图形归各自权利人所有，来源写在插件的 `icons/README.md`。
 
-`plugins/codex/agent/` 里的 `relay.mjs`、`titles.mjs`、`network.mjs`、`process-exit.mjs`、`options.mjs`、`subagents.mjs`、`instructions.mjs`、`steering.mjs`、`providers.mjs`、`sleep.mjs` 在加载时给锁定版本的
+`plugins/codex/agent/` 里的 `relay.mjs`、`titles.mjs`、`network.mjs`、`process-exit.mjs`、`options.mjs`、`subagents.mjs`、`instructions.mjs`、`steering.mjs`、`providers.mjs`、`sleep.mjs`、`mcp-policy.mjs` 在加载时给锁定版本的
 [codex-acp](https://github.com/agentclientprotocol/codex-acp)（Apache-2.0，Copyright 2025 JetBrains s.r.o.）打补丁，补丁里含 codex-acp 构建产物的原文片段。
 这些片段按 [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0) 使用，许可全文也随 npm 包装在 `node_modules/@agentclientprotocol/codex-acp/LICENSE`；
 codex-acp 本身作为 npm 依赖安装，不在本仓库里。

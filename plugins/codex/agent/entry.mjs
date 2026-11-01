@@ -26,10 +26,11 @@ import { CodexReviews } from './reviews.mjs';
 import { explainCodexError, reportedCodexFailures } from './errors.mjs';
 import { reportedCodexSleeps } from './sleep.mjs';
 import { codexDisplayNames } from './display.mjs';
+import { trustedCodaMcpRequests } from './mcp-policy.mjs';
 
 const env = process.env;
-// A session starts read-only, unless its machine's configuration says otherwise.
-env.INITIAL_AGENT_MODE ??= 'read-only';
+// Coda owns the permission boundary. An explicit launch mode or later ACP selection still wins.
+env.INITIAL_AGENT_MODE ??= 'agent-full-access';
 // The Codex this session runs, as the handshake's `agentInfo` names it (Coda's protocol「Agent 版本」): the connection's own
 // program when it sets one, else the plugin's locked @openai/codex.
 const own = env.CODEX_PATH;
@@ -66,6 +67,6 @@ registerHooks({ load(url, context, nextLoad) {
   const loaded = nextLoad(url, context);
   if (url !== adapter.href) return loaded;
   return { ...loaded, source: reportedCodexSleeps(reportedCodexFailures(codexOptionsAsShown(relayedCodexStreams(orderedCodexTitles(followCodexProcessExit(continuedCodexSubagents(
-    promptRequiredCodexSteering(instructedCodexThreads(servedCodexModels(networkedCodexDevelopment(Buffer.from(loaded.source).toString('utf8')))))))))))) };
+    promptRequiredCodexSteering(instructedCodexThreads(servedCodexModels(networkedCodexDevelopment(trustedCodaMcpRequests(Buffer.from(loaded.source).toString('utf8'))))))))))))) };
 } });
 await import(adapter.href);
