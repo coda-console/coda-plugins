@@ -5,6 +5,7 @@ import { capacityStatus, probe } from './capabilities.mjs';
 import { canonical } from './journal.mjs';
 import { Sources } from './source.mjs';
 import { Executions } from './executions.mjs';
+import { serveSimulatorStatus } from './simulator-status.mjs';
 
 const json = (res, status, body) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
 async function body(req) {
@@ -56,6 +57,7 @@ export class HostProvider {
       void this.engine.observe(event).catch(console.error);
     }, 'assigned'));
     this.service = await this.coda.services.register('execution', (req, res, caller) => this.serve(req, res, caller));
+    this.simulatorStatus = await serveSimulatorStatus(this.coda);
     // Recovery follows the durable worker; this timer never grants a slot or starts a second attempt.
     this.follow = this.interval(() => void this.engine.tick().catch(console.error), 1000); this.follow?.unref?.();
     this.probes = this.interval(() => {
@@ -116,6 +118,7 @@ export class HostProvider {
   }
   async stop() {
     this.closed = true; clearInterval(this.follow); clearInterval(this.probes);
+    await this.simulatorStatus?.dispose();
     for (const subscription of this.subscriptions) await subscription.dispose();
     await this.engine?.stop(); await this.sources?.stop(); await this.service?.dispose(); await this.queue.catch(() => {});
     // Durable workers keep their ledger leases while the module is down. A restarted provider observes their results.
