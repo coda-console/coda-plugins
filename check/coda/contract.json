@@ -1,5 +1,5 @@
 {
-  "commit": "c1d9bd9f99a2c90a446397eec21f581a71725385",
+  "commit": "76b1759d9058652bc11eb1f2b62e574fc5c61f21",
   "packages": {
     "@0dep/piso": "5.2.0",
     "@agentclientprotocol/sdk": "1.4.0",
@@ -10,7 +10,8 @@
   "files": {
     "check/coda/components/protocols/provider-definition.mjs": "98327f1900f84109fd5493d2de8f683eb020754245f3049869ca3b30468821f9",
     "check/coda/components/protocols/types.mjs": "c214787505f3b493eae8c89da79a3e7ea89e54945424ce227bea1fbcf35e826e",
-    "check/coda/adapters/provider-api.mjs": "99d5b32f9083645682e5b46d0d5f773db93e06cc72d1f98ae01e47f9b7e1253b",
+    "check/coda/adapters/provider-api.mjs": "33f69042b3437b436fc5c1ceddacf99fff2fa849834bcb065e5d9ae35a2fa7ec",
+    "check/coda/adapters/admission-api.mjs": "47524434710b250e5aa4c5b41fefe40684186a88f33ccf5a4fa44f8b0dd3a45a",
     "check/coda/components/plugins/agent-plugins.mjs": "d117702f83c988aa89c2e5ae26aafd6ae3e8ba0829adaeedf9e8640f5f8282be",
     "check/coda/components/plugins/plugin-extensions.mjs": "4d7963185195ba6d21a4e49a66987613d5892210b1eb1dc02cffb7b816407776",
     "check/coda/components/plugins/plugin-rules.mjs": "bf2eecafaf3a3c3a8b4719c3252db30a582fce5f11946926cd6a2bc03920c702",
@@ -22,6 +23,7 @@
     "check/coda/domain/agent-protocol.mjs": "769cc10dc21b3cef7718f94272aaef2d17d4882d42617b408cb47357abfc3bcb",
     "check/coda/domain/duration.mjs": "15dd64ef9b02342ad521c66e5968a569432a89dc7568d11afd3e6f3fe37e104b",
     "check/coda/domain/errors.mjs": "ddc00aef9bb6f9a56845a9926c82200628a906230d31212d88fcde48e36dfd36",
+    "check/coda/domain/resource-admission.mjs": "775b1d7067f9d8487a3504d737f3f4bea31adf77af3357ed42e313805e5188e7",
     "check/coda/domain/plugin-services.mjs": "940a72a14da980188a32c790c7f341d3ec0062a6e87ef1ebc9ef051798ea0a75",
     "check/coda/domain/values.mjs": "01cc72b8d9c09e3fe16c93ec332ca01148bba859b1c672586d9d07444d7816c4",
     "check/coda/kernel/agent-failures.mjs": "cbc215e2403d86f0acc765c2077197e0b529fc01e213db465c388361238ea8ce",

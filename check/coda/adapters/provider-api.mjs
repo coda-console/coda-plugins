@@ -1,7 +1,12 @@
 // The plugin host's local API. Controllers consume accepted objects serially per ID; they choose their own actions.
-export function providerAPI({ call, watch, report = console.error }) {
+export function providerAPI({ call, watch, connection, report = console.error }) {
   const observe = (kind, fn, scope = 'available') => watch(`provider:${kind}`, fn, { scope });
   return {
+    async resolve(ref, service) {
+      const { resource, path } = await call('resolve', [ref, service]);
+      const api = connection();
+      return { resource, url: `${api.url}${path}`, headers: { authorization: `Bearer ${api.token}` } };
+    },
     define: definition => call('define', [definition]),
     put: object => call('put', [object]),
     update: (kind, id, spec, revision) => call('update', [kind, id, spec, revision]),
