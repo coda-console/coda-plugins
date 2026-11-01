@@ -1,15 +1,10 @@
-// The step of 清点模拟器 (README.md, .coda/workflows/clean-simulators.bpmn), run while it holds the
-// group `host` whole: the simulators this environment registered (`host-sim bind`, in CODA_PLUGIN_STATE/simulators) are
-// deleted. Only commands holding the group use them, and none holds it now, nor is let in until this is over, so none of
-// them is anyone's: one a step left behind, one a command killed before it could delete its own. Another environment of this
-// user (Coda's docs/deployment.md「后端实例」) has its own group and its own list; its simulators are never touched here. One that
-// cannot be deleted stays listed for the next time. Only the environment's own backend (CODA_ARBITER) deletes any: one
-// started for tests or development leaves them. `HOST_SIM_SIMCTL` stands in for `xcrun` (a test's).
+// Periodic cleanup without holding host slots. See lib/simulators.mjs for ownership checks.
 import { execFile } from 'node:child_process';
-import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { registrations, runFinished } from '../lib/simulators.mjs';
 const exec = promisify(execFile);
 
 // `set: null` is the user's default device set, where `simctl` works without --set.
@@ -19,12 +14,12 @@ async function listed(set) {
   const { stdout } = await simctl(set, 'list', 'devices', '-j');
   return Object.values(JSON.parse(stdout).devices).flat().map(({ udid, name, state }) => ({ udid, name, state, set }));
 }
-// Shut down and delete; a device that is already gone is done.
+// Delete without forcing shutdown: simctl can refuse a device in use. Already gone is done.
 export async function removeSimulator({ udid, name, set = null }) {
   const current = async () => (await listed(set)).find(device => device.udid === udid) ?? null;
   if (!await current()) return;
-  await simctl(set, 'shutdown', udid).catch(() => {});
-  await simctl(set, 'delete', udid).catch(() => {});
+  // In-use errors are left for the next sweep, never forced or retried under a lock.
+  await simctl(set, 'delete', udid);
   const left = await current();
   if (left) throw new Error(`模拟器 ${name ?? udid} 未能删除（${left.state}）`);
 }
@@ -34,21 +29,36 @@ export function registered(state) {
   const file = join(state, 'simulators');
   return existsSync(file) ? [...new Set(readFileSync(file, 'utf8').split('\n').map(line => line.trim()).filter(Boolean))] : [];
 }
-function keep(state, udids) {
-  const file = join(state, 'simulators'), temporary = `${file}.next`;
-  writeFileSync(temporary, udids.map(udid => `${udid}\n`).join(''), { mode: 0o600 }); renameSync(temporary, file);
+// No slot is held: only confirmed terminal owners are eligible. Unknown/legacy owners stay listed.
+export async function cleanSimulators(state) {
+  for (const udid of registered(state)) console.log(`跳过模拟器 ${udid}：旧登记没有运行标识`);
+  const udids = new Set(registrations(state).map(record => record.udid));
+  let failures = 0;
+  for (const udid of udids) {
+    try {
+      // Re-read before each device: binds made during this sweep must also be checked.
+      const owners = registrations(state).filter(record => record.udid === udid);
+      if (!owners.length || registered(state).includes(udid) || !owners.every(owner => runFinished(state, owner.runId))) {
+        console.log(`跳过模拟器 ${udid}：运行仍在进行、收尾中或归属无法确认`);
+        continue;
+      }
+      await removeSimulator({ udid });
+      // Remove only the exact registrations checked above; concurrent registrations are not lost.
+      for (const owner of owners) {
+        try { unlinkSync(owner.file); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      }
+      console.log(`已删除模拟器 ${udid}`);
+    } catch (error) {
+      failures++;
+      console.error(`跳过模拟器 ${udid}（使用中或无法清理）：${error.message}`);
+    }
+  }
+  return failures ? 1 : 0;
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const state = process.env.CODA_PLUGIN_STATE;
   if (!process.env.CODA_ARBITER) { console.log('不是这个实例自己的后端（测试或开发起的），不清点模拟器'); process.exit(0); }
   if (!state) { console.error('没有宿主资源插件的状态目录，不知道本实例登记过哪些模拟器，什么都不删'); process.exit(1); }
-  const left = [];
-  for (const udid of registered(state)) {
-    try { await removeSimulator({ udid }); console.log(`已删除模拟器 ${udid}`); }
-    catch (error) { left.push(udid); console.error(`删除模拟器 ${udid} 失败：${error.message}`); }
-  }
-  // What was registered meanwhile is not lost: nobody holds the group while this runs, so nothing registers either.
-  keep(state, left);
-  process.exitCode = left.length ? 1 : 0;
+  process.exitCode = await cleanSimulators(state);
 }

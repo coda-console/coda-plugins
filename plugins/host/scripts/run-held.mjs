@@ -13,7 +13,7 @@ const { HELD_COMMAND: command, HELD_CWD: cwd, HELD_WHAT: what } = process.env;
 const devices = join(process.env.RUNNER_TEMP, 'host-sim-devices');
 // What the step is given as the plugin's and the runner's is not what the command runs with.
 const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(CODA_(NODE|ARBITER|PLUGIN_.*|GROUPS|ARTIFACTS)|GITHUB_.*|RUNNER_.*|HELD_.*)$/.test(name)));
-Object.assign(env, { HOST_SIM_LEASE: `coda-run:${what === '模拟器' ? 'simulator' : 'build'}`, HOST_SIM_DEVICES: devices });
+Object.assign(env, { HOST_SIM_LEASE: `coda-run:${what === '模拟器' ? 'simulator' : 'build'}`, HOST_SIM_DEVICES: devices, HOST_SIM_RUN_ID: process.env.GITHUB_RUN_ID ?? '' });
 // The simulator tool, which a test may stand in for.
 const simctl = env.HOST_SIM_SIMCTL ?? 'xcrun';
 
