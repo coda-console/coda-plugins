@@ -1,0 +1,22 @@
+{
+  "name": "@coda-console/scheduler",
+  "id": "scheduler",
+  "displayName": "执行调度",
+  "description": "为本机执行请求选择运行器：按序排队，有空位时本机优先，安全改派与取消。",
+  "version": "0.1.0",
+  "categories": ["机器与资源"],
+  "type": "module",
+  "main": "main.mjs",
+  "activationEvents": ["onStartupFinished"],
+  "extensionDependencies": ["host"],
+  "contributes": { "skills": ["skills/execution-scheduling"] },
+  "engines": { "node": ">=24" },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coda-console/coda-plugins.git",
+    "directory": "plugins/scheduler"
+  },
+  "publishConfig": { "access": "public" },
+  "files": ["main.mjs", "lib", "skills"]
+}
