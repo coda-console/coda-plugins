@@ -9,6 +9,8 @@ import { providerDefinition } from '../../../check/coda/components/protocols/pro
 import { ProtocolTypes, validate } from '../../../check/coda/components/protocols/types.mjs';
 import { Executions } from '../../../plugins/host/lib/executions.mjs';
 import { identity } from '../../../plugins/host/lib/journal.mjs';
+import { admissionAPI } from '../../../check/coda/adapters/admission-api.mjs';
+import { admissionRequest } from '../../../check/coda/domain/resource-admission.mjs';
 
 // Consume the exact package installed beside host, never a second schema fixture or the root checker's older version.
 const require = createRequire(new URL('../../../plugins/host/package.json', import.meta.url));
@@ -50,7 +52,14 @@ function fixture(root) {
       },
       publish: async () => {}, resolve: async () => {},
     },
-    resources: { acquire: async () => ({ admitted: true, lease: 'lease', slot: 0 }), release: async () => {}, list: async () => [] },
+    resources: admissionAPI(async (method, args) => {
+      if (method === 'list') return [];
+      if (method === 'release') { assert.deepEqual(args, ['lease']); return; }
+      assert.equal(method, 'acquire');
+      const request = admissionRequest(args[0]);
+      assert.equal(request.group, 'host'); assert.match(request.requestId, /^execution:[a-f0-9]{64}$/);
+      return { admitted: true, lease: 'lease', slot: 0 };
+    }),
     watch: async (kind, fn) => { assert.equal(kind, 'concurrency-groups'); fn({ type: 'ADDED', id: 'host', object: { capacity: 2, occupied: 1, available: 1 } }); return { dispose() {} }; },
     services: { register: async () => ({ dispose() {} }) },
   };
