@@ -50,7 +50,11 @@ export class HostProvider {
       if (event.type === 'DELETED') this.local.delete(event.id);
       else { this.local.set(event.id, event.object); await this.coda.protocols.publish('execution', event.id, !!event.object.spec.executor); }
     }, 'local'));
-    this.subscriptions.push(await this.coda.protocols.control('execution', event => this.engine.observe(event), 'assigned'));
+    // Receive intent immediately while source/admission IO is pending. The engine's per-ID queue serializes work;
+    // an outer controller queue would hide cancellation or re-binding until after the old request launches.
+    this.subscriptions.push(await this.coda.protocols.observe('execution', event => {
+      void this.engine.observe(event).catch(console.error);
+    }, 'assigned'));
     this.service = await this.coda.services.register('execution', (req, res, caller) => this.serve(req, res, caller));
     // Recovery follows the durable worker; this timer never grants a slot or starts a second attempt.
     this.follow = this.interval(() => void this.engine.tick().catch(console.error), 1000); this.follow?.unref?.();
