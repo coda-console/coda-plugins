@@ -7,7 +7,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { test } from 'node:test';
-import { setTimeout as delay } from 'node:timers/promises';
+import { serveSimulatorStatus, runFinished } from '../../../plugins/host/lib/simulator-status.mjs';
+import { registerSimulator, registrations } from '../../../plugins/host/lib/simulators.mjs';
 import { pluginDir } from '../plugin.mjs';
 import { declaredPanel, manifest, pluginEnv, run } from '../command.mjs';
 
@@ -21,18 +22,19 @@ function temporary(t) {
 // backend: the tests may run inside one.
 const env = (extra = {}) => {
   const base = pluginEnv('host', { CODA_NODE: process.execPath, ...extra });
-  for (const name of ['HOST_SIM_LEASE', 'HOST_SIM_DEVICES', 'CODA_GROUPS', 'CODA_THREAD_ID', 'CODA_ARBITER']) if (!(name in extra)) delete base[name];
+  for (const name of ['HOST_SIM_LEASE', 'HOST_SIM_DEVICES', 'CODA_GROUPS', 'CODA_THREAD_ID', 'CODA_ARBITER', 'HOST_SIM_RUN_ID', 'GITHUB_RUN_ID']) if (!(name in extra)) delete base[name];
   return base;
 };
 const hostSim = (args, extra) => run(`${manifest('host').contributes.commands.find(c => c.name === 'host-sim').command} ${args}`, env(extra));
 // A simulator tool standing in for xcrun: `simctl` keeps its devices in a file and logs what it was asked.
-function simctl(t, devices = []) {
+function simctl(t, devices = [], { cancelDuringCleanup = false } = {}) {
   const at = temporary(t), state = join(at, 'devices'), log = join(at, 'simctl.log'), tool = join(at, 'simctl');
   writeFileSync(state, devices.map(d => `${d}\n`).join(''));
   writeFileSync(tool, `#!${process.execPath}
 const fs = require('node:fs'), args = process.argv.slice(2).filter(a => a !== 'simctl');
 const read = () => fs.readFileSync(${JSON.stringify(state)}, 'utf8').split('\\n').filter(Boolean);
 fs.appendFileSync(${JSON.stringify(log)}, args.join(' ') + '\\n');
+if (${cancelDuringCleanup} && args[0] === 'shutdown') process.kill(process.ppid, 'SIGTERM');
 if (args[0] === 'list') process.stdout.write(JSON.stringify({ devices: { r: read().map(udid => ({ udid, name: udid, state: 'Booted' })) } }));
 if (args[0] === 'delete' && args[1] !== 'STUCK') fs.writeFileSync(${JSON.stringify(state)}, read().filter(u => u !== args[1]).map(u => u + '\\n').join(''));
 `, { mode: 0o755 });
@@ -79,14 +81,14 @@ test('inside a slot host-sim runs at once, the command told the slot is held, an
   const held = await hostSim(`run --kind build -- sh -c 'echo "lease=$HOST_SIM_LEASE"; exit 3'`, { HOST_SIM_LEASE: 'coda-run:build', CODA_THREAD_ID: 'thread' });
   assert.deepEqual([held.code, held.stdout], [3, 'lease=coda-run:build\n']);
   assert.equal((await hostSim('check --kind simulator', { HOST_SIM_LEASE: 'coda-run:simulator' })).code, 0);
-  assert.equal((await hostSim('bind --kind simulator FAKE-1', { HOST_SIM_LEASE: 'coda-run:simulator', HOST_SIM_DEVICES: devices, CODA_PLUGIN_STATE: state })).code, 0);
+  assert.equal((await hostSim('bind --kind simulator FAKE-1', { HOST_SIM_LEASE: 'coda-run:simulator', HOST_SIM_DEVICES: devices, CODA_PLUGIN_STATE: state, HOST_SIM_RUN_ID: 'held-run' })).code, 0);
   assert.equal(readFileSync(devices, 'utf8'), 'FAKE-1\n');
   // A step holding the group: what it runs is told so, so that a script going through host-sim until it is runs once.
   const step = await hostSim(`run --kind build -- sh -c 'echo "lease=$HOST_SIM_LEASE"'`, { CODA_GROUPS: 'release host' });
   assert.deepEqual([step.code, step.stdout], [0, 'lease=coda-group:host\n']);
-  const bound = await hostSim('bind FAKE-2', { CODA_GROUPS: 'host', CODA_PLUGIN_STATE: state });
+  const bound = await hostSim('bind FAKE-2', { CODA_GROUPS: 'host', CODA_PLUGIN_STATE: state, GITHUB_RUN_ID: 'step-run' });
   assert.match(bound.stderr, /模拟器 FAKE-2 由宿主资源插件定时清点时删除/);
-  assert.equal(readFileSync(join(state, 'simulators'), 'utf8'), 'FAKE-1\nFAKE-2\n');
+  assert.deepEqual(registrations(state).map(({ udid, runId }) => [udid, runId]).sort(), [['FAKE-1', 'held-run'], ['FAKE-2', 'step-run']]);
 });
 
 test('another kind goes whole to the first command plugged into kinds, as that plugin\'s; none plugged in is refused', async t => {
@@ -107,19 +109,22 @@ function held(t, inputs, extra = {}) {
     env: env({ HELD_COMMAND: inputs.command, HELD_CWD: inputs.cwd ?? at, HELD_WHAT: inputs.what ?? '构建', RUNNER_TEMP: at, GITHUB_OUTPUT: output,
       CODA_PLUGIN_STATE: join(at, 'state'), CODA_ARTIFACTS: at, GITHUB_WORKSPACE: at, ...extra }) });
   let out = '', err = '';
-  child.stdout.on('data', d => { out += d; }); child.stderr.on('data', d => { err += d; });
+  const ready = inputs.ready ? Promise.withResolvers() : null;
+  child.stdout.on('data', d => { out += d; if (ready && out.includes(inputs.ready)) ready.resolve(); });
+  child.stderr.on('data', d => { err += d; });
+  child.on('close', () => { if (ready && !out.includes(inputs.ready)) ready.reject(new Error(`命令未就绪就退出：${err}`)); });
   const ended = new Promise(resolve => child.on('close', code => resolve({ code, out, err, outputs: readFileSync(output, 'utf8') })));
-  return { at, child, ended };
+  return { at, child, ended, ready: ready?.promise };
 }
 
 test('持锁执行 runs the command where it was told, with the project\'s environment and the slot as its own, and deletes what it bound', async t => {
   const sims = simctl(t, ['FAKE-1']);
-  const { at, ended } = held(t, { command: 'echo "lease=$HOST_SIM_LEASE in=$(basename "$PWD") plugin=${CODA_PLUGIN_PATH:-none} runner=${RUNNER_TEMP:-none}"; echo FAKE-1 >> "$HOST_SIM_DEVICES"; exit 4' },
-    { HOST_SIM_SIMCTL: sims.tool });
+  const { at, ended } = held(t, { command: 'echo "lease=$HOST_SIM_LEASE in=$(basename "$PWD") plugin=${CODA_PLUGIN_PATH:-none} runner=${RUNNER_TEMP:-none} run=$HOST_SIM_RUN_ID"; echo FAKE-1 >> "$HOST_SIM_DEVICES"; exit 4' },
+    { HOST_SIM_SIMCTL: sims.tool, GITHUB_RUN_ID: 'held-owner' });
   const { code, out, outputs } = await ended;
   // It fails as the command does; the command's status is the output.
   assert.equal(code, 1); assert.equal(outputs, 'exit_code=4\n');
-  assert.match(out, new RegExp(`lease=coda-run:build in=${basename(at)} plugin=none runner=none`));
+  assert.match(out, new RegExp(`lease=coda-run:build in=${basename(at)} plugin=none runner=none run=held-owner`));
   assert.match(out, /已删除模拟器 FAKE-1/);
   assert.equal(sims.log(), 'shutdown FAKE-1\ndelete FAKE-1\n');
   const simulator = await held(t, { command: 'echo "$HOST_SIM_LEASE"', what: '模拟器' }).ended;
@@ -132,29 +137,102 @@ test('持锁执行 runs the command where it was told, with the project\'s envir
 
 test('持锁执行 cancelled still deletes the simulators its command bound before it ends', async t => {
   const sims = simctl(t, ['FAKE-2']);
-  const { at, child, ended } = held(t, { command: `echo FAKE-2 >> "$HOST_SIM_DEVICES"; touch bound; sleep 60`, what: '模拟器' }, { HOST_SIM_SIMCTL: sims.tool });
-  for (let i = 0; i < 500 && !existsSync(join(at, 'bound')); i++) await delay(10);
+  const { child, ended, ready } = held(t, { command: `echo FAKE-2 >> "$HOST_SIM_DEVICES"; echo bound; exec sleep 60`, what: '模拟器', ready: 'bound\n' }, { HOST_SIM_SIMCTL: sims.tool });
+  await ready;
   // As the step runner cancels a step: its whole process group is asked to stop.
   process.kill(-child.pid, 'SIGTERM');
-  const { code, outputs } = await ended;
-  assert.equal(code, 143); assert.equal(outputs, 'exit_code=143\n');
+  const result = await ended;
+  const { code, outputs } = result;
+  assert.equal(code, 143, JSON.stringify(result)); assert.equal(outputs, 'exit_code=143\n');
   assert.equal(sims.log(), 'shutdown FAKE-2\ndelete FAKE-2\n');
 });
 
-test('清点模拟器 deletes the simulators this environment registered, keeps one it could not, and only for its own backend', async t => {
-  const sims = simctl(t, ['ORPHAN-0', 'LEFT-1', 'STUCK', 'OTHER-3']);
-  const state = temporary(t);
-  writeFileSync(join(state, 'simulators'), 'LEFT-1\nSTUCK\nGONE-2\nLEFT-1\n');
-  const clean = extra => run(`node "$CODA_PLUGIN_PATH/scripts/clean-simulators.mjs"`, env({ CODA_PLUGIN_STATE: state, HOST_SIM_SIMCTL: sims.tool, ...extra }));
-  // A backend started for tests or development deletes nothing.
-  const other = await clean({});
-  assert.deepEqual([other.code, other.stdout], [0, '不是这个实例自己的后端（测试或开发起的），不清点模拟器\n']);
+test('持锁执行 retains cancellation when child exit is observed before TERM during simulator cleanup', async t => {
+  // The child receives TERM first. simctl then delivers TERM to the wrapper while it is cleaning up:
+  // no scheduler luck or sleep is needed to expose a pending signal hidden by synchronous cleanup.
+  const sims = simctl(t, ['FAKE-3'], { cancelDuringCleanup: true });
+  const result = await held(t, { command: 'echo FAKE-3 >> "$HOST_SIM_DEVICES"; kill -TERM $$', what: '模拟器' },
+    { SHELL: '/bin/sh', HOST_SIM_SIMCTL: sims.tool }).ended;
+  assert.equal(result.code, 143, JSON.stringify(result));
+  assert.equal(result.outputs, 'exit_code=143\n');
+  assert.equal(sims.log(), 'shutdown FAKE-3\ndelete FAKE-3\n');
+  assert.deepEqual(sims.devices(), []);
+});
+
+// Exercise the script with the real module bridge, public workflow responses and a fake simctl.
+async function hostStatus(t) {
+  const state = temporary(t), runs = new Map();
+  const bridge = await serveSimulatorStatus({ plugin: { state }, api: async path => {
+    assert.match(path, /^workflow-runs\//);
+    const id = decodeURIComponent(path.slice('workflow-runs/'.length));
+    if (!runs.has(id)) throw new Error('运行不存在或宿主暂不可用');
+    return { runId: id, state: runs.get(id) };
+  } });
+  t.after(() => bridge.dispose());
+  return { state, owner: (id, status) => runs.set(id, status) };
+}
+
+test('清点模拟器 deletes only finished owners; live, cancelling, unknown and legacy registrations stay', async t => {
+  const { state, owner } = await hostStatus(t);
+  const sims = simctl(t, ['LEFT', 'FAILED', 'CANCELLED', 'LIVE', 'STOPPING', 'DRAIN', 'HELD', 'UNKNOWN', 'LEGACY', 'SHARED', 'OTHER']);
+  for (const [id, status] of Object.entries({ done: 'succeeded', failed: 'failed', cancelled: 'cancelled', live: 'running', stopping: 'cancelling', drain: 'running', held: 'cancelling' })) owner(id, status);
+  for (const [udid, runId] of [['LEFT', 'done'], ['GONE', 'done'], ['FAILED', 'failed'], ['CANCELLED', 'cancelled'], ['LIVE', 'live'], ['STOPPING', 'stopping'], ['DRAIN', 'drain'], ['HELD', 'held'], ['UNKNOWN', 'missing'], ['SHARED', 'done'], ['SHARED', 'live']]) registerSimulator(state, udid, runId);
+  writeFileSync(join(state, 'simulators'), 'LEGACY\n');
+  const clean = extra => run('node "$CODA_PLUGIN_PATH/scripts/clean-simulators.mjs"', env({ CODA_PLUGIN_STATE: state, HOST_SIM_SIMCTL: sims.tool, ...extra }));
+  assert.equal((await clean({})).code, 0);
   assert.equal(sims.log(), '');
-  const own = await clean({ CODA_ARBITER: join(state, 'arbiter.sock') });
-  assert.equal(own.code, 1);
-  assert.match(own.stdout, /已删除模拟器 LEFT-1/); assert.match(own.stdout, /已删除模拟器 GONE-2/);
-  assert.match(own.stderr, /删除模拟器 STUCK 失败/);
-  // One never registered here stays: a user's own, or another environment's; one that would not go is tried next time.
-  assert.deepEqual(sims.devices(), ['ORPHAN-0', 'STUCK', 'OTHER-3']);
-  assert.equal(readFileSync(join(state, 'simulators'), 'utf8'), 'STUCK\n');
+  const own = await clean({ CODA_ARBITER: '1' });
+  assert.equal(own.code, 1, own.stderr);
+  assert.match(own.stderr, /运行不存在或宿主暂不可用/);
+  assert.deepEqual(sims.devices(), ['LIVE', 'STOPPING', 'DRAIN', 'HELD', 'UNKNOWN', 'LEGACY', 'SHARED', 'OTHER']);
+  assert.deepEqual(registrations(state).map(r => r.udid).sort(), ['DRAIN', 'HELD', 'LIVE', 'SHARED', 'SHARED', 'STOPPING', 'UNKNOWN']);
+  assert.doesNotMatch(sims.log(), /shutdown|delete (LIVE|STOPPING|DRAIN|HELD|UNKNOWN|LEGACY|SHARED|OTHER)/);
+  assert.match(own.stdout, /旧登记没有运行标识/);
+});
+
+test('清点模拟器 skips in-use failures and preserves registrations made during deletion', async t => {
+  const { state, owner } = await hostStatus(t); owner('done', 'succeeded'); owner('live', 'running');
+  registerSimulator(state, 'BUSY', 'done'); registerSimulator(state, 'LEFT', 'done');
+  const tool = join(temporary(t), 'simctl'), calls = join(temporary(t), 'calls');
+  writeFileSync(tool, `#!${process.execPath}
+const fs = require('node:fs'), args = process.argv.slice(2);
+const calls = ${JSON.stringify(calls)}, state = ${JSON.stringify(state)};
+if (args[1] === 'list') {
+  const gone = fs.existsSync(calls) && fs.readFileSync(calls, 'utf8').includes('LEFT');
+  console.log(JSON.stringify({ devices: { r: (gone ? ['BUSY'] : ['BUSY', 'LEFT']).map(udid => ({ udid, state: 'Booted' })) } }));
+} else if (args[1] === 'delete') {
+  if (args[2] === 'BUSY') { console.error('device is in use by another process'); process.exit(1); }
+  fs.writeFileSync(calls, 'LEFT');
+  fs.writeFileSync(state + '/simulator-registrations/concurrent.json', JSON.stringify({ udid: 'NEW', runId: 'live' }));
+} else process.exit(9);
+`, { mode: 0o755 });
+  const result = await run('node "$CODA_PLUGIN_PATH/scripts/clean-simulators.mjs"', env({ CODA_PLUGIN_STATE: state, CODA_ARBITER: '1', HOST_SIM_SIMCTL: tool }));
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /跳过模拟器 BUSY.*使用中/);
+  assert.match(result.stderr, /device is in use/);
+  assert.deepEqual(registrations(state).map(r => r.udid).sort(), ['BUSY', 'NEW']);
+});
+
+test('清点模拟器 never deletes when the plugin module is unavailable', async t => {
+  const state = join(temporary(t), 'plugins', 'host');
+  registerSimulator(state, 'KEEP', 'missing');
+  const sims = simctl(t, ['KEEP']);
+  const result = await run('node "$CODA_PLUGIN_PATH/scripts/clean-simulators.mjs"', env({ CODA_PLUGIN_STATE: state, CODA_ARBITER: '1', HOST_SIM_SIMCTL: sims.tool }));
+  assert.equal(result.code, 1);
+  assert.equal(sims.log(), '');
+  assert.equal(registrations(state).length, 1);
+});
+
+test('cleanup eligibility follows a fresh public run state, including reruns, and never guesses unknown states', async t => {
+  const { state, owner } = await hostStatus(t);
+  owner('run', 'succeeded');
+  assert.equal(await runFinished(state, 'run'), true);
+  owner('run', 'running');
+  assert.equal(await runFinished(state, 'run'), false);
+  owner('run', 'cancelling');
+  assert.equal(await runFinished(state, 'run'), false);
+  owner('run', 'future-state');
+  assert.equal(await runFinished(state, 'run'), false);
+  assert.equal(await runFinished(state, null), false);
+  await assert.rejects(runFinished(state, 'missing'), /运行不存在/);
 });

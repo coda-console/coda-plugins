@@ -11,6 +11,9 @@ description: 宿主资源插件的名额怎么用：会话里用 run-held 执行
 
 - Xcode 构建、用 Apple 模拟器的命令、会调用 `host-sim` 的项目脚本，不直接跑：用 `workflow_run` 调用能力 `run-held`，
   `inputs` 给 `command`（整条命令，由 `$SHELL -c` 执行）与 `cwd`（绝对路径，一般是你的工作目录），用模拟器另给 `what` 为 `模拟器`。
+- 总时限从取得名额、进入执行步骤开始计时，不含排队：`what=模拟器` 默认 60 分钟，其余默认 600 分钟。
+  长批次在 `inputs` 显式给 `timeoutMinutes: 120` 等正数调高（最多 1440 分钟；0 按种类默认）。
+  超时由引擎取消整组进程，另给 5 分钟清理宽限再释放名额，不按日志增长判断卡死。
 - 排队与执行由 Coda 管：结束得快就随这次调用返回结果，否则结果之后送回会话；调用先返回了，命令照常执行，要停用 `workflow_cancel`。
   命令失败这次调用也失败，结果带着输出的末尾，`exit_code` 是命令的退出码。
 - 原生子 Agent 不能调用 `run-held`：把这一步交回主 Agent，或由主 Agent 用 `spawn` 派一个 Coda 子会话。
@@ -41,5 +44,6 @@ description: 宿主资源插件的名额怎么用：会话里用 run-held 执行
   不要只看 `HOST_SIM_LEASE` 是否为空：测试机上执行的命令也带它（`coda-run:<设备名>`），那占的是测试机，不是构建名额。
 
 - `host-sim check --kind build|simulator`：在名额里退出码 0。
-- `host-sim bind <udid>`：登记命令建的模拟器；持锁执行在命令结束时删掉它，被强杀留下的由定时「清点模拟器」删除。
+- `host-sim bind <udid>`：登记命令建的模拟器；持锁执行在命令结束时删掉它，被强杀留下的由定时「清点模拟器」在确认归属运行及收尾已结束后删除。
+  清点不占名额；使用中、归属未知或旧版无运行 ID 的登记会跳过并记日志。
 - `--kind <设备名>`（如 `iphone-testbed`）交给测试机插件，见那个插件的 Skill `testbed`。

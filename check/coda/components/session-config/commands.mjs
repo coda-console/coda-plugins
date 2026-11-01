@@ -51,11 +51,16 @@ export function modeMark(value) {
   return { id: value.id, title: text(value.title, '模式名', 40), icon: text(value.icon, '模式图标', 100) };
 }
 
+export function modeMarks(value) {
+  check(Array.isArray(value), 'invalid_input', '输入框模式须为数组');
+  return value.map(modeMark);
+}
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export function firstMessage(value) {
   object(value, '首次发送');
   keys(value, ['requestId', 'projectId', 'title', 'agent', 'checkout', 'settings', 'text', 'attachments', 'quotes', 'handoffSource', 'parentThreadId',
-    'replyTo', 'threadId', 'extensionParent', 'mode', 'initiatedBy']);
+    'replyTo', 'threadId', 'extensionParent', 'modes', 'initiatedBy']);
   const initiatedBy = value.initiatedBy === undefined ? {} : (() => {
     const source = object(value.initiatedBy, '发起会话');
     keys(source, ['threadId', 'title']);
@@ -116,7 +121,7 @@ export function firstMessage(value) {
     settings: settings(value.settings),
     text: message,
     ...(passages.length ? { quotes: passages } : {}),
-    ...(value.mode === undefined ? {} : { mode: modeMark(value.mode) }),
+    ...(value.modes === undefined ? {} : { modes: modeMarks(value.modes) }),
   }, attachments(value.attachments));
 }
 
