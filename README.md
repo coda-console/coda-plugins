@@ -18,6 +18,7 @@ plugins/codex-accounts/  Codex 多账号：管理登录、自动续期与账号�
 plugins/cursor/          Cursor：在运行机的 cursor-agent acp 与 Coda 之间转发，送入会话指令
 plugins/git/             Git 源与快照：本机仓库 provider、运行关联的工作树／提交快照、临时 ref 回收与只读 smart HTTP v2
 plugins/host/            宿主资源：Xcode 构建、Apple 模拟器与项目要求排队的命令共用这台机器的一组名额（组 host、持锁执行 run-held、host-sim），面板「构建与模拟器名额」
+plugins/scheduler/       执行调度：为本机 execution 选择可用运行器，本机优先、按名额选择、安全改派与取消；政策和排队原因见插件 README
 plugins/magpie/          Magpie：把本机的 Magpie 网关作为模型服务提供给 Pi 等插件，安装时装好 Magpie 并让网关常驻
 plugins/network-log/     网络记录：默认关闭，按需开启建连等待与定时探测采集；关闭后仍可查看历史
 plugins/review/          PR 生命流程：会话开的 PR 先跑项目的检查、再交叉评审，你批准后合并、部署与发布；也是写 PR 流程的样例
