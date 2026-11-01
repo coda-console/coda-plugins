@@ -64,22 +64,28 @@ export class GitProvider {
     for (const [id, watcher] of this.runWatches) if (!needed.has(id)) {
       await watcher.dispose(); this.runWatches.delete(id); this.runs.delete(id);
     }
-    for (const id of needed) if (!this.runWatches.has(id)) {
-      let watcher, generation = 0;
-      try { watcher = await this.coda.watch('workflow-runs', event => {
-        if (event.id !== id) return; // The filtered collection can also contain child runs.
-        generation++;
-        this.runs.set(id, event.type === 'DELETED' ? { state: 'cancelled' } : event.object);
-        void this.schedule().catch(() => {});
-      }, { run: id }); } catch (error) { if (generation === 0) this.runs.set(id, { error: error.message }); continue; }
-      this.runWatches.set(id, watcher);
-      if (!this.runs.has(id)) {
-        // Confirm old runs that no longer appear in the default recent-runs list. A failed lookup is not completion.
-        const observed = generation;
+    for (const id of needed) {
+      let watcher = this.runWatches.get(id);
+      if (!watcher) {
+        watcher = { generation: 0 };
+        try {
+          const subscription = await this.coda.watch('workflow-runs', event => {
+            if (event.id !== id) return; // The filtered collection can also contain child runs.
+            watcher.generation++;
+            this.runs.set(id, event.type === 'DELETED' ? { state: 'cancelled' } : event.object);
+            void this.schedule().catch(() => {});
+          }, { run: id });
+          watcher.dispose = () => subscription.dispose();
+        } catch (error) { if (watcher.generation === 0) this.runs.set(id, { error: error.message }); continue; }
+        this.runWatches.set(id, watcher);
+      }
+      if (!this.runs.has(id) || this.runs.get(id).error) {
+        // Confirm old runs absent from the recent list; retry failed lookups on subsequent reconciliations.
+        const observed = watcher.generation;
         try {
           const run = await this.coda.api(`workflow-runs/${encodeURIComponent(id)}`);
-          if (generation === observed) this.runs.set(id, run);
-        } catch (error) { if (generation === observed) this.runs.set(id, { error: error.message }); }
+          if (watcher.generation === observed) this.runs.set(id, run);
+        } catch (error) { if (watcher.generation === observed) this.runs.set(id, { error: error.message }); }
       }
     }
   }

@@ -221,6 +221,45 @@ test('源符号链接换仓库后拒绝访问和快照，重启仍须重新登�
   assert.equal(await command(b, ['for-each-ref', 'refs/coda/snapshots/']), '');
 });
 
+test('旧运行查询暂时失败后，新增关联快照触发重查并恢复，无需订阅事件', async t => {
+  const dir = await fixture(t), h = host(join(dir, '.git', 'state'));
+  h.coda.api = async () => { throw new Error('temporarily unavailable'); };
+  const provider = new GitProvider(h.coda); t.after(() => provider.stop()); await provider.start();
+  await put(h, SOURCE, 'source', { path: dir });
+  await writeFile(join(dir, 'new'), 'captured');
+  await put(h, SNAPSHOT, 'first', { source: 'source', mode: 'worktree', run: 'old-run' }); await idle(provider);
+  assert.equal(get(h, SNAPSHOT, 'first').status.ready, false);
+  assert.match(get(h, SNAPSHOT, 'first').status.reason, /temporarily unavailable/);
+  assert.equal(await command(dir, ['for-each-ref', 'refs/coda/snapshots/']), '');
+  h.coda.api = async () => ({ id: 'old-run', state: 'running' });
+  await put(h, SNAPSHOT, 'second', { source: 'source', mode: 'worktree', run: 'old-run' }); await idle(provider);
+  for (const id of ['first', 'second']) {
+    const { status } = get(h, SNAPSHOT, id);
+    assert.equal(status.ready, true);
+    assert.equal(await command(dir, ['show', `${status.ref}:new`]), 'captured');
+  }
+  assert.deepEqual(h.failures, []);
+});
+
+for (const result of ['running', 'error']) test(`运行查询失败后的重查 ${result} 不覆盖等待期间的订阅终态`, async t => {
+  // Exercise the query/event interleaving in memory; reconciliation and Git are covered above.
+  const h = host('unused'), provider = new GitProvider(h.coda); t.after(() => provider.stop());
+  provider.snapshots.set('snapshot', { spec: { run: 'run' } });
+  h.coda.api = async () => { throw new Error('temporarily unavailable'); };
+  await provider.followRuns();
+  assert.match(provider.runs.get('run').error, /temporarily unavailable/);
+  const response = Promise.withResolvers();
+  let retried = false;
+  h.coda.api = () => { retried = true; return response.promise; };
+  const pending = provider.followRuns();
+  assert.equal(retried, true);
+  h.run('run', 'succeeded');
+  if (result === 'error') response.reject(new Error('old lookup failed'));
+  else response.resolve({ id: 'run', state: 'running' });
+  await pending;
+  assert.equal(provider.runs.get('run').state, 'succeeded');
+});
+
 for (const result of ['running', 'error']) test(`运行订阅终态先于旧查询 ${result} 返回时不回退、不创建快照`, async t => {
   const dir = await fixture(t), h = host(join(dir, '.git', 'state'));
   const entered = Promise.withResolvers(), response = Promise.withResolvers();
