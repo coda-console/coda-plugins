@@ -326,25 +326,26 @@ test('开发流程定义、回路、检查提交与部署发布选择符合运�
   assert.doesNotMatch(workflow, /无客户端改动，跳过|没有客户端改动时确认/);
   for (const [value, target] of [['device', 'device'], ['review', 'report'], ['pr', 'tell-device']]) assert.equal(route('after-device', { 'device-result': { route: value } }), target);
   assert.match(nodes.review.documentation[0].text, /\{\{report.feedback\}\}/, '验收失败的备注随审查任务交回');
-  assert.deepEqual(process.flowElements.filter(e => e.action === 'tell-session').map(e => e.id), ['tell-device', 'tell-approval']);
-  for (const id of ['tell-device', 'tell-approval']) assert.equal(params(id).session, undefined, '通知运行所属会话');
+  assert.deepEqual(process.flowElements.filter(e => e.action === 'tell-session').map(e => e.id), ['tell-device']);
+  assert.equal(params('tell-device').session, undefined, '通知运行所属会话');
   assert.equal(nodes['told-device-pr'].sourceRef.id, 'tell-device');
   assert.equal(nodes['told-device-pr'].targetRef.id, 'pr');
-  assert.equal(nodes['approve-route'].targetRef.id, 'tell-approval');
-  assert.equal(nodes['told-approval-route'].sourceRef.id, 'tell-approval');
-  assert.equal(nodes['told-approval-route'].targetRef.id, 'after-approval');
+  assert.equal(nodes['approve-route'].sourceRef.id, 'approve');
+  assert.equal(nodes['approve-route'].targetRef.id, 'after-approval');
   const context = { inputs: { title: '修好输入框' }, run: { id: 'run-1' }, accept: { head: 'head-1' }, pr: { head: 'head-1' } };
   const message = (id, field, extra = {}) => evaluate(params(id)[field].slice(1), { ...context, ...extra }).value;
   assert.equal(message('tell-device', 'text'), '功能「修好输入框」：用户设备验收通过，接下来开 PR、跑检查。');
   assert.equal(message('tell-device', 'key'), 'run-1:device:head-1');
-  for (const choice of ['merge', 'stop']) for (const deploy of [false, true]) for (const preview of [false, true]) for (const release of [false, true]) {
-    const options = choice === 'stop' ? {} : { deploy, preview, release };
-    const approve = { choice, chose: { stop: choice === 'stop' }, options, note: '补齐说明' };
-    const selections = [['deploy', '部署'], ['preview', '发布预览版'], ['release', '发布正式版']];
-    const text = choice === 'stop' ? '选择暂不合并。' : '批准合并，' + selections.map(([kind, label]) => `${options[kind] ? '已' : '未'}勾选${label}。`).join('');
-    assert.equal(message('tell-approval', 'text', { approve }), `功能「修好输入框」：用户${text}`);
-    assert.equal(message('tell-approval', 'key', { approve }), `run-1:approve:head-1:${choice}` + selections.map(([kind]) => `:${options[kind] ? kind : 'no-' + kind}`).join(''));
-    assert.equal(route('after-approval', { approve }), choice === 'stop' ? 'stopped' : 'premerge');
+  for (const stop of [false, true]) assert.equal(route('after-approval', { approve: { chose: { stop } } }), stop ? 'stopped' : 'premerge');
+  assert.equal(nodes.stopped.notify, undefined);
+  for (const context of [
+    { inputs: { delivery: '' }, approve: { options: { notify: true } } },
+    { inputs: { delivery: '' }, approve: { options: { notify: false } } },
+    { inputs: { delivery: 'requirement-1' } },
+  ]) {
+    const result = evaluate(nodes.done.notify.slice(1), context);
+    assert.equal(result.warnings.length, 0, JSON.stringify(result.warnings));
+    assert.equal(result.value, context.inputs.delivery ? true : context.approve.options.notify);
   }
   for (const [failed, target] of [['checks-failed', 'checks'], ['github-checks-failed', 'github-checks'], ['premerge-failed', 'premerge']]) {
     assert.equal(nodes[failed].attachedToRef.id, target);
@@ -389,8 +390,11 @@ test('开发流程定义、回路、检查提交与部署发布选择符合运�
   assert.deepEqual(evaluate(params('publish-release').inputs.slice(1), {}).value, { publish: 'true' });
   assert.deepEqual(process.flowElements.filter(e => e.action === 'run-workflows').map(e => e.id), ['checks', 'premerge', 'deploy', 'publish-preview', 'publish-release']);
   const options = values(nodes.approve)[0].options;
-  assert.deepEqual(options.map(option => [option.id, option.name]), [['deploy', '部署'], ['preview', '发布预览版'], ['release', '发布正式版']]);
-  for (const option of options) {
+  assert.deepEqual(options.map(option => [option.id, option.name]), [['deploy', '部署'], ['preview', '发布预览版'], ['release', '发布正式版'], ['notify', '全部完成后通知 Agent']]);
+  const notify = options.find(option => option.id === 'notify');
+  assert.equal(notify.default, 'true');
+  assert.equal(notify.shown, undefined);
+  for (const option of options.filter(option => option.id !== 'notify')) {
     assert.equal(option.default, undefined);
     for (const deploy of [false, true]) for (const preview of [false, true]) for (const release of [false, true]) {
       const kinds = { deploy, preview, release };

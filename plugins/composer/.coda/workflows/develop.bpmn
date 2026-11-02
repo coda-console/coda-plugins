@@ -208,18 +208,12 @@ head：{{pr.head}}
         <coda:choice id="merge" name="合并" primary="true"><coda:option id="deploy" name="部署" detail="调用项目里的部署流程" coda:shown="=kinds.deploy" />
           <coda:option id="preview" name="发布预览版" detail="调用项目里的预览发布流程" coda:shown="=kinds.preview" />
           <coda:option id="release" name="发布正式版" detail="调用项目里的正式发布流程" coda:shown="=kinds.release" />
+          <coda:option id="notify" name="全部完成后通知 Agent" default="true" />
         </coda:choice>
         <coda:choice id="stop" name="暂不合并" />
       </extensionElements>
     </userTask>
-    <sequenceFlow id="approve-route" sourceRef="approve" targetRef="tell-approval" />
-    <serviceTask id="tell-approval" name="告诉主 Agent 合并选择" coda:action="tell-session">
-      <extensionElements>
-        <coda:param name="key" value='=run.id + ":approve:" + pr.head + ":" + approve.choice + (if approve.options.deploy then ":deploy" else ":no-deploy") + (if approve.options.preview then ":preview" else ":no-preview") + (if approve.options.release then ":release" else ":no-release")' />
-        <coda:param name="text" value='="功能「" + inputs.title + "」：用户" + (if approve.chose.stop then "选择暂不合并。" else "批准合并，" + (if approve.options.deploy then "已勾选部署。" else "未勾选部署。") + (if approve.options.preview then "已勾选发布预览版。" else "未勾选发布预览版。") + (if approve.options.release then "已勾选发布正式版。" else "未勾选发布正式版。"))' />
-      </extensionElements>
-    </serviceTask>
-    <sequenceFlow id="told-approval-route" sourceRef="tell-approval" targetRef="after-approval" />
+    <sequenceFlow id="approve-route" sourceRef="approve" targetRef="after-approval" />
     <exclusiveGateway id="after-approval" name="是否合并" default="approval-premerge" />
     <sequenceFlow id="approval-stop" sourceRef="after-approval" targetRef="stopped"><conditionExpression xsi:type="tFormalExpression">=approve.chose.stop</conditionExpression></sequenceFlow>
     <sequenceFlow id="approval-premerge" sourceRef="after-approval" targetRef="premerge" />
@@ -262,6 +256,6 @@ head：{{pr.head}}
       <extensionElements><coda:param name="kind" value="release" /><coda:param name="commit" value="=merge.commit" /><coda:param name="inputs" value='={ publish: "true" }' /></extensionElements>
     </serviceTask>
     <sequenceFlow id="published-release" sourceRef="publish-release" targetRef="done" />
-    <endEvent id="done" name="已完成"><extensionElements><coda:output name="pr" value="=pr.url" /><coda:output name="commit" value="=merge.commit" /></extensionElements></endEvent>
+    <endEvent id="done" name="已完成" coda:notify='=if inputs.delivery != "" then true else approve.options.notify'><extensionElements><coda:output name="pr" value="=pr.url" /><coda:output name="commit" value="=merge.commit" /></extensionElements></endEvent>
   </process>
 </definitions>
