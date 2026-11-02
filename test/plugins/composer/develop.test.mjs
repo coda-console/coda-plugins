@@ -88,7 +88,8 @@ test('develop 从最新 base 开泳道，退回续作，逐项快进，验收后
   const oldHead = f.git('rev-parse', 'HEAD');
   writeFileSync(join(f.work, 'latest'), 'latest'); f.git('add', 'latest'); f.git('commit', '-qm', 'latest'); f.git('push', '-q', 'origin', 'main');
   const latest = f.git('rev-parse', 'HEAD'); f.git('switch', '--detach', oldHead);
-  f.run('lane');
+  const task = '## 背景\n\n第一项：修好输入框\n\n## 验证\n\n- 检查输入';
+  f.run('lane', { TASK: task });
   const lane = f.state().lane;
   assert.match(lane, /^lane\/修好输入框-run-1$/);
   assert.equal(f.state().head, latest);
@@ -127,17 +128,24 @@ test('develop 从最新 base 开泳道，退回续作，逐项快进，验收后
   f.review('revise', '修复按钮回调'); f.task('two', 'button fixed'); f.run('revise');
   f.review('accept'); assert.equal(f.run('accept').outputs.route, 'preview');
   assert.equal(f.device('yes'), 'pr');
-  f.run('pr');
+  const summary = f.run('pr').outputs.summary;
   const created = f.calls('gh').find(c => c.args[1] === 'create');
   assert.deepEqual(created.args.slice(0, 6), ['pr', 'create', '--base', 'main', '--head', lane]);
-  for (const answer of ['removed wrapper', 'second answer', 'button fixed']) assert.ok(created.body.includes(answer));
+  const approved = f.state().approved;
+  assert.equal(created.body, [
+    `## 第 1 项\n\n<details><summary>任务</summary>\n\n${task}\n\n</details>\n\nremoved wrapper\n\n提交：${approved[0].head}`,
+    `## 第 2 项\n\n<details><summary>任务</summary>\n\n第二项：补齐状态\n\n</details>\n\nsecond answer\n\n提交：${approved[1].head}`,
+    `## 第 3 项\n\n<details><summary>任务</summary>\n\n第二项：补齐状态\n\n</details>\n\nbutton fixed\n\n提交：${approved[2].head}`,
+  ].join('\n\n'));
+  assert.equal(summary, created.body, '批准卡片使用同一份正文');
   assert.ok(!created.body.includes('first answer'), '未通过的改动不放进 PR 汇总');
-  f.run('pr');
+  assert.equal(f.run('pr').outputs.summary, created.body);
   assert.equal(f.calls('gh').filter(c => c.args[1] === 'create').length, 1);
   assert.equal(f.calls('gh').filter(c => c.args[1] === 'edit').length, 1);
+  assert.equal(f.calls('gh').find(c => c.args[1] === 'edit').body, created.body);
 });
 
-test('检查失败回最近执行会话，修好更新 PR 重跑；合并后删除远端泳道并交出合并提交', t => {
+test('检查失败回最近执行会话，修好更新 PR 重跑；交由 gh 删除泳道，分支已删除仍交出合并提交', t => {
   const f = fixture(t); f.run('lane'); f.task('code', 'implementation'); f.run('execute');
   f.review('accept'); f.run('accept'); f.device('yes'); f.run('pr');
   const session = f.state().executor.session;
@@ -151,15 +159,18 @@ test('检查失败回最近执行会话，修好更新 PR 重跑；合并后删�
     f.review('accept'); assert.equal(f.run('accept').outputs.route, 'pr');
     f.run('pr');
   }
-  f.run('merge', { MERGE_EXIT: '1' }, 1);
+  assert.equal(f.run('merge', { MERGE_EXIT: '1' }, 1).outputs.commit, undefined);
   assert.equal(f.git('ls-remote', 'origin', f.state().lane).split('\t')[0], f.state().head, '合并失败不删除泳道');
+  f.git('push', 'origin', '--delete', f.state().lane);
+  f.git('switch', '--detach');
+  f.git('branch', '-D', f.state().lane);
   const merged = f.run('merge').outputs.commit;
   assert.equal(merged, 'f'.repeat(40)); assert.notEqual(merged, f.state().head);
   assert.deepEqual(f.calls('gh').find(c => c.args[1] === 'merge').args,
-    ['pr', 'merge', f.state().pr, '--squash', '--match-head-commit', f.state().head]);
+    ['pr', 'merge', f.state().pr, '--squash', '--match-head-commit', f.state().head, '--delete-branch']);
   assert.deepEqual(f.calls('gh').find(c => c.args[0] === 'pr' && c.args[1] === 'view').args,
     ['pr', 'view', f.state().pr, '--json', 'mergeCommit', '--jq', '.mergeCommit.oid']);
-  assert.equal(f.git('ls-remote', 'origin', f.state().lane), '', '合并成功后清理远端泳道');
+  assert.equal(f.git('ls-remote', 'origin', f.state().lane), '', '远端泳道已由 GitHub 自动删除');
 });
 
 test('泳道不接受分叉，Agent 非零退出不进入审查', t => {

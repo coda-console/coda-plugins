@@ -37,7 +37,7 @@ if (action === 'lane') {
 
 const state = JSON.parse(readFileSync(statePath, 'utf8'));
 const save = () => writeFileSync(statePath, JSON.stringify(state));
-const body = () => state.approved.map(item => `## ${item.task}\n\n${item.answer}\n\n提交：${item.head}`).join('\n\n');
+const body = () => state.approved.map((item, index) => `## 第 ${index + 1} 项\n\n<details><summary>任务</summary>\n\n${item.task}\n\n</details>\n\n${item.answer}\n\n提交：${item.head}`).join('\n\n');
 
 switch (action) {
   case 'execute':
@@ -114,9 +114,8 @@ switch (action) {
     save();
     break;
   case 'merge': {
-    gh('pr', 'merge', state.pr, '--squash', '--match-head-commit', state.head);
+    gh('pr', 'merge', state.pr, '--squash', '--match-head-commit', state.head, '--delete-branch');
     const commit = gh('pr', 'view', state.pr, '--json', 'mergeCommit', '--jq', '.mergeCommit.oid');
-    git('push', 'origin', '--delete', state.lane);
     output('commit', commit);
     break;
   }
