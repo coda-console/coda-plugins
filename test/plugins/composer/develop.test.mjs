@@ -140,7 +140,7 @@ test('develop 从最新 base 开泳道，退回续作，逐项快进，验收后
   assert.equal(f.run('device', { DEVICE: JSON.stringify({ choice: 'no' }) }).outputs.route, 'device');
   assert.equal(f.device('no'), 'device');
   assert.equal(f.device('no', '按钮没有响应'), 'review');
-  assert.match(f.run('review').outputs.feedback, /按钮没有响应/);
+  assert.equal(f.run('review').outputs.feedback, '设备验收不通过：\n按钮没有响应');
   f.review('revise', '修复按钮回调'); f.task('two', 'button fixed'); f.run('revise');
   f.review('accept'); assert.equal(f.run('accept').outputs.route, 'preview');
   assert.equal(f.device('yes'), 'pr');
@@ -251,7 +251,29 @@ test('开发流程定义、回路、检查提交与部署选择符合运行契�
   for (const [value, target] of [['preview', 'preview'], ['review', 'report'], ['device', 'device']]) assert.equal(route('after-preview', { 'preview-result': { route: value } }), target);
   assert.equal(nodes['pr-check'].targetRef.id, 'checks');
   assert.doesNotMatch(workflow, /无客户端改动，跳过|没有客户端改动时确认/);
-  for (const [value, target] of [['device', 'device'], ['review', 'report'], ['pr', 'pr']]) assert.equal(route('after-device', { 'device-result': { route: value } }), target);
+  for (const [value, target] of [['device', 'device'], ['review', 'report'], ['pr', 'tell-device']]) assert.equal(route('after-device', { 'device-result': { route: value } }), target);
+  assert.match(nodes.review.documentation[0].text, /\{\{report.feedback\}\}/, '验收失败的备注随审查任务交回');
+  assert.deepEqual(process.flowElements.filter(e => e.action === 'tell-session').map(e => e.id), ['tell-device', 'tell-approval']);
+  for (const id of ['tell-device', 'tell-approval']) assert.equal(params(id).session, undefined, '通知运行所属会话');
+  assert.equal(nodes['told-device-pr'].sourceRef.id, 'tell-device');
+  assert.equal(nodes['told-device-pr'].targetRef.id, 'pr');
+  assert.equal(nodes['approve-route'].targetRef.id, 'tell-approval');
+  assert.equal(nodes['told-approval-route'].sourceRef.id, 'tell-approval');
+  assert.equal(nodes['told-approval-route'].targetRef.id, 'after-approval');
+  const context = { inputs: { title: '修好输入框' }, run: { id: 'run-1' }, accept: { head: 'head-1' }, pr: { head: 'head-1' } };
+  const message = (id, field, extra = {}) => evaluate(params(id)[field].slice(1), { ...context, ...extra }).value;
+  assert.equal(message('tell-device', 'text'), '功能「修好输入框」：用户设备验收通过，接下来开 PR、跑检查。');
+  assert.equal(message('tell-device', 'key'), 'run-1:device:head-1');
+  for (const [choice, deploy, text] of [
+    ['merge', true, '批准合并，已勾选部署。'],
+    ['merge', false, '批准合并，未勾选部署。'],
+    ['stop', false, '选择暂不合并。'],
+  ]) {
+    const approve = { choice, chose: { stop: choice === 'stop' }, options: choice === 'stop' ? {} : { deploy } };
+    assert.equal(message('tell-approval', 'text', { approve }), `功能「修好输入框」：用户${text}`);
+    assert.equal(message('tell-approval', 'key', { approve }), `run-1:approve:head-1:${choice}:${deploy ? 'deploy' : 'no-deploy'}`);
+    assert.equal(route('after-approval', { approve }), choice === 'stop' ? 'stopped' : 'premerge');
+  }
   for (const [failed, target] of [['checks-failed', 'checks'], ['premerge-failed', 'premerge']]) {
     assert.equal(nodes[failed].attachedToRef.id, target);
     assert.equal(nodes[failed].eventDefinitions[0].$type, 'bpmn:ErrorEventDefinition');

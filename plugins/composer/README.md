@@ -80,6 +80,8 @@ Ultra 消失且此前 `sent > 0` 时用 `coda.tell` 告知关闭一次，恢复�
 6. 用户批准卡仅在项目有 `kind=deploy` 时显示「部署」，默认不勾；与现有 PR 批准卡一样，选中后运行这一类的全部流程。v1 不提供预览发布或正式发布。批准后在同一 head 跑 `kind=premerge`，失败同样回审查，修好后重新检查与批准。
 7. 用 `gh pr merge --squash --match-head-commit <head> --delete-branch` 合并并交由 gh 删除泳道分支，兼容 GitHub 合并后自动删除分支。成功后读取合并提交，再在合并提交上按勾选运行一次部署。
 
+用户设备验收通过后，流程用 `tell-session` 告诉发起运行的会话功能名，以及接下来开 PR、跑检查；验收不通过的备注已随审查任务交回，不重复通知。用户答复批准卡后，同样通知功能名和选择：批准合并时说明是否勾选部署，或说明暂不合并。
+
 每步独立工作区，进度与已通过的改动暂存于 `$CODA_ARTIFACTS/develop.json`；长期结果在泳道提交与 PR 中。执行者的分支/head 必须在本机仓库可读；`coda-agent --json` 标准输出是一行 `{session, branch, head, answer}`，`--continue` 保留同一会话并遵守首次的退出码约定。需要支持这两个接口的 Coda 版本。
 
 测试在 `test/plugins/composer/`，用临时 Git 仓库及假的 coda-agent、gh 验证，不发真实 PR 或部署。
