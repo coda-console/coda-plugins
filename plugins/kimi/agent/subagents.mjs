@@ -9,6 +9,29 @@ function toolKind(name) {
   return 'other';
 }
 
+// What one of Kimi's loop events says, as an ACP update: a thought, a reply, a tool call or a call's result; null for what
+// says nothing. `messageId` names a thought or reply, `toolCallId` the call, in the session it is told in.
+export function loopUpdate(event, { messageId, toolCallId }) {
+  const type = event?.type;
+  if (type === 'content.part' && event.part) {
+    const part = event.part;
+    if (part.type === 'think' && typeof part.think === 'string' && part.think.trim())
+      return { sessionUpdate: 'agent_thought_chunk', messageId, content: { type: 'text', text: part.think } };
+    if (part.type === 'text' && typeof part.text === 'string' && part.text.trim())
+      return { sessionUpdate: 'agent_message_chunk', messageId, content: { type: 'text', text: part.text } };
+  } else if (type === 'tool.call' && event.toolCallId) {
+    return { sessionUpdate: 'tool_call', toolCallId, title: event.name ?? '工具', kind: toolKind(event.name), status: 'in_progress', rawInput: event.args ?? {} };
+  } else if (type === 'tool.result' && event.toolCallId) {
+    const isError = Boolean(event.result?.isError || event.result?.error);
+    const output = typeof event.result?.output === 'string'
+      ? event.result.output
+      : (typeof event.result?.error === 'string' ? event.result.error : (event.result !== undefined ? JSON.stringify(event.result) : ''));
+    return { sessionUpdate: 'tool_call_update', toolCallId, status: isError ? 'failed' : 'completed',
+      content: [{ type: 'content', content: { type: 'text', text: output } }], rawOutput: event.result?.output ?? event.result };
+  }
+  return null;
+}
+
 function findTaskForTime(taskList, time) {
   if (!taskList.length) return null;
   if (!Number.isFinite(time)) {
@@ -271,53 +294,14 @@ export class KimiSubagentBridge {
 
   // `subagentSessionId` names the run, for what it said; it is said in the subagent's session, `agentId`.
   processLoopEvent(agentId, subagentSessionId, event, sub, gen) {
-    const type = event?.type;
-    if (type === 'content.part' && event.part) {
-      const part = event.part;
-      if (part.type === 'think' && typeof part.think === 'string' && part.think.trim()) {
-        const id = event.uuid || `${subagentSessionId}:think:${event.step ?? ''}:${event.turnId ?? ''}`;
-        if (!sub.emittedIds.has(id)) {
-          sub.emittedIds.add(id);
-          this.emit({ sessionUpdate: 'agent_thought_chunk', messageId: id, content: { type: 'text', text: part.think } }, agentId, gen?.taskId);
-        }
-      } else if (part.type === 'text' && typeof part.text === 'string' && part.text.trim()) {
-        const id = event.uuid || `${subagentSessionId}:text:${event.step ?? ''}:${event.turnId ?? ''}`;
-        if (!sub.emittedIds.has(id)) {
-          sub.emittedIds.add(id);
-          this.emit({ sessionUpdate: 'agent_message_chunk', messageId: id, content: { type: 'text', text: part.text } }, agentId, gen?.taskId);
-          if (gen) gen.hasAssistantMessage = true;
-        }
-      }
-    } else if (type === 'tool.call' && event.toolCallId) {
-      const callId = event.toolCallId;
-      if (!sub.emittedIds.has(callId)) {
-        sub.emittedIds.add(callId);
-        this.emit({
-          sessionUpdate: 'tool_call',
-          toolCallId: callId,
-          title: event.name ?? '工具',
-          kind: toolKind(event.name),
-          status: 'in_progress',
-          rawInput: event.args ?? {},
-        }, agentId, gen?.taskId);
-      }
-    } else if (type === 'tool.result' && event.toolCallId) {
-      const callId = event.toolCallId;
-      const resKey = `${callId}:result`;
-      if (!sub.emittedIds.has(resKey)) {
-        sub.emittedIds.add(resKey);
-        const isError = Boolean(event.result?.isError || event.result?.error);
-        const output = typeof event.result?.output === 'string'
-          ? event.result.output
-          : (typeof event.result?.error === 'string' ? event.result.error : (event.result !== undefined ? JSON.stringify(event.result) : ''));
-        this.emit({
-          sessionUpdate: 'tool_call_update',
-          toolCallId: callId,
-          status: isError ? 'failed' : 'completed',
-          content: [{ type: 'content', content: { type: 'text', text: output } }],
-          rawOutput: event.result?.output ?? event.result,
-        }, agentId, gen?.taskId);
-      }
-    }
+    const kind = event?.type === 'content.part' ? event.part?.type : undefined;
+    const key = event?.type === 'tool.call' ? event.toolCallId
+      : event?.type === 'tool.result' ? `${event.toolCallId}:result`
+      : event.uuid || `${subagentSessionId}:${kind}:${event.step ?? ''}:${event.turnId ?? ''}`;
+    const update = loopUpdate(event, { messageId: key, toolCallId: event.toolCallId });
+    if (!update || sub.emittedIds.has(key)) return;
+    sub.emittedIds.add(key);
+    this.emit(update, agentId, gen?.taskId);
+    if (gen && update.sessionUpdate === 'agent_message_chunk') gen.hasAssistantMessage = true;
   }
 }

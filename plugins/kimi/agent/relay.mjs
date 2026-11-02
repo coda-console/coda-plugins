@@ -4,6 +4,9 @@ import { kimiDisplayNames } from './display.mjs';
 // known, again whenever they change, at most once every `every`, and before Kimi's answer to a prompt is passed on, so
 // that what that turn took up is not left as if Kimi still had it to handle. A message Kimi sends outside a prompt while
 // nothing is handled may begin a turn of its own: it waits for a look too, so that what Kimi handles there is told first.
+// The turns Kimi's ACP does not tell, its goal's and those of prompts it queued behind them, are told from its files too
+// (turns.mjs): an answer Kimi gave at once to a prompt in which it said nothing waits for that look, and is held if Kimi
+// has not run the prompt yet.
 // Nothing waits on a look longer than `hold`. CODA_DISABLE_RUNTIME_PATCHES=kimi leaves a plain relay, but for Coda's session
 // instructions, which go in front of a new session's first prompt either way (instructions.mjs). A known quota error in
 // a prompt's answer is classified at this boundary (errors.mjs), without retrying or changing other errors.
@@ -11,17 +14,21 @@ import { SessionInstructions } from './instructions.mjs';
 import { classifyKimiError } from './errors.mjs';
 import { SUPPORTED, kimiSession } from './observe.mjs';
 import { KimiWaits } from './waits.mjs';
+import { KimiTurns } from './turns.mjs';
 
 const record = value => value && typeof value === 'object' && !Array.isArray(value);
+// What Kimi says in a turn, as opposed to what it says of the session.
+const SAID = new Set(['agent_message_chunk', 'agent_thought_chunk', 'tool_call', 'tool_call_update', 'plan']);
 
 export class KimiRelay {
   // `say`: a message to Coda; `tell`: one to Kimi.
   constructor({ say, tell, env = process.env, startedAt = Date.now(), every = 2_000, hold = 500, session = kimiSession }) {
     this.say = say; this.tell = tell; this.env = env; this.startedAt = startedAt; this.every = every; this.hold = hold; this.makeSession = session;
     this.plain = (env.CODA_DISABLE_RUNTIME_PATCHES ?? '').split(',').map(s => s.trim()).includes('kimi');
-    // Coda's requests whose answers are read here, by id; the prompts going.
-    this.asked = new Map(); this.prompts = new Set();
-    this.version = null; this.session = null; this.waits = null; this.content = []; this.instructions = new SessionInstructions();
+    // Coda's requests whose answers are read here, by id; the prompts going, each with when it was sent and whether Kimi
+    // said nothing in it yet.
+    this.asked = new Map(); this.prompts = new Set(); this.sent = new Map();
+    this.version = null; this.session = null; this.waits = null; this.turns = null; this.content = []; this.instructions = new SessionInstructions();
     // What Kimi said, passed on in order behind any message that waits for a look.
     this.queue = Promise.resolve();
     this.looking = null; this.again = false; this.lookedAt = -Infinity; this.timer = null; this.watching = null; this.closed = false;
@@ -33,9 +40,15 @@ export class KimiRelay {
     if (!this.plain && 'id' in message && typeof message.method === 'string') {
       if (message.method === 'initialize') this.asked.set(message.id, { initialize: true });
       else if (['session/new', 'session/load'].includes(message.method)) this.asked.set(message.id, { cwd: message.params?.cwd, sessionId: message.params?.sessionId });
-      else if (message.method === 'session/prompt') { this.asked.set(message.id, { prompt: true }); this.prompts.add(message.id); }
+      else if (message.method === 'session/prompt') {
+        this.asked.set(message.id, { prompt: true }); this.prompts.add(message.id); this.sent.set(message.id, { at: Date.now(), quiet: true });
+      }
     }
     this.tell(message);
+    if (message.method === 'session/cancel' && this.turns) for (const answer of this.turns.cancel()) {
+      this.prompts.delete(answer.id);
+      this.queue = this.queue.then(() => this.say(answer));
+    }
   }
   fromAgent(message) {
     if (!record(message)) return;
@@ -51,10 +64,13 @@ export class KimiRelay {
         message = { ...message, result: { ...message.result, agentCapabilities: { ...capabilities, _meta: { ...meta, coda: { waits: {} } } } } };
       }
     }
-    if (asked?.prompt) { this.prompts.delete(message.id); message = classifyKimiError(message); }
+    const sent = asked?.prompt ? this.sent.get(message.id) : undefined;
+    if (asked?.prompt) { this.prompts.delete(message.id); this.sent.delete(message.id); message = classifyKimiError(message); }
+    else if (message.method === 'session/update' && SAID.has(message.params?.update?.sessionUpdate)) for (const going of this.sent.values()) going.quiet = false;
     const waiting = asked?.prompt || (!answer && !this.prompts.size && this.waits && !this.waits.handling && Date.now() >= this.lookedAt + this.every);
     this.queue = this.queue.then(async () => {
       if (waiting) await this.look({ fresh: !!asked?.prompt });
+      if (sent?.quiet && message.result?.stopReason === 'end_turn' && this.turns?.hold(sent.at, message)) { this.prompts.add(message.id); return; }
       this.say(message);
       const sessionId = asked && !('error' in message) ? message.result?.sessionId ?? asked.sessionId : undefined;
       if (typeof sessionId === 'string') this.begin(sessionId, asked.cwd);
@@ -64,6 +80,7 @@ export class KimiRelay {
     this.unfollow();
     this.session = this.makeSession({ sessionId, cwd, env: this.env, version: this.version, startedAt: this.startedAt });
     this.waits = new KimiWaits({ sessionId, startedAt: this.startedAt });
+    this.turns = new KimiTurns({ sessionId, startedAt: this.startedAt });
     this.observe();
   }
   // Waits, at most `hold`, for a look at the files: one begun after this, when `fresh`.
@@ -76,12 +93,17 @@ export class KimiRelay {
   // The look going, or a new one. What it finds is told as soon as it is found.
   observe() {
     if (this.looking || this.closed || !this.session) return this.looking;
-    const session = this.session, waits = this.waits, promptActive = this.prompts.size > 0;
+    const session = this.session, waits = this.waits, turns = this.turns, promptActive = this.prompts.size > 0;
     this.lookedAt = Date.now();
     this.looking = session.observe({ signal: new AbortController().signal, emit: (update, sessionId, taskId) => this.content.push({ update, sessionId, taskId }) })
       .then(facts => {
         if (this.closed || session !== this.session) return;
-        for (const message of facts ? waits.read(facts, this.content.splice(0), { promptActive }) : waits.lost()) this.say(message);
+        const told = facts ? [...waits.read(facts, this.content.splice(0), { promptActive }), ...turns.read(facts.main)] : [...waits.lost(), ...turns.lost()];
+        for (const message of told) {
+          // A held prompt's answer, now due.
+          if ('id' in message) this.prompts.delete(message.id);
+          this.say(message);
+        }
         if (facts) this.follow();
       }, () => {})
       .finally(() => {
