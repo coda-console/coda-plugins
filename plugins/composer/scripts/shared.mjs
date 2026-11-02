@@ -14,4 +14,3 @@ export const command = (bin, args) => {
 };
 export const git = (...args) => command('git', args);
 export const gh = (...args) => command('gh', args);
-export const slug = title => title.normalize('NFKC').replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '').slice(0, 50) || 'feature';

@@ -2,7 +2,7 @@
 import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { gh, git, output, slug } from './shared.mjs';
+import { gh, git, output } from './shared.mjs';
 
 const env = process.env, action = process.argv[2];
 const statePath = join(env.CODA_ARTIFACTS, 'deliver.json');
@@ -51,7 +51,7 @@ switch (action) {
   case 'integrate': {
     state.feedback = `集成失败，请用 workflow_status 读取本运行「集成」步骤的错误和日志：coda://workflow-runs/${env.GITHUB_RUN_ID}`;
     save();
-    const branch = `delivery/${slug(state.title)}-${env.GITHUB_RUN_ID}`;
+    const branch = `delivery/${env.GITHUB_RUN_ID}`;
     git('fetch', 'origin', `+refs/heads/${state.base}:refs/remotes/origin/${state.base}`);
     git('switch', '-C', branch, `origin/${state.base}`);
     for (const member of localMembers()) {

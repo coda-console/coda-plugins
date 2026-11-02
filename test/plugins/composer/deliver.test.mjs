@@ -92,7 +92,7 @@ test('交付按成员顺序记录快照，仅集成本仓库 head，从最新 ba
   // 确认后成员分支又前进，集成仍使用已记录的 head。
   f.git('switch', two.headRefName); f.commit('unconfirmed', 'unconfirmed'); f.git('push', '-q', 'origin', two.headRefName);
   const integrated = f.run('integrate').outputs;
-  assert.equal(integrated.branch, 'delivery/交付-输入框-run-1');
+  assert.equal(integrated.branch, 'delivery/run-1');
   assert.equal(f.git('ls-remote', 'origin', integrated.branch).split('\t')[0], integrated.head);
   f.git('fetch', 'origin', integrated.branch);
   const parents = f.git('rev-list', '--parents', '-n', '1', integrated.head).split(' ');
@@ -169,7 +169,7 @@ test('只有插件成员时使用 coda 默认 base；gh 查询失败直接失败
   assert.match(result.stderr, /gh query failed/);
 });
 
-test('需求流程回路、人工任务、批准通知和一次部署契约', async () => {
+test('需求流程回路、人工任务、批准通知和部署发布顺序契约', async () => {
   const { root, problem } = await readWorkflow(workflow, 'deliver'); assert.ok(!problem, problem);
   const process = root.rootElements.find(e => e.$type === 'bpmn:Process');
   const nodes = Object.fromEntries(process.flowElements.map(e => [e.id, e]));
@@ -203,9 +203,15 @@ test('需求流程回路、人工任务、批准通知和一次部署契约', as
   for (const text of ['15 行', '3～5 条', '结构变化', '验证', '需要你知道', '不放执行者原文、测试数量、文件清单']) assert.ok(report.includes(text));
   assert.equal(nodes.approve.documentation[0].text, '{{report-result.body}}\n\n成员 PR：\n{{confirm-result.members}}\n{{if approval-result.route = "approval" then approval-result.feedback else ""}}');
   assert.deepEqual(params('kinds'), { commit: '=confirm-result.commit' });
-  const option = values(nodes.approve)[0].options[0];
-  assert.equal(option.default, undefined); assert.equal(option.id, 'deploy');
-  for (const deploy of [false, true]) assert.equal(evaluate(option.shown.slice(1), { kinds: { deploy } }).value, deploy);
+  const options = values(nodes.approve)[0].options;
+  assert.deepEqual(options.map(option => [option.id, option.name]), [['deploy', '部署'], ['preview', '发布预览版'], ['release', '发布正式版']]);
+  for (const option of options) {
+    assert.equal(option.default, undefined);
+    for (const deploy of [false, true]) for (const preview of [false, true]) for (const release of [false, true]) {
+      const kinds = { deploy, preview, release };
+      assert.equal(evaluate(option.shown.slice(1), { kinds }).value, kinds[option.id]);
+    }
+  }
   const release = nodes.release.documentation[0].text;
   assert.match(release, /被依赖的仓库在前[\s\S]*合并并发布新版本[\s\S]*更新钉定的包版本[\s\S]*检查通过[\s\S]*最后放行依赖方成员/);
   assert.match(release, /退回修改/);
@@ -213,11 +219,23 @@ test('需求流程回路、人工任务、批准通知和一次部署契约', as
   assert.match(nodes.confirm.documentation[0].text, /交付并部署它的项目/);
   assert.match(nodes.confirm.documentation[0].text, /被依赖的仓库在前/);
   assert.doesNotMatch(release + nodes.confirm.documentation[0].text, /coda 项目|coda-plugins|npm|coda 成员/);
-  assert.equal(route('deploy-choice', { merged: { route: 'merged' }, approve: { options: { deploy: true } } }), 'release');
-  for (const deploy of [false, true]) assert.equal(route('deploy-choice', { merged: { route: 'deploy' }, approve: { options: { deploy } } }), deploy ? 'deploy' : 'verify');
-  assert.deepEqual(process.flowElements.filter(e => e.action === 'run-workflows').map(e => e.id), ['deploy']);
+  assert.equal(route('deploy-choice', { merged: { route: 'merged' }, approve: { options: { deploy: true, preview: true, release: true } } }), 'release');
+  for (const deploy of [false, true]) for (const preview of [false, true]) for (const release of [false, true]) {
+    const options = { deploy, preview, release }, called = [];
+    const context = { merged: { route: 'deploy' }, approve: { options } };
+    let step = 'deploy-choice';
+    while (step !== 'verify') {
+      const node = nodes[step];
+      if (node.action === 'run-workflows') called.push(params(step).kind);
+      step = node.$type === 'bpmn:ExclusiveGateway' ? route(step, context) : process.flowElements.find(e => e.sourceRef === node).targetRef.id;
+    }
+    assert.deepEqual(called, ['deploy', 'preview', 'release'].filter(kind => options[kind]));
+  }
+  assert.deepEqual(params('publish-preview'), { kind: 'preview', commit: '=merged.commit' });
+  assert.deepEqual(params('publish-release'), { kind: 'release', commit: '=merged.commit', inputs: '={ publish: "true" }' });
+  assert.deepEqual(evaluate(params('publish-release').inputs.slice(1), {}).value, { publish: 'true' });
+  assert.deepEqual(process.flowElements.filter(e => e.action === 'run-workflows').map(e => e.id), ['deploy', 'publish-preview', 'publish-release']);
   assert.deepEqual(params('deploy'), { kind: 'deploy', commit: '=merged.commit' });
-  assert.equal(nodes['deploy-verify'].targetRef.id, 'verify');
   assert.deepEqual(process.flowElements.filter(e => e.action === 'tell-session').map(e => e.id), ['tell-approval', 'tell-result']);
   for (const id of ['tell-approval', 'tell-result']) assert.equal(params(id).session, undefined);
   const context = { inputs: { title: '输入框' }, run: { id: 'run-1' }, 'confirm-result': { round: '2' }, merged: { commit: 'merged-head' } };
@@ -226,10 +244,13 @@ test('需求流程回路、人工任务、批准通知和一次部署契约', as
     assert.equal(result.warnings.length, 0, JSON.stringify(result.warnings));
     return result.value;
   };
-  for (const [choice, deploy, text] of [['merge', true, '批准合并，已勾选部署。'], ['merge', false, '批准合并，未勾选部署。'], ['stop', false, '选择暂不合并：补齐说明']]) {
-    const approve = { choice, chose: { stop: choice === 'stop' }, options: { deploy }, note: '补齐说明' };
+  for (const choice of ['merge', 'stop']) for (const deploy of [false, true]) for (const preview of [false, true]) for (const release of [false, true]) {
+    const options = choice === 'stop' ? { deploy: false, preview: false, release: false } : { deploy, preview, release };
+    const approve = { choice, chose: { stop: choice === 'stop' }, options, note: '补齐说明' };
+    const selections = [['deploy', '部署'], ['preview', '发布预览版'], ['release', '发布正式版']];
+    const text = choice === 'stop' ? '选择暂不合并：补齐说明' : '批准合并，' + selections.map(([kind, label]) => `${options[kind] ? '已' : '未'}勾选${label}。`).join('');
     assert.equal(message('tell-approval', 'text', { approve }), `需求「输入框」：用户${text}`);
-    assert.equal(message('tell-approval', 'key', { approve }), `run-1:approve:2:${choice}:${deploy ? 'deploy' : 'no-deploy'}`);
+    assert.equal(message('tell-approval', 'key', { approve }), `run-1:approve:2:${choice}` + selections.map(([kind]) => `:${options[kind] ? kind : 'no-' + kind}`).join(''));
   }
   for (const deploy of [false, true]) for (const yes of [false, true]) {
     const extra = { approve: { options: { deploy } }, verify: { chose: { yes }, note: '实际验证结论' } };

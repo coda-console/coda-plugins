@@ -2,7 +2,7 @@
 import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { command, gh, git, output, slug } from './shared.mjs';
+import { command, gh, git, output } from './shared.mjs';
 
 const env = process.env, action = process.argv[2];
 const statePath = join(env.CODA_ARTIFACTS, 'develop.json');
@@ -16,7 +16,7 @@ if (action === 'lane') {
   const base = env.BASE || gh('repo', 'view', '--json', 'defaultBranchRef', '--jq', '.defaultBranchRef.name');
   git('fetch', 'origin', base);
   const head = git('rev-parse', 'FETCH_HEAD');
-  const lane = `lane/${slug(env.TITLE)}-${env.GITHUB_RUN_ID}`;
+  const lane = `lane/${env.GITHUB_RUN_ID}`;
   git('branch', lane, head);
   git('push', 'origin', `${lane}:refs/heads/${lane}`);
   writeFileSync(statePath, JSON.stringify({ title: env.TITLE, base, lane, head, task: env.TASK, approved: [], phase: 'preview', feedback: '', pr: '' }));

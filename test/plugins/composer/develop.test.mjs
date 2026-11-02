@@ -102,7 +102,7 @@ test('develop 从最新 base 开泳道，退回续作，逐项快进，验收后
   const task = '## 背景\n\n第一项：修好输入框\n\n## 验证\n\n- 检查输入';
   f.run('lane', { TASK: task });
   const lane = f.state().lane;
-  assert.match(lane, /^lane\/修好输入框-run-1$/);
+  assert.equal(lane, 'lane/run-1');
   assert.equal(f.state().head, latest);
   assert.equal(f.git('ls-remote', 'origin', lane).split('\t')[0], latest);
   f.task('one', 'first answer\nEOF_answer\n继续'); f.run('execute', { MODEL: 'cheap', EFFORT: 'low', MODE: 'auto' });
@@ -158,6 +158,7 @@ test('develop 从最新 base 开泳道，退回续作，逐项快进，验收后
   const summary = f.run('pr').outputs.summary;
   const created = f.calls('gh').find(c => c.args[1] === 'create');
   assert.deepEqual(created.args.slice(0, 6), ['pr', 'create', '--base', 'main', '--head', lane]);
+  assert.equal(created.args[created.args.indexOf('--title') + 1], '修好输入框');
   const approved = f.state().approved;
   assert.equal(created.body, [
     `## 第 1 项\n\n<details><summary>任务</summary>\n\n${task}\n\n</details>\n\nremoved wrapper\n\n提交：${approved[0].head}`,
@@ -284,7 +285,7 @@ test('GitHub 检查等待全部完成，无检查通过，检查失败和查询�
   }
 });
 
-test('开发流程定义、回路、检查提交与部署选择符合运行契约', async () => {
+test('开发流程定义、回路、检查提交与部署发布选择符合运行契约', async () => {
   const { root, problem } = await readWorkflow(workflow, 'develop'); assert.ok(!problem, problem);
   const process = root.rootElements.find(e => e.$type === 'bpmn:Process');
   const nodes = Object.fromEntries(process.flowElements.map(e => [e.id, e]));
@@ -336,14 +337,13 @@ test('开发流程定义、回路、检查提交与部署选择符合运行契�
   const message = (id, field, extra = {}) => evaluate(params(id)[field].slice(1), { ...context, ...extra }).value;
   assert.equal(message('tell-device', 'text'), '功能「修好输入框」：用户设备验收通过，接下来开 PR、跑检查。');
   assert.equal(message('tell-device', 'key'), 'run-1:device:head-1');
-  for (const [choice, deploy, text] of [
-    ['merge', true, '批准合并，已勾选部署。'],
-    ['merge', false, '批准合并，未勾选部署。'],
-    ['stop', false, '选择暂不合并。'],
-  ]) {
-    const approve = { choice, chose: { stop: choice === 'stop' }, options: choice === 'stop' ? {} : { deploy } };
+  for (const choice of ['merge', 'stop']) for (const deploy of [false, true]) for (const preview of [false, true]) for (const release of [false, true]) {
+    const options = choice === 'stop' ? {} : { deploy, preview, release };
+    const approve = { choice, chose: { stop: choice === 'stop' }, options, note: '补齐说明' };
+    const selections = [['deploy', '部署'], ['preview', '发布预览版'], ['release', '发布正式版']];
+    const text = choice === 'stop' ? '选择暂不合并。' : '批准合并，' + selections.map(([kind, label]) => `${options[kind] ? '已' : '未'}勾选${label}。`).join('');
     assert.equal(message('tell-approval', 'text', { approve }), `功能「修好输入框」：用户${text}`);
-    assert.equal(message('tell-approval', 'key', { approve }), `run-1:approve:head-1:${choice}:${deploy ? 'deploy' : 'no-deploy'}`);
+    assert.equal(message('tell-approval', 'key', { approve }), `run-1:approve:head-1:${choice}` + selections.map(([kind]) => `:${options[kind] ? kind : 'no-' + kind}`).join(''));
     assert.equal(route('after-approval', { approve }), choice === 'stop' ? 'stopped' : 'premerge');
   }
   for (const [failed, target] of [['checks-failed', 'checks'], ['github-checks-failed', 'github-checks'], ['premerge-failed', 'premerge']]) {
@@ -372,13 +372,31 @@ test('开发流程定义、回路、检查提交与部署选择符合运行契�
   assert.deepEqual(params('deploy'), { kind: 'deploy', commit: '=merge.commit' });
   assert.equal(nodes['approval-premerge'].targetRef.id, 'premerge');
   assert.equal(route('after-approval', { approve: { chose: { stop: true } } }), 'stopped');
-  assert.equal(route('deploy-choice', { inputs: { delivery: '' }, approve: { options: { deploy: true } } }), 'deploy');
-  assert.equal(route('deploy-choice', { inputs: { delivery: '' }, approve: { options: { deploy: false } } }), 'done');
   assert.equal(route('deploy-choice', { inputs: { delivery: 'requirement-1' } }), 'done');
-  assert.equal(route('deploy-choice', { inputs: { delivery: 'requirement-1' }, approve: { options: { deploy: true } } }), 'done');
-  const option = values(nodes.approve)[0].options[0];
-  assert.equal(option.default, undefined);
-  for (const deploy of [false, true]) assert.equal(evaluate(option.shown.slice(1), { kinds: { deploy } }).value, deploy);
+  for (const delivery of ['', 'requirement-1']) for (const deploy of [false, true]) for (const preview of [false, true]) for (const release of [false, true]) {
+    const options = { deploy, preview, release }, called = [];
+    const context = { inputs: { delivery }, approve: { options } };
+    let step = 'deploy-choice';
+    while (step !== 'done') {
+      const node = nodes[step];
+      if (node.action === 'run-workflows') called.push(params(step).kind);
+      step = node.$type === 'bpmn:ExclusiveGateway' ? route(step, context) : process.flowElements.find(e => e.sourceRef === node).targetRef.id;
+    }
+    assert.deepEqual(called, delivery ? [] : ['deploy', 'preview', 'release'].filter(kind => options[kind]));
+  }
+  assert.deepEqual(params('publish-preview'), { kind: 'preview', commit: '=merge.commit' });
+  assert.deepEqual(params('publish-release'), { kind: 'release', commit: '=merge.commit', inputs: '={ publish: "true" }' });
+  assert.deepEqual(evaluate(params('publish-release').inputs.slice(1), {}).value, { publish: 'true' });
+  assert.deepEqual(process.flowElements.filter(e => e.action === 'run-workflows').map(e => e.id), ['checks', 'premerge', 'deploy', 'publish-preview', 'publish-release']);
+  const options = values(nodes.approve)[0].options;
+  assert.deepEqual(options.map(option => [option.id, option.name]), [['deploy', '部署'], ['preview', '发布预览版'], ['release', '发布正式版']]);
+  for (const option of options) {
+    assert.equal(option.default, undefined);
+    for (const deploy of [false, true]) for (const preview of [false, true]) for (const release of [false, true]) {
+      const kinds = { deploy, preview, release };
+      assert.equal(evaluate(option.shown.slice(1), { kinds }).value, kinds[option.id]);
+    }
+  }
   const agent = params('execute').AGENT;
   assert.equal(evaluate(agent.slice(1), { inputs: { agent: '' }, github: { event: { coda: { session: { agent: 'codex' } } } } }).value, 'codex');
   assert.equal(evaluate(agent.slice(1), { inputs: { agent: 'kimi' } }).value, 'kimi');
