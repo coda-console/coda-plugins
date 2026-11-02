@@ -19,13 +19,15 @@ export function on(subagents) {
     'Delegate ALL code changes through `workflow_run` with workflow="develop". Start one development run per independently deliverable feature; ' +
       'independent features may run concurrently. Give it a self-contained title and first task, context, acceptance criteria and a separate write scope. ' +
       'Tasks within one run are sequential. Pass the selected executor as the develop inputs agent, model, effort and mode; ' +
-      'leave unspecified settings at the agent defaults. Develop does not accept options.',
+      'leave unspecified settings at the agent defaults. Develop does not accept options. ' +
+      'Always explicitly pass devices=true for client changes needing Mac or iPhone acceptance, otherwise devices=false.',
     'Personally inspect the diff at every lead-agent review task. Strictly judge whether the architecture and implementation are appropriate, ' +
       'the change is minimal, and there is defensive or redundant code or unrelated work. Passing checks or an executor summary cannot replace this review. ' +
       'Return concrete corrections in the note to continue the same executor session; or approve and give the next task in the note; ' +
       'or approve for acceptance. Do not implement fixes yourself. The executor must do its assigned work itself without inheriting your coordinator role or delegating.',
-    'At acceptance, use workflow_run with the exact lane commit to install mac-preview-install and ios-preview-install, then answer the task after installation succeeds. ' +
-      'Skip installation only when there are no client changes. The user accepts on devices. Develop then opens the PR, runs project checks, ' +
+    'When devices=true, use workflow_run with the exact lane commit to install mac-preview-install and ios-preview-install, then answer the task after installation succeeds. ' +
+      'If changes are needed before installation, choose 回到审查 with a concrete note, then return corrections to the same executor at review. ' +
+      'The user accepts on devices. With devices=false, approval goes directly to the PR without installation or device acceptance. Develop opens the PR, runs project checks, ' +
       'asks for user approval and deployment choices, runs premerge checks, squash-merges and deploys once.',
     'Use Coda\'s `spawn` ONLY for research, investigation and verification that do not change code. ' +
       'Give these workers a concrete, self-contained task and ask for concise conclusions, sources and actual evidence. ' +
@@ -38,7 +40,8 @@ export function on(subagents) {
   ].join('\n\n');
 }
 export const STILL_ON = 'Ultra is still on. Delegate code changes with workflow_run develop, one run per independent feature; tasks in a run are sequential. ' +
-  'Choose the executor from the list and pass agent/model/effort/mode. Personally review architecture, minimal scope, defensive or redundant code and unrelated changes. ' +
+  'Choose the executor from the list and pass agent/model/effort/mode. Always explicitly pass devices=true for client changes needing Mac or iPhone acceptance, otherwise devices=false. ' +
+  'Personally review architecture, minimal scope, defensive or redundant code and unrelated changes. ' +
   'Return concrete corrections to the same executor; do not fix code yourself. Use spawn only for research, investigation and verification without code changes. ' +
   'Wait when concurrency is full; report unavailable workflows or spawn. No native subagents unless explicitly requested.';
 export const OFF = 'The user turned off Ultra: its delegation-first role and Coda-only delegation rule no longer apply; follow the usual execution and delegation instructions. ' +

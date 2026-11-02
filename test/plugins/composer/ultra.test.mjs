@@ -18,6 +18,10 @@ test('Ultra 把代码修改交给 develop，主 Agent 亲审，spawn 仅做只�
     'minimal', 'defensive or redundant', 'unrelated', 'concrete corrections', 'same executor session',
     'spawn` ONLY', 'do not change code', 'mac-preview-install', 'ios-preview-install', 'exact lane commit']) assert.ok(full.includes(text), text);
   for (const text of ['workflow_run develop', 'Personally review', 'concrete corrections', 'spawn only', 'without code changes']) assert.ok(STILL_ON.includes(text), text);
+  for (const text of [full, STILL_ON]) assert.match(text, /Always explicitly pass devices=true for client changes needing Mac or iPhone acceptance, otherwise devices=false/);
+  assert.match(full, /With devices=false, approval goes directly to the PR without installation or device acceptance/);
+  assert.match(full, /choose 回到审查 with a concrete note/);
+  assert.doesNotMatch(full + STILL_ON, /Skip installation only when there are no client changes/);
   const paragraphs = full.split('\n\n');
   assert.match(paragraphs[1], /Small targeted reads for framing and your own architecture and implementation review belong here/);
   assert.doesNotMatch(paragraphs.find(p => p.startsWith("Use Coda's `spawn`")), /Small targeted reads/);

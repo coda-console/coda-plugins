@@ -12,13 +12,13 @@ const script = fileURLToPath(new URL('../../../plugins/composer/scripts/develop.
 const workflow = readFileSync(new URL('../../../plugins/composer/.coda/workflows/develop.bpmn', import.meta.url), 'utf8');
 const manifest = JSON.parse(readFileSync(new URL('../../../plugins/composer/package.json', import.meta.url), 'utf8'));
 
-function fixture(t) {
+function fixture(t, devices = true) {
   const root = mkdtempSync(join(tmpdir(), 'composer-develop-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const work = join(root, 'work'), origin = join(root, 'origin.git'), bin = join(root, 'bin'), artifacts = join(root, 'artifacts');
   for (const path of [work, bin, artifacts]) mkdirSync(path);
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, CODA_ARTIFACTS: artifacts, RUNNER_TEMP: root,
-    GITHUB_RUN_ID: 'run-1', GITHUB_OUTPUT: join(root, 'outputs'), TITLE: '修好输入框', TASK: '第一项：修好输入框', BASE: '',
+    GITHUB_RUN_ID: 'run-1', GITHUB_OUTPUT: join(root, 'outputs'), TITLE: '修好输入框', TASK: '第一项：修好输入框', BASE: '', DEVICES: String(devices),
     GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid', GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.invalid',
     GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'commit.gpgsign', GIT_CONFIG_VALUE_0: 'false', GIT_CONFIG_KEY_1: 'core.hooksPath', GIT_CONFIG_VALUE_1: '/dev/null',
     FIXTURE: root, AGENT: 'codex', MODEL: '', EFFORT: '', MODE: '' };
@@ -121,6 +121,22 @@ test('develop 从最新 base 开泳道，退回续作，逐项快进，验收后
   assert.ok(!f.calls('agent')[2].args.includes('--model'), '空设置使用 Agent 默认值');
   assert.match(f.calls('agent')[2].prompt, /第二项：补齐状态/);
   f.review('accept'); assert.equal(f.run('accept').outputs.route, 'preview');
+  const session = f.state().executor.session;
+  for (const note of [undefined, '', '  ']) {
+    const result = f.run('preview', { PREVIEW: JSON.stringify({ choice: 'review', note }) }).outputs;
+    assert.equal(result.route, 'preview');
+    assert.match(result.feedback, /回到审查必须在备注中写具体意见/);
+  }
+  const feedback = '先合入 origin/main 再安装';
+  assert.equal(f.run('preview', { PREVIEW: JSON.stringify({ choice: 'review', note: feedback }) }).outputs.route, 'review');
+  assert.equal(f.run('review').outputs.feedback, `安装预览版需处理：\n${feedback}`);
+  assert.equal(f.review('revise', feedback), 'revise');
+  f.task('two', 'base integrated'); f.run('revise');
+  assert.equal(f.state().executor.session, session);
+  assert.ok(f.calls('agent').at(-1).prompt.includes(feedback));
+  f.review('accept'); assert.equal(f.run('accept').outputs.route, 'preview');
+  assert.deepEqual(f.run('preview', { PREVIEW: JSON.stringify({ choice: 'installed' }) }).outputs, { feedback: '', route: 'device' });
+  assert.equal(f.state().feedback, '');
   assert.equal(f.run('device', { DEVICE: JSON.stringify({ choice: 'no' }) }).outputs.route, 'device');
   assert.equal(f.device('no'), 'device');
   assert.equal(f.device('no', '按钮没有响应'), 'review');
@@ -135,7 +151,8 @@ test('develop 从最新 base 开泳道，退回续作，逐项快进，验收后
   assert.equal(created.body, [
     `## 第 1 项\n\n<details><summary>任务</summary>\n\n${task}\n\n</details>\n\nremoved wrapper\n\n提交：${approved[0].head}`,
     `## 第 2 项\n\n<details><summary>任务</summary>\n\n第二项：补齐状态\n\n</details>\n\nsecond answer\n\n提交：${approved[1].head}`,
-    `## 第 3 项\n\n<details><summary>任务</summary>\n\n第二项：补齐状态\n\n</details>\n\nbutton fixed\n\n提交：${approved[2].head}`,
+    `## 第 3 项\n\n<details><summary>任务</summary>\n\n第二项：补齐状态\n\n</details>\n\nbase integrated\n\n提交：${approved[2].head}`,
+    `## 第 4 项\n\n<details><summary>任务</summary>\n\n第二项：补齐状态\n\n</details>\n\nbutton fixed\n\n提交：${approved[3].head}`,
   ].join('\n\n'));
   assert.equal(summary, created.body, '批准卡片使用同一份正文');
   assert.ok(!created.body.includes('first answer'), '未通过的改动不放进 PR 汇总');
@@ -186,12 +203,18 @@ test('泳道不接受分叉，Agent 非零退出不进入审查', t => {
   assert.equal(f.state().approved.length, 0);
 });
 
-test('显式 base 与并行功能运行各自建泳道', t => {
-  const f = fixture(t); f.git('branch', 'release'); f.git('push', '-q', 'origin', 'release');
+test('显式 base 与并行功能运行各自建泳道，无设备验收仍可派下一项并直接开 PR', t => {
+  const f = fixture(t, false); f.git('branch', 'release'); f.git('push', '-q', 'origin', 'release');
   f.run('lane', { BASE: 'release' }); const one = f.state();
   f.run('lane', { BASE: 'release', GITHUB_RUN_ID: 'run-2' }); const two = f.state();
   assert.equal(one.base, 'release'); assert.equal(two.base, 'release'); assert.notEqual(one.lane, two.lane);
   assert.equal(f.calls('gh').length, 0, '有 base 不查默认分支');
+  f.task('one', 'first change'); f.run('execute');
+  f.review('next', '第二项'); assert.equal(f.run('accept').outputs.route, 'execute');
+  f.task('two', 'second change'); f.run('execute');
+  f.review('accept'); assert.equal(f.run('accept').outputs.route, 'pr');
+  assert.equal(f.run('pr').outputs.url, 'https://github.com/example/fixture/pull/1');
+  assert.equal(f.state().phase, 'check');
 });
 
 test('开发流程定义、回路、检查提交与部署选择符合运行契约', async () => {
@@ -206,7 +229,12 @@ test('开发流程定义、回路、检查提交与部署选择符合运行契�
     return (flows.find(e => e.conditionExpression && evaluate(e.conditionExpression.body.trim().slice(1), context).value) ?? node.default).targetRef.id;
   };
   assert.equal(process.name, '开发'); assert.equal(process.concurrency, undefined);
-  assert.deepEqual(values(process).filter(v => v.required).map(v => v.name), ['title', 'task']);
+  assert.deepEqual(values(process).filter(v => v.required).map(v => v.name), ['title', 'task', 'devices']);
+  const devices = values(process).find(v => v.name === 'devices');
+  assert.equal(devices.type, 'boolean'); assert.equal(devices.default, undefined);
+  assert.equal(devices.label, '设备验收');
+  assert.equal(devices.description, '改了客户端、要在 Mac 或 iPhone 上验收时打开');
+  assert.equal(params('accept').DEVICES, '=inputs.devices');
   assert.equal(nodes.start.eventDefinitions, undefined, '不订阅旧 PR 生命周期');
   assert.ok(manifest.files.includes('.coda/workflows')); assert.ok(manifest.files.includes('scripts'));
   assert.doesNotMatch(workflow, /review\/scripts|vars\.review/);
@@ -215,6 +243,14 @@ test('开发流程定义、回路、检查提交与部署选择符合运行契�
   assert.equal(nodes.device.assignee, 'user'); assert.equal(nodes.approve.assignee, 'user');
   for (const [value, target] of [['review', 'report'], ['revise', 'revise'], ['accept', 'accept']]) assert.equal(route('how', { decide: { route: value } }), target);
   for (const value of ['execute', 'pr', 'preview']) assert.equal(route('after-accept', { accept: { route: value } }), value);
+  assert.deepEqual(values(nodes.preview).map(v => [v.id, v.name]), [['installed', '已装好'], ['review', '回到审查']]);
+  assert.match(nodes.preview.documentation[0].text, /preview-result.feedback/);
+  assert.equal(nodes['preview-result-flow'].targetRef.id, 'preview-result');
+  assert.equal(params('preview-result').PREVIEW, '=preview');
+  assert.match(nodes['preview-result'].script, /develop\.mjs" preview/);
+  for (const [value, target] of [['preview', 'preview'], ['review', 'report'], ['device', 'device']]) assert.equal(route('after-preview', { 'preview-result': { route: value } }), target);
+  assert.equal(nodes['pr-check'].targetRef.id, 'checks');
+  assert.doesNotMatch(workflow, /无客户端改动，跳过|没有客户端改动时确认/);
   for (const [value, target] of [['device', 'device'], ['review', 'report'], ['pr', 'pr']]) assert.equal(route('after-device', { 'device-result': { route: value } }), target);
   for (const [failed, target] of [['checks-failed', 'checks'], ['premerge-failed', 'premerge']]) {
     assert.equal(nodes[failed].attachedToRef.id, target);

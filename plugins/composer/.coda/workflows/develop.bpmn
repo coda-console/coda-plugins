@@ -5,6 +5,7 @@
     <extensionElements>
       <coda:input name="title" label="功能名" required="true" />
       <coda:input name="task" label="第一项任务" required="true" />
+      <coda:input name="devices" label="设备验收" type="boolean" required="true" description="改了客户端、要在 Mac 或 iPhone 上验收时打开" />
       <coda:input name="agent" label="执行者" default="" description="留空用发起会话的 Agent" />
       <coda:input name="model" label="模型" default="" description="留空用 Agent 默认值" />
       <coda:input name="effort" label="推理强度" default="" description="留空用 Agent 默认值" />
@@ -57,7 +58,7 @@ head：{{report.head}}
 审查要点：架构是否得当、改动是否最小、有没有防御性或冗余代码、有没有无关改动，实际验证是否足够。
 选择「退回修改」时备注必填，给具体意见；同一个执行会话继续修改。
 选择「通过，再派一项」时备注必填，写自足的下一项任务；先合进泳道，再开新的执行会话。
-选择「通过，可以验收」进入设备验收；若是在处理检查失败，先重跑检查。
+选择「通过，可以验收」时，开启设备验收则进入安装与验收，否则直接开 PR 并跑检查；若是在处理检查失败，先重跑检查。
 执行者已通过的 head 已在泳道上时 diff 为空；请结合反馈和本运行先前的通过记录审查。</documentation>
       <extensionElements>
         <coda:choice id="revise" name="退回修改" />
@@ -80,7 +81,7 @@ head：{{report.head}}
     </scriptTask>
     <sequenceFlow id="revise-report" sourceRef="revise" targetRef="report" />
     <scriptTask id="accept" name="快进泳道并推送" scriptFormat="bash" coda:timeout="5">
-      <extensionElements><coda:output name="head" /><coda:output name="lane" /><coda:output name="route" /></extensionElements>
+      <extensionElements><coda:env name="DEVICES" value="=inputs.devices" /><coda:output name="head" /><coda:output name="lane" /><coda:output name="route" /></extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" accept</script>
     </scriptTask>
     <sequenceFlow id="accept-after" sourceRef="accept" targetRef="after-accept" />
@@ -88,22 +89,32 @@ head：{{report.head}}
     <sequenceFlow id="accept-next" sourceRef="after-accept" targetRef="execute"><conditionExpression xsi:type="tFormalExpression">=accept.route = "execute"</conditionExpression></sequenceFlow>
     <sequenceFlow id="accept-check" sourceRef="after-accept" targetRef="pr"><conditionExpression xsi:type="tFormalExpression">=accept.route = "pr"</conditionExpression></sequenceFlow>
     <sequenceFlow id="accept-preview" sourceRef="after-accept" targetRef="preview" />
-    <userTask id="preview" name="安装预览版" coda:noteLabel="安装结果或跳过原因">
+    <userTask id="preview" name="安装预览版" coda:noteLabel="安装结果或回审查的原因">
       <documentation>主 Agent：泳道 {{accept.lane}} 的最新提交是 {{accept.head}}。
+{{if preview-result.feedback = null then "" else preview-result.feedback}}
 请用 workflow_run 分别发起 mac-preview-install 和 ios-preview-install，两次都传 commit="{{accept.head}}"。等两项成功安装后答复；有失败先处理，不能把发起当作装好。
-没有客户端改动可以选「无客户端改动，跳过」，在备注中说明。预览只装客户端，不从泳道部署后端。</documentation>
+需要先修改时选「回到审查」，备注必填，说明待处理问题；主 Agent 再用「退回修改」让最近的执行会话继续。预览只装客户端，不从泳道部署后端。</documentation>
       <extensionElements>
         <coda:choice id="installed" name="已装好" primary="true" />
-        <coda:choice id="skip" name="无客户端改动，跳过" />
+        <coda:choice id="review" name="回到审查" />
       </extensionElements>
     </userTask>
-    <sequenceFlow id="preview-device" sourceRef="preview" targetRef="device" />
+    <sequenceFlow id="preview-result-flow" sourceRef="preview" targetRef="preview-result" />
+    <scriptTask id="preview-result" name="读取安装意见" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements><coda:env name="PREVIEW" value="=preview" /><coda:output name="route" /><coda:output name="feedback" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" preview</script>
+    </scriptTask>
+    <sequenceFlow id="preview-route" sourceRef="preview-result" targetRef="after-preview" />
+    <exclusiveGateway id="after-preview" name="安装结论" default="preview-device" />
+    <sequenceFlow id="preview-note" sourceRef="after-preview" targetRef="preview"><conditionExpression xsi:type="tFormalExpression">=preview-result.route = "preview"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="preview-review" sourceRef="after-preview" targetRef="report"><conditionExpression xsi:type="tFormalExpression">=preview-result.route = "review"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="preview-device" sourceRef="after-preview" targetRef="device" />
     <userTask id="device" name="设备验收" coda:assignee="user" coda:handback="false" coda:noteLabel="验收意见">
       <documentation>功能：{{inputs.title}}
 泳道：{{accept.lane}}，提交：{{accept.head}}
 主 Agent 的安装结果：{{preview.note}}
 {{if device-result.feedback = null then "" else device-result.feedback}}
-请在设备上验收；没有客户端改动时确认本次功能结果。选「不行」必须在备注中写具体意见，交回主 Agent 审查。</documentation>
+请在设备上验收。选「不行」必须在备注中写具体意见，交回主 Agent 审查。</documentation>
       <extensionElements><coda:choice id="yes" name="通过" primary="true" /><coda:choice id="no" name="不行" /></extensionElements>
     </userTask>
     <sequenceFlow id="device-result-flow" sourceRef="device" targetRef="device-result" />
@@ -139,7 +150,7 @@ head：{{report.head}}
     <userTask id="approve" name="批准合并" coda:assignee="user" coda:handback="false">
       <documentation>PR：{{pr.url}}
 提交：{{pr.head}}
-设备验收和项目检查已通过。批准后先在此提交上跑合并前检查，再 squash 合入目标分支；勾选部署则在确认合并后部署一次。
+{{if inputs.devices then "设备验收和项目检查已通过。" else "项目检查已通过。"}}批准后先在此提交上跑合并前检查，再 squash 合入目标分支；勾选部署则在确认合并后部署一次。
 部署选项与现有 PR 批准卡相同：仅项目有 kind=deploy 的流程时显示，勾选后调用该类全部流程；默认不勾选。
 
 各次审查通过的改动：

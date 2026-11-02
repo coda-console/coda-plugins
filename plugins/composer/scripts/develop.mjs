@@ -83,7 +83,16 @@ switch (action) {
     save();
     output('head', state.head);
     output('lane', state.lane);
-    output('route', next ? 'execute' : state.phase === 'check' ? 'pr' : 'preview');
+    output('route', next ? 'execute' : env.DEVICES === 'true' && state.phase !== 'check' ? 'preview' : 'pr');
+    break;
+  }
+  case 'preview': {
+    const { choice, note = '' } = JSON.parse(env.PREVIEW);
+    const missing = choice === 'review' && !note.trim();
+    state.feedback = missing ? '回到审查必须在备注中写具体意见。' : choice === 'review' ? `安装预览版需处理：\n${note}` : '';
+    save();
+    output('feedback', state.feedback);
+    output('route', missing ? 'preview' : choice === 'review' ? 'review' : 'device');
     break;
   }
   case 'device': {

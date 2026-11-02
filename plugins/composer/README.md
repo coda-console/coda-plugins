@@ -43,6 +43,7 @@ Ultra 的模板设置由 `ultra.templates` 改为 **`composer.templates`**，模
 
 在会话或新任务输入框打 `/ultra`，点模式条选择执行者名单；点 × 退出。单独开启时消息照常发给当前会话，与其他模式一起开启时按各模式的去向发送。
 主 Agent 定义任务、处理困难决策并亲自审查架构和实现方式。所有代码修改通过 `workflow_run` 发起 `develop`，每个能独立交付的功能一个运行，可以同时进行；同一运行内按顺序派任务。
+每次发起都明确传 `devices`：改了客户端、要在 Mac 或 iPhone 上验收时传 `true`，否则传 `false`。
 `spawn` 只用于不改代码的调研、排查和核实。主 Agent 可以为定任务和审查读代码，不自己实现或替执行者修复。
 
 `composer.templates` 是执行者模板，一行「模板名、Agent、什么时候派给它」。同一模板名的行是一组，进入时填第一组；默认没有模板。
@@ -66,6 +67,7 @@ Ultra 消失且此前 `sent > 0` 时用 `coda.tell` 告知关闭一次，恢复�
 | 输入 | 用途 |
 | --- | --- |
 | `title`、`task` | 必填的功能名和第一项自足任务，包含背景、范围与验收要求 |
+| `devices` | 必填布尔值「设备验收」，无默认值；改了客户端、要在 Mac 或 iPhone 上验收时传 `true`，否则传 `false` |
 | `agent` | 留空使用发起会话的 Agent |
 | `model`、`effort`、`mode` | 可选，空值不传给 coda-agent，使用执行者默认值 |
 | `base` | 留空从 GitHub 读取仓库默认分支 |
@@ -73,8 +75,8 @@ Ultra 消失且此前 `sent > 0` 时用 `coda.tell` 告知关闭一次，恢复�
 1. 从远端 base 最新提交创建 `lane/<功能名>-<运行 ID>` 并推送，不同功能运行各有自己的泳道。
 2. 执行步骤用 `coda-agent --commit <泳道 head> --json` 开执行会话。固定说明要求遵守 AGENTS.md，只做本项、在当前分支提交、不推送、不写防御性或冗余代码、不顺手重构，并报告实际验证。
 3. 主 Agent 人工任务给出执行者回答、会话、分支、head 和 `git diff <泳道>...<head>`。退回意见或下一项任务写备注，必填；缺少时返回审查卡。「退回修改」用 `--continue <会话>`；通过后 `git merge --ff-only` 合入泳道并推送，不能快进就失败。「再派一项」从最新泳道提交开新会话。
-4. 主 Agent 用 `workflow_run` 带泳道的精确 `commit` 安装 `mac-preview-install`、`ios-preview-install`，安装成功后答复；没有客户端改动可跳过安装。随后用户答复「设备验收」，「不行」须附意见并回主 Agent 审查，修好后重新安装与验收。
-5. 设备验收通过后开泳道到 base 的 PR，正文按「第 N 项」汇总各次审查通过的任务：任务原文放在「任务」折叠区，随后列出执行者回答和提交；批准卡片使用同一份正文。`run-workflows kind=check` 在泳道最新提交上执行；失败交回主 Agent，材料给出失败阶段、提交和运行链接，由主 Agent 用 `workflow_status` 读取失败详情，再退回最近的执行会话。修好后更新同一个 PR 并重跑检查。
+4. `devices=false` 时，「通过，可以验收」直接进入开 PR 和检查，不产生安装与设备验收任务。`devices=true` 时，主 Agent 用 `workflow_run` 带泳道的精确 `commit` 安装 `mac-preview-install`、`ios-preview-install`，安装成功后答复「已装好」；需要先修改（例如合入最新 `origin/<base>`）时选「回到审查」，必须在备注中写具体意见，缺少时返回安装卡。意见作为待处理反馈交回主 Agent，再用「退回修改」继续最近的执行会话。随后用户答复「设备验收」，「不行」须附意见并回主 Agent 审查，修好后重新安装与验收。
+5. 设备验收通过或未开启设备验收时，开泳道到 base 的 PR，正文按「第 N 项」汇总各次审查通过的任务：任务原文放在「任务」折叠区，随后列出执行者回答和提交；批准卡片使用同一份正文。`run-workflows kind=check` 在泳道最新提交上执行；失败交回主 Agent，材料给出失败阶段、提交和运行链接，由主 Agent 用 `workflow_status` 读取失败详情，再退回最近的执行会话。修好后更新同一个 PR 并重跑检查。
 6. 用户批准卡仅在项目有 `kind=deploy` 时显示「部署」，默认不勾；与现有 PR 批准卡一样，选中后运行这一类的全部流程。v1 不提供预览发布或正式发布。批准后在同一 head 跑 `kind=premerge`，失败同样回审查，修好后重新检查与批准。
 7. 用 `gh pr merge --squash --match-head-commit <head> --delete-branch` 合并并交由 gh 删除泳道分支，兼容 GitHub 合并后自动删除分支。成功后读取合并提交，再在合并提交上按勾选运行一次部署。
 
