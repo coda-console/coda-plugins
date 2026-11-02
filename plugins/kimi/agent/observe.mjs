@@ -2,7 +2,7 @@ import { constants, watch } from 'node:fs';
 import { open, readdir, realpath } from 'node:fs/promises';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { homedir } from 'node:os';
-import { KimiSubagentBridge } from './subagents.mjs';
+import { KimiSubagentBridge, loopUpdate } from './subagents.mjs';
 
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
 const identifier = value => typeof value === 'string' && /^[\w-]+$/.test(value);
@@ -45,6 +45,9 @@ export function kimiSession({ sessionId, cwd, env = {}, version, startedAt = 0 }
   const home = env.KIMI_CODE_HOME || join(env.HOME || homedir(), '.kimi-code');
   let directory;
   let subagents;
+  // Lines of the main wire whose goal and turns were already given (`main`). The first look gives what it finds as of
+  // its end: the wire before it is another process's, or this one's from before it looked.
+  let given = null;
   return {
   // Calls `changed` whenever the session's files may have changed, and once its watches are in place; `lost` if one
   // breaks. Its directory is watched whole; its main agent's wire is a file appended to, whose watch (that of a file) is
@@ -70,9 +73,12 @@ export function kimiSession({ sessionId, cwd, env = {}, version, startedAt = 0 }
   // when its main agent last ended a turn (`turnEndedAt`, 0 for never), every cron the wire still tells of (`crons`, each
   // `waiting`, `handling`, `done` or `cancelled`, with the created time and fire cursor its next fire is counted from) and
   // the schedule config that count uses (`schedule`), and what its subagents said since the last look, to `emit` as their
-  // own sessions' updates. A cron's prompt does not leave here, only a short title cut from its first line. Null when the
-  // files are not this session's, or not laid out as understood; a read that fails (a file being written) throws. A cron
-  // event that is not the shape understood is skipped, so one of them cannot hide the tasks.
+  // own sessions' updates. `main` is what the main wire added since the last look, in its order, for turns.mjs: the goal
+  // as it changes, each main turn as it begins and ends, and what is said in a goal's or Coda's prompt's turn (as ACP
+  // updates); it opens with the goal and the turns still going as of the last look. A cron's prompt and a goal's objective
+  // do not leave here, only a short title cut from the first line. Null when the files are not this session's, or not laid
+  // out as understood; a read that fails (a file being written) throws. A cron or goal event that is not the shape
+  // understood is skipped, so one of them cannot hide the tasks.
   async observe({ signal, emit = () => {} }) {
     if (version !== SUPPORTED) return unread('unsupported_version');
     if (!identifier(sessionId) || !isAbsolute(home ?? '') || !isAbsolute(cwd ?? '')) return unread('unbound_session');
@@ -133,28 +139,78 @@ export function kimiSession({ sessionId, cwd, env = {}, version, startedAt = 0 }
     // is written after the delete. `cron.cursor` is the ideal minute that fire advanced to.
     const crons = new Map();
     const span = { turn: null };
-    let turnId = null, turnEndedAt = 0;
-    for (const line of lines) {
+    // Main turns begun and not yet ended. Kimi writes the next turn's start before the end of the one it follows.
+    const going = new Map();
+    const main = [];
+    let turnEndedAt = 0, goal = null, loopTurn = null;
+    const since = () => {
+      if (goal) main.push({ type: 'goal', id: goal.id, title: goal.title, active: goal.active });
+      for (const [turnId, turn] of going) if (turn.kind) main.push({ type: 'turn', turnId, ...turn });
+    };
+    const from = given ?? lines.length;
+    for (let i = 0; i < lines.length; i++) {
       signal.throwIfAborted();
-      const event = JSON.parse(line);
+      if (i === from) since();
+      const fresh = i >= from, event = JSON.parse(lines[i]);
       if (event.type === 'cron.add') noteCron(crons, event);
       else if (event.type === 'cron.delete') dropCron(crons, event, span.turn);
       else if (event.type === 'cron.cursor') noteCursor(crons, event);
       else if (event.type === 'agent.turn.started' || (event.type === 'turn.prompt' && event.agentId === 'main')) {
         if (!span.turn || span.turn.turnId !== event.turnId) span.turn = { turnId: event.turnId, time: event.time, prompted: false, jobId: undefined };
-        turnId = event.turnId;
-        if (event.type === 'turn.prompt') noteFire(crons, event, span.turn);
+        if (!going.has(event.turnId)) going.set(event.turnId, {});
+        if (event.type === 'turn.prompt') {
+          noteFire(crons, event, span.turn);
+          const turn = { kind: turnKind(event.origin), time: event.time };
+          going.set(event.turnId, turn);
+          if (fresh) main.push({ type: 'turn', turnId: event.turnId, ...turn });
+        }
       } else if (event.type === 'turn.ended') {
-        if (event.agentId !== 'main' || event.turnId !== turnId || !['completed', 'cancelled', 'failed', 'blocked'].includes(event.reason) ||
+        if (event.agentId !== 'main' || !going.has(event.turnId) || !['completed', 'cancelled', 'failed', 'blocked'].includes(event.reason) ||
           !Number.isSafeInteger(event.time) || event.time <= 0) return unread('unsupported_layout');
+        going.delete(event.turnId);
         turnEndedAt = event.time;
         for (const cron of crons.values()) if (cron.fireTurn === event.turnId) cron.fireEnded = true;
-        span.turn = null;
+        if (span.turn?.turnId === event.turnId) span.turn = null;
+        if (fresh) main.push({ type: 'ended', turnId: event.turnId, reason: event.reason });
+      } else if (event.type === 'goal.create' || event.type === 'goal.update' || event.type === 'goal.clear') {
+        const next = noteGoal(goal, event);
+        if (next === goal) continue;
+        goal = next;
+        if (fresh) main.push({ type: 'goal', id: goal.id, title: goal.title, active: goal.active });
+      } else if (event.type === 'context.append_loop_event' && event.agentId === 'main' && object(event.event)) {
+        // A call's result names no turn: it is of the turn its call was made in, the one the loop is in.
+        if (event.event.turnId !== undefined) loopTurn = Number(event.event.turnId);
+        const kind = going.get(loopTurn)?.kind;
+        if (!fresh || (kind !== 'goal' && kind !== 'user')) continue;
+        const update = loopUpdate(event.event, { messageId: event.event.uuid, toolCallId: `${loopTurn}:${event.event.toolCallId}` });
+        if (update) main.push({ type: 'update', turnId: loopTurn, update });
       }
     }
-    return { tasks, turnEndedAt, schedule: await cronClock(home, env, signal),
+    if (from >= lines.length) since();
+    given = lines.length;
+    return { tasks, turnEndedAt, main, schedule: await cronClock(home, env, signal),
       crons: [...crons.values()].map(publishCron) };
   } };
+}
+
+// Who began a main turn: Coda's prompt (`user`), the goal (`goal`), or something else Kimi took up.
+function turnKind(origin) {
+  if (origin?.kind === 'user') return 'user';
+  return origin?.kind === 'system_trigger' && origin.name === 'goal_continuation' ? 'goal' : 'other';
+}
+// Kimi's goal as its wire leaves it: `active` while Kimi keeps continuing toward it. Each time it turns active it is
+// waited on afresh (`id`), since a wait that ended cannot begin again. A clear ends it.
+function noteGoal(goal, event) {
+  if (event.type === 'goal.clear') return goal?.active ? { ...goal, active: false } : goal;
+  if (event.type === 'goal.create') {
+    if (!identifier(event.goalId) || typeof event.objective !== 'string') return goal;
+    return { goalId: event.goalId, runs: 1, id: event.goalId, title: event.objective.split(/\r?\n/, 1)[0].trim().slice(0, 100),
+      active: event.status === undefined || event.status === 'active' };
+  }
+  if (!goal || typeof event.status !== 'string' || (event.goalId !== undefined && event.goalId !== goal.goalId)) return goal;
+  const active = event.status === 'active';
+  if (active === goal.active) return goal;
+  return active ? { ...goal, runs: goal.runs + 1, id: `${goal.goalId}:${goal.runs + 1}`, active } : { ...goal, active };
 }
 
 // A cron.add that is not the shape from 2.1.1 is ignored. A later add of the same id replaces it.
