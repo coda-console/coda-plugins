@@ -197,7 +197,7 @@ test('需求流程回路、人工任务、批准通知和一次部署契约', as
   assert.equal(nodes['integration-failed'].eventDefinitions[0].$type, 'bpmn:ErrorEventDefinition');
   assert.equal(nodes['integration-feedback'].targetRef.id, 'context');
   assert.match(nodes.confirm.documentation[0].text, /退回修改/);
-  assert.match(nodes.preview.documentation[0].text, /mac-preview-install 和 ios-preview-install/);
+  assert.match(nodes.preview.documentation[0].text, /只装改到的那一端：改了 Mac 用 workflow_run 发起 mac-preview-install，改了 iPhone 发起 ios-preview-install/);
   assert.match(nodes.preview.documentation[0].text, /commit="\{\{integrate.head\}\}"/);
   const report = nodes.report.documentation[0].text;
   for (const text of ['15 行', '3～5 条', '结构变化', '验证', '需要你知道', '不放执行者原文、测试数量、文件清单']) assert.ok(report.includes(text));

@@ -25,25 +25,27 @@ test('Ultra 把代码修改交给 develop，主 Agent 亲审，spawn 仅做只�
   assert.doesNotMatch(full + STILL_ON, /trivial-work exception|delegate only through Coda.*spawn/);
 });
 
-test('Ultra 先建需求再关联功能，由主 Agent 判断达标、汇报并按序放行', () => {
+test('Ultra 一个需求默认一个 develop 直接合并，多个功能一起交付才建需求，由主 Agent 判断达标、汇报并按序放行', () => {
   const full = on([]);
-  assert.match(full, /workflow="deliver"/);
-  assert.match(STILL_ON, /workflow_run deliver/);
+  assert.match(full, /workflow="deliver" only when one requirement needs several develop runs accepted and approved together/);
+  assert.match(STILL_ON, /workflow_run deliver only when a requirement needs several develop runs accepted and approved together/);
   for (const text of [full, STILL_ON]) {
-    assert.ok(text.indexOf('deliver') < text.indexOf('develop'), '先建需求再开发功能');
+    assert.ok(text.indexOf('develop') < text.indexOf('deliver'), '默认先说独立 develop');
+    assert.match(text, /one standalone .*develop.* in the repository it changes, (leaving )?delivery empty/);
+    assert.match(text, /one requirement at a time unless the user asks otherwise/i);
     for (const requirement of ['project that delivers and deploys it', 'title, goal and devices', 'save the run ID',
       'delivery=<requirement run ID> and devices=false', 'project for cross-repository work',
       'Judge goal completion yourself', 'do not ask the user whether to deliver',
       'member PR URLs at 确认达标 in merge order, dependency repositories first', 'deliver template', 'about 15 lines',
       'what was delivered and structural changes', 'At 放行合并, follow its instructions in order on each develop run\'s 待交付 task',
-      'real environment after deployment', 'Standalone develop without delivery', 'small ad hoc fixes']) {
+      'real environment after deployment']) {
       assert.ok(text.includes(requirement), requirement);
     }
     assert.match(text, /Pass devices=true for client changes needing Mac or iPhone acceptance, otherwise devices=false/);
     assert.match(text, /merge and publish packages whose versions are pinned, then have dependent repositories update pinned versions and pass review\/checks before merging/);
     assert.doesNotMatch(text, /coda project|coda-plugins|npm|merge coda/);
   }
-  assert.match(full, /answer only after both installations succeed/);
+  assert.match(full, /install only the clients it changed \(mac-preview-install, ios-preview-install\); answer only after the started installations succeed/);
   assert.match(full, /return to 确认达标 with concrete feedback and return affected members from 待交付/);
   assert.match(full, /without executor transcripts, test counts, file lists or code/);
   assert.match(full, /Deliver deploys once after all merges if approved/);

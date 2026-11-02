@@ -112,7 +112,7 @@ test('develop 从最新 base 开泳道，退回续作，逐项快进，验收后
   assert.equal(report.answer, first.answer); assert.equal(report.branch, first.branch); assert.equal(report.head, first.head);
   const call = f.calls('agent')[0];
   assert.deepEqual(call.args.slice(0, -2), ['--commit', latest, '--title', '修好输入框', '--agent', 'codex', '--model', 'cheap', '--effort', 'low', '--mode', 'auto', '--json']);
-  for (const text of ['执行者', '不再委派', 'AGENTS.md', '不推送', '不写防御性、冗余', '不顺手重构', '实际跑了哪些验证', '第一项']) assert.ok(call.prompt.includes(text), text);
+  for (const text of ['执行者', '不再委派', 'AGENTS.md', '不推送', '不写防御性、冗余', '不顺手重构', '只跑与改动直接相关的快检查', '实际跑了哪些验证', '第一项']) assert.ok(call.prompt.includes(text), text);
   assert.equal(f.run('decide', { REVIEW: JSON.stringify({ choice: 'revise' }) }).outputs.route, 'review');
   assert.equal(f.review('revise', '  '), 'review');
   assert.match(f.run('review').outputs.feedback, /必须/);

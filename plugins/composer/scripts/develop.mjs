@@ -9,6 +9,7 @@ const statePath = join(env.CODA_ARTIFACTS, 'develop.json');
 const instructions = `你是这次开发流程的执行者，自己完成这一项任务，不继承主 Agent 的协调职责，不再委派。
 只做这一项，在当前分支提交，不推送、不开 PR、不合并、不部署。
 遵守仓库的 AGENTS.md。只改必需的地方，不写防御性、冗余的代码，不顺手重构。
+只跑与改动直接相关的快检查；之后 PR 的项目检查会跑的构建、全套和界面检查不在这里重复。
 回报改了什么、为什么、实际跑了哪些验证及未验证部分。`;
 
 if (action === 'lane') {

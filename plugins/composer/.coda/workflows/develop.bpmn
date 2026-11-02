@@ -93,7 +93,7 @@ head：{{report.head}}
     <userTask id="preview" name="安装预览版" coda:noteLabel="安装结果或回审查的原因">
       <documentation>主 Agent：泳道 {{accept.lane}} 的最新提交是 {{accept.head}}。
 {{if preview-result.feedback = null then "" else preview-result.feedback}}
-请用 workflow_run 分别发起 mac-preview-install 和 ios-preview-install，两次都传 commit="{{accept.head}}"。等两项成功安装后答复；有失败先处理，不能把发起当作装好。
+只装改到的那一端：改了 Mac 用 workflow_run 发起 mac-preview-install，改了 iPhone 发起 ios-preview-install，都传 commit="{{accept.head}}"。等发起的安装都成功后答复；有失败先处理，不能把发起当作装好。
 需要先修改时选「回到审查」，备注必填，说明待处理问题；主 Agent 再用「退回修改」让最近的执行会话继续。预览只装客户端，不从泳道部署后端。</documentation>
       <extensionElements>
         <coda:choice id="installed" name="已装好" primary="true" />

@@ -16,20 +16,21 @@ export function on(subagents) {
     'Conserve the lead agent\'s tokens and context while preserving quality. Keep task framing, difficult decisions, dispatch, ' +
       'architecture and implementation review, and acceptance in this session. ' +
       'Small targeted reads for framing and your own architecture and implementation review belong here.',
-    'For each requirement, first use `workflow_run` with workflow="deliver" in the project that delivers and deploys it, passing title, goal and devices; save the run ID. ' +
-      'Pass devices=true for client changes needing Mac or iPhone acceptance, otherwise devices=false. ' +
-      'Delegate ALL code changes through `workflow_run` with workflow="develop", passing delivery=<requirement run ID> and devices=false. ' +
-      'Start one run per independently deliverable feature; use project for cross-repository work; ' +
-      'independent features may run concurrently. Give it a self-contained title and first task, context, acceptance criteria and a separate write scope. ' +
-      'Tasks within one run are sequential. Pass the selected executor as the develop inputs agent, model, effort and mode; ' +
-      'leave unspecified settings at the agent defaults. Develop does not accept options. ' +
-      'Standalone develop without delivery remains available for small ad hoc fixes, with devices set explicitly as needed.',
+    'By default, do one requirement with one standalone `workflow_run` workflow="develop" in the repository it changes, leaving delivery empty; ' +
+      'it runs through checks, approval and merge. Pass devices=true for client changes needing Mac or iPhone acceptance, otherwise devices=false. ' +
+      'Use workflow="deliver" only when one requirement needs several develop runs accepted and approved together: first start it in the project that delivers and deploys it, ' +
+      'passing title, goal and devices; save the run ID; then pass delivery=<requirement run ID> and devices=false to each develop, ' +
+      'one run per independently deliverable feature; members may run concurrently. ' +
+      'Work on one requirement at a time unless the user asks otherwise. Delegate ALL code changes through develop; use project for cross-repository work. ' +
+      'Give each run a self-contained title and first task, context, acceptance criteria and a separate write scope. Tasks within one run are sequential. ' +
+      'Pass the selected executor as the develop inputs agent, model, effort and mode; leave unspecified settings at the agent defaults. Develop does not accept options.',
     'Personally inspect the diff at every lead-agent review task. Strictly judge whether the architecture and implementation are appropriate, ' +
       'the change is minimal, and there is defensive or redundant code or unrelated work. Passing checks or an executor summary cannot replace this review. ' +
       'Return concrete corrections in the note to continue the same executor session; or approve and give the next task in the note; ' +
       'or approve for acceptance. Do not implement fixes yourself. The executor must do its assigned work itself without inheriting your coordinator role or delegating.',
-    'Judge goal completion yourself; do not ask the user whether to deliver. Once met, list member PR URLs at 确认达标 in merge order, dependency repositories first. ' +
-      'When deliver devices=true, use workflow_run with the exact integration commit for mac-preview-install and ios-preview-install; answer only after both installations succeed. ' +
+    'Judge goal completion yourself; do not ask the user whether to deliver. In a deliver requirement, once met, list member PR URLs at 确认达标 in merge order, dependency repositories first. ' +
+      'When deliver devices=true, use workflow_run with the exact integration commit to install only the clients it changed (mac-preview-install, ios-preview-install); ' +
+      'answer only after the started installations succeed. ' +
       'The user accepts on devices. For fixes, return to 确认达标 with concrete feedback and return affected members from 待交付 for review and correction. ' +
       'Write the delivery report using the deliver template in about 15 lines: what was delivered and structural changes, without executor transcripts, test counts, file lists or code. ' +
       'At 放行合并, follow its instructions in order on each develop run\'s 待交付 task: merge and publish packages whose versions are pinned, then have dependent repositories update pinned versions and pass review/checks before merging. ' +
@@ -44,13 +45,15 @@ export function on(subagents) {
       : 'Use your own agent and model for develop inputs and for read-only Coda spawn.',
   ].join('\n\n');
 }
-export const STILL_ON = 'Ultra is still on. For each requirement, first workflow_run deliver in the project that delivers and deploys it with title, goal and devices; save the run ID. ' +
+export const STILL_ON = 'Ultra is still on. By default do one requirement with one standalone workflow_run develop in the repository it changes, delivery empty. ' +
   'Pass devices=true for client changes needing Mac or iPhone acceptance, otherwise devices=false. ' +
-  'Delegate code changes with workflow_run develop, passing delivery=<requirement run ID> and devices=false, one run per independent feature; use project for cross-repository work; tasks in a run are sequential. ' +
-  'Choose the executor from the list and pass agent/model/effort/mode. Standalone develop without delivery remains available for small ad hoc fixes, with devices set explicitly as needed. ' +
+  'Use workflow_run deliver only when a requirement needs several develop runs accepted and approved together: start it first in the project that delivers and deploys it with title, goal and devices, ' +
+  'save the run ID, and pass delivery=<requirement run ID> and devices=false to each develop. ' +
+  'One requirement at a time unless the user asks otherwise; use project for cross-repository work; tasks in a run are sequential. ' +
+  'Choose the executor from the list and pass agent/model/effort/mode. ' +
   'Personally review architecture, minimal scope, defensive or redundant code and unrelated changes. ' +
   'Return concrete corrections to the same executor; do not fix code yourself. Judge goal completion yourself; do not ask the user whether to deliver. ' +
-  'Once met, list member PR URLs at 确认达标 in merge order, dependency repositories first. Use the deliver template for a delivery report in about 15 lines: what was delivered and structural changes, without implementation details. ' +
+  'In a deliver requirement, once met, list member PR URLs at 确认达标 in merge order, dependency repositories first. Use the deliver template for a delivery report in about 15 lines: what was delivered and structural changes, without implementation details. ' +
   'At 放行合并, follow its instructions in order on each develop run\'s 待交付 task: merge and publish packages whose versions are pinned, then have dependent repositories update pinned versions and pass review/checks before merging; verify the goal in the real environment after deployment. ' +
   'Use spawn only for research, investigation and verification without code changes. ' +
   'Wait when concurrency is full; report unavailable workflows or spawn. No native subagents unless explicitly requested.';

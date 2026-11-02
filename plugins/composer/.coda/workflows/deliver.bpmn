@@ -58,7 +58,7 @@
       <documentation>需求：{{inputs.title}}
 集成分支：{{integrate.branch}}
 集成提交：{{integrate.head}}
-主 Agent：用 workflow_run 分别发起 mac-preview-install 和 ios-preview-install，两次都传 commit="{{integrate.head}}"。等两项成功安装后答「已装好」，不能把发起当作装好。
+主 Agent：只装改到的那一端：改了 Mac 用 workflow_run 发起 mac-preview-install，改了 iPhone 发起 ios-preview-install，都传 commit="{{integrate.head}}"。等发起的安装都成功后答「已装好」，不能把发起当作装好。
 需要处理问题时选「回到确认」，备注必填。
 {{if preview-result.feedback = null then "" else preview-result.feedback}}</documentation>
       <extensionElements><coda:choice id="installed" name="已装好" primary="true" /><coda:choice id="confirm" name="回到确认" /></extensionElements>
