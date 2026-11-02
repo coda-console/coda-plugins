@@ -6,6 +6,7 @@
       <coda:input name="title" label="功能名" required="true" />
       <coda:input name="task" label="第一项任务" required="true" />
       <coda:input name="devices" label="设备验收" type="boolean" required="true" description="改了客户端、要在 Mac 或 iPhone 上验收时打开" />
+      <coda:input name="delivery" label="所属需求" type="string" default="" description="需求运行的 ID；留空为独立交付" />
       <coda:input name="agent" label="执行者" default="" description="留空用发起会话的 Agent" />
       <coda:input name="model" label="模型" default="" description="留空用 Agent 默认值" />
       <coda:input name="effort" label="推理强度" default="" description="留空用 Agent 默认值" />
@@ -58,7 +59,7 @@ head：{{report.head}}
 审查要点：架构是否得当、改动是否最小、有没有防御性或冗余代码、有没有无关改动，实际验证是否足够。
 选择「退回修改」时备注必填，给具体意见；同一个执行会话继续修改。
 选择「通过，再派一项」时备注必填，写自足的下一项任务；先合进泳道，再开新的执行会话。
-选择「通过，可以验收」时，开启设备验收则进入安装与验收，否则直接开 PR 并跑检查；若是在处理检查失败，先重跑检查。
+选择「通过，可以验收」时，归属需求则直接开 PR 并跑检查；独立交付开启设备验收则进入安装与验收，否则直接开 PR 并跑检查；若是在处理检查失败，先重跑检查。
 执行者已通过的 head 已在泳道上时 diff 为空；请结合反馈和本运行先前的通过记录审查。</documentation>
       <extensionElements>
         <coda:choice id="revise" name="退回修改" />
@@ -81,7 +82,7 @@ head：{{report.head}}
     </scriptTask>
     <sequenceFlow id="revise-report" sourceRef="revise" targetRef="report" />
     <scriptTask id="accept" name="快进泳道并推送" scriptFormat="bash" coda:timeout="5">
-      <extensionElements><coda:env name="DEVICES" value="=inputs.devices" /><coda:output name="head" /><coda:output name="lane" /><coda:output name="route" /></extensionElements>
+      <extensionElements><coda:env name="DEVICES" value="=inputs.devices" /><coda:env name="DELIVERY" value="=inputs.delivery" /><coda:output name="head" /><coda:output name="lane" /><coda:output name="route" /></extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" accept</script>
     </scriptTask>
     <sequenceFlow id="accept-after" sourceRef="accept" targetRef="after-accept" />
@@ -149,7 +150,48 @@ head：{{report.head}}
       <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" check-failed</script>
     </scriptTask>
     <sequenceFlow id="checks-review" sourceRef="check-feedback" targetRef="report" />
-    <sequenceFlow id="checks-kinds" sourceRef="checks" targetRef="kinds" />
+    <sequenceFlow id="checks-github" sourceRef="checks" targetRef="github-checks" />
+    <scriptTask id="github-checks" name="GitHub 检查" scriptFormat="bash">
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" github-checks</script>
+    </scriptTask>
+    <boundaryEvent id="github-checks-failed" attachedToRef="github-checks"><errorEventDefinition /></boundaryEvent>
+    <sequenceFlow id="github-checks-feedback" sourceRef="github-checks-failed" targetRef="github-feedback" />
+    <scriptTask id="github-feedback" name="交回 GitHub 检查失败" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements><coda:env name="STEP" value="GitHub 检查" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" check-failed</script>
+    </scriptTask>
+    <sequenceFlow id="github-review" sourceRef="github-feedback" targetRef="report" />
+    <sequenceFlow id="github-delivery-choice" sourceRef="github-checks" targetRef="delivery-choice" />
+    <exclusiveGateway id="delivery-choice" name="是否归属需求" default="checks-kinds" />
+    <sequenceFlow id="checks-delivery" sourceRef="delivery-choice" targetRef="delivery"><conditionExpression xsi:type="tFormalExpression">=inputs.delivery != ""</conditionExpression></sequenceFlow>
+    <sequenceFlow id="checks-kinds" sourceRef="delivery-choice" targetRef="kinds" />
+    <userTask id="delivery" name="待交付" coda:noteLabel="需求验收的修改意见">
+      <documentation>所属需求：{{inputs.delivery}}
+PR：{{pr.url}}
+head：{{pr.head}}
+泳道：{{accept.lane}}
+项目检查和 GitHub 检查已通过。
+{{if delivery-result.feedback = null then "" else delivery-result.feedback}}
+主 Agent：请按所属需求运行的安排处理。需求验收不过时选「退回修改」，备注必填，意见交回主 Agent 审查，再退给执行者；修好后重新审查、更新 PR、跑检查并回到待交付。
+按需求运行的顺序选择「放行合并」，随后执行合并前检查和 squash 合并，输出合并提交并结束，不部署。
+
+各次审查通过的改动：
+{{pr.summary}}</documentation>
+      <extensionElements>
+        <coda:choice id="revise" name="退回修改" />
+        <coda:choice id="merge" name="放行合并" primary="true" />
+      </extensionElements>
+    </userTask>
+    <sequenceFlow id="delivery-result-flow" sourceRef="delivery" targetRef="delivery-result" />
+    <scriptTask id="delivery-result" name="读取交付意见" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements><coda:env name="DELIVERY_RESULT" value="=delivery" /><coda:output name="route" /><coda:output name="feedback" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" delivery</script>
+    </scriptTask>
+    <sequenceFlow id="delivery-route" sourceRef="delivery-result" targetRef="after-delivery" />
+    <exclusiveGateway id="after-delivery" name="交付结论" default="delivery-premerge" />
+    <sequenceFlow id="delivery-note" sourceRef="after-delivery" targetRef="delivery"><conditionExpression xsi:type="tFormalExpression">=delivery-result.route = "delivery"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="delivery-review" sourceRef="after-delivery" targetRef="report"><conditionExpression xsi:type="tFormalExpression">=delivery-result.route = "review"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="delivery-premerge" sourceRef="after-delivery" targetRef="premerge" />
     <serviceTask id="kinds" name="项目部署选项" coda:action="workflow-kinds">
       <extensionElements><coda:param name="commit" value="=pr.head" /></extensionElements>
     </serviceTask>
@@ -196,7 +238,7 @@ head：{{report.head}}
     </scriptTask>
     <sequenceFlow id="merge-deploy-choice" sourceRef="merge" targetRef="deploy-choice" />
     <exclusiveGateway id="deploy-choice" name="是否部署" default="merged-only" />
-    <sequenceFlow id="merged-deploy" sourceRef="deploy-choice" targetRef="deploy"><conditionExpression xsi:type="tFormalExpression">=approve.options.deploy</conditionExpression></sequenceFlow>
+    <sequenceFlow id="merged-deploy" sourceRef="deploy-choice" targetRef="deploy"><conditionExpression xsi:type="tFormalExpression">=inputs.delivery = "" and approve.options.deploy</conditionExpression></sequenceFlow>
     <sequenceFlow id="merged-only" sourceRef="deploy-choice" targetRef="done" />
     <serviceTask id="deploy" name="部署" coda:action="run-workflows">
       <extensionElements><coda:param name="kind" value="deploy" /><coda:param name="commit" value="=merge.commit" /></extensionElements>

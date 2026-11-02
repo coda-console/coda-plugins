@@ -83,7 +83,7 @@ switch (action) {
     save();
     output('head', state.head);
     output('lane', state.lane);
-    output('route', next ? 'execute' : env.DEVICES === 'true' && state.phase !== 'check' ? 'preview' : 'pr');
+    output('route', next ? 'execute' : !env.DELIVERY && env.DEVICES === 'true' && state.phase !== 'check' ? 'preview' : 'pr');
     break;
   }
   case 'preview': {
@@ -115,6 +115,24 @@ switch (action) {
     output('url', state.pr);
     output('head', state.head);
     output('summary', body());
+    break;
+  }
+  case 'github-checks': {
+    const result = spawnSync('gh', ['pr', 'checks', state.pr, '--watch'], { encoding: 'utf8', stdio: ['ignore', 'inherit', 'pipe'] });
+    if (result.error) throw result.error;
+    process.stderr.write(result.stderr);
+    // gh 对没有任何检查的 PR 也返回 1；这种情况不阻止交付。
+    if (result.status === 1 && result.stderr.trim() === `no checks reported on the '${state.lane}' branch`) break;
+    if (result.status !== 0) process.exit(result.status ?? 1);
+    break;
+  }
+  case 'delivery': {
+    const { choice, note = '' } = JSON.parse(env.DELIVERY_RESULT);
+    const missing = choice === 'revise' && !note.trim();
+    state.feedback = missing ? '退回修改必须在备注中写具体意见。' : choice === 'revise' ? `所属需求退回修改：\n${note}` : '';
+    save();
+    output('feedback', state.feedback);
+    output('route', missing ? 'delivery' : choice === 'revise' ? 'review' : 'premerge');
     break;
   }
   case 'check-failed':

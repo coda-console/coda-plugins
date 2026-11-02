@@ -12,13 +12,13 @@ const script = fileURLToPath(new URL('../../../plugins/composer/scripts/develop.
 const workflow = readFileSync(new URL('../../../plugins/composer/.coda/workflows/develop.bpmn', import.meta.url), 'utf8');
 const manifest = JSON.parse(readFileSync(new URL('../../../plugins/composer/package.json', import.meta.url), 'utf8'));
 
-function fixture(t, devices = true) {
+function fixture(t, devices = true, delivery = '') {
   const root = mkdtempSync(join(tmpdir(), 'composer-develop-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const work = join(root, 'work'), origin = join(root, 'origin.git'), bin = join(root, 'bin'), artifacts = join(root, 'artifacts');
   for (const path of [work, bin, artifacts]) mkdirSync(path);
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, CODA_ARTIFACTS: artifacts, RUNNER_TEMP: root,
-    GITHUB_RUN_ID: 'run-1', GITHUB_OUTPUT: join(root, 'outputs'), TITLE: '修好输入框', TASK: '第一项：修好输入框', BASE: '', DEVICES: String(devices),
+    GITHUB_RUN_ID: 'run-1', GITHUB_OUTPUT: join(root, 'outputs'), TITLE: '修好输入框', TASK: '第一项：修好输入框', BASE: '', DEVICES: String(devices), DELIVERY: delivery,
     GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid', GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.invalid',
     GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'commit.gpgsign', GIT_CONFIG_VALUE_0: 'false', GIT_CONFIG_KEY_1: 'core.hooksPath', GIT_CONFIG_VALUE_1: '/dev/null',
     FIXTURE: root, AGENT: 'codex', MODEL: '', EFFORT: '', MODE: '' };
@@ -66,6 +66,11 @@ if (args[0] === 'repo') console.log('main');
 else if (args[1] === 'create') console.log('https://github.com/example/fixture/pull/1');
 else if (args[1] === 'merge') process.exit(Number(process.env.MERGE_EXIT || 0));
 else if (args[1] === 'view') console.log('f'.repeat(40));
+else if (args[1] === 'checks') {
+  process.stdout.write(process.env.CHECKS_STDOUT || 'checks passed\n');
+  process.stderr.write(process.env.CHECKS_STDERR || '');
+  process.exit(Number(process.env.CHECKS_EXIT || 0));
+}
 `);
   writeFileSync(join(root, 'agent-calls'), '[]'); writeFileSync(join(root, 'gh-calls'), '[]');
   const state = () => JSON.parse(readFileSync(join(artifacts, 'develop.json'), 'utf8'));
@@ -166,7 +171,7 @@ test('检查失败回最近执行会话，修好更新 PR 重跑；交由 gh 删
   const f = fixture(t); f.run('lane'); f.task('code', 'implementation'); f.run('execute');
   f.review('accept'); f.run('accept'); f.device('yes'); f.run('pr');
   const session = f.state().executor.session;
-  for (const step of ['项目检查', '合并前检查']) {
+  for (const step of ['项目检查', 'GitHub 检查', '合并前检查']) {
     f.run('check-failed', { STEP: step });
     const feedback = f.run('review').outputs.feedback;
     assert.ok(feedback.includes(step)); assert.ok(feedback.includes(f.state().head));
@@ -217,6 +222,55 @@ test('显式 base 与并行功能运行各自建泳道，无设备验收仍可�
   assert.equal(f.state().phase, 'check');
 });
 
+test('归属需求跳过设备验收，待交付退回续作，更新同一 PR 后放行合并', t => {
+  const f = fixture(t, true, 'requirement-1');
+  f.run('lane'); f.task('one', 'first change'); f.run('execute');
+  f.review('next', '第二项'); assert.equal(f.run('accept').outputs.route, 'execute');
+  f.task('two', 'second change'); f.run('execute');
+  f.review('accept'); assert.equal(f.run('accept').outputs.route, 'pr');
+  const pr = f.run('pr').outputs;
+  assert.match(pr.summary, /first change/); assert.match(pr.summary, /second change/);
+  f.run('github-checks');
+  const session = f.state().executor.session;
+  const delivery = (choice, note) => f.run('delivery', { DELIVERY_RESULT: JSON.stringify({ choice, note }) }).outputs;
+  for (const note of [undefined, '', '  ']) {
+    assert.deepEqual(delivery('revise', note), { feedback: '退回修改必须在备注中写具体意见。', route: 'delivery' });
+  }
+  assert.equal(delivery('revise', '需求验收：按钮没有响应').route, 'review');
+  const feedback = f.run('review').outputs.feedback;
+  assert.equal(feedback, '所属需求退回修改：\n需求验收：按钮没有响应');
+  f.review('revise', feedback); f.task('two', 'button fixed'); f.run('revise');
+  assert.equal(f.state().executor.session, session);
+  assert.ok(f.calls('agent').at(-1).prompt.includes(feedback));
+  f.review('accept'); assert.equal(f.run('accept').outputs.route, 'pr');
+  const updated = f.run('pr').outputs;
+  assert.equal(updated.url, pr.url); assert.notEqual(updated.head, pr.head);
+  assert.match(updated.summary, /button fixed/);
+  assert.equal(f.calls('gh').filter(c => c.args[1] === 'create').length, 1);
+  assert.equal(f.calls('gh').filter(c => c.args[1] === 'edit').length, 1);
+  f.run('github-checks');
+  assert.deepEqual(delivery('merge'), { feedback: '', route: 'premerge' });
+  assert.equal(f.run('merge').outputs.commit, 'f'.repeat(40));
+});
+
+test('GitHub 检查等待全部完成，无检查通过，检查失败和查询错误保持失败并留下日志', t => {
+  const f = fixture(t, false);
+  f.run('lane'); f.task('code', 'implementation'); f.run('execute');
+  f.review('accept'); f.run('accept'); f.run('pr');
+  assert.match(f.run('github-checks').stdout, /checks passed/);
+  assert.deepEqual(f.calls('gh').at(-1).args, ['pr', 'checks', f.state().pr, '--watch']);
+  const noChecks = `no checks reported on the '${f.state().lane}' branch\n`;
+  assert.equal(f.run('github-checks', { CHECKS_EXIT: '1', CHECKS_STDERR: noChecks }).stderr, noChecks);
+  for (const [code, stdout, stderr] of [
+    [1, 'build\tfail\n', ''],
+    [1, '', 'HTTP 403: Forbidden\n'],
+    [8, 'build\tpending\n', ''],
+  ]) {
+    const result = f.run('github-checks', { CHECKS_EXIT: String(code), CHECKS_STDOUT: stdout, CHECKS_STDERR: stderr }, code);
+    assert.ok(result.stdout.includes(stdout)); assert.equal(result.stderr, stderr);
+  }
+});
+
 test('开发流程定义、回路、检查提交与部署选择符合运行契约', async () => {
   const { root, problem } = await readWorkflow(workflow, 'develop'); assert.ok(!problem, problem);
   const process = root.rootElements.find(e => e.$type === 'bpmn:Process');
@@ -235,6 +289,11 @@ test('开发流程定义、回路、检查提交与部署选择符合运行契�
   assert.equal(devices.label, '设备验收');
   assert.equal(devices.description, '改了客户端、要在 Mac 或 iPhone 上验收时打开');
   assert.equal(params('accept').DEVICES, '=inputs.devices');
+  const delivery = values(process).find(v => v.name === 'delivery');
+  assert.equal(delivery.type, 'string'); assert.equal(delivery.default, '');
+  assert.equal(delivery.label, '所属需求');
+  assert.equal(delivery.description, '需求运行的 ID；留空为独立交付');
+  assert.equal(params('accept').DELIVERY, '=inputs.delivery');
   assert.equal(nodes.start.eventDefinitions, undefined, '不订阅旧 PR 生命周期');
   assert.ok(manifest.files.includes('.coda/workflows')); assert.ok(manifest.files.includes('scripts'));
   assert.doesNotMatch(workflow, /review\/scripts|vars\.review/);
@@ -274,17 +333,35 @@ test('开发流程定义、回路、检查提交与部署选择符合运行契�
     assert.equal(message('tell-approval', 'key', { approve }), `run-1:approve:head-1:${choice}:${deploy ? 'deploy' : 'no-deploy'}`);
     assert.equal(route('after-approval', { approve }), choice === 'stop' ? 'stopped' : 'premerge');
   }
-  for (const [failed, target] of [['checks-failed', 'checks'], ['premerge-failed', 'premerge']]) {
+  for (const [failed, target] of [['checks-failed', 'checks'], ['github-checks-failed', 'github-checks'], ['premerge-failed', 'premerge']]) {
     assert.equal(nodes[failed].attachedToRef.id, target);
     assert.equal(nodes[failed].eventDefinitions[0].$type, 'bpmn:ErrorEventDefinition');
   }
   assert.deepEqual(params('checks'), { kind: 'check', commit: '=pr.head' });
+  assert.equal(nodes['checks-github'].targetRef.id, 'github-checks');
+  assert.match(nodes['github-checks'].script, /develop\.mjs" github-checks/);
+  assert.equal(nodes['github-checks-feedback'].targetRef.id, 'github-feedback');
+  assert.deepEqual(params('github-feedback'), { STEP: 'GitHub 检查' });
+  assert.equal(nodes['github-review'].targetRef.id, 'report');
+  assert.equal(nodes['github-delivery-choice'].targetRef.id, 'delivery-choice');
+  assert.equal(route('delivery-choice', { inputs: { delivery: '' } }), 'kinds');
+  assert.equal(route('delivery-choice', { inputs: { delivery: 'requirement-1' } }), 'delivery');
+  assert.equal(nodes.delivery.name, '待交付');
+  assert.equal(nodes.delivery.assignee, undefined, '待交付交给发起会话 Agent');
+  assert.deepEqual(values(nodes.delivery).map(v => [v.id, v.name]), [['revise', '退回修改'], ['merge', '放行合并']]);
+  for (const field of ['inputs.delivery', 'pr.url', 'pr.head', 'accept.lane', 'pr.summary']) assert.ok(nodes.delivery.documentation[0].text.includes(`{{${field}}}`));
+  assert.match(nodes.delivery.documentation[0].text, /delivery-result.feedback/);
+  assert.equal(nodes['delivery-result-flow'].targetRef.id, 'delivery-result');
+  assert.equal(params('delivery-result').DELIVERY_RESULT, '=delivery');
+  for (const [value, target] of [['delivery', 'delivery'], ['review', 'report'], ['premerge', 'premerge']]) assert.equal(route('after-delivery', { 'delivery-result': { route: value } }), target);
   assert.deepEqual(params('premerge'), { kind: 'premerge', commit: '=pr.head' });
   assert.deepEqual(params('deploy'), { kind: 'deploy', commit: '=merge.commit' });
   assert.equal(nodes['approval-premerge'].targetRef.id, 'premerge');
   assert.equal(route('after-approval', { approve: { chose: { stop: true } } }), 'stopped');
-  assert.equal(route('deploy-choice', { approve: { options: { deploy: true } } }), 'deploy');
-  assert.equal(route('deploy-choice', { approve: { options: { deploy: false } } }), 'done');
+  assert.equal(route('deploy-choice', { inputs: { delivery: '' }, approve: { options: { deploy: true } } }), 'deploy');
+  assert.equal(route('deploy-choice', { inputs: { delivery: '' }, approve: { options: { deploy: false } } }), 'done');
+  assert.equal(route('deploy-choice', { inputs: { delivery: 'requirement-1' } }), 'done');
+  assert.equal(route('deploy-choice', { inputs: { delivery: 'requirement-1' }, approve: { options: { deploy: true } } }), 'done');
   const option = values(nodes.approve)[0].options[0];
   assert.equal(option.default, undefined);
   for (const deploy of [false, true]) assert.equal(evaluate(option.shown.slice(1), { kinds: { deploy } }).value, deploy);
