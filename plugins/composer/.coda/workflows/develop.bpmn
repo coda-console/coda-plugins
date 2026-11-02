@@ -151,7 +151,7 @@ head：{{report.head}}
     </scriptTask>
     <sequenceFlow id="checks-review" sourceRef="check-feedback" targetRef="report" />
     <sequenceFlow id="checks-github" sourceRef="checks" targetRef="github-checks" />
-    <scriptTask id="github-checks" name="GitHub 检查" scriptFormat="bash">
+    <scriptTask id="github-checks" name="GitHub 检查" scriptFormat="bash" coda:timeout="60">
       <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" github-checks</script>
     </scriptTask>
     <boundaryEvent id="github-checks-failed" attachedToRef="github-checks"><errorEventDefinition /></boundaryEvent>

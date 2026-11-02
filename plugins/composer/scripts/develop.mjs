@@ -118,11 +118,9 @@ switch (action) {
     break;
   }
   case 'github-checks': {
-    const result = spawnSync('gh', ['pr', 'checks', state.pr, '--watch'], { encoding: 'utf8', stdio: ['ignore', 'inherit', 'pipe'] });
+    if (gh('pr', 'view', state.pr, '--json', 'statusCheckRollup', '--jq', '.statusCheckRollup | length') === '0') break;
+    const result = spawnSync('gh', ['pr', 'checks', state.pr, '--watch'], { stdio: 'inherit' });
     if (result.error) throw result.error;
-    process.stderr.write(result.stderr);
-    // gh 对没有任何检查的 PR 也返回 1；这种情况不阻止交付。
-    if (result.status === 1 && result.stderr.trim() === `no checks reported on the '${state.lane}' branch`) break;
     if (result.status !== 0) process.exit(result.status ?? 1);
     break;
   }

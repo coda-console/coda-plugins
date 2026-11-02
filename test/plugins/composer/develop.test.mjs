@@ -65,7 +65,13 @@ calls.push({ args, body }); writeFileSync(join(root, 'gh-calls'), JSON.stringify
 if (args[0] === 'repo') console.log('main');
 else if (args[1] === 'create') console.log('https://github.com/example/fixture/pull/1');
 else if (args[1] === 'merge') process.exit(Number(process.env.MERGE_EXIT || 0));
-else if (args[1] === 'view') console.log('f'.repeat(40));
+else if (args[1] === 'view') {
+  if (args.includes('statusCheckRollup')) {
+    console.log(process.env.CHECKS_COUNT || '1');
+    process.exit(Number(process.env.CHECKS_QUERY_EXIT || 0));
+  }
+  console.log('f'.repeat(40));
+}
 else if (args[1] === 'checks') {
   process.stdout.write(process.env.CHECKS_STDOUT || 'checks passed\n');
   process.stderr.write(process.env.CHECKS_STDERR || '');
@@ -258,9 +264,16 @@ test('GitHub 检查等待全部完成，无检查通过，检查失败和查询�
   f.run('lane'); f.task('code', 'implementation'); f.run('execute');
   f.review('accept'); f.run('accept'); f.run('pr');
   assert.match(f.run('github-checks').stdout, /checks passed/);
+  const query = ['pr', 'view', f.state().pr, '--json', 'statusCheckRollup', '--jq', '.statusCheckRollup | length'];
+  assert.deepEqual(f.calls('gh').at(-2).args, query);
   assert.deepEqual(f.calls('gh').at(-1).args, ['pr', 'checks', f.state().pr, '--watch']);
-  const noChecks = `no checks reported on the '${f.state().lane}' branch\n`;
-  assert.equal(f.run('github-checks', { CHECKS_EXIT: '1', CHECKS_STDERR: noChecks }).stderr, noChecks);
+  const count = f.calls('gh').length;
+  f.run('github-checks', { CHECKS_COUNT: '0', CHECKS_EXIT: '1' });
+  assert.equal(f.calls('gh').length, count + 1, '无检查时只查询数量，不启动等待');
+  assert.deepEqual(f.calls('gh').at(-1).args, query);
+  f.run('github-checks', { CHECKS_QUERY_EXIT: '1' }, 1);
+  assert.equal(f.calls('gh').length, count + 2, '查询失败时不启动等待');
+  assert.deepEqual(f.calls('gh').at(-1).args, query);
   for (const [code, stdout, stderr] of [
     [1, 'build\tfail\n', ''],
     [1, '', 'HTTP 403: Forbidden\n'],
@@ -340,6 +353,7 @@ test('开发流程定义、回路、检查提交与部署选择符合运行契�
   assert.deepEqual(params('checks'), { kind: 'check', commit: '=pr.head' });
   assert.equal(nodes['checks-github'].targetRef.id, 'github-checks');
   assert.match(nodes['github-checks'].script, /develop\.mjs" github-checks/);
+  assert.equal(nodes['github-checks'].timeout, 60);
   assert.equal(nodes['github-checks-feedback'].targetRef.id, 'github-feedback');
   assert.deepEqual(params('github-feedback'), { STEP: 'GitHub 检查' });
   assert.equal(nodes['github-review'].targetRef.id, 'report');
