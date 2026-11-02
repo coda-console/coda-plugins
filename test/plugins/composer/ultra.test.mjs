@@ -16,17 +16,38 @@ test('Ultra 把代码修改交给 develop，主 Agent 亲审，spawn 仅做只�
   for (const text of ['workflow="develop"', 'ALL code changes', 'independently deliverable', 'concurrently', 'sequential',
     'agent, model, effort and mode', 'Personally inspect the diff', 'architecture and implementation',
     'minimal', 'defensive or redundant', 'unrelated', 'concrete corrections', 'same executor session',
-    'spawn` ONLY', 'do not change code', 'mac-preview-install', 'ios-preview-install', 'exact lane commit']) assert.ok(full.includes(text), text);
+    'spawn` ONLY', 'do not change code', 'mac-preview-install', 'ios-preview-install', 'exact integration commit']) assert.ok(full.includes(text), text);
   for (const text of ['workflow_run develop', 'Personally review', 'concrete corrections', 'spawn only', 'without code changes']) assert.ok(STILL_ON.includes(text), text);
-  for (const text of [full, STILL_ON]) assert.match(text, /Always explicitly pass devices=true for client changes needing Mac or iPhone acceptance, otherwise devices=false/);
-  assert.match(full, /With devices=false, approval goes directly to the PR without installation or device acceptance/);
-  assert.match(full, /choose 回到审查 with a concrete note/);
-  assert.doesNotMatch(full + STILL_ON, /Skip installation only when there are no client changes/);
   const paragraphs = full.split('\n\n');
   assert.match(paragraphs[1], /Small targeted reads for framing and your own architecture and implementation review belong here/);
   assert.doesNotMatch(paragraphs.find(p => p.startsWith("Use Coda's `spawn`")), /Small targeted reads/);
   assert.ok(full.length < 4000, '默认说明给执行者名单留下空间');
   assert.doesNotMatch(full + STILL_ON, /trivial-work exception|delegate only through Coda.*spawn/);
+});
+
+test('Ultra 先建需求再关联功能，由主 Agent 判断达标、汇报并按序放行', () => {
+  const full = on([]);
+  assert.match(full, /workflow="deliver"/);
+  assert.match(STILL_ON, /workflow_run deliver/);
+  for (const text of [full, STILL_ON]) {
+    assert.ok(text.indexOf('deliver') < text.indexOf('develop'), '先建需求再开发功能');
+    for (const requirement of ['coda project', 'title, goal and devices', 'save the run ID',
+      'delivery=<requirement run ID> and devices=false', 'project for cross-repository work',
+      'Judge goal completion yourself', 'do not ask the user whether to deliver',
+      'member PR URLs at 确认达标 in merge order, coda-plugins first', 'deliver template', 'about 15 lines',
+      'what was delivered and structural changes', 'At 放行合并, follow its instructions in order on each develop run\'s 待交付 task',
+      'real environment after deployment', 'Standalone develop without delivery', 'small ad hoc fixes']) {
+      assert.ok(text.includes(requirement), requirement);
+    }
+    assert.match(text, /Pass devices=true for client changes needing Mac or iPhone acceptance, otherwise devices=false/);
+  }
+  assert.match(full, /answer only after both installations succeed/);
+  assert.match(full, /return to 确认达标 with concrete feedback and return affected members from 待交付/);
+  assert.match(full, /without executor transcripts, test counts, file lists or code/);
+  assert.match(full, /merge coda-plugins, wait for npm publication, return coda members to update pinned versions and pass review\/checks, then merge coda/);
+  assert.match(full, /Deliver deploys once after all merges if approved/);
+  assert.match(full, /record unverified parts if deployment was not selected/);
+  assert.match(STILL_ON, /without implementation details/);
 });
 
 
