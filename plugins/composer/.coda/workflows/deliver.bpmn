@@ -22,13 +22,13 @@
     <userTask id="confirm" name="确认达标" coda:noteLabel="成员 PR（每行一个，按合并顺序）">
       <documentation>需求：{{inputs.title}}
 目标与完成标准：{{inputs.goal}}
-主 Agent：本需求运行在 coda 项目中。请确认成员功能达到目标，相关 develop 运行均已检查通过并停在「待交付」。
+主 Agent：本需求运行在交付并部署它的项目中。请确认成员功能达到目标，相关 develop 运行均已检查通过并停在「待交付」。
 当前成员：
 {{context.members}}
 待处理反馈：
 {{context.feedback}}
 如需修改，在相关 develop 的「待交付」上选「退回修改」，备注写具体意见；执行者改完，重新审查和检查并回到待交付后，再开始交付。
-选择「开始交付」时备注必填，每行一个成员 PR URL，按合并顺序排列，coda-plugins 在前、coda 在后。开启设备验收时重新集成、安装、验收；否则直接写交付汇报。
+选择「开始交付」时备注必填，每行一个成员 PR URL，按合并顺序排列，被依赖的仓库在前：先合并并发布被钉版本的包，再让钉它的仓库更新版本、通过检查后合并。开启设备验收时重新集成、安装、验收；否则直接写交付汇报。
 选择「放弃」结束本次需求运行。各运行由主 Agent 在人工任务里协调。</documentation>
       <extensionElements><coda:choice id="start" name="开始交付" primary="true" /><coda:choice id="stop" name="放弃" /></extensionElements>
     </userTask>
@@ -151,16 +151,16 @@ PR：链接
     <exclusiveGateway id="after-approval" name="交付选择" default="approval-release" />
     <sequenceFlow id="approval-confirm" sourceRef="after-approval" targetRef="context"><conditionExpression xsi:type="tFormalExpression">=approval-result.route = "confirm"</conditionExpression></sequenceFlow>
     <sequenceFlow id="approval-release" sourceRef="after-approval" targetRef="release" />
-    <userTask id="release" name="放行合并" coda:noteLabel="coda 最后一个合并提交">
+    <userTask id="release" name="放行合并" coda:noteLabel="本项目最后一个合并提交">
       <documentation>需求：{{inputs.title}}
 成员 PR（按合并顺序）：
 {{confirm-result.members}}
 主 Agent：请在成员 develop 运行的「待交付」人工任务里协调，按以下顺序完成：
-1. 先给各 coda-plugins 成员选「放行合并」，等合并完成。
-2. 等 npm 发布出新版本，再给 coda 成员选「退回修改」，让执行者把 Coda 钉的插件版本改成新版本；重新审查、检查通过并回到待交付。
-3. 最后放行 coda 成员，等全部合并完成。
+1. 被依赖的仓库在前：先给提供被钉版本的包的成员选「放行合并」，等合并并发布新版本。
+2. 再给钉这些包的仓库成员选「退回修改」，让执行者更新钉定的包版本；重新审查、检查通过并回到待交付。
+3. 最后放行依赖方成员，等全部合并完成。
 无对应仓库成员时跳过该项。成员运行不部署，本需求在全部合并后按用户勾选统一部署一次。
-全部合并后答复，备注必填，只写 coda 最后一个合并提交；只有插件成员时写 coda 当前目标分支提交。
+全部合并后答复，备注必填，只写本项目最后一个合并提交；没有本仓库成员时写本项目当前目标分支提交。
 {{if merged.feedback = null then "" else merged.feedback}}</documentation>
       <extensionElements><coda:choice id="merged" name="全部已合并" primary="true" /></extensionElements>
     </userTask>
@@ -181,7 +181,7 @@ PR：链接
     <userTask id="verify" name="真实环境验证" coda:noteLabel="验证结论（有问题时必填）">
       <documentation>需求：{{inputs.title}}
 目标与完成标准：{{inputs.goal}}
-coda 合并提交：{{merged.commit}}
+本项目合并提交：{{merged.commit}}
 {{if approve.options.deploy then "已完成统一部署，请主 Agent 按目标在部署后的真实环境走一遍。" else "用户未勾部署，请主 Agent 在当前真实环境按目标验证，并在备注说明未部署造成的未验证部分。"}}
 选「通过」或「有问题」；有问题时备注必填，写实际问题和未达标之处，结论会通知发起会话。
 {{if verify-result.feedback = null then "" else verify-result.feedback}}</documentation>

@@ -207,9 +207,12 @@ test('需求流程回路、人工任务、批准通知和一次部署契约', as
   assert.equal(option.default, undefined); assert.equal(option.id, 'deploy');
   for (const deploy of [false, true]) assert.equal(evaluate(option.shown.slice(1), { kinds: { deploy } }).value, deploy);
   const release = nodes.release.documentation[0].text;
-  assert.ok(release.indexOf('coda-plugins') < release.indexOf('npm'));
-  assert.ok(release.indexOf('npm') < release.indexOf('最后放行 coda'));
-  assert.match(release, /退回修改/); assert.match(release, /钉的插件版本/);
+  assert.match(release, /被依赖的仓库在前[\s\S]*合并并发布新版本[\s\S]*更新钉定的包版本[\s\S]*检查通过[\s\S]*最后放行依赖方成员/);
+  assert.match(release, /退回修改/);
+  assert.match(release, /没有本仓库成员时写本项目当前目标分支提交/);
+  assert.match(nodes.confirm.documentation[0].text, /交付并部署它的项目/);
+  assert.match(nodes.confirm.documentation[0].text, /被依赖的仓库在前/);
+  assert.doesNotMatch(release + nodes.confirm.documentation[0].text, /coda 项目|coda-plugins|npm|coda 成员/);
   assert.equal(route('deploy-choice', { merged: { route: 'merged' }, approve: { options: { deploy: true } } }), 'release');
   for (const deploy of [false, true]) assert.equal(route('deploy-choice', { merged: { route: 'deploy' }, approve: { options: { deploy } } }), deploy ? 'deploy' : 'verify');
   assert.deepEqual(process.flowElements.filter(e => e.action === 'run-workflows').map(e => e.id), ['deploy']);

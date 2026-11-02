@@ -31,20 +31,21 @@ test('Ultra 先建需求再关联功能，由主 Agent 判断达标、汇报并�
   assert.match(STILL_ON, /workflow_run deliver/);
   for (const text of [full, STILL_ON]) {
     assert.ok(text.indexOf('deliver') < text.indexOf('develop'), '先建需求再开发功能');
-    for (const requirement of ['coda project', 'title, goal and devices', 'save the run ID',
+    for (const requirement of ['project that delivers and deploys it', 'title, goal and devices', 'save the run ID',
       'delivery=<requirement run ID> and devices=false', 'project for cross-repository work',
       'Judge goal completion yourself', 'do not ask the user whether to deliver',
-      'member PR URLs at 确认达标 in merge order, coda-plugins first', 'deliver template', 'about 15 lines',
+      'member PR URLs at 确认达标 in merge order, dependency repositories first', 'deliver template', 'about 15 lines',
       'what was delivered and structural changes', 'At 放行合并, follow its instructions in order on each develop run\'s 待交付 task',
       'real environment after deployment', 'Standalone develop without delivery', 'small ad hoc fixes']) {
       assert.ok(text.includes(requirement), requirement);
     }
     assert.match(text, /Pass devices=true for client changes needing Mac or iPhone acceptance, otherwise devices=false/);
+    assert.match(text, /merge and publish packages whose versions are pinned, then have dependent repositories update pinned versions and pass review\/checks before merging/);
+    assert.doesNotMatch(text, /coda project|coda-plugins|npm|merge coda/);
   }
   assert.match(full, /answer only after both installations succeed/);
   assert.match(full, /return to 确认达标 with concrete feedback and return affected members from 待交付/);
   assert.match(full, /without executor transcripts, test counts, file lists or code/);
-  assert.match(full, /merge coda-plugins, wait for npm publication, return coda members to update pinned versions and pass review\/checks, then merge coda/);
   assert.match(full, /Deliver deploys once after all merges if approved/);
   assert.match(full, /record unverified parts if deployment was not selected/);
   assert.match(STILL_ON, /without implementation details/);
