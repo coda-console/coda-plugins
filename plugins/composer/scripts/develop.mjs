@@ -1,23 +1,11 @@
 // 每一步的工作区都会回收；泳道进度和已通过的改动留在本次运行的产物里。
 import { spawnSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
-import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { command, gh, git, output, slug } from './shared.mjs';
 
 const env = process.env, action = process.argv[2];
 const statePath = join(env.CODA_ARTIFACTS, 'develop.json');
-const output = (name, value) => {
-  const end = randomUUID();
-  appendFileSync(env.GITHUB_OUTPUT, `${name}<<${end}\n${value}\n${end}\n`);
-};
-const command = (bin, args) => {
-  const result = spawnSync(bin, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
-  if (result.error) throw result.error;
-  if (result.status !== 0) process.exit(result.status ?? 1);
-  return result.stdout.trim();
-};
-const git = (...args) => command('git', args);
-const gh = (...args) => command('gh', args);
 const instructions = `你是这次开发流程的执行者，自己完成这一项任务，不继承主 Agent 的协调职责，不再委派。
 只做这一项，在当前分支提交，不推送、不开 PR、不合并、不部署。
 遵守仓库的 AGENTS.md。只改必需的地方，不写防御性、冗余的代码，不顺手重构。
@@ -27,8 +15,7 @@ if (action === 'lane') {
   const base = env.BASE || gh('repo', 'view', '--json', 'defaultBranchRef', '--jq', '.defaultBranchRef.name');
   git('fetch', 'origin', base);
   const head = git('rev-parse', 'FETCH_HEAD');
-  const slug = env.TITLE.normalize('NFKC').replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '').slice(0, 50) || 'feature';
-  const lane = `lane/${slug}-${env.GITHUB_RUN_ID}`;
+  const lane = `lane/${slug(env.TITLE)}-${env.GITHUB_RUN_ID}`;
   git('branch', lane, head);
   git('push', 'origin', `${lane}:refs/heads/${lane}`);
   writeFileSync(statePath, JSON.stringify({ title: env.TITLE, base, lane, head, task: env.TASK, approved: [], phase: 'preview', feedback: '', pr: '' }));

@@ -92,5 +92,19 @@ Ultra 消失且此前 `sent > 0` 时用 `coda.tell` 告知关闭一次，恢复�
 
 每步独立工作区，进度与已通过的改动暂存于 `$CODA_ARTIFACTS/develop.json`；长期结果在泳道提交与 PR 中。执行者的分支/head 必须在本机仓库可读；`coda-agent --json` 标准输出是一行 `{session, branch, head, answer}`，`--continue` 保留同一会话并遵守首次的退出码约定。需要支持这两个接口的 Coda 版本。
 
+## 需求交付流程
+
+在 **coda 项目**用 `workflow_run` 发起 `deliver`，必填 `title`（需求名）、`goal`（目标与完成标准）、`devices`（布尔，是否设备验收）。各功能独立运行 `develop`，`delivery` 填本需求运行 ID，检查通过后停在「待交付」。
+
+1. 主 Agent 在「确认达标」选择「开始交付」，备注每行一个成员 PR URL，按合并顺序排列，coda-plugins 在前。流程记录各 PR 的 URL、head、分支及 base；选择「放弃」结束。
+2. 开启设备验收时，以最新 `origin/<base>` 创建 `delivery/<需求名>-<运行 ID>`，按顺序 `git merge --no-ff` 本仓库 coda 成员的已记录 head 并推送。集成失败经错误边界回到确认，合并冲突的具体 Git 输出作为反馈。新一轮从最新 base 重新集成并替换本运行的预览分支。
+3. 主 Agent 用集成提交分别发起 `mac-preview-install`、`ios-preview-install`，成功后答「已装好」；「回到确认」须附原因。用户统一设备验收一次，「不行」须附意见并回到确认。主 Agent 在相关成员的「待交付」退回修改，改好并重新检查后再集成、安装、验收。`devices=false` 跳过集成、安装及设备验收。
+4. 主 Agent 写约 15 行以内的交付汇报，备注作为批准卡正文：交付名、用户能感知的 3～5 条变化、结构变化（无则写「无」）、设备与检查结论、部署后真实环境验证计划、风险与未做事项（没有可省略）、PR 链接。不放执行者原文、测试数量、文件清单或代码。
+5. 用户「批准交付」卡显示汇报和全部成员 PR；「批准合并」的部署勾选仅在项目有 `kind=deploy` 时显示，默认不勾。「暂不合并」须附原因并返回确认。有效答复后用 `tell-session` 告知发起会话的选择。
+6. 主 Agent 按顺序放行成员：先放行 coda-plugins 的「待交付」，等合并及 npm 新版本发布；再退回 coda 成员，让执行者更新钉定的插件版本，经审查、检查回到待交付；最后放行 coda。全部合并后备注写 coda 最后一个合并提交，只有插件成员时写 coda 当前目标分支提交。
+7. 勾了部署时，在该合并提交上调用一次 `run-workflows kind=deploy`。随后主 Agent 按 `goal` 走真实环境验证，选「通过」或附具体意见选「有问题」，用 `tell-session` 告知发起会话后结束。未勾部署时仍验证当前真实环境，备注说明未部署造成的未验证部分。
+
+必填备注缺少时回原任务补填。成员快照、轮次和反馈保存在 `$CODA_ARTIFACTS/deliver.json`；运行之间只通过主 Agent 答复各自人工任务协调，不直接发消息。此流程不改变成员 develop 的审查、检查与合并路径。
+
 测试在 `test/plugins/composer/`，用临时 Git 仓库及假的 coda-agent、gh 验证，不发真实 PR 或部署。
 委派文案的基础采用 [oh-my-claudecode 的委派规则](https://github.com/Yeachan-Heo/oh-my-claudecode/blob/82602887b71a3984e040fac2839ec8d27a7c67b6/docs/CLAUDE.md#L16)，适配 Coda 开发流程与只读 spawn。版权与 MIT 许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
