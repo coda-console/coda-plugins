@@ -589,7 +589,7 @@
   {
     "id": "session",
     "displayName": "会话生命周期",
-    "description": "所有会话共用：存续期间管理空闲进程和任务转交，归档宽限后收尾，按设置回收托管工作树，限定同时执行的子会话。停用后不自动执行这些政策。",
+    "description": "所有会话共用：存续期间管理空闲进程和任务转交，归档宽限后收尾，按设置回收托管工作树，限定同时执行的子会话。停用后不执行生命周期政策；归档宽限后的 Agent 停止仍由 Coda 保障。",
     "version": "1.0.0",
     "category": "工作流程",
     "source": {
@@ -608,7 +608,7 @@
       "session.archiveGrace": {
         "type": "string",
         "format": "duration",
-        "description": "所有会话从归档起算，期间取消归档就回到会话存续；收尾暂未完成时也按此间隔重试。",
+        "description": "所有会话从归档起算，期间取消归档就回到会话存续。Agent 停止期限在归档时保存，停用插件也生效；生命周期收尾暂未完成时也按此间隔重试。",
         "title": "归档后多久收尾",
         "order": 2,
         "default": "PT10M"
@@ -1032,17 +1032,363 @@
     "defaultInstalled": false
   },
   {
+    "id": "composer",
+    "displayName": "输入框模式",
+    "description": "输入框可同时开启的五种模式：交接到新会话、从任意会话创建子会话、打 ! 执行命令、Ultra 协调模式，以及按周期重复任务的循环模式。Ultra 按需求交付，通过关联的开发流程委派功能，主 Agent 亲自审查、判断达标，统一验收与批准后按序合并、部署并在真实环境验证。",
+    "version": "3.3.0",
+    "category": "工作流程",
+    "source": {
+      "kind": "builtin",
+      "package": "@coda-console/composer",
+      "tag": "latest",
+      "version": "3.3.0",
+      "integrity": "sha512-jpMDDngcUrMPCKhkvhGdqhhpzLYJgsdRFj9e7wl+c4J10j0dOjfmbczyDWqrugIozolXXJfHDxCfYoTKaRPvtw==",
+      "repo": "https://github.com/coda-console/coda-plugins.git",
+      "path": "plugins/composer"
+    },
+    "dir": "node_modules/@coda-console/composer",
+    "title": "输入框模式",
+    "properties": {
+      "composer.templates": {
+        "type": "array",
+        "description": "进入 Ultra 时可选的名单，一行一个执行者：同一个模板名的几行是一个模板，排第一的模板是进入时的默认。默认没有模板，执行者名单为空时沿用当前会话的 Agent 和模型。",
+        "title": "模板",
+        "rows": {
+          "type": "object",
+          "columns": {
+            "template": {
+              "type": "string",
+              "title": "模板",
+              "order": 0
+            },
+            "who": {
+              "type": "object",
+              "format": "coda-agent",
+              "title": "Agent",
+              "order": 1
+            },
+            "when": {
+              "type": "string",
+              "title": "什么时候派给它",
+              "order": 2
+            }
+          },
+          "required": [
+            "template",
+            "who"
+          ]
+        },
+        "default": []
+      }
+    },
+    "main": "main.mjs",
+    "startup": true,
+    "workflows": [
+      "deliver",
+      "develop"
+    ],
+    "capabilities": [],
+    "services": [],
+    "groups": [],
+    "commands": [],
+    "gitCredentials": [],
+    "endpoints": [],
+    "views": [],
+    "composerModes": [
+      {
+        "id": "handoff",
+        "title": "交接到新会话",
+        "icon": "arrow.right.square",
+        "hint": "新会话承接这里的上下文，共享当前工作目录；可选择执行者，留空沿用输入框的执行者。可与其他模式同时开启，发送后退出交接模式。",
+        "placeholder": "接下来要完成什么？",
+        "sendLabel": "交接",
+        "once": true,
+        "in": [
+          "session"
+        ],
+        "parameters": {
+          "properties": {
+            "agent": {
+              "type": "object",
+              "format": "coda-agent",
+              "description": "留空沿用输入框的执行者。",
+              "title": "Agent",
+              "order": 0
+            }
+          }
+        },
+        "schema": {
+          "type": "object",
+          "properties": {
+            "agent": {
+              "title": "Agent",
+              "description": "留空沿用输入框的执行者。",
+              "type": "object",
+              "format": "coda-agent"
+            }
+          }
+        }
+      },
+      {
+        "id": "subagent",
+        "title": "子会话",
+        "icon": "arrow.triangle.branch",
+        "hint": "从当前会话创建子会话，承接近期上下文并沿用工作目录；子会话也可继续创建子会话。可选择执行者和回报对象，发送后退出本模式。",
+        "placeholder": "描述交给子会话的任务…",
+        "sendLabel": "启动子会话",
+        "once": true,
+        "in": [
+          "session"
+        ],
+        "parameters": {
+          "properties": {
+            "agent": {
+              "type": "object",
+              "format": "coda-agent",
+              "description": "留空沿用输入框的执行者。",
+              "title": "Agent",
+              "order": 0
+            },
+            "replyTo": {
+              "type": "string",
+              "enum": [
+                "parent",
+                "sender"
+              ],
+              "enumItemLabels": [
+                "完成后回报父会话",
+                "完成后回报你"
+              ],
+              "enumDescriptions": [
+                "结果交给父 Agent，由它接着处理",
+                "做完提醒你，不叫醒父 Agent"
+              ],
+              "title": "回报对象",
+              "default": "parent",
+              "order": 1
+            }
+          }
+        },
+        "schema": {
+          "type": "object",
+          "properties": {
+            "agent": {
+              "title": "Agent",
+              "description": "留空沿用输入框的执行者。",
+              "type": "object",
+              "format": "coda-agent"
+            },
+            "replyTo": {
+              "title": "回报对象",
+              "type": "string",
+              "enum": [
+                "parent",
+                "sender"
+              ],
+              "enumItemLabels": [
+                "完成后回报父会话",
+                "完成后回报你"
+              ],
+              "enumDescriptions": [
+                "结果交给父 Agent，由它接着处理",
+                "做完提醒你，不叫醒父 Agent"
+              ],
+              "default": "parent"
+            }
+          }
+        }
+      },
+      {
+        "id": "shell",
+        "title": "执行命令",
+        "icon": "terminal",
+        "hint": "在会话工作目录执行，命令和结果作为这条消息发给 Agent。",
+        "placeholder": "输入要执行的命令…",
+        "sendLabel": "执行",
+        "once": false,
+        "trigger": "!",
+        "in": [
+          "session",
+          "new"
+        ]
+      },
+      {
+        "id": "ultra",
+        "title": "Ultra",
+        "icon": "square.stack.3d.up",
+        "hint": "通过开发流程委派代码修改，主 Agent 亲自审查与验收；可与其他模式同时开启，点 × 退出。",
+        "placeholder": "要完成什么？",
+        "once": false,
+        "in": [
+          "session",
+          "new"
+        ],
+        "parameters": {
+          "properties": {
+            "subagents": {
+              "type": "array",
+              "title": "执行者",
+              "rows": {
+                "type": "object",
+                "columns": {
+                  "who": {
+                    "type": "object",
+                    "format": "coda-agent",
+                    "title": "Agent",
+                    "order": 0
+                  },
+                  "when": {
+                    "type": "string",
+                    "title": "什么时候派给它",
+                    "order": 1
+                  }
+                },
+                "required": [
+                  "who"
+                ]
+              },
+              "presets": {
+                "from": "composer.templates",
+                "by": "template"
+              },
+              "order": 0
+            }
+          }
+        },
+        "schema": {
+          "type": "object",
+          "properties": {
+            "subagents": {
+              "title": "执行者",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "who": {
+                    "title": "Agent",
+                    "type": "object",
+                    "format": "coda-agent"
+                  },
+                  "when": {
+                    "title": "什么时候派给它",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "who"
+                ]
+              },
+              "presets": {
+                "from": "composer.templates",
+                "by": "template"
+              }
+            }
+          }
+        }
+      },
+      {
+        "id": "loop",
+        "title": "循环",
+        "icon": "clock.arrow.2.circlepath",
+        "hint": "按周期把同一句话再发给 Agent，每轮做完才开始计时，7 天后自动结束；可与其他模式同时开启，发送后退出循环模式。",
+        "placeholder": "每轮要做什么？",
+        "sendLabel": "开始循环",
+        "once": true,
+        "in": [
+          "session"
+        ],
+        "parameters": {
+          "properties": {
+            "every": {
+              "type": "string",
+              "format": "duration",
+              "enum": [
+                "PT5M",
+                "PT10M",
+                "PT15M",
+                "PT30M",
+                "PT1H",
+                "PT2H",
+                "PT3H",
+                "PT6H",
+                "PT12H",
+                "P1D"
+              ],
+              "enumItemLabels": [
+                "5 分钟",
+                "10 分钟",
+                "15 分钟",
+                "30 分钟",
+                "1 小时",
+                "2 小时",
+                "3 小时",
+                "6 小时",
+                "12 小时",
+                "1 天"
+              ],
+              "title": "周期",
+              "default": "PT30M",
+              "order": 0
+            }
+          }
+        },
+        "schema": {
+          "type": "object",
+          "properties": {
+            "every": {
+              "title": "周期",
+              "type": "string",
+              "format": "duration",
+              "enum": [
+                "PT5M",
+                "PT10M",
+                "PT15M",
+                "PT30M",
+                "PT1H",
+                "PT2H",
+                "PT3H",
+                "PT6H",
+                "PT12H",
+                "P1D"
+              ],
+              "enumItemLabels": [
+                "5 分钟",
+                "10 分钟",
+                "15 分钟",
+                "30 分钟",
+                "1 小时",
+                "2 小时",
+                "3 小时",
+                "6 小时",
+                "12 小时",
+                "1 天"
+              ],
+              "default": "PT30M"
+            }
+          }
+        }
+      }
+    ],
+    "agents": [],
+    "dependencies": [
+      "github"
+    ],
+    "extensionPoints": {},
+    "extensions": [],
+    "defaultInstalled": true
+  },
+  {
     "id": "grok",
     "displayName": "Grok",
     "description": "Grok Agent：适配运行机上 Grok CLI 的 ACP 与审批模式；资源页的「Grok」面板显示账号与额度，可从 Coda 安装和登录。",
-    "version": "1.3.3",
+    "version": "1.4.0",
     "category": "Agent",
     "source": {
       "kind": "builtin",
       "package": "@coda-console/grok",
       "tag": "latest",
-      "version": "1.3.3",
-      "integrity": "sha512-59h5Kp3IjPerRjQJKnZNY1EnVJ+PBSnWK+U7ZfeYe6HeCDMVXmSaXhj1xmg2HY8xMRUGo4O8GqzYYHa5MntH+Q==",
+      "version": "1.4.0",
+      "integrity": "sha512-acq1OH9zrCN1qyfEpJpj0rJwwepzJkKsUM2E22Rh7Bk0IXpqkdbSnX8PYJsADCc6pRpjK0/P8ecYKK9146AZ1Q==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/grok"
     },
