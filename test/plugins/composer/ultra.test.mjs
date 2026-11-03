@@ -4,10 +4,15 @@ import { activate } from '../../../plugins/composer/main.mjs';
 import { OFF, STILL_ON, on } from '../../../plugins/composer/ultra.mjs';
 
 test('Ultra 名单保留开发执行者与只读 spawn 的选择和分工', () => {
-  assert.match(on([{ who: { agent: 'codex', model: 'gpt-6.1-sol', effort: 'ultra', mode: 'agent',
-    options: { 'service-tier': 'priority' } }, when: '调研' }]),
-  /- agent=codex model=gpt-6\.1-sol effort=ultra mode=agent options=\{"service-tier":"priority"\}: 调研/);
-  assert.match(on([]), /your own agent and model/);
+  const full = on([{ who: { agent: 'codex', model: 'gpt-6.1-sol', effort: 'ultra', mode: 'agent',
+    options: { 'service-tier': 'priority' } }, when: '任何工作' }]);
+  assert.match(full, /- agent=codex model=gpt-6\.1-sol effort=ultra mode=agent options=\{"service-tier":"priority"\}: 任何工作/);
+  assert.match(full, /Choose executors from this list by task for both develop and Coda spawn, passing agent\/model\/effort\/mode/);
+  assert.match(full, /options apply only to read-only spawn, not develop/);
+  assert.match(full, /Use your own agent and model only when no entry covers the work/);
+  assert.match(full, /Use Coda's `spawn` ONLY[^\n]*choose their executors from the list/);
+  assert.match(STILL_ON, /For both develop and Coda spawn, choose the executor from the list and pass agent\/model\/effort\/mode/);
+  assert.ok(on([]).endsWith('Use your own agent and model for develop inputs and for read-only Coda spawn.'));
 });
 
 

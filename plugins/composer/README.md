@@ -47,11 +47,11 @@ Ultra 的模板设置由 `ultra.templates` 改为 **`composer.templates`**，模
 一个需求要多个 `develop` 一起验收、一起批准时才用 `deliver`：先在交付并部署它的项目发起，传 `title`、`goal`、`devices` 并记下运行 ID；
 每个能独立交付的功能一个 `develop`，传 `delivery=<需求运行 ID>`、`devices=false`，跨仓库用 `project` 指定，可以同时进行。
 是否达标由主 Agent 判断，不问用户要不要交付；需求流程达标后在「确认达标」按合并顺序列出成员 PR，被依赖的仓库在前。交付汇报按 deliver 模板写约 15 行，讲交付了什么和结构变化，不放实现细节；在「放行合并」按任务说明顺序操作各 develop 的「待交付」，部署后在真实环境验证。
-`spawn` 只用于不改代码的调研、排查和核实。主 Agent 可以为定任务和审查读代码，不自己实现或替执行者修复。
+`spawn` 只用于不改代码的调研、排查和核实，执行者同样从名单选。主 Agent 可以为定任务和审查读代码，不自己实现或替执行者修复。
 
 `composer.templates` 是执行者模板，一行「模板名、Agent、什么时候派给它」。同一模板名的行是一组，进入时填第一组；默认没有模板。
 Ultra 参数仍保存为 `subagents`，预设引用 `{ "from": "composer.templates", "by": "template" }`，选择预设只填入名单一次，之后可修改。
-从名单选执行者，把 `agent`、`model`、`effort`、`mode` 传给 develop；名单为空或没有对应任务时用当前会话的 Agent 和模型。
+develop 和 Coda `spawn` 都按任务从名单选执行者，传 `agent`、`model`、`effort`、`mode`；只有名单为空或没有条目覆盖这项工作时，才用当前会话的 Agent 和模型。
 名单中的 `options` 只用于只读 `spawn`，develop v1 不接受它。
 
 `ultra.mjs` 在首条、改参数后的首条、创建新会话时给完整说明，之后每收下 10 条再提醒一次。

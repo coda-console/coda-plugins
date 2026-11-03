@@ -35,13 +35,13 @@ export function on(subagents) {
       'Write the delivery report using the deliver template in about 15 lines: what was delivered and structural changes, without executor transcripts, test counts, file lists or code. ' +
       'At 放行合并, follow its instructions in order on each develop run\'s 待交付 task: merge and publish packages whose versions are pinned, then have dependent repositories update pinned versions and pass review/checks before merging. ' +
       'Deliver deploys once after all merges if approved; verify the goal in the real environment after deployment, or record unverified parts if deployment was not selected.',
-    'Use Coda\'s `spawn` ONLY for research, investigation and verification that do not change code. ' +
+    'Use Coda\'s `spawn` ONLY for research, investigation and verification that do not change code; choose their executors from the list. ' +
       'Give these workers a concrete, self-contained task and ask for concise conclusions, sources and actual evidence. ' +
       'Do not repeat their routine work. ' +
       'Do not use native subagents unless explicitly requested. If concurrency is full, wait; if the required workflow or spawn is unavailable, report the blocker, ' +
       'without falling back to direct implementation or another delegation channel.',
     subagents.length
-      ? `Choose executors from this list by task and pass agent/model/effort/mode to develop; options apply only to read-only spawn. For uncovered work use your own agent and model:\n${subagents.map(line).join('\n')}`
+      ? `Choose executors from this list by task for both develop and Coda spawn, passing agent/model/effort/mode; options apply only to read-only spawn, not develop. Use your own agent and model only when no entry covers the work:\n${subagents.map(line).join('\n')}`
       : 'Use your own agent and model for develop inputs and for read-only Coda spawn.',
   ].join('\n\n');
 }
@@ -50,7 +50,7 @@ export const STILL_ON = 'Ultra is still on. By default do one requirement with o
   'Use workflow_run deliver only when a requirement needs several develop runs accepted and approved together: start it first in the project that delivers and deploys it with title, goal and devices, ' +
   'save the run ID, and pass delivery=<requirement run ID> and devices=false to each develop. ' +
   'One requirement at a time unless the user asks otherwise; use project for cross-repository work; tasks in a run are sequential. ' +
-  'Choose the executor from the list and pass agent/model/effort/mode. ' +
+  'For both develop and Coda spawn, choose the executor from the list and pass agent/model/effort/mode. ' +
   'Personally review architecture, minimal scope, defensive or redundant code and unrelated changes. ' +
   'Return concrete corrections to the same executor; do not fix code yourself. Judge goal completion yourself; do not ask the user whether to deliver. ' +
   'In a deliver requirement, once met, list member PR URLs at 确认达标 in merge order, dependency repositories first. Use the deliver template for a delivery report in about 15 lines: what was delivered and structural changes, without implementation details. ' +
