@@ -127,7 +127,17 @@ switch (action) {
     save();
     break;
   case 'merge': {
-    gh('pr', 'merge', state.pr, '--squash', '--match-head-commit', state.head, '--delete-branch');
+    const pr = JSON.parse(gh('pr', 'view', state.pr, '--json', 'state,headRefOid,mergeCommit'));
+    if (pr.state === 'MERGED') {
+      if (pr.headRefOid !== state.head) throw new Error(`PR 已合并，但 head 不一致：预期 ${state.head}，实际 ${pr.headRefOid}`);
+      output('commit', pr.mergeCommit.oid);
+      break;
+    }
+    if (pr.state === 'CLOSED') throw new Error(`PR 已关闭但未合并：${state.pr}`);
+    // 显式 --repo 让 gh 只删除远端分支，避免在分离 HEAD 中操作本地分支。
+    const url = new URL(state.pr);
+    const repo = `${url.host}/${url.pathname.split('/').slice(1, 3).join('/')}`;
+    gh('pr', 'merge', state.pr, '--repo', repo, '--squash', '--match-head-commit', state.head, '--delete-branch');
     const commit = gh('pr', 'view', state.pr, '--json', 'mergeCommit', '--jq', '.mergeCommit.oid');
     output('commit', commit);
     break;
