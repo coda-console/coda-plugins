@@ -82,7 +82,7 @@ Ultra 消失且此前 `sent > 0` 时用 `coda.tell` 告知关闭一次，恢复�
 4. `devices=false` 时，「通过，可以验收」直接进入开 PR 和检查，不产生安装与设备验收任务。`devices=true` 时，主 Agent 用 `workflow_run` 带泳道的精确 `commit` 只安装改到的那一端（`mac-preview-install`、`ios-preview-install`），发起的安装都成功后答复「已装好」；需要先修改（例如合入最新 `origin/<base>`）时选「回到审查」，必须在备注中写具体意见，缺少时返回安装卡。意见作为待处理反馈交回主 Agent，再用「退回修改」继续最近的执行会话。随后用户答复「设备验收」，「不行」须附意见并回主 Agent 审查，修好后重新安装与验收。
 5. 设备验收通过或未开启设备验收时，开泳道到 base 的 PR，正文按「第 N 项」汇总各次审查通过的任务：任务原文放在「任务」折叠区，随后列出执行者回答和提交；批准卡片使用同一份正文。`run-workflows kind=check` 在泳道最新提交上执行，随后用 `gh pr checks <PR> --watch` 等 GitHub 检查全部结束；没有任何 GitHub 检查时直接通过。任一检查失败交回主 Agent，材料给出失败阶段、提交和运行链接，由主 Agent 用 `workflow_status` 读取失败详情，再退回最近的执行会话。修好后更新同一个 PR 并重跑检查。
 6. 用户「批准合并」卡提供「部署」「发布预览版」「发布正式版」，各自仅在项目有 `kind=deploy`、`kind=preview`、`kind=release` 的流程时显示，默认都不勾；选中后运行对应类别的全部流程。「合并」另有「全部完成后通知 Agent」，默认勾选。批准后在同一 head 跑 `kind=premerge`，失败同样回审查，修好后重新检查与批准。
-7. 用 `gh pr merge --squash --match-head-commit <head> --delete-branch` 合并并交由 gh 删除泳道分支，兼容 GitHub 合并后自动删除分支。成功后读取合并提交，再在合并提交上按勾选依次运行 deploy、preview、release，每类一次；正式发布传 `publish: "true"`，与现有 PR 流程一致。
+7. 合并前查询 PR 状态：已合并且 head 与本次运行记录一致时，直接输出原合并提交；已合并但 head 不一致或已关闭未合并时明确报错。未合并时用 `gh pr merge --repo <host/owner/repo> --squash --match-head-commit <head> --delete-branch` 合并；仓库从 PR URL 取得，gh 只删除远端泳道分支、不操作本地分支，支持分离 HEAD 检出，也兼容 GitHub 合并后自动删除分支。成功后读取合并提交，再在合并提交上按勾选依次运行 deploy、preview、release，每类一次；正式发布传 `publish: "true"`，与现有 PR 流程一致。
 
 以上安装、验收和批准路径适用于 `delivery` 留空的独立交付。`delivery` 非空时，「通过，可以验收」直接开或更新 PR，跳过安装和设备验收，不受 `devices` 影响。项目检查及 GitHub 检查通过后，进入给主 Agent 的「待交付」任务，不出用户批准卡。任务列出所属需求、PR、head、泳道和各次审查通过的汇总：
 

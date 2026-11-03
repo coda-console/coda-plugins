@@ -64,13 +64,24 @@ const body = args.includes('--body-file') ? readFileSync(args[args.indexOf('--bo
 calls.push({ args, body }); writeFileSync(join(root, 'gh-calls'), JSON.stringify(calls));
 if (args[0] === 'repo') console.log('main');
 else if (args[1] === 'create') console.log('https://github.com/example/fixture/pull/1');
-else if (args[1] === 'merge') process.exit(Number(process.env.MERGE_EXIT || 0));
+else if (args[1] === 'merge') {
+  const { execFileSync } = require('node:child_process');
+  if (!args.includes('--repo')) execFileSync('git', ['symbolic-ref', '--short', 'HEAD']);
+  if (process.env.MERGE_EXIT) process.exit(Number(process.env.MERGE_EXIT));
+  if (process.env.DELETE_REMOTE === 'true') {
+    const state = JSON.parse(readFileSync(join(process.env.CODA_ARTIFACTS, 'develop.json'), 'utf8'));
+    execFileSync('git', ['push', 'origin', '--delete', state.lane], { stdio: 'pipe' });
+  }
+}
 else if (args[1] === 'view') {
   if (args.includes('statusCheckRollup')) {
     console.log(process.env.CHECKS_COUNT || '1');
     process.exit(Number(process.env.CHECKS_QUERY_EXIT || 0));
   }
-  console.log('f'.repeat(40));
+  if (args.includes('state,headRefOid,mergeCommit')) {
+    const state = JSON.parse(readFileSync(join(process.env.CODA_ARTIFACTS, 'develop.json'), 'utf8'));
+    console.log(JSON.stringify({ state: process.env.PR_STATE || 'OPEN', headRefOid: process.env.PR_HEAD || state.head, mergeCommit: { oid: 'f'.repeat(40) } }));
+  } else console.log('f'.repeat(40));
 }
 else if (args[1] === 'checks') {
   process.stdout.write(process.env.CHECKS_STDOUT || 'checks passed\n');
@@ -192,14 +203,46 @@ test('检查失败回最近执行会话，修好更新 PR 重跑；交由 gh 删
   assert.equal(f.git('ls-remote', 'origin', f.state().lane).split('\t')[0], f.state().head, '合并失败不删除泳道');
   f.git('push', 'origin', '--delete', f.state().lane);
   f.git('switch', '--detach');
-  f.git('branch', '-D', f.state().lane);
+
   const merged = f.run('merge').outputs.commit;
   assert.equal(merged, 'f'.repeat(40)); assert.notEqual(merged, f.state().head);
   assert.deepEqual(f.calls('gh').find(c => c.args[1] === 'merge').args,
-    ['pr', 'merge', f.state().pr, '--squash', '--match-head-commit', f.state().head, '--delete-branch']);
-  assert.deepEqual(f.calls('gh').find(c => c.args[0] === 'pr' && c.args[1] === 'view').args,
+    ['pr', 'merge', f.state().pr, '--repo', 'github.com/example/fixture', '--squash', '--match-head-commit', f.state().head, '--delete-branch']);
+  assert.deepEqual(f.calls('gh').find(c => c.args.includes('mergeCommit')).args,
     ['pr', 'view', f.state().pr, '--json', 'mergeCommit', '--jq', '.mergeCommit.oid']);
   assert.equal(f.git('ls-remote', 'origin', f.state().lane), '', '远端泳道已由 GitHub 自动删除');
+});
+
+for (const scenario of [
+  { name: '分离 HEAD 正常合并并删除远端分支', state: 'OPEN', merge: true },
+  { name: '远端已自动删除仍可合并', state: 'OPEN', merge: true, deleted: true },
+  { name: '已合并且 head 一致可重复读取提交', state: 'MERGED', deleted: true },
+  { name: '已合并但 head 不一致失败', state: 'MERGED', head: 'a'.repeat(40), error: /已合并，但 head 不一致/ },
+  { name: '已关闭未合并失败', state: 'CLOSED', error: /已关闭但未合并/ },
+  { name: '真实合并失败直接退出', state: 'OPEN', merge: true, exit: '7' },
+]) test(scenario.name, t => {
+  const f = fixture(t);
+  f.run('lane'); f.run('pr');
+  f.git('switch', '--detach');
+  assert.equal(f.git('branch', '--show-current'), '');
+  const branches = f.git('show-ref', '--heads');
+  if (scenario.deleted) f.git('push', 'origin', '--delete', f.state().lane);
+  const extra = { PR_STATE: scenario.state, PR_HEAD: scenario.head || '', MERGE_EXIT: scenario.exit || '',
+    DELETE_REMOTE: String(!scenario.deleted) };
+  const result = f.run('merge', extra, scenario.error ? 1 : Number(scenario.exit || 0));
+  assert.equal(result.outputs.commit, scenario.error || scenario.exit ? undefined : 'f'.repeat(40));
+  if (scenario.error) assert.match(result.stderr, scenario.error);
+  assert.equal(f.git('show-ref', '--heads'), branches, '不改动本地分支');
+  assert.equal(f.git('branch', '--show-current'), '', '保持分离 HEAD');
+  const merges = f.calls('gh').filter(c => c.args[1] === 'merge');
+  assert.equal(merges.length, scenario.merge ? 1 : 0);
+  if (scenario.merge) assert.deepEqual(merges[0].args,
+    ['pr', 'merge', f.state().pr, '--repo', 'github.com/example/fixture', '--squash', '--match-head-commit', f.state().head, '--delete-branch']);
+  if (!scenario.error && !scenario.exit) {
+    assert.equal(f.git('ls-remote', 'origin', f.state().lane), '');
+    assert.equal(f.run('merge', { PR_STATE: 'MERGED' }).outputs.commit, result.outputs.commit);
+    assert.equal(f.calls('gh').filter(c => c.args[1] === 'merge').length, merges.length, '重跑不再合并');
+  }
 });
 
 test('泳道不接受分叉，Agent 非零退出不进入审查', t => {
