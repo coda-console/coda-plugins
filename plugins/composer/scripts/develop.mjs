@@ -10,7 +10,7 @@ const instructions = `你是这次开发流程的执行者，自己完成这一�
 只做这一项，在当前分支提交，不推送、不开 PR、不合并、不部署。
 遵守仓库的 AGENTS.md。只改必需的地方，不写防御性、冗余的代码，不顺手重构。
 只跑与改动直接相关的快检查；流程会在审查前自己跑项目检查，构建、全套和界面检查不在这里重复，不必再用 run-held 跑整套编译。
-发布说明由主 Agent 审查通过时准备，用户批准发布时填写确认。
+用户勾选发布后，未自行填写发布说明时，由主 Agent 在「写发布说明」任务中准备。
 回报改了什么、为什么、实际跑了哪些验证及未验证部分。`;
 
 if (action === 'lane') {
@@ -117,8 +117,15 @@ switch (action) {
   case 'approval': {
     const { choice, note = '', options = {} } = JSON.parse(env.APPROVAL);
     const missing = choice === 'merge' && (options.preview || options.release) && !note.trim();
-    output('feedback', missing ? '勾选发布预览版或正式版必须填写发布说明。' : '');
-    output('route', missing ? 'approve' : choice === 'stop' ? 'stop' : 'merge');
+    output('route', missing ? 'notes' : choice === 'stop' ? 'stop' : 'merge');
+    break;
+  }
+  case 'notes': {
+    const { note = '' } = JSON.parse(env.NOTES);
+    const missing = !note.trim();
+    output('route', missing ? 'notes' : 'ready');
+    output('feedback', missing ? '请在备注填写面向用户的发布说明。' : '');
+    output('notes', note);
     break;
   }
   case 'pr': {

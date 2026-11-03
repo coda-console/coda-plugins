@@ -89,10 +89,14 @@ switch (action) {
     if (answer('approve', true)) output('body', JSON.parse(env.RESPONSE).note);
     break;
   case 'approval': {
-    const { choice, options = {} } = JSON.parse(env.RESPONSE);
-    answer(choice === 'stop' ? 'confirm' : 'release', choice === 'stop' || options.preview || options.release);
+    const { choice, note = '', options = {} } = JSON.parse(env.RESPONSE);
+    const missing = (options.preview || options.release) && !note.trim();
+    answer(choice === 'stop' ? 'confirm' : missing ? 'notes' : 'release', choice === 'stop');
     break;
   }
+  case 'notes':
+    if (answer('ready', true)) output('notes', JSON.parse(env.RESPONSE).note);
+    break;
   case 'merged':
     if (answer('deploy', true)) output('commit', JSON.parse(env.RESPONSE).note.trim());
     break;
