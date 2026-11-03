@@ -21,7 +21,7 @@ export const composerType = { kind: 'composers', participants: () => [],
   spec: { ...object({ thread: string, project: string, modes: array(object({ mode, values })) }, ['modes']),
     oneOf: [{ required: ['thread'], not: { required: ['project'] } }, { required: ['project'], not: { required: ['thread'] } }] },
   status: object({ modes: array(object({ mode, sent: { type: 'integer', minimum: 0 }, changedSinceSent: { type: 'boolean' }, presets: { type: 'object', additionalProperties: array(object({ name: {}, values: array(values) })) } })) }) };
-const tell = array({ type: 'string', minLength: 1, maxLength: 4000, pattern: '^[^\\u0000]*\\S[^\\u0000]*$' });
+const tell = array({ type: 'string', minLength: 1, pattern:'^[^\\u0000]*\\S[^\\u0000]*$' });
 const targets = array(target), divert = { type: 'boolean' };
 export const submissionType = { kind: 'submissions',
   participants: object => object.spec.modes.map(({ mode }) => { const [plugin, key] = mode.split('/'); return { plugin, key }; }),
