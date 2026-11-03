@@ -67,6 +67,7 @@ export async function executeHooks({ directory, root, attempt, source, slot, spe
     await checkpoint({ phase: 'running', startedAt: new Date().toISOString() });
     const result = await hook({ ...common, command: 'run_script_step', signal, state,
       args: { ...spec.task, workingDirectory: spec.workingDirectory ?? '.', env: spec.env ?? {},
+        context: spec.context, metered: slot !== null,
         files: { output: join(directory, 'output'), summary: join(directory, 'summary') } } });
     code = result.code;
     if (result.aborted || signal.aborted) throw new Error('执行已取消');

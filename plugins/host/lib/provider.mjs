@@ -7,33 +7,28 @@ import { Sources } from './source.mjs';
 import { Executions } from './executions.mjs';
 import { serveSimulatorStatus } from './simulator-status.mjs';
 
+const named = values => Object.fromEntries(Object.entries(values ?? {}).filter(([key]) => key.startsWith('group:')));
 const json = (res, status, body) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
-async function body(req) {
-  const chunks = []; let size = 0;
-  for await (const chunk of req) { size += chunk.length; if (size > 2 ** 20) throw new Error('请求超过 1 MiB'); chunks.push(chunk); }
-  return JSON.parse(Buffer.concat(chunks).toString() || '{}');
-}
 
 export class HostProvider {
-  constructor(coda, { definitions, discover = probe, executions = options => new Executions(options), interval = setInterval } = {}) {
-    Object.assign(this, { coda, definitions, discover, executions, interval });
-    this.executorId = 'host'; this.local = new Map(); this.runs = new Map(); this.subscriptions = [];
+  constructor(coda, { executionDefinition, discover = probe, executions = options => new Executions(options), interval = setInterval } = {}) {
+    Object.assign(this, { coda, executionDefinition, discover, executions, interval });
+    this.executorId = 'host'; this.runs = new Map(); this.subscriptions = [];
     this.queue = Promise.resolve(); this.closed = false;
   }
   async start() {
     if (!this.coda.resources?.acquire || !this.coda.protocols.resolve) throw new Error('host 需要 Coda 的引用解析与本机账本准入接口');
-    const [executor, execution] = this.definitions;
-    await this.coda.protocols.define(executor);
-    await this.coda.protocols.define({ ...execution, controllers: ['scheduler'] });
+    await this.coda.protocols.implement({ kind: 'executor', id: this.executorId });
+    const execution = this.executionDefinition;
     // A local durable receipt for the existing execution, with readable logs; not a second scheduler or workflow queue.
-    await this.coda.protocols.define({ kind: 'hostExecution', spec: { type: 'object', properties: {
+    await this.coda.protocols.define({ kind: 'hostExecutionV2', spec: { type: 'object', properties: {
       execution: { type: 'object', properties: { kind: { const: 'execution' }, id: { type: 'string' } }, required: ['kind', 'id'], additionalProperties: false },
       assignmentId: { type: 'string' },
     }, required: ['execution', 'assignmentId'], additionalProperties: false }, status: execution.status });
     this.subscriptions.push(await this.coda.protocols.observe('executor', event => {
       if (event.id === this.executorId) this.offered = event.type === 'DELETED' ? null : event.object;
     }, 'local'));
-    this.subscriptions.push(await this.coda.protocols.observe('hostExecution', event => {
+    this.subscriptions.push(await this.coda.protocols.observe('hostExecutionV2', event => {
       if (event.type === 'DELETED') this.runs.delete(event.id); else this.runs.set(event.id, event.object);
     }, 'local'));
     this.discovered = await this.discover();
@@ -47,13 +42,10 @@ export class HostProvider {
     }));
     await this.refresh();
     await this.coda.protocols.publish('executor', this.executorId);
-    this.subscriptions.push(await this.coda.protocols.control('execution', async event => {
-      if (event.type === 'DELETED') this.local.delete(event.id);
-      else { this.local.set(event.id, event.object); await this.coda.protocols.publish('execution', event.id, !!event.object.spec.executor); }
-    }, 'local'));
     // Receive intent immediately while source/admission IO is pending. The engine's per-ID queue serializes work;
     // an outer controller queue would hide cancellation or re-binding until after the old request launches.
     this.subscriptions.push(await this.coda.protocols.observe('execution', event => {
+      if (!event.id.startsWith('remote:')) return; // Coda's original local runner owns local attempts.
       void this.engine.observe(event).catch(console.error);
     }, 'assigned'));
     this.service = await this.coda.services.register('execution', (req, res, caller) => this.serve(req, res, caller));
@@ -70,11 +62,13 @@ export class HostProvider {
       if (this.closed) return;
       const settings = JSON.parse((await this.coda.environment()).CODA_PLUGIN_SETTINGS ?? '{}');
       const spec = { protocolVersion: 1, enabled: settings['host.enabled'] !== false,
-        capacity: { slots: settings['host.capacity'] ?? 1 }, labels: [...new Set((settings['host.labels'] ?? '').split(',').map(s => s.trim()).filter(Boolean))], title: '本机运行器' };
+        capacity: { ...named(this.offered?.spec.capacity), slots: settings['host.capacity'] ?? 1 }, labels: [...new Set((settings['host.labels'] ?? '').split(',').map(s => s.trim()).filter(Boolean))], title: '本机运行器' };
       let object = this.offered;
       if (!object || canonical(object.spec) !== canonical(spec)) object = await this.coda.protocols.put({ kind: 'executor', id: this.executorId, spec,
         ...(object ? { revision: object.revision } : { status: {} }) });
       const facts = capacityStatus(spec, this.group, this.discovered), old = object.status;
+      // Named groups are Coda's local runner facts; host enhances this same executor, not another pool.
+      for (const field of ['capacity', 'occupied', 'available']) facts[field] = { ...named(old[field]), ...facts[field] };
       const { observedAt, observedRevision, ...before } = old;
       // Don't chase our own status revisions or create an endless watch-update loop.
       if (canonical(before) !== canonical(facts) || !observedAt || Date.now() - Date.parse(observedAt) >= 55_000) {
@@ -95,23 +89,7 @@ export class HostProvider {
       }
       const receipt = /^\/runs\/([a-f0-9]{64})$/.exec(url.pathname);
       if (req.method === 'GET' && receipt) return json(res, this.runs.has(receipt[1]) ? 200 : 404, this.runs.get(receipt[1]) ?? { error: '执行记录不存在' });
-      if (caller?.local !== true) return json(res, 403, { error: '执行管理入口只接受本机调用' });
-      const match = /^\/requests\/([a-zA-Z0-9_-]{1,100})(?:\/(cancel))?$/.exec(url.pathname);
-      if (!match) return json(res, 404, { error: '未知执行路径' });
-      const [, id, action] = match, object = this.local.get(id);
-      if (req.method === 'GET' && !action) return json(res, object ? 200 : 404, object ?? { error: '请求不存在' });
-      if (req.method !== 'POST') return json(res, 405, { error: '需要 GET 或 POST' });
-      const data = await body(req);
-      if (action === 'cancel') {
-        if (!object) return json(res, 404, { error: '请求不存在' });
-        await this.coda.protocols.update('execution', id, { ...object.spec, cancel: true }, data.revision);
-      } else {
-        if (object) return json(res, 409, { error: '一次尝试只能创建一次' });
-        if (data.spec?.executor != null || data.spec?.assignmentId != null) return json(res, 400, { error: '绑定只能由 scheduler 写入' });
-        await this.coda.protocols.put({ kind: 'execution', id, spec: data.spec,
-          status: { phase: 'queued', assignmentId: null } });
-      }
-      return json(res, 200, { kind: 'execution', id });
+      return json(res, 404, { error: '未知执行路径；执行请求由 Coda 创建和取消' });
     } catch (error) {
       if (res.headersSent) res.destroy(error); else json(res, error.status ?? 400, { error: error.message });
     }

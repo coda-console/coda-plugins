@@ -50,5 +50,5 @@ export function capacityStatus(spec, group, discovered) {
   const available = group?.exclusive ? 0 : Math.max(0, Math.min(capacity - occupied, group?.available ?? 0));
   return { ...discovered, capacity: { slots: capacity }, occupied: { slots: occupied }, available: { slots: available },
     accepting: spec.enabled && capacity > 0 && !!group,
-    executionFeatures: { multiResource: false, multiUnit: false, exclusive: true } };
+    executionFeatures: { multiResource: false, multiUnit: false, exclusive: true, noResources: true, namedResources: true, context: true } };
 }

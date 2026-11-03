@@ -35,7 +35,11 @@ function fixture(root) {
   const check = object => { const type = types.get(object.kind); validate(type.spec, object.spec, object.kind); validate(type.status, object.status, `${object.kind}.status`); };
   const coda = { plugin: { state: root }, environment: async () => ({ PATH: process.env.PATH, CODA_PLUGIN_SETTINGS: JSON.stringify(settings) }),
     protocols: {
-      define: async definition => { providerDefinition(definition); types.register({ ...definition, participants: () => [] }); },
+      define: async definition => {
+        assert.ok(!['executor', 'execution'].includes(definition.kind), 'Coda owns the public types');
+        providerDefinition(definition); types.register({ ...definition, participants: () => [] });
+      },
+      implement: async ref => { assert.deepEqual(ref, { kind: 'executor', id: 'host' }); return objects.get('executor/host'); },
       put: async object => {
         const previous = objects.get(`${object.kind}/${object.id}`);
         if (previous) assert.equal(object.revision, previous.revision);
@@ -66,6 +70,9 @@ function fixture(root) {
     watch: async (kind, fn) => { assert.equal(kind, 'concurrency-groups'); fn({ type: 'ADDED', id: 'host', object: { capacity: 2, occupied: 1, available: 1 } }); return { dispose() {} }; },
     services: { register: async () => ({ dispose() {} }) },
   };
+  for (const definition of [EXECUTOR_PROTOCOL, EXECUTION_PROTOCOL]) types.register({ ...definition, participants: () => [] });
+  save({ kind: 'executor', id: 'host', instance: 'local-executor',
+    spec: { protocolVersion: 1, enabled: true, capacity: { slots: 1 }, labels: [] }, status: {} });
   const handlers = coda.protocols;
   coda.protocols = providerAPI({
     call: (method, args) => handlers[method](...args),
@@ -81,12 +88,13 @@ function fixture(root) {
 test('provider uses public schemas, publishes real ledger facts, applies configuration and does not chase status revisions', async t => {
   const root = await mkdtemp(join(tmpdir(), 'host-provider-')); t.after(() => rm(root, { recursive: true, force: true }));
   const f = fixture(root);
-  const host = new HostProvider(f.coda, { definitions: [EXECUTOR_PROTOCOL, EXECUTION_PROTOCOL], interval: () => null,
+  const host = new HostProvider(f.coda, { executionDefinition: EXECUTION_PROTOCOL, interval: () => null,
     discover: async () => ({ detectedLabels: ['linux', 'x64', 'node-26'], capabilities: { os: 'linux', arch: 'x64', nodeVersion: '26.8.2', graphicalSession: null } }),
     executions: options => new Executions({ ...options, launch: async () => {}, control: async () => true }),
   });
   await host.start(); await f.flush();
   let object = f.objects.get('executor/host');
+  assert.equal(object.instance, 'local-executor');
   assert.equal(object.status.accepting, true); assert.deepEqual(object.spec.labels, ['custom']);
   assert.deepEqual(object.status.available, { slots: 1 });
   const revision = object.revision; await host.refresh(); await f.flush();
@@ -113,7 +121,7 @@ for (const stage of ['source', 'environment', 'admission']) for (const change of
       if (stage === 'admission') await pause();
       return { admitted: true, lease, slot: 0 };
     });
-    const host = new HostProvider(f.coda, { definitions: [EXECUTOR_PROTOCOL, EXECUTION_PROTOCOL], interval: () => null,
+    const host = new HostProvider(f.coda, { executionDefinition: EXECUTION_PROTOCOL, interval: () => null,
       discover: async () => ({ detectedLabels: ['linux'], capabilities: { os: 'linux', arch: 'x64', nodeVersion: '26', graphicalSession: null } }),
       executions: options => new Executions({ ...options,
         sources: { resolve: async () => { if (stage === 'source') await pause(); return null; } },
@@ -122,7 +130,7 @@ for (const stage of ['source', 'environment', 'admission']) for (const change of
     });
     await host.start(); await f.flush();
     waiting = true;
-    const object = await f.coda.protocols.put({ kind: 'execution', id: 'request', spec: {
+    const object = await f.coda.protocols.put({ kind: 'execution', id: 'remote:request', spec: {
       protocolVersion: 1, executor: { kind: 'executor', id: 'host' }, assignmentId: 'old-binding', run: { kind: 'workflow-runs', id: 'run' },
       attempt: 1, source: null, requirements: { labels: ['linux'] }, resources: { slots: 1 }, task: { command: 'true', args: [] }, env: {},
     }, status: {} });
@@ -139,8 +147,8 @@ for (const stage of ['source', 'environment', 'admission']) for (const change of
     assert.deepEqual(launches, change === 'rebind' ? ['new-binding'] : []);
     assert.equal(host.engine.journal.get(identity(object)), null, 'superseded binding never receives a durable claim');
     assert.deepEqual(released, stage === 'admission' ? ['lease-0'] : []);
-    if (change === 'cancel') assert.equal(f.objects.get('execution/request').status.outcome, 'cancelled');
-    if (change === 'delete') assert.equal(f.objects.has('execution/request'), false);
+    if (change === 'cancel') assert.equal(f.objects.get('execution/remote:request').status.outcome, 'cancelled');
+    if (change === 'delete') assert.equal(f.objects.has('execution/remote:request'), false);
     await host.stop();
   });
 }
@@ -148,21 +156,21 @@ for (const stage of ['source', 'environment', 'admission']) for (const change of
 test('execution results and local receipts validate against the published schema, including recovery and completion', async t => {
   const root = await mkdtemp(join(tmpdir(), 'host-public-contract-')); t.after(() => rm(root, { recursive: true, force: true }));
   const f = fixture(root);
-  const host = new HostProvider(f.coda, { definitions: [EXECUTOR_PROTOCOL, EXECUTION_PROTOCOL], interval: () => null,
+  const host = new HostProvider(f.coda, { executionDefinition: EXECUTION_PROTOCOL, interval: () => null,
     discover: async () => ({ detectedLabels: ['linux'], capabilities: { os: 'linux', arch: 'x64', nodeVersion: '26', graphicalSession: null } }),
     executions: options => new Executions({ ...options, launch: async () => {}, control: async () => false }),
   });
   await host.start(); await f.flush();
-  const object = await f.coda.protocols.put({ kind: 'execution', id: 'request', spec: {
+  const object = await f.coda.protocols.put({ kind: 'execution', id: 'remote:request', spec: {
     protocolVersion: 1, executor: { kind: 'executor', id: 'host' }, assignmentId: 'assigned', run: { kind: 'workflow-runs', id: 'run' },
     attempt: 1, source: null, requirements: { labels: ['linux'] }, resources: { slots: 1 }, task: { command: 'true', args: [] }, env: {},
   }, status: {} });
   await f.flush(); await host.engine.tick(); await f.flush();
-  assert.equal(f.objects.get('execution/request').status.reason.code, 'result_unknown');
+  assert.equal(f.objects.get('execution/remote:request').status.reason.code, 'result_unknown');
   const record = host.engine.journal.get(identity(object)); record.phase = 'finished'; record.startedAt = '2026-11-01T00:00:00.000Z';
   record.result = { outcome: 'succeeded', exitCode: 0, finishedAt: '2026-11-01T00:00:01.000Z', outputs: { answer: 'yes' } };
   host.engine.journal.save(record); await host.engine.tick(); await f.flush();
-  assert.equal(f.objects.get('execution/request').status.outcome, 'succeeded');
-  assert.equal(f.objects.get(`hostExecution/${record.key}`).status.outputs.answer, 'yes');
+  assert.equal(f.objects.get('execution/remote:request').status.outcome, 'succeeded');
+  assert.equal(f.objects.get(`hostExecutionV2/${record.key}`).status.outputs.answer, 'yes');
   await host.stop();
 });

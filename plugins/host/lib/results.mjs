@@ -31,9 +31,10 @@ export function outputs(text) {
   return result;
 }
 
-export async function resultFiles(directory) {
+export async function resultFiles(directory, declaredNames) {
   const output = await readPart(join(directory, 'output'), 1024 * 1024 + 1);
   if (Buffer.byteLength(output) > 1024 * 1024) throw new Error('步骤输出文件过大');
-  return { outputs: outputs(output), summary: (await readPart(join(directory, 'summary'), 16384)).slice(0, 4096),
+  const parsed = outputs(output), names = declaredNames && new Set(declaredNames);
+  return { outputs: names ? Object.fromEntries(Object.entries(parsed).filter(([name]) => names.has(name))) : parsed, summary: (await readPart(join(directory, 'summary'), 16384)).slice(0, 4096),
     outputTail: (await readPart(join(directory, 'log'), 16384, true)).slice(-16384) };
 }

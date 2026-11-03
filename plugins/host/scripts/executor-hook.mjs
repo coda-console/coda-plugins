@@ -1,7 +1,8 @@
 import { spawn, execFile } from 'node:child_process';
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { executionEnvironment } from '../lib/environment.mjs';
 import { inside, prepareWorkspace } from '../lib/workspace.mjs';
 
 const exec = promisify(execFile), chunks = [];
@@ -17,11 +18,9 @@ try {
   } else if (command === 'run_script_step') {
     const cwd = await inside(state.workspace, args.workingDirectory);
     // Execution inherits runtime paths, never the plugin host's secrets/settings. Reserved names stay local.
-    const declared = args.env ?? {};
-    if (Object.keys(declared).some(key => /^(CODA_|HOST_SIM_|GITHUB_OUTPUT$|GITHUB_STEP_SUMMARY$|RUNNER_)/.test(key))) throw new Error('声明变量不能覆盖执行器变量');
-    const env = { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, ...declared,
-      CI: 'true', HOST_SIM_LEASE: 'coda-run:build', HOST_SIM_DEVICES: state.devices,
-      GITHUB_OUTPUT: args.files.output, GITHUB_STEP_SUMMARY: args.files.summary };
+    const env = executionEnvironment({ runtime: process.env, declared: args.env, workflow: args.context?.workflow,
+      workspace: state.workspace, directory: process.cwd(), devices: state.devices, metered: args.metered, files: args.files });
+    await mkdir(env.RUNNER_TEMP, { recursive: true });
     let program, argv;
     if (Object.hasOwn(args, 'script')) {
       const file = join(process.cwd(), 'script.sh'); await writeFile(file, args.script, { mode: 0o600 });
