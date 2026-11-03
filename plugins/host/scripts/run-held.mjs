@@ -20,7 +20,7 @@ Object.assign(env, { HOST_SIM_LEASE: `coda-run:${what === '模拟器' ? 'simulat
 const simctl = env.HOST_SIM_SIMCTL ?? 'xcrun';
 
 const idleMinutes = Number(process.env.HELD_IDLE_MINUTES ?? 10);
-let idleTimer, killTimer, idleFailure = '', tail = '';
+let idleTimer, killTimer, idleFailure = '';
 let ending = false;
 // Register before launching the command, and keep cancellation authoritative through cleanup and exit.
 // A signal callback may arrive after the child's close callback, even for the same group-wide TERM.
@@ -34,7 +34,6 @@ if (!isAbsolute(cwd ?? '') || !existsSync(cwd) || !statSync(cwd).isDirectory()) 
     clearTimeout(idleTimer);
     if (idleMinutes > 0 && !idleFailure && !ending) idleTimer = setTimeout(() => {
       idleFailure = `${idleMinutes} 分钟无输出`;
-      process.stderr.write(`失败：${idleFailure}\n日志最后约 20 行：\n${tail}\n`);
       // The wrapper is exec'd as the step's process-group leader. Stop the entire command tree,
       // retaining the same five-minute cleanup grace as the workflow's cancelTimeout.
       killTimer = setTimeout(() => process.kill(-process.pid, 'SIGKILL'), 5 * 60_000);
@@ -46,7 +45,6 @@ if (!isAbsolute(cwd ?? '') || !existsSync(cwd) || !statSync(cwd).isDirectory()) 
     stream.setEncoding('utf8');
     stream.on('data', data => {
       destination.write(data);
-      tail = (tail + data).slice(-64 * 1024).split('\n').slice(-21).join('\n');
       resetIdle();
     });
   }
@@ -73,7 +71,7 @@ async function done(status) {
   const reason = idleFailure || (!ending && status !== 0 ? `命令非零退出（退出码 ${status}）` : '');
   if (reason) {
     appendFileSync(process.env.GITHUB_OUTPUT, `failure_reason=${reason}\n`);
-    process.stderr.write(`失败：${reason}\n日志最后约 20 行：\n${tail}\n`);
+    process.stderr.write(`失败：${reason}\n`);
   }
   clearTimeout(killTimer);
   // Let pending signal callbacks and output drain instead of synchronously exiting inside close.

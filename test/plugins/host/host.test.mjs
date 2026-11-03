@@ -121,11 +121,12 @@ test('持锁执行 runs the command where it was told, with the project\'s envir
   const sims = simctl(t, ['FAKE-1']);
   const { at, ended } = held(t, { command: 'echo "lease=$HOST_SIM_LEASE in=$(basename "$PWD") plugin=${CODA_PLUGIN_PATH:-none} runner=${RUNNER_TEMP:-none} run=$HOST_SIM_RUN_ID"; echo FAKE-1 >> "$HOST_SIM_DEVICES"; exit 4' },
     { HOST_SIM_SIMCTL: sims.tool, GITHUB_RUN_ID: 'held-owner' });
-  const { code, out, outputs } = await ended;
+  const { code, out, err, outputs } = await ended;
   // It fails as the command does; the command's status is the output.
   assert.equal(code, 1); assert.equal(outputs, 'exit_code=4\nfailure_reason=命令非零退出（退出码 4）\n');
   assert.match(out, new RegExp(`lease=coda-run:build in=${basename(at)} plugin=none runner=none run=held-owner`));
   assert.match(out, /已删除模拟器 FAKE-1/);
+  assert.equal(err, '失败：命令非零退出（退出码 4）\n');
   assert.equal(sims.log(), 'shutdown FAKE-1\ndelete FAKE-1\n');
   const simulator = await held(t, { command: 'echo "$HOST_SIM_LEASE"', what: '模拟器' }).ended;
   assert.deepEqual([simulator.code, simulator.out, simulator.outputs], [0, 'coda-run:simulator\n', 'exit_code=0\n']);
@@ -238,11 +239,11 @@ test('cleanup eligibility follows a fresh public run state, including reruns, an
 });
 
 
-test('持锁执行 fails a hung command with its idle reason and log tail', { timeout: 5000 }, async t => {
+test('持锁执行 fails a hung command with its idle reason once at the end', { timeout: 5000 }, async t => {
   const result = await held(t, { command: 'echo before-hang >&2; sleep 60' }, { HELD_IDLE_MINUTES: '0.005' }).ended;
   assert.equal(result.code, 1);
   assert.match(result.outputs, /failure_reason=0.005 分钟无输出/);
-  assert.match(result.err, /失败：0.005 分钟无输出\n日志最后约 20 行：\nbefore-hang/);
+  assert.equal(result.err, 'before-hang\n失败：0.005 分钟无输出\n');
 });
 
 test('持锁执行 keeps resetting the idle deadline on stdout and stderr output', { timeout: 5000 }, async t => {
