@@ -89,8 +89,8 @@ switch (action) {
     if (answer('approve', true)) output('body', JSON.parse(env.RESPONSE).note);
     break;
   case 'approval': {
-    const { choice } = JSON.parse(env.RESPONSE);
-    answer(choice === 'stop' ? 'confirm' : 'release', choice === 'stop');
+    const { choice, options = {} } = JSON.parse(env.RESPONSE);
+    answer(choice === 'stop' ? 'confirm' : 'release', choice === 'stop' || options.preview || options.release);
     break;
   }
   case 'merged':

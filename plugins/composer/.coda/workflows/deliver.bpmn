@@ -121,8 +121,9 @@ PR：链接
       <extensionElements><coda:param name="commit" value="=confirm-result.commit" /></extensionElements>
     </serviceTask>
     <sequenceFlow id="kinds-approve" sourceRef="kinds" targetRef="approve" />
-    <userTask id="approve" name="批准交付" coda:assignee="user" coda:handback="false" coda:noteLabel="暂不合并的原因（必填）">
-      <documentation>{{report-result.body}}
+    <userTask id="approve" name="批准交付" coda:assignee="user" coda:handback="false" coda:noteLabel="发布说明或暂不合并的原因（必填）">
+      <documentation>勾选发布预览版或正式版时，必须在备注填写主 Agent 准备、用户确认的发布说明。
+{{report-result.body}}
 
 成员 PR：
 {{confirm-result.members}}
@@ -178,14 +179,14 @@ PR：链接
     <sequenceFlow id="to-publish-preview" sourceRef="publish-preview-choice" targetRef="publish-preview"><conditionExpression xsi:type="tFormalExpression">=approve.options.preview</conditionExpression></sequenceFlow>
     <sequenceFlow id="skip-publish-preview" sourceRef="publish-preview-choice" targetRef="publish-release-choice" />
     <serviceTask id="publish-preview" name="发布预览版" coda:action="run-workflows">
-      <extensionElements><coda:param name="kind" value="preview" /><coda:param name="commit" value="=merged.commit" /></extensionElements>
+      <extensionElements><coda:param name="kind" value="preview" /><coda:param name="commit" value="=merged.commit" /><coda:param name="inputs" value="={ notes: approve.note }" /></extensionElements>
     </serviceTask>
     <sequenceFlow id="published-preview" sourceRef="publish-preview" targetRef="publish-release-choice" />
     <exclusiveGateway id="publish-release-choice" name="是否发布正式版" default="skip-publish-release" />
     <sequenceFlow id="to-publish-release" sourceRef="publish-release-choice" targetRef="publish-release"><conditionExpression xsi:type="tFormalExpression">=approve.options.release</conditionExpression></sequenceFlow>
     <sequenceFlow id="skip-publish-release" sourceRef="publish-release-choice" targetRef="verify" />
     <serviceTask id="publish-release" name="发布正式版" coda:action="run-workflows">
-      <extensionElements><coda:param name="kind" value="release" /><coda:param name="commit" value="=merged.commit" /><coda:param name="inputs" value='={ publish: "true" }' /></extensionElements>
+      <extensionElements><coda:param name="kind" value="release" /><coda:param name="commit" value="=merged.commit" /><coda:param name="inputs" value='={ publish: "true", notes: approve.note }' /></extensionElements>
     </serviceTask>
     <sequenceFlow id="published-release" sourceRef="publish-release" targetRef="verify" />
     <userTask id="verify" name="真实环境验证" coda:noteLabel="验证结论（有问题时必填）">

@@ -9,7 +9,8 @@ const statePath = join(env.CODA_ARTIFACTS, 'develop.json');
 const instructions = `你是这次开发流程的执行者，自己完成这一项任务，不继承主 Agent 的协调职责，不再委派。
 只做这一项，在当前分支提交，不推送、不开 PR、不合并、不部署。
 遵守仓库的 AGENTS.md。只改必需的地方，不写防御性、冗余的代码，不顺手重构。
-只跑与改动直接相关的快检查；之后 PR 的项目检查会跑的构建、全套和界面检查不在这里重复。
+只跑与改动直接相关的快检查；流程会在审查前自己跑项目检查，构建、全套和界面检查不在这里重复，不必再用 run-held 跑整套编译。
+发布说明由主 Agent 审查通过时准备，用户批准发布时填写确认。
 回报改了什么、为什么、实际跑了哪些验证及未验证部分。`;
 
 if (action === 'lane') {
@@ -39,10 +40,30 @@ switch (action) {
     }
     state.executor = JSON.parse(command('coda-agent', [...args, '--json', '--prompt-file', prompt]));
     state.feedback = '';
+    if (action === 'execute') state.failures = [];
     save();
     break;
   }
+  case 'gate':
+    output('head', state.executor.head);
+    break;
+  case 'gate-passed':
+    state.checks = { head: state.executor.head, runs: JSON.parse(env.RUNS) };
+    state.failures = [];
+    state.feedback = '';
+    save();
+    break;
+  case 'gate-failed': {
+    const failure = `项目检查未通过，提交 ${state.executor.head}。运行：coda://workflow-runs/${env.GITHUB_RUN_ID}。请用 workflow_status 查看项目检查调用的失败流程、步骤和日志尾，修复后提交。`;
+    delete state.checks;
+    state.failures.push(failure);
+    state.feedback = state.failures.join('\n\n');
+    save();
+    output('route', state.failures.length >= 3 ? 'review' : 'revise');
+    break;
+  }
   case 'review':
+    output('checks', state.checks?.head === state.executor.head ? state.checks.runs.map(r => `${r.workflow}: ${r.state} coda://workflow-runs/${r.runId}`).join('\n') || '此提交未声明项目检查流程。' : '此提交项目检查未通过。');
     for (const [name, value] of Object.entries({ ...state.executor, lane: state.lane, feedback: state.feedback })) output(name, value);
     break;
   case 'decide': {
@@ -93,6 +114,13 @@ switch (action) {
     output('route', missing ? 'device' : choice === 'no' ? 'review' : 'pr');
     break;
   }
+  case 'approval': {
+    const { choice, note = '', options = {} } = JSON.parse(env.APPROVAL);
+    const missing = choice === 'merge' && (options.preview || options.release) && !note.trim();
+    output('feedback', missing ? '勾选发布预览版或正式版必须填写发布说明。' : '');
+    output('route', missing ? 'approve' : choice === 'stop' ? 'stop' : 'merge');
+    break;
+  }
   case 'pr': {
     const path = join(env.RUNNER_TEMP, 'pr.md');
     writeFileSync(path, body());
@@ -100,6 +128,7 @@ switch (action) {
     else state.pr = gh('pr', 'create', '--base', state.base, '--head', state.lane, '--title', state.title, '--body-file', path);
     state.phase = 'check';
     save();
+    output('checked', String(state.checks?.head === state.head));
     output('url', state.pr);
     output('head', state.head);
     output('summary', body());

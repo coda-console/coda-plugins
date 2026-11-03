@@ -365,7 +365,7 @@ test('开发流程定义、回路、检查提交与部署发布选择符合运�
   assert.equal(params('preview-result').PREVIEW, '=preview');
   assert.match(nodes['preview-result'].script, /develop\.mjs" preview/);
   for (const [value, target] of [['preview', 'preview'], ['review', 'report'], ['device', 'device']]) assert.equal(route('after-preview', { 'preview-result': { route: value } }), target);
-  assert.equal(nodes['pr-check'].targetRef.id, 'checks');
+  assert.equal(nodes['pr-check'].targetRef.id, 'reuse-checks');
   assert.doesNotMatch(workflow, /无客户端改动，跳过|没有客户端改动时确认/);
   for (const [value, target] of [['device', 'device'], ['review', 'report'], ['pr', 'tell-device']]) assert.equal(route('after-device', { 'device-result': { route: value } }), target);
   assert.match(nodes.review.documentation[0].text, /\{\{report.feedback\}\}/, '验收失败的备注随审查任务交回');
@@ -374,7 +374,7 @@ test('开发流程定义、回路、检查提交与部署发布选择符合运�
   assert.equal(nodes['told-device-pr'].sourceRef.id, 'tell-device');
   assert.equal(nodes['told-device-pr'].targetRef.id, 'pr');
   assert.equal(nodes['approve-route'].sourceRef.id, 'approve');
-  assert.equal(nodes['approve-route'].targetRef.id, 'after-approval');
+  assert.equal(nodes['approve-route'].targetRef.id, 'approval-result');
   const context = { inputs: { title: '修好输入框' }, run: { id: 'run-1' }, accept: { head: 'head-1' }, pr: { head: 'head-1' } };
   const message = (id, field, extra = {}) => evaluate(params(id)[field].slice(1), { ...context, ...extra }).value;
   assert.equal(message('tell-device', 'text'), '功能「修好输入框」：用户设备验收通过，接下来开 PR、跑检查。');
@@ -394,8 +394,8 @@ test('开发流程定义、回路、检查提交与部署发布选择符合运�
     assert.equal(nodes[failed].attachedToRef.id, target);
     assert.equal(nodes[failed].eventDefinitions[0].$type, 'bpmn:ErrorEventDefinition');
   }
-  assert.deepEqual(params('checks'), { kind: 'check', commit: '=pr.head' });
-  assert.equal(nodes['checks-github'].targetRef.id, 'github-checks');
+  assert.deepEqual(params('checks'), { kind: 'check', commit: '=gate.head' });
+  assert.equal(nodes['checks-github'].targetRef.id, 'gate-passed');
   assert.match(nodes['github-checks'].script, /develop\.mjs" github-checks/);
   assert.equal(nodes['github-checks'].timeout, 60);
   assert.equal(nodes['github-checks-feedback'].targetRef.id, 'github-feedback');
@@ -428,9 +428,9 @@ test('开发流程定义、回路、检查提交与部署发布选择符合运�
     }
     assert.deepEqual(called, delivery ? [] : ['deploy', 'preview', 'release'].filter(kind => options[kind]));
   }
-  assert.deepEqual(params('publish-preview'), { kind: 'preview', commit: '=merge.commit' });
-  assert.deepEqual(params('publish-release'), { kind: 'release', commit: '=merge.commit', inputs: '={ publish: "true" }' });
-  assert.deepEqual(evaluate(params('publish-release').inputs.slice(1), {}).value, { publish: 'true' });
+  assert.deepEqual(params('publish-preview'), { kind: 'preview', commit: '=merge.commit', inputs: '={ notes: approve.note }' });
+  assert.deepEqual(params('publish-release'), { kind: 'release', commit: '=merge.commit', inputs: '={ publish: "true", notes: approve.note }' });
+  assert.deepEqual(evaluate(params('publish-release').inputs.slice(1), { approve: { note: '更新说明' } }).value, { publish: 'true', notes: '更新说明' });
   assert.deepEqual(process.flowElements.filter(e => e.action === 'run-workflows').map(e => e.id), ['checks', 'premerge', 'deploy', 'publish-preview', 'publish-release']);
   const options = values(nodes.approve)[0].options;
   assert.deepEqual(options.map(option => [option.id, option.name]), [['deploy', '部署'], ['preview', '发布预览版'], ['release', '发布正式版'], ['notify', '全部完成后通知 Agent']]);
@@ -447,4 +447,57 @@ test('开发流程定义、回路、检查提交与部署发布选择符合运�
   const agent = params('execute').AGENT;
   assert.equal(evaluate(agent.slice(1), { inputs: { agent: '' }, github: { event: { coda: { session: { agent: 'codex' } } } } }).value, 'codex');
   assert.equal(evaluate(agent.slice(1), { inputs: { agent: 'kimi' } }).value, 'kimi');
+});
+
+test('审查前检查失败自动续作同一会话，连续三次升级，成功记录提交和运行供 PR 复用', t => {
+  const f = fixture(t, false); f.run('lane'); f.task('code', 'first'); f.run('execute');
+  const session = f.state().executor.session;
+  for (let i = 1; i <= 3; i++) {
+    assert.equal(f.run('gate').outputs.head, f.state().executor.head);
+    assert.equal(f.run('gate-failed').outputs.route, i === 3 ? 'review' : 'revise');
+    assert.equal(f.state().failures.length, i);
+    if (i < 3) {
+      f.task('code', `fix ${i}`); f.run('revise');
+      assert.equal(f.state().executor.session, session);
+      assert.match(f.calls('agent').at(-1).prompt, /项目检查未通过.*提交/);
+      assert.match(f.calls('agent').at(-1).prompt, /workflow_status/);
+    }
+  }
+  assert.equal(f.run('review').outputs.feedback.split('项目检查未通过').length - 1, 3);
+  const runs = [{ workflow: 'test', state: 'succeeded', runId: 'check-1' }];
+  f.run('gate-passed', { RUNS: JSON.stringify(runs) });
+  assert.equal(f.state().failures.length, 0);
+  assert.match(f.run('review').outputs.checks, /test: succeeded coda:\/\/workflow-runs\/check-1/);
+  f.review('accept'); f.run('accept');
+  assert.equal(f.run('pr').outputs.checked, 'true');
+  f.task('code', 'new change'); f.run('revise');
+  f.review('accept'); f.run('accept');
+  assert.equal(f.run('pr').outputs.checked, 'false', '新提交不能复用旧结果');
+});
+
+test('发布说明为空则返回批准卡，非发布选择不要求说明', t => {
+  const f = fixture(t); f.run('lane');
+  for (const preview of [false, true]) for (const release of [false, true]) for (const note of ['', '  ', '修复输入问题']) {
+    const { outputs } = f.run('approval', { APPROVAL: JSON.stringify({ choice: 'merge', options: { preview, release }, note }) });
+    const missing = (preview || release) && !note.trim();
+    assert.equal(outputs.route, missing ? 'approve' : 'merge');
+    if (missing) assert.match(outputs.feedback, /必须填写发布说明/);
+  }
+  assert.equal(f.run('approval', { APPROVAL: JSON.stringify({ choice: 'stop', options: { release: true } }) }).outputs.route, 'stop');
+});
+
+test('流程在执行及续作后先检查，失败分流，PR 同提交绕过检查，发布传用户说明', async () => {
+  const { root, problem } = await readWorkflow(workflow, 'develop'); assert.ok(!problem, problem);
+  const process = root.rootElements.find(e => e.$type === 'bpmn:Process');
+  const nodes = Object.fromEntries(process.flowElements.map(e => [e.id, e]));
+  for (const id of ['execute-report', 'revise-report']) assert.equal(nodes[id].targetRef.id, 'gate');
+  assert.equal(nodes['checks-review'].targetRef.id, 'gate-route');
+  assert.equal(nodes['gate-revise'].targetRef.id, 'revise');
+  assert.equal(nodes['gate-escalate'].targetRef.id, 'report');
+  assert.equal(nodes['reuse-passed'].targetRef.id, 'github-checks');
+  for (const checked of ['true', 'false']) assert.equal(evaluate(nodes['reuse-passed'].conditionExpression.body.slice(1), { pr: { checked } }).value, checked === 'true');
+  for (const id of ['publish-preview', 'publish-release']) {
+    const input = nodes[id].extensionElements.values.find(v => v.name === 'inputs');
+    assert.equal(evaluate(input.value.slice(1), { approve: { note: '用户修改后的发布说明' } }).value.notes, '用户修改后的发布说明');
+  }
 });
