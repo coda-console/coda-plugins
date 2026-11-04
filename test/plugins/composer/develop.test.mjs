@@ -329,12 +329,14 @@ test('GitHub 检查等待全部完成，无检查通过，检查失败和查询�
 test('开发流程定义、回路、检查提交与部署发布选择符合运行契约', async () => {
   const { root, problem } = await readWorkflow(workflow, 'develop'); assert.ok(!problem, problem);
   const process = root.rootElements.find(e => e.$type === 'bpmn:Process');
-  const nodes = Object.fromEntries(process.flowElements.map(e => [e.id, e]));
+  const acceptance = process.flowElements.find(e => e.id === 'acceptance');
+  const elements = [...process.flowElements, ...acceptance.flowElements];
+  const nodes = Object.fromEntries(elements.map(e => [e.id, e]));
   const values = node => node.extensionElements?.values ?? [];
   const params = id => Object.fromEntries(values(nodes[id]).map(v => [v.name, v.value]));
   const route = (id, context) => {
     const node = nodes[id];
-    const flows = process.flowElements.filter(e => e.sourceRef === node);
+    const flows = elements.filter(e => e.sourceRef === node);
     return (flows.find(e => e.conditionExpression && evaluate(e.conditionExpression.body.trim().slice(1), context).value) ?? node.default).targetRef.id;
   };
   assert.equal(process.name, '开发'); assert.equal(process.concurrency, undefined);
@@ -356,16 +358,16 @@ test('开发流程定义、回路、检查提交与部署发布选择符合运�
   assert.equal(nodes.review.assignee, undefined, '默认交给发起会话 Agent');
   assert.equal(nodes.device.assignee, 'user'); assert.equal(nodes.approve.assignee, 'user');
   for (const [value, target] of [['review', 'report'], ['revise', 'revise'], ['accept', 'accept']]) assert.equal(route('how', { decide: { route: value } }), target);
-  for (const value of ['execute', 'pr', 'preview']) assert.equal(route('after-accept', { accept: { route: value } }), value);
+  for (const [value, target] of [['execute', 'execute'], ['pr', 'pr'], ['preview', 'acceptance']]) assert.equal(route('after-accept', { accept: { route: value } }), target);
   assert.deepEqual(values(nodes.preview).map(v => [v.id, v.name]), [['installed', '已装好'], ['review', '回到审查']]);
   assert.match(nodes.preview.documentation[0].text, /preview-result.feedback/);
   assert.equal(nodes['preview-result-flow'].targetRef.id, 'preview-result');
   assert.equal(params('preview-result').PREVIEW, '=preview');
   assert.match(nodes['preview-result'].script, /develop\.mjs" preview/);
-  for (const [value, target] of [['preview', 'preview'], ['review', 'report'], ['device', 'device']]) assert.equal(route('after-preview', { 'preview-result': { route: value } }), target);
+  for (const [value, target] of [['preview', 'preview'], ['review', 'acceptance-return'], ['device', 'device']]) assert.equal(route('after-preview', { 'preview-result': { route: value } }), target);
   assert.equal(nodes['pr-check'].targetRef.id, 'reuse-checks');
   assert.doesNotMatch(workflow, /无客户端改动，跳过|没有客户端改动时确认/);
-  for (const [value, target] of [['device', 'device'], ['review', 'report'], ['pr', 'tell-device']]) assert.equal(route('after-device', { 'device-result': { route: value } }), target);
+  for (const [value, target] of [['device', 'device'], ['review', 'acceptance-return'], ['pr', 'acceptance-passed']]) assert.equal(route('after-device', { 'device-result': { route: value } }), target);
   assert.match(nodes.review.documentation[0].text, /\{\{report.feedback\}\}/, '验收失败的备注随审查任务交回');
   assert.deepEqual(process.flowElements.filter(e => e.action === 'tell-session').map(e => e.id), ['tell-device']);
   assert.equal(params('tell-device').session, undefined, '通知运行所属会话');

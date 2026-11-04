@@ -6,6 +6,7 @@
       <coda:input name="title" label="功能名" required="true" />
       <coda:input name="task" label="第一项任务" required="true" />
       <coda:input name="devices" label="设备验收" type="boolean" required="true" description="改了客户端、要在 Mac 或 iPhone 上验收时打开" />
+      <coda:input name="device" label="验收设备" type="string" default="" description="测试机设备名，如 duo-testbed；验收期间独占它；留空不占设备" />
       <coda:input name="delivery" label="所属需求" type="string" default="" description="需求运行的 ID；留空为独立交付" />
       <coda:input name="agent" label="执行者" default="" description="留空用发起会话的 Agent" />
       <coda:input name="model" label="模型" default="" description="留空用 Agent 默认值" />
@@ -106,45 +107,68 @@ head：{{report.head}}
     <exclusiveGateway id="after-accept" name="继续执行还是验收" default="accept-preview" />
     <sequenceFlow id="accept-next" sourceRef="after-accept" targetRef="execute"><conditionExpression xsi:type="tFormalExpression">=accept.route = "execute"</conditionExpression></sequenceFlow>
     <sequenceFlow id="accept-check" sourceRef="after-accept" targetRef="pr"><conditionExpression xsi:type="tFormalExpression">=accept.route = "pr"</conditionExpression></sequenceFlow>
-    <sequenceFlow id="accept-preview" sourceRef="after-accept" targetRef="preview" />
-    <userTask id="preview" name="安装预览版" coda:noteLabel="安装结果或回审查的原因">
-      <documentation>主 Agent：泳道 {{accept.lane}} 的最新提交是 {{accept.head}}。
+    <sequenceFlow id="accept-preview" sourceRef="after-accept" targetRef="acceptance" />
+    <subProcess id="acceptance" name="安装与设备验收">
+      <startEvent id="acceptance-start" />
+      <sequenceFlow id="acceptance-enter" sourceRef="acceptance-start" targetRef="device-lock-choice" />
+      <exclusiveGateway id="device-lock-choice" name="是否占用验收设备" default="device-lock-skip" />
+      <sequenceFlow id="device-lock-needed" sourceRef="device-lock-choice" targetRef="device-lock"><conditionExpression xsi:type="tFormalExpression">=inputs.devices and inputs.device != ""</conditionExpression></sequenceFlow>
+      <sequenceFlow id="device-lock-skip" sourceRef="device-lock-choice" targetRef="preview" />
+      <serviceTask id="device-lock" name="等验收设备" coda:action="hold-group" coda:status="等验收设备 {{inputs.device}}">
+        <extensionElements>
+          <coda:param name="group" value="device:{{inputs.device}}" />
+          <coda:param name="capacity" value="1" />
+        </extensionElements>
+      </serviceTask>
+      <sequenceFlow id="device-lock-acquired" sourceRef="device-lock" targetRef="preview" />
+      <userTask id="preview" name="安装预览版" coda:noteLabel="安装结果或回审查的原因">
+        <documentation>主 Agent：泳道 {{accept.lane}} 的最新提交是 {{accept.head}}。
 {{if preview-result.feedback = null then "" else preview-result.feedback}}
 只装改到的那一端：改了 Mac 用 workflow_run 发起 mac-preview-install，改了 iPhone 发起 ios-preview-install，都传 commit="{{accept.head}}"。等发起的安装都成功后答复；有失败先处理，不能把发起当作装好。
+
+{{if inputs.device = "" then "" else "发起 ios-preview-install 时还要传 device=\"" + inputs.device + "\"。安装运行会借本段占着的设备，不另排队。"}}
 需要先修改时选「回到审查」，备注必填，说明待处理问题；主 Agent 再用「退回修改」让最近的执行会话继续。预览只装客户端，不从泳道部署后端。</documentation>
-      <extensionElements>
-        <coda:choice id="installed" name="已装好" primary="true" />
-        <coda:choice id="review" name="回到审查" />
-      </extensionElements>
-    </userTask>
-    <sequenceFlow id="preview-result-flow" sourceRef="preview" targetRef="preview-result" />
-    <scriptTask id="preview-result" name="读取安装意见" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
-      <extensionElements><coda:env name="PREVIEW" value="=preview" /><coda:output name="route" /><coda:output name="feedback" /></extensionElements>
-      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" preview</script>
-    </scriptTask>
-    <sequenceFlow id="preview-route" sourceRef="preview-result" targetRef="after-preview" />
-    <exclusiveGateway id="after-preview" name="安装结论" default="preview-device" />
-    <sequenceFlow id="preview-note" sourceRef="after-preview" targetRef="preview"><conditionExpression xsi:type="tFormalExpression">=preview-result.route = "preview"</conditionExpression></sequenceFlow>
-    <sequenceFlow id="preview-review" sourceRef="after-preview" targetRef="report"><conditionExpression xsi:type="tFormalExpression">=preview-result.route = "review"</conditionExpression></sequenceFlow>
-    <sequenceFlow id="preview-device" sourceRef="after-preview" targetRef="device" />
-    <userTask id="device" name="设备验收" coda:assignee="user" coda:handback="false" coda:noteLabel="验收意见">
-      <documentation>功能：{{inputs.title}}
+        <extensionElements>
+          <coda:choice id="installed" name="已装好" primary="true" />
+          <coda:choice id="review" name="回到审查" />
+        </extensionElements>
+      </userTask>
+      <sequenceFlow id="preview-result-flow" sourceRef="preview" targetRef="preview-result" />
+      <scriptTask id="preview-result" name="读取安装意见" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+        <extensionElements><coda:env name="PREVIEW" value="=preview" /><coda:output name="route" /><coda:output name="feedback" /></extensionElements>
+        <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" preview</script>
+      </scriptTask>
+      <sequenceFlow id="preview-route" sourceRef="preview-result" targetRef="after-preview" />
+      <exclusiveGateway id="after-preview" name="安装结论" default="preview-device" />
+      <sequenceFlow id="preview-note" sourceRef="after-preview" targetRef="preview"><conditionExpression xsi:type="tFormalExpression">=preview-result.route = "preview"</conditionExpression></sequenceFlow>
+      <sequenceFlow id="preview-review" sourceRef="after-preview" targetRef="acceptance-return"><conditionExpression xsi:type="tFormalExpression">=preview-result.route = "review"</conditionExpression></sequenceFlow>
+      <sequenceFlow id="preview-device" sourceRef="after-preview" targetRef="device" />
+      <userTask id="device" name="设备验收" coda:assignee="user" coda:handback="false" coda:noteLabel="验收意见">
+        <documentation>功能：{{inputs.title}}
 泳道：{{accept.lane}}，提交：{{accept.head}}
 主 Agent 的安装结果：{{preview.note}}
 {{if device-result.feedback = null then "" else device-result.feedback}}
+{{if inputs.device = "" then "" else "验收期间设备 " + inputs.device + " 一直被本段占着。"}}
 请在设备上验收。选「不行」必须在备注中写具体意见，交回主 Agent 审查。</documentation>
-      <extensionElements><coda:choice id="yes" name="通过" primary="true" /><coda:choice id="no" name="不行" /></extensionElements>
-    </userTask>
-    <sequenceFlow id="device-result-flow" sourceRef="device" targetRef="device-result" />
-    <scriptTask id="device-result" name="读取验收意见" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
-      <extensionElements><coda:env name="DEVICE" value="=device" /><coda:output name="route" /><coda:output name="feedback" /></extensionElements>
-      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" device</script>
-    </scriptTask>
-    <sequenceFlow id="device-route" sourceRef="device-result" targetRef="after-device" />
-    <exclusiveGateway id="after-device" name="验收结论" default="device-pr" />
-    <sequenceFlow id="device-note" sourceRef="after-device" targetRef="device"><conditionExpression xsi:type="tFormalExpression">=device-result.route = "device"</conditionExpression></sequenceFlow>
-    <sequenceFlow id="device-review" sourceRef="after-device" targetRef="report"><conditionExpression xsi:type="tFormalExpression">=device-result.route = "review"</conditionExpression></sequenceFlow>
-    <sequenceFlow id="device-pr" sourceRef="after-device" targetRef="tell-device" />
+        <extensionElements><coda:choice id="yes" name="通过" primary="true" /><coda:choice id="no" name="不行" /></extensionElements>
+      </userTask>
+      <sequenceFlow id="device-result-flow" sourceRef="device" targetRef="device-result" />
+      <scriptTask id="device-result" name="读取验收意见" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+        <extensionElements><coda:env name="DEVICE" value="=device" /><coda:output name="route" /><coda:output name="feedback" /></extensionElements>
+        <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" device</script>
+      </scriptTask>
+      <sequenceFlow id="device-route" sourceRef="device-result" targetRef="after-device" />
+      <exclusiveGateway id="after-device" name="验收结论" default="device-pr" />
+      <sequenceFlow id="device-note" sourceRef="after-device" targetRef="device"><conditionExpression xsi:type="tFormalExpression">=device-result.route = "device"</conditionExpression></sequenceFlow>
+      <sequenceFlow id="device-review" sourceRef="after-device" targetRef="acceptance-return"><conditionExpression xsi:type="tFormalExpression">=device-result.route = "review"</conditionExpression></sequenceFlow>
+      <sequenceFlow id="device-pr" sourceRef="after-device" targetRef="acceptance-passed" />
+      <endEvent id="acceptance-return"><extensionElements><coda:output name="route" value="return" /></extensionElements></endEvent>
+      <endEvent id="acceptance-passed"><extensionElements><coda:output name="route" value="passed" /></extensionElements></endEvent>
+    </subProcess>
+    <sequenceFlow id="acceptance-finished" sourceRef="acceptance" targetRef="acceptance-route" />
+    <exclusiveGateway id="acceptance-route" name="验收段结论" default="acceptance-continue" />
+    <sequenceFlow id="acceptance-back" sourceRef="acceptance-route" targetRef="report"><conditionExpression xsi:type="tFormalExpression">=acceptance.route = "return"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="acceptance-continue" sourceRef="acceptance-route" targetRef="tell-device" />
     <serviceTask id="tell-device" name="告诉主 Agent 验收通过" coda:action="tell-session">
       <extensionElements>
         <coda:param name="key" value='=run.id + ":device:" + accept.head' />
