@@ -6,7 +6,7 @@ import { evaluate } from 'feelin';
 
 for (const name of ['develop', 'deliver']) {
   test(`${name}：设备占用限定在安装与验收段，退出后再分流`, async () => {
-    const xml = readFileSync(new URL(`../.coda/workflows/${name}.bpmn`, import.meta.url), 'utf8');
+    const xml = readFileSync(new URL(`../../../plugins/composer/.coda/workflows/${name}.bpmn`, import.meta.url), 'utf8');
     const { root, problem } = await readWorkflow(xml, name);
     assert.ok(!problem, problem);
     const process = root.rootElements.find(e => e.$type === 'bpmn:Process');

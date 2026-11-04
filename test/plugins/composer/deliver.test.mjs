@@ -172,22 +172,24 @@ test('只有插件成员时使用 coda 默认 base；gh 查询失败直接失败
 test('需求流程回路、人工任务、结果通知和部署发布顺序契约', async () => {
   const { root, problem } = await readWorkflow(workflow, 'deliver'); assert.ok(!problem, problem);
   const process = root.rootElements.find(e => e.$type === 'bpmn:Process');
-  const nodes = Object.fromEntries(process.flowElements.map(e => [e.id, e]));
+  const acceptance = process.flowElements.find(e => e.id === 'acceptance');
+  const elements = [...process.flowElements, ...acceptance.flowElements];
+  const nodes = Object.fromEntries(elements.map(e => [e.id, e]));
   const values = node => node.extensionElements?.values ?? [];
   const params = id => Object.fromEntries(values(nodes[id]).map(v => [v.name, v.value]));
   const route = (id, context) => {
-    const node = nodes[id], flows = process.flowElements.filter(e => e.sourceRef === node);
+    const node = nodes[id], flows = elements.filter(e => e.sourceRef === node);
     return (flows.find(e => e.conditionExpression && evaluate(e.conditionExpression.body.trim().slice(1), context).value) ?? node.default).targetRef.id;
   };
-  assert.deepEqual(values(process).map(v => [v.name, v.required]), [['title', true], ['goal', true], ['devices', true]]);
+  assert.deepEqual(values(process).map(v => [v.name, v.required]), [['title', true], ['goal', true], ['devices', true], ['device', undefined]]);
   assert.equal(values(process)[2].type, 'boolean'); assert.equal(values(process)[2].default, undefined);
   assert.equal(nodes.start.eventDefinitions, undefined);
   for (const id of ['confirm', 'preview', 'report', 'release', 'verify']) assert.equal(nodes[id].assignee, undefined);
   for (const id of ['device', 'approve']) { assert.equal(nodes[id].assignee, 'user'); assert.equal(nodes[id].handback, false); }
   for (const [id, result, paths] of [
     ['after-confirm', 'confirm-result', { confirm: 'context', stop: 'stopped', report: 'report', integrate: 'integrate' }],
-    ['after-preview', 'preview-result', { preview: 'preview', confirm: 'context', device: 'device' }],
-    ['after-device', 'device-result', { device: 'device', confirm: 'context', report: 'report' }],
+    ['after-preview', 'preview-result', { preview: 'preview', confirm: 'acceptance-return', device: 'device' }],
+    ['after-device', 'device-result', { device: 'device', confirm: 'acceptance-return', report: 'acceptance-passed' }],
     ['after-report', 'report-result', { report: 'report', approve: 'kinds' }],
     ['approval-note', 'approval-result', { approval: 'approve', confirm: 'after-approval', release: 'after-approval' }],
     ['after-approval', 'approval-result', { confirm: 'context', release: 'release' }],
