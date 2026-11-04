@@ -19,6 +19,8 @@ Object.assign(env, { HOST_SIM_LEASE: `coda-run:${what === '模拟器' ? 'simulat
 // The simulator tool, which a test may stand in for.
 const simctl = env.HOST_SIM_SIMCTL ?? 'xcrun';
 
+const idleMinutes = Number(process.env.HELD_IDLE_MINUTES ?? 10);
+let idleTimer, killTimer, idleFailure = '';
 let ending = false;
 // Register before launching the command, and keep cancellation authoritative through cleanup and exit.
 // A signal callback may arrive after the child's close callback, even for the same group-wide TERM.
@@ -27,12 +29,32 @@ if (!isAbsolute(cwd ?? '') || !existsSync(cwd) || !statSync(cwd).isDirectory()) 
   process.stderr.write(`cwd 须为存在的目录的绝对路径：${cwd}\n`);
   await done(2);
 } else {
-  const child = spawn(env.SHELL || '/bin/sh', ['-c', command], { cwd, env, stdio: 'inherit' });
+  const child = spawn(env.SHELL || '/bin/sh', ['-c', command], { cwd, env, stdio: ['inherit', 'pipe', 'pipe'] });
+  const resetIdle = () => {
+    clearTimeout(idleTimer);
+    if (idleMinutes > 0 && !idleFailure && !ending) idleTimer = setTimeout(() => {
+      idleFailure = `${idleMinutes} 分钟无输出`;
+      // The wrapper is exec'd as the step's process-group leader. Stop the entire command tree,
+      // retaining the same five-minute cleanup grace as the workflow's cancelTimeout.
+      killTimer = setTimeout(() => process.kill(-process.pid, 'SIGKILL'), 5 * 60_000);
+      killTimer.unref();
+      process.kill(-process.pid, 'SIGTERM');
+    }, idleMinutes * 60_000);
+  };
+  for (const [stream, destination] of [[child.stdout, process.stdout], [child.stderr, process.stderr]]) {
+    stream.setEncoding('utf8');
+    stream.on('data', data => {
+      destination.write(data);
+      resetIdle();
+    });
+  }
+  resetIdle();
   // Cancelled: the step's process group is asked to stop, the command with it; the simulators still go before the step ends.
   const status = await new Promise(resolve => {
     child.on('error', error => { process.stderr.write(`执行不了：${error.message}\n`); resolve(127); });
     child.on('close', (code, signal) => resolve(code ?? 128 + (constants.signals[signal] ?? 0)));
   });
+  clearTimeout(idleTimer);
   await done(status);
 }
 
@@ -46,6 +68,12 @@ async function done(status) {
     }
   }
   appendFileSync(process.env.GITHUB_OUTPUT, `exit_code=${status}\n`);
+  const reason = idleFailure || (!ending && status !== 0 ? `命令非零退出（退出码 ${status}）` : '');
+  if (reason) {
+    appendFileSync(process.env.GITHUB_OUTPUT, `failure_reason=${reason}\n`);
+    process.stderr.write(`失败：${reason}\n`);
+  }
+  clearTimeout(killTimer);
   // Let pending signal callbacks and output drain instead of synchronously exiting inside close.
-  process.exitCode = ending ? 143 : status === 0 ? 0 : 1;
+  process.exitCode = idleFailure ? 1 : ending ? 143 : status === 0 ? 0 : 1;
 }

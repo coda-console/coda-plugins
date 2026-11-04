@@ -10,7 +10,7 @@ async function processOf(path, name) {
   return root.rootElements.find(element => element.$type === 'bpmn:Process');
 }
 
-test('run-held limits simulator execution to 60 minutes, other commands to 600, with an explicit override', async () => {
+test('run-held limits simulator execution to 60 minutes, other commands to 30, with an explicit override', async () => {
   const process = await processOf('capabilities', 'run-held');
   const inputs = Object.fromEntries(process.extensionElements.values.map(input => [input.name, input.type === 'number' ? Number(input.default) : input.default]));
   const held = process.flowElements.find(element => element.id === 'held');
@@ -20,12 +20,14 @@ test('run-held limits simulator execution to 60 minutes, other commands to 600, 
   assert.equal(timer.cancelActivity, true);
   assert.equal(command.cancelTimeout, 5);
   assert.equal(command.timeout, 1440);
+  assert.equal(inputs.idleMinutes, 10);
+  assert.equal(command.extensionElements.values.find(value => value.name === 'HELD_IDLE_MINUTES').value, '=inputs.idleMinutes');
   assert.ok(held.flowElements.some(element => element.sourceRef?.id === 'hold' && element.targetRef === command));
   const expression = timer.eventDefinitions[0].timeDuration.body.trim().slice(1);
   const limit = extra => evaluate(expression, { inputs: { ...inputs, ...extra } }).value;
   assert.equal(limit({ what: '模拟器' }), 'PT60M');
-  assert.equal(limit({}), 'PT600M');
-  assert.equal(limit({ what: '其他命令' }), 'PT600M');
+  assert.equal(limit({}), 'PT30M');
+  assert.equal(limit({ what: '其他命令' }), 'PT30M');
   assert.equal(limit({ what: '模拟器', timeoutMinutes: 120 }), 'PT120M');
   assert.equal(limit({ timeoutMinutes: 900 }), 'PT900M');
   assert.equal(limit({ timeoutMinutes: -1 }), null);

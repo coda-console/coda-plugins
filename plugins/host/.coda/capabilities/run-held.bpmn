@@ -8,8 +8,9 @@
     <extensionElements>
       <coda:input name="command" required="true" description="要占着名额执行的命令，由 $SHELL -c 执行，如 bash scripts/build-ios.sh" />
       <coda:input name="cwd" required="true" description="在哪个目录执行：绝对路径，一般是你的工作目录" />
-      <coda:input name="what" default="构建" description="排的是什么名额，写进状态行：构建或模拟器；模拟器默认总时限 60 分钟，其余 600 分钟" />
-      <coda:input name="timeoutMinutes" type="number" default="0" description="执行总时限（分钟）：0 按种类默认，模拟器 60，其余 600；长批次可显式调高，最多 1440。不含排队，另有 5 分钟取消收尾宽限" />
+      <coda:input name="what" default="构建" description="排的是什么名额，写进状态行：构建或模拟器；模拟器默认总时限 60 分钟，其余 30 分钟" />
+      <coda:input name="timeoutMinutes" type="number" default="0" description="执行总时限（分钟）：0 按种类默认，模拟器 60，其余 30；长批次可显式调高，最多 1440。不含排队，另有 5 分钟取消收尾宽限" />
+      <coda:input name="idleMinutes" type="number" default="10" description="连续无 stdout 或 stderr 输出的上限（分钟），默认 10；0 关闭，可显式调高；到限先 TERM，另有 5 分钟收尾宽限" />
     </extensionElements>
     <startEvent id="start" />
     <sequenceFlow id="to-held" sourceRef="start" targetRef="held" />
@@ -29,7 +30,9 @@
           <coda:env name="HELD_COMMAND" value="=inputs.command" />
           <coda:env name="HELD_CWD" value="=inputs.cwd" />
           <coda:env name="HELD_WHAT" value="=inputs.what" />
+          <coda:env name="HELD_IDLE_MINUTES" value="=inputs.idleMinutes" />
           <coda:output name="exit_code" />
+          <coda:output name="failure_reason" />
         </extensionElements>
         <script>exec node "$CODA_PLUGIN_PATH/scripts/run-held.mjs"</script>
       </scriptTask>
@@ -37,7 +40,7 @@
            中断仍由执行器 TERM、等待 cancelTimeout 收尾，再释放名额。1440 是引擎的硬上限。 -->
       <boundaryEvent id="timed-out" name="执行总时限已到" attachedToRef="command" cancelActivity="true">
         <timerEventDefinition>
-          <timeDuration xsi:type="tFormalExpression">=if inputs.timeoutMinutes &lt; 0 or inputs.timeoutMinutes &gt; 1440 then null else "PT" + string(if inputs.timeoutMinutes &gt; 0 then inputs.timeoutMinutes else if inputs.what = "模拟器" then 60 else 600) + "M"</timeDuration>
+          <timeDuration xsi:type="tFormalExpression">=if inputs.timeoutMinutes &lt; 0 or inputs.timeoutMinutes &gt; 1440 then null else "PT" + string(if inputs.timeoutMinutes &gt; 0 then inputs.timeoutMinutes else if inputs.what = "模拟器" then 60 else 30) + "M"</timeDuration>
         </timerEventDefinition>
       </boundaryEvent>
       <sequenceFlow id="timeout-failed" sourceRef="timed-out" targetRef="timed-out-end" />

@@ -121,17 +121,18 @@ test('持锁执行 runs the command where it was told, with the project\'s envir
   const sims = simctl(t, ['FAKE-1']);
   const { at, ended } = held(t, { command: 'echo "lease=$HOST_SIM_LEASE in=$(basename "$PWD") plugin=${CODA_PLUGIN_PATH:-none} runner=${RUNNER_TEMP:-none} run=$HOST_SIM_RUN_ID"; echo FAKE-1 >> "$HOST_SIM_DEVICES"; exit 4' },
     { HOST_SIM_SIMCTL: sims.tool, GITHUB_RUN_ID: 'held-owner' });
-  const { code, out, outputs } = await ended;
+  const { code, out, err, outputs } = await ended;
   // It fails as the command does; the command's status is the output.
-  assert.equal(code, 1); assert.equal(outputs, 'exit_code=4\n');
+  assert.equal(code, 1); assert.equal(outputs, 'exit_code=4\nfailure_reason=命令非零退出（退出码 4）\n');
   assert.match(out, new RegExp(`lease=coda-run:build in=${basename(at)} plugin=none runner=none run=held-owner`));
   assert.match(out, /已删除模拟器 FAKE-1/);
+  assert.equal(err, '失败：命令非零退出（退出码 4）\n');
   assert.equal(sims.log(), 'shutdown FAKE-1\ndelete FAKE-1\n');
   const simulator = await held(t, { command: 'echo "$HOST_SIM_LEASE"', what: '模拟器' }).ended;
   assert.deepEqual([simulator.code, simulator.out, simulator.outputs], [0, 'coda-run:simulator\n', 'exit_code=0\n']);
   // A directory that is not one: the command does not run.
   const nowhere = await held(t, { command: 'echo never', cwd: 'relative' }).ended;
-  assert.deepEqual([nowhere.code, nowhere.out, nowhere.outputs], [1, '', 'exit_code=2\n']);
+  assert.deepEqual([nowhere.code, nowhere.out, nowhere.outputs], [1, '', 'exit_code=2\nfailure_reason=命令非零退出（退出码 2）\n']);
   assert.match(nowhere.err, /cwd 须为存在的目录的绝对路径/);
 });
 
@@ -235,4 +236,24 @@ test('cleanup eligibility follows a fresh public run state, including reruns, an
   assert.equal(await runFinished(state, 'run'), false);
   assert.equal(await runFinished(state, null), false);
   await assert.rejects(runFinished(state, 'missing'), /运行不存在/);
+});
+
+
+test('持锁执行 fails a hung command with its idle reason once at the end', { timeout: 5000 }, async t => {
+  const result = await held(t, { command: 'echo before-hang >&2; sleep 60' }, { HELD_IDLE_MINUTES: '0.005' }).ended;
+  assert.equal(result.code, 1);
+  assert.match(result.outputs, /failure_reason=0.005 分钟无输出/);
+  assert.equal(result.err, 'before-hang\n失败：0.005 分钟无输出\n');
+});
+
+test('持锁执行 keeps resetting the idle deadline on stdout and stderr output', { timeout: 5000 }, async t => {
+  const result = await held(t, { command: `"${process.execPath}" -e 'let n=0; const timer=setInterval(() => { (n++ % 2 ? process.stderr : process.stdout).write("progress\\n"); if(n===12) clearInterval(timer); }, 100)'` }, { HELD_IDLE_MINUTES: '0.01' }).ended;
+  assert.equal(result.code, 0, result.err);
+  assert.equal(result.outputs, 'exit_code=0\n');
+  assert.doesNotMatch(result.err, /无输出/);
+});
+
+test('持锁执行 can disable the idle deadline', { timeout: 5000 }, async t => {
+  const result = await held(t, { command: 'sleep 0.4' }, { HELD_IDLE_MINUTES: '0' }).ended;
+  assert.equal(result.code, 0);
 });
