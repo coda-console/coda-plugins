@@ -1,5 +1,5 @@
 // 每一步的工作区都会回收；泳道进度和已通过的改动留在本次运行的产物里。
-import { spawnSync } from 'node:child_process';
+import { waitForGitHubChecks } from './github-checks.mjs';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { command, gh, git, output } from './shared.mjs';
@@ -142,10 +142,8 @@ switch (action) {
     break;
   }
   case 'github-checks': {
-    if (gh('pr', 'view', state.pr, '--json', 'statusCheckRollup', '--jq', '.statusCheckRollup | length') === '0') break;
-    const result = spawnSync('gh', ['pr', 'checks', state.pr, '--watch'], { stdio: 'inherit' });
-    if (result.error) throw result.error;
-    if (result.status !== 0) process.exit(result.status ?? 1);
+    const status = await waitForGitHubChecks(state.pr, state.head);
+    if (status !== 0) process.exit(status);
     break;
   }
   case 'delivery': {
