@@ -70,6 +70,7 @@ export class KimiRelay {
     const waiting = asked?.prompt || (!answer && !this.prompts.size && this.waits && !this.waits.handling && Date.now() >= this.lookedAt + this.every);
     this.queue = this.queue.then(async () => {
       if (waiting) await this.look({ fresh: !!asked?.prompt });
+      if (sent && message.result?.stopReason === 'end_turn') message = this.turns?.answer(sent.at, message) ?? message;
       if (sent?.quiet && message.result?.stopReason === 'end_turn' && this.turns?.hold(sent.at, message)) { this.prompts.add(message.id); return; }
       this.say(message);
       const sessionId = asked && !('error' in message) ? message.result?.sessionId ?? asked.sessionId : undefined;
