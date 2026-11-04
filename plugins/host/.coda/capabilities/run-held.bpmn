@@ -43,8 +43,11 @@
           <timeDuration xsi:type="tFormalExpression">=if inputs.timeoutMinutes &lt; 0 or inputs.timeoutMinutes &gt; 1440 then null else "PT" + string(if inputs.timeoutMinutes &gt; 0 then inputs.timeoutMinutes else if inputs.what = "模拟器" then 60 else 30) + "M"</timeDuration>
         </timerEventDefinition>
       </boundaryEvent>
-      <sequenceFlow id="timeout-failed" sourceRef="timed-out" targetRef="timed-out-end" />
-      <endEvent id="timed-out-end" name="执行超过总时限"><errorEventDefinition /></endEvent>
+      <sequenceFlow id="timeout-failed" sourceRef="timed-out" targetRef="report-timeout" />
+      <scriptTask id="report-timeout" name="执行超过总时限" coda:checkout="false" scriptFormat="bash">
+        <extensionElements><coda:output name="failure_reason" /></extensionElements>
+        <script>exec node "$CODA_PLUGIN_PATH/scripts/report-timeout.mjs"</script>
+      </scriptTask>
       <sequenceFlow id="ran" sourceRef="command" targetRef="held-end" />
       <endEvent id="held-end" />
     </subProcess>

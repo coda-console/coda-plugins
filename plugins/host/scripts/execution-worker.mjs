@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { Journal } from '../lib/journal.mjs';
 import { executeHooks } from '../lib/hooks.mjs';
 import { resultFiles } from '../lib/results.mjs';
+import { keychainPromptSuffix } from '../lib/keychain-prompt.mjs';
 
 const chunks = [];
 for await (const chunk of process.stdin) chunks.push(chunk);
@@ -21,8 +22,12 @@ for (const name of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(name, () => signa
 await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
 record.control = { port: server.address().port, token: randomUUID() };
 record.phase = 'preparing'; record.startedAt = new Date().toISOString(); journal.save(record);
-let timer;
-if (spec.timeoutMs) timer = setTimeout(() => signal.abort(new Error('执行超时')), Math.min(spec.timeoutMs, 2 ** 31 - 1));
+let timer, timeoutHint = '';
+if (spec.timeoutMs) timer = setTimeout(() => {
+  if (signal.signal.aborted) return;
+  timeoutHint = keychainPromptSuffix();
+  signal.abort(new Error('执行超时'));
+}, Math.min(spec.timeoutMs, 2 ** 31 - 1));
 try {
   const result = await executeHooks({ root, directory: journal.directory(key), attempt: key, source, slot: record.admission.slot,
     spec, env, signal: signal.signal, checkpoint: async patch => {
@@ -38,6 +43,10 @@ try {
   record.result = { outcome: 'failed', exitCode: null, reason: { code: 'worker_failed', message: error.message }, finishedAt: new Date().toISOString() };
 } finally {
   clearTimeout(timer);
+  if (timeoutHint) {
+    record.result.reason ??= { code: 'cancelled', message: '执行超时' };
+    record.result.reason.message += timeoutHint;
+  }
   record.phase = 'finished'; record.pid = null; journal.save(record);
   await new Promise(resolve => server.close(resolve));
 }

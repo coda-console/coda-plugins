@@ -32,7 +32,10 @@ test('run-held limits simulator execution to 60 minutes, other commands to 30, w
   assert.equal(limit({ timeoutMinutes: 900 }), 'PT900M');
   assert.equal(limit({ timeoutMinutes: -1 }), null);
   assert.equal(limit({ timeoutMinutes: 1441 }), null);
-  assert.ok(held.flowElements.find(element => element.id === 'timed-out-end').eventDefinitions.some(event => event.$type === 'bpmn:ErrorEventDefinition'));
+  const report = held.flowElements.find(element => element.id === 'report-timeout');
+  assert.equal(held.flowElements.find(element => element.id === 'timeout-failed').targetRef, report);
+  assert.equal(report.script, 'exec node "$CODA_PLUGIN_PATH/scripts/report-timeout.mjs"');
+  assert.ok(!held.flowElements.some(element => element.sourceRef === report || element.id === 'timed-out-end'));
 });
 
 test('periodic simulator cleanup never enters the host queue', async () => {

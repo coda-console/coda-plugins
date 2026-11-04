@@ -9,6 +9,7 @@ import { appendFileSync, existsSync, readFileSync, statSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { constants } from 'node:os';
 import { promisify } from 'node:util';
+import { keychainPromptSuffix } from '../lib/keychain-prompt.mjs';
 const exec = promisify(execFile);
 
 const { HELD_COMMAND: command, HELD_CWD: cwd, HELD_WHAT: what } = process.env;
@@ -33,7 +34,8 @@ if (!isAbsolute(cwd ?? '') || !existsSync(cwd) || !statSync(cwd).isDirectory()) 
   const resetIdle = () => {
     clearTimeout(idleTimer);
     if (idleMinutes > 0 && !idleFailure && !ending) idleTimer = setTimeout(() => {
-      idleFailure = `${idleMinutes} 分钟无输出`;
+      if (ending) return;
+      idleFailure = `${idleMinutes} 分钟无输出${keychainPromptSuffix()}`;
       // The wrapper is exec'd as the step's process-group leader. Stop the entire command tree,
       // retaining the same five-minute cleanup grace as the workflow's cancelTimeout.
       killTimer = setTimeout(() => process.kill(-process.pid, 'SIGKILL'), 5 * 60_000);
