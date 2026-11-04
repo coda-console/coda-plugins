@@ -1,6 +1,6 @@
 // 每一步的工作区都会回收；泳道进度和已通过的改动留在本次运行的产物里。
 import { waitForGitHubChecks } from './github-checks.mjs';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { command, gh, git, output } from './shared.mjs';
 
@@ -24,8 +24,17 @@ if (action === 'lane') {
   process.exit(0);
 }
 
+if (action === 'cleanup' && !existsSync(statePath)) process.exit(0);
+
 const state = JSON.parse(readFileSync(statePath, 'utf8'));
 const save = () => writeFileSync(statePath, JSON.stringify(state));
+const cleanup = () => {
+  if (!state.checkRef) return;
+  const head = git('ls-remote', 'origin', state.checkRef).split('\t')[0];
+  if (head) git('push', '--no-follow-tags', `--force-with-lease=${state.checkRef}:${head}`, 'origin', `:${state.checkRef}`);
+  delete state.checkRef;
+  save();
+};
 const body = () => state.approved.map((item, index) => `## 第 ${index + 1} 项\n\n<details><summary>任务</summary>\n\n${item.task}\n\n</details>\n\n${item.answer}\n\n提交：${item.head}`).join('\n\n');
 
 switch (action) {
@@ -44,7 +53,15 @@ switch (action) {
     save();
     break;
   }
+  case 'cleanup':
+    cleanup();
+    break;
   case 'gate':
+    state.checkRef = `refs/heads/composer-check/${env.GITHUB_RUN_ID}`;
+    // 先记清理目标；推送已落地但进程中断时也能收尾。
+    save();
+    console.error(`推送执行者提交 ${state.executor.head} 到 ${state.checkRef}`);
+    git('push', '--no-follow-tags', '--force', 'origin', `${state.executor.head}:${state.checkRef}`);
     output('head', state.executor.head);
     break;
   case 'gate-passed':
@@ -84,6 +101,7 @@ switch (action) {
     // 顺序任务只能快进；Git 的错误会说明分叉，流程停在这里交回主 Agent。
     git('merge', '--ff-only', state.executor.head);
     git('push', 'origin', `HEAD:refs/heads/${state.lane}`);
+    cleanup();
     state.head = state.executor.head;
     if (state.approved.at(-1)?.head !== state.head) state.approved.push({ task: state.task, head: state.head, answer: state.executor.answer });
     const next = state.choice === 'next';
