@@ -71,6 +71,7 @@ Ultra 消失且此前 `sent > 0` 时用 `coda.tell` 告知关闭一次，恢复�
 | --- | --- |
 | `title`、`task` | 必填的功能名和第一项自足任务，包含背景、范围与验收要求 |
 | `devices` | 必填布尔值「设备验收」，无默认值；改了客户端、要在 Mac 或 iPhone 上验收时传 `true`，否则传 `false` |
+| `device` | 可选文本「验收设备」，如 `duo-testbed`，默认空；开启设备验收且非空时，从安装前到验收结束独占这台设备；留空不占设备 |
 | `delivery` | 字符串「所属需求」，填需求运行的 ID；默认空，为独立交付 |
 | `agent` | 留空使用发起会话的 Agent |
 | `model`、`effort`、`mode` | 可选，空值不传给 coda-agent，使用执行者默认值 |
@@ -107,9 +108,11 @@ PR 位于同一 develop 运行，按 head 复用已通过的项目检查即可�
 
 仍缺少的内核能力只有失败详情输出：错误边界后需要可读取的子运行 ID、失败步骤、错误及日志尾，当前失败批次没有这些 outputs。自动续作目前附父运行和提交，要求执行者读取 `workflow_status`，尚不能直接附日志尾。
 
+填写 `device` 且开启设备验收时，安装前用 `hold-group` 占用 `device:<设备名>`（容量 1），状态显示「等验收设备 <设备名>」。引擎按组归属在整个空间排队；composer 不依赖 testbed 插件。安装与验收共用这一段占用，发起 `ios-preview-install` 时除精确 `commit` 外还传同一个 `device`，安装运行借用本段设备，不另排队。通过、退回审查或确认、取消并收尾后释放；再次进入重新排队。缺少必填意见时仍留在本段补填。未填设备名时沿用原安装与验收行为，不传设备参数、不占设备。
+
 ## 需求交付流程
 
-一个需求要多个 `develop` 一起验收、一起批准时才用它；只有一个 `develop` 的需求不挂需求，直接走到合并。在**交付并部署这个需求的项目**用 `workflow_run` 发起 `deliver`，必填 `title`（需求名）、`goal`（目标与完成标准）、`devices`（布尔，是否设备验收）。各功能独立运行 `develop`，`delivery` 填本需求运行 ID，检查通过后停在「待交付」。
+一个需求要多个 `develop` 一起验收、一起批准时才用它；只有一个 `develop` 的需求不挂需求，直接走到合并。在**交付并部署这个需求的项目**用 `workflow_run` 发起 `deliver`，必填 `title`（需求名）、`goal`（目标与完成标准）、`devices`（布尔，是否设备验收）。可选 `device`（验收设备名，如 `duo-testbed`，默认空），与 develop 的设备占用规则相同。各功能独立运行 `develop`，`delivery` 填本需求运行 ID，检查通过后停在「待交付」。
 
 1. 主 Agent 在「确认达标」选择「开始交付」，备注每行一个成员 PR URL，按合并顺序排列，被依赖的仓库在前。流程记录各 PR 的 URL、head、分支及 base；选择「放弃」结束。
 2. 开启设备验收时，以最新 `origin/<base>` 创建 `delivery/<运行 ID>`（分支名只用 ASCII），按顺序 `git merge --no-ff` 仅合入本仓库成员的已记录 head 并推送。集成失败经错误边界回到确认，合并冲突的具体 Git 输出作为反馈。新一轮从最新 base 重新集成并替换本运行的预览分支。
@@ -121,5 +124,5 @@ PR 位于同一 develop 运行，按 head 复用已通过的项目检查即可�
 
 必填备注缺少时回原任务补填。成员快照、轮次和反馈保存在 `$CODA_ARTIFACTS/deliver.json`；运行之间只通过主 Agent 答复各自人工任务协调，不直接发消息。此流程不改变成员 develop 的审查、检查与合并路径。
 
-测试在 `test/plugins/composer/`，用临时 Git 仓库及假的 coda-agent、gh 验证，不发真实 PR 或部署。PR 复用测试将实际脚本输出按引擎语义转换（`"true"` / `"false"` 转为布尔值），再用同版本 FEEL 求值真实 BPMN 网关条件，覆盖同提交复用、记录缺失与提交变化；check 包仅校验流程方言，此测试不运行完整 BPMN 引擎。
+设备验收段的结构与 FEEL 分流测试在 `plugins/composer/test/device-acceptance.test.mjs`，用 `node --test plugins/composer/test/device-acceptance.test.mjs` 运行；检查占用范围、退出和重入路径，取消后的实际释放由引擎契约保证，不在插件测试中模拟引擎。其余测试在 `test/plugins/composer/`，用临时 Git 仓库及假的 coda-agent、gh 验证，不发真实 PR 或部署。PR 复用测试将实际脚本输出按引擎语义转换（`"true"` / `"false"` 转为布尔值），再用同版本 FEEL 求值真实 BPMN 网关条件，覆盖同提交复用、记录缺失与提交变化；check 包仅校验流程方言，此测试不运行完整 BPMN 引擎。
 委派文案的基础采用 [oh-my-claudecode 的委派规则](https://github.com/Yeachan-Heo/oh-my-claudecode/blob/82602887b71a3984e040fac2839ec8d27a7c67b6/docs/CLAUDE.md#L16)，适配 Coda 开发流程与只读 spawn。版权与 MIT 许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
