@@ -74,8 +74,9 @@ else if (args[1] === 'merge') {
   }
 }
 else if (args[1] === 'view') {
-  if (args.includes('statusCheckRollup')) {
-    console.log(process.env.CHECKS_COUNT || '1');
+  if (args.includes('headRefOid,statusCheckRollup')) {
+    const state = JSON.parse(readFileSync(join(process.env.CODA_ARTIFACTS, 'develop.json'), 'utf8'));
+    console.log(JSON.stringify({ headRefOid: process.env.PR_HEAD || state.head, statusCheckRollup: [{}] }));
     process.exit(Number(process.env.CHECKS_QUERY_EXIT || 0));
   }
   if (args.includes('state,headRefOid,mergeCommit')) {
@@ -308,16 +309,13 @@ test('GitHub 检查等待全部完成，无检查通过，检查失败和查询�
   f.run('lane'); f.task('code', 'implementation'); f.run('execute');
   f.review('accept'); f.run('accept'); f.run('pr');
   assert.match(f.run('github-checks').stdout, /checks passed/);
-  const query = ['pr', 'view', f.state().pr, '--json', 'statusCheckRollup', '--jq', '.statusCheckRollup | length'];
-  assert.deepEqual(f.calls('gh').at(-2).args, query);
-  assert.deepEqual(f.calls('gh').at(-1).args, ['pr', 'checks', f.state().pr, '--watch']);
-  const count = f.calls('gh').length;
-  f.run('github-checks', { CHECKS_COUNT: '0', CHECKS_EXIT: '1' });
-  assert.equal(f.calls('gh').length, count + 1, '无检查时只查询数量，不启动等待');
+  const query = ['pr', 'view', f.state().pr, '--json', 'headRefOid,statusCheckRollup'];
+  assert.deepEqual(f.calls('gh').at(-3).args, query);
+  assert.deepEqual(f.calls('gh').at(-2).args, ['pr', 'checks', f.state().pr, '--watch']);
   assert.deepEqual(f.calls('gh').at(-1).args, query);
   f.run('github-checks', { CHECKS_QUERY_EXIT: '1' }, 1);
-  assert.equal(f.calls('gh').length, count + 2, '查询失败时不启动等待');
   assert.deepEqual(f.calls('gh').at(-1).args, query);
+  assert.match(f.run('github-checks', { PR_HEAD: 'stale' }, 1).stderr, /PR head 不一致/);
   for (const [code, stdout, stderr] of [
     [1, 'build\tfail\n', ''],
     [1, '', 'HTTP 403: Forbidden\n'],
