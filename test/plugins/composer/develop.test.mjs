@@ -492,7 +492,7 @@ test('流程在执行及续作后先检查，失败分流，PR 同提交绕过�
   assert.equal(nodes['gate-revise'].targetRef.id, 'revise');
   assert.equal(nodes['gate-escalate'].targetRef.id, 'report');
   assert.equal(nodes['reuse-passed'].targetRef.id, 'github-checks');
-  for (const checked of ['true', 'false']) assert.equal(evaluate(nodes['reuse-passed'].conditionExpression.body.slice(1), { pr: { checked } }).value, checked === 'true');
+  for (const checked of [true, false]) assert.equal(evaluate(nodes['reuse-passed'].conditionExpression.body.slice(1), { pr: { checked } }).value, checked);
   for (const id of ['publish-preview', 'publish-release']) {
     const input = nodes[id].extensionElements.values.find(v => v.name === 'inputs');
     assert.equal(evaluate(input.value.slice(1), { 'approval-result': { route: 'merge' }, approve: { note: '用户修改后的发布说明' } }).value.notes, '用户修改后的发布说明');
@@ -573,23 +573,45 @@ test('gate 检出 Git 工作区且先于检查', async () => {
   assert.equal(nodes['reuse-missing'].targetRef.id, 'gate');
 });
 
-test('PR 检查复用缺失回到 gate 重推，同一 head 再次 accept 仍清理', t => {
+test('PR 实际输出经类型转换和网关求值：同提交复用，缺失或新提交回 gate', async t => {
+  const { root, problem } = await readWorkflow(workflow, 'develop'); assert.ok(!problem, problem);
+  const process = root.rootElements.find(e => e.$type === 'bpmn:Process');
+  const nodes = Object.fromEntries(process.flowElements.map(e => [e.id, e]));
+  const gateway = nodes['reuse-checks'];
+  const next = outputs => {
+    // 对齐 coda backend/src/components/workflows/bpmn-runs.mjs 的 typed：
+    // 脚本输出先把 true/false 字符串变成布尔值，再按任务 id 进入 FEEL。
+    // check 包只校验流程方言；这里用与引擎相同的 feelin 求值真实 BPMN 条件。
+    const pr = Object.fromEntries(Object.entries(outputs).map(([key, value]) =>
+      [key, value === 'true' ? true : value === 'false' ? false : value]));
+    const selected = process.flowElements.filter(flow => flow.sourceRef === gateway).find(flow => {
+      if (flow === gateway.default) return false;
+      const result = evaluate(flow.conditionExpression.body.slice(1), { pr });
+      assert.deepEqual(result.warnings, []);
+      return result.value === true;
+    }) ?? gateway.default;
+    return selected.targetRef.id;
+  };
   const f = fixture(t, false); f.run('lane'); f.task('code', 'first'); f.run('execute');
+  assert.equal(next(f.run('pr').outputs), 'gate', '尚无检查结果');
   const head = f.run('gate').outputs.head;
   const ref = f.state().checkRef;
   f.run('gate-passed', { RUNS: '[]' });
   f.review('accept'); f.run('accept');
   assert.equal(f.git('ls-remote', 'origin', ref), '');
-  assert.equal(f.run('pr').outputs.checked, 'true');
+  assert.equal(next(f.run('pr').outputs), 'github-checks');
   const state = f.state(); delete state.checks;
   writeFileSync(join(f.env.CODA_ARTIFACTS, 'develop.json'), JSON.stringify(state));
-  assert.equal(f.run('pr').outputs.checked, 'false');
+  assert.equal(next(f.run('pr').outputs), 'gate', '检查记录缺失');
   assert.equal(f.run('gate').outputs.head, head);
   assert.equal(f.git('ls-remote', 'origin', ref).split('\t')[0], head);
   f.run('gate-passed', { RUNS: '[]' });
   f.review('accept'); f.run('accept');
   assert.equal(f.git('ls-remote', 'origin', ref), '');
-  assert.equal(f.run('pr').outputs.checked, 'true');
+  assert.equal(next(f.run('pr').outputs), 'github-checks');
   assert.equal(f.git('ls-remote', 'origin', f.state().lane).split('\t')[0], head);
   assert.equal(f.state().approved.length, 1);
+  f.task('code', 'new change'); f.run('revise');
+  f.review('accept'); f.run('accept');
+  assert.equal(next(f.run('pr').outputs), 'gate', '新提交不能复用旧检查');
 });

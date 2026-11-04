@@ -121,5 +121,5 @@ PR 位于同一 develop 运行，按 head 复用已通过的项目检查即可�
 
 必填备注缺少时回原任务补填。成员快照、轮次和反馈保存在 `$CODA_ARTIFACTS/deliver.json`；运行之间只通过主 Agent 答复各自人工任务协调，不直接发消息。此流程不改变成员 develop 的审查、检查与合并路径。
 
-测试在 `test/plugins/composer/`，用临时 Git 仓库及假的 coda-agent、gh 验证，不发真实 PR 或部署。
+测试在 `test/plugins/composer/`，用临时 Git 仓库及假的 coda-agent、gh 验证，不发真实 PR 或部署。PR 复用测试将实际脚本输出按引擎语义转换（`"true"` / `"false"` 转为布尔值），再用同版本 FEEL 求值真实 BPMN 网关条件，覆盖同提交复用、记录缺失与提交变化；check 包仅校验流程方言，此测试不运行完整 BPMN 引擎。
 委派文案的基础采用 [oh-my-claudecode 的委派规则](https://github.com/Yeachan-Heo/oh-my-claudecode/blob/82602887b71a3984e040fac2839ec8d27a7c67b6/docs/CLAUDE.md#L16)，适配 Coda 开发流程与只读 spawn。版权与 MIT 许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
