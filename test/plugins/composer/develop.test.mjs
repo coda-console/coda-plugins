@@ -554,41 +554,42 @@ test('gate 推送后才输出检查 head，重试更新同一分支，通过后�
   assert.equal(f.git('ls-remote', 'origin', f.state().lane).split('\t')[0], f.state().executor.head);
 });
 
-test('gate 推送失败保留原因且不输出 head；结束清理可重复且保留其他分支', t => {
+test('gate 推送失败保留 Git 原因且不输出 head', t => {
   const f = fixture(t); f.run('lane'); f.task('code', 'first'); f.run('execute');
-  const remote = f.git('remote', 'get-url', 'origin');
   f.git('remote', 'set-url', '--push', 'origin', join(f.root, 'missing.git'));
   const failed = f.run('gate', {}, 128);
   assert.match(failed.stderr, /missing.git/);
   assert.match(failed.stderr, /推送执行者提交/);
   assert.deepEqual(failed.outputs, {});
-  f.git('remote', 'set-url', '--push', 'origin', remote);
-  f.run('cleanup'); // 推送未落地也可收尾。
-  f.run('gate');
-  const ref = f.state().checkRef;
-  f.run('cleanup'); f.run('cleanup');
-  assert.equal(f.git('ls-remote', 'origin', ref), '');
-  assert.ok(f.git('ls-remote', 'origin', f.state().lane));
-  assert.ok(f.git('ls-remote', 'origin', 'refs/heads/main'));
 });
 
-test('gate 检出 Git 工作区且先于检查，未处理失败和取消都清理临时分支', async () => {
+test('gate 检出 Git 工作区且先于检查', async () => {
   const { root, problem } = await readWorkflow(workflow, 'develop'); assert.ok(!problem, problem);
   const process = root.rootElements.find(e => e.$type === 'bpmn:Process');
   const nodes = Object.fromEntries(process.flowElements.map(e => [e.id, e]));
   assert.notEqual(nodes.gate.checkout, false);
   assert.equal(nodes['gate-checks'].sourceRef.id, 'gate');
   assert.equal(nodes['gate-checks'].targetRef.id, 'checks');
-  for (const kind of ['error', 'cancel']) {
-    const sub = nodes[`cleanup-${kind}`];
-    assert.equal(sub.triggeredByEvent, true);
-    const start = sub.flowElements.find(e => e.$type === 'bpmn:StartEvent');
-    assert.equal(start.eventDefinitions[0].$type, kind === 'error' ? 'bpmn:ErrorEventDefinition' : 'bpmn:MessageEventDefinition');
-    if (kind === 'cancel') assert.equal(start.eventDefinitions[0].messageRef.name, 'workflow.cancel');
-    const step = sub.flowElements.find(e => e.$type === 'bpmn:ScriptTask');
-    assert.match(step.script, /develop\.mjs" cleanup/);
-    assert.notEqual(step.checkout, false);
-    const end = sub.flowElements.find(e => e.$type === 'bpmn:EndEvent');
-    if (kind === 'error') assert.equal(end.eventDefinitions[0].$type, 'bpmn:ErrorEventDefinition');
-  }
+  assert.equal(nodes['reuse-missing'].targetRef.id, 'gate');
+});
+
+test('PR 检查复用缺失回到 gate 重推，同一 head 再次 accept 仍清理', t => {
+  const f = fixture(t, false); f.run('lane'); f.task('code', 'first'); f.run('execute');
+  const head = f.run('gate').outputs.head;
+  const ref = f.state().checkRef;
+  f.run('gate-passed', { RUNS: '[]' });
+  f.review('accept'); f.run('accept');
+  assert.equal(f.git('ls-remote', 'origin', ref), '');
+  assert.equal(f.run('pr').outputs.checked, 'true');
+  const state = f.state(); delete state.checks;
+  writeFileSync(join(f.env.CODA_ARTIFACTS, 'develop.json'), JSON.stringify(state));
+  assert.equal(f.run('pr').outputs.checked, 'false');
+  assert.equal(f.run('gate').outputs.head, head);
+  assert.equal(f.git('ls-remote', 'origin', ref).split('\t')[0], head);
+  f.run('gate-passed', { RUNS: '[]' });
+  f.review('accept'); f.run('accept');
+  assert.equal(f.git('ls-remote', 'origin', ref), '');
+  assert.equal(f.run('pr').outputs.checked, 'true');
+  assert.equal(f.git('ls-remote', 'origin', f.state().lane).split('\t')[0], head);
+  assert.equal(f.state().approved.length, 1);
 });

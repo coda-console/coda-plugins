@@ -1,7 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="develop-definitions" targetNamespace="https://coda.pub/plugins/composer">
-  <message id="cancel-message" name="workflow.cancel" />
   <process id="develop" name="开发" isExecutable="true" coda:title="开发：{{inputs.title}}">
     <extensionElements>
       <coda:input name="title" label="功能名" required="true" />
@@ -302,23 +301,5 @@ PR：{{pr.url}}
     </serviceTask>
     <sequenceFlow id="published-release" sourceRef="publish-release" targetRef="done" />
     <endEvent id="done" name="已完成" coda:notify='=if inputs.delivery != "" then true else approve.options.notify'><extensionElements><coda:output name="pr" value="=pr.url" /><coda:output name="commit" value="=merge.commit" /></extensionElements></endEvent>
-    <subProcess id="cleanup-error" triggeredByEvent="true">
-      <startEvent id="cleanup-error-start"><errorEventDefinition /></startEvent>
-      <sequenceFlow id="cleanup-error-run" sourceRef="cleanup-error-start" targetRef="cleanup-failed-ref" />
-      <scriptTask id="cleanup-failed-ref" name="清理检查分支" scriptFormat="bash" coda:timeout="5">
-        <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" cleanup</script>
-      </scriptTask>
-      <sequenceFlow id="cleanup-error-end" sourceRef="cleanup-failed-ref" targetRef="failed" />
-      <endEvent id="failed"><errorEventDefinition /></endEvent>
-    </subProcess>
-    <subProcess id="cleanup-cancel" triggeredByEvent="true">
-      <startEvent id="cleanup-cancel-start"><messageEventDefinition messageRef="cancel-message" /></startEvent>
-      <sequenceFlow id="cleanup-cancel-run" sourceRef="cleanup-cancel-start" targetRef="cleanup-cancelled-ref" />
-      <scriptTask id="cleanup-cancelled-ref" name="清理检查分支" scriptFormat="bash" coda:timeout="5">
-        <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" cleanup</script>
-      </scriptTask>
-      <sequenceFlow id="cleanup-cancel-end" sourceRef="cleanup-cancelled-ref" targetRef="cancelled" />
-      <endEvent id="cancelled" />
-    </subProcess>
   </process>
 </definitions>

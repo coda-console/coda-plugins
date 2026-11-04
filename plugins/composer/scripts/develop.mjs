@@ -1,6 +1,6 @@
 // 每一步的工作区都会回收；泳道进度和已通过的改动留在本次运行的产物里。
 import { waitForGitHubChecks } from './github-checks.mjs';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { command, gh, git, output } from './shared.mjs';
 
@@ -24,14 +24,11 @@ if (action === 'lane') {
   process.exit(0);
 }
 
-if (action === 'cleanup' && !existsSync(statePath)) process.exit(0);
-
 const state = JSON.parse(readFileSync(statePath, 'utf8'));
 const save = () => writeFileSync(statePath, JSON.stringify(state));
 const cleanup = () => {
   if (!state.checkRef) return;
-  const head = git('ls-remote', 'origin', state.checkRef).split('\t')[0];
-  if (head) git('push', '--no-follow-tags', `--force-with-lease=${state.checkRef}:${head}`, 'origin', `:${state.checkRef}`);
+  if (git('ls-remote', 'origin', state.checkRef)) git('push', 'origin', '--delete', state.checkRef);
   delete state.checkRef;
   save();
 };
@@ -53,12 +50,9 @@ switch (action) {
     save();
     break;
   }
-  case 'cleanup':
-    cleanup();
-    break;
   case 'gate':
     state.checkRef = `refs/heads/composer-check/${env.GITHUB_RUN_ID}`;
-    // 先记清理目标；推送已落地但进程中断时也能收尾。
+    // 记录本轮检查分支，accept 推入泳道后删除。
     save();
     console.error(`推送执行者提交 ${state.executor.head} 到 ${state.checkRef}`);
     git('push', '--no-follow-tags', '--force', 'origin', `${state.executor.head}:${state.checkRef}`);
