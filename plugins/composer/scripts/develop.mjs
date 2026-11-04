@@ -26,6 +26,12 @@ if (action === 'lane') {
 
 const state = JSON.parse(readFileSync(statePath, 'utf8'));
 const save = () => writeFileSync(statePath, JSON.stringify(state));
+const cleanup = () => {
+  if (!state.checkRef) return;
+  if (git('ls-remote', 'origin', state.checkRef)) git('push', 'origin', '--delete', state.checkRef);
+  delete state.checkRef;
+  save();
+};
 const body = () => state.approved.map((item, index) => `## 第 ${index + 1} 项\n\n<details><summary>任务</summary>\n\n${item.task}\n\n</details>\n\n${item.answer}\n\n提交：${item.head}`).join('\n\n');
 
 switch (action) {
@@ -45,6 +51,11 @@ switch (action) {
     break;
   }
   case 'gate':
+    state.checkRef = `refs/heads/composer-check/${env.GITHUB_RUN_ID}`;
+    // 记录本轮检查分支，accept 推入泳道后删除。
+    save();
+    console.error(`推送执行者提交 ${state.executor.head} 到 ${state.checkRef}`);
+    git('push', '--no-follow-tags', '--force', 'origin', `${state.executor.head}:${state.checkRef}`);
     output('head', state.executor.head);
     break;
   case 'gate-passed':
@@ -84,6 +95,7 @@ switch (action) {
     // 顺序任务只能快进；Git 的错误会说明分叉，流程停在这里交回主 Agent。
     git('merge', '--ff-only', state.executor.head);
     git('push', 'origin', `HEAD:refs/heads/${state.lane}`);
+    cleanup();
     state.head = state.executor.head;
     if (state.approved.at(-1)?.head !== state.head) state.approved.push({ task: state.task, head: state.head, answer: state.executor.answer });
     const next = state.choice === 'next';

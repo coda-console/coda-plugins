@@ -34,7 +34,7 @@
       <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" execute</script>
     </scriptTask>
     <sequenceFlow id="execute-report" sourceRef="execute" targetRef="gate" />
-    <scriptTask id="gate" name="读取执行者提交" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+    <scriptTask id="gate" name="推送执行者提交" scriptFormat="bash" coda:timeout="5">
       <extensionElements><coda:output name="head" /></extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" gate</script>
     </scriptTask>
@@ -158,7 +158,7 @@ head：{{report.head}}
     </scriptTask>
     <sequenceFlow id="pr-check" sourceRef="pr" targetRef="reuse-checks" />
     <exclusiveGateway id="reuse-checks" name="复用本次开发已通过的提交" default="reuse-missing" />
-    <sequenceFlow id="reuse-passed" sourceRef="reuse-checks" targetRef="github-checks"><conditionExpression xsi:type="tFormalExpression">=pr.checked = "true"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="reuse-passed" sourceRef="reuse-checks" targetRef="github-checks"><conditionExpression xsi:type="tFormalExpression">=pr.checked = true</conditionExpression></sequenceFlow>
     <sequenceFlow id="reuse-missing" sourceRef="reuse-checks" targetRef="gate" />
     <serviceTask id="checks" name="项目检查" coda:action="run-workflows">
       <extensionElements><coda:param name="kind" value="check" /><coda:param name="commit" value="=gate.head" /></extensionElements>

@@ -97,7 +97,9 @@ Ultra 消失且此前 `sent > 0` 时用 `coda.tell` 告知关闭一次，恢复�
 
 ### 审查前检查与当前内核限制
 
-执行者交回后，流程自己用执行者 head 跑 PR 同一组 `coda:kind="check"`，全部成功后才进入正常审查。审查材料列出检查流程、状态和运行链接；没有声明检查时明确显示没有项目检查。执行者只需跑与改动直接相关的快检查，不必再用 run-held 跑整套编译。通过会清零连续失败次数；新任务重新计数。
+执行者交回后，gate 先把 head 推送到本次运行独占的 `composer-check/<运行 ID>` 分支，成功后才输出 head 并调用项目检查；推送失败停在 gate，日志保留 Git 的具体原因。此时 GitHub 已有提交，检查可以写提交状态，PR 复用同一 head 时也能看到这些状态。临时分支每次 gate 更新，不占用只存审查通过提交的泳道；审查通过并推入泳道后立即删除。推送或清理失败留在原步骤，沿用流程原有的恢复行为；取消或放弃运行可能留下检查分支，不另加全局收尾机制。选择每次运行一个分支，是为了隔离并发运行，且不用累计执行者分支。
+
+流程自己用执行者 head 跑 PR 同一组 `coda:kind="check"`，全部成功后才进入正常审查。审查材料列出检查流程、状态和运行链接；没有声明检查时明确显示没有项目检查。执行者只需跑与改动直接相关的快检查，不必再用 run-held 跑整套编译。通过会清零连续失败次数；新任务重新计数。
 
 用户只需在批准卡勾选发布类别。develop 和 deliver 在勾选发布但备注为空时，进入交给主 Agent 的「写发布说明」任务，列出所选类别，由主 Agent 按上次公开版本以来合并的改动写面向用户的说明；备注必填，空白时返回同一 Agent 任务。用户自己填写了备注则直接使用，不再要求主 Agent 编写。说明随 `notes` 传给两类发布流程，审查意见不作为发布说明。
 
@@ -119,5 +121,5 @@ PR 位于同一 develop 运行，按 head 复用已通过的项目检查即可�
 
 必填备注缺少时回原任务补填。成员快照、轮次和反馈保存在 `$CODA_ARTIFACTS/deliver.json`；运行之间只通过主 Agent 答复各自人工任务协调，不直接发消息。此流程不改变成员 develop 的审查、检查与合并路径。
 
-测试在 `test/plugins/composer/`，用临时 Git 仓库及假的 coda-agent、gh 验证，不发真实 PR 或部署。
+测试在 `test/plugins/composer/`，用临时 Git 仓库及假的 coda-agent、gh 验证，不发真实 PR 或部署。PR 复用测试将实际脚本输出按引擎语义转换（`"true"` / `"false"` 转为布尔值），再用同版本 FEEL 求值真实 BPMN 网关条件，覆盖同提交复用、记录缺失与提交变化；check 包仅校验流程方言，此测试不运行完整 BPMN 引擎。
 委派文案的基础采用 [oh-my-claudecode 的委派规则](https://github.com/Yeachan-Heo/oh-my-claudecode/blob/82602887b71a3984e040fac2839ec8d27a7c67b6/docs/CLAUDE.md#L16)，适配 Coda 开发流程与只读 spawn。版权与 MIT 许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
