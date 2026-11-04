@@ -1,11 +1,11 @@
 // A durable worker survives a plugin-host restart. Only this worker updates its running journal.
 // The provider recovers by observing it; it never launches a second worker for an existing claim.
-import { spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { Journal } from '../lib/journal.mjs';
 import { executeHooks } from '../lib/hooks.mjs';
 import { resultFiles } from '../lib/results.mjs';
+import { keychainPromptSuffix } from '../lib/keychain-prompt.mjs';
 
 const chunks = [];
 for await (const chunk of process.stdin) chunks.push(chunk);
@@ -25,8 +25,7 @@ record.phase = 'preparing'; record.startedAt = new Date().toISOString(); journal
 let timer, timeoutHint = '';
 if (spec.timeoutMs) timer = setTimeout(() => {
   if (signal.signal.aborted) return;
-  if (process.platform === 'darwin' && spawnSync('pgrep', ['-x', 'SecurityAgent'], { stdio: 'ignore' }).status === 0)
-    timeoutHint = '；此时屏幕上有钥匙串授权框（SecurityAgent）在等待应答，命令很可能卡在它上面；构建脚本不要读钥匙串，见 host-slots 说明';
+  timeoutHint = keychainPromptSuffix();
   signal.abort(new Error('执行超时'));
 }, Math.min(spec.timeoutMs, 2 ** 31 - 1));
 try {

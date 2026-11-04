@@ -6,10 +6,10 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { readWorkflow } from '@coda-console/protocol/workflow';
+import { keychainPromptHint as hint } from '../../../plugins/host/lib/keychain-prompt.mjs';
 import { Journal, identity, taskFingerprint } from '../../../plugins/host/lib/journal.mjs';
 
 const plugin = fileURLToPath(new URL('../../../plugins/host/', import.meta.url));
-const hint = '；此时屏幕上有钥匙串授权框（SecurityAgent）在等待应答，命令很可能卡在它上面；构建脚本不要读钥匙串，见 host-slots 说明';
 function fixture(t, present) {
   const root = mkdtempSync(join(tmpdir(), 'host-timeout-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -17,7 +17,7 @@ function fixture(t, present) {
   writeFileSync(output, '');
   writeFileSync(join(root, 'pgrep'), '#!/bin/sh\necho "$*" >> "$PROBE_CALLS"\nexit ' + (present ? 0 : 1) + '\n', { mode: 0o755 });
   return { root, output, calls, env: { ...process.env, PATH: `${root}:${dirname(process.execPath)}:${process.env.PATH}`,
-    PROBE_CALLS: calls, GITHUB_OUTPUT: output, RUNNER_TEMP: root, HELD_CWD: root, HELD_IDLE_MINUTES: '0.005' } };
+    CODA_PLUGIN_PATH: plugin, PROBE_CALLS: calls, GITHUB_OUTPUT: output, RUNNER_TEMP: root, HELD_CWD: root, HELD_IDLE_MINUTES: '0.005' } };
 }
 function execute(t, command, args, env, input) {
   const child = spawn(command, args, { env, detached: true });
