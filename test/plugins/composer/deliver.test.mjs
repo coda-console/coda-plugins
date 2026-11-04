@@ -201,7 +201,7 @@ test('需求流程回路、人工任务、结果通知和部署发布顺序契�
   assert.match(nodes.preview.documentation[0].text, /commit="\{\{integrate.head\}\}"/);
   const report = nodes.report.documentation[0].text;
   for (const text of ['15 行', '3～5 条', '结构变化', '验证', '需要你知道', '不放执行者原文、测试数量、文件清单']) assert.ok(report.includes(text));
-  assert.equal(nodes.approve.documentation[0].text, '{{report-result.body}}\n\n成员 PR：\n{{confirm-result.members}}\n{{if approval-result.route = "approval" then approval-result.feedback else ""}}');
+  assert.equal(nodes.approve.documentation[0].text, '勾选发布后，主 Agent 会准备发布说明；若你填写了备注，将直接用作发布说明。暂不合并时请在备注说明原因。\n{{report-result.body}}\n\n成员 PR：\n{{confirm-result.members}}\n{{if approval-result.route = "approval" then approval-result.feedback else ""}}');
   assert.deepEqual(params('kinds'), { commit: '=confirm-result.commit' });
   const options = values(nodes.approve)[0].options;
   assert.deepEqual(options.map(option => [option.id, option.name]), [['deploy', '部署'], ['preview', '发布预览版'], ['release', '发布正式版']]);
@@ -231,9 +231,9 @@ test('需求流程回路、人工任务、结果通知和部署发布顺序契�
     }
     assert.deepEqual(called, ['deploy', 'preview', 'release'].filter(kind => options[kind]));
   }
-  assert.deepEqual(params('publish-preview'), { kind: 'preview', commit: '=merged.commit' });
-  assert.deepEqual(params('publish-release'), { kind: 'release', commit: '=merged.commit', inputs: '={ publish: "true" }' });
-  assert.deepEqual(evaluate(params('publish-release').inputs.slice(1), {}).value, { publish: 'true' });
+  assert.deepEqual(params('publish-preview'), { kind: 'preview', commit: '=merged.commit', inputs: '={ notes: if approval-result.route = "notes" then notes-result.notes else approve.note }' });
+  assert.deepEqual(params('publish-release'), { kind: 'release', commit: '=merged.commit', inputs: '={ publish: "true", notes: if approval-result.route = "notes" then notes-result.notes else approve.note }' });
+  assert.deepEqual(evaluate(params('publish-release').inputs.slice(1), { 'approval-result': { route: 'merge' }, approve: { note: '更新说明' } }).value, { publish: 'true', notes: '更新说明' });
   assert.deepEqual(process.flowElements.filter(e => e.action === 'run-workflows').map(e => e.id), ['deploy', 'publish-preview', 'publish-release']);
   assert.deepEqual(params('deploy'), { kind: 'deploy', commit: '=merged.commit' });
   assert.deepEqual(process.flowElements.filter(e => e.action === 'tell-session').map(e => e.id), ['tell-result']);
@@ -252,4 +252,50 @@ test('需求流程回路、人工任务、结果通知和部署发布顺序契�
     assert.equal(message('tell-result', 'key', extra), 'run-1:verified:merged-head');
   }
   assert.equal(nodes['result-done'].targetRef.id, 'done');
+});
+
+test('交付勾选发布而无说明时交主 Agent 编写', t => {
+  const f = fixture(t, false);
+  for (const preview of [false, true]) for (const release of [false, true]) for (const note of ['', '  ', '发布说明']) {
+    const result = f.run('approval', { RESPONSE: JSON.stringify({ choice: 'merge', options: { preview, release }, note }) }).outputs;
+    assert.equal(result.route, (preview || release) && !note.trim() ? 'notes' : 'release');
+  }
+});
+
+
+test('发布说明由主 Agent 补写或直接使用用户备注，空说明不放行', async t => {
+  const f = fixture(t);
+  const { root, problem } = await readWorkflow(workflow, 'deliver'); assert.ok(!problem, problem);
+  const process = root.rootElements.find(e => e.$type === 'bpmn:Process');
+  const nodes = Object.fromEntries(process.flowElements.map(e => [e.id, e]));
+  assert.equal(nodes['write-notes'].assignee, undefined, '交发起会话主 Agent');
+  assert.equal(nodes['write-notes'].name, '写发布说明');
+  assert.equal(nodes['approval-write-notes'].targetRef.id, 'write-notes');
+  assert.equal(nodes['notes-missing'].targetRef.id, 'write-notes');
+  assert.equal(nodes['notes-ready'].targetRef.id, 'release');
+  assert.equal(nodes['notes-result'].extensionElements.values.find(v => v.name === 'RESPONSE').value, '=write-notes');
+  for (const text of ['approve.options.preview', 'approve.options.release', '上次公开版本以来合并的改动', '面向用户', '备注必填']) assert.ok(nodes['write-notes'].documentation[0].text.includes(text));
+  assert.doesNotMatch(workflow, /\{\{review\.note\}\}/);
+  for (const note of [undefined, '', '  ']) {
+    const result = f.run('notes', { RESPONSE: JSON.stringify({ note }) }).outputs;
+    assert.equal(result.route, 'notes');
+    assert.ok(result.feedback);
+    assert.equal(evaluate(nodes['notes-missing'].conditionExpression.body.slice(1), { 'notes-result': result }).value, true);
+  }
+  for (const preview of [false, true]) for (const release of [false, true]) {
+    if (!preview && !release) continue;
+    for (const note of ['', '用户自己的说明']) {
+      const approve = { choice: 'merge', options: { preview, release }, note };
+      const approval = f.run('approval', { RESPONSE: JSON.stringify(approve) }).outputs;
+      assert.equal(evaluate(nodes['approval-write-notes'].conditionExpression.body.slice(1), { 'approval-result': approval }).value, !note);
+      const notes = f.run('notes', { RESPONSE: JSON.stringify({ note: '主 Agent 的发布说明' }) }).outputs;
+      assert.equal(notes.route, 'ready');
+      for (const id of ['publish-preview', 'publish-release']) {
+        const input = nodes[id].extensionElements.values.find(v => v.name === 'inputs');
+        const result = evaluate(input.value.slice(1), { approve, 'approval-result': approval, 'notes-result': notes });
+        assert.equal(result.warnings.length, 0);
+        assert.equal(result.value.notes, note || '主 Agent 的发布说明');
+      }
+    }
+  }
 });

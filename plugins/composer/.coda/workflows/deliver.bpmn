@@ -121,8 +121,9 @@ PR：链接
       <extensionElements><coda:param name="commit" value="=confirm-result.commit" /></extensionElements>
     </serviceTask>
     <sequenceFlow id="kinds-approve" sourceRef="kinds" targetRef="approve" />
-    <userTask id="approve" name="批准交付" coda:assignee="user" coda:handback="false" coda:noteLabel="暂不合并的原因（必填）">
-      <documentation>{{report-result.body}}
+    <userTask id="approve" name="批准交付" coda:assignee="user" coda:handback="false" coda:noteLabel="备注">
+      <documentation>勾选发布后，主 Agent 会准备发布说明；若你填写了备注，将直接用作发布说明。暂不合并时请在备注说明原因。
+{{report-result.body}}
 
 成员 PR：
 {{confirm-result.members}}
@@ -146,7 +147,25 @@ PR：链接
     <sequenceFlow id="approval-route" sourceRef="approval-note" targetRef="after-approval" />
     <exclusiveGateway id="after-approval" name="交付选择" default="approval-release" />
     <sequenceFlow id="approval-confirm" sourceRef="after-approval" targetRef="context"><conditionExpression xsi:type="tFormalExpression">=approval-result.route = "confirm"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="approval-write-notes" sourceRef="after-approval" targetRef="write-notes"><conditionExpression xsi:type="tFormalExpression">=approval-result.route = "notes"</conditionExpression></sequenceFlow>
     <sequenceFlow id="approval-release" sourceRef="after-approval" targetRef="release" />
+    <userTask id="write-notes" name="写发布说明" coda:noteLabel="发布说明（必填）">
+      <documentation>已勾选发布类别：{{if approve.options.preview then "预览版" else ""}} {{if approve.options.release then "正式版" else ""}}
+成员 PR：
+{{confirm-result.members}}
+请主 Agent 按上次公开版本以来合并的改动，写面向用户的发布说明，备注必填。请结合本次批准的改动，不要使用审查意见作为发布说明。
+{{if notes-result.feedback = null then "" else notes-result.feedback}}</documentation>
+      <extensionElements><coda:choice id="ready" name="说明已写好" primary="true" /></extensionElements>
+    </userTask>
+    <sequenceFlow id="write-notes-result" sourceRef="write-notes" targetRef="notes-result" />
+    <scriptTask id="notes-result" name="记录发布说明" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements><coda:env name="RESPONSE" value="=write-notes" /><coda:output name="route" /><coda:output name="feedback" /><coda:output name="notes" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/deliver.mjs" notes</script>
+    </scriptTask>
+    <sequenceFlow id="notes-result-route" sourceRef="notes-result" targetRef="notes-route" />
+    <exclusiveGateway id="notes-route" name="发布说明是否填写" default="notes-ready" />
+    <sequenceFlow id="notes-missing" sourceRef="notes-route" targetRef="write-notes"><conditionExpression xsi:type="tFormalExpression">=notes-result.route = "notes"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="notes-ready" sourceRef="notes-route" targetRef="release" />
     <userTask id="release" name="放行合并" coda:noteLabel="本项目最后一个合并提交">
       <documentation>需求：{{inputs.title}}
 成员 PR（按合并顺序）：
@@ -178,14 +197,14 @@ PR：链接
     <sequenceFlow id="to-publish-preview" sourceRef="publish-preview-choice" targetRef="publish-preview"><conditionExpression xsi:type="tFormalExpression">=approve.options.preview</conditionExpression></sequenceFlow>
     <sequenceFlow id="skip-publish-preview" sourceRef="publish-preview-choice" targetRef="publish-release-choice" />
     <serviceTask id="publish-preview" name="发布预览版" coda:action="run-workflows">
-      <extensionElements><coda:param name="kind" value="preview" /><coda:param name="commit" value="=merged.commit" /></extensionElements>
+      <extensionElements><coda:param name="kind" value="preview" /><coda:param name="commit" value="=merged.commit" /><coda:param name="inputs" value='={ notes: if approval-result.route = "notes" then notes-result.notes else approve.note }' /></extensionElements>
     </serviceTask>
     <sequenceFlow id="published-preview" sourceRef="publish-preview" targetRef="publish-release-choice" />
     <exclusiveGateway id="publish-release-choice" name="是否发布正式版" default="skip-publish-release" />
     <sequenceFlow id="to-publish-release" sourceRef="publish-release-choice" targetRef="publish-release"><conditionExpression xsi:type="tFormalExpression">=approve.options.release</conditionExpression></sequenceFlow>
     <sequenceFlow id="skip-publish-release" sourceRef="publish-release-choice" targetRef="verify" />
     <serviceTask id="publish-release" name="发布正式版" coda:action="run-workflows">
-      <extensionElements><coda:param name="kind" value="release" /><coda:param name="commit" value="=merged.commit" /><coda:param name="inputs" value='={ publish: "true" }' /></extensionElements>
+      <extensionElements><coda:param name="kind" value="release" /><coda:param name="commit" value="=merged.commit" /><coda:param name="inputs" value='={ publish: "true", notes: if approval-result.route = "notes" then notes-result.notes else approve.note }' /></extensionElements>
     </serviceTask>
     <sequenceFlow id="published-release" sourceRef="publish-release" targetRef="verify" />
     <userTask id="verify" name="真实环境验证" coda:noteLabel="验证结论（有问题时必填）">
