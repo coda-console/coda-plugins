@@ -3,12 +3,14 @@
 // there. Its commands see the device as theirs (`HOST_SIM_LEASE`), so that a project script calling host-sim again for
 // it inside runs at once. The command's exit status is the step's output `exit_code`; the step itself succeeds, so that
 // the status reaches host-sim as the command gave it.
+import { resolveDevice } from './resolve-device.mjs';
 import { spawn } from 'node:child_process';
 import { appendFileSync, readFileSync, rmSync } from 'node:fs';
 import { constants } from 'node:os';
 
 const spec = JSON.parse(readFileSync(process.env.SPEC, 'utf8'));
 rmSync(process.env.SPEC, { force: true });
+resolveDevice(spec.kind);
 const env = { ...spec.env, HOST_SIM_LEASE: `coda-run:${spec.kind}` };
 const child = spawn(spec.argv[0], spec.argv.slice(1), { cwd: spec.cwd, env, stdio: 'inherit' });
 let ending = false;

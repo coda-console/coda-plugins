@@ -3,6 +3,7 @@
 // command is handed to the capability 在测试机上执行 and followed with `coda-run`: Coda lends it the device the task holds
 // and runs it in the session's directory, with its environment. Inside that command (`HOST_SIM_LEASE=coda-run:<设备名>`),
 // or in a step whose run holds the device's group (`CODA_GROUPS` names device:<设备名>), it runs at once.
+import { resolveDevice } from './resolve-device.mjs';
 import { spawn } from 'node:child_process';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
@@ -23,6 +24,7 @@ if (command === 'run' && (held || thread)) {
   const at = args.indexOf('--'), argv = at >= 0 ? args.slice(at + 1) : [];
   if (!argv.length) fail('用法：host-sim run --kind <设备名> -- <命令> [参数…]', 2);
   // Already inside a command on the device (a project script calling itself again): it is this one's.
+  try { resolveDevice(kind); } catch (error) { fail(error.message, 1); }
   if (held) follow(argv, { ...session(), HOST_SIM_LEASE: lease || `coda-group:${group}` });
   else {
     // What to run, where and with what, for 在测试机上执行 to read: kept while the run may still read it. coda-run ending
@@ -38,6 +40,7 @@ if (command === 'run' && (held || thread)) {
       code => { if (code !== null && code !== 75) rmSync(spec, { force: true }); });
   }
 } else if (command === 'check' && held) {
+  try { resolveDevice(kind); } catch (error) { fail(error.message, 1); }
   process.stderr.write(`host-sim：在借到的测试机 ${kind} 上\n`);
 } else if (!['run', 'check'].includes(command)) {
   fail(`用法：host-sim run --kind ${kind} -- <命令>，或在借到的测试机上用 check`, 2);

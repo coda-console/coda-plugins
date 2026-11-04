@@ -2,8 +2,8 @@
   "name": "@coda-console/testbed",
   "id": "testbed",
   "displayName": "测试机",
-  "description": "长插在 Mac 上的 iPhone、iPad 测试机只经这里使用：排到后按需装上 App，把任务交给会话在真机上操作；会话的 host-sim 命令借用它，任务结束时随之停下；任务结束、出错或取消时先切黑屏再交给下一位，切不过去就请你处理。",
-  "version": "1.1.0",
+  "description": "iPhone、iPad 测试机登记在哪个实例就归哪个实例，空间里同一设备只登记一次，重复占用报冲突。任何实例的会话都能用，在归属实例排队；安装、操作和切黑屏在发起的 Mac 执行，须与设备配对，XCTest 须有本机 runner。无需会话操作的流程可自行 hold-group device:<id>（capacity 1）独占。",
+  "version": "1.2.0",
   "categories": [
     "机器与资源"
   ],
@@ -35,7 +35,7 @@
           "title": "切黑屏命令",
           "type": "object",
           "order": 1,
-          "description": "每台测试机用完、交给下一位之前怎么切黑屏。默认用 devicectl 在设备上打开黑屏 App（com.leavan.blackscreen）；某台要换做法就加一行：左边是设备名（它所在 Mac 的测试机插件登记的 id），右边是在那台 Mac 上执行的命令（sh，设备的 UDID 在 $UDID）。失败时请你处理后再交出设备。",
+          "description": "每台测试机用完、交给下一位之前怎么切黑屏。默认用 devicectl 在设备上打开黑屏 App（com.leavan.blackscreen）；某台要换做法就加一行：左边是设备名（归属实例的测试机插件登记的 id），右边是在发起的 Mac 上执行的命令（sh，设备的 UDID 在 $UDID）。失败时请你处理后再交出设备。",
           "additionalProperties": {
             "type": "string"
           },
@@ -60,6 +60,11 @@
     ".coda",
     "scripts",
     "blackscreen",
-    "skills"
+    "skills",
+    "main.mjs"
+  ],
+  "main": "main.mjs",
+  "activationEvents": [
+    "onStartupFinished"
   ]
 }
