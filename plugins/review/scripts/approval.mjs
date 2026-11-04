@@ -7,6 +7,7 @@ import { json, output } from './step.mjs';
 const options = (json('APPROVED', {}) ?? {}).options ?? {};
 const chosen = id => options[id] === true;
 output('at', Date.now());
+output('base', process.env.BASE);
 output('deleteBranch', chosen('deleteBranch'));
 output('deploy', chosen('deploy'));
 output('release', chosen('preview') || chosen('release'));

@@ -13,7 +13,7 @@ export const summary = text => { if (process.env.GITHUB_STEP_SUMMARY) appendFile
 
 // The pull request at `url` as GitHub has it based now: its base branch and its repository's default branch (`main`), and
 // its number; asked a few times a few seconds apart. `error` says why when it cannot be read.
-export async function baseOf(url) {
+export async function baseOf(url, targetBranch = '') {
   const at = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(url ?? '');
   if (!at) return { error: `不是 GitHub 上的 PR：${url}` };
   let error = '';
@@ -22,7 +22,7 @@ export async function baseOf(url) {
     const done = spawnSync('gh', ['api', `repos/${at[1]}/pulls/${at[2]}`, '--jq', '{base: .base.ref, main: .base.repo.default_branch}'], { encoding: 'utf8' });
     let read = null;
     try { read = done.status === 0 ? JSON.parse(done.stdout) : null; } catch {}
-    if (read?.base && read?.main) return { base: read.base, main: read.main, number: at[2] };
+    if (read?.base && read?.main) return { base: read.base, main: read.main, target: targetBranch.trim() || read.main, number: at[2] };
     error = (done.stderr || '').trim().split('\n').at(-1) || '没有读到';
   }
   return { error: `读不到 PR 的 base：${error}` };

@@ -3,7 +3,7 @@
   "id": "review",
   "displayName": "PR 生命流程",
   "description": "会话开的 PR 从开出来起一条流程：每个新版本先跑项目声明的检查，再请另一家 Agent 评审，要求修改时交给开 PR 的会话处理、有分歧时交给你仲裁；通过后请你批准合并，跑过项目的合并前检查再合并，合并后按你的选择删除远程分支、调用项目的部署和发布流程，PR 合并或关闭时结束。",
-  "version": "2.9.1",
+  "version": "2.10.0",
   "categories": [
     "工作流程"
   ],
@@ -108,10 +108,17 @@
           "default": 3,
           "description": "一条运行里最多自动评审几次。到了上限，新版本交给你决定：放行，或再评审一次。手动发起不计次数。"
         },
+        "review.targetBranch": {
+          "title": "合并目标分支",
+          "type": "string",
+          "order": 5,
+          "default": "",
+          "description": "只允许合并到这个分支，留空使用仓库默认分支。目录里的设置优先于本机插件设置，适用于该目录所有会话的 PR；不自动修改已有 PR 的 base。运行开始时读取，修改后对新运行生效，重跑或原地恢复时重新读取。"
+        },
         "review.mergeMethod": {
           "title": "合并方式",
           "type": "string",
-          "order": 5,
+          "order": 6,
           "enum": [
             "squash",
             "merge",
@@ -123,7 +130,7 @@
         "review.mergeOptions": {
           "title": "合并时默认勾选",
           "type": "array",
-          "order": 6,
+          "order": 7,
           "uniqueItems": true,
           "items": {
             "anyOf": [
@@ -162,7 +169,13 @@
         }
       }
     },
-    "instructions": "gh pr create 开出即评审；等其他 PR、升锁或发布的开草稿（-R 在 --draft 前），满足后 gh pr ready。只合并进默认分支；合并前验证声明为流程步骤或 GitHub 必需检查。正常结束只更新状态，任务与失败回本会话，不轮询。手动用 workflow_run 发起 pull-request 前用 gh pr view 取得完整地址传 pr；同 PR 复用未结束运行。"
+    "instructions": "开 PR 用 review-target-branch 查目标，以 --base 指定；叠放可用依赖分支。开出即评审；等前提的开草稿（-R 在 --draft 前），满足后 gh pr ready。只合并到目标分支。验证声明为流程或必需检查。正常结束只更新状态，任务与失败回会话，勿轮询。手动 pull-request 用 gh pr view 取完整地址传 pr，同 PR 复用未结束运行。",
+    "commands": [
+      {
+        "name": "review-target-branch",
+        "command": "\"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/target-branch.mjs\""
+      }
+    ]
   },
   "license": "MIT",
   "repository": {
