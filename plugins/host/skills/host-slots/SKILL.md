@@ -33,6 +33,12 @@ description: 宿主资源插件的名额怎么用：会话里用 run-held 执行
 
 - 步骤里再调 `host-sim` 会沿用这份名额；没占着组 `host` 的步骤调用 `host-sim` 会被拒绝。
 
+## 无人值守构建
+
+会话和流程里的命令无人值守，任何钥匙串授权框都没人点。项目构建脚本须让 SwiftPM 不读钥匙串：`xcodebuild` 加 `-packageAuthorizationProvider netrc`，`swift build/run/test/package` 加 `--disable-keychain`。签名按 `apple-signing` skill 使用私钥文件，不经钥匙串。
+
+构建无输出卡住时，先看失败原因有没有授权框提示。无输出或总时限失败时，host 只在失败路径检查一次本机是否有 `SecurityAgent` 进程；有则追加提示，没有则保留原原因。正常结束、非零退出和取消不检查。
+
 ## 项目脚本经 host-sim 排队
 
 - `host-sim run --kind build|simulator -- <命令> [参数…]`：已在名额里（持锁执行的命令带 `HOST_SIM_LEASE`，占着组 `host` 的步骤带 `CODA_GROUPS`）就直接执行，

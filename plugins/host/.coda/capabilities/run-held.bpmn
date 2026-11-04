@@ -43,7 +43,21 @@
           <timeDuration xsi:type="tFormalExpression">=if inputs.timeoutMinutes &lt; 0 or inputs.timeoutMinutes &gt; 1440 then null else "PT" + string(if inputs.timeoutMinutes &gt; 0 then inputs.timeoutMinutes else if inputs.what = "模拟器" then 60 else 30) + "M"</timeDuration>
         </timerEventDefinition>
       </boundaryEvent>
-      <sequenceFlow id="timeout-failed" sourceRef="timed-out" targetRef="timed-out-end" />
+      <sequenceFlow id="timeout-failed" sourceRef="timed-out" targetRef="report-timeout" />
+      <scriptTask id="report-timeout" name="执行超过总时限" coda:checkout="false" scriptFormat="bash">
+        <extensionElements><coda:output name="failure_reason" /></extensionElements>
+        <script><![CDATA[node --input-type=module <<'NODE'
+import { spawnSync } from 'node:child_process';
+import { appendFileSync } from 'node:fs';
+let reason = '执行超过总时限';
+if (process.platform === 'darwin' && spawnSync('pgrep', ['-x', 'SecurityAgent'], { stdio: 'ignore' }).status === 0)
+  reason += '；此时屏幕上有钥匙串授权框（SecurityAgent）在等待应答，命令很可能卡在它上面；构建脚本不要读钥匙串，见 host-slots 说明';
+appendFileSync(process.env.GITHUB_OUTPUT, `failure_reason=${reason}\n`);
+process.stderr.write(`失败：${reason}\n`);
+process.exitCode = 1;
+NODE]]></script>
+      </scriptTask>
+      <sequenceFlow id="timeout-reported" sourceRef="report-timeout" targetRef="timed-out-end" />
       <endEvent id="timed-out-end" name="执行超过总时限"><errorEventDefinition /></endEvent>
       <sequenceFlow id="ran" sourceRef="command" targetRef="held-end" />
       <endEvent id="held-end" />

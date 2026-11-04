@@ -1,5 +1,6 @@
 // A durable worker survives a plugin-host restart. Only this worker updates its running journal.
 // The provider recovers by observing it; it never launches a second worker for an existing claim.
+import { spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { Journal } from '../lib/journal.mjs';
@@ -21,8 +22,13 @@ for (const name of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(name, () => signa
 await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
 record.control = { port: server.address().port, token: randomUUID() };
 record.phase = 'preparing'; record.startedAt = new Date().toISOString(); journal.save(record);
-let timer;
-if (spec.timeoutMs) timer = setTimeout(() => signal.abort(new Error('执行超时')), Math.min(spec.timeoutMs, 2 ** 31 - 1));
+let timer, timeoutHint = '';
+if (spec.timeoutMs) timer = setTimeout(() => {
+  if (signal.signal.aborted) return;
+  if (process.platform === 'darwin' && spawnSync('pgrep', ['-x', 'SecurityAgent'], { stdio: 'ignore' }).status === 0)
+    timeoutHint = '；此时屏幕上有钥匙串授权框（SecurityAgent）在等待应答，命令很可能卡在它上面；构建脚本不要读钥匙串，见 host-slots 说明';
+  signal.abort(new Error('执行超时'));
+}, Math.min(spec.timeoutMs, 2 ** 31 - 1));
 try {
   const result = await executeHooks({ root, directory: journal.directory(key), attempt: key, source, slot: record.admission.slot,
     spec, env, signal: signal.signal, checkpoint: async patch => {
@@ -38,6 +44,10 @@ try {
   record.result = { outcome: 'failed', exitCode: null, reason: { code: 'worker_failed', message: error.message }, finishedAt: new Date().toISOString() };
 } finally {
   clearTimeout(timer);
+  if (timeoutHint) {
+    record.result.reason ??= { code: 'cancelled', message: '执行超时' };
+    record.result.reason.message += timeoutHint;
+  }
   record.phase = 'finished'; record.pid = null; journal.save(record);
   await new Promise(resolve => server.close(resolve));
 }

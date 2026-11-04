@@ -4,7 +4,7 @@
 // simulator one of them registers (`host-sim bind`) is written to `HOST_SIM_DEVICES` and deleted here once the command is
 // over, cancelled or not. The command's exit status is the step's output `exit_code`, and the step fails as the command
 // does: the agent is told a failure, with the end of what it printed.
-import { spawn, execFile } from 'node:child_process';
+import { spawn, execFile, spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, readFileSync, statSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { constants } from 'node:os';
@@ -33,7 +33,10 @@ if (!isAbsolute(cwd ?? '') || !existsSync(cwd) || !statSync(cwd).isDirectory()) 
   const resetIdle = () => {
     clearTimeout(idleTimer);
     if (idleMinutes > 0 && !idleFailure && !ending) idleTimer = setTimeout(() => {
+      if (ending) return;
       idleFailure = `${idleMinutes} 分钟无输出`;
+      if (process.platform === 'darwin' && spawnSync('pgrep', ['-x', 'SecurityAgent'], { stdio: 'ignore' }).status === 0)
+        idleFailure += '；此时屏幕上有钥匙串授权框（SecurityAgent）在等待应答，命令很可能卡在它上面；构建脚本不要读钥匙串，见 host-slots 说明';
       // The wrapper is exec'd as the step's process-group leader. Stop the entire command tree,
       // retaining the same five-minute cleanup grace as the workflow's cancelTimeout.
       killTimer = setTimeout(() => process.kill(-process.pid, 'SIGKILL'), 5 * 60_000);
