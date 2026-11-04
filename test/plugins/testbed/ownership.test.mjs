@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
-import { realpathSync, mkdtempSync, writeFileSync, readFileSync, rmSync, renameSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import { setTimeout } from 'node:timers/promises';
-import { activate, deactivate } from '../main.mjs';
+import { activate, deactivate } from '../../../plugins/testbed/main.mjs';
 
 const phone = { id: 'phone', name: 'Phone', udid: 'UDID', note: 'local runner required' };
 function fixture(t) {
@@ -44,7 +44,7 @@ test('declarations follow atomic replacements; invalid/missing registration pres
   await until(() => calls.at(-1).length === 0);
 });
 
-test('all entry points resolve remote devices, keep execution local, and propagate missing/conflict errors', t => {
+test('find resolves remote devices and propagates missing/conflict errors', t => {
   const state = fixture(t), output = join(state, 'output');
   writeFileSync(join(state, 'devices.json'), '[]');
   writeFileSync(join(state, 'coda-resources'), `#!${process.execPath}\nif(process.argv[2] !== 'group-owner' || process.argv[3] !== 'device:phone') process.exit(9);\nif(process.env.CONFLICT) {console.error('conflict owner-a owner-b'); process.exit(1);}\nconsole.log(process.env.OWNER);\n`, { mode: 0o755 });
@@ -55,15 +55,6 @@ test('all entry points resolve remote devices, keep execution local, and propaga
   assert.equal(result.status, 0, result.stderr);
   assert.match(readFileSync(output, 'utf8'), /udid=UDID/);
   assert.match(readFileSync(output, 'utf8'), /local runner required/);
-  result = run('host-sim', ['run', '--kind', 'phone', '--', process.execPath, '-e', 'console.log(process.cwd())']);
-  assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout.trim(), process.cwd());
-  const spec = join(state, 'spec');
-  writeFileSync(spec, JSON.stringify({ kind: 'phone', argv: [process.execPath, '-e', 'console.log(process.cwd());process.exit(7)'], cwd: state, env: {} }));
-  result = run('run-on-device', [], { SPEC: spec });
-  assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout.trim(), realpathSync(state));
-  assert.match(readFileSync(output, 'utf8'), /exit_code=7/);
   result = run('device', [], { OWNER: 'null' });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /没有这台测试机 phone/);

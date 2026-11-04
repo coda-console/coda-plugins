@@ -1,3 +1,6 @@
+// Devices belong to the instance whose plugin state contains their devices.json registration.
+// The plugin publishes ownership declarations to the space; callers missing a local id query group-owner.
+// An unreadable registration must not revoke existing declarations; only a valid empty array does.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -10,8 +13,8 @@ export function devices(path = file, { missingIsEmpty = true } = {}) {
   }
   if (!Array.isArray(list)) throw new Error(`设备登记 ${path} 须为设备数组`);
   for (const device of list) {
-    if (!/^[a-z][a-z0-9-]*$/.test(device?.id ?? '') || typeof device?.udid !== 'string' || !device.udid)
-      throw new Error(`设备登记 ${path} 须有有效的 id 和非空 udid`);
+    if (typeof device?.udid !== 'string' || !device.udid)
+      throw new Error(`设备登记 ${path} 须有非空 udid`);
   }
   // A device is held by the group of its name: one device under two names would be held twice, one name twice either device.
   for (const key of ['id', 'udid']) {

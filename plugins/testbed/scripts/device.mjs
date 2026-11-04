@@ -1,3 +1,6 @@
+// Find a device's name, UDID and note for the step outputs. Registration determines its owning instance,
+// whose declarations are published to the space. An id absent locally is resolved through group-owner;
+// if neither has it, report the missing device and the locally available ids.
 import { appendFileSync } from 'node:fs';
 import { resolveDevice } from './resolve-device.mjs';
 

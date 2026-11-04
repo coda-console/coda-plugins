@@ -25,7 +25,7 @@ iPhone、iPad 测试机由这个插件登记归属。每台设备是一个[并�
 - 其他流程：`<callActivity calledElement="use-testbed">`，参数用 `coda:param`；项目流程先在自己的步骤构建、签名，把 App 路径传给它。
 
 **过程**：
-1. 「找测试机」：先查本地登记；没有这个 id 就用 `coda-resources group-owner device:<id>` 读取归属实例声明的显示名、UDID 和说明。两边都没有则报「没有这台测试机」，列出本地可用设备，不排队。`host-sim` 和 `run-on-device` 使用同样的解析。
+1. 「找测试机」：先查本地登记；没有这个 id 就用 `coda-resources group-owner device:<id>` 读取归属实例声明的显示名、UDID 和说明。两边都没有则报「没有这台测试机」，列出本地可用设备，不排队。
 2. 「等测试机」：`hold-group` 为「占用测试机」这一段排进组 `device:<设备名>`（`capacity` 1、`borrow="no"`：每次使用都排队，做着上一次任务的会话再发起一次也排在后面），由引擎到归属实例排队，排到才往下走；之后到这一段结束都占着它。
 3. 有 `app` 就装上（`xcrun devicectl device install app`），再把任务交给调用的会话：要求是 `instructions`，加上设备名、UDID、借用方法和登记里的说明。
    做任务期间，这个会话（含子 Agent）用 `host-sim run --kind <设备名> -- <命令>` 操作设备：`host-sim` 经 `coda-run` 把命令交给能力 `run-on-device`，
