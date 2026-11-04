@@ -65,10 +65,13 @@ test('找测试机 gives the registered device\'s name, UDID and note; one not r
   const found = await step(t, 'device', { CODA_PLUGIN_STATE: state, DEVICE: phone.id });
   assert.equal(found.code, 0);
   assert.equal(found.outputs, `name=${phone.name}\nudid=${phone.udid}\nnote<<CODA_NOTE\n${phone.note}\nCODA_NOTE\n`);
-  const missing = await step(t, 'device', { CODA_PLUGIN_STATE: state, DEVICE: 'ipad-testbed' });
-  assert.equal(missing.code, 1); assert.match(missing.stderr, /本机没有登记设备 ipad-testbed.*登记了：iphone-testbed/);
-  const none = await step(t, 'device', { CODA_PLUGIN_STATE: registered(t), DEVICE: phone.id });
-  assert.equal(none.code, 1); assert.match(none.stderr, /一台也没有登记/);
+  const tools = temporary(t);
+  writeFileSync(join(tools, 'coda-resources'), '#!/bin/sh\n[ "$1" = group-owner ] || exit 9\nprintf \'null\\n\'\n', { mode: 0o755 });
+  const queryPath = `${tools}:${process.env.PATH}`;
+  const missing = await step(t, 'device', { CODA_PLUGIN_STATE: state, DEVICE: 'ipad-testbed', PATH: queryPath });
+  assert.equal(missing.code, 1); assert.match(missing.stderr, /没有这台测试机 ipad-testbed.*本地可用：iphone-testbed/);
+  const none = await step(t, 'device', { CODA_PLUGIN_STATE: registered(t), DEVICE: phone.id, PATH: queryPath });
+  assert.equal(none.code, 1); assert.match(none.stderr, /没有这台测试机 iphone-testbed.*本地可用：无/);
   const list = await step(t, 'device', { CODA_PLUGIN_STATE: registered(t, '{}'), DEVICE: phone.id });
   assert.equal(list.code, 1); assert.match(list.stderr, /须为设备数组/);
   // One device under two names would be held by two groups at once: the registration is refused whichever is asked for.
@@ -79,6 +82,11 @@ test('找测试机 gives the registered device\'s name, UDID and note; one not r
   }
   const named = await step(t, 'device', { CODA_PLUGIN_STATE: registered(t, [phone, { ...phone, udid: 'OTHER' }]), DEVICE: phone.id });
   assert.equal(named.code, 1); assert.match(named.stderr, /id 重复：iphone-testbed/);
+  const emptyUdid = await step(t, 'device', { CODA_PLUGIN_STATE: registered(t, [{ ...phone, udid: '' }]), DEVICE: phone.id });
+  assert.equal(emptyUdid.code, 1); assert.match(emptyUdid.stderr, /须有非空 udid/);
+  const otherId = 'iPhone_测试机';
+  const unrestricted = await step(t, 'device', { CODA_PLUGIN_STATE: registered(t, [{ ...phone, id: otherId }]), DEVICE: otherId });
+  assert.equal(unrestricted.code, 0, unrestricted.stderr);
 });
 
 test('切黑屏 launches the black screen app over devicectl, or runs the device\'s own line from the setting, its UDID in UDID', async t => {
