@@ -173,6 +173,8 @@ test('需求流程回路、人工任务、结果通知和部署发布顺序契�
   const { root, problem } = await readWorkflow(workflow, 'deliver'); assert.ok(!problem, problem);
   const process = root.rootElements.find(e => e.$type === 'bpmn:Process');
   const acceptance = process.flowElements.find(e => e.id === 'acceptance');
+  // 卡片上只在走进验收后才有这一段，没开设备验收的运行照常按步骤画进度。
+  assert.equal(acceptance.optional, true);
   const elements = [...process.flowElements, ...acceptance.flowElements];
   const nodes = Object.fromEntries(elements.map(e => [e.id, e]));
   const values = node => node.extensionElements?.values ?? [];

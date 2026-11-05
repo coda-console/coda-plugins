@@ -55,7 +55,7 @@
     <boundaryEvent id="integration-failed" attachedToRef="integrate"><errorEventDefinition /></boundaryEvent>
     <sequenceFlow id="integration-feedback" sourceRef="integration-failed" targetRef="context" />
     <sequenceFlow id="integrate-preview" sourceRef="integrate" targetRef="acceptance" />
-    <subProcess id="acceptance" name="安装与设备验收">
+    <subProcess id="acceptance" name="安装与设备验收" coda:optional="true">
       <startEvent id="acceptance-start" />
       <sequenceFlow id="acceptance-enter" sourceRef="acceptance-start" targetRef="device-lock-choice" />
       <exclusiveGateway id="device-lock-choice" name="是否占用验收设备" default="device-lock-skip" />

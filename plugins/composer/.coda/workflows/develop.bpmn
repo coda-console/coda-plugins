@@ -108,7 +108,7 @@ head：{{report.head}}
     <sequenceFlow id="accept-next" sourceRef="after-accept" targetRef="execute"><conditionExpression xsi:type="tFormalExpression">=accept.route = "execute"</conditionExpression></sequenceFlow>
     <sequenceFlow id="accept-check" sourceRef="after-accept" targetRef="pr"><conditionExpression xsi:type="tFormalExpression">=accept.route = "pr"</conditionExpression></sequenceFlow>
     <sequenceFlow id="accept-preview" sourceRef="after-accept" targetRef="acceptance" />
-    <subProcess id="acceptance" name="安装与设备验收">
+    <subProcess id="acceptance" name="安装与设备验收" coda:optional="true">
       <startEvent id="acceptance-start" />
       <sequenceFlow id="acceptance-enter" sourceRef="acceptance-start" targetRef="device-lock-choice" />
       <exclusiveGateway id="device-lock-choice" name="是否占用验收设备" default="device-lock-skip" />
