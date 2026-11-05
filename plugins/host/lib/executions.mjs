@@ -2,11 +2,13 @@ import { spawn } from 'node:child_process';
 import { closeSync, openSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
-import { Journal, canonical, identity, taskFingerprint } from './journal.mjs';
+import { Journal, canonical, runKey } from './journal.mjs';
 import { controlWorker } from './worker-control.mjs';
 
+export const RUN = 'coda/run@1';
 const entry = fileURLToPath(new URL('../scripts/execution-worker.mjs', import.meta.url));
 const now = () => new Date().toISOString();
+const TERMINAL = new Set(['completed', 'failed', 'canceled']);
 
 export function launchWorker(input, directory) {
   const fd = openSync(join(directory, 'worker.log'), 'a', 0o600);
@@ -22,15 +24,49 @@ export function launchWorker(input, directory) {
   });
 }
 
+const failure = (code, message, outcome = 'failed') => ({ outcome, exitCode: null, reason: { code, message } });
+const cancelled = () => ({ outcome: 'cancelled', exitCode: null });
+
+// The progress a run reports while it still goes; the result once it has ended.
+export function runStatus(record) {
+  if (record.phase !== 'finished') return { state: 'working',
+    progress: record.reason?.message ?? { waiting: '等待本机名额', claimed: '等待启动', preparing: '准备中', running: '运行中', cleanup: '收尾中' }[record.phase] ?? '进行中' };
+  const result = record.result;
+  if (!result) return { state: 'failed', result: { exitCode: 1, output: '', summary: '', message: '执行没有结果' } };
+  if (result.outcome === 'cancelled') return { state: 'canceled' };
+  const body = { exitCode: result.exitCode ?? (result.outcome === 'succeeded' ? 0 : 1), output: result.outputTail ?? '', summary: result.summary ?? '',
+    ...(result.outputs && Object.keys(result.outputs).length ? { outputs: result.outputs } : {}) };
+  return result.outcome === 'succeeded' ? { state: 'completed', result: body }
+    : { state: 'failed', result: { ...body, message: result.reason?.message ?? '执行失败' } };
+}
+
 export class Executions {
-  constructor({ coda, root, executorId, sources, offered, environment, launch = launchWorker, control = controlWorker, report = console.error }) {
-    Object.assign(this, { coda, root, executorId, sources, offered, environment, launch, control, report });
-    this.journal = new Journal(root); this.objects = new Map(); this.busy = new Map(); this.stopped = false;
+  constructor({ coda, root, sources, offered, environment, launch = launchWorker, control = controlWorker, report = console.error }) {
+    Object.assign(this, { coda, root, sources, offered, environment, launch, control, report });
+    this.journal = new Journal(root); this.busy = new Map(); this.stopped = false; this.runs = new Map();
   }
-  async observe(event) {
-    if (event.type === 'DELETED') this.objects.delete(event.id); else this.objects.set(event.id, event.object);
-    // Return after reconciling, not after the command. A following cancel is never stuck behind a long script.
-    await this.reconcile(event.id);
+  // A `coda/executor@1` execute: the run is Coda's, this executor only answers on it.
+  execute(run, input) {
+    const key = runKey(run);
+    if (this.journal.get(key)) return;
+    this.supported(input);
+    this.journal.save({ key, runId: run.id, phase: 'waiting', input });
+    void this.reconcile(key).catch(error => this.report('[host execution]', error.message));
+  }
+  supported(input) {
+    const resources = Object.keys(input.resources ?? {});
+    if (resources.length && !(resources.length === 1 && resources[0] === 'slots' && input.resources.slots === 1))
+      throw new Error('只支持 { slots: 1 } 或不占资源');
+    if ((input.exclusiveResources ?? []).length && !(input.exclusiveResources.length === 1 && input.exclusiveResources[0] === 'slots' && resources.includes('slots')))
+      throw new Error('只能独占 slots');
+  }
+  async cancel(id) {
+    const record = this.journal.get(runKey({ kind: RUN, id }));
+    if (!record || record.phase === 'finished') return;
+    record.canceled = true; this.journal.save(record);
+    if (record.control) await this.control(record, 'cancel');
+    else if (record.phase === 'waiting' || record.phase === 'claimed') this.finish(record, cancelled());
+    else void this.reconcile(record.key).catch(error => this.report('[host execution]', error.message));
   }
   async recoverLeases() {
     for (const lease of await this.coda.resources.list()) {
@@ -39,98 +75,95 @@ export class Executions {
       if (match && !this.journal.get(match[1])) await this.coda.resources.release(lease.lease);
     }
   }
-  reconcile(id) {
-    const before = this.busy.get(id) ?? Promise.resolve();
-    const next = before.catch(() => {}).then(() => this.advance(id)); this.busy.set(id, next);
-    return next.finally(() => { if (this.busy.get(id) === next) this.busy.delete(id); });
+  reconcile(key) {
+    const before = this.busy.get(key) ?? Promise.resolve();
+    const next = before.catch(() => {}).then(() => this.advance(key)); this.busy.set(key, next);
+    return next.finally(() => { if (this.busy.get(key) === next) this.busy.delete(key); });
   }
   async tick() {
-    const ids = new Set([...this.objects.keys(), ...this.journal.list().map(r => r.id)]);
-    await Promise.all([...ids].map(id => this.reconcile(id).catch(error => this.report('[host execution]', error.message))));
+    await Promise.all(this.journal.list().map(record => this.reconcile(record.key).catch(error => this.report('[host execution]', error.message))));
   }
-  matches(object) { return object?.spec.executor?.kind === 'executor' && object.spec.executor.id === this.executorId && object.spec.assignmentId; }
-  async reply(object, status) {
-    const current = this.objects.get(object.id);
-    if (!current || current.instance !== object.instance || taskFingerprint(current.spec) !== taskFingerprint(object.spec)) return;
-    if (canonical(current.status) === canonical(status)) return;
-    // The result is reconciled against the same immutable assignment. A different task never inherits an old answer.
-    await this.coda.protocols.setStatus('execution', current.id, status, current.revision);
+  finish(record, result) {
+    const current = this.journal.get(record.key) ?? record;
+    current.phase = 'finished'; current.result = { ...result, finishedAt: now() }; current.reason = null;
+    this.journal.save(current);
+    return this.publish(current);
   }
-  async advance(id) {
+  async advance(key) {
     if (this.stopped) return;
-    const object = this.objects.get(id), records = this.journal.list().filter(r => r.id === id);
-    let hasCurrent = false;
-    for (const record of records) {
-      const current = object && record.key === identity(object) && record.fingerprint === taskFingerprint(object.spec);
-      if (current) hasCurrent = true;
-      if ((!current || object.spec.cancel) && record.phase !== 'finished') await this.control(record, 'cancel');
-      if (record.phase === 'finished' && !record.released) {
-        if (record.admission) await this.coda.resources.release(record.admission.lease);
-        record.released = true; this.journal.save(record);
-      }
-      {
-        const run = { kind: 'hostExecution', id: record.key };
-        const status = { phase: record.phase === 'finished' ? 'finished' : record.phase === 'claimed' ? 'queued'
-          : record.phase === 'running' || record.phase === 'cleanup' ? 'running' : 'preparing', assignmentId: record.assignmentId,
-          ...(record.startedAt ? { startedAt: record.startedAt } : {}), executionRun: run,
-          ...(record.admission ? { admission: { lease: record.admission.lease, slots: [record.admission.slot] } } : {}),
-          ...(record.result ?? {}), logs: [{ ref: run }] };
-        if (record.phase !== 'finished' && !await this.control(record)) {
-          status.reason = { code: 'result_unknown', message: '执行结果未明，保留绑定与名额；恢复原执行记录，不自动重跑' };
+    let record = this.journal.get(key);
+    if (!record) return;
+    if (record.phase === 'waiting') {
+      if (record.canceled) return this.finish(record, cancelled());
+      const offered = this.offered();
+      if (!offered?.status.accepting) return this.finish(record, failure('not_accepting', '运行器已停止接活', 'rejected'));
+      const labels = new Set([...offered.spec.labels, ...offered.status.detectedLabels]);
+      if (!record.input.requirements.labels.every(label => labels.has(label)))
+        return this.finish(record, failure('labels_unavailable', '运行器不满足所需能力', 'rejected'));
+      let source;
+      try { source = await this.sources.resolve(record.input.source); }
+      catch (error) { return this.finish(record, failure('source_unavailable', error.message)); }
+      const env = await this.environment();
+      record = this.journal.get(key);
+      if (!record || record.canceled) return record ? this.finish(record, cancelled()) : undefined;
+      const slots = record.input.resources?.slots === 1;
+      let admission = null;
+      if (slots) {
+        admission = await this.coda.resources.acquire({ requestId: `execution:${key}`, group: 'host', resources: { slots: 1 },
+          exclusive: (record.input.exclusiveResources ?? []).includes('slots') });
+        record = this.journal.get(key);
+        if (!record || record.canceled) {
+          if (admission.admitted) await this.coda.resources.release(admission.lease);
+          return record ? this.finish(record, cancelled()) : undefined;
         }
-        await this.publishRun(record, status);
-        if (current) await this.reply(object, status);
+        if (!admission.admitted) {
+          record.reason = { code: 'capacity', message: '等待本机名额' }; this.journal.save(record);
+          return this.publish(record);
+        }
       }
+      record.phase = 'claimed'; record.admission = admission; record.startedAt = now(); record.reason = null;
+      this.journal.save(record);
+      // A slot-less task still gets its own workspace directory without sharing another attempt's cache.
+      const slot = admission?.slot ?? (Number.parseInt(key.slice(0, 6), 16) || 0);
+      try { await this.launch({ root: this.root, key, source, spec: record.input, env, slot }, this.journal.directory(key)); }
+      catch (error) {
+        record = this.journal.get(key);
+        return record ? this.finish(record, failure('launch_failed', error.message)) : undefined;
+      }
+      return this.publish(this.journal.get(key));
     }
-    // Old bindings still need cancellation and lease release even when the current binding already exists.
-    if (hasCurrent || !this.matches(object)) return;
-    // An already-terminal answer without a journal is not permission to rerun.
-    if (object.status.assignmentId === object.spec.assignmentId && object.status.phase === 'finished') return;
-    const { spec } = object, offered = this.offered();
-    const refuse = async (code, message, outcome = 'rejected') => this.reply(object, {
-      phase: 'finished', assignmentId: spec.assignmentId, outcome, exitCode: null, finishedAt: now(), reason: { code, message },
-    });
-    if (spec.cancel) return refuse('cancelled', '开始前已取消', 'cancelled');
-    if (!offered?.status.accepting) return refuse('not_accepting', '运行器已停止接活');
-    if (Object.keys(spec.resources).length !== 1 || spec.resources.slots !== 1 || (spec.exclusiveResources ?? []).some(k => k !== 'slots')) return refuse('unsupported_resources', '只支持 slots: 1 或 slots 独占');
-    const labels = new Set([...offered.spec.labels, ...offered.status.detectedLabels]);
-    if (!spec.requirements.labels.every(label => labels.has(label))) return refuse('labels_unavailable', '运行器不满足所需能力');
-    let source;
-    try { source = await this.sources.resolve(spec.source); }
-    catch (error) { return this.reply(object, { phase: 'queued', assignmentId: spec.assignmentId,
-      reason: { code: 'source_unavailable', message: error.message.slice(0, 4096) } }); }
-    const key = identity(object), env = await this.environment();
-    // Any asynchronous source lookup may race cancellation, deletion or re-binding. Re-read before admission.
-    const current = this.objects.get(id);
-    if (!current || current.instance !== object.instance || taskFingerprint(current.spec) !== taskFingerprint(spec) || current.spec.cancel) return;
-    if (!this.offered()?.status.accepting) return refuse('not_accepting', '运行器已停止接活');
-    const admission = await this.coda.resources.acquire({ requestId: `execution:${key}`, group: 'host', resources: { slots: 1 }, exclusive: spec.exclusiveResources?.includes('slots') ?? false });
-    const latest = this.objects.get(id);
-    if (!latest || latest.instance !== object.instance || taskFingerprint(latest.spec) !== taskFingerprint(spec) || latest.spec.cancel) {
-      if (admission.admitted) await this.coda.resources.release(admission.lease);
-      return;
+    if (record.canceled && record.control && record.phase !== 'finished') await this.control(record, 'cancel');
+    if (record.canceled && record.phase === 'claimed' && !record.control) return this.finish(record, cancelled());
+    if (record.phase !== 'finished' && record.control && !(await this.control(record))) {
+      record.reason = { code: 'result_unknown', message: '执行结果未明，保留名额；恢复原执行记录，不自动重跑' };
+      this.journal.save(record);
     }
-    if (!this.offered()?.status.accepting) {
-      if (admission.admitted) await this.coda.resources.release(admission.lease);
-      return refuse('not_accepting', '运行器已停止接活');
+    if (record.phase === 'finished' && !record.released && record.admission) {
+      await this.coda.resources.release(record.admission.lease);
+      record.released = true; this.journal.save(record);
     }
-    if (!admission.admitted) return this.reply(object, { phase: 'queued', assignmentId: spec.assignmentId, reason: { code: 'capacity', message: '等待本机名额' } });
-    const record = { key, id, instance: object.instance, assignmentId: spec.assignmentId, fingerprint: taskFingerprint(spec), admission, phase: 'claimed' };
-    this.journal.save(record);
-    try { await this.launch({ root: this.root, key, source, spec, env }, this.journal.directory(key)); }
-    catch (error) {
-      // A spawn error is definite non-execution. No automatic retry in this assignment.
-      record.phase = 'finished'; record.result = { outcome: 'rejected', exitCode: null, finishedAt: now(), reason: { code: 'launch_failed', message: error.message } }; this.journal.save(record);
-    }
+    await this.publish(this.journal.get(key));
   }
-  async publishRun(record, status) {
-    const held = this.runs?.get(record.key);
-    if (!held) {
-      await this.coda.protocols.put({ kind: 'hostExecution', id: record.key,
-        spec: { execution: { kind: 'execution', id: record.id }, assignmentId: record.assignmentId }, status });
-    } else if (canonical(held.status) !== canonical(status)) await this.coda.protocols.setStatus('hostExecution', held.id, status, held.revision);
-    // Creation and publication can be interrupted separately; also repair publication of recovered local receipts.
-    await this.coda.protocols.publish('hostExecution', record.key);
+  // Only this executor writes its run; a terminal status is never written again.
+  async publish(record) {
+    if (!record) return;
+    const status = runStatus(record), serialized = canonical(status);
+    if (record.reportedStatus === serialized && (record.phase !== 'finished' || record.reported)) return;
+    const held = this.runs.get(record.runId);
+    if (!held) return;
+    try {
+      const next = await this.coda.protocols.setStatus(RUN, held.id, status, held.revision);
+      this.runs.set(record.runId, next ?? { ...held, status });
+      record.reportedStatus = serialized;
+      if (TERMINAL.has(status.state)) record.reported = true;
+      this.journal.save(record);
+    } catch (error) {
+      // Another writer may have already accepted the terminal answer (for example just before this process restarted).
+      if (TERMINAL.has(status.state) && /终态|已结束/.test(error.message)) {
+        record.reportedStatus = serialized; record.reported = true; this.journal.save(record); return;
+      }
+      throw error;
+    }
   }
   async stop() { this.stopped = true; await Promise.allSettled(this.busy.values()); }
 }

@@ -326,7 +326,7 @@
   {
     "id": "maintenance",
     "displayName": "维护",
-    "description": "按周期为每个目录做维护：把旧的工具详情移到冷文件，清掉空闲工作树的构建产物，以及已归档会话的密钥与命令输出；整台机器清一次没人引用的旧附件。",
+    "description": "按周期为每个目录做维护：删除超过保留期未活动的工具详情，清掉空闲工作树的构建产物，以及已归档会话的密钥与命令输出；整台机器清一次没人引用的旧附件。",
     "version": "1.0.0",
     "category": "工作流程",
     "source": {
@@ -341,22 +341,6 @@
         "title": "维护周期",
         "order": 1,
         "default": "R/PT6H"
-      },
-      "maintenance.coldAfterAny": {
-        "type": "string",
-        "format": "duration",
-        "description": "已结束的工具调用多久没有变化，就把详情移出数据库、存进冷文件；会话里打开这一步时照常读回。ISO 8601 时长，如 P30D。",
-        "title": "工具详情多久后转冷",
-        "order": 2,
-        "default": "P30D"
-      },
-      "maintenance.coldAfterArchived": {
-        "type": "string",
-        "format": "duration",
-        "description": "会话（或它的根会话）已归档时，工具详情多久没有变化就转冷。ISO 8601 时长，如 P7D。",
-        "title": "已归档会话的工具详情多久后转冷",
-        "order": 3,
-        "default": "P7D"
       },
       "maintenance.buildIdle": {
         "type": "string",
@@ -381,6 +365,14 @@
         "title": "归档后多久删掉会话的密钥与命令输出",
         "order": 6,
         "default": "PT10M"
+      },
+      "maintenance.toolDetailsAfter": {
+        "type": "string",
+        "format": "duration",
+        "description": "已结束的工具调用最后活动超过此时长后，只保留卡片摘要。原生子 Agent 卡片保留。ISO 8601 时长，如 P7D。",
+        "title": "工具详情保留多久",
+        "order": 2,
+        "default": "P7D"
       }
     },
     "workflows": [
@@ -1035,14 +1027,14 @@
     "id": "composer",
     "displayName": "输入框模式",
     "description": "输入框可同时开启的五种模式：交接到新会话、从任意会话创建子会话、打 ! 执行命令、Ultra 协调模式，以及按周期重复任务的循环模式。Ultra 按需求交付，通过关联的开发流程委派功能，主 Agent 亲自审查、判断达标，统一验收与批准后按序合并、部署并在真实环境验证。",
-    "version": "3.6.2",
+    "version": "3.7.0",
     "category": "工作流程",
     "source": {
       "kind": "builtin",
       "package": "@coda-console/composer",
       "tag": "latest",
-      "version": "3.6.2",
-      "integrity": "sha512-x+JQ7zTIlhapxc6hx/pMAcEcIK7ZyaU923UbX91nfDN+/wn1sY3WLCmztHjo/ylgQLRCJc9V3JMDtHOFGk0d/Q==",
+      "version": "3.7.0",
+      "integrity": "sha512-9azxrFGaPPPGOMq2r7pRabewDBGW4xqA8ayP0du5EwUdWAshsI9ICxXjoZBpeYq07Oe/iF80FEXo3PxYdEIa+w==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/composer"
     },

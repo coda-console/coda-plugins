@@ -9,8 +9,9 @@ import { keychainPromptSuffix } from '../lib/keychain-prompt.mjs';
 
 const chunks = [];
 for await (const chunk of process.stdin) chunks.push(chunk);
-const { root, key, source, spec, env } = JSON.parse(Buffer.concat(chunks).toString());
-const journal = new Journal(root), record = journal.get(key), signal = new AbortController();
+const { root, key, source, spec, env, slot } = JSON.parse(Buffer.concat(chunks).toString());
+const journal = new Journal(root), signal = new AbortController();
+let record = journal.get(key);
 if (!record || record.phase !== 'claimed') throw new Error('没有可启动的持久执行申请');
 const server = createServer((req, res) => {
   if (req.headers.authorization !== `Bearer ${record.control.token}`) { res.writeHead(403).end(); return; }
@@ -20,6 +21,9 @@ const server = createServer((req, res) => {
 });
 for (const name of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(name, () => signal.abort(new Error('执行已中止')));
 await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+// A cancellation that arrived while this worker was starting has already changed the durable claim.
+record = journal.get(key);
+if (!record || record.phase !== 'claimed' || record.canceled) { await new Promise(resolve => server.close(resolve)); throw new Error('执行已取消'); }
 record.control = { port: server.address().port, token: randomUUID() };
 record.phase = 'preparing'; record.startedAt = new Date().toISOString(); journal.save(record);
 let timer, timeoutHint = '';
@@ -29,7 +33,7 @@ if (spec.timeoutMs) timer = setTimeout(() => {
   signal.abort(new Error('执行超时'));
 }, Math.min(spec.timeoutMs, 2 ** 31 - 1));
 try {
-  const result = await executeHooks({ root, directory: journal.directory(key), attempt: key, source, slot: record.admission.slot,
+  const result = await executeHooks({ root, directory: journal.directory(key), attempt: key, source, slot: record.admission?.slot ?? slot,
     spec, env, signal: signal.signal, checkpoint: async patch => {
       // startedAt is the beginning of preparation, not just the script: preparation can have side effects too.
       const { startedAt, ...rest } = patch; Object.assign(record, rest); journal.save(record);

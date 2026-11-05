@@ -150,7 +150,7 @@ test('持锁执行 cancelled still deletes the simulators its command bound befo
 
 test('持锁执行 retains cancellation when child exit is observed before TERM during simulator cleanup', async t => {
   // The child receives TERM first. simctl then delivers TERM to the wrapper while it is cleaning up:
-  // no scheduler luck or sleep is needed to expose a pending signal hidden by synchronous cleanup.
+  // no timing luck or sleep is needed to expose a pending signal hidden by synchronous cleanup.
   const sims = simctl(t, ['FAKE-3'], { cancelDuringCleanup: true });
   const result = await held(t, { command: 'echo FAKE-3 >> "$HOST_SIM_DEVICES"; kill -TERM $$', what: '模拟器' },
     { SHELL: '/bin/sh', HOST_SIM_SIMCTL: sims.tool }).ended;
