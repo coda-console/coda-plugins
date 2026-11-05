@@ -64,7 +64,10 @@ test('找测试机 gives the registered device\'s name, UDID and note; one not r
   const state = registered(t, [phone]);
   const found = await step(t, 'device', { CODA_PLUGIN_STATE: state, DEVICE: phone.id });
   assert.equal(found.code, 0);
-  assert.equal(found.outputs, `name=${phone.name}\nudid=${phone.udid}\nnote<<CODA_NOTE\n${phone.note}\nCODA_NOTE\n`);
+  assert.equal(found.outputs, `name=${phone.name}\nudid=${phone.udid}\npersonal=false\nnote<<CODA_NOTE\n${phone.note}\nCODA_NOTE\n`);
+  const personal = await step(t, 'device', { CODA_PLUGIN_STATE: registered(t, [{ ...phone, personal: true }]), DEVICE: phone.id });
+  assert.equal(personal.code, 0, personal.stderr);
+  assert.equal(personal.outputs, found.outputs.replace('personal=false', 'personal=true'));
   const tools = temporary(t);
   writeFileSync(join(tools, 'coda-resources'), '#!/bin/sh\n[ "$1" = group-owner ] || exit 9\nprintf \'null\\n\'\n', { mode: 0o755 });
   const queryPath = `${tools}:${process.env.PATH}`;

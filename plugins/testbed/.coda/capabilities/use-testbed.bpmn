@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- 使用测试机（README.md）：测试机的唯一入口。先从本机的设备登记查出这台设备，再排进它的组 device:<设备名>，
      按需装上 App，把任务交给调用的会话；会话做任务期间，它用 host-sim run --kind <设备> 的命令（能力 run-on-device）借用这个组。
-     任务答复、装包或任务出错、运行被取消，都先等借去的命令停完、再切黑屏，然后放开；切不过去就请用户处理，处理之前一直占着。
+     任务答复、装包或任务出错、运行被取消，都先等借去的命令停完、常驻测试机再切黑屏，个人设备直接放开；切不过去就请用户处理，处理之前一直占着。
      能力：只被调用（workflow_run 或 callActivity），结果交给调用者。 -->
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xmlns:coda="https://coda.pub/schema/bpmn/1.0" id="use-testbed-definitions" targetNamespace="https://coda.pub/plugins/testbed">
@@ -22,6 +22,7 @@
         <coda:output name="name" />
         <coda:output name="udid" />
         <coda:output name="note" />
+        <coda:output name="personal" />
       </extensionElements>
       <script>node "$CODA_PLUGIN_PATH/scripts/device.mjs"</script>
     </scriptTask>
@@ -56,21 +57,27 @@
       <userTask id="task" name="=inputs.task" coda:status="{{find.name}} 交给会话使用">
         <documentation>{{inputs.instructions}}
 
-测试机 {{find.name}}（设备名 {{inputs.device}}，UDID {{find.udid}}）由这个任务占着，直到答复：本会话（含子 Agent）用 host-sim run --kind {{inputs.device}} -- &lt;命令&gt; 操作它，命令结束不会交出设备。答复之后还在执行的命令随之停下，测试机切黑屏，再交给下一位。
+测试机 {{find.name}}（设备名 {{inputs.device}}，UDID {{find.udid}}）由这个任务占着，直到答复：本会话（含子 Agent）用 host-sim run --kind {{inputs.device}} -- &lt;命令&gt; 操作它，命令结束不会交出设备。答复之后还在执行的命令随之停下，{{if find.personal then "个人设备直接交给下一位。" else "测试机切黑屏，再交给下一位。"}}
 
 {{find.note}}</documentation>
       </userTask>
-      <sequenceFlow id="used" sourceRef="task" targetRef="black" />
+      <sequenceFlow id="used" sourceRef="task" targetRef="return-device" />
 
-      <!-- 装包或任务出错、运行被取消：同样先切黑屏，再让运行以原来的原因结束。 -->
+      <!-- 装包或任务出错、运行被取消：个人设备直接归还，常驻测试机先切黑屏，再让运行以原来的原因结束。 -->
       <boundaryEvent id="install-cancelled" attachedToRef="install"><messageEventDefinition messageRef="cancel" /></boundaryEvent>
       <boundaryEvent id="install-failed" attachedToRef="install"><errorEventDefinition /></boundaryEvent>
       <boundaryEvent id="task-cancelled" attachedToRef="task"><messageEventDefinition messageRef="cancel" /></boundaryEvent>
       <boundaryEvent id="task-failed" attachedToRef="task"><errorEventDefinition /></boundaryEvent>
-      <sequenceFlow id="install-cancelled-black" sourceRef="install-cancelled" targetRef="black-stop" />
-      <sequenceFlow id="install-failed-black" sourceRef="install-failed" targetRef="black-stop" />
-      <sequenceFlow id="task-cancelled-black" sourceRef="task-cancelled" targetRef="black-stop" />
-      <sequenceFlow id="task-failed-black" sourceRef="task-failed" targetRef="black-stop" />
+      <sequenceFlow id="install-cancelled-black" sourceRef="install-cancelled" targetRef="return-stopped" />
+      <sequenceFlow id="install-failed-black" sourceRef="install-failed" targetRef="return-stopped" />
+      <sequenceFlow id="task-cancelled-black" sourceRef="task-cancelled" targetRef="return-stopped" />
+      <sequenceFlow id="task-failed-black" sourceRef="task-failed" targetRef="return-stopped" />
+
+      <exclusiveGateway id="return-device" default="return-device-resident" />
+      <sequenceFlow id="return-device-personal" sourceRef="return-device" targetRef="done">
+        <conditionExpression xsi:type="tFormalExpression">=find.personal</conditionExpression>
+      </sequenceFlow>
+      <sequenceFlow id="return-device-resident" sourceRef="return-device" targetRef="black" />
 
       <scriptTask id="black" name="切黑屏" coda:checkout="false" coda:timeout="2" coda:status="{{find.name}} 切黑屏" scriptFormat="bash">
         <extensionElements>
@@ -105,6 +112,12 @@
       <endEvent id="done">
         <extensionElements><coda:output name="stopped" value="false" /></extensionElements>
       </endEvent>
+
+      <exclusiveGateway id="return-stopped" default="return-stopped-resident" />
+      <sequenceFlow id="return-stopped-personal" sourceRef="return-stopped" targetRef="stopped">
+        <conditionExpression xsi:type="tFormalExpression">=find.personal</conditionExpression>
+      </sequenceFlow>
+      <sequenceFlow id="return-stopped-resident" sourceRef="return-stopped" targetRef="black-stop" />
 
       <scriptTask id="black-stop" name="切黑屏（没有做完）" coda:checkout="false" coda:timeout="2" coda:status="{{find.name}} 切黑屏" scriptFormat="bash">
         <extensionElements>
