@@ -97,9 +97,6 @@
   "activationEvents": [
     "onStartupFinished"
   ],
-  "dependencies": {
-    "@coda-console/protocol": "git+https://github.com/coda-console/coda-protocol.git#0e21bab9be38bdf6549491bd9f432f2c1c004d54"
-  },
   "extensionDependencies": [
     "git"
   ]

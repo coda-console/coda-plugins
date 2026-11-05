@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { createRequire } from 'node:module';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,9 +10,8 @@ import { admissionAPI } from '../../../check/coda/adapters/admission-api.mjs';
 import { admissionRequest } from '../../../check/coda/domain/resource-admission.mjs';
 import { providerAPI } from '../../../check/coda/adapters/provider-api.mjs';
 
-// Consume the exact package installed beside host, never a second schema fixture or the root checker's older version.
-const require = createRequire(new URL('../../../plugins/host/package.json', import.meta.url));
-const { EXECUTOR_PROTOCOL, RUN_PROTOCOL } = await import(require.resolve('@coda-console/protocol/protocol'));
+// The protocol package is this repository's dependency; host itself only implements the core protocols.
+const { EXECUTOR_PROTOCOL, RUN_PROTOCOL } = await import('@coda-console/protocol/protocol');
 
 const input = (patch = {}) => ({ source: null, requirements: { labels: ['linux'] }, resources: { slots: 1 }, exclusiveResources: [],
   task: { command: 'true', args: [] }, env: {}, ...patch });
