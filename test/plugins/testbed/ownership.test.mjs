@@ -28,11 +28,11 @@ test('declarations follow atomic replacements; invalid/missing registration pres
   t.after(async () => { await deactivate(); console.error = original; });
   writeFileSync(file, JSON.stringify([phone]));
   await activate({ plugin: { state }, resources: { declareGroups: async groups => calls.push(groups) } });
-  assert.deepEqual(calls[0], [{ name: 'device:phone', attributes: { name: phone.name, udid: phone.udid, note: phone.note, personal: false }, unique: ['udid'] }]);
+  assert.deepEqual(calls[0], [{ name: 'device:phone', attributes: { name: phone.name, udid: phone.udid, note: phone.note, personal: 'false' }, unique: ['udid'] }]);
   writeFileSync(join(state, 'next'), JSON.stringify([{ ...phone, name: 'Changed', personal: true }]));
   renameSync(join(state, 'next'), file);
   await until(() => calls.at(-1)[0]?.attributes.name === 'Changed');
-  assert.equal(calls.at(-1)[0].attributes.personal, true);
+  assert.equal(calls.at(-1)[0].attributes.personal, 'true');
   let count = calls.length;
   writeFileSync(file, '{broken');
   await until(() => errors.length > 0);
@@ -58,9 +58,13 @@ test('find resolves remote devices and propagates missing/conflict errors', t =>
   assert.match(readFileSync(output, 'utf8'), /local runner required/);
   assert.match(readFileSync(output, 'utf8'), /personal=false/);
   writeFileSync(output, '');
-  result = run('device', [], { OWNER: JSON.stringify({ attributes: { ...phone, personal: true } }) });
+  result = run('device', [], { OWNER: JSON.stringify({ attributes: { ...phone, personal: 'true' } }) });
   assert.equal(result.status, 0, result.stderr);
   assert.match(readFileSync(output, 'utf8'), /personal=true/);
+  writeFileSync(output, '');
+  result = run('device', [], { OWNER: JSON.stringify({ attributes: { ...phone, personal: 'false' } }) });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(readFileSync(output, 'utf8'), /personal=false/);
   result = run('device', [], { OWNER: 'null' });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /没有这台测试机 phone/);

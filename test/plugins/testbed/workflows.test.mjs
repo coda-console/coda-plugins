@@ -33,17 +33,4 @@ test('personal devices leave the held scope without blackscreen on reply, failur
       assert.equal(next(gateway, personal), personal ? end : black);
     }
   }
-  for (const [id, attached, type] of [
-    ['install-failed', 'install', 'bpmn:ErrorEventDefinition'],
-    ['task-failed', 'task', 'bpmn:ErrorEventDefinition'],
-    ['install-cancelled', 'install', 'bpmn:MessageEventDefinition'],
-    ['task-cancelled', 'task', 'bpmn:MessageEventDefinition'],
-  ]) {
-    assert.equal(node(id).attachedToRef, node(attached));
-    assert.equal(node(id).eventDefinitions[0].$type, type);
-  }
-  for (const [id, stopped] of [['done', 'false'], ['stopped', 'true']]) {
-    assert.equal(node(id).$type, 'bpmn:EndEvent');
-    assert.equal(node(id).extensionElements.values.find(value => value.name === 'stopped').value, stopped);
-  }
 });

@@ -11,7 +11,7 @@ export async function activate(coda) {
       const list = devices(file, { missingIsEmpty: false });
       await coda.resources.declareGroups(list.map(device => ({
         name: `device:${device.id}`,
-        attributes: { name: device.name ?? device.id, udid: device.udid, note: device.note ?? '', personal: device.personal === true },
+        attributes: { name: device.name ?? device.id, udid: device.udid, note: device.note ?? '', personal: device.personal === true ? 'true' : 'false' },
         unique: ['udid'],
       })));
     }).catch(error => console.error(`测试机归属声明失败：${error.message}`));
