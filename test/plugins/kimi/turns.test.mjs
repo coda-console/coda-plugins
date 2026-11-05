@@ -140,3 +140,75 @@ test('a prompt Kimi spoke in, or one it answered with nothing going, is passed o
   await r.drained();
   assert.deepEqual([told.at(-1).method, brief(out.at(-1))], ['session/cancel', ['answer', 4, 'cancelled']]);
 });
+
+const quota = { code: 'provider.api_error', name: 'APIProviderQuotaExhaustedError',
+  message: "429 You've reached your weekly (7-day) usage limit. Your quota will reset when the current 7-day window ends.",
+  details: { statusCode: 429, requestId: null, traceId: 'quota-trace' }, retryable: false };
+const failed = (turnId, time) => ({ ...ended(turnId, time, 'failed'), error: quota });
+const answer = id => ({ jsonrpc: '2.0', id, result: { stopReason: 'end_turn' } });
+function assertQuota(message, id) {
+  assert.equal(message.id, id);
+  assert.equal('result' in message, false);
+  assert.equal(message.error.code, -32603);
+  assert.equal(message.error.message, quota.message);
+  assert.equal(message.error.data._meta.coda.failure.kind, 'quota_exhausted');
+  assert.deepEqual(message.error.data.providerError, quota);
+}
+
+for (const spoke of [false, true]) test(`a native weekly quota failure replaces end_turn, with prior output: ${spoke}`, async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 100 });
+  const f = await layout(t), { r, out, looked, prompt } = await relay(t, f);
+  prompt(2);
+  await f.write(...begin(1, 100, { kind: 'user' }));
+  if (spoke) r.fromAgent({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: SESSION,
+    update: { sessionUpdate: 'tool_call', toolCallId: 'diff', title: 'Read diff', kind: 'execute', status: 'completed' } } });
+  await f.write(failed(1, 101));
+  // A watch can read the failed turn before ACP answers; the failure must survive that observation.
+  await looked();
+  r.fromAgent(answer(2));
+  await r.drained();
+  assertQuota(out.at(-1), 2);
+  assert.equal(out.filter(m => m.id === 2).length, 1);
+
+  t.mock.timers.tick(10);
+  prompt(3);
+  await f.write(...begin(2, 110, { kind: 'user' }), ended(2, 111));
+  r.fromAgent(answer(3));
+  await r.drained();
+  assert.deepEqual(out.at(-1), answer(3));
+});
+
+test('historical and autonomous quota failures never replace another prompt\'s answer', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 100 });
+  const f = await layout(t);
+  await f.write(...begin(1, 1, { kind: 'user' }), failed(1, 2));
+  const { r, out, looked, prompt } = await relay(t, f);
+  prompt(2);
+  r.fromAgent(answer(2));
+  await r.drained();
+  assert.deepEqual(out.at(-1), answer(2));
+  await f.write(...begin(2, 101, { kind: 'user' }), failed(2, 102));
+  await looked();
+  t.mock.timers.tick(10);
+  prompt(3);
+  await f.write(...begin(3, 110), failed(3, 111));
+  r.fromAgent(answer(3));
+  await r.drained();
+  assert.deepEqual(out.at(-1), answer(3));
+});
+
+test('a queued prompt that later fails with quota exhaustion returns its native failure once', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 100 });
+  const f = await layout(t), { r, out, looked, prompt } = await relay(t, f);
+  await f.write(goal(90), ...begin(1, 95));
+  await looked();
+  prompt(2);
+  r.fromAgent(answer(2));
+  await r.drained();
+  assert.equal(out.some(m => m.id === 2), false);
+  await f.write(...begin(2, 101, { kind: 'user' }), ended(1, 102), failed(2, 103));
+  await looked();
+  assertQuota(out.find(m => m.id === 2), 2);
+  await looked();
+  assert.equal(out.filter(m => m.id === 2).length, 1);
+});

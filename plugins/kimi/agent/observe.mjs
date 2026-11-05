@@ -171,7 +171,8 @@ export function kimiSession({ sessionId, cwd, env = {}, version, startedAt = 0 }
         turnEndedAt = event.time;
         for (const cron of crons.values()) if (cron.fireTurn === event.turnId) cron.fireEnded = true;
         if (span.turn?.turnId === event.turnId) span.turn = null;
-        if (fresh) main.push({ type: 'ended', turnId: event.turnId, reason: event.reason });
+        if (fresh) main.push({ type: 'ended', turnId: event.turnId, reason: event.reason,
+          ...(event.reason === 'failed' && object(event.error) && typeof event.error.message === 'string' ? { error: event.error } : {}) });
       } else if (event.type === 'goal.create' || event.type === 'goal.update' || event.type === 'goal.clear') {
         const next = noteGoal(goal, event);
         if (next === goal) continue;

@@ -6,6 +6,8 @@
 // active. A Coda prompt Kimi answered at once without running it is held: its answer waits for the turn that runs it, the
 // first of Coda's prompts' turns that began after it was sent. What is said in a goal's turn or a held prompt's is told as
 // this session's updates; a turn from before this agent process (`startedAt`) is another process's and is not told.
+import { failedKimiTurn } from './errors.mjs';
+
 const CONTINUES = '目标未完成前，每轮结束后自动继续';
 // How Kimi's ACP answers a turn that ended so.
 const STOPPED = { cancelled: 'cancelled', blocked: 'refusal' };
@@ -25,6 +27,12 @@ export class KimiTurns {
     if (user) { user.claimed = true; this.telling.add(user.turnId); }
     this.held.push({ sentAt, answer, turnId: user?.turnId });
     return true;
+  }
+  // Only the native user turn that ran this prompt can correct its ACP answer, never an earlier or autonomous turn.
+  answer(sentAt, answer) {
+    const user = this.user;
+    if (!user || user.claimed || user.time < sentAt || !user.ended) return answer;
+    return failedKimiTurn(answer, user.ended);
   }
   // What `main` tells Coda, in order: the goal's waits, what its turns and held prompts' turns said, and held answers due.
   read(main = []) {
@@ -72,13 +80,13 @@ export class KimiTurns {
       if (held) { held.turnId = turnId; this.user.claimed = true; this.telling.add(turnId); }
     }
   }
-  end({ turnId, reason }, told) {
+  end({ turnId, reason, error }, told) {
     if (!this.going.delete(turnId)) return;
     this.telling.delete(turnId);
-    if (this.user?.turnId === turnId) this.user.ended = true;
+    if (this.user?.turnId === turnId) this.user.ended = { reason, error };
     if (this.goal?.turn === turnId) this.settle(told);
     const i = this.held.findIndex(h => h.turnId === turnId);
-    if (i >= 0) told.push(answered(this.held.splice(i, 1)[0].answer, STOPPED[reason] ?? 'end_turn'));
+    if (i >= 0) told.push(failedKimiTurn(answered(this.held.splice(i, 1)[0].answer, STOPPED[reason] ?? 'end_turn'), { reason, error }));
   }
   // The goal's turn is over: it waits for the next, or ends, and the goal that replaced it is told.
   settle(told) {

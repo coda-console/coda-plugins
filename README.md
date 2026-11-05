@@ -319,11 +319,14 @@ Codex 的原生失败统一以 ACP 错误结束，包括只有 `turn/completed.f
 明确的额度耗尽、认证、上下文限制、参数、配置或沙箱错误不带此标记。
 插件不做退避或重新发送；Coda 按通用协议统一退避，客户端只支持 ACP 时仍能读到完整错误。
 
-Kimi 2.1.1 会把五小时额度耗尽（`403 You've reached your 5-hour usage limit.`）误报为 ACP `auth_required`。
-Kimi 插件在 `session/prompt` 的回执中将这条已知错误改为普通执行错误（-32603），在标准 `error.message` 中保留服务端完整原因，
-同时按[执行失败协议](https://github.com/coda-console/coda-protocol/blob/main/docs/agent-protocol.md#执行失败)报告 `error.data._meta.coda.failure: {kind: "quota_exhausted"}`。
+Kimi 2.1.1 会把五小时额度耗尽（`403 You've reached your 5-hour usage limit.`）误报为 ACP `auth_required`，
+也会在七天额度耗尽（`429 You've reached your weekly (7-day) usage limit.`）时只返回正常的 `end_turn`。
+Kimi 插件把回执里的明确额度错误改为普通执行错误（-32603）；回执为 `end_turn` 时，从会话文件读取本次 prompt 对应的原生轮次，
+若该轮失败且有错误原因，就用这个错误结束请求。直接执行和排队后执行的 prompt 都适用，不用历史轮次或自主轮次的错误代替当前结果。
+标准 `error.message` 保留服务端完整原因；原生 `APIProviderQuotaExhaustedError` 或明确的五小时、七天额度消息，
+按[执行失败协议](https://github.com/coda-console/coda-protocol/blob/main/docs/agent-protocol.md#执行失败)报告 `error.data._meta.coda.failure: {kind: "quota_exhausted"}`。
 Coda 按这个通用类别显示「额度不足」，不触发服务故障重试；其他 ACP 客户端仍能读取完整原因。
-插件不推算额度重置时间；其他认证失败、403、短时限流与普通错误原样保留。
+插件不推算额度重置时间；其他认证失败、403、短时限流与普通错误不归为额度不足。
 `CODA_DISABLE_RUNTIME_PATCHES=kimi` 关闭这层适配。
 
 ### 升级 Agent 的 CLI 与 SDK
