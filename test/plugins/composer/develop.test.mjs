@@ -330,6 +330,8 @@ test('开发流程定义、回路、检查提交与部署发布选择符合运�
   const { root, problem } = await readWorkflow(workflow, 'develop'); assert.ok(!problem, problem);
   const process = root.rootElements.find(e => e.$type === 'bpmn:Process');
   const acceptance = process.flowElements.find(e => e.id === 'acceptance');
+  // 卡片上只在走进验收后才有这一段，没开设备验收的运行照常按步骤画进度。
+  assert.equal(acceptance.optional, true);
   const elements = [...process.flowElements, ...acceptance.flowElements];
   const nodes = Object.fromEntries(elements.map(e => [e.id, e]));
   const values = node => node.extensionElements?.values ?? [];
