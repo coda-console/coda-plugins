@@ -1,9 +1,11 @@
-import Ajv from 'ajv';
+import Ajv2020 from 'ajv/dist/2020.js';
+import { parseProtocolName } from '@coda-console/protocol/protocol';
 
 // Only JSON Schema rules: no coercion, custom keywords or executable constraints. Only the type's schemas
 // supply defaults. An absent field without a declared default stays absent.
-const ajv = new Ajv({ allErrors: true, addUsedSchema: false });
-const defaults = new Ajv({ allErrors: true, addUsedSchema: false, useDefaults: true });
+const options = { allErrors: true, addUsedSchema: false, strict: true, strictTypes: false, strictRequired: false, allowUnionTypes: true };
+const ajv = new Ajv2020(options);
+const defaults = new Ajv2020({ ...options, useDefaults: true });
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const compare = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 
@@ -19,8 +21,8 @@ export function validate(check, value, who) {
 
 export class ProtocolTypes {
   constructor() { this.types = new Map(); }
-  register({ kind, spec, status, contributions = {}, participants }, registered = () => {}) {
-    if (typeof kind !== 'string' || !/^[a-z][a-zA-Z0-9-]*$/.test(kind) || this.types.has(kind)) throw new TypeError(`协议类型无效或已登记：${kind}`);
+  register({ kind, spec, status, contributions = {}, participants = () => [] }, registered = () => {}, replace = false) {
+    if (!parseProtocolName(kind) || (this.types.has(kind) && !replace)) throw new TypeError(`协议名无效或已登记：${kind}`);
     if (spec?.type !== 'object' || status?.type !== 'object') throw new TypeError(`${kind}: spec 与 status 须为对象 schema`);
     if (typeof participants !== 'function' || !object(contributions)) throw new TypeError(`${kind}: 需要 participants 与 contributions`);
     const properties = {};

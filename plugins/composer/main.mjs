@@ -2,7 +2,7 @@
 import { OFF, STILL_ON, on } from './ultra.mjs';
 
 export function activate(coda) {
-  const register = (id, handler) => coda.protocols.register('submissions', id, ({ spec }) => {
+  const register = (id, handler) => coda.protocols.register('coda/submission@1', id, ({ spec }) => {
     const mode = spec.modes.find(mode => mode.mode === `composer/${id}`);
     return mode ? handler(spec, mode) : null;
   });
@@ -34,7 +34,7 @@ export function activate(coda) {
   }));
 
   const previous = new Map();
-  return coda.watch('composers', async ({ type, id, object }) => {
+  return coda.watch('coda/composer@1', async ({ type, id, object }) => {
     const before = previous.get(id);
     // 删除输入框只释放记忆；关闭说明针对仍存在的会话输入框退出 Ultra。
     if (type === 'DELETED') { previous.delete(id); return; }

@@ -1,15 +1,15 @@
 # Git 源与快照
 
-`@coda-console/git` 提供本机仓库、运行关联快照和只读 Git smart HTTP。需要系统 Git（支持 protocol v2、`--path-format=absolute`）及包含 provider／流式服务接口的 Coda（coda#2080、#2079）。不接收机器 ID、机器列表或空间配置，不依赖 host，不改变执行／部署准入。
+`@coda-console/git` 提供本机仓库、运行关联快照和只读 Git smart HTTP。需要系统 Git（支持 protocol v2、`--path-format=absolute`）及包含 provider／流式服务接口、协议定义写在清单里的 Coda（coda#2080、#2079、#2176）。不接收机器 ID、机器列表或空间配置，不依赖 host，不改变执行／部署准入。
 
 ## 对象与本机管理入口
 
-概念名为 GitSource、SourceSnapshot；Coda 类型名要求小写开头，实际 kind 为 `gitSource`、`sourceSnapshot`。由插件登记 schema 并保存本机正本，`control` 办事员写 status 时带执行时观察到的 revision。类型定义见 `lib/definitions.mjs`。
+协议名为 `git/source@1`、`git/snapshot@1`，按 Coda 的协议格式写在插件清单的 `contributes.protocols` 里，并在 `contributes.protocolImplementations` 里声明实现。由插件保存本机正本，`control` 办事员写 status 时带执行时观察到的 revision。代码里的协议名见 `lib/definitions.mjs`。
 
-| kind | spec | status |
+| 协议 | spec | status |
 | --- | --- | --- |
-| `gitSource` | `path`：工作副本根目录或裸仓库的本机绝对路径 | `ready`、`url`，失败时 `reason` |
-| `sourceSnapshot` | `source`：本机源 ID；`mode`：`commit` 或 `worktree`；`commit`：仅提交模式必填；`run`：已有本机运行 ID | `ready`、`commit`、`ref`、`url`；失败时 `reason`；回收后 `released: true` |
+| `git/source@1` | `path`：工作副本根目录或裸仓库的本机绝对路径 | `ready`、`url`，失败时 `reason` |
+| `git/snapshot@1` | `source`：本机源 ID；`mode`：`commit` 或 `worktree`；`commit`：仅提交模式必填；`run`：已有本机运行 ID | `ready`、`commit`、`ref`、`url`；失败时 `reason`；回收后 `released: true` |
 
 源和快照 ID 使用 1–100 个字母、数字、`_`、`-`。源实例首次可用时会持久固定解析后的工作副本、Git 目录及公共目录。符号链接改指另一仓库时，源变为不可用，重启也不会自动接管新仓库；须删除源后重新登记。未创建 HEAD 的仓库无法制作快照；裸仓库仅支持提交模式。工作树快照记录 Git 自身的文件语义：含未提交和未跟踪文件，不含忽略文件；子模块记录 gitlink，不递归打包子模块工作树。
 
@@ -22,7 +22,7 @@ await coda.api(`${base}/snapshots/job-input`, {
   spec: { source: 'project', mode: 'worktree', run: runId },
 });
 // 提交模式：spec: { source: 'project', mode: 'commit', commit: sha, run: runId }
-const subscription = await coda.protocols.observe('sourceSnapshot', event => {
+const subscription = await coda.protocols.observe('git/snapshot@1', event => {
   if (event.id === 'job-input' && event.object.status.ready) {
     // status.url 是本机服务相对路径；status.ref 是 fetch 的完整引用。
   }
@@ -62,4 +62,4 @@ node bin/check.mjs plugins/git --manifest
 node scripts/check-contract.mjs
 ```
 
-真实 Coda 插件宿主、空间代理／tailnet／DERP 与运行器整合属于后续步骤，不能用脚本测试替代。新包首发依照仓库根 README「npm 发布」：维护者 `npm login` 后执行 bootstrap 配置信任，再由 main 的 `publish.yml` 发布 `0.1.3`。本步骤不修改 Coda 的版本钉选或默认安装。
+真实 Coda 插件宿主、空间代理／tailnet／DERP 与运行器整合属于后续步骤，不能用脚本测试替代。新包首发依照仓库根 README「npm 发布」：维护者 `npm login` 后执行 bootstrap 配置信任，再由 main 的 `publish.yml` 发布 `0.2.0`。本步骤不修改 Coda 的版本钉选或默认安装。

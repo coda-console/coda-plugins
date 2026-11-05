@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
-import { definitions, SOURCE, SNAPSHOT } from './definitions.mjs';
+import { SOURCE, SNAPSHOT } from './definitions.mjs';
 import { repository, git, createSnapshot, removeSnapshot, snapshotRef } from './git.mjs';
 import { smartHTTP, readBody, reply } from './http.mjs';
 
@@ -25,7 +25,6 @@ export class GitProvider {
     await mkdir(this.coda.plugin.state, { recursive: true });
     try { this.records = JSON.parse(await readFile(this.file, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     try { this.identities = JSON.parse(await readFile(this.identitiesFile, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    for (const definition of definitions) await this.coda.protocols.define(definition);
     for (const [kind, map] of [[SOURCE, this.sources], [SNAPSHOT, this.snapshots]]) {
       this.subscriptions.push(await this.coda.protocols.observe(kind, event => {
         if (event.type === 'DELETED') map.delete(event.id); else map.set(event.id, event.object);

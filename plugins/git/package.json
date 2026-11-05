@@ -3,12 +3,73 @@
   "id": "git",
   "displayName": "Git 源与快照",
   "description": "登记本机 Git 仓库，创建提交或工作树快照，按运行回收临时引用，提供只读 smart HTTP。",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "categories": ["机器与资源"],
   "type": "module",
   "main": "main.mjs",
   "activationEvents": ["onStartupFinished"],
-  "contributes": { "skills": ["skills/git-source"] },
+  "contributes": {
+    "protocols": [
+      {
+        "name": "git/source@1",
+        "title": "Git 源",
+        "description": "本机 Git 仓库：工作副本根目录或裸仓库的绝对路径。",
+        "spec": {
+          "type": "object",
+          "properties": { "path": { "type": "string", "minLength": 1 } },
+          "required": ["path"],
+          "additionalProperties": false
+        },
+        "status": {
+          "type": "object",
+          "properties": {
+            "ready": { "type": "boolean" },
+            "url": { "type": "string", "minLength": 1 },
+            "reason": { "type": "string", "minLength": 1 }
+          },
+          "required": [],
+          "additionalProperties": false
+        },
+        "operations": {}
+      },
+      {
+        "name": "git/snapshot@1",
+        "title": "Git 快照",
+        "description": "按运行从 Git 源制作提交或工作树快照，供只读 smart HTTP 取用。",
+        "spec": {
+          "type": "object",
+          "properties": {
+            "source": { "type": "string", "minLength": 1 },
+            "mode": { "enum": ["commit", "worktree"] },
+            "commit": { "type": "string", "minLength": 1 },
+            "run": { "type": "string", "minLength": 1 }
+          },
+          "required": ["source", "mode", "run"],
+          "additionalProperties": false,
+          "oneOf": [
+            { "properties": { "mode": { "const": "commit" } }, "required": ["commit"] },
+            { "properties": { "mode": { "const": "worktree" } }, "not": { "required": ["commit"] } }
+          ]
+        },
+        "status": {
+          "type": "object",
+          "properties": {
+            "ready": { "type": "boolean" },
+            "commit": { "type": "string", "minLength": 1 },
+            "ref": { "type": "string", "minLength": 1 },
+            "url": { "type": "string", "minLength": 1 },
+            "reason": { "type": "string", "minLength": 1 },
+            "released": { "type": "boolean" }
+          },
+          "required": [],
+          "additionalProperties": false
+        },
+        "operations": {}
+      }
+    ],
+    "protocolImplementations": ["git/source@1", "git/snapshot@1"],
+    "skills": ["skills/git-source"]
+  },
   "engines": { "node": ">=24" },
   "license": "MIT",
   "repository": {
