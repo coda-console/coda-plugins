@@ -8,17 +8,16 @@ import { promisify } from 'node:util';
 import { probe, capacityStatus } from '../../../plugins/host/lib/capabilities.mjs';
 import { prepareWorkspace, inside, git } from '../../../plugins/host/lib/workspace.mjs';
 import { executeHooks } from '../../../plugins/host/lib/hooks.mjs';
-import { Journal, identity, taskFingerprint } from '../../../plugins/host/lib/journal.mjs';
-import { Executions } from '../../../plugins/host/lib/executions.mjs';
+import { Journal } from '../../../plugins/host/lib/journal.mjs';
+import { Executions, RUN, runStatus } from '../../../plugins/host/lib/executions.mjs';
 import { Sources } from '../../../plugins/host/lib/source.mjs';
 import { outputs } from '../../../plugins/host/lib/results.mjs';
 
 const exec = promisify(execFile);
 async function temporary(t) { const root = await mkdtemp(join(tmpdir(), 'host-executor-')); t.after(() => rm(root, { recursive: true, force: true })); return root; }
-const spec = () => ({ protocolVersion: 1, executor: { kind: 'executor', id: 'host' }, assignmentId: 'binding-a',
-  run: { kind: 'workflow-runs', id: 'workflow' }, attempt: 1, source: null, requirements: { labels: ['linux'] },
-  resources: { slots: 1 }, exclusiveResources: [], task: { command: 'true', args: [] }, env: {}, cancel: false });
-const request = () => ({ kind: 'execution', id: 'job', instance: 'instance-a', revision: 'v1', spec: spec(), status: {} });
+const input = (patch = {}) => ({ source: null, requirements: { labels: ['linux'] }, resources: { slots: 1 }, exclusiveResources: [],
+  task: { command: 'true', args: [] }, env: {}, ...patch });
+const run = (id = 'job') => ({ kind: RUN, id, revision: 'r1', status: { state: 'working' } });
 
 test('read-only capability probes distinguish missing Xcode and unavailable runtimes; capacity includes other ledger users', async () => {
   const calls = [];
@@ -63,28 +62,28 @@ test('real Git cache keeps ignored files, cleans stale source, isolates work cop
 
 test('prepare failure still cleans up its returned state; cancellation cannot skip cleanup', async t => {
   const root = await temporary(t), calls = [], controller = new AbortController();
-  const result = await executeHooks({ root, directory: root, attempt: 'a', source: null, slot: 0, spec: spec(), env: {}, signal: controller.signal,
-    checkpoint: async () => {}, hook: async input => {
-      calls.push(input.command);
-      if (input.command === 'prepare_job') return { code: 1, answer: { state: { workspace: root } } };
-      assert.deepEqual(input.state, { workspace: root }); return { code: 0 };
+  const result = await executeHooks({ root, directory: root, attempt: 'a', source: null, slot: 0, spec: input(), env: {}, signal: controller.signal,
+    checkpoint: async () => {}, hook: async value => {
+      calls.push(value.command);
+      if (value.command === 'prepare_job') return { code: 1, answer: { state: { workspace: root } } };
+      assert.deepEqual(value.state, { workspace: root }); return { code: 0 };
     } });
   assert.deepEqual(calls, ['prepare_job', 'cleanup_job']); assert.equal(result.outcome, 'failed');
   calls.length = 0;
-  const cancelled = await executeHooks({ root, directory: root, attempt: 'a', source: null, slot: 0, spec: spec(), env: {}, signal: controller.signal,
-    checkpoint: async patch => { if (patch.phase === 'running') controller.abort(); }, hook: async input => {
-      calls.push(input.command);
-      if (input.command === 'prepare_job') return { code: 0, answer: { state: { workspace: root } } };
-      if (input.command === 'cleanup_job') assert.equal(input.signal.aborted, false);
-      return { code: 143, aborted: input.command === 'run_script_step' };
+  const cancelled = await executeHooks({ root, directory: root, attempt: 'a', source: null, slot: 0, spec: input(), env: {}, signal: controller.signal,
+    checkpoint: async patch => { if (patch.phase === 'running') controller.abort(); }, hook: async value => {
+      calls.push(value.command);
+      if (value.command === 'prepare_job') return { code: 0, answer: { state: { workspace: root } } };
+      if (value.command === 'cleanup_job') assert.equal(value.signal.aborted, false);
+      return { code: 143, aborted: value.command === 'run_script_step' };
     } });
   assert.equal(cancelled.outcome, 'cancelled'); assert.equal(calls.at(-1), 'cleanup_job');
 });
 
 test('real three-part hook runs commands in isolation and returns the command exit code and declared outputs', async t => {
   const root = await temporary(t), directory = join(root, 'attempt');
-  const task = { ...spec(), task: { script: 'printf "hello=%s\\n" "$DECLARED" >> "$GITHUB_OUTPUT"\nprintf "%s" "${SHOULD_NOT_LEAK-absent}"\nexit 7', shell: 'sh' }, env: { DECLARED: 'yes' } };
-  const result = await executeHooks({ root, directory, attempt: 'attempt', source: null, slot: 0, spec: task,
+  const spec = input({ task: { script: 'printf "hello=%s\\n" "$DECLARED" >> "$GITHUB_OUTPUT"\nprintf "%s" "${SHOULD_NOT_LEAK-absent}"\nexit 7', shell: 'sh' }, env: { DECLARED: 'yes' } });
+  const result = await executeHooks({ root, directory, attempt: 'attempt', source: null, slot: 0, spec,
     env: { ...process.env, SHOULD_NOT_LEAK: 'secret' }, signal: new AbortController().signal, checkpoint: async () => {} });
   assert.equal(result.exitCode, 7); assert.equal(result.outcome, 'failed');
   assert.equal(await readFile(join(directory, 'output'), 'utf8'), 'hello=yes\n');
@@ -96,147 +95,81 @@ function engine(root, changes = {}) {
   const coda = { resources: {
     acquire: async () => ({ admitted: true, lease: 'lease', slot: 0 }), release: async lease => released.push(lease),
   }, protocols: {
-    setStatus: async (kind, id, status, revision) => { writes.push({ kind, id, status, revision }); },
-    put: async object => { runs.set(object.id, { ...object, revision: 'r1' }); return runs.get(object.id); }, publish: async () => {},
+    setStatus: async (kind, id, status, revision) => { writes.push({ kind, id, status, revision }); return { kind, id, status, revision: 'r2' }; },
   } };
-  const host = new Executions({ coda, root, executorId: 'host', sources: { resolve: async () => null }, offered: () => ({
+  const host = new Executions({ coda, root, sources: { resolve: async () => null }, offered: () => ({
     spec: { labels: [] }, status: { accepting: true, detectedLabels: ['linux'] },
-  }), environment: async () => ({}), launch: async input => launches.push(input), control: async (record, action) => { cancels.push(action); return true; }, ...changes });
+  }), environment: async () => ({}), launch: async value => launches.push(value), control: async (record, action) => { cancels.push(action); return true; }, ...changes });
   host.runs = runs;
-  return { host, coda, writes, released, launches, cancels };
+  const offer = (object = run()) => { runs.set(object.id, object); return object; };
+  return { host, coda, writes, released, launches, cancels, runs, offer };
 }
+const flush = async fixture => { while (fixture.host.busy.size) await Promise.all([...fixture.host.busy.values()]); };
 
-for (const changed of [false, true]) {
-  test(`recovering an existing receipt repairs interrupted publication with ${changed ? 'changed' : 'unchanged'} status`, async () => {
-    const stored = new Map(), published = new Set(), record = { key: 'receipt', id: 'job', assignmentId: 'binding' };
-    const initial = { phase: 'running' }, final = changed ? { phase: 'finished', outcome: 'succeeded' } : initial;
-    let interrupted = true, puts = 0;
-    const coda = { protocols: {
-      put: async object => { puts++; stored.set(object.id, { ...object, revision: 'r1' }); return stored.get(object.id); },
-      setStatus: async (kind, id, status, revision) => {
-        assert.equal(revision, stored.get(id).revision);
-        stored.set(id, { ...stored.get(id), status, revision: 'r2' });
-      },
-      publish: async (kind, id) => {
-        assert.equal(kind, 'hostExecution'); assert.ok(stored.has(id));
-        if (interrupted) throw new Error('publication interrupted');
-        published.add(id);
-      },
-    } };
-    await assert.rejects(Executions.prototype.publishRun.call({ coda, runs: new Map() }, record, initial), /publication interrupted/);
-    assert.ok(stored.has(record.key)); assert.equal(published.has(record.key), false);
-    // A restarted provider's local watch restores the durable object even though it was never published.
-    const recovered = { coda, runs: new Map(stored) }; interrupted = false;
-    await Executions.prototype.publishRun.call(recovered, record, final);
-    const remoteReceipt = published.has(record.key) ? stored.get(record.key) : undefined;
-    assert.deepEqual(remoteReceipt?.status, final);
-    assert.equal(puts, 1, 'recovery publishes the existing receipt without replacing it');
-    recovered.runs = new Map(stored);
-    await Executions.prototype.publishRun.call(recovered, record, final);
-    assert.deepEqual(published, new Set([record.key])); assert.equal(puts, 1);
-  });
-}
-
-test('assigned controller starts once, accepts cancel while running, and restart never reruns a durable claim', async t => {
-  const root = await temporary(t), first = engine(root), object = request();
-  await first.host.observe({ type: 'ADDED', id: object.id, object });
-  await first.host.observe({ type: 'ADDED', id: object.id, object }); assert.equal(first.launches.length, 1);
-  await first.host.observe({ type: 'MODIFIED', id: object.id, object: { ...object, revision: 'v2', spec: { ...object.spec, cancel: true } } });
-  assert.ok(first.cancels.includes('cancel'));
-  const restart = engine(root, { control: async () => false });
-  await restart.host.observe({ type: 'ADDED', id: object.id, object });
-  assert.equal(restart.launches.length, 0); assert.deepEqual(restart.released, []);
-  assert.equal(restart.writes.at(-1).status.reason.code, 'result_unknown');
+test('execute starts once, reports progress, and restart never reruns the durable run', async t => {
+  const root = await temporary(t), first = engine(root), object = run();
+  first.offer(object); first.host.execute(object, input());
+  first.host.execute(object, input()); await flush(first);
+  assert.equal(first.launches.length, 1);
+  const record = first.host.journal.list()[0]; record.control = { port: 1, token: 't' }; record.phase = 'running'; first.host.journal.save(record);
+  await first.host.tick();
+  assert.equal(first.writes.at(-1).status.progress, '运行中');
+  const restart = engine(root);
+  restart.offer(object); restart.host.execute(object, input()); await flush(restart);
+  assert.equal(restart.launches.length, 0);
 });
 
-test('rebind/deletion cannot receive an old result; only a finished worker releases its lease', async t => {
-  const root = await temporary(t), fixture = engine(root), object = request();
-  await fixture.host.observe({ type: 'ADDED', id: object.id, object });
-  const record = fixture.host.journal.get(identity(object));
-  record.phase = 'finished'; record.result = { outcome: 'succeeded', exitCode: 0, finishedAt: new Date().toISOString() };
-  fixture.host.journal.save(record);
-  fixture.writes.length = 0;
-  await fixture.host.observe({ type: 'DELETED', id: object.id, object });
-  assert.deepEqual(fixture.released, ['lease']); assert.equal(fixture.writes.filter(w => w.kind === 'execution').length, 0);
-  const foreign = { ...object, spec: { ...object.spec, executor: { kind: 'executor', id: 'another' }, assignmentId: 'b' } };
-  await fixture.host.observe({ type: 'ADDED', id: foreign.id, object: foreign });
-  assert.equal(fixture.launches.length, 1);
+test('completed, failed and canceled results are written on the run exactly once', async t => {
+  const root = await temporary(t), fixture = engine(root), object = run();
+  fixture.offer(object); fixture.host.execute(object, input()); await flush(fixture);
+  const record = fixture.host.journal.list()[0];
+  record.phase = 'finished';
+  record.result = { outcome: 'succeeded', exitCode: 0, outputTail: 'done', summary: 'ok', outputs: { answer: 'yes' }, finishedAt: new Date().toISOString() };
+  fixture.host.journal.save(record); await fixture.host.tick();
+  assert.deepEqual(fixture.writes.at(-1).status, { state: 'completed', result: { exitCode: 0, output: 'done', summary: 'ok', outputs: { answer: 'yes' } } });
+  const count = fixture.writes.length; await fixture.host.tick(); assert.equal(fixture.writes.length, count, 'terminal status is never written again');
+  assert.deepEqual(fixture.released, ['lease']);
+  assert.equal(runStatus({ ...record, result: { outcome: 'failed', exitCode: 7, reason: { message: 'bad' } } }).result.message, 'bad');
+  assert.deepEqual(runStatus({ ...record, result: { outcome: 'cancelled' } }), { state: 'canceled' });
 });
 
-test('a cancellation during source resolution prevents ledger admission and process creation', async t => {
-  const root = await temporary(t), object = request(); let resolveSource, looked;
+test('cancel asks the worker to stop and a cancellation during source resolution prevents admission', async t => {
+  const root = await temporary(t), object = run(); let resolveSource, looked;
   const ready = new Promise(resolve => { looked = resolve; });
   const source = new Promise(resolve => { resolveSource = resolve; });
   const fixture = engine(root, { sources: { resolve: () => { looked(); return source; } } });
   let acquired = 0; fixture.coda.resources.acquire = async () => { acquired++; return { admitted: false }; };
-  const started = fixture.host.observe({ type: 'ADDED', id: object.id, object }); await ready;
-  const cancel = fixture.host.observe({ type: 'MODIFIED', id: object.id, object: { ...object, spec: { ...object.spec, cancel: true }, revision: 'v2' } });
-  resolveSource(null); await started; await cancel;
+  fixture.offer(object); fixture.host.execute(object, input());
+  await ready; await fixture.host.cancel(object.id);
+  resolveSource(null); await flush(fixture);
   assert.equal(acquired, 0); assert.equal(fixture.launches.length, 0);
-  assert.equal(fixture.writes.at(-1).status.outcome, 'cancelled');
+  assert.equal(fixture.writes.at(-1).status.state, 'canceled');
+
+  const running = run('running'); fixture.offer(running); fixture.host.execute(running, input()); await flush(fixture);
+  const record = fixture.host.journal.list().find(record => record.runId === running.id);
+  record.phase = 'running'; record.control = { port: 1, token: 't' }; fixture.host.journal.save(record);
+  await fixture.host.cancel(running.id);
+  assert.ok(fixture.cancels.includes('cancel'));
 });
 
-test('a current journal record cannot skip cancellation or lease release of a later old binding', async t => {
-  const root = await temporary(t), object = request(), cancelled = [];
-  const fixture = engine(root, { control: async (record, action) => {
-    if (action === 'cancel') cancelled.push(record.key);
-    return true;
-  } });
-  const current = { key: identity(object), id: object.id, instance: object.instance, assignmentId: object.spec.assignmentId,
-    fingerprint: taskFingerprint(object.spec), phase: 'running', admission: { lease: 'current-lease', slot: 0 } };
-  const oldObject = { ...object, spec: { ...object.spec, assignmentId: 'old-binding' } };
-  const old = { ...current, key: identity(oldObject), assignmentId: oldObject.spec.assignmentId,
-    fingerprint: taskFingerprint(oldObject.spec), admission: { lease: 'old-lease', slot: 1 } };
-  fixture.host.journal.save(current); fixture.host.journal.save(old);
-  // Exercise the problematic order explicitly, independent of filesystem directory ordering.
-  fixture.host.journal.list = () => [current.key, old.key].map(key => fixture.host.journal.get(key));
-  await fixture.host.observe({ type: 'ADDED', id: object.id, object });
-  assert.deepEqual(cancelled, [old.key]); assert.deepEqual(fixture.released, []);
-  old.phase = 'finished'; old.result = { outcome: 'cancelled', exitCode: 143, finishedAt: new Date().toISOString() };
-  fixture.host.journal.save(old);
-  await fixture.host.tick(); await fixture.host.tick();
-  assert.deepEqual(fixture.released, ['old-lease']);
-  assert.equal(fixture.host.journal.get(old.key).released, true);
-  assert.equal(fixture.host.journal.get(current.key).released, undefined);
+test('slots are admitted through the host ledger; no slot waits instead of launching', async t => {
+  const root = await temporary(t), object = run(), fixture = engine(root);
+  let admitted = false;
+  fixture.coda.resources.acquire = async () => admitted ? { admitted: true, lease: 'lease', slot: 0 } : { admitted: false };
+  fixture.offer(object); fixture.host.execute(object, input()); await flush(fixture);
   assert.equal(fixture.launches.length, 0);
-  const replies = fixture.writes.filter(write => write.kind === 'execution');
-  assert.ok(replies.length > 0);
-  assert.ok(replies.every(write => write.status.assignmentId === current.assignmentId && write.status.phase === 'running'));
+  assert.equal(fixture.writes.at(-1).status.progress, '等待本机名额');
+  admitted = true; await fixture.host.tick();
+  assert.equal(fixture.launches.length, 1);
+  assert.equal(fixture.released.length, 0);
 });
-
-for (const stage of ['source', 'environment', 'admitted', 'denied']) {
-  test(`pausing acceptance while awaiting ${stage} rejects without a claim and releases any acquired lease`, async t => {
-    const root = await temporary(t), object = request(), entered = Promise.withResolvers(), resume = Promise.withResolvers();
-    const offered = { spec: { labels: [] }, status: { accepting: true, detectedLabels: ['linux'] } };
-    const wait = async value => { entered.resolve(); await resume.promise; return value; };
-    const fixture = engine(root, { offered: () => offered,
-      sources: { resolve: () => stage === 'source' ? wait(null) : Promise.resolve(null) },
-      environment: () => stage === 'environment' ? wait({}) : Promise.resolve({}),
-    });
-    let acquired = 0;
-    fixture.coda.resources.acquire = async () => {
-      acquired++;
-      const result = stage === 'denied' ? { admitted: false } : { admitted: true, lease: 'lease', slot: 0 };
-      return ['admitted', 'denied'].includes(stage) ? wait(result) : result;
-    };
-    const pending = fixture.host.observe({ type: 'ADDED', id: object.id, object });
-    await entered.promise; offered.status.accepting = false; resume.resolve(); await pending;
-    assert.equal(fixture.launches.length, 0);
-    assert.deepEqual(fixture.host.journal.list(), []);
-    assert.equal(acquired, ['admitted', 'denied'].includes(stage) ? 1 : 0);
-    assert.deepEqual(fixture.released, stage === 'admitted' ? ['lease'] : []);
-    const status = fixture.writes.at(-1).status;
-    assert.equal(status.phase, 'finished'); assert.equal(status.outcome, 'rejected');
-    assert.equal(status.reason.code, 'not_accepting');
-  });
-}
 
 test('snapshot source identity is scoped to its provider endpoint, not the holder-local source ID', async () => {
   const locations = { snap: 'http://localhost:1/a/', wrong: 'http://localhost:1/b/', right: 'http://localhost:1/a/' };
   const sources = new Sources({ protocols: { resolve: async ref => ({ resource: { kind: ref.kind, id: ref.id === 'snap' ? 'snapshot' : 'same-id' }, url: locations[ref.id], headers: { authorization: 'Bearer test' } }) } });
-  sources.objects.set('sourceSnapshot/snap', { kind: 'sourceSnapshot', id: 'snap', spec: { source: 'same-id' }, status: { ready: true, commit: 'a'.repeat(40), ref: 'refs/coda/snapshots/a' } });
-  for (const id of ['wrong', 'right']) sources.objects.set(`gitSource/${id}`, { kind: 'gitSource', id, instance: `${id}-instance`, status: { ready: true } });
-  const resolved = await sources.resolve({ snapshot: { kind: 'sourceSnapshot', id: 'snap' } });
+  sources.objects.set('git/snapshot@1/snap', { kind: 'git/snapshot@1', id: 'snap', spec: { source: 'same-id' }, status: { ready: true, commit: 'a'.repeat(40), ref: 'refs/coda/snapshots/a' } });
+  for (const id of ['wrong', 'right']) sources.objects.set(`git/source@1/${id}`, { kind: 'git/source@1', id, instance: `${id}-instance`, status: { ready: true } });
+  const resolved = await sources.resolve({ snapshot: { kind: 'git/snapshot@1', id: 'snap' } });
   assert.equal(resolved.key, JSON.stringify(['right', 'right-instance'])); assert.equal(resolved.url, 'http://localhost:1/a/repos/same-id');
   assert.equal(resolved.headers.authorization, 'Bearer test');
 });

@@ -9,7 +9,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { providerAPI } from '../../../check/coda/adapters/provider-api.mjs';
 import { smartHTTP } from '../../../plugins/git/lib/http.mjs';
-import { Sources } from '../../../plugins/host/lib/source.mjs';
+import { Sources, SOURCE, SNAPSHOT } from '../../../plugins/host/lib/source.mjs';
 import { prepareWorkspace, git } from '../../../plugins/host/lib/workspace.mjs';
 
 test('official resolver adapter feeds git provider smart HTTP v2 into the host cache without persisting credentials', async t => {
@@ -40,20 +40,20 @@ test('official resolver adapter feeds git provider smart HTTP v2 into the host c
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   const url = `http://127.0.0.1:${server.address().port}`;
   const objects = [
-    { kind: 'gitSource', id: 'mirrored-source', instance: 'source-incarnation', status: { ready: true } },
-    { kind: 'sourceSnapshot', id: 'mirrored-snapshot', spec: { source: 'local-source' }, status: { ready: true, commit, ref } },
+    { kind: SOURCE, id: 'mirrored-source', instance: 'source-incarnation', status: { ready: true } },
+    { kind: SNAPSHOT, id: 'mirrored-snapshot', spec: { source: 'local-source' }, status: { ready: true, commit, ref } },
   ];
   const protocols = providerAPI({ connection: () => ({ url, token }), call: async (method, args) => {
     assert.equal(method, 'resolve'); assert.equal(args[1], 'repository');
-    return { resource: { kind: args[0].kind, id: args[0].kind === 'gitSource' ? 'local-source' : 'local-snapshot' }, path };
+    return { resource: { kind: args[0].kind, id: args[0].kind === SOURCE ? 'local-source' : 'local-snapshot' }, path };
   }, watch: async (kind, fn, options) => {
     assert.equal(options.scope, 'available');
-    for (const object of objects.filter(object => kind === `provider:${object.kind}`)) fn({ type: 'ADDED', id: object.id, object });
+    for (const object of objects.filter(object => kind === object.kind)) fn({ type: 'ADDED', id: object.id, object });
     return { dispose() {} };
   } });
   const sources = new Sources({ protocols }); await sources.start(); t.after(() => sources.stop());
-  for (const input of [{ snapshot: { kind: 'sourceSnapshot', id: 'mirrored-snapshot' } },
-    { repository: { kind: 'gitSource', id: 'mirrored-source' }, commit }]) {
+  for (const input of [{ snapshot: { kind: SNAPSHOT, id: 'mirrored-snapshot' } },
+    { repository: { kind: SOURCE, id: 'mirrored-source' }, commit }]) {
     const source = await sources.resolve(input);
     const workspace = await prepareWorkspace({ root: cache, source, slot: 0, attempt: 'transport' });
     assert.equal(await readFile(join(workspace, 'input'), 'utf8'), 'snapshot contents');

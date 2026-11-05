@@ -1,15 +1,15 @@
 {
-  "commit": "f0458cc4e9a98ad99cd03bc6613ccc39dd6fb8b3",
+  "commit": "cec3f0ece39c54c0cfd0c18c5fb52051e7d8f20e",
   "packages": {
     "@0dep/piso": "5.2.0",
     "@agentclientprotocol/sdk": "1.4.0",
-    "@coda-console/protocol": "git+https://github.com/coda-console/coda-protocol.git#4f33ae5ee472c2fa88627b4eb3147f0f22bfc67e",
+    "@coda-console/protocol": "git+https://github.com/coda-console/coda-protocol.git#0e21bab9be38bdf6549491bd9f432f2c1c004d54",
     "ajv": "8.20.0",
     "yaml": "2.9.1"
   },
   "files": {
     "check/coda/components/protocols/creation.mjs": "2b4a400d3064af4b5106077dc783c567910fef3c47b2d52af3f0d838c5accf19",
-    "check/coda/components/protocols/types.mjs": "d0ede65e16c7a386e3c978b333e22eadc73731b87e2e6a457ff09b4ce15cbd68",
+    "check/coda/components/protocols/types.mjs": "ded6a23805f4665e6d0733bdaa906f2fb5ffd199bf6c9c831076e944190416df",
     "check/coda/adapters/provider-api.mjs": "0f6fd1853f91797fa173f57e339379aa6cc17f419e6a244fc3092578522061dc",
     "check/coda/adapters/admission-api.mjs": "461b5a8a1ad73d7afed5db308813d02324e29c643b8e773ad127d4bdb00fb524",
     "check/coda/components/composers/schemas.mjs": "6d497f58147756e789f9a566b2366f2fe36c0c72310421fb02508bf24a04f2c0",

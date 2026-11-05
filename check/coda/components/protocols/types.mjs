@@ -21,10 +21,19 @@ export function validate(check, value, who) {
 
 export class ProtocolTypes {
   constructor() { this.types = new Map(); }
-  register({ kind, spec, status, contributions = {}, participants = () => [] }, registered = () => {}, replace = false) {
+  register({ kind, spec, status, operations = {}, contributions = {}, participants = () => [] }, registered = () => {}, replace = false) {
     if (!parseProtocolName(kind) || (this.types.has(kind) && !replace)) throw new TypeError(`协议名无效或已登记：${kind}`);
     if (spec?.type !== 'object' || status?.type !== 'object') throw new TypeError(`${kind}: spec 与 status 须为对象 schema`);
     if (typeof participants !== 'function' || !object(contributions)) throw new TypeError(`${kind}: 需要 participants 与 contributions`);
+    // Each operation is an input and either an immediate result or a run reference, as the protocol package defines them.
+    if (!object(operations)) throw new TypeError(`${kind}: operations 须为对象`);
+    const compiled = new Map();
+    for (const [name, operation] of Object.entries(operations)) {
+      if (!/^[a-z][a-z0-9-]{0,63}$/.test(name) || !object(operation)) throw new TypeError(`${kind}.${name}: 操作名或定义无效`);
+      const run = operation.run === true;
+      if (run === Object.hasOwn(operation, 'result') || !operation.input) throw new TypeError(`${kind}.${name}: 操作要写 input，并恰写 result 或 run`);
+      compiled.set(name, { input: compile(operation.input), ...(run ? { run } : { result: compile(operation.result) }) });
+    }
     const properties = {};
     for (const [field, { merge, schema }] of Object.entries(contributions)) {
       const type = merge === 'append' ? 'array' : merge === 'or' ? 'boolean' : null;
@@ -33,7 +42,7 @@ export class ProtocolTypes {
       }
       Object.defineProperty(properties, field, { value: schema, enumerable: true });
     }
-    const type = { kind, participants, contributions: structuredClone(contributions),
+    const type = { kind, participants, contributions: structuredClone(contributions), operations: compiled,
       spec: compile(spec, defaults), status: compile(status, defaults),
       // Before supplementation only merge operands must be shaped correctly. Required fields and counts apply to the
       // complete spec, so a participant can supply a required list that the initial object does not have yet.
