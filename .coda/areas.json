@@ -1,0 +1,22 @@
+{
+  "claude 插件": ["plugins/claude/"],
+  "codex 插件": ["plugins/codex/"],
+  "codex-accounts 插件": ["plugins/codex-accounts/"],
+  "composer 插件": ["plugins/composer/"],
+  "cursor 插件": ["plugins/cursor/"],
+  "git 插件": ["plugins/git/"],
+  "grok 插件": ["plugins/grok/"],
+  "grok-bot 插件": ["plugins/grok-bot/"],
+  "host 插件": ["plugins/host/"],
+  "kimi 插件": ["plugins/kimi/"],
+  "magpie 插件": ["plugins/magpie/"],
+  "network-log 插件": ["plugins/network-log/"],
+  "opencode 插件": ["plugins/opencode/"],
+  "review 插件": ["plugins/review/"],
+  "scheduler 插件": ["plugins/scheduler/"],
+  "testbed 插件": ["plugins/testbed/"],
+  "测试": ["test/"],
+  "文档": ["docs/", "README.md"],
+  "仓库脚本与流程": ["scripts/", "check/", "bin/", ".github/", ".coda/"],
+  "模板": ["templates/"]
+}
