@@ -143,7 +143,9 @@ test('develop 从最新 base 开泳道，退回续作，逐项快进，验收后
   assert.equal(f.calls('agent')[2].args[1], accepted.head);
   assert.ok(!f.calls('agent')[2].args.includes('--model'), '空设置使用 Agent 默认值');
   assert.match(f.calls('agent')[2].prompt, /第二项：补齐状态/);
-  f.review('accept'); assert.equal(f.run('accept').outputs.route, 'preview');
+  for (const note of [undefined, '', '  ']) assert.equal(f.run('decide', { REVIEW: JSON.stringify({ choice: 'accept', note }) }).outputs.route, 'review');
+  assert.equal(f.run('review').outputs.feedback, '通过，可以验收必须在备注中写给用户的改动汇报。');
+  f.review('accept', '旧汇报'); assert.equal(f.run('accept').outputs.route, 'preview');
   const session = f.state().executor.session;
   for (const note of [undefined, '', '  ']) {
     const result = f.run('preview', { PREVIEW: JSON.stringify({ choice: 'review', note }) }).outputs;
@@ -157,7 +159,7 @@ test('develop 从最新 base 开泳道，退回续作，逐项快进，验收后
   f.task('two', 'base integrated'); f.run('revise');
   assert.equal(f.state().executor.session, session);
   assert.ok(f.calls('agent').at(-1).prompt.includes(feedback));
-  f.review('accept'); assert.equal(f.run('accept').outputs.route, 'preview');
+  f.review('accept', '汇报'); assert.equal(f.run('accept').outputs.route, 'preview');
   assert.deepEqual(f.run('preview', { PREVIEW: JSON.stringify({ choice: 'installed' }) }).outputs, { feedback: '', route: 'device' });
   assert.equal(f.state().feedback, '');
   assert.equal(f.run('device', { DEVICE: JSON.stringify({ choice: 'no' }) }).outputs.route, 'device');
@@ -165,22 +167,24 @@ test('develop 从最新 base 开泳道，退回续作，逐项快进，验收后
   assert.equal(f.device('no', '按钮没有响应'), 'review');
   assert.equal(f.run('review').outputs.feedback, '设备验收不通过：\n按钮没有响应');
   f.review('revise', '修复按钮回调'); f.task('two', 'button fixed'); f.run('revise');
-  f.review('accept'); assert.equal(f.run('accept').outputs.route, 'preview');
+  const userReport = '做了什么\n- 输入框可以正常输入\n需要你知道：无';
+  f.review('accept', userReport); assert.equal(f.run('accept').outputs.route, 'preview');
   assert.equal(f.device('yes'), 'pr');
   const summary = f.run('pr').outputs.summary;
   const created = f.calls('gh').find(c => c.args[1] === 'create');
   assert.deepEqual(created.args.slice(0, 6), ['pr', 'create', '--base', 'main', '--head', lane]);
   assert.equal(created.args[created.args.indexOf('--title') + 1], '修好输入框');
   const approved = f.state().approved;
-  assert.equal(created.body, [
+  assert.equal(summary, `${userReport}\n\n改动：2 个文件 +2 -0\n- 根目录：2 个文件 +2 -0`, '汇报只用最新一份，改动按目标分支最新提交统计');
+  assert.equal(created.body, `${summary}\n\n<details><summary>执行记录</summary>\n\n${[
     `## 第 1 项\n\n<details><summary>任务</summary>\n\n${task}\n\n</details>\n\nremoved wrapper\n\n提交：${approved[0].head}`,
     `## 第 2 项\n\n<details><summary>任务</summary>\n\n第二项：补齐状态\n\n</details>\n\nsecond answer\n\n提交：${approved[1].head}`,
     `## 第 3 项\n\n<details><summary>任务</summary>\n\n第二项：补齐状态\n\n</details>\n\nbase integrated\n\n提交：${approved[2].head}`,
     `## 第 4 项\n\n<details><summary>任务</summary>\n\n第二项：补齐状态\n\n</details>\n\nbutton fixed\n\n提交：${approved[3].head}`,
-  ].join('\n\n'));
-  assert.equal(summary, created.body, '批准卡片使用同一份正文');
-  assert.ok(!created.body.includes('first answer'), '未通过的改动不放进 PR 汇总');
-  assert.equal(f.run('pr').outputs.summary, created.body);
+  ].join('\n\n')}\n\n</details>`, 'PR 描述以汇总开头，执行记录折叠在后');
+  assert.ok(!created.body.includes('first answer'), '未通过的改动不放进执行记录');
+  assert.ok(!summary.includes('removed wrapper'), '卡片汇总不含执行者回答');
+  assert.equal(f.run('pr').outputs.summary, summary);
   assert.equal(f.calls('gh').filter(c => c.args[1] === 'create').length, 1);
   assert.equal(f.calls('gh').filter(c => c.args[1] === 'edit').length, 1);
   assert.equal(f.calls('gh').find(c => c.args[1] === 'edit').body, created.body);
@@ -188,7 +192,7 @@ test('develop 从最新 base 开泳道，退回续作，逐项快进，验收后
 
 test('检查失败回最近执行会话，修好更新 PR 重跑；交由 gh 删除泳道，分支已删除仍交出合并提交', t => {
   const f = fixture(t); f.run('lane'); f.task('code', 'implementation'); f.run('execute');
-  f.review('accept'); f.run('accept'); f.device('yes'); f.run('pr');
+  f.review('accept', '汇报'); f.run('accept'); f.device('yes'); f.run('pr');
   const session = f.state().executor.session;
   for (const step of ['项目检查', 'GitHub 检查', '合并前检查']) {
     f.run('check-failed', { STEP: step });
@@ -197,7 +201,7 @@ test('检查失败回最近执行会话，修好更新 PR 重跑；交由 gh 删
     assert.match(feedback, /workflow_status.*读取错误和日志/);
     f.review('revise', `${step}：修复断言`); f.task('code', step); f.run('revise');
     assert.equal(f.state().executor.session, session);
-    f.review('accept'); assert.equal(f.run('accept').outputs.route, 'pr');
+    f.review('accept', '汇报'); assert.equal(f.run('accept').outputs.route, 'pr');
     f.run('pr');
   }
   assert.equal(f.run('merge', { MERGE_EXIT: '1' }, 1).outputs.commit, undefined);
@@ -249,7 +253,7 @@ for (const scenario of [
 test('泳道不接受分叉，Agent 非零退出不进入审查', t => {
   const f = fixture(t); f.run('lane');
   for (const code of [1, 2, 130]) { f.task('code', '', code); f.run('execute', {}, code); assert.equal(f.state().executor, undefined); }
-  f.task('code', 'worker change'); f.run('execute'); f.review('accept');
+  f.task('code', 'worker change'); f.run('execute'); f.review('accept', '汇报');
   f.git('switch', f.state().lane);
   writeFileSync(join(f.work, 'other'), 'other'); f.git('add', 'other'); f.git('commit', '-qm', 'other change');
   f.git('push', '-q', 'origin', f.state().lane);
@@ -268,7 +272,7 @@ test('显式 base 与并行功能运行各自建泳道，无设备验收仍可�
   f.task('one', 'first change'); f.run('execute');
   f.review('next', '第二项'); assert.equal(f.run('accept').outputs.route, 'execute');
   f.task('two', 'second change'); f.run('execute');
-  f.review('accept'); assert.equal(f.run('accept').outputs.route, 'pr');
+  f.review('accept', '汇报'); assert.equal(f.run('accept').outputs.route, 'pr');
   assert.equal(f.run('pr').outputs.url, 'https://github.com/example/fixture/pull/1');
   assert.equal(f.state().phase, 'check');
 });
@@ -278,9 +282,11 @@ test('归属需求跳过设备验收，待交付退回续作，更新同一 PR �
   f.run('lane'); f.task('one', 'first change'); f.run('execute');
   f.review('next', '第二项'); assert.equal(f.run('accept').outputs.route, 'execute');
   f.task('two', 'second change'); f.run('execute');
-  f.review('accept'); assert.equal(f.run('accept').outputs.route, 'pr');
+  f.review('accept', '汇报'); assert.equal(f.run('accept').outputs.route, 'pr');
   const pr = f.run('pr').outputs;
-  assert.match(pr.summary, /first change/); assert.match(pr.summary, /second change/);
+  assert.match(pr.summary, /^汇报\n\n改动：2 个文件/);
+  const created = f.calls('gh').find(c => c.args[1] === 'create').body;
+  assert.match(created, /<details><summary>执行记录<\/summary>[\s\S]*first change[\s\S]*second change/);
   f.run('github-checks');
   const session = f.state().executor.session;
   const delivery = (choice, note) => f.run('delivery', { DELIVERY_RESULT: JSON.stringify({ choice, note }) }).outputs;
@@ -293,10 +299,10 @@ test('归属需求跳过设备验收，待交付退回续作，更新同一 PR �
   f.review('revise', feedback); f.task('two', 'button fixed'); f.run('revise');
   assert.equal(f.state().executor.session, session);
   assert.ok(f.calls('agent').at(-1).prompt.includes(feedback));
-  f.review('accept'); assert.equal(f.run('accept').outputs.route, 'pr');
+  f.review('accept', '汇报'); assert.equal(f.run('accept').outputs.route, 'pr');
   const updated = f.run('pr').outputs;
   assert.equal(updated.url, pr.url); assert.notEqual(updated.head, pr.head);
-  assert.match(updated.summary, /button fixed/);
+  assert.match(f.calls('gh').find(c => c.args[1] === 'edit').body, /button fixed/);
   assert.equal(f.calls('gh').filter(c => c.args[1] === 'create').length, 1);
   assert.equal(f.calls('gh').filter(c => c.args[1] === 'edit').length, 1);
   f.run('github-checks');
@@ -304,10 +310,37 @@ test('归属需求跳过设备验收，待交付退回续作，更新同一 PR �
   assert.equal(f.run('merge').outputs.commit, 'f'.repeat(40));
 });
 
+test('PR 汇总按 .coda/areas.json 最长前缀归区域，未声明走顶层目录，改名按新路径，二进制只计文件', t => {
+  const f = fixture(t, false);
+  const write = (path, text) => { mkdirSync(join(f.work, path, '..'), { recursive: true }); writeFileSync(join(f.work, path), text); };
+  const lines = n => 'line\n'.repeat(n);
+  write('old/Big.swift', 'big\nbody\n'); f.git('add', '-A'); f.git('commit', '-qm', 'big'); f.git('push', '-q', 'origin', 'main');
+  f.run('lane');
+  f.git('switch', '-q', f.state().lane);
+  write('.coda/areas.json', '{ "iPhone 客户端": ["iOS/"], "共享": ["iOS/Shared/", "AGENTS.md"] }\n');
+  write('iOS/App.swift', lines(5)); write('iOS/Shared/Model.swift', lines(6)); write('AGENTS.md', lines(1));
+  write('Sources/Core.swift', lines(8)); write('notes.txt', lines(2)); write('img.png', Buffer.from([0, 1, 2, 0]));
+  f.git('mv', 'old/Big.swift', 'iOS/Big.swift'); f.git('rm', '-q', 'base');
+  const summary = () => {
+    f.git('add', '-A'); f.git('commit', '-qm', 'change'); f.git('push', '-q', 'origin', f.state().lane);
+    writeFileSync(join(f.root, 'artifacts', 'develop.json'), JSON.stringify({ ...f.state(), head: f.git('rev-parse', 'HEAD'), report: '汇报' }));
+    return f.run('pr').outputs.summary;
+  };
+  assert.equal(summary(), ['汇报', '', '改动：9 个文件 +23 -1',
+    '- Sources：1 个文件 +8 -0', '- 共享：2 个文件 +7 -0', '- iPhone 客户端：2 个文件 +5 -0', '- 根目录：3 个文件 +2 -1', '- .coda：1 个文件 +1 -0'].join('\n'));
+  f.git('rm', '-q', '.coda/areas.json');
+  assert.equal(summary(), ['汇报', '', '改动：8 个文件 +22 -1',
+    '- iOS：3 个文件 +11 -0', '- Sources：1 个文件 +8 -0', '- 根目录：4 个文件 +3 -1'].join('\n'));
+  write('.coda/areas.json', '{ "iOS": ');
+  f.git('add', '-A'); f.git('commit', '-qm', 'broken'); f.git('push', '-q', 'origin', f.state().lane);
+  writeFileSync(join(f.root, 'artifacts', 'develop.json'), JSON.stringify({ ...f.state(), head: f.git('rev-parse', 'HEAD') }));
+  assert.match(f.run('pr', {}, 1).stderr, /JSON/);
+});
+
 test('GitHub 检查等待全部完成，无检查通过，检查失败和查询错误保持失败并留下日志', t => {
   const f = fixture(t, false);
   f.run('lane'); f.task('code', 'implementation'); f.run('execute');
-  f.review('accept'); f.run('accept'); f.run('pr');
+  f.review('accept', '汇报'); f.run('accept'); f.run('pr');
   assert.match(f.run('github-checks').stdout, /checks passed/);
   const query = ['pr', 'view', f.state().pr, '--json', 'headRefOid,statusCheckRollup'];
   assert.deepEqual(f.calls('gh').at(-3).args, query);
@@ -470,10 +503,10 @@ test('审查前检查失败自动续作同一会话，连续三次升级，成�
   f.run('gate-passed', { RUNS: JSON.stringify(runs) });
   assert.equal(f.state().failures.length, 0);
   assert.match(f.run('review').outputs.checks, /test: succeeded coda:\/\/workflow-runs\/check-1/);
-  f.review('accept'); f.run('accept');
+  f.review('accept', '汇报'); f.run('accept');
   assert.equal(f.run('pr').outputs.checked, 'true');
   f.task('code', 'new change'); f.run('revise');
-  f.review('accept'); f.run('accept');
+  f.review('accept', '汇报'); f.run('accept');
   assert.equal(f.run('pr').outputs.checked, 'false', '新提交不能复用旧结果');
 });
 
@@ -553,7 +586,7 @@ test('gate 推送后才输出检查 head，重试更新同一分支，通过后�
     assert.equal(f.git('ls-remote', 'origin', ref).split('\t')[0], head);
     assert.equal(f.git('ls-remote', 'origin', f.state().lane).split('\t')[0], laneHead);
   }
-  f.review('accept'); f.run('accept');
+  f.review('accept', '汇报'); f.run('accept');
   assert.equal(f.git('ls-remote', 'origin', ref), '');
   assert.equal(f.git('ls-remote', 'origin', f.state().lane).split('\t')[0], f.state().executor.head);
 });
@@ -601,7 +634,7 @@ test('PR 实际输出经类型转换和网关求值：同提交复用，缺失�
   const head = f.run('gate').outputs.head;
   const ref = f.state().checkRef;
   f.run('gate-passed', { RUNS: '[]' });
-  f.review('accept'); f.run('accept');
+  f.review('accept', '汇报'); f.run('accept');
   assert.equal(f.git('ls-remote', 'origin', ref), '');
   assert.equal(next(f.run('pr').outputs), 'github-checks');
   const state = f.state(); delete state.checks;
@@ -610,12 +643,12 @@ test('PR 实际输出经类型转换和网关求值：同提交复用，缺失�
   assert.equal(f.run('gate').outputs.head, head);
   assert.equal(f.git('ls-remote', 'origin', ref).split('\t')[0], head);
   f.run('gate-passed', { RUNS: '[]' });
-  f.review('accept'); f.run('accept');
+  f.review('accept', '汇报'); f.run('accept');
   assert.equal(f.git('ls-remote', 'origin', ref), '');
   assert.equal(next(f.run('pr').outputs), 'github-checks');
   assert.equal(f.git('ls-remote', 'origin', f.state().lane).split('\t')[0], head);
   assert.equal(f.state().approved.length, 1);
   f.task('code', 'new change'); f.run('revise');
-  f.review('accept'); f.run('accept');
+  f.review('accept', '汇报'); f.run('accept');
   assert.equal(next(f.run('pr').outputs), 'gate', '新提交不能复用旧检查');
 });
