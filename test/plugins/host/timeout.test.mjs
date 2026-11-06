@@ -72,6 +72,21 @@ for (const present of [false, true]) {
   });
 }
 
+// A shell with job control puts its background job in a group of its own, as swift build does its compilers: TERM to the
+// command's group alone leaves it under launchd, holding the output pipe and the machine's memory.
+test('idle timeout also ends what the command started in a process group of its own', { timeout: 5000 }, async t => {
+  const f = fixture(t, false), escaped = join(f.root, 'escaped');
+  const result = await execute(t, process.execPath, [join(plugin, 'scripts/run-held.mjs')],
+    { ...f.env, SHELL: '/bin/bash', HELD_COMMAND: `set -m; sleep 60 & echo $! > ${JSON.stringify(escaped)}; wait` });
+  const pid = Number(readFileSync(escaped, 'utf8'));
+  t.after(() => { try { process.kill(pid, 'SIGKILL'); } catch {} });
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /无输出/);
+  // Gone once launchd has reaped it; the test's time limit stands for a process that is not.
+  const alive = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  while (alive()) await new Promise(resolve => setTimeout(resolve, 20));
+});
+
 for (const status of [0, 4]) test(`command exit ${status} does not probe SecurityAgent`, async t => {
   const f = fixture(t, true);
   await execute(t, process.execPath, [join(plugin, 'scripts/run-held.mjs')], { ...f.env, HELD_COMMAND: `exit ${status}` });
