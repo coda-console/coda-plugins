@@ -2,8 +2,9 @@
   "name": "@coda-console/host",
   "id": "host",
   "displayName": "宿主资源",
-  "description": "本机运行器：公布能力与名额，执行绑定给本机的请求；Xcode 构建、模拟器和项目命令共用本实例名额，保留 run-held 与 host-sim。",
-  "version": "1.2.6",
+  "description": "Xcode 构建与模拟器的排队名额",
+  "icon": { "symbol": "hammer.fill", "color": "gray" },
+  "version": "1.3.0",
   "categories": [
     "机器与资源"
   ],

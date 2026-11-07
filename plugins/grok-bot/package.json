@@ -2,8 +2,8 @@
   "name": "@coda-console/grok-bot",
   "id": "grok-bot",
   "displayName": "Grok Bot",
-  "description": "通过 Grok Bot 原生主会话接入 Coda，镜像回复与 Routine 运行记录。",
-  "version": "0.3.3",
+  "description": "把 Grok Bot 主会话接进 Coda",
+  "version": "0.4.0",
   "coda": {
     "channels": ["preview"]
   },
