@@ -279,10 +279,6 @@ export function catalogProblem(plugin, catalog, builtin, installed) {
     const owner = [...catalog.values()].find(p => p.id !== plugin.id && claims(p).includes(claim));
     if (owner) return `${claim} 已由插件 ${owner.displayName} 声明`;
   }
-  for (const definition of plugin.protocols ?? []) {
-    const owner = [...catalog.values()].find(p => p.id !== plugin.id && p.protocols?.some(other => other.name === definition.name));
-    if (owner) return `协议 ${definition.name} 已由插件 ${owner.displayName} 定义`;
-  }
   return null;
 }
 // What installing a plugin from a repository brings along, in the order installing does it (components/plugins/plugin-extensions.mjs

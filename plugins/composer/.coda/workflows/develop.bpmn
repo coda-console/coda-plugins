@@ -78,6 +78,10 @@ head：{{report.head}}
 选择「通过，再派一项」时备注必填，写自足的下一项任务；先合进泳道，再开新的执行会话。
 流程自己跑项目检查；执行者只需跑直接相关的快检查，不必用 run-held 跑整套编译。
 选择「通过，可以验收」时，归属需求则直接开 PR；独立交付开启设备验收则进入安装与验收，否则直接开 PR。同一 head 复用本次已通过的项目检查，PR 阶段另等 GitHub 检查。
+选择「通过，可以验收」时备注必填，写给用户的改动汇报，会原样放在批准卡和 PR 描述最上面。约 8 行以内，只写用户能感知的变化和动到的端，不放实现细节、测试数量、文件清单，不贴代码：
+做了什么
+- …（3～5 条）
+需要你知道：…（风险、没做的、顺带改的；没有写「无」）
 执行者已通过的 head 已在泳道上时 diff 为空；请结合反馈和本运行先前的通过记录审查。</documentation>
       <extensionElements>
         <coda:choice id="revise" name="退回修改" />
@@ -219,7 +223,6 @@ head：{{pr.head}}
 主 Agent：请按所属需求运行的安排处理。需求验收不过时选「退回修改」，备注必填，意见交回主 Agent 审查，再退给执行者；修好后重新审查、更新 PR、跑检查并回到待交付。
 按需求运行的顺序选择「放行合并」，随后执行合并前检查和 squash 合并，输出合并提交并结束，不部署。
 
-各次审查通过的改动：
 {{pr.summary}}</documentation>
       <extensionElements>
         <coda:choice id="revise" name="退回修改" />
@@ -241,14 +244,12 @@ head：{{pr.head}}
     </serviceTask>
     <sequenceFlow id="kinds-approve" sourceRef="kinds" targetRef="approve" />
     <userTask id="approve" name="批准合并" coda:noteLabel="备注（可选）" coda:assignee="user">
-      <documentation>PR：{{pr.url}}
-提交：{{pr.head}}
-{{if inputs.devices then "设备验收和项目检查已通过。" else "项目检查已通过。"}}批准后先在此提交上跑合并前检查，再 squash 合入目标分支；确认合并后按勾选依次部署、发布预览版、发布正式版，每类一次。
-勾选发布后，主 Agent 会准备发布说明；若你填写了备注，将直接用作发布说明。
-部署与发布选项仅项目有对应类别的流程时显示，勾选后调用该类全部流程；默认都不勾选。
+      <documentation>{{pr.summary}}
 
-各次审查通过的改动：
-{{pr.summary}}</documentation>
+{{if inputs.devices then "设备验收、" else ""}}项目检查、GitHub 检查已通过。
+PR：{{pr.url}}
+批准后先跑合并前检查再 squash 合并，随后按勾选依次部署、发布预览版、发布正式版，每类一次；选项只在项目有对应流程时出现，默认不勾。
+勾选发布时备注即发布说明，不填由主 Agent 写。</documentation>
       <extensionElements>
         <coda:choice id="merge" name="合并" primary="true"><coda:option id="deploy" name="部署" detail="调用项目里的部署流程" coda:shown="=kinds.deploy" />
           <coda:option id="preview" name="发布预览版" detail="调用项目里的预览发布流程" coda:shown="=kinds.preview" />

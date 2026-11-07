@@ -1,6 +1,6 @@
-// The「Claude」panel's login (`signIn`): `claude auth login --claudeai` of the CLI that comes with the plugin's own Claude
+// The「Claude」resource type's login (`signIn`): `claude auth login --claudeai` of the CLI that comes with the plugin's own Claude
 // SDK (the one its sessions run), never another on the PATH. Coda shows the authorization link this prints
-// and writes the code the page gave back to its input, once (docs/plugins.md「面板的登录」). Only the official link is
+// and writes the code the page gave back to its input, once (docs/plugins.md「资源的登录」). Only the official link is
 // passed on, and only a code bound to it is handed to the CLI, which does the exchange, keeps and renews the credentials.
 // What the CLI says otherwise is not passed on: it may carry the code. `--installed` says whether that CLI is there.
 import { spawn } from 'node:child_process';

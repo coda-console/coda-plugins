@@ -1,5 +1,5 @@
-// The panel's「使用完全重置」for a managed account: redeems exactly the credit its button named, once. Anything but a reset
-// is said in one line and fails the action, so the panel shows it.
+// The「使用完全重置」button of a managed account: redeems exactly the credit its button named, once. Anything but a reset
+// is said in one line and fails the action, so its row shows it.
 import { randomUUID } from 'node:crypto';
 import { withManagedAccount } from './manager.mjs';
 import { outcomes } from './quota.mjs';

@@ -44,7 +44,7 @@
 长批次在 `inputs` 显式给 `timeoutMinutes`，如 `{ "command": "bash scripts/ios-ui-test.sh", "cwd": "/path/to/project", "what": "模拟器", "timeoutMinutes": 120 }`。
 `timeoutMinutes=0`（默认）按种类取值；显式值须大于 0、最多 1440 分钟。用引擎的中断计时器取消整组进程，保留 5 分钟清理宽限，之后才释放名额。
 
-**无输出上限**：`idleMinutes` 默认 10 分钟，从命令启动起，stdout 或 stderr 每次有新输出就重新计时；连续到限无输出即失败，先向整组进程发送 TERM，最多留 5 分钟收尾。可在 `inputs` 设 `idleMinutes: 30` 调高，或 `idleMinutes: 0` 关闭（总时限仍生效）。失败结果与会话通知区分「执行超过总时限」「N 分钟无输出」「命令非零退出（退出码 N）」；输出 `failure_reason` 记录原因。run-held 因无输出或总时限失败、执行器超时时，若 macOS 上检测到 `SecurityAgent` 进程，失败原因会追加钥匙串授权框提示，见 [host-slots](skills/host-slots/SKILL.md#无人值守构建)。
+**无输出上限**：`idleMinutes` 默认 10 分钟，从命令启动起，stdout 或 stderr 每次有新输出就重新计时；连续到限无输出即失败，先向整组进程发送 TERM（连同命令另起进程组的子进程，如 `swift build` 的编译器），最多留 5 分钟收尾。可在 `inputs` 设 `idleMinutes: 30` 调高，或 `idleMinutes: 0` 关闭（总时限仍生效）。失败结果与会话通知区分「执行超过总时限」「N 分钟无输出」「命令非零退出（退出码 N）」；输出 `failure_reason` 记录原因。run-held 因无输出或总时限失败、执行器超时时，若 macOS 上检测到 `SecurityAgent` 进程，失败原因会追加钥匙串授权框提示，见 [host-slots](skills/host-slots/SKILL.md#无人值守构建)。
 
 **过程**（`.coda/capabilities/run-held.bpmn`）：
 1. 「等名额」：`hold-group` 为「占用名额」这一段排进 `host`，容量读设置 `host.capacity`；状态行写「排队等构建名额 · 排第 N 位」或「排队等模拟器名额 · 排第 N 位」，
@@ -73,8 +73,8 @@
 **会话之外**：终端里没有这个命令；从会话以外的地方调用插件的 `host-sim` 不排队，也不执行，提示只能在 Coda 的会话或流程步骤里用；
 没有占着组的流程步骤里调用同样拒绝，提示写 `coda:group="host"`。
 
-**面板**「构建与模拟器名额」（`slots`）：从 `CODA_GROUPS_STATE` 读组 `host`，一条进度条画空闲名额（空几个、共几个，说明行写几个在排队），
-下面每个占着的写运行标题、所属会话和占了多久（借用中、正在收尾、占满另外注明），每个排着的写排第几、等了多久。打开或刷新资源页时读，不在后台采集。
+**资源**「构建名额」（类型 `slots`）：从 `CODA_GROUPS_STATE` 读组 `host`，一行：读数「空闲」画空闲名额（空几个、共几个），
+接着每个占着的写运行标题、所属会话和占了多久（借用中、正在收尾、占满另外注明），每个排着的写排第几、等了多久，合计至多 8 个读数。打开或刷新资源页时读，不在后台采集。
 容量在「设置 › 插件」里改。
 
 **设置**：`host.capacity`「名额数」，1–8，默认 1；`host.cleanSchedule`「清点模拟器的周期」，ISO 8601 重复间隔，默认 `R/P1D`（每天一次）。

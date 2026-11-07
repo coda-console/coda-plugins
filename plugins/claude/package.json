@@ -2,8 +2,8 @@
   "name": "@coda-console/claude",
   "id": "claude",
   "displayName": "Claude",
-  "description": "Claude SDK Agent：Coda 基于 Claude Agent SDK 写的 ACP 入口，一个进程一个 SDK 会话；资源页的「Claude」面板显示会话报告的额度，可从 Coda 登录。",
-  "version": "1.7.9",
+  "description": "用 Claude Agent SDK 跑会话",
+  "version": "1.10.0",
   "categories": [
     "Agent"
   ],
@@ -22,7 +22,8 @@
         "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/agent/entry.mjs\"",
         "modes": {
           "title": "审批模式",
-          "unset": "人工审批",
+          "unset": "Agent 默认",
+          "note": "未选择时从人工审批开始；Claude 自己切换的模式保持不变。",
           "auto": "auto",
           "full": "bypassPermissions"
         },
@@ -60,11 +61,11 @@
         }
       }
     },
-    "panels": [
+    "resources": [
       {
         "id": "limits",
         "title": "Claude",
-        "command": "node \"$CODA_PLUGIN_PATH/scripts/panel.mjs\"",
+        "command": "node \"$CODA_PLUGIN_PATH/scripts/resources.mjs\"",
         "signIn": {
           "command": "exec node \"$CODA_PLUGIN_PATH/scripts/login.mjs\"",
           "installed": "node \"$CODA_PLUGIN_PATH/scripts/login.mjs\" --installed",

@@ -51,7 +51,7 @@ function stored(at) {
   } catch (error) { if (error.code === 'ENOENT') return null; throw new Error('读不了插件保存的账号列表'); }
 }
 // Import the existing Codex login once, as an ordinary managed account. A store, even an empty one, records that this
-// has happened: removing the imported account must not make it reappear on the next panel read.
+// has happened: removing the imported account must not make it reappear on the next reading.
 export async function list(at = paths(), { recoverImport = false } = {}) {
   const known = stored(at);
   if (known !== null) return known;

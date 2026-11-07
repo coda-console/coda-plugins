@@ -1,0 +1,22 @@
+{
+  "name": "uptime",
+  "displayName": "运行时间（模板）",
+  "description": "最小的资源插件模板",
+  "version": "1.0.0",
+  "contributes": {
+    "resources": [
+      {
+        "id": "uptime",
+        "title": "运行时间",
+        "command": "node \"$CODA_PLUGIN_PATH/scripts/resources.mjs\"",
+        "maxAge": "PT1M",
+        "actions": {
+          "mark": {
+            "command": "node \"$CODA_PLUGIN_PATH/scripts/mark.mjs\"",
+            "confirm": "记下此刻？\n之后显示距这次记下过了多久。"
+          }
+        }
+      }
+    ]
+  }
+}

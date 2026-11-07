@@ -2,17 +2,18 @@
   "name": "@coda-console/host",
   "id": "host",
   "displayName": "宿主资源",
-  "description": "本机运行器：把本机的执行环境发布为 coda/executor@1，执行 execute 调用并写出 coda/run@1 运行；Xcode 构建、模拟器和项目命令共用本实例名额，保留 run-held 与 host-sim。",
+  "description": "本机运行器与 Xcode、模拟器的排队名额",
+  "icon": { "symbol": "hammer.fill", "color": "gray" },
   "version": "2.0.0",
   "categories": [
     "机器与资源"
   ],
   "contributes": {
-    "panels": [
+    "resources": [
       {
         "id": "slots",
-        "title": "构建与模拟器名额",
-        "command": "node \"$CODA_PLUGIN_PATH/scripts/panel.mjs\""
+        "title": "构建名额",
+        "command": "node \"$CODA_PLUGIN_PATH/scripts/resources.mjs\""
       }
     ],
     "capabilities": [

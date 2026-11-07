@@ -10,6 +10,7 @@ import { isAbsolute, join } from 'node:path';
 import { constants } from 'node:os';
 import { promisify } from 'node:util';
 import { keychainPromptSuffix } from '../lib/keychain-prompt.mjs';
+import { processTree, signalTree } from '../lib/process-tree.mjs';
 const exec = promisify(execFile);
 
 const { HELD_COMMAND: command, HELD_CWD: cwd, HELD_WHAT: what } = process.env;
@@ -36,11 +37,13 @@ if (!isAbsolute(cwd ?? '') || !existsSync(cwd) || !statSync(cwd).isDirectory()) 
     if (idleMinutes > 0 && !idleFailure && !ending) idleTimer = setTimeout(() => {
       if (ending) return;
       idleFailure = `${idleMinutes} 分钟无输出${keychainPromptSuffix()}`;
-      // The wrapper is exec'd as the step's process-group leader. Stop the entire command tree,
-      // retaining the same five-minute cleanup grace as the workflow's cancelTimeout.
-      killTimer = setTimeout(() => process.kill(-process.pid, 'SIGKILL'), 5 * 60_000);
-      killTimer.unref();
-      process.kill(-process.pid, 'SIGTERM');
+      // The wrapper is exec'd as the step's process-group leader. Stop the entire command tree, with what it started in
+      // groups of its own (lib/process-tree.mjs), retaining the same five-minute cleanup grace as the workflow's cancelTimeout.
+      void processTree([process.pid]).then(tree => {
+        killTimer = setTimeout(() => void signalTree([process.pid], tree, 'SIGKILL'), 5 * 60_000);
+        killTimer.unref();
+        return signalTree([process.pid], tree, 'SIGTERM');
+      });
     }, idleMinutes * 60_000);
   };
   for (const [stream, destination] of [[child.stdout, process.stdout], [child.stderr, process.stderr]]) {

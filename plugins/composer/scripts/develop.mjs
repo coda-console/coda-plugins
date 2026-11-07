@@ -34,6 +34,29 @@ const cleanup = () => {
 };
 const body = () => state.approved.map((item, index) => `## 第 ${index + 1} 项\n\n<details><summary>任务</summary>\n\n${item.task}\n\n</details>\n\n${item.answer}\n\n提交：${item.head}`).join('\n\n');
 
+// 与 PR 的 Files changed 一致：目标分支最新提交到 head 的三点 diff，按 .coda/areas.json 的最长前缀归区域。
+const changes = () => {
+  git('fetch', 'origin', state.lane);
+  git('fetch', 'origin', state.base);
+  const declared = git('ls-tree', '--name-only', state.head, '.coda/areas.json') ? JSON.parse(git('show', `${state.head}:.coda/areas.json`)) : {};
+  const prefixes = Object.entries(declared).flatMap(([area, list]) => list.map(prefix => [prefix, area])).sort((a, b) => b[0].length - a[0].length);
+  const fields = git('diff', '--numstat', '-z', '-M', `FETCH_HEAD...${state.head}`).split('\0');
+  const areas = {}, total = { files: 0, added: 0, deleted: 0 };
+  for (let i = 0; i < fields.length - 1; i++) {
+    const [added, deleted, name] = fields[i].split('\t');
+    // 改名时 -z 输出旧路径和新路径两个字段，按新路径归类。
+    const file = name || fields[i += 2];
+    const area = prefixes.find(([prefix]) => file.startsWith(prefix))?.[1] ?? (file.includes('/') ? file.split('/')[0] : '根目录');
+    for (const group of [areas[area] ??= { files: 0, added: 0, deleted: 0 }, total]) {
+      group.files++;
+      group.added += added === '-' ? 0 : Number(added);
+      group.deleted += deleted === '-' ? 0 : Number(deleted);
+    }
+  }
+  const line = ({ files, added, deleted }) => `${files} 个文件 +${added} -${deleted}`;
+  return [`改动：${line(total)}`, ...Object.entries(areas).sort(([, a], [, b]) => b.added + b.deleted - a.added - a.deleted).map(([area, group]) => `- ${area}：${line(group)}`)].join('\n');
+};
+
 switch (action) {
   case 'execute':
   case 'revise': {
@@ -79,11 +102,12 @@ switch (action) {
     break;
   case 'decide': {
     const { choice, note = '' } = JSON.parse(env.REVIEW);
-    const missing = ['revise', 'next'].includes(choice) && !note.trim();
-    if (missing) state.feedback = choice === 'revise' ? '退回修改必须在备注中写具体意见。' : '通过，再派一项必须在备注中写下一项任务。';
+    const missing = !note.trim();
+    if (missing) state.feedback = { revise: '退回修改必须在备注中写具体意见。', next: '通过，再派一项必须在备注中写下一项任务。', accept: '通过，可以验收必须在备注中写给用户的改动汇报。' }[choice];
     else {
       state.choice = choice;
       state.feedback = note;
+      if (choice === 'accept') state.report = note;
     }
     save();
     output('route', missing ? 'review' : choice === 'revise' ? 'revise' : 'accept');
@@ -142,7 +166,8 @@ switch (action) {
   }
   case 'pr': {
     const path = join(env.RUNNER_TEMP, 'pr.md');
-    writeFileSync(path, body());
+    const summary = `${state.report}\n\n${changes()}`;
+    writeFileSync(path, `${summary}\n\n<details><summary>执行记录</summary>\n\n${body()}\n\n</details>`);
     if (state.pr) gh('pr', 'edit', state.pr, '--body-file', path);
     else state.pr = gh('pr', 'create', '--base', state.base, '--head', state.lane, '--title', state.title, '--body-file', path);
     state.phase = 'check';
@@ -150,7 +175,7 @@ switch (action) {
     output('checked', String(state.checks?.head === state.head));
     output('url', state.pr);
     output('head', state.head);
-    output('summary', body());
+    output('summary', summary);
     break;
   }
   case 'github-checks': {

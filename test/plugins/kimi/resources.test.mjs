@@ -7,8 +7,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, rm, access, mkdir, utimes } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
-import { panelTypes } from '../../../check/panel.mjs';
-import { account, card, windows } from '../../../plugins/kimi/scripts/quota.mjs';
+import { readResources } from '../../../check/panel.mjs';
+import { account, resource, windows } from '../../../plugins/kimi/scripts/quota.mjs';
 import { KimiUnavailable, kimiWeb } from '../../../plugins/kimi/scripts/web.mjs';
 import { declaredPanel, installed, pluginEnv, run, signIn } from '../command.mjs';
 
@@ -57,10 +57,10 @@ async function machine(t, mode, { signedIn = true } = {}) {
 test('the quota is what the plan has left, booster balance included; who is signed in is a nickname and level, never a phone or email', () => {
   assert.deepEqual(windows({ kind: 'ok', quota: { usages: { limit5h: { usedRatio: 0.32, resetAt: '2026-09-27T04:21:05Z' }, limit7d: { usedRatio: 0.162 },
     monthTotal: { usedRatio: 1.4, resetAt: 'soon' }, monthCode: { usedRatio: 0.2 } }, extraUsage: { totalCents: 2500, balanceCents: 400 } } }), [
-    { type: 'meter', label: '5 小时', value: '剩余 68%', fraction: 0.68, time: '2026-09-27T04:21:05.000Z', timeLabel: '重置' },
-    { type: 'meter', label: '7 天', value: '剩余 84%', fraction: 0.84 },
-    { type: 'meter', label: '月度', value: '剩余 0%', fraction: 0 },
-    { type: 'meter', label: 'Extra Usage 余额', value: '剩余 16%', fraction: 0.16 },
+    { label: '5 小时', value: '剩余 68%', fraction: 0.68, time: '2026-09-27T04:21:05.000Z' },
+    { label: '7 天', value: '剩余 84%', fraction: 0.84 },
+    { label: '月度', value: '剩余 0%', fraction: 0 },
+    { label: 'Extra Usage 余额', value: '剩余 16%', fraction: 0.16 },
   ]);
   assert.deepEqual(windows({ kind: 'ok', quota: { usages: { limit5h: { usedRatio: '0.3' }, limit7d: { usedRatio: -1 }, monthTotal: {} }, extraUsage: { totalCents: 'x', balanceCents: 5 } } }), []);
   assert.equal(windows({ kind: 'error' }), null);
@@ -69,9 +69,9 @@ test('the quota is what the plan has left, booster balance included; who is sign
   assert.deepEqual(account({ kind: 'ok', userInfo: { userId: 42, nickname: 'a', userLevelName: 'b' } }), { name: 'a', plan: 'b', id: '42' });
   assert.equal(account({ kind: 'error', status: 401 }), null, 'Kimi refuses the login');
   assert.throws(() => account({ kind: 'error', message: 'timed out' }), /没有说明/, 'a passing fault is not a sign-out');
-  const shown = card({ name: '', plan: '' }, { error: 'Kimi 本地服务返回 500' });
-  assert.deepEqual(shown, { type: 'card', title: 'Kimi', items: [{ type: 'error', text: '暂时无法获取额度：Kimi 本地服务返回 500' }] });
-  assert.deepEqual(panelTypes(JSON.stringify({ items: [shown] }), declared), ['card', 'error'], 'a reading Coda takes');
+  const shown = resource({ name: '', plan: '' }, { error: 'Kimi 本地服务返回 500' });
+  assert.deepEqual(shown, { name: 'Kimi', values: [], error: '暂时无法获取额度：Kimi 本地服务返回 500' });
+  assert.deepEqual(readResources(JSON.stringify({ resources: [shown] }), declared), [{ ...shown, actions: [] }], 'a reading Coda takes');
 });
 
 test('the CLI\'s local server is started privately, asked each path with its token, and ended with its directory', async t => {
@@ -93,21 +93,21 @@ test('the CLI\'s local server is started privately, asked each path with its tok
   await assert.rejects(kimiWeb(['/x'], { binary: '/does/not/exist/kimi' }), /没能启动/);
 });
 
-test('the panel shows the login and its quota, asks who it is once per state of the login, and shows nothing without one', async t => {
+test('the type shows the login and its quota, asks who it is once per state of the login, and shows nothing without one', async t => {
   const m = await machine(t, 'ok', { signedIn: false }), state = join(m.home, 'state');
   await mkdir(state);
   const read = async () => {
     const result = await run(declared.command, pluginEnv('kimi', { HOME: m.home, KIMI_CODE_HOME: '', CODA_PLUGIN_STATE: state }));
     assert.equal(result.code, 0, result.stderr);
-    panelTypes(result.stdout, declared);
-    return JSON.parse(result.stdout).items;
+    readResources(result.stdout, declared);
+    return JSON.parse(result.stdout).resources;
   };
   assert.deepEqual(await read(), [], 'no login here: offered under「添加资源」');
   const file = join(m.kimiHome, 'credentials/kimi-code.json');
   await mkdir(dirname(file)); await writeFile(file, '{}');
-  assert.deepEqual(await read(), [{ type: 'card', title: '登月者0448', subtitle: 'Allegretto', identity: 'kimi:u1', items: [
-    { type: 'meter', label: '5 小时', value: '剩余 75%', fraction: 0.75, time: '2026-10-13T05:00:00.000Z', timeLabel: '重置' },
-    { type: 'meter', label: 'Extra Usage 余额', value: '剩余 16%', fraction: 0.16 }] }]);
+  assert.deepEqual(await read(), [{ name: '登月者0448', identity: 'kimi:u1', values: [
+    { label: '5 小时', value: '剩余 75%', fraction: 0.75, time: '2026-10-13T05:00:00.000Z' },
+    { label: 'Extra Usage 余额', value: '剩余 16%', fraction: 0.16 }] }]);
   await read();
   assert.equal((await m.requests()).filter(r => r.url === '/api/v1/oauth/userinfo').length, 1, 'not asked again while the login stays as it was');
   const touch = async offset => utimes(file, new Date(), new Date(Date.now() + offset));
@@ -115,10 +115,10 @@ test('the panel shows the login and its quota, asks who it is once per state of 
   // whoever it is now. A login it refuses shows nothing.
   await m.setMode('nameless'); await touch(5000);
   const nameless = (await read())[0];
-  assert.equal(nameless.title, '登月者0448');
+  assert.equal(nameless.name, '登月者0448');
   assert.equal(nameless.identity, undefined);
   await m.setMode('expired'); await touch(10000);
-  assert.deepEqual((await read())[0].items, [{ type: 'error', text: '暂时无法获取额度：Kimi 没有给出额度' }]);
+  assert.deepEqual([(await read())[0].values, (await read())[0].error], [[], '暂时无法获取额度：Kimi 没有给出额度']);
   await m.setMode('signed-out'); await touch(15000);
   assert.deepEqual(await read(), []);
   assert.ok(!JSON.stringify(await m.requests()).includes('SECRET@'), 'nothing of the account but what is shown');

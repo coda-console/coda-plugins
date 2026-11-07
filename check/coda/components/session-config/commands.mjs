@@ -60,12 +60,12 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export function firstMessage(value) {
   object(value, '首次发送');
   keys(value, ['requestId', 'projectId', 'title', 'agent', 'checkout', 'settings', 'text', 'attachments', 'quotes', 'handoffSource', 'parentThreadId',
-    'replyTo', 'threadId', 'modes', 'initiatedBy']);
+    'replyTo', 'threadId', 'extensionParent', 'modes', 'initiatedBy']);
   const initiatedBy = value.initiatedBy === undefined ? {} : (() => {
     const source = object(value.initiatedBy, '发起会话');
     keys(source, ['threadId', 'title']);
     check(UUID.test(source.threadId ?? ''), 'invalid_input', '发起会话标识须为 UUID');
-    check(!value.parentThreadId && !value.handoffSource, 'invalid_input', '发起的会话须为独立会话');
+    check(!value.parentThreadId && !value.extensionParent && !value.handoffSource, 'invalid_input', '发起的会话须为独立会话');
     return { initiatedBy: { threadId: source.threadId, title: text(source.title, '发起会话标题') } };
   })();
   const handoff = value.handoffSource === undefined ? {} : { handoffSource: text(value.handoffSource, '交接来源', 100) };
@@ -78,9 +78,21 @@ export function firstMessage(value) {
   const reply = value.replyTo === 'sender' ? { replyTo: 'sender' } : {};
   // Which agents may run is the store's to say (its plugin installed); here only that it names one.
   check(typeof value.agent === 'string' && AGENT_ID.test(value.agent), 'invalid_input', 'Agent 不可用');
-  // A session an agent started of its own (initiatedBy) names its own ID, so that a retry finds it; the child the user
-  // starts from the interface is under its parent, in a checkout it names.
-  check(value.threadId === undefined || value.initiatedBy !== undefined,
+  // A session an extension starts for a parent session this kernel does not keep (docs/subagent-design.md「扩展作为调用方」):
+  // the extension names it, so that a retry finds it and the parent knows it before the answer comes, and says who calls
+  // it — `caller`, which every later call of that parent's must name again, `threadId` and `title` of the parent, and
+  // `location`, where the parent is, in words — all as the extension knows them. Only an extension may say so
+  // (transport/http.mjs); the child works in a worktree of its own, and is nobody's child here.
+  const outside = value.extensionParent === undefined ? {} : (() => {
+    const p = object(value.extensionParent, '父会话');
+    keys(p, ['caller', 'threadId', 'title', 'location']);
+    check(UUID.test(value.threadId ?? ''), 'invalid_input', '扩展发起的子会话须带会话标识（UUID）');
+    check(value.parentThreadId === undefined && value.handoffSource === undefined && value.checkout?.kind === 'worktree', 'invalid_input',
+      '扩展发起的子会话只在新工作树里开始');
+    return { threadId: value.threadId, extensionParent: { caller: text(p.caller, '调用方', 200), threadId: text(p.threadId, '父会话', 100),
+      title: typeof p.title === 'string' ? p.title.slice(0, 200) : '', ...(typeof p.location === 'string' && p.location ? { location: p.location.slice(0, 200) } : {}) } };
+  })();
+  check(value.threadId === undefined || value.extensionParent !== undefined || value.initiatedBy !== undefined,
     'invalid_input', '只有 Agent 发起的会话可以指定会话标识');
   if (value.threadId !== undefined) check(UUID.test(value.threadId), 'invalid_input', '会话标识须为 UUID');
   const checkout = object(value.checkout, '工作位置');
@@ -99,6 +111,7 @@ export function firstMessage(value) {
     ...initiatedBy,
     ...parent,
     ...reply,
+    ...outside,
     ...(value.threadId === undefined ? {} : { threadId: value.threadId }),
     requestId: text(value.requestId, '请求标识', 100),
     projectId: text(value.projectId, '目录标识', 100),

@@ -2,8 +2,8 @@
   "name": "@coda-console/codex",
   "id": "codex",
   "displayName": "Codex",
-  "description": "Codex Agent：Coda 自带的入口运行 codex-acp，报告子 Agent、后台命令与命令的自动审核。额度与登录由账号来源插件接管；未接入账号来源时使用 Codex 自己的登录面板。",
-  "version": "1.9.0",
+  "description": "用 OpenAI Codex 跑会话",
+  "version": "1.11.0",
   "categories": [
     "Agent"
   ],
@@ -28,7 +28,8 @@
         "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/agent/entry.mjs\"",
         "modes": {
           "title": "审批模式",
-          "unset": "完全访问",
+          "unset": "Agent 默认",
+          "note": "未选择时为完全访问。",
           "auto": "agent",
           "full": "agent-full-access"
         },
@@ -58,11 +59,11 @@
         }
       }
     },
-    "panels": [
+    "resources": [
       {
         "id": "login",
         "title": "Codex",
-        "command": "node \"$CODA_PLUGIN_PATH/scripts/panel.mjs\"",
+        "command": "node \"$CODA_PLUGIN_PATH/scripts/resources.mjs\"",
         "maxAge": "PT0S",
         "actions": {
           "reset": {
@@ -78,7 +79,7 @@
     ],
     "extensionPoints": {
       "account-source": {
-        "description": "Codex 的账号与登录入口：来源给出当前账号和令牌，响应 --login，并提供账号与额度面板；接入后 Codex 自带的额度面板隐藏。"
+        "description": "Codex 的账号与登录入口：来源给出当前账号和令牌，响应 --login，并提供账号与额度资源；接入后 Codex 自带的那一行不再显示。"
       }
     }
   },

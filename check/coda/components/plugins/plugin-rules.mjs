@@ -16,10 +16,9 @@ import { settings as agentSettings } from '../session-config/commands.mjs';
 import { requireCondition as check, ContractError } from '../../domain/errors.mjs';
 import { isDuration } from '../../domain/duration.mjs';
 import { AGENT_ID } from '../../domain/values.mjs';
-import { agentDeclarations } from './agent-plugins.mjs';
+import { agentDeclarations, iconFiles } from './agent-plugins.mjs';
 import { checkCatalog, extensionsFor } from './plugin-extensions.mjs';
 import { manifestProblem, TYPES } from '@coda-console/protocol/validate';
-import { ownedProtocolsProblem } from '@coda-console/protocol/protocol';
 import { claims, COMMIT, INTEGRITY, NPM_VERSION, npmPluginId, repoAddress, sourcePath } from './plugin-source-rules.mjs';
 import { readSkillDocument } from './skill-document.mjs';
 import { executorLabels } from '../workflows/executor-labels.mjs';
@@ -96,6 +95,18 @@ function parametersOf(value, where) {
   }));
   return { properties, ...(value.required?.length ? { required: [...value.required] } : {}) };
 }
+// Its icon (docs/plugins.md「插件页」): a symbol on a system colour as written, or its PDFs read as an agent's are; one that
+// draws none and brings one agent is drawn as that agent. Nothing else: the clients draw its category's.
+export function pluginIcon(declared, agents, dir) {
+  if (declared?.symbol) return { symbol: declared.symbol, color: declared.color };
+  if (declared) return iconFiles(dir, declared);
+  return agents.length === 1 ? agents[0].icon : null;
+}
+// The README a plugin's page shows (docs/plugins.md「插件页」), as npm and GitHub find it in its directory; null without one.
+const README = /^readme(\.md|\.markdown)?$/i;
+export function readmeFile(dir) {
+  try { const name = readdirSync(dir).filter(name => README.test(name)).sort()[0]; return name ? join(dir, name) : null; } catch { return null; }
+}
 // The category it is listed under (docs/plugins.md「商店」): the first of its manifest's `categories`, as VS Code's are
 // written; empty when it names none.
 export const manifestCategory = manifest => Array.isArray(manifest?.categories) && typeof manifest.categories[0] === 'string' ? manifest.categories[0].trim().slice(0, 32) : '';
@@ -114,8 +125,6 @@ export function readPlugin(dir, source) {
   if (!named && source?.package && typeof manifest.name === 'string') try { id = npmPluginId(manifest.name); } catch {}
   check(typeof id === 'string' && ID.test(id), 'invalid_plugin', `package.json 的 ${named ? 'id' : 'name'} 只能用小写字母、数字和「-」`);
   const contributes = manifest.contributes ?? {}, configuration = contributes.configuration ?? {};
-  const protocolsProblem = ownedProtocolsProblem({ id, contributes: { protocols: contributes.protocols } });
-  check(!protocolsProblem, 'invalid_plugin', protocolsProblem);
   const properties = Object.fromEntries(Object.entries(configuration.properties ?? {}).map(([key, value]) => {
     check(key.split('.')[0] === id, 'invalid_plugin', `设置名须以「${id}.」开头：${key}`);
     return [key, setting(value, key)];
@@ -125,8 +134,10 @@ export function readPlugin(dir, source) {
   const displayName = typeof manifest.displayName === 'string' ? manifest.displayName : id;
   // What it writes under keys of `contributes` that are none of Coda's: for the points other plugins declare (checkCatalog).
   const offers = Object.fromEntries(Object.entries(contributes).filter(([key]) => !TYPES.includes(key)));
+  const agents = agentDeclarations(contributes.agents, dir), icon = pluginIcon(manifest.icon, agents, dir);
   return { id, displayName, description: typeof manifest.description === 'string' ? manifest.description : '', version: String(manifest.version ?? ''),
-    category: manifestCategory(manifest), source, dir, title: typeof configuration.title === 'string' ? configuration.title : displayName, properties,
+    category: manifestCategory(manifest), ...(icon ? { icon } : {}), ...(readmeFile(dir) ? { readme: true } : {}),
+    source, dir, title: typeof configuration.title === 'string' ? configuration.title : displayName, properties,
     ...(manifest.coda !== undefined ? { coda: manifest.coda } : {}),
     ...(manifest.main ? { main: posix.normalize(manifest.main) } : {}), ...(activation.includes('onStartupFinished') ? { startup: true } : {}),
     ...(required.length ? { required: [...required] } : {}), workflows: files('.coda/workflows'),
@@ -139,12 +150,10 @@ export function readPlugin(dir, source) {
     // The entry as one path in its directory (`./view/a.html`, `view//a.html` are `view/a.html`): the clients load it by that.
     views: (contributes.views ?? []).map(v => ({ id: v.id, title: v.title, entry: posix.normalize(v.entry), ...(v.in?.length ? { in: [...v.in] } : {}),
       ...(v.icon ? { icon: v.icon } : {}), ...(v.handles?.length ? { handles: [...v.handles] } : {}), ...(v.readout ? { readout: v.readout } : {}),
-      ...(v.checkout ? { checkout: v.checkout } : {}) })),
+      ...(v.checkout ? { checkout: v.checkout } : {}), ...(v.frame ? { frame: v.frame } : {}) })),
     ...(contributes.composerModes?.length ? { composerModes: composerModes(contributes.composerModes) } : {}),
-    ...(contributes.protocols?.length ? { protocols: structuredClone(contributes.protocols) } : {}),
-    ...(contributes.protocolImplementations?.length ? { protocolImplementations: [...contributes.protocolImplementations] } : {}),
     ...(Object.keys(offers).length ? { offers } : {}),
-    agents: agentDeclarations(contributes.agents, dir),
+    agents,
     dependencies: [...dependencies], extensionPoints: extensionPoints(contributes.extensionPoints, dir),
     extensions: Object.entries(contributes.extensions ?? {}).map(([key, value]) => { const [plugin, point] = key.split('/'); return { plugin, point, command: value.command }; }),
     ...(contributes.instructions ? { instructions: contributes.instructions.trim() } : {}), ...(contributes.setup ? { setup: { command: contributes.setup.command } } : {}),

@@ -2,7 +2,6 @@
 import { requireCondition as check } from '../../domain/errors.mjs';
 
 export const creationProperties = {
-  provider: { type: 'string' },
   createdAt: { type: 'string' },
   creationSequence: { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
 };

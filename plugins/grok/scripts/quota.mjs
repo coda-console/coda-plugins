@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-// What the「Grok」panel shows (docs/plugins.md「内置插件：Grok」): who is signed in and the plan's coding credits, as the
+// What the「Grok」resource type shows (docs/plugins.md「内置插件：Grok」): who is signed in and the plan's coding credits, as the
 // CLI itself answers them (`_x.ai/auth/check_subscription`, `_x.ai/auth/info`, `_x.ai/billing`: what its `/usage` reads).
 const line = (value, max = 80) => typeof value === 'string' ? [...value.replace(/\s+/g, ' ').trim()].slice(0, max).join('') : '';
 const instant = value => typeof value === 'string' && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null;
@@ -25,22 +25,22 @@ export function windows(document) {
   const used = typeof config.creditUsagePercent === 'number' && Number.isFinite(config.creditUsagePercent) ? Math.min(100, Math.max(0, config.creditUsagePercent))
     : limit > 0 ? Math.min(100, cents(config.used) / limit * 100) : 0;
   const type = config.currentPeriod?.type, left = Math.round(100 - used), resets = instant(config.currentPeriod?.end ?? config.billingPeriodEnd);
-  const meters = [{ type: 'meter', label: type === 'USAGE_PERIOD_TYPE_WEEKLY' ? '7 天' : type === 'USAGE_PERIOD_TYPE_MONTHLY' ? '月度' : '额度',
-    value: `剩余 ${left}%`, fraction: left / 100, ...(resets ? { time: resets, timeLabel: '重置' } : {}) }];
+  const meters = [{ label: type === 'USAGE_PERIOD_TYPE_WEEKLY' ? '7 天' : type === 'USAGE_PERIOD_TYPE_MONTHLY' ? '月度' : '额度',
+    value: `剩余 ${left}%`, fraction: left / 100, ...(resets ? { time: resets } : {}) }];
   // A zero amount still arrives as `{}`; the older shape leaves on-demand spending out, and it is what went past the allowance.
   const cap = cents(config.onDemandCap);
   const onDemand = config.onDemandUsed != null ? cents(config.onDemandUsed) : Math.max(0, cents(config.used) - limit);
   if (cap > 0) {
     const share = Math.round(Math.max(0, cap - onDemand) / cap * 100);
-    meters.push({ type: 'meter', label: '按需用量', value: `剩余 ${share}%`, fraction: share / 100 });
+    meters.push({ label: '按需用量', value: `剩余 ${share}%`, fraction: share / 100 });
   }
   return meters;
 }
-// The panel from what the CLI answered; nothing when no one is signed in.
-export function panel([subscription, info, billing]) {
+// The resources from what the CLI answered: the login, its name and its credits; none when no one is signed in.
+export function resources([subscription, info, billing]) {
   const who = account(subscription, info);
-  if (!who) return { items: [] };
-  const meters = windows(billing);
-  return { items: [{ type: 'card', title: who.name || 'Grok', ...(who.plan ? { subtitle: who.plan } : {}), ...(who.id ? { identity: `grok:${who.id}` } : {}),
-    items: meters.length ? meters : [{ type: 'error', text: '暂时无法获取额度：Grok 没有给出额度' }] }] };
+  if (!who) return { resources: [] };
+  const values = windows(billing);
+  return { resources: [{ name: who.name || 'Grok', ...(who.id ? { identity: `grok:${who.id}` } : {}), values,
+    ...(values.length ? {} : { error: '暂时无法获取额度：Grok 没有给出额度' }) }] };
 }

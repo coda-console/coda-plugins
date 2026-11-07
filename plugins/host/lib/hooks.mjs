@@ -3,6 +3,7 @@ import { closeSync, openSync } from 'node:fs';
 import { appendFile, mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { processTree, signalTree } from './process-tree.mjs';
 
 const entry = fileURLToPath(new URL('../scripts/executor-hook.mjs', import.meta.url));
 const kill = (pid, signal) => { try { process.kill(-pid, signal); } catch (error) { if (error.code !== 'ESRCH') throw error; } };
@@ -17,11 +18,13 @@ export async function callHook({ command, args, state = null, directory, env, si
   let child;
   try { child = spawn(process.execPath, [entry], { cwd: directory, env, detached: true, stdio: ['pipe', output, output] }); }
   finally { closeSync(output); }
-  let timer, aborted = false;
+  let timer, aborted = false, listed = null;
+  // What the hook started in groups of its own goes with its group (lib/process-tree.mjs): listed before the first signal.
   const stop = () => {
     aborted = true;
-    if (child.pid) kill(child.pid, 'SIGTERM');
-    timer ??= setTimeout(() => { if (child.pid) kill(child.pid, 'SIGKILL'); }, grace);
+    if (!child.pid || listed) return;
+    listed = processTree([child.pid]).then(async tree => { await signalTree([child.pid], tree, 'SIGTERM'); return tree; });
+    timer ??= setTimeout(() => { void listed.then(tree => signalTree([child.pid], tree, 'SIGKILL')); }, grace);
   };
   const ended = new Promise((resolve, reject) => {
     child.once('error', reject);
@@ -41,6 +44,7 @@ export async function callHook({ command, args, state = null, directory, env, si
     clearTimeout(timer); signal?.removeEventListener('abort', stop);
     // No surviving background commands may retain the slot after the hook returns.
     if (child.pid) kill(child.pid, 'SIGKILL');
+    if (listed) await signalTree([], await listed, 'SIGKILL');
   }
   let answer = null;
   try { answer = JSON.parse(await readFile(responseFile, 'utf8')); } catch (error) { if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error; }

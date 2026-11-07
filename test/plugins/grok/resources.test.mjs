@@ -1,21 +1,21 @@
 // From Coda's backend/test/grok.test.mjs at 9ffb9911, as plain node:test: its login and install through Coda's panels
 // driven here as Coda drives the panel's `signIn` commands. How Coda reads the device code, and fails a refused login with
 // its last line, stays in Coda.
-// The grok plugin's「Grok」panel: who is signed in and the plan's credits, as the CLI answers them over ACP (scripts/ask.mjs,
-// quota.mjs, panel.mjs); signing in and installing with the CLI's own login and installer.
+// The grok plugin's「Grok」resources: who is signed in and the plan's credits, as the CLI answers them over ACP
+// (scripts/ask.mjs, quota.mjs, resources.mjs); signing in and installing with the CLI's own login and installer.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, writeFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { panelTypes } from '../../../check/panel.mjs';
+import { readResources } from '../../../check/panel.mjs';
 import { grokAsk } from '../../../plugins/grok/scripts/ask.mjs';
-import { account, panel, windows } from '../../../plugins/grok/scripts/quota.mjs';
+import { account, resources, windows } from '../../../plugins/grok/scripts/quota.mjs';
 import { declaredPanel, installed, pluginEnv, run, signIn } from '../command.mjs';
 
 const declared = declaredPanel('grok');
 
-test('Grok credits read as its own /usage shows them: bars of what is left', () => {
+test('Grok credits read as its own /usage shows them: values of what is left', () => {
   const values = config => windows({ config }).map(m => [m.label, m.value, m.time ?? null]);
   // As SuperGrok answers at the start of a week: protobuf JSON leaves the zero share out.
   assert.deepEqual(values({ currentPeriod: { type: 'USAGE_PERIOD_TYPE_WEEKLY', end: '2026-10-06T11:48:35.429865+00:00' },
@@ -39,9 +39,9 @@ test('Grok credits read as its own /usage shows them: bars of what is left', () 
   assert.deepEqual(account(subscription, { firstName: 'Lea' }), { name: 'Lea', plan: 'SuperGrok' });
   assert.equal(account({ authenticated: false }, {}), null);
   assert.throws(() => account({}, {}), /没有说明登录状态/, 'a passing fault is not a sign-out');
-  const { items } = panel([subscription, { firstName: null }, {}]);
-  assert.deepEqual(items, [{ type: 'card', title: 'Grok', subtitle: 'SuperGrok', items: [{ type: 'error', text: '暂时无法获取额度：Grok 没有给出额度' }] }]);
-  assert.deepEqual(panelTypes(JSON.stringify({ items }), declared), ['card', 'error'], 'a reading Coda takes');
+  const read = resources([subscription, { firstName: null }, {}]);
+  assert.deepEqual(read.resources, [{ name: 'Grok', values: [], error: '暂时无法获取额度：Grok 没有给出额度' }]);
+  assert.deepEqual(readResources(JSON.stringify(read), declared), [{ name: 'Grok', values: [], error: '暂时无法获取额度：Grok 没有给出额度', actions: [] }], 'a reading Coda takes');
 });
 
 // A machine's home with a Grok CLI where its installer puts it, speaking ACP as the real one does. FAKE_GROK: `out` says no
@@ -75,22 +75,21 @@ process.stdin.on('data', chunk => {
 test('who is signed in and the credits are asked of one Grok, in order, and a CLI that does not answer fails the reading', async t => {
   const m = await machine(t);
   const ask = (mode, extra = {}) => grokAsk(['_x.ai/auth/check_subscription', '_x.ai/auth/info', '_x.ai/billing'], { binary: m.binary, env: { ...process.env, FAKE_GROK: mode }, ...extra });
-  assert.deepEqual(panel(await ask('')).items[0], { type: 'card', title: 'Lea', subtitle: 'SuperGrok', identity: 'grok:8c2a47d3bdb8d3096a6479f53eac3b72',
-    items: [{ type: 'meter', label: '7 天', value: '剩余 75%', fraction: 0.75, time: '2026-10-06T11:48:35.000Z', timeLabel: '重置' }] });
+  assert.deepEqual(resources(await ask('')).resources[0], { name: 'Lea', identity: 'grok:8c2a47d3bdb8d3096a6479f53eac3b72',
+    values: [{ label: '7 天', value: '剩余 75%', fraction: 0.75, time: '2026-10-06T11:48:35.000Z' }] });
   // The name is asked for once the subscription check, which may fill it in, has answered.
-  assert.equal(panel(await ask('late-name')).items[0].title, 'Lea');
-  assert.deepEqual(panel(await ask('out')), { items: [] });
+  assert.equal(resources(await ask('late-name')).resources[0].name, 'Lea');
+  assert.deepEqual(resources(await ask('out')), { resources: [] });
   await assert.rejects(ask('silent', { timeoutMs: 300 }), /没有回答/);
   await assert.rejects(grokAsk(['_x.ai/billing'], { binary: null }), /找不到 Grok CLI/);
 });
 
-test('the panel shows nothing without a login file, and the login\'s card with one', async t => {
+test('the type shows nothing without a login file, and the login with one', async t => {
   for (const [signedIn, expected] of [[false, []], [true, ['Lea']]]) {
     const m = await machine(t, { signedIn });
     const result = await run(declared.command, pluginEnv('grok', { HOME: m.home, GROK_HOME: '' }));
     assert.equal(result.code, 0, result.stderr);
-    panelTypes(result.stdout, declared);
-    assert.deepEqual(JSON.parse(result.stdout).items.map(c => c.title), expected);
+    assert.deepEqual(readResources(result.stdout, declared).map(r => r.name), expected);
   }
 });
 

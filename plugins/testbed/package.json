@@ -2,8 +2,9 @@
   "name": "@coda-console/testbed",
   "id": "testbed",
   "displayName": "测试机",
-  "description": "iPhone、iPad 测试机登记在哪个实例就归哪个实例，空间里同一设备只登记一次，重复占用报冲突。任何实例的会话都能用，在归属实例排队；安装、操作和切黑屏在发起的 Mac 执行，须与设备配对，XCTest 须有本机 runner。无需会话操作的流程可自行 hold-group device:<id>（capacity 1）独占。",
-  "version": "1.3.0",
+  "description": "排队使用 iPhone、iPad 测试机",
+  "icon": { "symbol": "iphone", "color": "gray" },
+  "version": "1.6.0",
   "categories": [
     "机器与资源"
   ],
@@ -11,11 +12,11 @@
     "host"
   ],
   "contributes": {
-    "panels": [
+    "resources": [
       {
         "id": "devices",
         "title": "测试机",
-        "command": "node \"$CODA_PLUGIN_PATH/scripts/panel.mjs\""
+        "command": "node \"$CODA_PLUGIN_PATH/scripts/resources.mjs\""
       }
     ],
     "capabilities": [

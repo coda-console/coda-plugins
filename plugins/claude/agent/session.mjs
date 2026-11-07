@@ -3,7 +3,7 @@
 // its input. What Claude says, its tools and their results, its settings, its title and its usage become session updates;
 // what it keeps going beside a turn, waits (waits.mjs); what it asks, permission requests and forms, withdrawn as the SDK
 // withdraws them. A turn Claude begins on its own is told by what it handles. The plan windows it reports go to the file
-// the plugin's「Claude」panel reads (limits.json in CODA_PLUGIN_STATE, limits.mjs), not to Coda's session. Chosen, a session
+// the plugin's「Claude」resource reads (limits.json in CODA_PLUGIN_STATE, limits.mjs), not to Coda's session. Chosen, a session
 // that is to go on later is compacted before its cache expires, as the plugin's lifecycle process asks (compaction.mjs).
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -80,7 +80,7 @@ export class ClaudeSession {
     this.steering = new Set(); this.held = null; this.ending = null; this.turning = false;
     // The model services chosen in Coda (providers.mjs), and the service's model the query runs on: null on Claude's own.
     this.services = chosenServices(env); this.serviceModel = null;
-    this.models = []; this.commands = []; this.terminal = null; this.current = { mode: 'default', model: undefined, effort: null };
+    this.models = []; this.commands = []; this.terminal = null; this.current = { mode: 'default', model: undefined, effort: null, ultracode: null };
     // Streamed text by API message, so that the complete message adds only what was not streamed; tool calls said.
     this.streams = new Map(); this.streamed = new Map(); this.tools = new ToolCallCache(); this.children = new Set(); this.early = new Map(); this.compaction = null;
     this.waits = new ClaudeWaits({ say: (params, sessionId = this.sessionId) => this.notify('_coda/wait', { sessionId, ...params }),
@@ -184,12 +184,12 @@ export class ClaudeSession {
       const initialization = await this.initialized(), served = await listed;
       if (this.phase !== 'starting') throw failure('Claude 会话在初始化时结束', -32001);
       this.models = [...claudeModels(initialization.models), ...served]; this.commands = initialization.commands ?? [];
-      // Who the session runs as, for the「Claude」panel (limits.mjs): the windows it reports are that account's, and
-      // only while the panel is of that account.
+      // Who the session runs as, for the「Claude」resource (limits.mjs): the windows it reports are that account's, and
+      // only while the resource is of that account.
       const email = initialization.account?.email;
       this.account = typeof email === 'string' && email.trim() ? accountHash(email) : null;
       if (this.env.CODA_PLUGIN_STATE) new ClaudeSessionLimits({ path: join(this.env.CODA_PLUGIN_STATE, 'limits.json') }).startedAs(this.account);
-      this.current.model = this.models[0]?.id;
+      this.current.model = this.models[0]?.id; this.current.ultracode = await this.ultracode();
       this.phase = 'running';
       return { ...(resume ? {} : { sessionId: this.sessionId }), configOptions: this.options() };
     } catch (error) {
@@ -204,6 +204,7 @@ export class ClaudeSession {
     this.input = new InputStream();
     const entry = this.served(model);
     const settings = { ...this.launch.settings, ...(this.current.effort ? { effortLevel: this.current.effort } : {}),
+      ...(this.current.ultracode === true ? { ultracode: true } : {}),
       ...(entry ? serviceSettings(this.services.find(service => service.ref === entry.service), entry.model) : {}) };
     this.serviceModel = entry ? model : null; this.cacheUse.restarted();
     // A compaction in the query moved off ends with it.
@@ -219,6 +220,11 @@ export class ClaudeSession {
       new Promise((_, reject) => { timer = setTimeout(() => reject(failure('Claude 初始化超时', -32001)), this.initializationTimeoutMs); })])
       .finally(() => clearTimeout(timer));
   }
+  // Whether the query's model can run Ultracode (sdk Settings.ultracode), and whether it does; null where it cannot.
+  async ultracode() {
+    const { applied } = await this.query.getSettings();
+    return applied.ultracodeAvailable ? applied.ultracode === true : null;
+  }
   // The model chosen is of another service than the query's (Claude's own, or a chosen service's): the session goes on in a
   // query started for it, resuming what the last one said. Before a turn, as Coda sets a session's model before each.
   async reroute() {
@@ -233,11 +239,18 @@ export class ClaudeSession {
       this.start(said ? { resume: this.sessionId } : { sessionId: this.sessionId }, this.current.model);
       if (this.title) this.title.query = this.query;
       await this.initialized();
+      const ultracode = await this.ultracode();
+      if (ultracode !== this.current.ultracode) {
+        this.current.ultracode = ultracode;
+        this.update(this.sessionId, { sessionUpdate: 'config_option_update', configOptions: this.options() });
+      }
     } catch (error) {
       this.end(this.query, error);
       throw error instanceof RequestError ? error : failure(error?.message || 'Claude 会话启动失败');
     }
   }
+  // A change of effort turns Ultracode off unless the same settings keep it on.
+  keptUltracode() { return this.current.ultracode === true ? { ultracode: true } : {}; }
   // The chosen services' model that `model` is; null for one of Claude's own.
   served(model) { return this.models.find(m => m.id === model && m.model) ?? null; }
   // Whether the next turn runs in another query than this one: on another service's model, or back on Claude's own.
@@ -253,16 +266,19 @@ export class ClaudeSession {
       // what this one still runs would end with it.
       const switching = (this.served(value)?.id ?? null) !== this.serviceModel;
       if (switching && (this.prompts.size || this.waits.pending)) throw failure('后台任务、子 Agent 或定时唤醒还没结束，结束后才能换到这个模型', -32602);
-      if (!switching && !this.serviceModel) await this.query.setModel(value);
+      if (!switching && !this.serviceModel) { await this.query.setModel(value); this.current.ultracode = await this.ultracode(); }
       this.current.model = value;
       // An effort chosen for the last model that this one does not have is no choice of it: the model's own goes on.
       if (this.current.effort !== null && !this.models.find(model => model.id === value).efforts.includes(this.current.effort)) {
-        await this.query.applyFlagSettings({ effortLevel: null }); this.current.effort = null;
+        await this.query.applyFlagSettings({ effortLevel: null, ...this.keptUltracode() }); this.current.effort = null;
       }
     } else if (configId === 'effort') {
       const effort = value === MODEL_EFFORT ? null : value;
       if (effort !== null && !this.models.find(model => model.id === this.current.model)?.efforts.includes(effort)) throw failure('推理强度不适用于当前模型', -32602);
-      await this.query.applyFlagSettings({ effortLevel: effort }); this.current.effort = effort;
+      await this.query.applyFlagSettings({ effortLevel: effort, ...this.keptUltracode() }); this.current.effort = effort;
+    } else if (configId === 'ultracode') {
+      if (typeof value !== 'boolean' || this.current.ultracode === null) throw failure('Ultracode 不可用', -32602);
+      await this.query.applyFlagSettings({ ultracode: value }); this.current.ultracode = value;
     } else throw failure(`没有设置项 ${configId}`, -32602);
     return { configOptions: this.options() };
   }

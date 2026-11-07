@@ -1,15 +1,15 @@
 // From Coda's backend/test/claude-limits.test.mjs at 9ffb9911, as plain node:test. Its case of Coda moving the limits kept
 // before the update into the plugin's state stays in Coda.
 // The claude plugin's limits (agent/limits.mjs): what the SDK's rate_limit_event says of each window, kept across restarts,
-// and the「Claude」panel that shows them (scripts/quota.mjs).
+// and the「Claude」resource that shows them (scripts/quota.mjs).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { panelTypes } from '../../../check/panel.mjs';
+import { readResources } from '../../../check/panel.mjs';
 import { ClaudeSessionLimits, accountHash } from '../../../plugins/claude/agent/limits.mjs';
-import { panel } from '../../../plugins/claude/scripts/quota.mjs';
+import { resources } from '../../../plugins/claude/scripts/quota.mjs';
 import { declaredPanel } from '../command.mjs';
 
 const NOW = Date.parse('2026-10-08T00:00:00Z');
@@ -106,45 +106,46 @@ test('the windows are kept across a restart, written only as one moves, and a fi
   }
 });
 
-test('the「Claude」panel shows what the sessions reported, says when it all has passed, and nothing before anything was', async t => {
+test('the「Claude」resource shows what the sessions reported, says when it all has passed, and nothing before anything was', async t => {
   const dir = await root(t), path = join(dir, 'limits.json'), declared = declaredPanel('claude');
   let now = NOW;
   const limits = () => new ClaudeSessionLimits({ path, now: () => now });
-  assert.deepEqual(panel(limits()), { items: [] }, 'nothing reported: offered under「添加资源」 instead');
+  assert.deepEqual(resources(limits()), { resources: [] }, 'nothing reported: offered under「添加资源」 instead');
   limits().observe(event);
-  const { items } = panel(limits());
-  assert.deepEqual(items, [{ type: 'card', title: 'Claude SDK', items: [
-    { type: 'meter', label: '5 小时', value: '剩余 89%', fraction: 0.89, time: '2026-10-08T03:00:00.000Z', timeLabel: '重置' },
-    { type: 'meter', label: '7 天', value: '剩余 9%', fraction: 0.09, time: '2026-10-12T00:00:00.000Z', timeLabel: '重置' },
+  const read = resources(limits());
+  assert.deepEqual(read.resources, [{ values: [
+    { label: '5 小时', value: '剩余 89%', fraction: 0.89, time: '2026-10-08T03:00:00.000Z' },
+    { label: '7 天', value: '剩余 9%', fraction: 0.09, time: '2026-10-12T00:00:00.000Z' },
   ] }]);
-  assert.deepEqual(panelTypes(JSON.stringify({ items }), declared), ['card', 'meter', 'meter'], 'a reading Coda takes');
+  assert.deepEqual(readResources(JSON.stringify(read), declared), read.resources.map(r => ({ ...r, actions: [] })), 'a reading Coda takes');
   now = Date.parse('2026-10-13T00:00:00Z');
-  assert.deepEqual(panel(limits()).items[0].items, [{ type: 'error', text: '额度记录已过期，会话再运行后更新' }]);
+  assert.deepEqual(resources(limits()).resources, [{ name: 'Claude', error: '额度记录已过期，会话再运行后更新' }]);
+  assert.equal(readResources(JSON.stringify(resources(limits())), declared).length, 1);
 });
 
-test('the account the latest session starts as names the card, as a hash; what another account reports is not its', async t => {
+test('the account the latest session starts as is the resource\'s identity, as a hash; what another account reports is not its', async t => {
   const dir = await root(t), path = join(dir, 'limits.json'), declared = declaredPanel('claude');
   const limits = () => new ClaudeSessionLimits({ path, now: () => NOW });
   const a = accountHash(' Me@Example.com '), b = accountHash('other@example.com');
   limits().observe(event);
-  assert.equal(panel(limits()).items[0].identity, undefined, 'no session said who it is: the card is this machine\'s alone');
+  assert.equal(resources(limits()).resources[0].identity, undefined, 'no session said who it is: the resource is this machine\'s alone');
   limits().startedAs(a);
   assert.equal(limits().known(), false, 'what was reported before is not known to be this account\'s');
   limits().observe(event, a);
-  const { items } = panel(limits());
-  assert.equal(items[0].identity, `claude:${accountHash('me@example.com')}`);
+  const read = resources(limits());
+  assert.equal(read.resources[0].identity, `claude:${accountHash('me@example.com')}`);
   assert.ok(!(await readFile(path, 'utf8')).includes('example.com'), 'the email itself is not kept');
-  assert.deepEqual(panelTypes(JSON.stringify({ items }), declared), ['card', 'meter', 'meter'], 'a reading Coda takes');
+  assert.equal(readResources(JSON.stringify(read), declared)[0].values.length, 2, 'a reading Coda takes');
   // Another account's session starts while one of the first is still running: what the older one reports is not B's.
   limits().startedAs(b);
   limits().observe(event, a);
   assert.equal(limits().known(), false);
   limits().observe({ rateLimitType: 'five_hour', utilization: 0.2, resetsAt: at('2026-10-08T03:00:00Z') }, b);
-  assert.deepEqual(panel(limits()).items[0].items.map(i => i.value), ['剩余 80%']);
-  assert.equal(panel(limits()).items[0].identity, `claude:${b}`);
+  assert.deepEqual(resources(limits()).resources[0].values.map(v => v.value), ['剩余 80%']);
+  assert.equal(resources(limits()).resources[0].identity, `claude:${b}`);
   // A session that cannot say who it is names no one, and its windows are not filed under the account before.
   limits().startedAs(null);
   limits().observe(event);
-  assert.equal(panel(limits()).items[0].identity, undefined);
+  assert.equal(resources(limits()).resources[0].identity, undefined);
   assert.equal(limits().quota().length, 2);
 });
