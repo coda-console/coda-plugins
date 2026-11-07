@@ -37,15 +37,24 @@ for (const name of Object.keys(store)) {
 setInterval(schedule, 5000);
 
 function render() {
-  const now = Date.now(), from = now - range.ms, scrollTop = root.scrollTop;
-  root.replaceChildren(h('div', { class: 'page' }, toolbar(), problems(), hangsSection(from, now), probesSection(from, now)));
-  root.scrollTop = scrollTop;
+  const now = Date.now(), from = now - range.ms;
+  root.replaceChildren(h('div', { class: 'page' }, problems(), hangsSection(from, now), probesSection(from, now)));
+  declareHeader();
 }
 
-function toolbar() {
-  return h('div', { class: 'ranges', role: 'tablist' }, RANGES.map(r => h('button', { class: r === range ? 'range on' : 'range', role: 'tab', 'aria-selected': String(r === range),
-    onclick: () => { range = r; coda.setState({ range: r.id }); render(); } }, r.label)));
+// The while chosen is the page's top bar, kept still by the App above the page's scroll (docs/plugins.md「视图」).
+let headerKey = '';
+function declareHeader() {
+  if (headerKey === range.id) return;
+  headerKey = range.id;
+  coda.header({ text: null, segments: { items: RANGES.map(({ id, label }) => ({ id, label })), selected: range.id } }).catch(() => {});
 }
+
+coda.on('header', ({ id }) => {
+  range = RANGES.find(r => r.id === id);
+  coda.setState({ range: id });
+  render();
+});
 
 // What keeps a machine from being read or recorded: unreachable, a system without a table to read, mihomo not answering.
 function problems() {
