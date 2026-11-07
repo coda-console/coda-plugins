@@ -306,7 +306,7 @@ test('归属需求跳过设备验收，待交付退回续作，更新同一 PR �
   assert.equal(f.calls('gh').filter(c => c.args[1] === 'create').length, 1);
   assert.equal(f.calls('gh').filter(c => c.args[1] === 'edit').length, 1);
   f.run('github-checks');
-  assert.deepEqual(delivery('merge'), { feedback: '', route: 'premerge' });
+  assert.deepEqual(delivery('merge'), { feedback: '', route: 'merge' });
   assert.equal(f.run('merge').outputs.commit, 'f'.repeat(40));
 });
 
@@ -414,7 +414,7 @@ test('开发流程定义、回路、检查提交与部署发布选择符合运�
   const message = (id, field, extra = {}) => evaluate(params(id)[field].slice(1), { ...context, ...extra }).value;
   assert.equal(message('tell-device', 'text'), '功能「修好输入框」：用户设备验收通过，接下来开 PR、跑检查。');
   assert.equal(message('tell-device', 'key'), 'run-1:device:head-1');
-  for (const stop of [false, true]) assert.equal(route('after-approval', { approve: { chose: { stop } } }), stop ? 'stopped' : 'premerge');
+  for (const stop of [false, true]) assert.equal(route('after-approval', { approve: { chose: { stop } } }), stop ? 'stopped' : 'merge');
   assert.equal(nodes.stopped.notify, undefined);
   for (const context of [
     { inputs: { delivery: '' }, approve: { options: { notify: true } } },
@@ -446,10 +446,14 @@ test('开发流程定义、回路、检查提交与部署发布选择符合运�
   assert.match(nodes.delivery.documentation[0].text, /delivery-result.feedback/);
   assert.equal(nodes['delivery-result-flow'].targetRef.id, 'delivery-result');
   assert.equal(params('delivery-result').DELIVERY_RESULT, '=delivery');
-  for (const [value, target] of [['delivery', 'delivery'], ['review', 'report'], ['premerge', 'premerge']]) assert.equal(route('after-delivery', { 'delivery-result': { route: value } }), target);
+  for (const [value, target] of [['delivery', 'delivery'], ['review', 'report'], ['merge', 'merge']]) assert.equal(route('after-delivery', { 'delivery-result': { route: value } }), target);
   assert.deepEqual(params('premerge'), { kind: 'premerge', commit: '=pr.head' });
   assert.deepEqual(params('deploy'), { kind: 'deploy', commit: '=merge.commit' });
-  assert.equal(nodes['approval-premerge'].targetRef.id, 'premerge');
+  assert.equal(nodes['approval-merge'].targetRef.id, 'merge');
+  // 合并前检查在 PR head 上跑完才进 GitHub 检查与批准卡，批准后直接合并。
+  assert.equal(route('reuse-checks', { pr: { checked: true } }), 'premerge');
+  assert.equal(nodes['premerge-github'].targetRef.id, 'github-checks');
+  assert.equal(nodes['premerge-review'].targetRef.id, 'report');
   assert.equal(route('after-approval', { approve: { chose: { stop: true } } }), 'stopped');
   assert.equal(route('deploy-choice', { inputs: { delivery: 'requirement-1' } }), 'done');
   for (const delivery of ['', 'requirement-1']) for (const deploy of [false, true]) for (const preview of [false, true]) for (const release of [false, true]) {
@@ -528,7 +532,7 @@ test('流程在执行及续作后先检查，失败分流，PR 同提交绕过�
   assert.equal(nodes['checks-review'].targetRef.id, 'gate-route');
   assert.equal(nodes['gate-revise'].targetRef.id, 'revise');
   assert.equal(nodes['gate-escalate'].targetRef.id, 'report');
-  assert.equal(nodes['reuse-passed'].targetRef.id, 'github-checks');
+  assert.equal(nodes['reuse-passed'].targetRef.id, 'premerge');
   for (const checked of [true, false]) assert.equal(evaluate(nodes['reuse-passed'].conditionExpression.body.slice(1), { pr: { checked } }).value, checked);
   for (const id of ['publish-preview', 'publish-release']) {
     const input = nodes[id].extensionElements.values.find(v => v.name === 'inputs');
@@ -546,7 +550,7 @@ test('发布说明由主 Agent 补写或直接使用用户备注，空说明不�
   assert.equal(nodes['write-notes'].name, '写发布说明');
   assert.equal(nodes['approval-missing'].targetRef.id, 'write-notes');
   assert.equal(nodes['notes-missing'].targetRef.id, 'write-notes');
-  assert.equal(nodes['notes-ready'].targetRef.id, 'premerge');
+  assert.equal(nodes['notes-ready'].targetRef.id, 'merge');
   assert.equal(nodes['notes-result'].extensionElements.values.find(v => v.name === 'NOTES').value, '=write-notes');
   for (const text of ['approve.options.preview', 'approve.options.release', '上次公开版本以来合并的改动', '面向用户', '备注必填']) assert.ok(nodes['write-notes'].documentation[0].text.includes(text));
   assert.doesNotMatch(workflow, /\{\{review\.note\}\}/);
@@ -636,7 +640,7 @@ test('PR 实际输出经类型转换和网关求值：同提交复用，缺失�
   f.run('gate-passed', { RUNS: '[]' });
   f.review('accept', '汇报'); f.run('accept');
   assert.equal(f.git('ls-remote', 'origin', ref), '');
-  assert.equal(next(f.run('pr').outputs), 'github-checks');
+  assert.equal(next(f.run('pr').outputs), 'premerge');
   const state = f.state(); delete state.checks;
   writeFileSync(join(f.env.CODA_ARTIFACTS, 'develop.json'), JSON.stringify(state));
   assert.equal(next(f.run('pr').outputs), 'gate', '检查记录缺失');
@@ -645,7 +649,7 @@ test('PR 实际输出经类型转换和网关求值：同提交复用，缺失�
   f.run('gate-passed', { RUNS: '[]' });
   f.review('accept', '汇报'); f.run('accept');
   assert.equal(f.git('ls-remote', 'origin', ref), '');
-  assert.equal(next(f.run('pr').outputs), 'github-checks');
+  assert.equal(next(f.run('pr').outputs), 'premerge');
   assert.equal(f.git('ls-remote', 'origin', f.state().lane).split('\t')[0], head);
   assert.equal(f.state().approved.length, 1);
   f.task('code', 'new change'); f.run('revise');
