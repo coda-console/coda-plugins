@@ -47,14 +47,12 @@ let headerKey = '';
 function declareHeader() {
   if (headerKey === range.id) return;
   headerKey = range.id;
-  coda.header({ text: '', segments: { items: RANGES.map(({ id, label }) => ({ id, label })), selected: range.id } }).catch(() => {});
+  coda.header({ text: null, segments: { items: RANGES.map(({ id, label }) => ({ id, label })), selected: range.id } }).catch(() => {});
 }
 
-coda.on('header', ({ id } = {}) => {
-  const next = RANGES.find(r => r.id === id);
-  if (!next || next === range) return;
-  range = next;
-  coda.setState({ range: range.id });
+coda.on('header', ({ id }) => {
+  range = RANGES.find(r => r.id === id);
+  coda.setState({ range: id });
   render();
 });
 
