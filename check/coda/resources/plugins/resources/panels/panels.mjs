@@ -1,17 +1,19 @@
-// The panels installed plugins bring to this machine's resources page (docs/plugins.md「面板」), read and acted on here, in
-// the resources plugin's module: what each plugin declares comes from Coda's collection of the installed plugins
+// The resource types installed plugins bring to this machine's resources page (docs/plugins.md「资源」), read and acted on
+// here, in the resources plugin's module: what each plugin declares comes from Coda's collection of the installed plugins
 // (`coda.watch("plugins")`), and each command runs with that plugin's own environment (`coda.environment(null, { plugin })`),
-// as Coda gives every process of the plugin's. A panel is read only when a page asks (opening it, refreshing), never in
-// the background, and no reading is kept on disk. What every panel gets from here and not from its plugin: one reading
-// at a time (a second ask joins it), the last good reading shown again within the panel's `maxAge` and listed with the
-// panel, and on failure the last good one kept and marked as such. The machine keeps the panels it hides, in this
-// plugin's state; their order is their plugins' (docs/resources-page.md「顺序」).
+// as Coda gives every process of the plugin's. A plugin declaring `resources` has those; one still declaring the panels
+// before them has its panels, read as they were (`format`), for the page to take as resources (docs/plugins.md「旧的面板」).
+// A type is read only when a page asks (opening it, refreshing), never in the background, and no reading is kept on disk.
+// What every type gets from here and not from its plugin: one reading at a time (a second ask joins it), the last good
+// reading shown again within the type's `maxAge` and listed with it, and on failure the last good one kept and marked as
+// such. The machine keeps which it shows and which not, in this plugin's state; their order is their plugins'
+// (docs/resources-page.md「顺序」). Inside, a type is still called a panel, as the page's view and its messages are.
 import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runCommand, ended, outcome } from './command.mjs';
-import { PanelError, panelDeclarations, panelItems, actionArgs, shownItems, displayOptions, keepMissingMetrics } from './rules.mjs';
+import { PanelError, panelDeclarations, panelItems, resourceItems, actionArgs, shownItems, displayOptions, keepMissingMetrics } from './rules.mjs';
 import { SignIn, authorizationLink, deviceCode } from './sign-in.mjs';
 
 const fail = (code, message) => { throw new PanelError(code, message); };
@@ -31,10 +33,10 @@ export class Panels {
   // Nothing is told before the plugins' environments are there (`ready`): what a login says of whether its program is
   // installed is checked with its plugin's own.
   changed(key = null) { if (this.ready) for (const fn of this.listeners) try { fn(key); } catch {} }
-  // Once: the installed plugins watched, what this machine hides, and the environment of each plugin whose panels sign in.
+  // Once: the installed plugins watched, what this machine shows and hides, and the environment of each plugin whose panels sign in.
   start() {
     this.started ??= (async () => {
-      this.hidden = this.readHidden();
+      this.choices = this.readHidden();
       const watched = await this.coda.watch('plugins', ({ type, id, object }) => {
         if (type === 'DELETED') this.plugins.delete(id); else this.plugins.set(id, object);
         // Another version (another directory, another environment): what was checked with the last is checked again.
@@ -51,20 +53,29 @@ export class Panels {
     })();
     return this.started;
   }
-  // What the machine hides, as it was kept: none when nothing is, or what is cannot be read.
+  // What the machine was told to hide or show, by panel: none when nothing is, or what is cannot be read. Kept before as
+  // the list of those hidden.
   readHidden() {
-    try { return new Set(JSON.parse(readFileSync(this.file, 'utf8'))); } catch { return new Set(); }
+    try {
+      const kept = JSON.parse(readFileSync(this.file, 'utf8'));
+      return Array.isArray(kept) ? Object.fromEntries(kept.map(key => [key, true])) : kept && typeof kept === 'object' ? kept : {};
+    } catch { return {}; }
   }
-  keepHidden(hidden) {
+  keepHidden(choices) {
     const next = `${this.file}.next`;
-    writeFileSync(next, JSON.stringify([...hidden].sort()));
+    writeFileSync(next, JSON.stringify(Object.fromEntries(Object.entries(choices).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0))));
     renameSync(next, this.file);
   }
-  // The installed plugins' panels, by plugin id, each plugin's in the order it declares them. A project disabling a plugin
-  // does not take its panels away: the page is the machine's, not a project's.
+  // Whether the machine hides it: as it was told, else as its type says (`hidden`, shown only once chosen).
+  hiddenOf({ key, panel }) { return this.choices[key] ?? !!panel.hidden; }
+  // The installed plugins' types, by plugin id, each plugin's in the order it declares them: its resource types, or the
+  // panels of one that declares none. A project disabling a plugin does not take them away: the page is the machine's,
+  // not a project's.
   installed() {
-    return [...this.plugins.values()].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0).flatMap(plugin =>
-      panelDeclarations(plugin.contributes?.panels).map(panel => ({ plugin, panel, key: `${plugin.id}/${panel.id}` })));
+    return [...this.plugins.values()].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0).flatMap(plugin => {
+      const format = plugin.contributes?.resources ? 'resources' : 'panels';
+      return panelDeclarations(plugin.contributes?.[format]).map(panel => ({ plugin, panel, key: `${plugin.id}/${panel.id}`, format }));
+    });
   }
   find(key) {
     return this.installed().find(e => e.key === key) ?? fail('not_found', `没有面板 ${key}`);
@@ -76,14 +87,15 @@ export class Panels {
   }
   // What a page shows of a panel: what it is, whether the machine hides it, what was last read and how that stands now.
   view(entry, index) {
-    const { plugin, panel, key } = entry, shown = this.shown.get(key);
-    return { plugin: plugin.id, pluginName: plugin.name, panel: panel.id, title: panel.title, version: plugin.version ?? '', source: plugin.source ?? { kind: 'builtin' },
+    const { plugin, panel, key, format } = entry, shown = this.shown.get(key), acting = this.acting.get(key);
+    return { plugin: plugin.id, pluginName: plugin.name, panel: panel.id, title: panel.title, format, version: plugin.version ?? '', source: plugin.source ?? { kind: 'builtin' },
       actions: Object.fromEntries(Object.entries(panel.actions ?? {}).map(([name, a]) => [name, a.confirm ? { confirm: a.confirm } : {}])),
-      configurable: !!panel.displaySetting, signsIn: !!panel.signIn, hidden: this.hidden.has(key), index,
+      configurable: !!panel.displaySetting, signsIn: !!panel.signIn, hidden: this.hiddenOf(entry), index,
       signIn: panel.signIn ? this.login(entry).view() : null,
       reading: shown ? this.present(entry, shown) : null,
       busy: this.reading.has(key), failure: this.failures.get(key) ?? null,
-      acting: this.acting.get(key)?.button ?? null, actionError: this.acting.get(key)?.error ?? null };
+      // The action under way, by its button; or why the last one did not go through, with the button it was.
+      acting: acting && !acting.error ? acting.button : null, actionError: acting?.error ?? null, failedButton: acting?.error ? acting.button : null };
   }
   list() { return this.installed().map((entry, index) => [entry.key, this.view(entry, index)]); }
   // One panel's, as `list` has it; none for one no longer installed.
@@ -106,13 +118,14 @@ export class Panels {
     const values = this.settingsOf(plugin.id)[panel.displaySetting] ?? {};
     return { ...reading, items: shownItems(reading.items, values), display: { setting: panel.displaySetting, options: displayOptions(reading.items, values) } };
   }
-  // `{ items, readAt }`, or with `error` when this reading failed: then the last good items with `stale`, or none.
+  // `{ resources, readAt }` (a panel's `{ items, readAt }`), or with `error` when this reading failed: then the last good
+  // one with `stale`, or none.
   read(key, { force = false } = {}) {
     const entry = this.find(key);
     const pending = this.reading.get(key);
     if (pending) return pending;
     const last = this.last.get(key);
-    if (!force && last && entry.panel.maxAgeMs && this.now() - last.at < entry.panel.maxAgeMs && !this.shown.get(key)?.error) return Promise.resolve(this.present(entry, { items: last.items, readAt: last.at }));
+    if (!force && last && entry.panel.maxAgeMs && this.now() - last.at < entry.panel.maxAgeMs && !this.shown.get(key)?.error) return Promise.resolve(this.present(entry, { ...last.content, readAt: last.at }));
     const reading = this.fetch(entry).finally(() => { this.reading.delete(key); this.changed(key); });
     this.reading.set(key, reading);
     this.changed(key);
@@ -124,11 +137,10 @@ export class Panels {
     try {
       const result = await this.run(panel.command, { env: await this.env(plugin.id), timeoutMs: this.readTimeoutMs, signal: this.closing.signal });
       if (ended(result)) {
-        const parsed = panelItems(result.stdout, panel, plugin.views ?? []), at = this.now();
-        const items = panel.displaySetting ? keepMissingMetrics(parsed, this.last.get(key)?.items ?? []) : parsed;
-        this.last.set(key, { items, at }); this.failures.delete(key);
-        this.shown.set(key, { items, readAt: at });
-        return this.present(entry, { items, readAt: at });
+        const content = this.content(entry, result.stdout), at = this.now();
+        this.last.set(key, { content, at }); this.failures.delete(key);
+        this.shown.set(key, { ...content, readAt: at });
+        return this.present(entry, { ...content, readAt: at });
       }
       failure = outcome(result, '读取');
     } catch (e) {
@@ -136,15 +148,21 @@ export class Panels {
       failure = `输出无效：${e.message}`;
     }
     const last = this.last.get(key);
-    const reading = last ? { items: last.items, readAt: last.at, stale: true, error: failure } : { items: [], error: failure };
+    const reading = last ? { ...last.content, readAt: last.at, stale: true, error: failure } : { [entry.format === 'resources' ? 'resources' : 'items']: [], error: failure };
     this.shown.set(key, reading);
     return this.present(entry, reading);
+  }
+  // What a command printed, as its format has it: resources, or a panel's items (those it chooses among keeping their places).
+  content({ plugin, panel, key, format }, output) {
+    if (format === 'resources') return { resources: resourceItems(output, panel, plugin.views ?? []) };
+    const items = panelItems(output, panel, plugin.views ?? []);
+    return { items: panel.displaySetting ? keepMissingMetrics(items, this.last.get(key)?.content.items ?? []) : items };
   }
   // Runs one of a panel's actions with what its button sent, then reads the panel again. One action of a panel at a time;
   // one under way goes on to its end even when whoever asked has gone.
   async act(key, name, args, button = name) {
-    const entry = this.find(key), { plugin, panel } = entry;
-    if (this.acting.get(key)?.button) fail('panel_busy', `${panel.title} 正在进行另一项操作`);
+    const entry = this.find(key), { plugin, panel } = entry, now = this.acting.get(key);
+    if (now && !now.error) fail('panel_busy', `${panel.title} 正在进行另一项操作`);
     // What went wrong is said under the panel, whatever it was.
     try {
       const action = panel.actions?.[name] ?? fail('not_found', `面板 ${panel.title} 没有动作 ${name}`);
@@ -155,20 +173,19 @@ export class Panels {
       if (!ended(result)) fail('action_failed', outcome(result, '操作'));
       this.acting.delete(key);
     } catch (e) {
-      this.acting.set(key, { error: e.message }); this.changed(key);
+      this.acting.set(key, { button, error: e.message }); this.changed(key);
       throw e;
     }
     // A reading that began before the action ended may not show what it did.
     await this.reading.get(key);
     return this.read(key, { force: true });
   }
-  // One panel hidden or shown again on this machine, the others as they were: one change at a time.
+  // One type hidden or shown on this machine, the others as they were: one change at a time.
   hide(key, hidden) {
     const change = this.hides.then(() => {
-      const next = new Set(this.hidden);
-      if (hidden) next.add(key); else next.delete(key);
+      const next = { ...this.choices, [key]: !!hidden };
       this.keepHidden(next);
-      this.hidden = next;
+      this.choices = next;
       this.changed(key);
     });
     this.hides = change.catch(() => {});

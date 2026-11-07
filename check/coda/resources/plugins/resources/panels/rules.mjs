@@ -1,7 +1,8 @@
-// What a panel is (docs/plugins.md「面板」): how a plugin declares one (`contributes.panels`, of the schema the resources
-// plugin declares for its point, schema.json, checked where the plugin is installed) and what its command may print,
-// checked here, where the panels are read, the way a task's card is drawn from its fields. Nothing here knows what a panel
-// is about: CPU, an account's quota and a disk are all meters and figures.
+// What a resource type is (docs/plugins.md「资源」): how a plugin declares one (`contributes.resources`, of the schema the
+// resources plugin declares for its point, resources.schema.json, checked where the plugin is installed) and what its
+// command may print, checked here, where the types are read. Nothing here knows what a resource is about: CPU, an account's
+// quota and a disk are all names and values. A plugin still declaring the panels before them (`contributes.panels`,
+// schema.json) has them read as they were, for the page to take as resources (docs/plugins.md「旧的面板」).
 
 // What is not as it must be: the panel says so where it would show.
 export class PanelError extends Error {
@@ -19,6 +20,8 @@ function durationMs(text) {
 }
 
 export const ITEM_TYPES = ['card', 'meter', 'stat', 'markdown', 'button', 'error'];
+// How many resources a reading lists, and how many values and buttons one has.
+const RESOURCES = 50, VALUES = 8, ACTIONS = 8;
 // What a panel's command may print: past these, the reading fails rather than being cut short.
 export const OUTPUT_LIMIT = 64 * 1024;
 export const ARGS_LIMIT = 4 * 1024;
@@ -36,8 +39,8 @@ const text = (value, max, where, code, { need = true, line = true } = {}) => {
 };
 const object = (value, where, code) => check(value && typeof value === 'object' && !Array.isArray(value), code, `${where} 须为对象`);
 
-// ---- Declarations (`contributes.panels`) ----
-// A plugin's panels as it declares them, in its order, each with the actions its buttons may take (none when it declares
+// ---- Declarations (`contributes.resources`, or the panels before them) ----
+// A plugin's types as it declares them, in its order, each with the actions its buttons may take (none when it declares
 // none) and, with a `maxAge`, how long a reading may be shown again without asking.
 export function panelDeclarations(raw = []) {
   return raw.map(panel => ({ ...panel, actions: panel.actions ?? {}, ...(panel.maxAge ? { maxAgeMs: durationMs(panel.maxAge) } : {}) }));
@@ -98,23 +101,27 @@ function plainItem(raw, where, scope, inCard) {
     case 'error':
       keys(raw, ['type', 'text'], where, code);
       return { type: 'error', text: text(raw.text, ERROR, `${where} 的 text`, code, { line: false }) };
-    case 'button': {
-      keys(raw, ['type', 'label', 'action', 'view', 'args', 'disabled', 'confirm'], where, code);
-      // What it does: run one of the panel's actions here, or open one of its plugin's views in the client.
-      const opens = raw.view !== undefined;
-      check(opens !== (raw.action !== undefined), code, `${where} 须有 action 或 view 之一`);
-      if (opens) check(typeof raw.view === 'string' && scope.views.includes(raw.view), code, `${where} 的 view 须是插件声明的视图：${raw.view}`);
-      else check(typeof raw.action === 'string' && Object.hasOwn(scope.actions, raw.action), code, `${where} 的 action 须是面板声明的动作：${raw.action}`);
-      check(raw.args === undefined || (raw.args && typeof raw.args === 'object' && !Array.isArray(raw.args) && JSON.stringify(raw.args).length <= ARGS_LIMIT), code,
-        `${where} 的 args 须为不超过 ${ARGS_LIMIT} 字节的对象`);
-      check(raw.disabled === undefined || typeof raw.disabled === 'boolean', code, `${where} 的 disabled 须为开或关`);
-      // Its own question, for what this one button does (which account, which credit), in place of its action's.
-      return { type: 'button', label: text(raw.label, LABEL, `${where} 的 label`, code), ...(opens ? { view: raw.view } : { action: raw.action }),
-        ...(raw.args ? { args: raw.args } : {}), ...(raw.disabled ? { disabled: true } : {}),
-        ...(raw.confirm !== undefined ? { confirm: text(raw.confirm, CONFIRM, `${where} 的 confirm`, code, { line: false }) } : {}) };
-    }
+    case 'button':
+      keys(raw, ['type', ...BUTTON_KEYS], where, code);
+      return { type: 'button', ...button(raw, where, scope) };
   }
   return fail(code, `${where} 的 type 不受支持`);
+}
+const BUTTON_KEYS = ['label', 'action', 'view', 'args', 'disabled', 'confirm'];
+// What a button does: run one of the type's actions here, or open one of its plugin's views in the client.
+function button(raw, where, scope) {
+  const code = 'invalid_panel';
+  const opens = raw.view !== undefined;
+  check(opens !== (raw.action !== undefined), code, `${where} 须有 action 或 view 之一`);
+  if (opens) check(typeof raw.view === 'string' && scope.views.includes(raw.view), code, `${where} 的 view 须是插件声明的视图：${raw.view}`);
+  else check(typeof raw.action === 'string' && Object.hasOwn(scope.actions, raw.action), code, `${where} 的 action 须是声明的动作：${raw.action}`);
+  check(raw.args === undefined || (raw.args && typeof raw.args === 'object' && !Array.isArray(raw.args) && JSON.stringify(raw.args).length <= ARGS_LIMIT), code,
+    `${where} 的 args 须为不超过 ${ARGS_LIMIT} 字节的对象`);
+  check(raw.disabled === undefined || typeof raw.disabled === 'boolean', code, `${where} 的 disabled 须为开或关`);
+  // Its own question, for what this one button does (which account, which credit), in place of its action's.
+  return { label: text(raw.label, LABEL, `${where} 的 label`, code), ...(opens ? { view: raw.view } : { action: raw.action }),
+    ...(raw.args ? { args: raw.args } : {}), ...(raw.disabled ? { disabled: true } : {}),
+    ...(raw.confirm !== undefined ? { confirm: text(raw.confirm, CONFIRM, `${where} 的 confirm`, code, { line: false }) } : {}) };
 }
 // A panel's reading from what its command printed. Anything it cannot be fails the reading, with where. `views`: the ids
 // of its plugin's views, which a button may open.
@@ -131,6 +138,55 @@ export function panelItems(output, panel, views = []) {
   check(!ids.length || panel.displaySetting, code, '数值项的 display 需要面板声明 displaySetting');
   check(new Set(ids).size === ids.length, code, 'display.id 不能重复');
   return items;
+}
+// A type's reading from what its command printed: `{ resources: [...] }`, each a name, the outside identity it is (an
+// account, compared and nothing else), its values, one line of what is wrong with it, and its buttons. Nothing that
+// explains: a value is a name and what it reads (docs/plugins.md「资源」). Anything else fails the reading, with where.
+export function resourceItems(output, type, views = []) {
+  const code = 'invalid_panel';
+  check(Buffer.byteLength(output) <= OUTPUT_LIMIT, code, `输出超过 ${OUTPUT_LIMIT / 1024} KiB`);
+  let value;
+  try { value = JSON.parse(output); } catch { return fail(code, '输出不是 JSON'); }
+  object(value, '输出', code);
+  keys(value, ['resources'], '输出', code);
+  check(Array.isArray(value.resources) && value.resources.length <= RESOURCES, code, `输出的 resources 须为不超过 ${RESOURCES} 项的数组`);
+  return value.resources.map((r, i) => resource(r, `resources[${i}]`, { actions: type.actions, views }));
+}
+function resource(raw, where, scope) {
+  const code = 'invalid_panel';
+  object(raw, where, code);
+  keys(raw, ['name', 'identity', 'values', 'error', 'actions'], where, code);
+  const list = (value, max, name) => {
+    check(value === undefined || (Array.isArray(value) && value.length <= max), code, `${where} 的 ${name} 须为不超过 ${max} 项的数组`);
+    return value ?? [];
+  };
+  const name = text(raw.name, LABEL, `${where} 的 name`, code, { need: false });
+  const values = list(raw.values, VALUES, 'values').map((v, i) => reading(v, `${where}.values[${i}]`));
+  const actions = list(raw.actions, ACTIONS, 'actions').map((b, i) => {
+    const at = `${where}.actions[${i}]`;
+    object(b, at, code);
+    keys(b, BUTTON_KEYS, at, code);
+    return button(b, at, scope);
+  });
+  check(name !== undefined || values.length, code, `${where} 须有 name 或 values`);
+  return { ...(name !== undefined ? { name } : {}),
+    ...(raw.identity !== undefined ? { identity: text(raw.identity, IDENTITY, `${where} 的 identity`, code) } : {}),
+    values, ...(raw.error !== undefined ? { error: text(raw.error, LABEL, `${where} 的 error`, code) } : {}), actions };
+}
+// One value: what it is called (left out where its resource has only it), what it reads, how much of it is left (0–1,
+// left out when not known: never drawn as empty), and a time it comes with (when a quota is back).
+function reading(raw, where) {
+  const code = 'invalid_panel';
+  object(raw, where, code);
+  keys(raw, ['label', 'value', 'fraction', 'time'], where, code);
+  check(raw.fraction === undefined || raw.fraction === null || (typeof raw.fraction === 'number' && raw.fraction >= 0 && raw.fraction <= 1), code,
+    `${where} 的 fraction 须在 0–1 之间，不知道时不写`);
+  check(raw.time === undefined || (typeof raw.time === 'string' && Number.isFinite(Date.parse(raw.time))), code, `${where} 的 time 须为 ISO 8601 时间`);
+  check(raw.value !== undefined || typeof raw.fraction === 'number', code, `${where} 须有 value 或 fraction`);
+  return { ...(raw.label !== undefined ? { label: text(raw.label, LABEL, `${where} 的 label`, code) } : {}),
+    ...(raw.value !== undefined ? { value: text(raw.value, LABEL, `${where} 的 value`, code) } : {}),
+    ...(typeof raw.fraction === 'number' ? { fraction: raw.fraction } : {}),
+    ...(raw.time !== undefined ? { time: new Date(raw.time).toISOString() } : {}) };
 }
 // What a button sends: an object the action's command reads as JSON.
 export function actionArgs(value) {
