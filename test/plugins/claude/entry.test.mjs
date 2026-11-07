@@ -117,6 +117,27 @@ test('session/new lists the concrete models the SDK resolves its rows to, and se
   assert.equal((await c.request('session/new', { cwd: c.cwd, mcpServers: [] })).error.code, -32600, 'one session a process');
 });
 
+test('Ultracode is a switch where the model can run it, and a change of effort keeps it on', async t => {
+  const c = await setup(t);
+  const opened = await c.open(), query = queries.get(c.sessionId);
+  const ultracode = options => options.find(o => o.id === 'ultracode');
+  assert.deepEqual(ultracode(opened.configOptions), { id: 'ultracode', name: 'Ultracode', description: '每个任务都用工作流派多个子 Agent 完成，用量明显更大',
+    category: 'model_config', type: 'boolean', currentValue: false });
+  const set = (configId, value) => c.request('session/set_config_option', { sessionId: c.sessionId, configId, value, ...(typeof value === 'boolean' ? { type: 'boolean' } : {}) });
+  assert.equal(ultracode((await set('ultracode', true)).result.configOptions).currentValue, true);
+  assert.deepEqual([query.flags.at(-1), query.ultracode], [{ ultracode: true }, true]);
+  assert.equal((await set('ultracode', 'on')).error.code, -32602);
+  const effort = (await set('effort', 'high')).result.configOptions;
+  assert.deepEqual([query.flags.at(-1), query.ultracode, ultracode(effort).currentValue], [{ effortLevel: 'high', ultracode: true }, true, true]);
+  await set('ultracode', false);
+  assert.deepEqual([query.flags.at(-1), query.ultracode], [{ ultracode: false }, false]);
+  await set('ultracode', true);
+  // A model that cannot run it has no switch, and none to set.
+  assert.equal(ultracode((await set('model', 'other-model')).result.configOptions), undefined);
+  assert.equal((await set('ultracode', true)).error.code, -32602);
+  assert.equal(ultracode((await set('model', 'fixture-model-v1')).result.configOptions).currentValue, true, 'as the SDK says it applies');
+});
+
 test('Coda\'s session instructions follow Claude Code\'s system prompt, on a new session and a loaded one; other modes are refused', async t => {
   const systemPrompt = text => ({ mode: 'append', content: [{ type: 'text', text }] });
   const c = await setup(t);

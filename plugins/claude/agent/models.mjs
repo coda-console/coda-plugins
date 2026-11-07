@@ -53,10 +53,13 @@ function modelSelect(currentValue, models) {
 // The effort that leaves it to the model, marked as the agent's own default (docs/agent-protocol.md): what Coda goes back to
 // when the session's effort is taken off.
 export const MODEL_EFFORT = 'default';
-// `current`: { mode, model, effort }. An effort not chosen is null: the model's own default.
+// `current`: { mode, model, effort, ultracode }. An effort not chosen is null: the model's own default. Ultracode is null
+// where the model cannot run it.
 export function configOptions(models, current) {
   const efforts = models.find(m => m.id === current.model)?.efforts ?? [];
   return [select('mode', '审批模式', 'mode', current.mode, MODES), modelSelect(current.model, models),
     ...(efforts.length ? [select('effort', '推理强度', 'thought_level', efforts.includes(current.effort) ? current.effort : MODEL_EFFORT,
-      [{ id: MODEL_EFFORT, name: '模型默认', _meta: { coda: { default: true } } }, ...efforts.map(id => ({ id, name: id }))])] : [])];
+      [{ id: MODEL_EFFORT, name: '模型默认', _meta: { coda: { default: true } } }, ...efforts.map(id => ({ id, name: id }))])] : []),
+    ...(current.ultracode !== null ? [{ id: 'ultracode', name: 'Ultracode', description: '每个任务都用工作流派多个子 Agent 完成，用量明显更大',
+      category: 'model_config', type: 'boolean', currentValue: current.ultracode }] : [])];
 }

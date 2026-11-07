@@ -19,7 +19,7 @@ export function fixtureSdk(argv = []) {
     queue = []; wake = null; closed = false; controller = new AbortController();
     constructor({ prompt, options }) {
       this.options = options; this.id = options.resume ?? options.sessionId; this.model = options.model ?? models[0].value; this.mode = options.permissionMode ?? 'default';
-      this.effort = options.settings?.effortLevel;
+      this.effort = options.settings?.effortLevel; this.ultracode = options.settings?.ultracode === true;
       this.entries = options.resume ? JSON.parse(readFileSync(path(options.cwd, this.id))) : [];
       this.persist(); queries.set(this.id, this);
       // What the client writes is read as it comes (`received`, all of it), and turns run one at a time: a message marked `next`
@@ -284,7 +284,17 @@ export function fixtureSdk(argv = []) {
     }
     async setModel(model) { this.model = model; }
     async setPermissionMode(mode) { this.mode = mode; }
-    async applyFlagSettings(settings) { this.effort = settings.effortLevel; }
+    // As the SDK applies them: an effort moved to another without `ultracode` turns Ultracode off (`flags`: each applied).
+    async applyFlagSettings(settings) {
+      (this.flags ??= []).push(settings);
+      if ('effortLevel' in settings) { if (settings.effortLevel !== this.effort && !('ultracode' in settings)) this.ultracode = false; this.effort = settings.effortLevel; }
+      if ('ultracode' in settings) this.ultracode = settings.ultracode;
+    }
+    // Ultracode runs on the fixture model alone, its variant included.
+    async getSettings() {
+      const ultracodeAvailable = this.model.startsWith('fixture-model');
+      return { applied: { ultracode: ultracodeAvailable && this.ultracode, ultracodeAvailable } };
+    }
     // `cancelQueued`: the messages that came and are not taken yet go too, as Claude Code cancels them (`interrupts`: each asked).
     async interrupt(options) {
       (this.interrupts ??= []).push(options ?? null);
