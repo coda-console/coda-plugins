@@ -4,7 +4,7 @@
   "displayName": "Codex 多账号",
   "description": "管理多个 Codex 账号与额度",
   "icon": { "symbol": "person.2.fill", "color": "teal" },
-  "version": "2.2.0",
+  "version": "2.3.0",
   "categories": ["模型与账号"],
   "extensionDependencies": [
     "codex"
@@ -15,11 +15,11 @@
         "command": "exec node \"$CODA_PLUGIN_PATH/scripts/source.mjs\""
       }
     },
-    "panels": [
+    "resources": [
       {
         "id": "accounts",
-        "title": "Codex 多账号",
-        "command": "node \"$CODA_PLUGIN_PATH/scripts/panel.mjs\"",
+        "title": "Codex",
+        "command": "node \"$CODA_PLUGIN_PATH/scripts/resources.mjs\"",
         "maxAge": "PT5M",
         "actions": {
           "select": {
@@ -36,7 +36,7 @@
         },
         "signIn": {
           "command": "NO_COLOR=1 exec node \"$CODA_PLUGIN_PATH/scripts/login.mjs\"",
-          "note": "登录其他账号即可添加；登录已有账号会更新其凭据。首个账号会自动选用，之后可在面板切换。"
+          "note": "登录其他账号即可添加；登录已有账号会更新其凭据。首个账号会自动选用，之后在账号那一行的「···」里切换。"
         }
       }
     ]

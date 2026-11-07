@@ -1,4 +1,4 @@
-// The 宿主资源 plugin's scripts, run as Coda runs them (plugins/host/README.md): its panel over the groups as Coda says they
+// The 宿主资源 plugin's scripts, run as Coda runs them (plugins/host/README.md): its resource over the groups as Coda says they
 // are, its command host-sim in a session, a step and a held command, the step of 持锁执行 and that of 清点模拟器. How Coda's
 // engine queues them (hold-group, coda:group) is Coda's own to test; a simulator tool here is a stand-in's.
 import assert from 'node:assert/strict';
@@ -11,6 +11,7 @@ import { serveSimulatorStatus, runFinished } from '../../../plugins/host/lib/sim
 import { registerSimulator, registrations } from '../../../plugins/host/lib/simulators.mjs';
 import { pluginDir } from '../plugin.mjs';
 import { declaredPanel, manifest, pluginEnv, run } from '../command.mjs';
+import { readResources } from '../../../check/panel.mjs';
 
 const dir = pluginDir('host');
 function temporary(t) {
@@ -41,7 +42,7 @@ if (args[0] === 'delete' && args[1] !== 'STUCK') fs.writeFileSync(${JSON.stringi
   return { tool, devices: () => readFileSync(state, 'utf8').split('\n').filter(Boolean), log: () => existsSync(log) ? readFileSync(log, 'utf8') : '' };
 }
 
-test('the panel shows the free slots, who holds the group host and who waits; one holding it whole leaves none free', async () => {
+test('the resource shows the free slots, who holds the group host and who waits; one holding it whole leaves none free', async () => {
   const now = Date.UTC(2026, 9, 13, 12), ago = minutes => now - minutes * 60_000;
   const one = (runId, title, thread, since, more = {}) => ({ runId, workflow: 'w', title, status: null, threadId: 't', thread, since, ...more });
   const host = { name: 'host', occupied: 1, holders: [one('r1', 'testflight', null, ago(75), { borrowed: false, leaving: false })],
@@ -50,15 +51,17 @@ test('the panel shows the free slots, who holds the group host and who waits; on
     const { code, stdout } = await run(declaredPanel('host').command,
       env({ CODA_GROUPS_STATE: JSON.stringify({ now, groups }), CODA_PLUGIN_SETTINGS: JSON.stringify({ 'host.capacity': 2 }) }));
     assert.equal(code, 0);
-    return JSON.parse(stdout).items[0];
+    return readResources(stdout, declaredPanel('host'))[0].values;
   };
   const slots = await read([host]);
-  assert.equal(slots.subtitle, '这个实例同时允许 2 个（设置「名额数」）');
-  assert.deepEqual(slots.items.map(i => [i.label, i.value]), [['空闲名额', '1 / 2'], ['testflight', '占用 1 小时 15 分钟'], ['xcodebuild test · 会话乙', '排第 1 位，等了 2 分钟']]);
-  assert.equal(slots.items[0].fraction, 0.5);
+  assert.deepEqual(slots.map(i => [i.label, i.value]), [['空闲', '1 / 2'], ['testflight', '占用 1 小时 15 分钟'], ['xcodebuild test · 会话乙', '排第 1 位，等了 2 分钟']]);
+  assert.equal(slots[0].fraction, 0.5);
   const cleaning = await read([{ ...host, holders: [one('r6', '清点模拟器', null, ago(1), { borrowed: false, leaving: false, exclusive: true })] }]);
-  assert.deepEqual(cleaning.items.slice(0, 2).map(i => [i.label, i.value]), [['空闲名额', '0 / 2'], ['清点模拟器', '占满 1 分钟']]);
-  assert.deepEqual((await read([])).items.map(i => [i.label, i.value]), [['空闲名额', '2 / 2']]);
+  assert.deepEqual(cleaning.slice(0, 2).map(i => [i.label, i.value]), [['空闲', '0 / 2'], ['清点模拟器', '占满 1 分钟']]);
+  assert.deepEqual((await read([])).map(i => [i.label, i.value]), [['空闲', '2 / 2']]);
+  // As many as a resource has values: the free slots, then those holding it, then those waiting.
+  const many = await read([{ ...host, queue: Array.from({ length: 12 }, (_, i) => one(`q${i}`, `job ${i}`, null, ago(1), { capacity: 2 })) }]);
+  assert.deepEqual([many.length, many.at(-1).label], [8, 'job 5']);
 });
 
 test('host-sim in a session points to run-held; outside Coda, or in a step holding nothing, there is no slot to take', async () => {

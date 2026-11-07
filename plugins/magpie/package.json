@@ -4,7 +4,7 @@
   "displayName": "Magpie",
   "description": "把本机 Magpie 网关提供为模型服务",
   "icon": { "symbol": "bird.fill", "color": "indigo" },
-  "version": "1.3.0",
+  "version": "1.4.0",
   "categories": ["模型与账号"],
   "contributes": {
     "configuration": {
@@ -39,10 +39,10 @@
         "url": "http://127.0.0.1:3425"
       }
     ],
-    "panels": [
+    "resources": [
       {
         "id": "quotas",
-        "title": "Magpie 额度",
+        "title": "Magpie",
         "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/quotas.mjs\"",
         "maxAge": "PT1M"
       }

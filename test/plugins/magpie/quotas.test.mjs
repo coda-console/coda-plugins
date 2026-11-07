@@ -1,4 +1,4 @@
-// The Magpie plugin's panel「Magpie 额度」, run as Coda runs it from its manifest, from a copy of the plugin whose model
+// The Magpie plugin's resource type「Magpie」, run as Coda runs it from its manifest, from a copy of the plugin whose model
 // services point at a gateway the test stands in.
 import assert from 'node:assert/strict';
 import { cpSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { declaredPanel, manifest, pluginEnv, run } from '../command.mjs';
+import { readResources } from '../../../check/panel.mjs';
 import { pluginDir } from '../plugin.mjs';
 
 const declared = declaredPanel('magpie', 'quotas');
@@ -44,26 +45,24 @@ async function panel(t, answer) {
   return run(declared.command, { ...pluginEnv('magpie', { CODA_NODE: process.execPath }), CODA_PLUGIN_PATH: copy });
 }
 
-test('each subscription Magpie serves is a card: what is left of each window as the other panels say it, its balance and resets, and why a reading failed', async t => {
+test('each subscription Magpie serves is a resource: what is left of each window as the other plugins say it, its balance and resets, and why a reading failed', async t => {
   const ran = await panel(t, { body: { object: 'list', data: quotas } });
   assert.equal(ran.code, 0, ran.stderr);
-  assert.deepEqual(JSON.parse(ran.stdout).items, [
-    { type: 'card', title: 'Codex', subtitle: 'pro · a@example.com', items: [
-      { type: 'meter', label: '5 小时', value: '剩余 100%', fraction: 1 },
-      { type: 'meter', label: '7 天', value: '剩余 63%', fraction: 0.63, time: '2026-10-30T01:13:02+08:00', timeLabel: '重置' },
-      { type: 'stat', label: '余额', value: '62033.82 credits' },
-      { type: 'stat', label: '可用重置', value: '2 次' }] },
-    { type: 'card', title: 'WorkBuddy', subtitle: 'Free · 我的', items: [
-      { type: 'meter', label: 'Credits', value: '剩余 75%', fraction: 0.75 }] },
-    { type: 'card', title: 'Kimi', items: [
-      { type: 'meter', label: '月度', value: '不限' },
-      { type: 'error', text: 'the usage endpoint answered 502' }] },
+  // Whose it is beside the service (its alias, else the user); no plan.
+  assert.deepEqual(readResources(ran.stdout, declared), [
+    { name: 'Codex · a@example.com', values: [
+      { label: '5 小时', value: '剩余 100%', fraction: 1 },
+      { label: '7 天', value: '剩余 63%', fraction: 0.63, time: '2026-10-29T17:13:02.000Z' },
+      { label: '余额', value: '62033.82 credits' },
+      { label: '可用重置', value: '2 次' }], actions: [] },
+    { name: 'WorkBuddy · 我的', values: [{ label: 'Credits', value: '剩余 75%', fraction: 0.75 }], actions: [] },
+    { name: 'Kimi', values: [{ label: '月度', value: '不限' }], error: 'the usage endpoint answered 502', actions: [] },
   ]);
 });
 
-test('with none, the panel has nothing to show', async t => {
+test('with none, the type has nothing to show', async t => {
   const ran = await panel(t, { body: { object: 'list', data: [] } });
-  assert.deepEqual([ran.code, JSON.parse(ran.stdout)], [0, { items: [] }]);
+  assert.deepEqual([ran.code, JSON.parse(ran.stdout)], [0, { resources: [] }]);
 });
 
 test('a gateway that does not answer, or cannot say, fails the reading with why', async t => {

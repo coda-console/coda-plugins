@@ -3,7 +3,7 @@
   "id": "kimi",
   "displayName": "Kimi Code",
   "description": "用 Kimi Code 跑会话",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "categories": [
     "Agent"
   ],
@@ -30,11 +30,11 @@
         "setupHint": "请在「资源」里为运行机添加 Kimi。"
       }
     ],
-    "panels": [
+    "resources": [
       {
         "id": "account",
         "title": "Kimi",
-        "command": "node \"$CODA_PLUGIN_PATH/scripts/panel.mjs\"",
+        "command": "node \"$CODA_PLUGIN_PATH/scripts/resources.mjs\"",
         "maxAge": "PT5M",
         "signIn": {
           "command": "exec sh \"$CODA_PLUGIN_PATH/scripts/login.sh\"",

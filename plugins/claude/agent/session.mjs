@@ -3,7 +3,7 @@
 // its input. What Claude says, its tools and their results, its settings, its title and its usage become session updates;
 // what it keeps going beside a turn, waits (waits.mjs); what it asks, permission requests and forms, withdrawn as the SDK
 // withdraws them. A turn Claude begins on its own is told by what it handles. The plan windows it reports go to the file
-// the plugin's「Claude」panel reads (limits.json in CODA_PLUGIN_STATE, limits.mjs), not to Coda's session. Chosen, a session
+// the plugin's「Claude」resource reads (limits.json in CODA_PLUGIN_STATE, limits.mjs), not to Coda's session. Chosen, a session
 // that is to go on later is compacted before its cache expires, as the plugin's lifecycle process asks (compaction.mjs).
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -184,8 +184,8 @@ export class ClaudeSession {
       const initialization = await this.initialized(), served = await listed;
       if (this.phase !== 'starting') throw failure('Claude 会话在初始化时结束', -32001);
       this.models = [...claudeModels(initialization.models), ...served]; this.commands = initialization.commands ?? [];
-      // Who the session runs as, for the「Claude」panel (limits.mjs): the windows it reports are that account's, and
-      // only while the panel is of that account.
+      // Who the session runs as, for the「Claude」resource (limits.mjs): the windows it reports are that account's, and
+      // only while the resource is of that account.
       const email = initialization.account?.email;
       this.account = typeof email === 'string' && email.trim() ? accountHash(email) : null;
       if (this.env.CODA_PLUGIN_STATE) new ClaudeSessionLimits({ path: join(this.env.CODA_PLUGIN_STATE, 'limits.json') }).startedAs(this.account);

@@ -1,5 +1,5 @@
 // Which Kimi CLI runs: the one its installer puts in ~/.kimi-code/bin, else the first `kimi` on the PATH; the same the
-// 「Kimi」panel signs in and reads the quota with (scripts/).
+// 「Kimi」resource type signs in and reads the quota with (scripts/).
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';

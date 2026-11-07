@@ -1,7 +1,7 @@
 // The plugin's setup (`contributes.setup`), which Coda runs on each machine when the user installs or updates the plugin: it
 // ends well once the machine can run the agent. Without a Grok CLI that runs, or with one older than MINIMUM (the CLI whose
 // `agent --no-leader stdio` and `_x.ai/yolo_mode_changed` the agent entry was checked against), Grok's own installer puts
-// the latest in ~/.grok/bin, where the agent looks first, as the「Grok」panel's install does; a newer one is kept. Why the
+// the latest in ~/.grok/bin, where the agent looks first, as the「Grok」type's install does; a newer one is kept. Why the
 // machine is not ready is said in one line on standard error.
 import { spawnSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
@@ -35,7 +35,7 @@ if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToP
   const before = needed(grokBinary());
   if (before.action !== 'none') {
     // What the installer prints goes to standard error with the rest of its story.
-    // As the panel's `install`: without SHELL it leaves the shell's configuration alone.
+    // As the type's `install`: without SHELL it leaves the shell's configuration alone.
     const installed = spawnSync('bash', ['-c', 'set -o pipefail; curl -fsSL https://x.ai/cli/install.sh | bash'], { stdio: ['ignore', 2, 2],
       env: { ...process.env, SHELL: '', PATH: `${join(homedir(), '.grok/bin')}:${process.env.PATH ?? ''}` } });
     if (installed.status !== 0) { console.error(`${before.reason}，安装失败（退出码 ${installed.status ?? installed.signal}）`); process.exit(1); }

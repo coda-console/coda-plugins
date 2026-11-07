@@ -5,7 +5,7 @@
 // `refresh: true` asks the owner to renew a rejected access token, even before its expiry.
 // Either may answer `{ "id", "error": { "message" } }`. A source taking full ownership reports an error until an account
 // is chosen; a legacy source's `null` leaves the underlying login as it is. A source that ends is started again when asked.
-// An installed source owns the account panel and handles `--login` for Codex's existing login entry.
+// An installed source owns the account's resources and handles `--login` for Codex's existing login entry.
 import { spawn } from 'node:child_process';
 import { dirname } from 'node:path';
 import { readLines } from './lines.mjs';
@@ -28,7 +28,7 @@ export class AccountSource {
   }
   start() {
     const { command } = this.source;
-    // As a panel's command is run (docs/plugins.md「面板」): its plugin's directory and state, and this Node first on the PATH.
+    // As a resource type's command is run (docs/plugins.md「资源」): its plugin's directory and state, and this Node first on the PATH.
     const child = spawn('/bin/sh', ['-c', command], { env: sourceEnv(this.source, this.env),
       stdio: ['pipe', 'pipe', 'ignore'] });
     child.stdin.on('error', () => {});

@@ -1,4 +1,4 @@
-// The panel's「切换使用」checks the owned account before saving the choice. Sessions take it at their next boundary.
+// The「切换使用」button checks the owned account before saving the choice. Sessions take it at their next boundary.
 import { withAccount } from './codex.mjs';
 import { choose, tokens } from './manager.mjs';
 

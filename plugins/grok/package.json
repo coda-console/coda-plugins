@@ -3,7 +3,7 @@
   "id": "grok",
   "displayName": "Grok",
   "description": "用 Grok CLI 跑会话",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "categories": [
     "Agent"
   ],
@@ -31,11 +31,11 @@
         "setupHint": "请在「资源」里为运行机添加 Grok。"
       }
     ],
-    "panels": [
+    "resources": [
       {
         "id": "account",
         "title": "Grok",
-        "command": "node \"$CODA_PLUGIN_PATH/scripts/panel.mjs\"",
+        "command": "node \"$CODA_PLUGIN_PATH/scripts/resources.mjs\"",
         "maxAge": "PT5M",
         "signIn": {
           "command": "g=\"$HOME/.grok/bin/grok\"; [ -x \"$g\" ] || g=grok; BROWSER=/usr/bin/true NO_COLOR=1 exec \"$g\" login --device-auth",

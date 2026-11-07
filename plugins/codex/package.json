@@ -3,7 +3,7 @@
   "id": "codex",
   "displayName": "Codex",
   "description": "用 OpenAI Codex 跑会话",
-  "version": "1.10.0",
+  "version": "1.11.0",
   "categories": [
     "Agent"
   ],
@@ -59,11 +59,11 @@
         }
       }
     },
-    "panels": [
+    "resources": [
       {
         "id": "login",
         "title": "Codex",
-        "command": "node \"$CODA_PLUGIN_PATH/scripts/panel.mjs\"",
+        "command": "node \"$CODA_PLUGIN_PATH/scripts/resources.mjs\"",
         "maxAge": "PT0S",
         "actions": {
           "reset": {
@@ -79,7 +79,7 @@
     ],
     "extensionPoints": {
       "account-source": {
-        "description": "Codex 的账号与登录入口：来源给出当前账号和令牌，响应 --login，并提供账号与额度面板；接入后 Codex 自带的额度面板隐藏。"
+        "description": "Codex 的账号与登录入口：来源给出当前账号和令牌，响应 --login，并提供账号与额度资源；接入后 Codex 自带的那一行不再显示。"
       }
     }
   },

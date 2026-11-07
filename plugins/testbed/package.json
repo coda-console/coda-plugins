@@ -4,7 +4,7 @@
   "displayName": "测试机",
   "description": "排队使用 iPhone、iPad 测试机",
   "icon": { "symbol": "iphone", "color": "gray" },
-  "version": "1.4.0",
+  "version": "1.5.0",
   "categories": [
     "机器与资源"
   ],
@@ -12,11 +12,11 @@
     "host"
   ],
   "contributes": {
-    "panels": [
+    "resources": [
       {
         "id": "devices",
         "title": "测试机",
-        "command": "node \"$CODA_PLUGIN_PATH/scripts/panel.mjs\""
+        "command": "node \"$CODA_PLUGIN_PATH/scripts/resources.mjs\""
       }
     ],
     "capabilities": [
