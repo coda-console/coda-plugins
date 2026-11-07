@@ -8,9 +8,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { panelTypes } from '../../../check/panel.mjs';
+import { readResources } from '../../../check/panel.mjs';
 import { identity, list, tokens, selection, choose, remove, saveLogin } from '../../../plugins/codex-accounts/scripts/manager.mjs';
-import { panel } from '../../../plugins/codex-accounts/scripts/quota.mjs';
+import { resources } from '../../../plugins/codex-accounts/scripts/quota.mjs';
 import { AccountSource } from '../../../plugins/codex/agent/account-source.mjs';
 import { declaredPanel, manifest, pluginEnv, run } from '../command.mjs';
 import { pluginDir } from '../plugin.mjs';
@@ -24,7 +24,7 @@ const auth = (account, exp = Date.now() / 1000 + 3600) => ({ auth_mode: 'chatgpt
   access_token: jwt({ exp, 'https://api.openai.com/auth': { chatgpt_account_id: account, chatgpt_plan_type: 'pro' } }),
   id_token: jwt({ email: `${account}@example.com` }), refresh_token: `PRIVATE-REFRESH-${account}`, account_id: account,
 } });
-const takes = value => panelTypes(JSON.stringify(value), declared);
+const takes = value => readResources(JSON.stringify(value), declared);
 async function until(fn) { for (let i = 0; i < 1000; i++) { if (await fn()) return; await delay(10); } throw Error('timed out'); }
 async function setup(t) {
   const dir = await realpath(await mkdtemp(join(tmpdir(), 'coda-owned-accounts-'))), state = join(dir, 'state'), native = join(dir, 'native'), log = join(dir, 'events.jsonl');
@@ -50,7 +50,7 @@ test('a clean installation offers Coda login without an external account library
   assert.deepEqual(await list(f.at), []);
   assert.ok(declared.signIn?.command); assert.equal(declared.signIn.installed, undefined);
   const result = await f.exec(declared.command);
-  assert.equal(result.code, 0, result.stderr); assert.deepEqual(JSON.parse(result.stdout), { items: [] });
+  assert.equal(result.code, 0, result.stderr); assert.deepEqual(JSON.parse(result.stdout), { resources: [] });
   await assert.rejects(f.source().selected(), /添加或选择/);
   await assert.rejects(choose('native', f.at), /尚未在插件中登录/);
   assert.deepEqual(await f.events(), [], 'no Codex processes needed to show an empty store');
@@ -85,7 +85,7 @@ test('an old native selection is adopted, while an unavailable explicit account 
   await list(g.at); assert.equal(selection(g.at), identity('previous'));
   await assert.rejects(g.source().selected(), /所选账号尚未/);
   const view = JSON.parse((await g.exec(declared.command)).stdout);
-  assert.ok(view.items.some(i => i.type === 'error')); takes(view);
+  assert.deepEqual(view.resources[0], { name: '所选账号', error: '尚未在插件中登录：重新登录它，或切换到其他账号' }); takes(view);
 });
 
 test('device login adds accounts, re-login updates by identity, and failed login preserves accounts and selection', async t => {
@@ -157,7 +157,7 @@ test('a stale credential lock recovers and unsafe auth files fail without exposi
   await assert.rejects(remove('../native', f.at), /没有指明/);
 });
 
-test('the panel shows only managed accounts, with a selection and removal action; failed quota stays on its own card', async () => {
+test('the resources are only the managed accounts, with a selection and removal action; failed quota stays on its own row', async () => {
   const accounts = [{ alias: 'work', identity: 'w', plan: 'pro' }, { alias: 'home', identity: 'h', plan: 'plus' }];
   const early = Date.UTC(2026, 9, 20, 1) / 1000;
   const read = async a => {
@@ -165,33 +165,34 @@ test('the panel shows only managed accounts, with a selection and removal action
     return { rateLimits: { primary: { usedPercent: 10, windowDurationMins: 300 } },
       rateLimitResetCredits: { availableCount: 1, credits: [{ id: 'c1', status: 'available', resetType: 'codexRateLimits', expiresAt: early }] } };
   };
-  const view = await panel(accounts, 'w', read), cards = view.items.filter(i => i.type === 'card'); takes(view);
-  assert.deepEqual(cards.map(c => c.title), ['work', 'home']);
+  const view = await resources(accounts, 'w', read), rows = takes(view);
+  assert.deepEqual(rows.map(r => r.name), ['work', 'home']);
   // Without an email who it is is not known: no identity for Coda's group view to merge on.
-  assert.deepEqual(cards.map(c => c.identity), [undefined, undefined]);
-  // With one, who and which workspace (the manager's identity, the workspace's account ID hashed), as the Codex panel
+  assert.deepEqual(rows.map(r => r.identity), [undefined, undefined]);
+  // With one, who and which workspace (the manager's identity, the workspace's account ID hashed), as the Codex plugin
   // says the same login: one person in one workspace, the same on every machine.
-  const named = (await panel([{ alias: 'Me@Example.com', identity: '6941a40c68883449343dbf6ec558673ef50f456eead61cb4fa7ea9c519ee63aa', plan: 'pro' }], null, read)).items.find(i => i.type === 'card');
+  const named = (await resources([{ alias: 'Me@Example.com', identity: '6941a40c68883449343dbf6ec558673ef50f456eead61cb4fa7ea9c519ee63aa', plan: 'pro' }], null, read)).resources[0];
   assert.equal(named.identity, 'codex:4f8c8f70fdb1a82f325caca6fccb78690831f66027018f748a0c7141a6d929a3');
-  const colleague = (await panel([{ alias: 'colleague@example.com', identity: '6941a40c68883449343dbf6ec558673ef50f456eead61cb4fa7ea9c519ee63aa', plan: 'pro' }], null, read)).items.find(i => i.type === 'card');
+  const colleague = (await resources([{ alias: 'colleague@example.com', identity: '6941a40c68883449343dbf6ec558673ef50f456eead61cb4fa7ea9c519ee63aa', plan: 'pro' }], null, read)).resources[0];
   assert.notEqual(colleague.identity, named.identity);
-  assert.equal(cards[0].items[0].label, '已选择'); assert.equal(cards[0].items[0].disabled, true);
-  assert.ok(cards.every(c => c.items.some(i => i.action === 'remove')));
-  assert.ok(cards[0].items.some(i => i.action === 'reset' && i.args.creditId === 'c1'));
-  assert.ok(cards[1].items.some(i => i.type === 'error'));
+  // The one sessions use says so; the others offer switching to them. No plan beside the name.
+  assert.deepEqual(rows[0].values, [{ label: '状态', value: '正在使用' }, { label: '5 小时', value: '剩余 90%', fraction: 0.9 },
+    { label: '完全重置', value: '剩余 1 次', time: new Date(early * 1000).toISOString() }]);
+  assert.deepEqual(rows.map(r => r.actions.map(a => a.label)), [['使用完全重置', '移除账号'], ['切换使用', '移除账号']]);
+  assert.deepEqual(rows[0].actions[0].args, { account: 'w', creditId: 'c1' });
+  assert.equal(rows[1].error, '暂时无法获取额度：请重新登录');
   const many = Array.from({ length: 60 }, (_, i) => ({ alias: `account-${i}`, identity: `i${i}`, plan: 'pro' }));
-  const big = await panel(many, null, async () => ({ rateLimitResetCredits: { availableCount: 30, credits: Array.from({ length: 30 }, (_, i) =>
+  const big = await resources(many, null, async () => ({ rateLimitResetCredits: { availableCount: 30, credits: Array.from({ length: 30 }, (_, i) =>
     ({ id: `c${i}`, status: 'available', resetType: 'codexRateLimits', expiresAt: early })) } }));
   assert.ok(Buffer.byteLength(JSON.stringify(big)) < 64 * 1024);
-  const count = takes(big).filter(type => type === 'card').length;
-  assert.deepEqual(big.items.at(-1), { type: 'markdown', text: `另有 ${60 - count} 个账号没有列出` });
+  assert.equal(takes(big).length, 40, 'as many as a reading holds');
 });
 
-test('panel commands switch only to a checked account, reset its quota, and remove its credentials', async t => {
+test('the type\'s commands switch only to a checked account, reset its quota, and remove its credentials', async t => {
   const f = await setup(t); await f.login('first'); await f.login('second');
   const read = await f.exec(declared.command); assert.equal(read.code, 0, read.stderr);
   const view = JSON.parse(read.stdout); takes(view);
-  assert.ok(view.items.filter(i => i.type === 'card').every(c => c.items.some(i => i.type === 'meter' && i.value === '剩余 50%')));
+  assert.ok(view.resources.every(r => r.values.some(v => v.value === '剩余 50%')));
   const select = account => f.exec(declared.actions.select.command, { CODA_PANEL_ARGS: JSON.stringify({ account: identity(account) }) });
   assert.equal((await select('second')).code, 0); assert.equal(selection(f.at), identity('second'));
   const refused = await f.exec(declared.actions.select.command, { CODA_PANEL_ARGS: JSON.stringify({ account: identity('first') }), FAKE_REFUSE: '1' });
@@ -229,7 +230,7 @@ test('installing the source hides the built-in quota board, guards stale resets,
   const extensions = { 'account-source': [{ plugin: 'codex-accounts', command: sourceCommand, path: pluginDir('codex-accounts'), state: f.state }] };
   const env = { ...f.env(), CODA_PLUGIN_PATH: pluginDir('codex'), CODA_PLUGIN_EXTENSIONS: JSON.stringify(extensions) };
   const hidden = await run(native.command, env);
-  assert.equal(hidden.code, 0, hidden.stderr); assert.deepEqual(JSON.parse(hidden.stdout), { items: [] });
+  assert.equal(hidden.code, 0, hidden.stderr); assert.deepEqual(JSON.parse(hidden.stdout), { resources: [] });
   assert.deepEqual(await f.events(), [], 'hidden native board never queries the old login');
   const staleReset = await run(native.actions.reset.command, { ...env, CODA_PANEL_ARGS: JSON.stringify({ creditId: 'old-credit' }) });
   assert.equal(staleReset.code, 1); assert.match(staleReset.stderr, /已由账号插件接管/); assert.deepEqual(await f.events(), []);
@@ -238,7 +239,7 @@ test('installing the source hides the built-in quota board, guards stale resets,
   assert.deepEqual((await list(f.at)).map(a => a.alias), ['existing@example.com', 'second@example.com']);
   assert.equal(await readFile(join(f.native, 'auth.json'), 'utf8'), original);
   const restored = await run(native.command, { ...env, CODA_PLUGIN_EXTENSIONS: '{}' });
-  assert.equal(restored.code, 0, restored.stderr); assert.equal(JSON.parse(restored.stdout).items[0].title, 'existing@example.com');
+  assert.equal(restored.code, 0, restored.stderr); assert.equal(JSON.parse(restored.stdout).resources[0].name, 'existing@example.com');
 });
 
 test('an unreadable old login does not prevent signing in directly through the plugin', async t => {

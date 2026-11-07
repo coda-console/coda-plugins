@@ -3,7 +3,7 @@
   "id": "claude",
   "displayName": "Claude",
   "description": "用 Claude Agent SDK 跑会话",
-  "version": "1.9.0",
+  "version": "1.10.0",
   "categories": [
     "Agent"
   ],
@@ -61,11 +61,11 @@
         }
       }
     },
-    "panels": [
+    "resources": [
       {
         "id": "limits",
         "title": "Claude",
-        "command": "node \"$CODA_PLUGIN_PATH/scripts/panel.mjs\"",
+        "command": "node \"$CODA_PLUGIN_PATH/scripts/resources.mjs\"",
         "signIn": {
           "command": "exec node \"$CODA_PLUGIN_PATH/scripts/login.mjs\"",
           "installed": "node \"$CODA_PLUGIN_PATH/scripts/login.mjs\" --installed",

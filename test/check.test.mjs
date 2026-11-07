@@ -57,10 +57,11 @@ describe('this repository', () => {
     assert.match(report.items.find(item => item.rule === 'live.waits').message, /登记 1 个（task ×1），自主轮次 1 次，都已结束/);
     assert.match(report.items.find(item => item.rule === 'live.autonomous').message, /两秒到了/);
   });
-  test('templates/panel reads as a panel', async () => {
-    const { report } = await checkPlugin(at('templates/panel'), { live: true, limits });
+  test('templates/resource reads as resources', async () => {
+    const { report } = await checkPlugin(at('templates/resource'), { live: true, limits });
     assertPasses(report, ['manifest.name', 'manifest.panels', 'panel.read']);
-    assert.match(report.items.find(item => item.rule === 'panel.read').message, /card ×1.*button ×1.*meter ×1/);
+    assert.match(report.items.find(item => item.rule === 'manifest.panels').message, /资源类型 uptime「运行时间」：动作 mark/);
+    assert.match(report.items.find(item => item.rule === 'panel.read').message, /输出合资源格式：1 个资源，读数 2 个，按钮 1 个/);
   });
   // Coda's own types, and those the points of the plugins Coda ships declare (the resources plugin's `panels`), pass; another
   // no plugin declares is of no type.
@@ -75,7 +76,7 @@ describe('this repository', () => {
     const link = join(mkdtempSync(join(tmpdir(), 'coda-plugin-check-link-')), 'repo');
     temps.push(join(link, '..'));
     symlinkSync(root, link);
-    const { report } = await checkPlugin(join(link, 'templates/panel'), { manifestOnly: true });
+    const { report } = await checkPlugin(join(link, 'templates/resource'), { manifestOnly: true });
     assert.deepEqual(failed(report), []);
   });
   test('plugins/cursor passes the manifest level', async () => {
@@ -85,7 +86,7 @@ describe('this repository', () => {
   });
   test('the command line exits 0 on a pass and 1 on a failure', () => {
     const run = (...args) => spawnSync(process.execPath, [at('bin/check.mjs'), ...args], { encoding: 'utf8' });
-    const good = run(at('templates/panel'));
+    const good = run(at('templates/resource'));
     assert.equal(good.status, 0, good.stdout);
     assert.match(good.stdout, /结果：通过/);
     assert.match(good.stdout, /类型是 Coda [0-9a-f]{7} 的 schema/);
@@ -479,6 +480,12 @@ describe('manifests Coda does not take', () => {
     const { report } = await checkPlugin(dir, { agent: null, limits });
     assert.ok(failed(report).includes('panel.output'), JSON.stringify(report.items, null, 1));
     assert.match(report.failures.find(f => f.rule === 'panel.output').message, /fraction 须在 0–1 之间/);
+  });
+  test('resources whose output Coda cannot read, or that explain themselves', async () => {
+    const dir = plugin({ files: { 'resources.mjs': `console.log(JSON.stringify({ resources: [{ name: '用量', subtitle: '本月' }] }))` },
+      manifest: { contributes: { resources: [{ id: 'usage', title: '用量', command: 'node "$CODA_PLUGIN_PATH/resources.mjs"' }] } } });
+    const { report } = await checkPlugin(dir, { agent: null, limits });
+    assert.match(report.failures.find(f => f.rule === 'panel.output').message, /输出不合资源格式：.*不支持的键：subtitle/);
   });
   test('a panel whose command fails says what the resources page shows', async () => {
     const dir = plugin({ manifest: { contributes: { panels: [{ id: 'usage', title: '用量', command: 'echo 读不到用量 >&2; exit 3' }] } } });

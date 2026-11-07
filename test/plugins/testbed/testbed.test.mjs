@@ -1,4 +1,4 @@
-// The 测试机 plugin's scripts, run as Coda runs them (plugins/testbed/README.md): its panel over the devices registered here
+// The 测试机 plugin's scripts, run as Coda runs them (plugins/testbed/README.md): its resources over the devices registered here
 // and their groups, the steps of use-testbed that find a device and put its black screen up, its part of host-sim (plugged
 // into the host plugin's point `kinds`) and the step of run-on-device. The flow around them is Coda's engine's to run.
 import assert from 'node:assert/strict';
@@ -9,6 +9,7 @@ import { basename, join } from 'node:path';
 import { test } from 'node:test';
 import { pluginDir } from '../plugin.mjs';
 import { declaredPanel, manifest, pluginEnv, run } from '../command.mjs';
+import { readResources } from '../../../check/panel.mjs';
 
 const dir = pluginDir('testbed');
 const phone = { id: 'iphone-testbed', name: 'iPhone13pm', udid: 'TEST-IPHONE', note: '登录着用户的 Apple 账号：不碰钱包与支付。' };
@@ -37,7 +38,7 @@ async function step(t, name, extra) {
   return { ...ended, outputs: readFileSync(output, 'utf8') };
 }
 
-test('the panel shows each device registered here, who uses it, who borrowed it and who waits; none registered, nothing', async t => {
+test('the resources are each device registered here, who uses it, who borrowed it and who waits; none registered, nothing', async t => {
   const state = registered(t, [phone, { id: 'ipad-testbed', name: 'iPad Air', udid: 'B' }]);
   const now = Date.UTC(2026, 9, 13, 12), ago = minutes => now - minutes * 60_000;
   const one = (runId, title, thread, since, more = {}) => ({ runId, workflow: 'w', title, status: null, threadId: 't', thread, since, ...more });
@@ -45,19 +46,18 @@ test('the panel shows each device registered here, who uses it, who borrowed it 
     holders: [one('r5', 'iphone-testbed：xcrun devicectl', '会话甲', ago(0), { borrowed: true, leaving: false }), one('r3', 'iphone-testbed：看首页', '会话甲', ago(12), { borrowed: false, leaving: false })] },
   { name: 'host', occupied: 1, holders: [one('r1', 'testflight', null, ago(75), { borrowed: false, leaving: false })], queue: [] }];
   const read = async state => {
-    const { code, stdout } = await run(declaredPanel('testbed').command, env({ CODA_PLUGIN_STATE: state, CODA_GROUPS_STATE: JSON.stringify({ now, groups }) }));
-    assert.equal(code, 0);
-    return JSON.parse(stdout).items;
+    const { code, stdout, stderr } = await run(declaredPanel('testbed').command, env({ CODA_PLUGIN_STATE: state, CODA_GROUPS_STATE: JSON.stringify({ now, groups }) }));
+    return code === 0 ? readResources(stdout, declaredPanel('testbed')) : { code, stderr };
   };
   const [iphone, ipad] = await read(state);
-  assert.deepEqual([iphone.title, iphone.subtitle, ipad.title], ['iPhone13pm', 'iphone-testbed', 'iPad Air']);
+  assert.deepEqual([iphone.name, ipad.name], ['iPhone13pm · iphone-testbed', 'iPad Air · ipad-testbed']);
   // The use that holds it first, what a session borrowed it for after.
-  assert.deepEqual(iphone.items.map(i => [i.label, i.value]), [['iphone-testbed：看首页 · 会话甲', '使用中 12 分钟'],
+  assert.deepEqual(iphone.values.map(i => [i.label, i.value]), [['iphone-testbed：看首页 · 会话甲', '使用中 12 分钟'],
     ['iphone-testbed：xcrun devicectl · 会话甲', '会话借用 不到 1 分钟'], ['w · 另一个会话', '排第 1 位，等了 3 分钟']]);
-  assert.deepEqual(ipad.items.map(i => [i.label, i.value]), [['状态', '空闲']]);
+  assert.deepEqual(ipad.values, [{ value: '空闲' }]);
   assert.deepEqual(await read(registered(t)), []);
-  const [broken] = await read(registered(t, '{ not json'));
-  assert.equal(broken.type, 'error'); assert.match(broken.text, /读不了设备登记/);
+  const broken = await read(registered(t, '{ not json'));
+  assert.equal(broken.code, 1); assert.match(broken.stderr, /读不了设备登记/);
 });
 
 test('找测试机 gives the registered device\'s name, UDID and note; one not registered fails, saying which are', async t => {

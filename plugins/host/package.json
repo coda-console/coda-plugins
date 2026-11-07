@@ -4,16 +4,16 @@
   "displayName": "宿主资源",
   "description": "Xcode 构建与模拟器的排队名额",
   "icon": { "symbol": "hammer.fill", "color": "gray" },
-  "version": "1.3.0",
+  "version": "1.4.0",
   "categories": [
     "机器与资源"
   ],
   "contributes": {
-    "panels": [
+    "resources": [
       {
         "id": "slots",
-        "title": "构建与模拟器名额",
-        "command": "node \"$CODA_PLUGIN_PATH/scripts/panel.mjs\""
+        "title": "构建名额",
+        "command": "node \"$CODA_PLUGIN_PATH/scripts/resources.mjs\""
       }
     ],
     "capabilities": [

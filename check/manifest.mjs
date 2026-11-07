@@ -107,9 +107,11 @@ export function checkManifest(dir, say) {
   const found = besideAll(dir, plugin.dependencies);
   const offered = offerProblem(plugin, new Map([...builtin, ...found]));
   if (offered) say.fail('manifest.offers', offered);
-  // Its panels, as the resources plugin reads what is written for its point once that is of the point's schema.
-  const panels = offered ? [] : panelDeclarations(plugin.offers?.panels);
-  for (const panel of panels) say.pass('manifest.panels', `面板 ${panel.id}「${panel.title}」：动作 ${Object.keys(panel.actions).join('、') || '无'}${panel.signIn ? '，可从 Coda 登录' : ''}`);
+  // Its resource types, or the panels before them, as the resources plugin reads what is written for its point once that is
+  // of the point's schema: one declaring types has those alone.
+  const format = plugin.offers?.resources ? 'resources' : 'panels', what = format === 'resources' ? '资源类型' : '面板';
+  const panels = offered ? [] : panelDeclarations(plugin.offers?.[format]).map(panel => ({ ...panel, format }));
+  for (const panel of panels) say.pass('manifest.panels', `${what} ${panel.id}「${panel.title}」：动作 ${Object.keys(panel.actions).join('、') || '无'}${panel.signIn ? '，可从 Coda 登录' : ''}`);
 
   // What its processes are given (pluginEnv): the plugins it depends on, those beside it here; one Coda ships has its
   // directory in Coda, not here, even with one of its ID beside it (Coda picks its own), and one found nowhere is not named.

@@ -1,7 +1,7 @@
 // A private connection to the Codex CLI's app-server (a copy of the codex plugin's scripts/app-server.mjs: a plugin uses
 // nothing of another's but what it plugs into). Used for a managed account's home and isolated token checks.
 // The CLI is the codex plugin's (its `@openai/codex` dependency, found from its directory in `CODA_PLUGIN_DEPENDENCIES`), so
-// the panel asks the same Codex the sessions run.
+// the resources ask the same Codex the sessions run.
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';

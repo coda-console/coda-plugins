@@ -9,9 +9,10 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { pluginDir } from './plugin.mjs';
 
 export const manifest = id => JSON.parse(readFileSync(join(pluginDir(id), 'package.json'), 'utf8'));
-// A panel as its manifest declares it (the first, unless named), its actions as Coda reads them: none is `{}`.
+// A resource type (or a panel before them) as its manifest declares it (the first, unless named), its actions as Coda reads
+// them: none is `{}`.
 export function declaredPanel(id, panelId) {
-  const panels = manifest(id).contributes.panels, panel = panelId ? panels.find(p => p.id === panelId) : panels[0];
+  const { resources, panels: before } = manifest(id).contributes, panels = resources ?? before, panel = panelId ? panels.find(p => p.id === panelId) : panels[0];
   return { ...panel, actions: panel.actions ?? {} };
 }
 

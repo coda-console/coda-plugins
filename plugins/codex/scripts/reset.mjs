@@ -1,11 +1,11 @@
-// The panel's「使用完全重置」: redeems exactly the credit its button named (without one Codex would pick for itself), once.
-// Anything but a reset is said in one line and fails the action, so the panel shows it.
+// The「使用完全重置」button: redeems exactly the credit its button named (without one Codex would pick for itself), once.
+// Anything but a reset is said in one line and fails the action, so its row shows it.
 import { randomUUID } from 'node:crypto';
 import { withAppServer } from './app-server.mjs';
 import { outcomes } from './quota.mjs';
 import { accountSource } from '../agent/account-source.mjs';
 
-if (accountSource()) { console.error('额度已由账号插件接管，请在账号面板使用完全重置'); process.exit(1); }
+if (accountSource()) { console.error('额度已由账号插件接管，请在账号插件的那一行使用完全重置'); process.exit(1); }
 
 const { creditId } = JSON.parse(process.env.CODA_PANEL_ARGS || '{}');
 if (typeof creditId !== 'string' || !creditId) { console.error('没有指明用哪一次完全重置'); process.exit(1); }
