@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { readWorkflow } from '@coda-console/protocol/workflow';
 import { evaluate } from 'feelin';
 
 const script = fileURLToPath(new URL('../../../plugins/review/scripts/review.mjs', import.meta.url));
@@ -85,4 +86,42 @@ test('merge options default to the configured selection, including an explicit e
   assert.deepEqual(selected(['deleteBranch', 'notify']), ['deleteBranch', 'notify']);
   assert.deepEqual(selected(['deploy', 'preview', 'release']), ['deploy', 'preview', 'release']);
   assert.deepEqual(selected([]), []);
+});
+
+// Each answer of a task that fixes a failed version, followed through the flow: pushed waits quietly for the new version.
+test('fixing a failed version: pushed waits for the new version, again reruns the step, rejected goes to the user', async () => {
+  const source = readFileSync(new URL('../../../plugins/review/.coda/workflows/pull-request.bpmn', import.meta.url), 'utf8');
+  const { root, problem } = await readWorkflow(source, 'pull-request'); assert.ok(!problem, problem);
+  const process = root.rootElements.find(e => e.$type === 'bpmn:Process');
+  const nodes = {}, flows = [], parent = {};
+  const index = container => {
+    for (const e of container.flowElements ?? []) {
+      if (e.$type === 'bpmn:SequenceFlow') flows.push(e); else nodes[e.id] = e;
+      if (e.$type === 'bpmn:SubProcess') { for (const c of e.flowElements ?? []) parent[c.id] = e; index(e); }
+    }
+  };
+  index(process);
+  const outputs = node => Object.fromEntries((node.extensionElements?.values ?? []).filter(v => v.$type === 'coda:Output').map(v => [v.name, v.value]));
+  // Where the flow goes from a node, through gateways and out of subprocesses, to the next step that waits or works.
+  const STEPS = ['bpmn:UserTask', 'bpmn:ServiceTask', 'bpmn:ScriptTask', 'bpmn:ReceiveTask', 'bpmn:SubProcess'];
+  const next = (id, context) => {
+    const out = flows.filter(f => f.sourceRef.id === id);
+    const to = (out.find(f => f.conditionExpression && evaluate(f.conditionExpression.body.trim().slice(1), context).value) ?? nodes[id].default ?? out[0]).targetRef.id;
+    if (STEPS.includes(nodes[to].$type)) return to;
+    if (nodes[to].$type === 'bpmn:EndEvent') { context[parent[to].id] = outputs(nodes[to]); return next(parent[to].id, context); }
+    return next(to, context);
+  };
+  const answer = (task, choice) => next(task, { [task]: { result: 'completed', choice, chose: { [choice]: true } } });
+  const boundary = task => Object.values(nodes).find(n => n.$type === 'bpmn:BoundaryEvent' && n.attachedToRef.id === task && n.eventDefinitions[0].$type === 'bpmn:ErrorEventDefinition').id;
+  for (const [task, again, user] of [['fix-checks', 'run-checks', 'checks-user'], ['fix-premerge', 'premerge', 'premerge-user'], ['unblock', 'merge', 'unblock-user']]) {
+    assert.deepEqual(nodes[task].extensionElements.values.map(c => c.id), ['again', 'pushed'], task);
+    assert.match(nodes[task].documentation[0].text, /choice pushed/, task);
+    assert.equal(answer(task, 'pushed'), 'waiting', task);
+    assert.equal(answer(task, 'again'), again, task);
+    assert.equal(next(boundary(task), {}), user, task);
+  }
+  // The new version's event takes the waiting run back to the start: checks, then review.
+  assert.equal(nodes.waiting.messageRef.name, 'pull_request.synchronize');
+  assert.equal(next('waiting', { github: { event: { pull_request: { draft: false } } } }), 'checking');
+  assert.equal(next('after-checking', { checking: { outcome: 'passed' } }), 'reviewing');
 });

@@ -613,21 +613,6 @@
         "order": 5,
         "default": "PT1H"
       },
-      "session.handToUser": {
-        "type": "boolean",
-        "description": "流程交给会话 Agent 的任务，Agent 停下没答复、也没有别的东西会叫醒它时，转成你的卡片；关掉就一直留在 Agent 那里，等它下次被叫醒。",
-        "title": "Agent 停下没答复的任务转给你",
-        "order": 8,
-        "default": true
-      },
-      "session.handToUserAfter": {
-        "type": "string",
-        "format": "duration",
-        "description": "从 Agent 最后一次干活算起。期间它刚做完的事让流程撤掉了任务（如推送新提交），就不转；进程已停就立即转。",
-        "title": "Agent 停下多久后转给你",
-        "order": 9,
-        "default": "PT2M"
-      },
       "session.subagents": {
         "type": "integer",
         "minimum": 1,

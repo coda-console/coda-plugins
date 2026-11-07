@@ -143,7 +143,7 @@ head：{{report.head}}
       <sequenceFlow id="preview-note" sourceRef="after-preview" targetRef="preview"><conditionExpression xsi:type="tFormalExpression">=preview-result.route = "preview"</conditionExpression></sequenceFlow>
       <sequenceFlow id="preview-review" sourceRef="after-preview" targetRef="acceptance-return"><conditionExpression xsi:type="tFormalExpression">=preview-result.route = "review"</conditionExpression></sequenceFlow>
       <sequenceFlow id="preview-device" sourceRef="after-preview" targetRef="device" />
-      <userTask id="device" name="设备验收" coda:assignee="user" coda:handback="false" coda:noteLabel="验收意见">
+      <userTask id="device" name="设备验收" coda:assignee="user" coda:noteLabel="验收意见">
         <documentation>功能：{{inputs.title}}
 泳道：{{accept.lane}}，提交：{{accept.head}}
 主 Agent 的安装结果：{{preview.note}}
@@ -240,7 +240,7 @@ head：{{pr.head}}
       <extensionElements><coda:param name="commit" value="=pr.head" /></extensionElements>
     </serviceTask>
     <sequenceFlow id="kinds-approve" sourceRef="kinds" targetRef="approve" />
-    <userTask id="approve" name="批准合并" coda:noteLabel="备注（可选）" coda:assignee="user" coda:handback="false">
+    <userTask id="approve" name="批准合并" coda:noteLabel="备注（可选）" coda:assignee="user">
       <documentation>PR：{{pr.url}}
 提交：{{pr.head}}
 {{if inputs.devices then "设备验收和项目检查已通过。" else "项目检查已通过。"}}批准后先在此提交上跑合并前检查，再 squash 合入目标分支；确认合并后按勾选依次部署、发布预览版、发布正式版，每类一次。
