@@ -226,6 +226,12 @@ Claude 的设置「缓存过期前压缩」（`claude.idleCompaction`，默认�
 - 会话事实 `pinned`、`usage`，动作 `compact-session` 与流程属性 `coda:agents` 由 Coda 提供（见 Coda 仓 docs/workflows.md「生命周期流程」与
   docs/agent-protocol.md），Coda 还没有这些时，这条流程读不进来，不会运行。
 
+### Claude Ultracode
+
+Ultracode 是 Claude Agent SDK 的会话设置 `ultracode`：每个任务都用动态工作流派多个子 Agent 完成，与推理强度无关。
+入口用布尔配置项 `ultracode`（「Ultracode」）报告它，只在当前模型能开时出现（SDK `getSettings()` 的 `applied.ultracodeAvailable`），
+开关经 `applyFlagSettings` 设给 SDK；改推理强度时同时带上 `ultracode`，不会把它关掉。打开后用量明显更大。
+
 ### Grok 审批模式
 
 Grok 插件通过 ACP 提供原来的「自动审批」「全部放行」两个选项；新会话未选择时沿用运行机配置。
