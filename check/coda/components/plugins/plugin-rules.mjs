@@ -136,7 +136,7 @@ export function readPlugin(dir, source) {
     // The entry as one path in its directory (`./view/a.html`, `view//a.html` are `view/a.html`): the clients load it by that.
     views: (contributes.views ?? []).map(v => ({ id: v.id, title: v.title, entry: posix.normalize(v.entry), ...(v.in?.length ? { in: [...v.in] } : {}),
       ...(v.icon ? { icon: v.icon } : {}), ...(v.handles?.length ? { handles: [...v.handles] } : {}), ...(v.readout ? { readout: v.readout } : {}),
-      ...(v.checkout ? { checkout: v.checkout } : {}) })),
+      ...(v.checkout ? { checkout: v.checkout } : {}), ...(v.frame ? { frame: v.frame } : {}) })),
     ...(contributes.composerModes?.length ? { composerModes: composerModes(contributes.composerModes) } : {}),
     ...(Object.keys(offers).length ? { offers } : {}),
     agents: agentDeclarations(contributes.agents, dir),
