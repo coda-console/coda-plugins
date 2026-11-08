@@ -324,7 +324,7 @@
     "id": "guide",
     "displayName": "Coda 使用指南",
     "description": "让 Agent 会回答 Coda 怎么用",
-    "version": "1.0.3",
+    "version": "1.0.5",
     "category": "工作流程",
     "icon": {
       "symbol": "book.fill",
@@ -1221,7 +1221,7 @@
     "id": "composer",
     "displayName": "输入框模式",
     "description": "交接、子会话、! 命令、Ultra 与循环",
-    "version": "3.10.1",
+    "version": "4.0.0",
     "category": "工作流程",
     "icon": {
       "symbol": "character.cursor.ibeam",
@@ -1232,8 +1232,8 @@
       "kind": "builtin",
       "package": "@coda-console/composer",
       "tag": "latest",
-      "version": "3.10.1",
-      "integrity": "sha512-21uk17cG/JCC8ohPzJy5bvJnY8e75c0SAec77hr6hxv00SvyoZtKrfeG2sz3bbOZqz/v3lxOoJ1AeVBZ81gfOw==",
+      "version": "4.0.0",
+      "integrity": "sha512-TDZQcbqlcCcUlY2tch4r4dc7cT5xwmk0pYVPuJQ973hAupokbPhhHhkKTnJjZoqg+VFsd4fyIyDDF5GFzFG+rw==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/composer"
     },
@@ -1809,7 +1809,7 @@
     "id": "review",
     "displayName": "PR 生命流程",
     "description": "PR 从检查、评审到批准合并",
-    "version": "2.10.0",
+    "version": "2.11.0",
     "category": "工作流程",
     "icon": {
       "symbol": "checkmark.bubble.fill",
@@ -1820,8 +1820,8 @@
       "kind": "builtin",
       "package": "@coda-console/review",
       "tag": "latest",
-      "version": "2.10.0",
-      "integrity": "sha512-EutKwDxNJmijPJawe48K4ffeHbaFo8JZEhYgJHY/dVwonsXHcSwj4S7flYWiQvdiM03O22Ha4KfI4V15SOripA==",
+      "version": "2.11.0",
+      "integrity": "sha512-GMFBiWjfBV4Q3oPViA/wm6Adz1hu8bKNCHcSMn5nnV+FQG+/+NbdXUU7Amr69kElTWknJJ2fZtpmeEa4PZuvXw==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/review"
     },
