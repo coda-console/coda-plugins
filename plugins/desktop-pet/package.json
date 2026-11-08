@@ -1,0 +1,39 @@
+{
+  "name": "@coda-console/desktop-pet",
+  "id": "desktop-pet",
+  "displayName": "桌面宠物",
+  "description": "Coda 娘待在桌面上：Agent 在跑时她在打字，有事等你时举起卡片叫你",
+  "icon": {
+    "symbol": "pawprint.fill",
+    "color": "pink"
+  },
+  "version": "0.1.0",
+  "type": "module",
+  "main": "main.mjs",
+  "contributes": {
+    "views": [
+      {
+        "id": "home",
+        "title": "桌面宠物",
+        "entry": "view/home.html",
+        "in": [
+          "page"
+        ],
+        "icon": "pawprint",
+        "frame": "document"
+      },
+      {
+        "id": "pet",
+        "title": "Coda 娘",
+        "entry": "view/pet.html",
+        "frame": "canvas"
+      }
+    ]
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coda-console/coda-plugins.git",
+    "directory": "plugins/desktop-pet"
+  }
+}

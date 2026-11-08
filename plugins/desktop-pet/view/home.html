@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<style>
+  body { margin: 0; padding: 20px; font: var(--coda-font-size, 13px)/1.5 var(--coda-font, -apple-system), sans-serif; color: var(--coda-foreground); background: var(--coda-background); }
+  .card { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; padding: 16px; border-radius: var(--coda-radius-card, 12px); background: var(--coda-card); border: 1px solid var(--coda-outline); }
+  img { width: 180px; max-width: 40%; border-radius: 10px; background: #fff; }
+  .text { flex: 1; min-width: 200px; }
+  h2 { margin: 0 0 4px; font-size: 1.25em; }
+  p { margin: 0 0 12px; color: var(--coda-secondary); }
+  button { border: 0; border-radius: var(--coda-radius, 8px); padding: 7px 14px; background: var(--coda-accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+  button.quiet { background: var(--coda-fill); color: var(--coda-foreground); }
+  #status { margin: 12px 0 0; font-size: .92em; color: var(--coda-tertiary); }
+</style></head>
+<body>
+  <div class="card">
+    <img src="portrait.jpg" alt="Coda 娘">
+    <div class="text">
+      <h2>Coda 娘</h2>
+      <p>待在桌面上陪你：Agent 在跑时她在打字，有事等你时举起卡片叫你，点气泡直接去处理。拖起来能把她扔到别处；双击缩成贴边的悬浮球，右键收起。</p>
+      <button id="toggle">放到桌面上</button>
+      <div id="status"></div>
+    </div>
+  </div>
+  <script type="module" src="home.js"></script>
+</body></html>
