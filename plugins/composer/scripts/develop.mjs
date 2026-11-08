@@ -199,8 +199,7 @@ switch (action) {
     save();
     break;
   case 'merge': {
-    const view = () => JSON.parse(gh('pr', 'view', state.pr, '--json', 'state,headRefOid,mergeCommit,mergeable'));
-    const pr = view();
+    const pr = JSON.parse(gh('pr', 'view', state.pr, '--json', 'state,headRefOid,mergeCommit'));
     if (pr.state === 'MERGED') {
       if (pr.headRefOid !== state.head) throw new Error(`PR 已合并，但 head 不一致：预期 ${state.head}，实际 ${pr.headRefOid}`);
       output('route', 'merged');
@@ -208,16 +207,6 @@ switch (action) {
       break;
     }
     if (pr.state === 'CLOSED') throw new Error(`PR 已关闭但未合并：${state.pr}`);
-    if (pr.headRefOid !== state.head) throw new Error(`PR head 不一致：预期 ${state.head}，实际 ${pr.headRefOid}`);
-    const conflict = pr => {
-      if (pr.state !== 'OPEN' || pr.headRefOid !== state.head || pr.mergeable !== 'CONFLICTING') return false;
-      state.feedback = `PR ${state.pr} 与目标分支 ${state.base} 存在合并冲突，提交 ${state.head}。\n请主 Agent 审查后用「退回修改」交给执行者：运行 git fetch origin ${state.base}，将最新目标分支合入当前执行分支并解冲突；迁移版本号等撞号要顺延，跑相关测试并提交。之后重新经过项目检查、审查、更新 PR、合并前检查和 GitHub 检查，再重新批准合并及部署、发布选项。`;
-      state.phase = 'check';
-      save();
-      output('route', 'conflict');
-      return true;
-    };
-    if (conflict(pr)) break;
     // 显式 --repo 让 gh 只删除远端分支，避免在分离 HEAD 中操作本地分支。
     const url = new URL(state.pr);
     const repo = `${url.host}/${url.pathname.split('/').slice(1, 3).join('/')}`;
@@ -226,7 +215,14 @@ switch (action) {
     process.stdout.write(result.stdout);
     process.stderr.write(result.stderr);
     if (result.status !== 0) {
-      if (/not mergeable/i.test(result.stderr) && conflict(view())) break;
+      const failed = JSON.parse(gh('pr', 'view', state.pr, '--json', 'state,mergeable'));
+      if (failed.state === 'OPEN' && failed.mergeable === 'CONFLICTING') {
+        state.feedback = `PR ${state.pr} 与目标分支 ${state.base} 存在合并冲突，提交 ${state.head}。\n请主 Agent 审查后用「退回修改」交给执行者：运行 git fetch origin ${state.base}，将最新目标分支合入当前执行分支并解冲突；迁移版本号等撞号要顺延，跑相关测试并提交。之后重新经过项目检查、审查、更新 PR、合并前检查和 GitHub 检查，再重新批准合并及部署、发布选项。`;
+        state.phase = 'check';
+        save();
+        output('route', 'conflict');
+        break;
+      }
       process.exit(result.status ?? 1);
     }
     const commit = gh('pr', 'view', state.pr, '--json', 'mergeCommit', '--jq', '.mergeCommit.oid');

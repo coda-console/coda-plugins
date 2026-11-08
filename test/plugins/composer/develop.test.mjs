@@ -84,9 +84,9 @@ else if (args[1] === 'view') {
     console.log(JSON.stringify({ headRefOid: process.env.PR_HEAD || state.head, statusCheckRollup: [{}] }));
     process.exit(Number(process.env.CHECKS_QUERY_EXIT || 0));
   }
-  if (args.includes('state,headRefOid,mergeCommit,mergeable')) {
+  if (args.includes('state,headRefOid,mergeCommit') || args.includes('state,mergeable')) {
     const state = JSON.parse(readFileSync(join(process.env.CODA_ARTIFACTS, 'develop.json'), 'utf8'));
-    console.log(JSON.stringify({ state: process.env.PR_STATE || 'OPEN', mergeable: (calls.some(c => c.args[1] === 'merge') && process.env.PR_MERGEABLE_AFTER) || process.env.PR_MERGEABLE || 'MERGEABLE', headRefOid: process.env.PR_HEAD || state.head, mergeCommit: { oid: 'f'.repeat(40) } }));
+    console.log(JSON.stringify({ state: process.env.PR_STATE || 'OPEN', mergeable: process.env.PR_MERGEABLE || 'MERGEABLE', headRefOid: process.env.PR_HEAD || state.head, mergeCommit: { oid: 'f'.repeat(40) } }));
   } else console.log('f'.repeat(40));
 }
 else if (args[1] === 'checks') {
@@ -229,7 +229,6 @@ for (const scenario of [
   { name: '已合并且 head 一致可重复读取提交', state: 'MERGED', deleted: true },
   { name: '已合并但 head 不一致失败', state: 'MERGED', head: 'a'.repeat(40), error: /已合并，但 head 不一致/ },
   { name: '已关闭未合并失败', state: 'CLOSED', error: /已关闭但未合并/ },
-  { name: 'OPEN head 不一致即使冲突仍失败', state: 'OPEN', head: 'a'.repeat(40), error: /PR head 不一致/ },
   { name: '真实合并失败直接退出', state: 'OPEN', merge: true, exit: '7' },
 ]) test(scenario.name, t => {
   const f = fixture(t);
@@ -257,20 +256,25 @@ for (const scenario of [
 });
 
 for (const scenario of [
-  { name: 'not mergeable 后确认冲突', mergeable: 'CONFLICTING', stderr: 'X Pull request is not mergeable', conflict: true },
+  { name: '合并失败后确认冲突', mergeable: 'CONFLICTING', stderr: 'X Pull request is not mergeable', conflict: true },
   { name: 'not mergeable 但 UNKNOWN 仍失败', mergeable: 'UNKNOWN', stderr: 'X Pull request is not mergeable' },
   { name: 'not mergeable 但 MERGEABLE 仍失败', mergeable: 'MERGEABLE', stderr: 'X Pull request is not mergeable' },
-  { name: '权限失败不按冲突退回', mergeable: 'CONFLICTING', stderr: 'HTTP 403: Forbidden' },
-  { name: '网络失败不按冲突退回', mergeable: 'CONFLICTING', stderr: 'network unavailable' },
+  { name: '错误文案变化仍按冲突退回', mergeable: 'CONFLICTING', conflict: true, stderr: '合并冲突' },
+  { name: '权限失败且无冲突仍失败', mergeable: 'MERGEABLE', stderr: 'HTTP 403: Forbidden' },
+  { name: '网络失败且无冲突仍失败', mergeable: 'UNKNOWN', stderr: 'network unavailable' },
 ]) test(scenario.name, t => {
   const f = fixture(t); f.run('lane'); f.run('pr');
-  const result = f.run('merge', { MERGE_EXIT: '7', MERGE_STDERR: scenario.stderr, PR_MERGEABLE_AFTER: scenario.mergeable }, scenario.conflict ? 0 : 7);
+  const result = f.run('merge', { MERGE_EXIT: '7', MERGE_STDERR: scenario.stderr, PR_MERGEABLE: scenario.mergeable }, scenario.conflict ? 0 : 7);
   assert.equal(result.stderr, scenario.stderr);
   assert.deepEqual(result.outputs, scenario.conflict ? { route: 'conflict' } : {});
   assert.equal(Boolean(f.state().feedback), Boolean(scenario.conflict));
+  const queries = f.calls('gh').filter(c => c.args.includes('state,mergeable'));
+  assert.equal(queries.length, 1, '合并失败后只查一次冲突状态');
+  const mergeIndex = f.calls('gh').findIndex(c => c.args[1] === 'merge');
+  assert.equal(f.calls('gh')[mergeIndex + 1].args.at(-1), 'state,mergeable');
 });
 
-test('合并冲突带反馈回审查，原执行者合入 base 后重走检查、更新同一 PR 并重新批准', t => {
+test('合并冲突带反馈回审查，原执行者合入 base 后重走检查、更新同一 PR 并重新批准', async t => {
   const f = fixture(t); f.run('lane'); f.task('base', 'worker change'); f.run('execute');
   f.run('gate'); f.run('gate-passed', { RUNS: '[]' });
   f.review('accept', '汇报'); f.run('accept'); f.run('pr');
@@ -280,8 +284,8 @@ test('合并冲突带反馈回审查，原执行者合入 base 后重走检查�
   writeFileSync(join(f.work, 'base'), 'target change'); f.git('add', 'base'); f.git('commit', '-qm', 'base advanced');
   f.git('push', 'origin', 'main');
   const baseHead = f.git('rev-parse', 'HEAD');
-  assert.deepEqual(f.run('merge', { PR_MERGEABLE: 'CONFLICTING' }).outputs, { route: 'conflict' });
-  assert.equal(f.calls('gh').filter(c => c.args[1] === 'merge').length, 0);
+  assert.deepEqual(f.run('merge', { MERGE_EXIT: '1', PR_MERGEABLE: 'CONFLICTING' }).outputs, { route: 'conflict' });
+  assert.equal(f.calls('gh').filter(c => c.args[1] === 'merge').length, 1);
   assert.equal(f.state().head, before.head);
   assert.equal(f.state().phase, 'check');
   const feedback = f.run('review').outputs.feedback;
@@ -302,8 +306,17 @@ test('合并冲突带反馈回审查，原执行者合入 base 后重走检查�
   f.run('github-checks');
   assert.equal(f.run('approval', { APPROVAL: JSON.stringify({ choice: 'merge', options: {} }) }).outputs.route, 'merge', '新批准不沿用旧发布选项或要求发布说明');
   assert.equal(f.run('merge').outputs.commit, 'f'.repeat(40));
-  const merged = f.calls('gh').find(c => c.args[1] === 'merge');
+  const merged = f.calls('gh').filter(c => c.args[1] === 'merge').at(-1);
   assert.equal(merged.args[merged.args.indexOf('--match-head-commit') + 1], head);
+  const { root, problem } = await readWorkflow(workflow, 'develop'); assert.ok(!problem, problem);
+  const nodes = Object.fromEntries(root.rootElements.find(e => e.$type === 'bpmn:Process').flowElements.map(e => [e.id, e]));
+  for (const [id, option] of [['merged-deploy', 'deploy'], ['to-publish-preview', 'preview'], ['to-publish-release', 'release']]) {
+    const expression = nodes[id].conditionExpression.body.slice(1);
+    const context = { approve: { options: { [option]: true } } };
+    assert.equal(evaluate(expression, context).value, true);
+    context.approve = { options: { [option]: false } };
+    assert.equal(evaluate(expression, context).value, false, '新批准卡取消选项后不部署或发布');
+  }
 });
 
 test('泳道不接受分叉，Agent 非零退出不进入审查', t => {
@@ -465,10 +478,9 @@ test('开发流程定义、回路、检查提交与部署发布选择符合运�
   assert.equal(nodes['told-device-pr'].sourceRef.id, 'tell-device');
   assert.equal(nodes['told-device-pr'].targetRef.id, 'pr');
   assert.equal(nodes['merge-route'].targetRef.id, 'after-merge');
-  assert.equal(route('after-merge', { merge: { route: 'conflict' } }), 'merge-feedback');
+  assert.equal(route('after-merge', { merge: { route: 'conflict' } }), 'report');
   assert.equal(route('after-merge', { merge: { route: 'merged', commit: 'merged' } }), 'deploy-choice');
-  assert.equal(nodes['merge-review'].targetRef.id, 'report');
-  assert.match(nodes['merge-feedback'].script, /develop\.mjs" review/);
+  assert.equal(nodes['merge-feedback'], undefined);
   assert.equal(nodes['kinds-approve'].targetRef.id, 'approve', '新一轮必须重新进入用户批准任务');
   assert.equal(nodes['approve-route'].sourceRef.id, 'approve');
   assert.equal(nodes['approve-route'].targetRef.id, 'approval-result');
