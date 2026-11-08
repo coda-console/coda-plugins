@@ -17,20 +17,20 @@
     "title": "批准执行",
     "properties": {},
     "workflows": [],
+    "services": [],
+    "agents": [],
+    "instructions": "权限受阻时，先走原生权限升级或审批（如 Codex 的 require_escalated）。原生机制不可用、仍受权限阻拦或需用户明确授权时，才调用 workflow_run，workflow 为 approve-command，inputs 给 command、cwd（绝对路径）、reason（一行）。用户批准后由 Coda 执行，结果随调用或稍后送达；用户明确拒绝后不换方式重试。",
+    "commands": [],
     "capabilities": [
       "approve-command"
     ],
-    "services": [],
     "groups": [],
-    "commands": [],
     "gitCredentials": [],
     "endpoints": [],
     "views": [],
-    "agents": [],
     "dependencies": [],
     "extensionPoints": {},
-    "extensions": [],
-    "instructions": "权限受阻时，先走原生权限升级或审批（如 Codex 的 require_escalated）。原生机制不可用、仍受权限阻拦或需用户明确授权时，才调用 workflow_run，workflow 为 approve-command，inputs 给 command、cwd（绝对路径）、reason（一行）。用户批准后由 Coda 执行，结果随调用或稍后送达；用户明确拒绝后不换方式重试。"
+    "extensions": []
   },
   {
     "id": "ask-user",
@@ -50,20 +50,20 @@
     "title": "提问",
     "properties": {},
     "workflows": [],
+    "services": [],
+    "agents": [],
+    "instructions": "要用户补充信息或拿主意才能做下去时，有原生提问工具（如 AskUserQuestion）就用它；没有就调用 workflow_run，workflow 为 ask-user，inputs 给 question（一行）、detail（背景与要补充什么，可省略）。不要结束这一轮在回复里问；答复随调用或稍后送达。",
+    "commands": [],
     "capabilities": [
       "ask-user"
     ],
-    "services": [],
     "groups": [],
-    "commands": [],
     "gitCredentials": [],
     "endpoints": [],
     "views": [],
-    "agents": [],
     "dependencies": [],
     "extensionPoints": {},
-    "extensions": [],
-    "instructions": "要用户补充信息或拿主意才能做下去时，有原生提问工具（如 AskUserQuestion）就用它；没有就调用 workflow_run，workflow 为 ask-user，inputs 给 question（一行）、detail（背景与要补充什么，可省略）。不要结束这一轮在回复里问；答复随调用或稍后送达。"
+    "extensions": []
   },
   {
     "id": "changes",
@@ -84,10 +84,11 @@
     "properties": {},
     "main": "main.mjs",
     "workflows": [],
-    "capabilities": [],
     "services": [],
-    "groups": [],
+    "agents": [],
     "commands": [],
+    "capabilities": [],
+    "groups": [],
     "gitCredentials": [],
     "endpoints": [],
     "views": [
@@ -104,7 +105,6 @@
         "frame": "document"
       }
     ],
-    "agents": [],
     "dependencies": [],
     "extensionPoints": {},
     "extensions": []
@@ -143,10 +143,20 @@
       }
     },
     "workflows": [],
-    "capabilities": [],
     "services": [],
-    "groups": [],
+    "agents": [],
     "commands": [],
+    "capabilities": [],
+    "groups": [],
+    "modelProviders": [
+      {
+        "id": "cliproxy",
+        "title": "CLIProxy",
+        "api": "openai-completions",
+        "url": "${config:cliproxy.url}",
+        "key": "cliproxy.key"
+      }
+    ],
     "gitCredentials": [],
     "endpoints": [],
     "views": [],
@@ -160,19 +170,9 @@
         }
       ]
     },
-    "agents": [],
     "dependencies": [],
     "extensionPoints": {},
-    "extensions": [],
-    "modelProviders": [
-      {
-        "id": "cliproxy",
-        "title": "CLIProxy",
-        "api": "openai-completions",
-        "url": "${config:cliproxy.url}",
-        "key": "cliproxy.key"
-      }
-    ]
+    "extensions": []
   },
   {
     "id": "diagnostics",
@@ -192,19 +192,9 @@
     "title": "机器诊断",
     "properties": {},
     "workflows": [],
-    "capabilities": [],
     "services": [],
-    "groups": [],
-    "commands": [],
-    "gitCredentials": [],
-    "endpoints": [],
-    "views": [],
     "agents": [],
-    "dependencies": [
-      "space"
-    ],
-    "extensionPoints": {},
-    "extensions": [],
+    "commands": [],
     "mcpServers": [
       {
         "name": "diagnostics",
@@ -216,7 +206,17 @@
         ],
         "env": []
       }
-    ]
+    ],
+    "capabilities": [],
+    "groups": [],
+    "gitCredentials": [],
+    "endpoints": [],
+    "views": [],
+    "dependencies": [
+      "space"
+    ],
+    "extensionPoints": {},
+    "extensions": []
   },
   {
     "id": "github",
@@ -245,9 +245,9 @@
     "workflows": [
       "pull-request-watch"
     ],
-    "capabilities": [],
     "services": [],
-    "groups": [],
+    "agents": [],
+    "instructions": "GitHub 仓库用 HTTPS 地址（https://github.com/<owner>/<repo>.git），不要改成 SSH 别名。用哪个账号、提交署什么名，由 Coda 按仓库的 owner 决定：不要自己设 user.name、user.email 或 GH_CONFIG_DIR。",
     "commands": [
       {
         "name": "gh",
@@ -262,6 +262,8 @@
         "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/reported-pr.mjs\""
       }
     ],
+    "capabilities": [],
+    "groups": [],
     "events": [
       {
         "name": "github.pull_request_reported",
@@ -303,6 +305,9 @@
         "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/credential.mjs\""
       }
     ],
+    "repositories": {
+      "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/repositories.mjs\""
+    },
     "endpoints": [
       {
         "id": "accounts",
@@ -338,20 +343,15 @@
         }
       ]
     },
-    "agents": [],
     "dependencies": [],
     "extensionPoints": {},
     "extensions": [],
-    "instructions": "GitHub 仓库用 HTTPS 地址（https://github.com/<owner>/<repo>.git），不要改成 SSH 别名。用哪个账号、提交署什么名，由 Coda 按仓库的 owner 决定：不要自己设 user.name、user.email 或 GH_CONFIG_DIR。",
     "environment": [
       {
         "name": "GIT_CONFIG_PARAMETERS",
         "value": "'include.path=${CODA_PLUGIN_STATE}/git/config'"
       }
-    ],
-    "repositories": {
-      "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/repositories.mjs\""
-    }
+    ]
   },
   {
     "id": "guide",
@@ -371,24 +371,24 @@
     "title": "Coda 使用指南",
     "properties": {},
     "workflows": [],
-    "capabilities": [],
     "services": [],
-    "groups": [],
-    "commands": [],
-    "gitCredentials": [],
-    "endpoints": [],
-    "views": [],
     "agents": [],
-    "dependencies": [],
-    "extensionPoints": {},
-    "extensions": [],
     "skills": [
       {
         "name": "coda",
         "path": "src/resources/plugins/guide/skills/coda",
         "description": "Coda 的使用指南：Coda 是什么、连接、目录、会话、卡片、流程、插件、空间各是什么、怎么配合。用户问 Coda 怎么用、某个界面、菜单、状态或标记是什么意思时，先读这里再回答。"
       }
-    ]
+    ],
+    "commands": [],
+    "capabilities": [],
+    "groups": [],
+    "gitCredentials": [],
+    "endpoints": [],
+    "views": [],
+    "dependencies": [],
+    "extensionPoints": {},
+    "extensions": []
   },
   {
     "id": "maintenance",
@@ -451,14 +451,14 @@
       "clean-uploads",
       "maintenance"
     ],
-    "capabilities": [],
     "services": [],
-    "groups": [],
+    "agents": [],
     "commands": [],
+    "capabilities": [],
+    "groups": [],
     "gitCredentials": [],
     "endpoints": [],
     "views": [],
-    "agents": [],
     "dependencies": [],
     "extensionPoints": {},
     "extensions": []
@@ -482,10 +482,11 @@
     "properties": {},
     "main": "main.mjs",
     "workflows": [],
-    "capabilities": [],
     "services": [],
-    "groups": [],
+    "agents": [],
     "commands": [],
+    "capabilities": [],
+    "groups": [],
     "gitCredentials": [],
     "endpoints": [],
     "views": [
@@ -501,7 +502,6 @@
         "frame": "document"
       }
     ],
-    "agents": [],
     "dependencies": [],
     "extensionPoints": {
       "resources": {
@@ -764,21 +764,21 @@
     "title": "密钥",
     "properties": {},
     "workflows": [],
+    "services": [],
+    "agents": [],
+    "instructions": "凭据用 workflow_run 调 secret-request（name、purpose、fields JSON、网页加 host），勿贴对话或读密文。网页用 secret-fill（path、field）；Mac 验证用 secret-fill（target=system、purpose），密码在本会话内存复用。submitted 后核对原操作；管理员、钥匙串、Touch ID 由本人处理。",
+    "commands": [],
     "capabilities": [
       "secret-fill",
       "secret-request"
     ],
-    "services": [],
     "groups": [],
-    "commands": [],
     "gitCredentials": [],
     "endpoints": [],
     "views": [],
-    "agents": [],
     "dependencies": [],
     "extensionPoints": {},
-    "extensions": [],
-    "instructions": "凭据用 workflow_run 调 secret-request（name、purpose、fields JSON、网页加 host），勿贴对话或读密文。网页用 secret-fill（path、field）；Mac 验证用 secret-fill（target=system、purpose），密码在本会话内存复用。submitted 后核对原操作；管理员、钥匙串、Touch ID 由本人处理。"
+    "extensions": []
   },
   {
     "id": "session",
@@ -833,19 +833,19 @@
     "workflows": [
       "session"
     ],
-    "capabilities": [],
     "services": [],
+    "agents": [],
+    "commands": [],
+    "capabilities": [],
     "groups": [
       {
         "name": "subagents",
         "capacity": "session.subagents"
       }
     ],
-    "commands": [],
     "gitCredentials": [],
     "endpoints": [],
     "views": [],
-    "agents": [],
     "dependencies": [],
     "extensionPoints": {},
     "extensions": []
@@ -868,16 +868,16 @@
     "title": "空间",
     "properties": {},
     "workflows": [],
-    "capabilities": [],
     "services": [
       "space"
     ],
-    "groups": [],
+    "agents": [],
     "commands": [],
+    "capabilities": [],
+    "groups": [],
     "gitCredentials": [],
     "endpoints": [],
     "views": [],
-    "agents": [],
     "dependencies": [
       "tailnet"
     ],
@@ -902,21 +902,21 @@
     "title": "网络",
     "properties": {},
     "workflows": [],
-    "capabilities": [],
     "services": [
       "tailnet"
     ],
-    "groups": [],
+    "agents": [],
     "commands": [
       {
         "name": "coda-relay",
         "command": "\"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/relay.mjs\""
       }
     ],
+    "capabilities": [],
+    "groups": [],
     "gitCredentials": [],
     "endpoints": [],
     "views": [],
-    "agents": [],
     "dependencies": [],
     "extensionPoints": {
       "ports": {
@@ -944,10 +944,11 @@
     "properties": {},
     "main": "main.mjs",
     "workflows": [],
-    "capabilities": [],
     "services": [],
-    "groups": [],
+    "agents": [],
     "commands": [],
+    "capabilities": [],
+    "groups": [],
     "gitCredentials": [],
     "endpoints": [],
     "views": [
@@ -982,7 +983,6 @@
         "frame": "canvas"
       }
     ],
-    "agents": [],
     "dependencies": [],
     "extensionPoints": {},
     "extensions": []
@@ -1031,28 +1031,7 @@
     "workflows": [
       "claude-compaction"
     ],
-    "capabilities": [],
     "services": [],
-    "groups": [],
-    "commands": [],
-    "gitCredentials": [],
-    "endpoints": [],
-    "views": [],
-    "offers": {
-      "resources": [
-        {
-          "id": "limits",
-          "title": "Claude",
-          "command": "node \"$CODA_PLUGIN_PATH/scripts/resources.mjs\"",
-          "signIn": {
-            "command": "exec node \"$CODA_PLUGIN_PATH/scripts/login.mjs\"",
-            "installed": "node \"$CODA_PLUGIN_PATH/scripts/login.mjs\" --installed",
-            "input": "authorizationCode",
-            "note": "登录保存在这台机器上，供 Claude SDK 使用；额度在会话运行后出现。这台机器若已配置 OAuth token、API key 或云服务商，会话仍优先用那些配置。"
-          }
-        }
-      ]
-    },
     "agents": [
       {
         "id": "claude-sdk",
@@ -1078,6 +1057,27 @@
         "setupHint": "请在运行机配置 Claude SDK 认证；若指定了 token 文件，请检查路径和权限。"
       }
     ],
+    "commands": [],
+    "capabilities": [],
+    "groups": [],
+    "gitCredentials": [],
+    "endpoints": [],
+    "views": [],
+    "offers": {
+      "resources": [
+        {
+          "id": "limits",
+          "title": "Claude",
+          "command": "node \"$CODA_PLUGIN_PATH/scripts/resources.mjs\"",
+          "signIn": {
+            "command": "exec node \"$CODA_PLUGIN_PATH/scripts/login.mjs\"",
+            "installed": "node \"$CODA_PLUGIN_PATH/scripts/login.mjs\" --installed",
+            "input": "authorizationCode",
+            "note": "登录保存在这台机器上，供 Claude SDK 使用；额度在会话运行后出现。这台机器若已配置 OAuth token、API key 或云服务商，会话仍优先用那些配置。"
+          }
+        }
+      ]
+    },
     "dependencies": [],
     "extensionPoints": {},
     "extensions": [],
@@ -1118,33 +1118,7 @@
       }
     },
     "workflows": [],
-    "capabilities": [],
     "services": [],
-    "groups": [],
-    "commands": [],
-    "gitCredentials": [],
-    "endpoints": [],
-    "views": [],
-    "offers": {
-      "resources": [
-        {
-          "id": "login",
-          "title": "Codex",
-          "command": "node \"$CODA_PLUGIN_PATH/scripts/resources.mjs\"",
-          "maxAge": "PT0S",
-          "actions": {
-            "reset": {
-              "command": "node \"$CODA_PLUGIN_PATH/scripts/reset.mjs\"",
-              "confirm": "使用一次完全重置？\n用最早到期的那一次。成功后消耗 1 次，无法撤销。"
-            }
-          },
-          "signIn": {
-            "command": "NO_COLOR=1 exec node \"$CODA_PLUGIN_PATH/scripts/cli.mjs\" login --device-auth",
-            "note": "接入账号插件后，登录会添加或更新插件管理的账号。"
-          }
-        }
-      ]
-    },
     "agents": [
       {
         "id": "codex",
@@ -1169,6 +1143,32 @@
         "setupHint": "请在运行机为后端所属账号完成 Codex 认证。"
       }
     ],
+    "commands": [],
+    "capabilities": [],
+    "groups": [],
+    "gitCredentials": [],
+    "endpoints": [],
+    "views": [],
+    "offers": {
+      "resources": [
+        {
+          "id": "login",
+          "title": "Codex",
+          "command": "node \"$CODA_PLUGIN_PATH/scripts/resources.mjs\"",
+          "maxAge": "PT0S",
+          "actions": {
+            "reset": {
+              "command": "node \"$CODA_PLUGIN_PATH/scripts/reset.mjs\"",
+              "confirm": "使用一次完全重置？\n用最早到期的那一次。成功后消耗 1 次，无法撤销。"
+            }
+          },
+          "signIn": {
+            "command": "NO_COLOR=1 exec node \"$CODA_PLUGIN_PATH/scripts/cli.mjs\" login --device-auth",
+            "note": "接入账号插件后，登录会添加或更新插件管理的账号。"
+          }
+        }
+      ]
+    },
     "dependencies": [],
     "extensionPoints": {
       "account-source": {
@@ -1202,10 +1202,11 @@
     "title": "Codex 多账号",
     "properties": {},
     "workflows": [],
-    "capabilities": [],
     "services": [],
-    "groups": [],
+    "agents": [],
     "commands": [],
+    "capabilities": [],
+    "groups": [],
     "gitCredentials": [],
     "endpoints": [],
     "views": [],
@@ -1236,7 +1237,6 @@
         }
       ]
     },
-    "agents": [],
     "dependencies": [
       "codex"
     ],
@@ -1311,13 +1311,12 @@
       "deliver",
       "develop"
     ],
-    "capabilities": [],
     "services": [],
-    "groups": [],
+    "agents": [],
     "commands": [],
+    "capabilities": [],
+    "groups": [],
     "gitCredentials": [],
-    "endpoints": [],
-    "views": [],
     "composerModes": [
       {
         "id": "handoff",
@@ -1593,7 +1592,8 @@
         }
       }
     ],
-    "agents": [],
+    "endpoints": [],
+    "views": [],
     "dependencies": [
       "github"
     ],
@@ -1625,29 +1625,7 @@
     "title": "Grok",
     "properties": {},
     "workflows": [],
-    "capabilities": [],
     "services": [],
-    "groups": [],
-    "commands": [],
-    "gitCredentials": [],
-    "endpoints": [],
-    "views": [],
-    "offers": {
-      "resources": [
-        {
-          "id": "account",
-          "title": "Grok",
-          "command": "node \"$CODA_PLUGIN_PATH/scripts/resources.mjs\"",
-          "maxAge": "PT5M",
-          "signIn": {
-            "command": "g=\"$HOME/.grok/bin/grok\"; [ -x \"$g\" ] || g=grok; BROWSER=/usr/bin/true NO_COLOR=1 exec \"$g\" login --device-auth",
-            "installed": "test -x \"$HOME/.grok/bin/grok\" || command -v grok >/dev/null",
-            "install": "SHELL= PATH=\"$HOME/.grok/bin:$PATH\" exec bash -c 'set -o pipefail; curl -fsSL https://x.ai/cli/install.sh | bash'",
-            "note": "登录保存在这台机器的 Grok CLI 里，由它自己续期；可以用 X 账号确认。"
-          }
-        }
-      ]
-    },
     "agents": [
       {
         "id": "grok",
@@ -1671,6 +1649,28 @@
         "setupHint": "请在「资源」里为运行机添加 Grok。"
       }
     ],
+    "commands": [],
+    "capabilities": [],
+    "groups": [],
+    "gitCredentials": [],
+    "endpoints": [],
+    "views": [],
+    "offers": {
+      "resources": [
+        {
+          "id": "account",
+          "title": "Grok",
+          "command": "node \"$CODA_PLUGIN_PATH/scripts/resources.mjs\"",
+          "maxAge": "PT5M",
+          "signIn": {
+            "command": "g=\"$HOME/.grok/bin/grok\"; [ -x \"$g\" ] || g=grok; BROWSER=/usr/bin/true NO_COLOR=1 exec \"$g\" login --device-auth",
+            "installed": "test -x \"$HOME/.grok/bin/grok\" || command -v grok >/dev/null",
+            "install": "SHELL= PATH=\"$HOME/.grok/bin:$PATH\" exec bash -c 'set -o pipefail; curl -fsSL https://x.ai/cli/install.sh | bash'",
+            "note": "登录保存在这台机器的 Grok CLI 里，由它自己续期；可以用 X 账号确认。"
+          }
+        }
+      ]
+    },
     "dependencies": [],
     "extensionPoints": {},
     "extensions": [],
@@ -1704,29 +1704,7 @@
     "title": "Kimi Code",
     "properties": {},
     "workflows": [],
-    "capabilities": [],
     "services": [],
-    "groups": [],
-    "commands": [],
-    "gitCredentials": [],
-    "endpoints": [],
-    "views": [],
-    "offers": {
-      "resources": [
-        {
-          "id": "account",
-          "title": "Kimi",
-          "command": "node \"$CODA_PLUGIN_PATH/scripts/resources.mjs\"",
-          "maxAge": "PT5M",
-          "signIn": {
-            "command": "exec sh \"$CODA_PLUGIN_PATH/scripts/login.sh\"",
-            "installed": "test -x \"$HOME/.kimi-code/bin/kimi\" || command -v kimi >/dev/null",
-            "install": "exec sh \"$CODA_PLUGIN_PATH/scripts/install.sh\"",
-            "note": "登录保存在这台机器的 Kimi CLI 里，由它自己续期。"
-          }
-        }
-      ]
-    },
     "agents": [
       {
         "id": "kimi",
@@ -1750,6 +1728,28 @@
         "setupHint": "请在「资源」里为运行机添加 Kimi。"
       }
     ],
+    "commands": [],
+    "capabilities": [],
+    "groups": [],
+    "gitCredentials": [],
+    "endpoints": [],
+    "views": [],
+    "offers": {
+      "resources": [
+        {
+          "id": "account",
+          "title": "Kimi",
+          "command": "node \"$CODA_PLUGIN_PATH/scripts/resources.mjs\"",
+          "maxAge": "PT5M",
+          "signIn": {
+            "command": "exec sh \"$CODA_PLUGIN_PATH/scripts/login.sh\"",
+            "installed": "test -x \"$HOME/.kimi-code/bin/kimi\" || command -v kimi >/dev/null",
+            "install": "exec sh \"$CODA_PLUGIN_PATH/scripts/install.sh\"",
+            "note": "登录保存在这台机器的 Kimi CLI 里，由它自己续期。"
+          }
+        }
+      ]
+    },
     "dependencies": [],
     "extensionPoints": {},
     "extensions": [],
@@ -1796,13 +1796,7 @@
       }
     },
     "workflows": [],
-    "capabilities": [],
     "services": [],
-    "groups": [],
-    "commands": [],
-    "gitCredentials": [],
-    "endpoints": [],
-    "views": [],
     "agents": [
       {
         "id": "opencode",
@@ -1830,6 +1824,12 @@
         "setupHint": "请在运行机安装并登录 OpenCode 2（2.1.4 及以上），确认后端能执行 opencode acp。"
       }
     ],
+    "commands": [],
+    "capabilities": [],
+    "groups": [],
+    "gitCredentials": [],
+    "endpoints": [],
+    "views": [],
     "dependencies": [],
     "extensionPoints": {},
     "extensions": [],
@@ -2003,20 +2003,20 @@
     "workflows": [
       "pull-request"
     ],
-    "capabilities": [],
     "services": [],
-    "groups": [],
+    "agents": [],
+    "instructions": "gh pr create 开出即评审；等其他 PR、升锁或发布的开草稿（-R 在 --draft 前），满足后 gh pr ready。只合并进默认分支；合并前验证声明为流程步骤或 GitHub 必需检查。正常结束只更新状态，任务与失败回本会话，不轮询。手动用 workflow_run 发起 pull-request 前用 gh pr view 取得完整地址传 pr；同 PR 复用未结束运行。",
     "commands": [],
+    "capabilities": [],
+    "groups": [],
     "gitCredentials": [],
     "endpoints": [],
     "views": [],
-    "agents": [],
     "dependencies": [
       "github"
     ],
     "extensionPoints": {},
     "extensions": [],
-    "instructions": "gh pr create 开出即评审；等其他 PR、升锁或发布的开草稿（-R 在 --draft 前），满足后 gh pr ready。只合并进默认分支；合并前验证声明为流程步骤或 GitHub 必需检查。正常结束只更新状态，任务与失败回本会话，不轮询。手动用 workflow_run 发起 pull-request 前用 gh pr view 取得完整地址传 pr；同 PR 复用未结束运行。",
     "defaultInstalled": false
   },
   {
@@ -2040,10 +2040,11 @@
     "title": "机器负载",
     "properties": {},
     "workflows": [],
-    "capabilities": [],
     "services": [],
-    "groups": [],
+    "agents": [],
     "commands": [],
+    "capabilities": [],
+    "groups": [],
     "gitCredentials": [],
     "endpoints": [],
     "views": [],
@@ -2106,7 +2107,6 @@
         }
       ]
     },
-    "agents": [],
     "dependencies": [],
     "extensionPoints": {},
     "extensions": [],
