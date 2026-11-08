@@ -1,4 +1,5 @@
 // 每一步的工作区都会回收；泳道进度和已通过的改动留在本次运行的产物里。
+import { spawnSync } from 'node:child_process';
 import { waitForGitHubChecks } from './github-checks.mjs';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -201,6 +202,7 @@ switch (action) {
     const pr = JSON.parse(gh('pr', 'view', state.pr, '--json', 'state,headRefOid,mergeCommit'));
     if (pr.state === 'MERGED') {
       if (pr.headRefOid !== state.head) throw new Error(`PR 已合并，但 head 不一致：预期 ${state.head}，实际 ${pr.headRefOid}`);
+      output('route', 'merged');
       output('commit', pr.mergeCommit.oid);
       break;
     }
@@ -208,8 +210,23 @@ switch (action) {
     // 显式 --repo 让 gh 只删除远端分支，避免在分离 HEAD 中操作本地分支。
     const url = new URL(state.pr);
     const repo = `${url.host}/${url.pathname.split('/').slice(1, 3).join('/')}`;
-    gh('pr', 'merge', state.pr, '--repo', repo, '--squash', '--match-head-commit', state.head, '--delete-branch');
+    const result = spawnSync('gh', ['pr', 'merge', state.pr, '--repo', repo, '--squash', '--match-head-commit', state.head, '--delete-branch'], { encoding: 'utf8' });
+    if (result.error) throw result.error;
+    process.stdout.write(result.stdout);
+    process.stderr.write(result.stderr);
+    if (result.status !== 0) {
+      const failed = JSON.parse(gh('pr', 'view', state.pr, '--json', 'state,mergeable'));
+      if (failed.state === 'OPEN' && failed.mergeable === 'CONFLICTING') {
+        state.feedback = `PR ${state.pr} 与目标分支 ${state.base} 存在合并冲突，提交 ${state.head}。\n请主 Agent 审查后用「退回修改」交给执行者：运行 git fetch origin ${state.base}，将最新目标分支合入当前执行分支并解冲突；迁移版本号等撞号要顺延，跑相关测试并提交。之后重新经过项目检查、审查、更新 PR、合并前检查和 GitHub 检查，再重新批准合并及部署、发布选项。`;
+        state.phase = 'check';
+        save();
+        output('route', 'conflict');
+        break;
+      }
+      process.exit(result.status ?? 1);
+    }
     const commit = gh('pr', 'view', state.pr, '--json', 'mergeCommit', '--jq', '.mergeCommit.oid');
+    output('route', 'merged');
     output('commit', commit);
     break;
   }
