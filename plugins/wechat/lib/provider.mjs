@@ -4,6 +4,8 @@
 // A cursor is a message's `seq` in its group, in decimal. The record ID is `<account>:<group>`, and the account is the
 // record's container, so a read finds the group from the record alone.
 export const SESSION = 'coda/session@1';
+// The host stamps each published object with this plugin's id; we only react to our own. It tells us that id through
+// `coda.plugin.id`, so we follow whatever it calls us and fall back to our manifest id only when it says nothing.
 const PLUGIN = 'wechat';
 const LIMIT = 50;
 const cursor = seq => String(seq);
@@ -13,11 +15,12 @@ const recordId = (account, group) => `${account}:${group}`;
 export class WechatProvider {
   constructor(coda, bridge) {
     this.coda = coda; this.bridge = bridge;
+    this.plugin = coda.plugin?.id ?? PLUGIN;
     this.records = new Map(); this.queue = Promise.resolve();
   }
   async start() {
     this.observation = await this.coda.protocols.observe(SESSION, ({ type, id, object }) => {
-      if (object.provider !== PLUGIN) return;
+      if (object.provider !== this.plugin) return;
       if (type === 'DELETED') this.records.delete(id); else this.records.set(id, object);
     }, 'local');
     this.reading = this.coda.protocols.handle(SESSION, 'read', (input, { record }) => this.read(record, input));
@@ -36,8 +39,11 @@ export class WechatProvider {
     this.queue = next.catch(error => console.error('[wechat]', error.message));
     return next;
   }
+  // Only write when the status actually moved: `changed` fires for every list change, so re-pushing an identical status
+  // would hand every group a fresh revision each time.
   async write(id, status) {
     const record = this.records.get(id);
+    if (JSON.stringify(record.status) === JSON.stringify(status)) return;
     this.records.set(id, await this.coda.protocols.setStatus(SESSION, id, status, record.revision));
   }
   async sync() {
@@ -52,7 +58,7 @@ export class WechatProvider {
       const spec = { title: group.name, container: { id: account.id, title: account.name } };
       const status = {
         participants: group.members.map(member => member.id === account.id
-          ? { id: member.id, name: member.name, kind: 'bot', self: true } : { id: member.id, name: member.name, kind: 'person' }),
+          ? { id: member.id, name: member.name, kind: 'person', self: true } : { id: member.id, name: member.name, kind: 'person' }),
         ...(group.last === null ? {} : { head: cursor(group.last) }), state: 'active',
       };
       listed.add(id);

@@ -88,11 +88,11 @@ test('每个群一条已发布的记录：群名、登录账号作容器，成�
   const family = h.objects.get('wxid_me:family@chatroom');
   assert.deepEqual(family.spec, { title: '家里', container: { id: 'wxid_me', title: '我' } });
   assert.deepEqual(family.status, {
-    participants: [{ id: 'wxid_me', name: '我', kind: 'bot', self: true }, { id: 'wxid_mom', name: '妈妈', kind: 'person' }],
+    participants: [{ id: 'wxid_me', name: '我', kind: 'person', self: true }, { id: 'wxid_mom', name: '妈妈', kind: 'person' }],
     head: '35', state: 'active',
   });
   assert.deepEqual(h.objects.get('wxid_me:work@chatroom').status, {
-    participants: [{ id: 'wxid_me', name: '我', kind: 'bot', self: true }, { id: 'wxid_boss', name: '老板', kind: 'person' }],
+    participants: [{ id: 'wxid_me', name: '我', kind: 'person', self: true }, { id: 'wxid_boss', name: '老板', kind: 'person' }],
     state: 'active',
   });
 });
