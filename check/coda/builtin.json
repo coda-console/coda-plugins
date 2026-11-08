@@ -1221,7 +1221,7 @@
     "id": "composer",
     "displayName": "输入框模式",
     "description": "交接、子会话、! 命令、Ultra 与循环",
-    "version": "4.0.0",
+    "version": "4.1.0",
     "category": "工作流程",
     "icon": {
       "symbol": "character.cursor.ibeam",
@@ -1232,8 +1232,8 @@
       "kind": "builtin",
       "package": "@coda-console/composer",
       "tag": "latest",
-      "version": "4.0.0",
-      "integrity": "sha512-TDZQcbqlcCcUlY2tch4r4dc7cT5xwmk0pYVPuJQ973hAupokbPhhHhkKTnJjZoqg+VFsd4fyIyDDF5GFzFG+rw==",
+      "version": "4.1.0",
+      "integrity": "sha512-Cv0K4io2K0VBuWyTrbQ9yL9I8oCN0H4LGL+eFl8jaUcFz3JSl+/SloAgOfv+8NE7UWSrjW3z1BYeGewYKSVeIw==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/composer"
     },
