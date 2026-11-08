@@ -1,26 +1,25 @@
 {
-  "commit": "d75bc18652da406a03a9d5665fa1f05034837206",
+  "commit": "8d7cb856458f8b38318f3ef059c56822e69a1109",
   "packages": {
     "@0dep/piso": "5.2.0",
     "@agentclientprotocol/sdk": "1.4.0",
-    "@coda-console/protocol": "2.5.0",
+    "@coda-console/protocol": "git+https://github.com/coda-console/coda-protocol.git#304a97abe55d8143ee66c1a55d01f5b5427eebb1",
     "ajv": "8.20.0",
     "yaml": "2.9.1"
   },
   "files": {
-    "check/coda/components/protocols/creation.mjs": "d061194dafc615fff490869e90d252deb2429a12a3d5e046a886212ec3afede4",
-    "check/coda/components/protocols/provider-definition.mjs": "98327f1900f84109fd5493d2de8f683eb020754245f3049869ca3b30468821f9",
-    "check/coda/components/protocols/types.mjs": "94bb3f30a3fcbe50e5a5c286fa84f4bd80951932adb582046a7820622415a229",
-    "check/coda/adapters/provider-api.mjs": "8a2b5d7b4a3766f9e28270bd355f4b4081d3069b4cedad120671995bea160253",
+    "check/coda/components/protocols/creation.mjs": "2b4a400d3064af4b5106077dc783c567910fef3c47b2d52af3f0d838c5accf19",
+    "check/coda/components/protocols/types.mjs": "30a39388d86bb052927b9c4e656580ca73185039a93b6d5bd6f2047faa5c485e",
+    "check/coda/adapters/provider-api.mjs": "0f6fd1853f91797fa173f57e339379aa6cc17f419e6a244fc3092578522061dc",
     "check/coda/adapters/admission-api.mjs": "461b5a8a1ad73d7afed5db308813d02324e29c643b8e773ad127d4bdb00fb524",
-    "check/coda/components/composers/schemas.mjs": "282052bb58bdbf612a55b275456c6fea04d979136cf8a3700a4641380e501b3f",
+    "check/coda/components/composers/schemas.mjs": "6d497f58147756e789f9a566b2366f2fe36c0c72310421fb02508bf24a04f2c0",
     "check/coda/components/plugins/agent-plugins.mjs": "7ca5c0303c6fedffa7b0bcd90546273356ebc410b101f203f2ee8e7503063403",
     "check/coda/components/plugins/plugin-extensions.mjs": "4d7963185195ba6d21a4e49a66987613d5892210b1eb1dc02cffb7b816407776",
-    "check/coda/components/plugins/plugin-rules.mjs": "6a0e534aefb2256c4e88486a4727dc7ad88cb29bec755a854d5bf2f4bf773a24",
-    "check/coda/components/plugins/plugin-source-rules.mjs": "d894d55a3272df5ef3b108b68820c64aefdf6b69346404b58954f2a3503cb4a5",
+    "check/coda/components/plugins/plugin-rules.mjs": "5c6aeb7025337098f33844b743faaaa4cf122c343c3a897d755b00098a5d4938",
+    "check/coda/components/plugins/plugin-source-rules.mjs": "cdbe62cc3264469ec91ef7b8ff011a4b8313210f02bd44feb6bfb19eb4624fb9",
     "check/coda/components/plugins/skill-document.mjs": "153ad3c096c7c9b7774bcf7dcc0ba603c962ee1ac8697c8a71e3f2c9ba9c92e6",
     "check/coda/components/prompt-recovery/prompt-recovery.mjs": "f43f21d24c19a58113d3304f9248225b12080ab00ed15eab74bf7b94642732de",
-    "check/coda/components/session-config/commands.mjs": "2e4c80b0280db32fe220fa360f18a8e66f12e6a16e3e7bce545c762c9c6340e1",
+    "check/coda/components/session-config/commands.mjs": "e454081dd94dd7403c2153174d829ee58d2276697eb4b274ad9cc08fd9689d73",
     "check/coda/components/workflows/executor-labels.mjs": "dceca6ae60c0a4f3c3cc72a6c84f1489831790774c93caab96e4ddb493bc89e1",
     "check/coda/domain/agent-protocol.mjs": "769cc10dc21b3cef7718f94272aaef2d17d4882d42617b408cb47357abfc3bcb",
     "check/coda/domain/duration.mjs": "15dd64ef9b02342ad521c66e5968a569432a89dc7568d11afd3e6f3fe37e104b",
@@ -31,8 +30,9 @@
     "check/coda/kernel/agent-failures.mjs": "cbc215e2403d86f0acc765c2077197e0b529fc01e213db465c388361238ea8ce",
     "check/coda/resources/plugins/resources/panels/command.mjs": "606f28bf87f87dded9df2db892bc7624c770d795ffab88f2409998346920ae42",
     "check/coda/resources/plugins/resources/panels/panels.mjs": "4862dccd91c29db76caf1033ffeab743c7943befaca7406a56467c470b90a1b8",
-    "check/coda/resources/plugins/resources/panels/rules.mjs": "8de0c45df3b252d49a5a012696db95c9c46f29262213b2f846928cd512dd7213",
+    "check/coda/resources/plugins/resources/panels/rules.mjs": "d5b12f3e0e5040224314e5d2de2bd49f5b1ed24ea205590ff99a54e8b4e96d7f",
     "check/coda/resources/plugins/resources/panels/sign-in.mjs": "1271a24e33b1b882a1fb9bee03b8e240db8b9bee1b5208f0e1c84499cfb1be7e",
-    "check/coda/builtin.json": "5a597073d8188733dda85977c4ba7ed83fe011b9968146e4b567b3b7219435ad"
+    "check/coda/kernel/calls.mjs": "fe7589992fe4f35741f39ed4ddf9fa67812c26d2c52cbe61001d434b44b2fe6e",
+    "check/coda/builtin.json": "2fd2991f6ab6350bb495f3c1ce3b1cbe00b850572e22dfaa6880fe73d272717a"
   }
 }

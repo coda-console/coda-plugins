@@ -189,7 +189,7 @@ switch (action) {
     state.feedback = missing ? '退回修改必须在备注中写具体意见。' : choice === 'revise' ? `所属需求退回修改：\n${note}` : '';
     save();
     output('feedback', state.feedback);
-    output('route', missing ? 'delivery' : choice === 'revise' ? 'review' : 'premerge');
+    output('route', missing ? 'delivery' : choice === 'revise' ? 'review' : 'merge');
     break;
   }
   case 'check-failed':

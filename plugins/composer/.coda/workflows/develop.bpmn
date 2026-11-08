@@ -186,7 +186,7 @@ head：{{report.head}}
     </scriptTask>
     <sequenceFlow id="pr-check" sourceRef="pr" targetRef="reuse-checks" />
     <exclusiveGateway id="reuse-checks" name="复用本次开发已通过的提交" default="reuse-missing" />
-    <sequenceFlow id="reuse-passed" sourceRef="reuse-checks" targetRef="github-checks"><conditionExpression xsi:type="tFormalExpression">=pr.checked = true</conditionExpression></sequenceFlow>
+    <sequenceFlow id="reuse-passed" sourceRef="reuse-checks" targetRef="premerge"><conditionExpression xsi:type="tFormalExpression">=pr.checked = true</conditionExpression></sequenceFlow>
     <sequenceFlow id="reuse-missing" sourceRef="reuse-checks" targetRef="gate" />
     <serviceTask id="checks" name="项目检查" coda:action="run-workflows">
       <extensionElements><coda:param name="kind" value="check" /><coda:param name="commit" value="=gate.head" /></extensionElements>
@@ -199,6 +199,17 @@ head：{{report.head}}
     </scriptTask>
     <sequenceFlow id="checks-review" sourceRef="check-feedback" targetRef="gate-route" />
     <sequenceFlow id="checks-github" sourceRef="checks" targetRef="gate-passed" />
+    <serviceTask id="premerge" name="合并前检查" coda:action="run-workflows">
+      <extensionElements><coda:param name="kind" value="premerge" /><coda:param name="commit" value="=pr.head" /></extensionElements>
+    </serviceTask>
+    <boundaryEvent id="premerge-failed" attachedToRef="premerge"><errorEventDefinition /></boundaryEvent>
+    <sequenceFlow id="premerge-feedback-flow" sourceRef="premerge-failed" targetRef="premerge-feedback" />
+    <scriptTask id="premerge-feedback" name="交回合并前检查失败" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements><coda:env name="STEP" value="合并前检查" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" check-failed</script>
+    </scriptTask>
+    <sequenceFlow id="premerge-review" sourceRef="premerge-feedback" targetRef="report" />
+    <sequenceFlow id="premerge-github" sourceRef="premerge" targetRef="github-checks" />
     <scriptTask id="github-checks" name="GitHub 检查" scriptFormat="bash" coda:timeout="60">
       <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" github-checks</script>
     </scriptTask>
@@ -218,10 +229,10 @@ head：{{report.head}}
 PR：{{pr.url}}
 head：{{pr.head}}
 泳道：{{accept.lane}}
-项目检查和 GitHub 检查已通过。
+项目检查、合并前检查和 GitHub 检查已通过。
 {{if delivery-result.feedback = null then "" else delivery-result.feedback}}
 主 Agent：请按所属需求运行的安排处理。需求验收不过时选「退回修改」，备注必填，意见交回主 Agent 审查，再退给执行者；修好后重新审查、更新 PR、跑检查并回到待交付。
-按需求运行的顺序选择「放行合并」，随后执行合并前检查和 squash 合并，输出合并提交并结束，不部署。
+按需求运行的顺序选择「放行合并」，随后 squash 合并，输出合并提交并结束，不部署。
 
 {{pr.summary}}</documentation>
       <extensionElements>
@@ -235,10 +246,10 @@ head：{{pr.head}}
       <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" delivery</script>
     </scriptTask>
     <sequenceFlow id="delivery-route" sourceRef="delivery-result" targetRef="after-delivery" />
-    <exclusiveGateway id="after-delivery" name="交付结论" default="delivery-premerge" />
+    <exclusiveGateway id="after-delivery" name="交付结论" default="delivery-merge" />
     <sequenceFlow id="delivery-note" sourceRef="after-delivery" targetRef="delivery"><conditionExpression xsi:type="tFormalExpression">=delivery-result.route = "delivery"</conditionExpression></sequenceFlow>
     <sequenceFlow id="delivery-review" sourceRef="after-delivery" targetRef="report"><conditionExpression xsi:type="tFormalExpression">=delivery-result.route = "review"</conditionExpression></sequenceFlow>
-    <sequenceFlow id="delivery-premerge" sourceRef="after-delivery" targetRef="premerge" />
+    <sequenceFlow id="delivery-merge" sourceRef="after-delivery" targetRef="merge" />
     <serviceTask id="kinds" name="项目部署与发布选项" coda:action="workflow-kinds">
       <extensionElements><coda:param name="commit" value="=pr.head" /></extensionElements>
     </serviceTask>
@@ -246,9 +257,9 @@ head：{{pr.head}}
     <userTask id="approve" name="批准合并" coda:noteLabel="备注（可选）" coda:assignee="user">
       <documentation>{{pr.summary}}
 
-{{if inputs.devices then "设备验收、" else ""}}项目检查、GitHub 检查已通过。
+{{if inputs.devices then "设备验收、" else ""}}项目检查、合并前检查、GitHub 检查已通过。
 PR：{{pr.url}}
-批准后先跑合并前检查再 squash 合并，随后按勾选依次部署、发布预览版、发布正式版，每类一次；选项只在项目有对应流程时出现，默认不勾。
+批准后 squash 合并，随后按勾选依次部署、发布预览版、发布正式版，每类一次；选项只在项目有对应流程时出现，默认不勾。
 勾选发布时备注即发布说明，不填由主 Agent 写。</documentation>
       <extensionElements>
         <coda:choice id="merge" name="合并" primary="true"><coda:option id="deploy" name="部署" detail="调用项目里的部署流程" coda:shown="=kinds.deploy" />
@@ -265,10 +276,10 @@ PR：{{pr.url}}
       <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" approval</script>
     </scriptTask>
     <sequenceFlow id="approval-validated" sourceRef="approval-result" targetRef="after-approval" />
-    <exclusiveGateway id="after-approval" name="是否合并" default="approval-premerge" />
+    <exclusiveGateway id="after-approval" name="是否合并" default="approval-merge" />
     <sequenceFlow id="approval-missing" sourceRef="after-approval" targetRef="write-notes"><conditionExpression xsi:type="tFormalExpression">=approval-result.route = "notes"</conditionExpression></sequenceFlow>
     <sequenceFlow id="approval-stop" sourceRef="after-approval" targetRef="stopped"><conditionExpression xsi:type="tFormalExpression">=approve.chose.stop</conditionExpression></sequenceFlow>
-    <sequenceFlow id="approval-premerge" sourceRef="after-approval" targetRef="premerge" />
+    <sequenceFlow id="approval-merge" sourceRef="after-approval" targetRef="merge" />
     <userTask id="write-notes" name="写发布说明" coda:noteLabel="发布说明（必填）">
       <documentation>已勾选发布类别：{{if approve.options.preview then "预览版" else ""}} {{if approve.options.release then "正式版" else ""}}
 PR：{{pr.url}}
@@ -285,19 +296,8 @@ PR：{{pr.url}}
     <sequenceFlow id="notes-result-route" sourceRef="notes-result" targetRef="notes-route" />
     <exclusiveGateway id="notes-route" name="发布说明是否填写" default="notes-ready" />
     <sequenceFlow id="notes-missing" sourceRef="notes-route" targetRef="write-notes"><conditionExpression xsi:type="tFormalExpression">=notes-result.route = "notes"</conditionExpression></sequenceFlow>
-    <sequenceFlow id="notes-ready" sourceRef="notes-route" targetRef="premerge" />
+    <sequenceFlow id="notes-ready" sourceRef="notes-route" targetRef="merge" />
     <endEvent id="stopped" name="暂不合并" />
-    <serviceTask id="premerge" name="合并前检查" coda:action="run-workflows">
-      <extensionElements><coda:param name="kind" value="premerge" /><coda:param name="commit" value="=pr.head" /></extensionElements>
-    </serviceTask>
-    <boundaryEvent id="premerge-failed" attachedToRef="premerge"><errorEventDefinition /></boundaryEvent>
-    <sequenceFlow id="premerge-feedback-flow" sourceRef="premerge-failed" targetRef="premerge-feedback" />
-    <scriptTask id="premerge-feedback" name="交回合并前检查失败" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
-      <extensionElements><coda:env name="STEP" value="合并前检查" /></extensionElements>
-      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" check-failed</script>
-    </scriptTask>
-    <sequenceFlow id="premerge-review" sourceRef="premerge-feedback" targetRef="report" />
-    <sequenceFlow id="premerge-merge" sourceRef="premerge" targetRef="merge" />
     <scriptTask id="merge" name="Squash 合并" scriptFormat="bash" coda:timeout="10">
       <extensionElements><coda:output name="commit" /></extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" merge</script>
