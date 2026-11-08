@@ -11,4 +11,4 @@ export function requireCondition(condition, code, message) {
 }
 
 // A remote request was conclusively refused. Other errors leave its outcome uncertain and can be retried.
-export const REFUSED = new Set(['forbidden', 'not_found', 'invalid_input', 'invalid_state', 'idempotency_conflict', 'call_ended']);
+export const REFUSED = new Set(['forbidden', 'not_holder', 'not_found', 'invalid_input', 'invalid_state', 'idempotency_conflict', 'call_ended']);

@@ -33,6 +33,39 @@
     "instructions": "权限受阻时，先走原生权限升级或审批（如 Codex 的 require_escalated）。原生机制不可用、仍受权限阻拦或需用户明确授权时，才调用 workflow_run，workflow 为 approve-command，inputs 给 command、cwd（绝对路径）、reason（一行）。用户批准后由 Coda 执行，结果随调用或稍后送达；用户明确拒绝后不换方式重试。"
   },
   {
+    "id": "ask-user",
+    "displayName": "提问",
+    "description": "Agent 要你补充信息或拿主意时出一张卡片，你的答复交回它",
+    "version": "1.0.0",
+    "category": "工作流程",
+    "icon": {
+      "symbol": "questionmark.bubble.fill",
+      "color": "pink"
+    },
+    "readme": true,
+    "source": {
+      "kind": "builtin"
+    },
+    "dir": "src/resources/plugins/ask-user",
+    "title": "提问",
+    "properties": {},
+    "workflows": [],
+    "capabilities": [
+      "ask-user"
+    ],
+    "services": [],
+    "groups": [],
+    "commands": [],
+    "gitCredentials": [],
+    "endpoints": [],
+    "views": [],
+    "agents": [],
+    "dependencies": [],
+    "extensionPoints": {},
+    "extensions": [],
+    "instructions": "要用户补充信息或拿主意才能做下去时，有原生提问工具（如 AskUserQuestion）就用它；没有就调用 workflow_run，workflow 为 ask-user，inputs 给 question（一行）、detail（背景与要补充什么，可省略）。不要结束这一轮在回复里问；答复随调用或稍后送达。"
+  },
+  {
     "id": "changes",
     "displayName": "变更",
     "description": "看会话改了哪些文件",
