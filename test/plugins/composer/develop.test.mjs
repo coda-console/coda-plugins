@@ -505,6 +505,18 @@ test('开发流程定义、回路、检查提交与部署发布选择符合运�
   }
   assert.deepEqual(params('checks'), { kind: 'check', commit: '=gate.head' });
   assert.equal(nodes['checks-github'].targetRef.id, 'gate-passed');
+  // 推出的提交在审查的同时预编：只在随后会进设备验收时，不挡审查，失败也不算数。
+  assert.deepEqual(elements.filter(e => e.sourceRef === nodes['gate-fork']).map(e => e.targetRef.id), ['checks', 'prebuild-choice']);
+  for (const [devices, delivery, target] of [[true, '', 'prebuild'], [false, '', 'prebuilt'], [true, 'requirement-1', 'prebuilt']]) {
+    assert.equal(route('prebuild-choice', { inputs: { devices, delivery } }), target);
+  }
+  assert.deepEqual({ ...params('prebuild'), inputs: undefined }, { kind: 'prebuild', commit: '=gate.head', inputs: undefined });
+  for (const device of ['', 'duo-testbed']) {
+    assert.deepEqual(evaluate(params('prebuild').inputs.slice(1), { inputs: { device } }).value, device ? { device } : {});
+  }
+  assert.equal(nodes['prebuild-failed'].attachedToRef.id, 'prebuild');
+  assert.equal(nodes['prebuild-failed'].eventDefinitions[0].$type, 'bpmn:ErrorEventDefinition');
+  for (const id of ['prebuild-done', 'prebuild-failed-done', 'prebuild-skip']) assert.equal(nodes[id].targetRef.id, 'prebuilt');
   assert.match(nodes['github-checks'].script, /develop\.mjs" github-checks/);
   assert.equal(nodes['github-checks'].timeout, 60);
   assert.equal(nodes['github-checks-feedback'].targetRef.id, 'github-feedback');
@@ -544,7 +556,7 @@ test('开发流程定义、回路、检查提交与部署发布选择符合运�
   assert.deepEqual(params('publish-preview'), { kind: 'preview', commit: '=merge.commit', inputs: '={ notes: if approval-result.route = "notes" then notes-result.notes else approve.note }' });
   assert.deepEqual(params('publish-release'), { kind: 'release', commit: '=merge.commit', inputs: '={ publish: "true", notes: if approval-result.route = "notes" then notes-result.notes else approve.note }' });
   assert.deepEqual(evaluate(params('publish-release').inputs.slice(1), { 'approval-result': { route: 'merge' }, approve: { note: '更新说明' } }).value, { publish: 'true', notes: '更新说明' });
-  assert.deepEqual(process.flowElements.filter(e => e.action === 'run-workflows').map(e => e.id), ['checks', 'premerge', 'deploy', 'publish-preview', 'publish-release']);
+  assert.deepEqual(process.flowElements.filter(e => e.action === 'run-workflows').map(e => e.id), ['prebuild', 'checks', 'premerge', 'deploy', 'publish-preview', 'publish-release']);
   const options = values(nodes.approve)[0].options;
   assert.deepEqual(options.map(option => [option.id, option.name]), [['deploy', '部署'], ['preview', '发布预览版'], ['release', '发布正式版'], ['notify', '全部完成后通知 Agent']]);
   const notify = options.find(option => option.id === 'notify');
@@ -684,7 +696,8 @@ test('gate 检出 Git 工作区且先于检查', async () => {
   const nodes = Object.fromEntries(process.flowElements.map(e => [e.id, e]));
   assert.notEqual(nodes.gate.checkout, false);
   assert.equal(nodes['gate-checks'].sourceRef.id, 'gate');
-  assert.equal(nodes['gate-checks'].targetRef.id, 'checks');
+  assert.equal(nodes['gate-checks'].targetRef.id, 'gate-fork');
+  assert.equal(nodes['gate-fork-checks'].targetRef.id, 'checks');
   assert.equal(nodes['reuse-missing'].targetRef.id, 'gate');
 });
 
