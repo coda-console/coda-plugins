@@ -28,7 +28,7 @@ export async function inside(root, path = '.') {
 }
 
 // sourceKey includes the source work-copy instance, NOT its origin URL, snapshot or commit.
-// The slot comes from the host ledger. No local counter or scheduler guess can allocate it.
+// The slot comes from the host ledger. No local counter or estimate can allocate it.
 export async function prepareWorkspace({ root, source, slot, attempt, signal, runGit = git, prepared = async () => {} }) {
   if (!Number.isSafeInteger(slot) || slot < 0) throw new Error('账本未提供有效名额序号');
   const key = source ? source.key : `empty:${attempt}`;

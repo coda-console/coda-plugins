@@ -19,6 +19,7 @@ import { AGENT_ID } from '../../domain/values.mjs';
 import { agentDeclarations, iconFiles } from './agent-plugins.mjs';
 import { checkCatalog, extensionsFor } from './plugin-extensions.mjs';
 import { manifestProblem, TYPES } from '@coda-console/protocol/validate';
+import { ownedProtocolsProblem } from '@coda-console/protocol/protocol';
 import { claims, COMMIT, INTEGRITY, NPM_VERSION, npmPluginId, repoAddress, sourcePath } from './plugin-source-rules.mjs';
 import { readSkillDocument } from './skill-document.mjs';
 import { executorLabels } from '../workflows/executor-labels.mjs';
@@ -125,6 +126,8 @@ export function readPlugin(dir, source) {
   if (!named && source?.package && typeof manifest.name === 'string') try { id = npmPluginId(manifest.name); } catch {}
   check(typeof id === 'string' && ID.test(id), 'invalid_plugin', `package.json 的 ${named ? 'id' : 'name'} 只能用小写字母、数字和「-」`);
   const contributes = manifest.contributes ?? {}, configuration = contributes.configuration ?? {};
+  const protocolsProblem = ownedProtocolsProblem({ id, contributes: { protocols: contributes.protocols } });
+  check(!protocolsProblem, 'invalid_plugin', protocolsProblem);
   const properties = Object.fromEntries(Object.entries(configuration.properties ?? {}).map(([key, value]) => {
     check(key.split('.')[0] === id, 'invalid_plugin', `设置名须以「${id}.」开头：${key}`);
     return [key, setting(value, key)];
@@ -152,6 +155,8 @@ export function readPlugin(dir, source) {
       ...(v.icon ? { icon: v.icon } : {}), ...(v.handles?.length ? { handles: [...v.handles] } : {}), ...(v.readout ? { readout: v.readout } : {}),
       ...(v.checkout ? { checkout: v.checkout } : {}), ...(v.frame ? { frame: v.frame } : {}) })),
     ...(contributes.composerModes?.length ? { composerModes: composerModes(contributes.composerModes) } : {}),
+    ...(contributes.protocols?.length ? { protocols: structuredClone(contributes.protocols) } : {}),
+    ...(contributes.protocolImplementations?.length ? { protocolImplementations: [...contributes.protocolImplementations] } : {}),
     ...(Object.keys(offers).length ? { offers } : {}),
     agents,
     dependencies: [...dependencies], extensionPoints: extensionPoints(contributes.extensionPoints, dir),

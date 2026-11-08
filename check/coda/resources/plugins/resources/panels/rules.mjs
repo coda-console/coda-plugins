@@ -25,7 +25,7 @@ const RESOURCES = 50, VALUES = 8, ACTIONS = 8;
 // What a panel's command may print: past these, the reading fails rather than being cut short.
 export const OUTPUT_LIMIT = 64 * 1024;
 export const ARGS_LIMIT = 4 * 1024;
-const ITEMS = 50, CARD_ITEMS = 20, LABEL = 80, IDENTITY = 200, MARKDOWN = 4000, ERROR = 500, CONFIRM = 200;
+const ITEMS = 50, CARD_ITEMS = 20, LABEL = 80, IDENTITY = 200, MARKDOWN = 4000, ERROR = 500, CONFIRM = 200, LINK = 2000;
 const fail = (code, message) => check(false, code, message);
 const keys = (value, allowed, where, code) => {
   const extra = Object.keys(value).filter(k => !allowed.includes(k));
@@ -108,18 +108,22 @@ function plainItem(raw, where, scope, inCard) {
   return fail(code, `${where} 的 type 不受支持`);
 }
 const BUTTON_KEYS = ['label', 'action', 'view', 'args', 'disabled', 'confirm'];
-// What a button does: run one of the type's actions here, or open one of its plugin's views in the client.
-function button(raw, where, scope) {
+// What a button does: run one of the type's actions here, open one of its plugin's views in the client, or (a resource's,
+// `url` among `keys`) open a web page on the device.
+function button(raw, where, scope, keys = BUTTON_KEYS) {
   const code = 'invalid_panel';
-  const opens = raw.view !== undefined;
-  check(opens !== (raw.action !== undefined), code, `${where} 须有 action 或 view 之一`);
-  if (opens) check(typeof raw.view === 'string' && scope.views.includes(raw.view), code, `${where} 的 view 须是插件声明的视图：${raw.view}`);
-  else check(typeof raw.action === 'string' && Object.hasOwn(scope.actions, raw.action), code, `${where} 的 action 须是声明的动作：${raw.action}`);
+  const does = ['action', 'view', 'url'].filter(k => keys.includes(k) && raw[k] !== undefined);
+  check(does.length === 1, code, `${where} 须有 ${keys.includes('url') ? 'action、view 或 url' : 'action 或 view'} 之一`);
+  const [kind] = does;
+  if (kind === 'view') check(typeof raw.view === 'string' && scope.views.includes(raw.view), code, `${where} 的 view 须是插件声明的视图：${raw.view}`);
+  else if (kind === 'action') check(typeof raw.action === 'string' && Object.hasOwn(scope.actions, raw.action), code, `${where} 的 action 须是声明的动作：${raw.action}`);
+  else check(typeof raw.url === 'string' && raw.url.length <= LINK && /^https:\/\/[^\s]+$/.test(raw.url), code, `${where} 的 url 须为不超过 ${LINK} 字的 https 地址`);
+  check(kind !== 'url' || (raw.args === undefined && raw.confirm === undefined), code, `${where}：打开网页的按钮不带 args 与 confirm`);
   check(raw.args === undefined || (raw.args && typeof raw.args === 'object' && !Array.isArray(raw.args) && JSON.stringify(raw.args).length <= ARGS_LIMIT), code,
     `${where} 的 args 须为不超过 ${ARGS_LIMIT} 字节的对象`);
   check(raw.disabled === undefined || typeof raw.disabled === 'boolean', code, `${where} 的 disabled 须为开或关`);
   // Its own question, for what this one button does (which account, which credit), in place of its action's.
-  return { label: text(raw.label, LABEL, `${where} 的 label`, code), ...(opens ? { view: raw.view } : { action: raw.action }),
+  return { label: text(raw.label, LABEL, `${where} 的 label`, code), [kind]: raw[kind],
     ...(raw.args ? { args: raw.args } : {}), ...(raw.disabled ? { disabled: true } : {}),
     ...(raw.confirm !== undefined ? { confirm: text(raw.confirm, CONFIRM, `${where} 的 confirm`, code, { line: false }) } : {}) };
 }
@@ -165,8 +169,8 @@ function resource(raw, where, scope) {
   const actions = list(raw.actions, ACTIONS, 'actions').map((b, i) => {
     const at = `${where}.actions[${i}]`;
     object(b, at, code);
-    keys(b, BUTTON_KEYS, at, code);
-    return button(b, at, scope);
+    keys(b, [...BUTTON_KEYS, 'url'], at, code);
+    return button(b, at, scope, [...BUTTON_KEYS, 'url']);
   });
   check(name !== undefined || values.length, code, `${where} 须有 name 或 values`);
   return { ...(name !== undefined ? { name } : {}),

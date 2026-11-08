@@ -63,11 +63,11 @@ test('watch 按会话记住对象，仅 Ultra 发过再退出时告知关闭一�
   let changed;
   const told = [], watched = { dispose() {} };
   assert.equal(await activate({ protocols: { register() {} },
-    watch: async (kind, handler) => { assert.equal(kind, 'composers'); changed = handler; return watched; },
+    watch: async (kind, handler) => { assert.equal(kind, 'coda/composer@1'); changed = handler; return watched; },
     tell: async (thread, text) => { told.push([thread, text]); },
   }), watched);
   const event = (id, sent, active = true, type = 'MODIFIED') => ({ type, id, object: {
-    kind: 'composers', id, revision: 1,
+    kind: 'coda/composer@1', id, revision: 1,
     spec: { ...(id.startsWith('new:') ? { project: id.slice(4) } : { thread: id }),
       modes: [...(active ? [{ mode: 'composer/ultra', values: {} }] : []), { mode: 'composer/loop', values: { every: 'PT30M' } }] },
     status: { modes: [...(active ? [{ mode: 'composer/ultra', sent, changedSinceSent: false, presets: {} }] : []),

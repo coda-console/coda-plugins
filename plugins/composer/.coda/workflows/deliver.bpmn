@@ -89,7 +89,7 @@
       <sequenceFlow id="preview-note" sourceRef="after-preview" targetRef="preview"><conditionExpression xsi:type="tFormalExpression">=preview-result.route = "preview"</conditionExpression></sequenceFlow>
       <sequenceFlow id="preview-confirm" sourceRef="after-preview" targetRef="acceptance-return"><conditionExpression xsi:type="tFormalExpression">=preview-result.route = "confirm"</conditionExpression></sequenceFlow>
       <sequenceFlow id="preview-device" sourceRef="after-preview" targetRef="device" />
-      <userTask id="device" name="设备验收" coda:assignee="user" coda:handback="false" coda:noteLabel="验收意见">
+      <userTask id="device" name="设备验收" coda:assignee="user" coda:noteLabel="验收意见">
         <documentation>需求：{{inputs.title}}
 目标与完成标准：{{inputs.goal}}
 集成提交：{{integrate.head}}
@@ -145,7 +145,7 @@ PR：链接
       <extensionElements><coda:param name="commit" value="=confirm-result.commit" /></extensionElements>
     </serviceTask>
     <sequenceFlow id="kinds-approve" sourceRef="kinds" targetRef="approve" />
-    <userTask id="approve" name="批准交付" coda:assignee="user" coda:handback="false" coda:noteLabel="备注">
+    <userTask id="approve" name="批准交付" coda:assignee="user" coda:noteLabel="备注">
       <documentation>勾选发布后，主 Agent 会准备发布说明；若你填写了备注，将直接用作发布说明。暂不合并时请在备注说明原因。
 {{report-result.body}}
 

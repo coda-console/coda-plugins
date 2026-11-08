@@ -187,7 +187,7 @@ test('需求流程回路、人工任务、结果通知和部署发布顺序契�
   assert.equal(values(process)[2].type, 'boolean'); assert.equal(values(process)[2].default, undefined);
   assert.equal(nodes.start.eventDefinitions, undefined);
   for (const id of ['confirm', 'preview', 'report', 'release', 'verify']) assert.equal(nodes[id].assignee, undefined);
-  for (const id of ['device', 'approve']) { assert.equal(nodes[id].assignee, 'user'); assert.equal(nodes[id].handback, false); }
+  for (const id of ['device', 'approve']) assert.equal(nodes[id].assignee, 'user');
   for (const [id, result, paths] of [
     ['after-confirm', 'confirm-result', { confirm: 'context', stop: 'stopped', report: 'report', integrate: 'integrate' }],
     ['after-preview', 'preview-result', { preview: 'preview', confirm: 'acceptance-return', device: 'device' }],

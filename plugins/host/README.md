@@ -1,22 +1,20 @@
 # 宿主资源
 
-## 运行器与执行请求
+## 运行器与执行环境
 
-从 1.2.0 起，host 实现公共 `executor`／`execution` 协议：配置意图、能力和名额在本机持有，执行请求由发起端持有，只有绑定给本机 `executor/host` 的请求才执行。协议 schema 来自 `@coda-console/protocol/executor`，不在插件里维护副本；需要 git 插件与 Coda 的 `protocols.resolve`、`resources.acquire/release/list` 接口。`run-held` 的流程入口仍保持原路径，第 9 步再切到执行请求。
+从 2.0.0 起，host 在清单里声明实现 `coda/executor@1` 与 `coda/run@1`，把自己这台机器的执行环境发布为一条 `coda/executor@1` 记录（ID `host`）。别的机器或 Coda 对这条记录调用 `execute`，输入照协议包 executor@1；host 在本机执行任务，并只写这次调用开出的 `coda/run@1` 运行：进行中是 `working` 带进展，结束写 `completed`、`failed`（带退出码、输出末尾、摘要与步骤输出）或 `canceled`。终态之后不再改。取消是对运行调用 `cancel`，交给 host 停下原 worker。
 
-插件启动登记类型，公布一个本实例的 `executor/host`。`host.enabled` 控制是否接活，默认 true；`host.capacity` 配置名额数；`host.labels` 是逗号分隔的自定义标签。系统／CPU、Node、Xcode、可用模拟器 runtime 与图形会话由本机探测，每分钟刷新，不启动模拟器。容量和占用订阅 `concurrency-groups`，包括旧流程与 run-held，公布值不构成预留。停止接活不终止已接收的任务。
+配置意图、能力和名额在本机持有。`host.enabled` 控制是否接活，默认 true；`host.capacity` 配置名额数；`host.labels` 是逗号分隔的自定义标签。系统／CPU、Node、Xcode、可用模拟器 runtime 与图形会话由本机探测，每分钟刷新，不启动模拟器。容量和占用订阅 `concurrency-groups`，包括旧流程与 run-held，公布值不构成预留。停止接活不终止已接收的任务。
 
-资源首版只接受 `{slots: 1}`；`exclusiveResources: ['slots']` 表示独占，默认不独占。host 将 slots 映射到本机组 host，开跑前通过同一名额账本最终准入，账本返回稳定名额序号。其他资源量不能模拟为多次申请；scheduler 只读能力、资源量并修改单值绑定，不负责本机预留。
+资源只接受 `{slots:1}` 或空对象；`exclusiveResources: ['slots']` 表示独占。host 将 slots 映射到本机组 host，开跑前通过同一名额账本最终准入，账本返回稳定名额序号。其他资源量不能模拟为多次申请。
 
-**创建与取消**：本机插件经服务 `plugins/host/services/execution` 操作。POST `/requests/<id>` 的正文为 `{spec}`，只能创建未绑定请求（`executor` 和 `assignmentId` 都为 null），重复 ID 拒绝；GET 同路径读本机正本。scheduler 带观察到的 revision 更新完整 spec 中的绑定及 assignmentId；绑定后 host 才发布该请求。POST `/requests/<id>/cancel` 带 `{revision}`，只把 `spec.cancel` 改为 true。远端调用者不能通过这些入口创建或取消本机请求。任务、源码、需求在首次绑定后不再修改，重试创建新 ID／attempt。
-
-**源码**：提交端先用 git 插件创建 ready 的 sourceSnapshot，或引用 gitSource 加完整 commit。跨机时须发布快照及所属源；host 经 `protocols.observe` 看对象，经 `protocols.resolve(ref, 'repository')` 获得鉴权到达，不拼机器 ID 或 `/forward`。快照的 source ID 在其持有者范围内解释。代理鉴权头只传给本次 Git 子进程，不进入对象、日志、持久记录或 `.git/config`。
+**执行**：`execute` 的输入照协议包 executor@1：`source`（`git/snapshot@1`，或 `git/source@1` 加完整 commit）、`requirements.labels`、`resources`、`context`、`task`、`env`、`timeoutMs`、`cancelGraceMs`。源码经 Coda 的引用解析取得鉴权到达，不拼机器 ID 或 `/forward`；快照的 source ID 在其持有者范围内解释。代理鉴权头只传给本次 Git 子进程，不进入对象、日志、持久记录或 `.git/config`。
 
 固定目录为 `<插件状态>/workspaces/<来源工作副本身份及 instance 的散列>/<账本名额序号>`，不同来源工作副本、不同名额隔离；快照或提交改变不会丢掉同源缓存。fetch 后校验 commit，执行 `reset --hard` 和 `clean -fd`，保留被忽略缓存。cwd 必须在该工作根内，拒绝路径穿越和符号链接逃逸。没有源码的任务使用每次尝试的隔离目录。源码获取不改变发布／部署的准入政策。
 
-**三段 hook 与恢复**：`prepare_job / run_script_step / cleanup_job` 使用原 JSON envelope，prepare 的 state 即使伴随失败也会收尾；命令退出码原样返回，cleanup 失败记日志。声明变量与执行器变量分开，取消先停止当前进程组、在收尾期限内 cleanup，确认完成后才释放名额。每次尝试在启动前持久记账；独立 worker 继续运行，不随插件宿主重启而重复启动。重启后跟随已有 worker；worker 不可达且无最终记录时报告 `result_unknown`，保留绑定与名额，绝不把丢失响应当作安全重试。取消通过带随机 token 的 loopback 控制通道交给原 worker，不对可能已被复用的 PID 盲发信号。
+**三段 hook 与恢复**：`prepare_job / run_script_step / cleanup_job` 使用原 JSON envelope，prepare 的 state 即使伴随失败也会收尾；命令退出码原样返回，cleanup 失败记日志。声明变量与执行器变量分开，取消先停止当前进程组、在收尾期限内 cleanup，确认完成后才释放名额。每次尝试在启动前持久记账；独立 worker 继续运行，不随插件宿主重启而重复启动。重启后跟随已有 worker；worker 不可达且无最终记录时在运行进展里写 `result_unknown`，保留名额，绝不把丢失响应当作安全重试。取消通过带随机 token 的 loopback 控制通道交给原 worker，不对可能已被复用的 PID 盲发信号。
 
-本机 `hostExecution` 是这一次执行的持久结果引用和日志入口，没有另一个任务队列。`execution.status.executionRun`／`logs[].ref` 指向它，经 `protocols.resolve(ref, 'execution')` 取得服务基址；GET `/runs/<解析后的 id>` 读结果，GET `/runs/<id>/log?offset=<字节位置>` 每次最多读 64 KiB。结果保留有界 outputs、summary 和日志末尾；产物字节传输留给 artifacts 插件。请求改派或删除后，旧 worker 的最终结果仍保存到自己的记录，不能写入新绑定。
+运行本身是这次执行的持久结果引用，日志与结果留在插件状态的 `attempts/<运行键>/` 下；结果保留有界 outputs、summary 和日志末尾。产物字节传输留给 artifacts 插件。
 
 **验证**：纯规则、Git 目录、hook、取消竞态与重启记录在 `test/plugins/host/`；公共形状直接用 host 安装的协议包和同步的 provider 校验器测试。真实 Coda 存储／节点镜像／资源账本装配留 Coda 仓库验证。包含 host-sim 的完整插件测试经会话的 `workflow_run` → `run-held` 运行，不启动真实模拟器。
 

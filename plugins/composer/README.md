@@ -14,6 +14,8 @@
 
 3.0.0 按 [Coda #2063 的接口约定](https://github.com/coda-console/coda/issues/2063) 改为 `submissions` 协议参与者，依赖该 issue 第 2 步的后端支持，以及 [Coda #2085](https://github.com/coda-console/coda/pull/2085) 的新会话模式继承与实际投递计数，不能用于旧版回调宿主。交接、子会话和循环声明 `once: true`，发出的一条被收下后退出该模式；Ultra 保持开启，执行命令的触发词仍是 `!`。
 
+4.0.0 跟随 [Coda #2176](https://github.com/coda-console/coda/issues/2176) 的协议命名：输入的观察与发出的一条的参与者改用 `coda/composer@1`、`coda/submission@1`，需要支持协议名的新版 Coda，不能用于旧版。本插件不定义也不实现协议，只作为参与者登记补充。同一版本还包含 main 上 3.10.0、3.10.1 的改动（[#197](https://github.com/coda-console/coda-plugins/pull/197)、[#199](https://github.com/coda-console/coda-plugins/pull/199)）：develop 的合并前检查挪到批准卡之前，批准、放行后直接合并；合并冲突退回执行者；流程定义去掉了 `coda:handback`，跟上 Coda 的「流程任务每层一轮」。
+
 插件只返回补充，不改正文、附件、引用或输入框的执行者。多个模式的补充由 Coda 合并，`tell` 是字符串数组，按列表追加后随这条发送到每个收到它的会话；只要有一项 `divert: true` 就不发给默认去向，各模式追加的去向仍分别执行。
 
 | 模式 | 发出的一条的补充 |
@@ -59,7 +61,7 @@ develop 和 Coda `spawn` 都按任务从名单选执行者，传 `agent`、`mode
 退回时给具体意见，由同一个执行会话修复；通过后可派下一项，或进入验收。执行者自己完成任务，不继承协调职责、不再转派。
 并发已满就等名额；流程或 spawn 不可用就报告阻塞，不改用直接实现或原生子 Agent。用户的明确指令优先。
 
-插件声明 `activationEvents: ["onStartupFinished"]`，重启后通过 `coda.watch('composers', …)` 恢复观察。
+插件声明 `activationEvents: ["onStartupFinished"]`，重启后通过 `coda.watch('coda/composer@1', …)` 恢复观察。
 Ultra 消失且此前 `sent > 0` 时用 `coda.tell` 告知关闭一次，恢复通常的执行与委派规则；一条都没发过就不说。
 名单连同说明超过 Coda 单次告诉 Agent 的 4000 字上限时，缩短名单再发。这些分工是提示词约束，不在运行时禁用工具。
 

@@ -1,8 +1,11 @@
 // All references and authenticated service locations are resolved by Coda. This module knows no machine IDs.
+export const SOURCE = 'git/source@1';
+export const SNAPSHOT = 'git/snapshot@1';
+
 export class Sources {
   constructor(coda) { this.coda = coda; this.objects = new Map(); this.subscriptions = []; }
   async start() {
-    for (const kind of ['gitSource', 'sourceSnapshot']) this.subscriptions.push(await this.coda.protocols.observe(kind, event => {
+    for (const kind of [SOURCE, SNAPSHOT]) this.subscriptions.push(await this.coda.protocols.observe(kind, event => {
       const key = `${kind}/${event.id}`;
       if (event.type === 'DELETED') this.objects.delete(key); else this.objects.set(key, event.object);
     }));
@@ -15,12 +18,12 @@ export class Sources {
     let source = object, sourceEndpoint = endpoint;
     if (input.snapshot) {
       source = null;
-      // PR #147's snapshot.source is holder-local. Match only within the same resolved service, never by ID alone.
-      for (const candidate of this.objects.values()) if (candidate.kind === 'gitSource' && candidate.status.ready) {
+      // A snapshot's source is holder-local. Match only within the same resolved service, never by ID alone.
+      for (const candidate of this.objects.values()) if (candidate.kind === SOURCE && candidate.status.ready) {
         const resolved = await this.coda.protocols.resolve({ kind: candidate.kind, id: candidate.id }, 'repository');
         if (resolved.url === endpoint.url && resolved.resource.id === object.spec.source) { source = candidate; sourceEndpoint = resolved; break; }
       }
-      if (!source) throw new Error('须发布快照所属 gitSource，才能确定来源工作副本身份');
+      if (!source) throw new Error('须发布快照所属 git/source@1，才能确定来源工作副本身份');
     }
     const commit = input.snapshot ? object.status.commit : input.commit.toLowerCase();
     return { key: JSON.stringify([source.id, source.instance]), commit,

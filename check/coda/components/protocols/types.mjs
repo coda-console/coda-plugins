@@ -1,9 +1,17 @@
-import Ajv from 'ajv';
+import Ajv2020 from 'ajv/dist/2020.js';
+import { parseProtocolName } from '@coda-console/protocol/protocol';
+import { AGENTS, GROUPS, THREADS } from '../../domain/resource-kinds.mjs';
+
+// The resource kinds an invocation may name until the resource is a protocol of its own (docs/plugins.md「调用」): `threads`,
+// `agents`, `groups`. Only Coda's own core operations use these; a plugin defines protocols under its namespace.
+const KINDS = new Set([AGENTS, GROUPS, THREADS]);
+export const resourceKind = value => KINDS.has(value);
 
 // Only JSON Schema rules: no coercion, custom keywords or executable constraints. Only the type's schemas
 // supply defaults. An absent field without a declared default stays absent.
-const ajv = new Ajv({ allErrors: true, addUsedSchema: false });
-const defaults = new Ajv({ allErrors: true, addUsedSchema: false, useDefaults: true });
+const options = { allErrors: true, addUsedSchema: false, strict: true, strictTypes: false, strictRequired: false, allowUnionTypes: true };
+const ajv = new Ajv2020(options);
+const defaults = new Ajv2020({ ...options, useDefaults: true });
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const compare = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 
@@ -19,10 +27,23 @@ export function validate(check, value, who) {
 
 export class ProtocolTypes {
   constructor() { this.types = new Map(); }
-  register({ kind, spec, status, contributions = {}, participants }, registered = () => {}) {
-    if (typeof kind !== 'string' || !/^[a-z][a-zA-Z0-9-]*$/.test(kind) || this.types.has(kind)) throw new TypeError(`协议类型无效或已登记：${kind}`);
+  register({ kind, spec, status, operations = {}, contributions = {}, participants = () => [] }, registered = () => {}, replace = false) {
+    if (!(parseProtocolName(kind) || resourceKind(kind)) || (this.types.has(kind) && !replace)) throw new TypeError(`协议名无效或已登记：${kind}`);
     if (spec?.type !== 'object' || status?.type !== 'object') throw new TypeError(`${kind}: spec 与 status 须为对象 schema`);
     if (typeof participants !== 'function' || !object(contributions)) throw new TypeError(`${kind}: 需要 participants 与 contributions`);
+    // Each operation is an input and either an immediate result or a run reference, as the protocol package defines them.
+    // `join` names an input field holding the run of an open call that the operation adds to instead of opening one;
+    // `safe`, one that only reads and answers at once, whose request and answer neither side keeps.
+    if (!object(operations)) throw new TypeError(`${kind}: operations 须为对象`);
+    const compiled = new Map();
+    for (const [name, operation] of Object.entries(operations)) {
+      if (!/^[a-z][a-z0-9-]{0,63}$/.test(name) || !object(operation)) throw new TypeError(`${kind}.${name}: 操作名或定义无效`);
+      const run = operation.run === true, join = operation.join;
+      if (run === Object.hasOwn(operation, 'result') || !operation.input) throw new TypeError(`${kind}.${name}: 操作要写 input，并恰写 result 或 run`);
+      if (join !== undefined && (!run || typeof join !== 'string' || !join)) throw new TypeError(`${kind}.${name}: join 只能用于运行，并写出输入里的字段`);
+      compiled.set(name, { input: compile(operation.input), ...(run ? { run } : { result: compile(operation.result) }), ...(join ? { join } : {}),
+        ...(operation.safe === true ? { safe: true } : {}) });
+    }
     const properties = {};
     for (const [field, { merge, schema }] of Object.entries(contributions)) {
       const type = merge === 'append' ? 'array' : merge === 'or' ? 'boolean' : null;
@@ -31,7 +52,7 @@ export class ProtocolTypes {
       }
       Object.defineProperty(properties, field, { value: schema, enumerable: true });
     }
-    const type = { kind, participants, contributions: structuredClone(contributions),
+    const type = { kind, participants, contributions: structuredClone(contributions), operations: compiled,
       spec: compile(spec, defaults), status: compile(status, defaults),
       // Before supplementation only merge operands must be shaped correctly. Required fields and counts apply to the
       // complete spec, so a participant can supply a required list that the initial object does not have yet.

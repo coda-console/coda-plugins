@@ -2,9 +2,9 @@
   "name": "@coda-console/host",
   "id": "host",
   "displayName": "宿主资源",
-  "description": "Xcode 构建与模拟器的排队名额",
+  "description": "本机运行器与 Xcode、模拟器的排队名额",
   "icon": { "symbol": "hammer.fill", "color": "gray" },
-  "version": "1.4.0",
+  "version": "2.0.0",
   "categories": [
     "机器与资源"
   ],
@@ -60,7 +60,7 @@
           "title": "接收执行请求",
           "type": "boolean",
           "default": true,
-          "description": "公布本机运行器并接收绑定给本机的执行请求；关闭后仍可创建请求交给其他运行器。"
+          "description": "公布本机执行环境并接受 execute 调用；关闭后不再接新任务，已接收的任务照常结束。"
         },
         "host.labels": {
           "title": "运行器标签",
@@ -72,6 +72,10 @@
     },
     "skills": [
       "skills/host-slots"
+    ],
+    "protocolImplementations": [
+      "coda/executor@1",
+      "coda/run@1"
     ]
   },
   "license": "MIT",
@@ -94,9 +98,6 @@
   "activationEvents": [
     "onStartupFinished"
   ],
-  "dependencies": {
-    "@coda-console/protocol": "2.1.0"
-  },
   "extensionDependencies": [
     "git"
   ]

@@ -15,17 +15,17 @@ test('真实清单被识别为启动激活：恢复已有 Ultra 后直接退出�
   assert.deepEqual(report.failures, []);
   const plugin = checked.plugin;
   assert.equal(plugin.startup, true, 'Coda 读取清单后须将此插件列入启动加载名单');
-  const restored = { kind: 'composers', id: 'restored', revision: 5,
+  const restored = { kind: 'coda/composer@1', id: 'restored', revision: 5,
     spec: { thread: 'restored', modes: [{ mode: 'composer/ultra', values: {} }] },
     status: { modes: [{ mode: 'composer/ultra', sent: 3, changedSinceSent: false, presets: {} }] } };
   let changed;
   const told = [];
   // 使用契约读取器产出的 startup 和 main 加载真实入口；只替代宿主 watch/tell 传输。
-  // 不开视图、不调用任何 submissions handler，初始 ADDED 代表宿主重新 list 后交回的对象。
+  // 不开视图、不调用任何 coda/submission@1 handler，初始 ADDED 代表宿主重新 list 后交回的对象。
   if (plugin.startup) await (await import(new URL(plugin.main, dir))).activate({
     protocols: { register() {} },
     watch: async (kind, handler) => {
-      assert.equal(kind, 'composers');
+      assert.equal(kind, 'coda/composer@1');
       changed = handler;
       await handler({ type: 'ADDED', id: restored.id, object: restored });
       return { dispose() {} };

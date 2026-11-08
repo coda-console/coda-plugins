@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { readWorkflow } from '@coda-console/protocol/workflow';
 import { keychainPromptHint as hint } from '../../../plugins/host/lib/keychain-prompt.mjs';
-import { Journal, identity, taskFingerprint } from '../../../plugins/host/lib/journal.mjs';
+import { Journal, runKey } from '../../../plugins/host/lib/journal.mjs';
 
 const plugin = fileURLToPath(new URL('../../../plugins/host/', import.meta.url));
 function fixture(t, present) {
@@ -59,13 +59,12 @@ for (const present of [false, true]) {
   });
   test(`worker timeout preserves its SecurityAgent reason (present=${present})`, { timeout: 5000 }, async t => {
     const f = fixture(t, present), journal = new Journal(f.root);
-    const spec = { assignmentId: 'assignment', attempt: 1, timeoutMs: 300, cancelGraceMs: 1000,
-      requirements: { labels: [] }, task: { command: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)'] } };
-    const object = { id: 'request', instance: 'instance', spec }, key = identity(object);
-    journal.save({ key, id: object.id, instance: object.instance, fingerprint: taskFingerprint(spec), assignmentId: spec.assignmentId,
-      admission: { lease: 'lease', slot: 0 }, phase: 'claimed' });
+    const spec = { source: null, timeoutMs: 300, cancelGraceMs: 1000, requirements: { labels: [] }, resources: {},
+      task: { command: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)'] }, env: {} };
+    const run = { kind: 'coda/run@1', id: 'request' }, key = runKey(run);
+    journal.save({ key, runId: run.id, phase: 'claimed', admission: { lease: 'lease', slot: 0 } });
     const result = await execute(t, process.execPath, [join(plugin, 'scripts/execution-worker.mjs')], f.env,
-      JSON.stringify({ root: f.root, key, source: null, spec, env: f.env }));
+      JSON.stringify({ root: f.root, key, source: null, spec, env: f.env, slot: 0 }));
     assert.equal(result.code, 0, result.stderr);
     assert.deepEqual(journal.get(key).result.reason, { code: 'cancelled', message: `执行已取消${suffix}` });
     checkedOnce(f);

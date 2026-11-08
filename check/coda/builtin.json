@@ -80,7 +80,7 @@
     "id": "cliproxy",
     "displayName": "CLIProxy",
     "description": "显示额度，把 CLIProxy 提供为模型服务",
-    "version": "1.2.0",
+    "version": "1.3.0",
     "category": "模型与账号",
     "icon": {
       "symbol": "bolt.fill",
@@ -118,10 +118,10 @@
     "endpoints": [],
     "views": [],
     "offers": {
-      "panels": [
+      "resources": [
         {
           "id": "antigravity",
-          "title": "Antigravity · CLIProxy",
+          "title": "Antigravity",
           "command": "node \"$CODA_PLUGIN_PATH/scripts/antigravity.mjs\"",
           "maxAge": "PT5M"
         }
@@ -189,7 +189,7 @@
     "id": "github",
     "displayName": "GitHub",
     "description": "登录账号，推送时自动选对账号",
-    "version": "1.8.0",
+    "version": "1.9.0",
     "category": "模型与账号",
     "icon": {
       "symbol": "arrow.triangle.pull",
@@ -270,28 +270,31 @@
         "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/credential.mjs\""
       }
     ],
-    "endpoints": [],
-    "views": [],
+    "endpoints": [
+      {
+        "id": "accounts",
+        "command": "exec node \"$CODA_PLUGIN_PATH/scripts/endpoint.mjs\""
+      }
+    ],
+    "views": [
+      {
+        "id": "accounts",
+        "title": "GitHub 账号",
+        "entry": "view/accounts.html",
+        "frame": "document"
+      }
+    ],
     "offers": {
-      "panels": [
+      "resources": [
         {
           "id": "accounts",
-          "title": "GitHub 账号",
-          "command": "node \"$CODA_PLUGIN_PATH/scripts/panel.mjs\"",
+          "title": "GitHub",
+          "command": "node \"$CODA_PLUGIN_PATH/scripts/resources.mjs\"",
           "maxAge": "PT1M",
           "actions": {
             "remove": {
               "command": "node \"$CODA_PLUGIN_PATH/scripts/action.mjs\" remove",
               "confirm": "移除这个账号的登录？\n它负责的 owner 之后会重新试出用哪个账号。"
-            },
-            "assign": {
-              "command": "node \"$CODA_PLUGIN_PATH/scripts/action.mjs\" assign"
-            },
-            "forget": {
-              "command": "node \"$CODA_PLUGIN_PATH/scripts/action.mjs\" forget"
-            },
-            "move": {
-              "command": "node \"$CODA_PLUGIN_PATH/scripts/action.mjs\" move"
             }
           },
           "signIn": {
@@ -321,7 +324,7 @@
     "id": "guide",
     "displayName": "Coda 使用指南",
     "description": "让 Agent 会回答 Coda 怎么用",
-    "version": "1.0.0",
+    "version": "1.0.3",
     "category": "工作流程",
     "icon": {
       "symbol": "book.fill",
@@ -431,7 +434,7 @@
     "id": "resources",
     "displayName": "资源",
     "description": "各台电脑的账号、额度与负载",
-    "version": "2.0.0",
+    "version": "2.1.0",
     "category": "机器与资源",
     "icon": {
       "symbol": "gauge.with.dots.needle.67percent",
@@ -784,21 +787,6 @@
         "order": 5,
         "default": "PT1H"
       },
-      "session.handToUser": {
-        "type": "boolean",
-        "description": "流程交给会话 Agent 的任务，Agent 停下没答复、也没有别的东西会叫醒它时，转成你的卡片；关掉就一直留在 Agent 那里，等它下次被叫醒。",
-        "title": "Agent 停下没答复的任务转给你",
-        "order": 8,
-        "default": true
-      },
-      "session.handToUserAfter": {
-        "type": "string",
-        "format": "duration",
-        "description": "从 Agent 最后一次干活算起。期间它刚做完的事让流程撤掉了任务（如推送新提交），就不转；进程已停就立即转。",
-        "title": "Agent 停下多久后转给你",
-        "order": 9,
-        "default": "PT2M"
-      },
       "session.subagents": {
         "type": "integer",
         "minimum": 1,
@@ -970,7 +958,7 @@
     "id": "claude",
     "displayName": "Claude",
     "description": "用 Claude Agent SDK 跑会话",
-    "version": "1.9.0",
+    "version": "1.10.0",
     "category": "Agent",
     "icon": {
       "light": "JVBERi0xLjcKJbXtrvsKNCAwIG9iago8PCAvTGVuZ3RoIDUgMCBSCiAgIC9GaWx0ZXIgL0ZsYXRlRGVjb2RlCj4+CnN0cmVhbQp4nG1WSY4YNxC76xX6QBTtyzP8hCCAnUP74OT/QFhkqWcMewaYaUrqWlisUpeY8ftHwZ/T0hrx7+/hR/gSf4Sc9shnx5z6xM/CQ+ulrBn//Rb//CvHb/+FntPaJe6T8qzxe+w15dPjbqmO+MTe0gBcwwwD9rRLjfM4HOm0HWeF3R5sYfL4OOnk6djQKkcot2LYjAAjMBybK5mxVtKG1XXskBmrIxUEsWcqw4xVxILXgfV6zbS7B60AY68yGzxXBrKzvRI+rM+dJhNr5nSWVBVZoY+x9GxUjJk6cmOU9qawmSqTcS24mBZHKYxjNS4/keSsYpzYbmbScCxzwGeeGDzrslOzuKofb8gOD6PyLcZpVkdhWT72881jGNXh00IlPcDyByaasFgsjTn340x1bgPavyfEyuz7ppsHovKq4TGVvU0CcuQHm7Pfac/18sSAPKeOZ7F0uPPx+tT7noQtvp48aeGgBUY5SNbLQvfnDkI/DC/G2V7Cl0lZ9Wf5aqzbHR0e9VCeuJhD7amSmkWmavbSsK6wZiIML5FYkByLMi3u0065Qh8zaY1Sr6ZaJzmtpTlmUBJW39a9KsBwBihyXyiF3dPtiiKTjuAdwtZhbO2jHcyft22VuMSp9Q1PiUYAhjSUABFqi6liSZjgs8u+qi+z/Fsgdwdcm7diQg/Klg2TvPFM/2gibz3R9pYENbZcYENCgggsOjHDGbPoF5rxKaIC/AZrgm1WE/aJzqeamjXvi+Ny97aZFxbWrbkgRud68aqMxbTrHQxjM7XhnQZoNLy2FrkstyGG5la942vcgoYPT2+FcZgs1PvyodqrDawpNWCSHIoLo8amb7GZbbYwqCz8Uil24M4c0aDGyNqsu6Nd2GEIUgMcA5SiRvPSlAY+lEAhwTI1czxjzrS3ENNk45OViAOi3Ik8B8PQghnT3dGOp7ylWfSxUt66Ntrl8zhZONDugkXTbi1PpWuMJClr9zsolBuSIZ70g46ePtIOB/5j14M9AFtZ331ohMqa+0LluzTxwmA2S5t0vHWDlBtYkU6aB6JrGxfMT3lAPujPoPcppEwBkRmO9E+0Ew9vGcRpV0b3YYk0LgqfoPZULFfuY5eY2Zh001gg0OQFUbzIzHvHK7SOt7KLRze45LHGFcljXw286o6Piekjed72mmqs32AJ24W8nX+Z96rixln+6TJ86MGR8YXvBV0Mc/38PTE1ptAAonVoA2XEsaDutx3QKYUCWwcB+9eNWue8XxG8aSA7+etdg0Hlfe6nlVf/if/88vH1NXwJ/wPzdvIkCmVuZHN0cmVhbQplbmRvYmoKNSAwIG9iagogICA5NzAKZW5kb2JqCjMgMCBvYmoKPDwKICAgL0V4dEdTdGF0ZSA8PAogICAgICAvYTAgPDwgL0NBIDEgL2NhIDEgPj4KICAgPj4KPj4KZW5kb2JqCjcgMCBvYmoKPDwgL1R5cGUgL09ialN0bQogICAvTGVuZ3RoIDggMCBSCiAgIC9OIDEKICAgL0ZpcnN0IDQKICAgL0ZpbHRlciAvRmxhdGVEZWNvZGUKPj4Kc3RyZWFtCnicM1Mw4IrmiuUCAAY4AV0KZW5kc3RyZWFtCmVuZG9iago4IDAgb2JqCiAgIDE2CmVuZG9iago5IDAgb2JqCjw8IC9UeXBlIC9PYmpTdG0KICAgL0xlbmd0aCAxMiAwIFIKICAgL04gNAogICAvRmlyc3QgMjMKICAgL0ZpbHRlciAvRmxhdGVEZWNvZGUKPj4Kc3RyZWFtCnicVZFPa4QwEMXvfoq5lCoFTeLa1UX2sApLKQVxeys9hDi4gWIkiaX77Zv4Z0sJhMyPeXlvGAokoAQyEjCgGQ0ohXSfB2UJyfttREga3qMJACB5lZ2BD2BAoIXPGVVqGizQ4HicFY1W3SRQQyi41ApoTPN4B+HV2tEckmSmvebjVQoTK91H0fKNRm6lGmpuEcL6wAh7JgUtGHOv/Inkj4REm8lfLHhw1l7fcI0+h082gzfsJD+pHxeXuFOk8T5b7y34YJ3EwO6uOWs1jVCWvvD14jPTDV0c1Xwwo/cTtw2/gNUTblXlumr8lgLb88lDl9vzFo2atEAD6d3z4oTCLvGN28S/EStu+Zfq1wndFtYBXdMvwB5vsQplbmRzdHJlYW0KZW5kb2JqCjEyIDAgb2JqCiAgIDI3OQplbmRvYmoKMTMgMCBvYmoKPDwgL1R5cGUgL1hSZWYKICAgL0xlbmd0aCA1OQogICAvRmlsdGVyIC9GbGF0ZURlY29kZQogICAvU2l6ZSAxNAogICAvVyBbMSAyIDJdCiAgIC9Sb290IDExIDAgUgogICAvSW5mbyAxMCAwIFIKPj4Kc3RyZWFtCnicY2Bg+P+fiYGTgQFEMDGy2DAwMDLwAwkWNZAYO4jVAiRY2UCENEQdI4hgZmRbBhRj28vAAADC2ATdCmVuZHN0cmVhbQplbmRvYmoKc3RhcnR4cmVmCjE3MjUKJSVFT0YK",
@@ -981,8 +969,8 @@
       "kind": "builtin",
       "package": "@coda-console/claude",
       "tag": "latest",
-      "version": "1.9.0",
-      "integrity": "sha512-DfJ32fNdk1bfD0/e4H38otvoL3gqu77EvQaFvpLtycm0OzSKGQ+6eSZQybrVncohoEFe0Rd7hcUfA4OKo6rW5A==",
+      "version": "1.10.0",
+      "integrity": "sha512-iG7lXu3xtzuvuMKDZiIBEzvidrMn8mPmi+WFLrJl9iY1XoLyJYyPuZa4rY3f+HNB6L0jAz2P4NsgzEtJxEry6g==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/claude"
     },
@@ -1018,11 +1006,11 @@
     "endpoints": [],
     "views": [],
     "offers": {
-      "panels": [
+      "resources": [
         {
           "id": "limits",
           "title": "Claude",
-          "command": "node \"$CODA_PLUGIN_PATH/scripts/panel.mjs\"",
+          "command": "node \"$CODA_PLUGIN_PATH/scripts/resources.mjs\"",
           "signIn": {
             "command": "exec node \"$CODA_PLUGIN_PATH/scripts/login.mjs\"",
             "installed": "node \"$CODA_PLUGIN_PATH/scripts/login.mjs\" --installed",
@@ -1066,7 +1054,7 @@
     "id": "codex",
     "displayName": "Codex",
     "description": "用 OpenAI Codex 跑会话",
-    "version": "1.10.0",
+    "version": "1.11.0",
     "category": "Agent",
     "icon": {
       "light": "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",
@@ -1077,8 +1065,8 @@
       "kind": "builtin",
       "package": "@coda-console/codex",
       "tag": "latest",
-      "version": "1.10.0",
-      "integrity": "sha512-NVj+4zdggzf8mhwGiVgI9FROdeSB27SeyW2evopnz5y/29Pinv+S6AIj/hX6Z1T0ksdAvxFL2uqhf2/0oI8SSg==",
+      "version": "1.11.0",
+      "integrity": "sha512-/Vri1yv+QOGIHZ/PIvL1A8Ai9hYcT4LbJOvZ9AcLJIACJ4tK5Mq8WBIkAPYvZgxY37rnH1EqwNAChGFlsPl75A==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/codex"
     },
@@ -1105,11 +1093,11 @@
     "endpoints": [],
     "views": [],
     "offers": {
-      "panels": [
+      "resources": [
         {
           "id": "login",
           "title": "Codex",
-          "command": "node \"$CODA_PLUGIN_PATH/scripts/panel.mjs\"",
+          "command": "node \"$CODA_PLUGIN_PATH/scripts/resources.mjs\"",
           "maxAge": "PT0S",
           "actions": {
             "reset": {
@@ -1151,7 +1139,7 @@
     "dependencies": [],
     "extensionPoints": {
       "account-source": {
-        "description": "Codex 的账号与登录入口：来源给出当前账号和令牌，响应 --login，并提供账号与额度面板；接入后 Codex 自带的额度面板隐藏。"
+        "description": "Codex 的账号与登录入口：来源给出当前账号和令牌，响应 --login，并提供账号与额度资源；接入后 Codex 自带的那一行不再显示。"
       }
     },
     "extensions": [],
@@ -1161,7 +1149,7 @@
     "id": "codex-accounts",
     "displayName": "Codex 多账号",
     "description": "管理多个 Codex 账号与额度",
-    "version": "2.2.0",
+    "version": "2.3.0",
     "category": "模型与账号",
     "icon": {
       "symbol": "person.2.fill",
@@ -1172,8 +1160,8 @@
       "kind": "builtin",
       "package": "@coda-console/codex-accounts",
       "tag": "latest",
-      "version": "2.2.0",
-      "integrity": "sha512-k/mF1HBQxWE5vc9S6fPg58+oBWmpUQqBbbVYD8WPd4T794yIqOI3/2FuIRmN+WEowYKZL+Og1C2rEZvwSroq1Q==",
+      "version": "2.3.0",
+      "integrity": "sha512-CM1cYx8TbkpXa/PY+9XYmS7LQY+UnsovxbglzSCGN8m40AqGofgDpBmUlm8hf2kvYbz5/S4OBfUwH+YW7Zj4rA==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/codex-accounts"
     },
@@ -1189,11 +1177,11 @@
     "endpoints": [],
     "views": [],
     "offers": {
-      "panels": [
+      "resources": [
         {
           "id": "accounts",
-          "title": "Codex 多账号",
-          "command": "node \"$CODA_PLUGIN_PATH/scripts/panel.mjs\"",
+          "title": "Codex",
+          "command": "node \"$CODA_PLUGIN_PATH/scripts/resources.mjs\"",
           "maxAge": "PT5M",
           "actions": {
             "select": {
@@ -1210,7 +1198,7 @@
           },
           "signIn": {
             "command": "NO_COLOR=1 exec node \"$CODA_PLUGIN_PATH/scripts/login.mjs\"",
-            "note": "登录其他账号即可添加；登录已有账号会更新其凭据。首个账号会自动选用，之后可在面板切换。"
+            "note": "登录其他账号即可添加；登录已有账号会更新其凭据。首个账号会自动选用，之后在账号那一行的「···」里切换。"
           }
         }
       ]
@@ -1233,7 +1221,7 @@
     "id": "composer",
     "displayName": "输入框模式",
     "description": "交接、子会话、! 命令、Ultra 与循环",
-    "version": "3.9.0",
+    "version": "3.10.1",
     "category": "工作流程",
     "icon": {
       "symbol": "character.cursor.ibeam",
@@ -1244,8 +1232,8 @@
       "kind": "builtin",
       "package": "@coda-console/composer",
       "tag": "latest",
-      "version": "3.9.0",
-      "integrity": "sha512-o3yN3ED6XjYLG7a+gZlxA34Hj4vpRpdW23od+hSJgXfwayhb9G2hW7VNEJ9xfexe2VUjVRashtSz0Xe67uEK1Q==",
+      "version": "3.10.1",
+      "integrity": "sha512-21uk17cG/JCC8ohPzJy5bvJnY8e75c0SAec77hr6hxv00SvyoZtKrfeG2sz3bbOZqz/v3lxOoJ1AeVBZ81gfOw==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/composer"
     },
@@ -1584,7 +1572,7 @@
     "id": "grok",
     "displayName": "Grok",
     "description": "用 Grok CLI 跑会话",
-    "version": "1.5.0",
+    "version": "1.6.0",
     "category": "Agent",
     "icon": {
       "light": "JVBERi0xLjcKJbXtrvsKNCAwIG9iago8PCAvTGVuZ3RoIDUgMCBSCiAgIC9GaWx0ZXIgL0ZsYXRlRGVjb2RlCj4+CnN0cmVhbQp4nFVTTcoVQQzc9ymyFoxJ57eP4RFkwG/zXKj3Byv9UJCBGZLupCpVGSXB81nx0rPp+bF+Lrm5Xx/05ZvQx+9Vzpqke7Nt+kFqxaedKlg96EXqyqpGtbm3IwyOTirjMkTF0puqUL3oIQ3nszed5D3noezapHpY7KB7cIvi65y1p2AL60EmhE2CTrNnLMQA2EXVnHIu7EGjhyIvgAYSQHhRN1oHKTjsxMEeCFSU8jmJTn7eHLzZfFpo9h1O9+E4mAnDnInF361wHtuoBVL8LYha1Mrig6kpXFKE8RU3tIRDmsw4AxQOwiIQvMUHVaEIbfRDFKaLIED22MIiTjZcLxLkRZkJu/VF+pewOEiMX1ZvwyxpvSjlOqZArw54aNDMR/TNvpN8gxwcPWx1KIEPNigyHQNgdLqSwzDBiNB/ZHfgO0TU5kYRpDvqww8HmNDe8eu/eEJLFigHm1OwEGpYHsH5vvevN10zDK4/l2G1EtLhNdjWRhsTNrVz0IbZVbRAUzg3bh4uJKJAKwhoqdeFrjvCTPLQLqAHJYrRTRmE0Bpu0wIRrVl354oZyEdXWOZ+NRvAmL0dGfA1djipWH60egjCpt9VO3kWXOvEJXDGD4Y9tD2Gjx+p149ZxBd9/7S+rj95P69MCmVuZHN0cmVhbQplbmRvYmoKNSAwIG9iagogICA0ODQKZW5kb2JqCjMgMCBvYmoKPDwKICAgL0V4dEdTdGF0ZSA8PAogICAgICAvYTAgPDwgL0NBIDEgL2NhIDEgPj4KICAgPj4KPj4KZW5kb2JqCjcgMCBvYmoKPDwgL1R5cGUgL09ialN0bQogICAvTGVuZ3RoIDggMCBSCiAgIC9OIDEKICAgL0ZpcnN0IDQKICAgL0ZpbHRlciAvRmxhdGVEZWNvZGUKPj4Kc3RyZWFtCnicM1Mw4IrmiuUCAAY4AV0KZW5kc3RyZWFtCmVuZG9iago4IDAgb2JqCiAgIDE2CmVuZG9iago5IDAgb2JqCjw8IC9UeXBlIC9PYmpTdG0KICAgL0xlbmd0aCAxMiAwIFIKICAgL04gNAogICAvRmlyc3QgMjMKICAgL0ZpbHRlciAvRmxhdGVEZWNvZGUKPj4Kc3RyZWFtCnicVZFBa8MwDIXv/hW6jCUMEtlNtraEHppAGWMQ2t7GDsYxqWHEwXbG+u9nO03HMDro48nvCVFAQhFKJAxoSQmlsHopSFVBfr6OEvKW99ISAMjfVGfhAxggHOEzolpPgwNKdrs40RrdTUIaSARXRgPN6DorILk4N9ptnkfaGz5elLCZNn2azt8YyZ3SQ8OdhKTZMmTPFLFEyhA3T7h+REwXk79Y8OCtw3zLjQw5QrII3mWn+F7/+LjoH92wWEvowXm5heKuPxg9jVBVoQn97BHpgk6eGj7YMXiJ64JfwZlJLl3tVY38VkIeD/sAfebAj9LqyQhpYXX3PPlB4ebo1l/h33o1d/xL97ft/AVuy3nRLxI/bsgKZW5kc3RyZWFtCmVuZG9iagoxMiAwIG9iagogICAyNzcKZW5kb2JqCjEzIDAgb2JqCjw8IC9UeXBlIC9YUmVmCiAgIC9MZW5ndGggNTkKICAgL0ZpbHRlciAvRmxhdGVEZWNvZGUKICAgL1NpemUgMTQKICAgL1cgWzEgMiAyXQogICAvUm9vdCAxMSAwIFIKICAgL0luZm8gMTAgMCBSCj4+CnN0cmVhbQp4nGNgYPj/n4mBk4EBRDAxMoUxMDAy8AMJJgeQGDuINQ9IMCuACFOIOkYQwczIsg8oxnKVgQEA1JwFgQplbmRzdHJlYW0KZW5kb2JqCnN0YXJ0eHJlZgoxMjM3CiUlRU9GCg==",
@@ -1595,8 +1583,8 @@
       "kind": "builtin",
       "package": "@coda-console/grok",
       "tag": "latest",
-      "version": "1.5.0",
-      "integrity": "sha512-eMrRAGwSDOhkVER7Kh0yFwFwnuLdg92k/JTXC+1HUu80RE56zf1HcFjDp8BgEL6HxDxz9gqqk+L34f5Yymq9Ng==",
+      "version": "1.6.0",
+      "integrity": "sha512-BPmNhauZXOTCdnyuVoydvVdH/szTHFDlaISF0CfcgIFyMv2jMKrElDy7+H97nGexKIpLLp+iZuUmSIj7L4sxog==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/grok"
     },
@@ -1612,11 +1600,11 @@
     "endpoints": [],
     "views": [],
     "offers": {
-      "panels": [
+      "resources": [
         {
           "id": "account",
           "title": "Grok",
-          "command": "node \"$CODA_PLUGIN_PATH/scripts/panel.mjs\"",
+          "command": "node \"$CODA_PLUGIN_PATH/scripts/resources.mjs\"",
           "maxAge": "PT5M",
           "signIn": {
             "command": "g=\"$HOME/.grok/bin/grok\"; [ -x \"$g\" ] || g=grok; BROWSER=/usr/bin/true NO_COLOR=1 exec \"$g\" login --device-auth",
@@ -1662,7 +1650,7 @@
     "id": "kimi",
     "displayName": "Kimi Code",
     "description": "用 Kimi Code 跑会话",
-    "version": "1.3.0",
+    "version": "1.4.1",
     "category": "Agent",
     "icon": {
       "light": "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",
@@ -1674,8 +1662,8 @@
       "kind": "builtin",
       "package": "@coda-console/kimi",
       "tag": "latest",
-      "version": "1.3.0",
-      "integrity": "sha512-Q/qiUPshiQO7xFEvk8n8TKguBHmmpEkqrS5BR+3mTdq3i3HxpV/Q8gKKaa11KqE6I2tUlReBXt5e/l/PAcgLSQ==",
+      "version": "1.4.1",
+      "integrity": "sha512-bBLlDqgdZWnEDb3l7LPKYWamyd05jV9Ptelwcjz/DQpzfw/YbBN316crIgk7L2dVOvcmZgdL+VFtGU83nXA7+A==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/kimi"
     },
@@ -1691,11 +1679,11 @@
     "endpoints": [],
     "views": [],
     "offers": {
-      "panels": [
+      "resources": [
         {
           "id": "account",
           "title": "Kimi",
-          "command": "node \"$CODA_PLUGIN_PATH/scripts/panel.mjs\"",
+          "command": "node \"$CODA_PLUGIN_PATH/scripts/resources.mjs\"",
           "maxAge": "PT5M",
           "signIn": {
             "command": "exec sh \"$CODA_PLUGIN_PATH/scripts/login.sh\"",
@@ -2001,29 +1989,23 @@
   {
     "id": "machine-stats",
     "displayName": "机器负载",
-    "description": "在资源页显示 CPU、内存、各磁盘、网络、温度、GPU、电池与风扇数值；在插件设置中选择显示项，打开或刷新时采样。",
-    "version": "1.0.2",
+    "description": "CPU、内存、磁盘、网络与温度读数",
+    "version": "2.0.0",
     "category": "机器与资源",
+    "icon": {
+      "symbol": "cpu",
+      "color": "green"
+    },
     "readme": true,
     "source": {
       "kind": "builtin",
       "repo": "https://github.com/coda-console/machine-stats.git",
       "path": "",
-      "commit": "22e991f41d467389d485ac995f8d0f753f5ef608"
+      "commit": "957498f60cdd2fdd95f431ad07060f3f8e8ff84b"
     },
     "dir": "node_modules/machine-stats",
     "title": "机器负载",
-    "properties": {
-      "machine-stats.display": {
-        "type": "object",
-        "description": "资源页显示的指标，按磁盘与网卡分别选择。",
-        "title": "显示指标",
-        "entries": {
-          "type": "boolean"
-        },
-        "default": {}
-      }
-    },
+    "properties": {},
     "workflows": [],
     "capabilities": [],
     "services": [],
@@ -2033,12 +2015,61 @@
     "endpoints": [],
     "views": [],
     "offers": {
-      "panels": [
+      "resources": [
         {
-          "id": "load",
-          "title": "机器负载",
-          "command": "node \"$CODA_PLUGIN_PATH/scripts/stats.mjs\"",
-          "displaySetting": "machine-stats.display"
+          "id": "cpu",
+          "title": "CPU",
+          "command": "node \"$CODA_PLUGIN_PATH/scripts/stats.mjs\" cpu"
+        },
+        {
+          "id": "memory",
+          "title": "内存",
+          "command": "node \"$CODA_PLUGIN_PATH/scripts/stats.mjs\" memory"
+        },
+        {
+          "id": "swap",
+          "title": "交换空间",
+          "command": "node \"$CODA_PLUGIN_PATH/scripts/stats.mjs\" swap",
+          "hidden": true
+        },
+        {
+          "id": "disks",
+          "title": "磁盘",
+          "command": "node \"$CODA_PLUGIN_PATH/scripts/stats.mjs\" disks"
+        },
+        {
+          "id": "disk-io",
+          "title": "磁盘读写",
+          "command": "node \"$CODA_PLUGIN_PATH/scripts/stats.mjs\" disk-io",
+          "hidden": true
+        },
+        {
+          "id": "network",
+          "title": "网络",
+          "command": "node \"$CODA_PLUGIN_PATH/scripts/stats.mjs\" network"
+        },
+        {
+          "id": "temperature",
+          "title": "温度",
+          "command": "node \"$CODA_PLUGIN_PATH/scripts/stats.mjs\" temperature"
+        },
+        {
+          "id": "gpu",
+          "title": "GPU",
+          "command": "node \"$CODA_PLUGIN_PATH/scripts/stats.mjs\" gpu",
+          "hidden": true
+        },
+        {
+          "id": "battery",
+          "title": "电池",
+          "command": "node \"$CODA_PLUGIN_PATH/scripts/stats.mjs\" battery",
+          "hidden": true
+        },
+        {
+          "id": "fans",
+          "title": "风扇",
+          "command": "node \"$CODA_PLUGIN_PATH/scripts/stats.mjs\" fans",
+          "hidden": true
         }
       ]
     },

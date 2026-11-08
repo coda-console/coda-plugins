@@ -54,7 +54,7 @@
 
     <!-- 检查：机器检查便宜，先过了它们再请 Agent 评审。项目在自己的仓库里声明哪些流程是检查（coda:kind="check"）：这里在这个提交上调用它们，
          一个没通过（运行失败）就交给开 PR 的会话；都通过了，再等这个提交在 GitHub 上的全部检查（项目检查写的状态、GitHub Actions 等）有结果，
-         它们的一句话结论交给评审方、写在批准卡上。会话推新提交就从头再来；重跑外部检查或处理好别的后答复，再跑一遍。 -->
+         它们的一句话结论交给评审方、写在批准卡上。会话推了新提交就答复「已推送新版本」，等新提交从头再来；重跑外部检查或处理好别的后答复，再跑一遍。 -->
     <subProcess id="checking" name="检查">
       <startEvent id="checking-in" />
       <sequenceFlow id="c-in" sourceRef="checking-in" targetRef="run-checks" />
@@ -82,29 +82,44 @@
         <conditionExpression xsi:type="tFormalExpression">=not(checks.passed)</conditionExpression>
       </sequenceFlow>
       <sequenceFlow id="checks-passed" sourceRef="checked" targetRef="checking-out" />
-      <userTask id="fix-checks" name="检查没通过：处理后答复" coda:status="检查没通过：开 PR 的会话处理中" coda:completeLabel="已处理，再跑检查" coda:rejectLabel="处理不了">
+      <userTask id="fix-checks" name="检查没通过：处理后答复" coda:status="检查没通过：开 PR 的会话处理中">
         <documentation>PR #{{github.event.number}}（{{github.event.pull_request.html_url}}）的检查没通过。没通过的项目检查列在这次运行页的「调用的流程」里（运行 {{run.id}}）；
 GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 查看。
 
-请查明原因。是这次改动导致的就修改、验证并推送新版本（新版本会重新检查、评审），不必答复这个任务；检查本身出了问题（偶发、机器离线），处理好后答复 completed，项目的检查会再跑一遍，GitHub 上的其他检查要你自己重跑。做不了就答复 rejected，在 note 里写明原因，交给用户。</documentation>
+请查明原因。是这次改动导致的就修改、验证并推送新版本，再答复 completed、choice pushed：这个版本不再重跑检查，新版本会重新检查、评审；检查本身出了问题（偶发、机器离线），处理好后答复 completed、choice again，项目的检查会再跑一遍，GitHub 上的其他检查要你自己重跑。做不了就答复 rejected，在 note 里写明原因，交给用户。</documentation>
+        <extensionElements>
+          <coda:choice id="again" name="已处理，再跑检查" primary="true" />
+          <coda:choice id="pushed" name="已推送新版本" />
+        </extensionElements>
       </userTask>
-      <sequenceFlow id="run-again" sourceRef="fix-checks" targetRef="run-checks" />
+      <sequenceFlow id="to-fixed-checks" sourceRef="fix-checks" targetRef="fixed-checks" />
+      <exclusiveGateway id="fixed-checks" name="推送了吗" default="run-again" />
+      <sequenceFlow id="checks-fix-pushed" sourceRef="fixed-checks" targetRef="checking-fixing">
+        <conditionExpression xsi:type="tFormalExpression">=fix-checks.chose.pushed</conditionExpression>
+      </sequenceFlow>
+      <sequenceFlow id="run-again" sourceRef="fixed-checks" targetRef="run-checks" />
       <boundaryEvent id="checks-stuck" name="做不了" attachedToRef="fix-checks"><errorEventDefinition /></boundaryEvent>
       <sequenceFlow id="to-checks-user" sourceRef="checks-stuck" targetRef="checks-user" />
-      <userTask id="checks-user" name="检查没通过：等你处理" coda:assignee="user" coda:handback="false" coda:status="检查没通过：等你处理" coda:completeLabel="再跑检查" coda:rejectLabel="不再等">
+      <userTask id="checks-user" name="检查没通过：等你处理" coda:assignee="user" coda:status="检查没通过：等你处理" coda:completeLabel="再跑检查" coda:rejectLabel="不再等">
         <documentation>PR #{{github.event.number}}（{{github.event.pull_request.html_url}}）的检查没通过，开 PR 的会话处理不了，理由在这次运行的「检查没通过：处理后答复」任务里；
 没通过的项目检查见运行页「调用的流程」，GitHub 上的检查见 PR 页面。
 
 处理好后选「再跑检查」；推送新提交也会从头再来。</documentation>
       </userTask>
       <sequenceFlow id="run-again-by-user" sourceRef="checks-user" targetRef="run-checks" />
-      <endEvent id="checking-out" />
+      <endEvent id="checking-out"><extensionElements><coda:output name="outcome" value="passed" /></extensionElements></endEvent>
+      <endEvent id="checking-fixing" name="等新提交"><extensionElements><coda:output name="outcome" value="fixing" /></extensionElements></endEvent>
     </subProcess>
     <boundaryEvent id="pushed-while-checking" name="新提交" attachedToRef="checking"><messageEventDefinition messageRef="synchronize" /></boundaryEvent>
     <sequenceFlow id="checking-pushed" sourceRef="pushed-while-checking" targetRef="opening" />
     <boundaryEvent id="closed-while-checking" name="PR 关闭" attachedToRef="checking"><messageEventDefinition messageRef="closed" /></boundaryEvent>
     <sequenceFlow id="checking-closed" sourceRef="closed-while-checking" targetRef="ended" />
-    <sequenceFlow id="to-reviewing" sourceRef="checking" targetRef="reviewing" />
+    <sequenceFlow id="checked-out" sourceRef="checking" targetRef="after-checking" />
+    <exclusiveGateway id="after-checking" name="接下来" default="to-reviewing" />
+    <sequenceFlow id="checked-fixing" sourceRef="after-checking" targetRef="waiting">
+      <conditionExpression xsi:type="tFormalExpression">=checking.outcome = "fixing"</conditionExpression>
+    </sequenceFlow>
+    <sequenceFlow id="to-reviewing" sourceRef="after-checking" targetRef="reviewing" />
 
     <!-- 评审这个版本：同一个提交在同一个 base 上评审通过过就不再评；自动评审到了上限请你决定。结束时 head 是通过的那个提交，合并只合它。 -->
     <subProcess id="reviewing" name="评审">
@@ -153,7 +168,7 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
       </sequenceFlow>
       <sequenceFlow id="approved" sourceRef="verdict" targetRef="passed" />
 
-      <userTask id="limit" name="评审次数已到上限" coda:assignee="user" coda:handback="false" coda:status="评审次数已到上限：等你决定">
+      <userTask id="limit" name="评审次数已到上限" coda:assignee="user" coda:status="评审次数已到上限：等你决定">
         <documentation>PR #{{github.event.number}} 在这条运行里已自动评审 {{review.count}} 次，到了上限（{{vars.review.maxReviews}} 次）。当前版本 {{github.event.pull_request.head.sha}} 还没评审过。
 
 最近一次评审（提交 {{review.head}}）：{{review.line}}
@@ -188,7 +203,7 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
       <sequenceFlow id="fixed" sourceRef="fix" targetRef="fixing" />
       <boundaryEvent id="disputed" name="不同意" attachedToRef="fix"><errorEventDefinition /></boundaryEvent>
       <sequenceFlow id="to-arbitrate" sourceRef="disputed" targetRef="arbitrate" />
-      <userTask id="arbitrate" name="仲裁评审意见" coda:assignee="user" coda:handback="false" coda:status="评审意见有分歧：等你仲裁" coda:completeLabel="放行本次评审" coda:rejectLabel="按评审意见修改">
+      <userTask id="arbitrate" name="仲裁评审意见" coda:assignee="user" coda:status="评审意见有分歧：等你仲裁" coda:completeLabel="放行本次评审" coda:rejectLabel="按评审意见修改">
         <documentation>交叉评审要求修改 PR {{review.pr}}，开 PR 的会话不同意，理由在这次运行的「处理评审意见」任务里。阻塞级别及以上的问题：
 
 {{review.findings}}
@@ -283,7 +298,7 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
         <serviceTask id="kinds" name="看项目有哪些部署、发布" coda:action="workflow-kinds" />
         <sequenceFlow id="kinds-known" sourceRef="kinds" targetRef="approve" />
 
-        <userTask id="approve" name="批准合并" coda:assignee="user" coda:handback="false" coda:status="评审通过：等你批准合并">
+        <userTask id="approve" name="批准合并" coda:assignee="user" coda:status="评审通过：等你批准合并">
           <documentation>PR #{{github.event.number}} 可以合并。
 
 - **评审**：{{review.line}}
@@ -348,7 +363,7 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
         <sequenceFlow id="to-premerge" sourceRef="approval" targetRef="premerge" />
 
         <!-- 合并前检查：每个版本都跑嫌贵的验证（如后端全套），项目声明为 coda:kind="premerge"，批准后在要合并的提交上只跑一次。
-             没通过交给开 PR 的会话：推新提交就从头再来，评审通过后按原批准合并；检查本身出了问题，处理好后答复，再跑一遍。 -->
+             没通过交给开 PR 的会话：推了新提交答复「已推送新版本」，等新提交从头再来，评审通过后按原批准合并；检查本身出了问题，处理好后答复，再跑一遍。 -->
         <serviceTask id="premerge" name="合并前检查" coda:action="run-workflows" coda:status="合并前检查">
           <extensionElements>
             <coda:param name="kind" value="premerge" />
@@ -368,15 +383,24 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
         <sequenceFlow id="handed-over" sourceRef="handing" targetRef="preparing-ready" />
         <boundaryEvent id="premerge-broke" name="没通过" attachedToRef="premerge"><errorEventDefinition /></boundaryEvent>
         <sequenceFlow id="premerge-to-fix" sourceRef="premerge-broke" targetRef="fix-premerge" />
-        <userTask id="fix-premerge" name="合并前检查没通过：处理后答复" coda:status="合并前检查没通过：开 PR 的会话处理中" coda:completeLabel="已处理，再跑检查" coda:rejectLabel="处理不了">
+        <userTask id="fix-premerge" name="合并前检查没通过：处理后答复" coda:status="合并前检查没通过：开 PR 的会话处理中">
           <documentation>用户已批准合并 PR #{{github.event.number}}（{{github.event.pull_request.html_url}}），但提交 {{reviewing.head}} 的合并前检查没通过，还没有合并。没通过的检查列在这次运行页的「调用的流程」里（运行 {{run.id}}）。
 
-请查明原因。是这次改动导致的就修改、验证并推送新版本（新版本会重新检查、评审，通过后按用户的批准合并），不必答复这个任务；检查本身出了问题（偶发、机器离线），处理好后答复 completed，合并前检查会再跑一遍。做不了就答复 rejected，在 note 里写明原因，交给用户。</documentation>
+请查明原因。是这次改动导致的就修改、验证并推送新版本，再答复 completed、choice pushed：这个版本不再跑合并前检查，新版本会重新检查、评审，通过后按用户的批准合并；检查本身出了问题（偶发、机器离线），处理好后答复 completed、choice again，合并前检查会再跑一遍。做不了就答复 rejected，在 note 里写明原因，交给用户。</documentation>
+          <extensionElements>
+            <coda:choice id="again" name="已处理，再跑检查" primary="true" />
+            <coda:choice id="pushed" name="已推送新版本" />
+          </extensionElements>
         </userTask>
-        <sequenceFlow id="premerge-again" sourceRef="fix-premerge" targetRef="premerge" />
+        <sequenceFlow id="to-fixed-premerge" sourceRef="fix-premerge" targetRef="fixed-premerge" />
+        <exclusiveGateway id="fixed-premerge" name="推送了吗" default="premerge-again" />
+        <sequenceFlow id="premerge-fix-pushed" sourceRef="fixed-premerge" targetRef="preparing-fixing">
+          <conditionExpression xsi:type="tFormalExpression">=fix-premerge.chose.pushed</conditionExpression>
+        </sequenceFlow>
+        <sequenceFlow id="premerge-again" sourceRef="fixed-premerge" targetRef="premerge" />
         <boundaryEvent id="premerge-stuck" name="做不了" attachedToRef="fix-premerge"><errorEventDefinition /></boundaryEvent>
         <sequenceFlow id="to-premerge-user" sourceRef="premerge-stuck" targetRef="premerge-user" />
-        <userTask id="premerge-user" name="合并前检查没通过：等你处理" coda:assignee="user" coda:handback="false" coda:status="合并前检查没通过：等你处理" coda:completeLabel="再跑检查" coda:rejectLabel="不再等">
+        <userTask id="premerge-user" name="合并前检查没通过：等你处理" coda:assignee="user" coda:status="合并前检查没通过：等你处理" coda:completeLabel="再跑检查" coda:rejectLabel="不再等">
           <documentation>你已批准合并 PR #{{github.event.number}}（{{github.event.pull_request.html_url}}），但合并前检查没通过，开 PR 的会话处理不了，理由在这次运行的「合并前检查没通过：处理后答复」任务里；
 没通过的检查见运行页「调用的流程」。
 
@@ -428,20 +452,29 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
       <subProcess id="resolving" name="处理合并阻碍">
         <startEvent id="resolving-in" />
         <sequenceFlow id="resolving-started" sourceRef="resolving-in" targetRef="unblock" />
-        <!-- 没有合并：开 PR 的会话推新提交（经评审后按原批准合并），或处理好之后答复重试；它做不了交给你。 -->
-        <userTask id="unblock" name="合并没成功：处理后答复" coda:status="没有合并：开 PR 的会话处理中" coda:completeLabel="已处理，重试合并" coda:rejectLabel="处理不了">
+        <!-- 没有合并：开 PR 的会话推新提交后答复「已推送新版本」（经评审后按原批准合并），或处理好之后答复重试；它做不了交给你。 -->
+        <userTask id="unblock" name="合并没成功：处理后答复" coda:status="没有合并：开 PR 的会话处理中">
           <documentation>用户已批准合并 PR #{{github.event.number}}（{{github.event.pull_request.html_url}}），但没有合并：{{merge.reason}}
 
-- 与目标分支 {{github.event.pull_request.base.ref}} 有冲突，或要求先合入：把它合入这个 PR 的分支，解决冲突、验证并推送。新提交照常评审，通过后按用户的批准合并，不必答复这个任务。
-- PR 是草稿：确认可以评审后用 `gh pr ready` 标记，再答复 completed 重试合并。
-- 必需的检查还没通过：等它通过后答复 completed 重试；检查失败就修复并推送。
+- 与目标分支 {{github.event.pull_request.base.ref}} 有冲突，或要求先合入：把它合入这个 PR 的分支，解决冲突、验证并推送，再答复 completed、choice pushed。新提交照常评审，通过后按用户的批准合并。
+- PR 是草稿：确认可以评审后用 `gh pr ready` 标记，再答复 completed、choice again 重试合并。
+- 必需的检查还没通过：等它通过后答复 completed、choice again 重试；检查失败就修复并推送，再答复 completed、choice pushed。
 
 做不了就答复 rejected，在 note 里写明原因，交给用户。</documentation>
+          <extensionElements>
+            <coda:choice id="again" name="已处理，重试合并" primary="true" />
+            <coda:choice id="pushed" name="已推送新版本" />
+          </extensionElements>
         </userTask>
-        <sequenceFlow id="retry" sourceRef="unblock" targetRef="resolving-retry" />
+        <sequenceFlow id="to-unblocked" sourceRef="unblock" targetRef="unblocked" />
+        <exclusiveGateway id="unblocked" name="推送了吗" default="retry" />
+        <sequenceFlow id="unblock-pushed" sourceRef="unblocked" targetRef="resolving-fixing">
+          <conditionExpression xsi:type="tFormalExpression">=unblock.chose.pushed</conditionExpression>
+        </sequenceFlow>
+        <sequenceFlow id="retry" sourceRef="unblocked" targetRef="resolving-retry" />
         <boundaryEvent id="stuck" name="做不了" attachedToRef="unblock"><errorEventDefinition /></boundaryEvent>
         <sequenceFlow id="to-unblock-user" sourceRef="stuck" targetRef="unblock-user" />
-        <userTask id="unblock-user" name="合并没成功：等你处理" coda:assignee="user" coda:handback="false" coda:status="没有合并：等你处理">
+        <userTask id="unblock-user" name="合并没成功：等你处理" coda:assignee="user" coda:status="没有合并：等你处理">
           <documentation>你已批准合并 PR #{{github.event.number}}（{{github.event.pull_request.html_url}}），但没有合并：{{merge.reason}}
 
 开 PR 的会话处理不了，理由在这次运行的「合并没成功：处理后答复」任务里。在 GitHub 上处理好后选「重试合并」；推送新提交也会接着评审、按你的批准合并。</documentation>
@@ -459,6 +492,7 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
 
         <endEvent id="resolving-retry"><extensionElements><coda:output name="outcome" value="retry" /></extensionElements></endEvent>
         <endEvent id="resolving-close"><extensionElements><coda:output name="outcome" value="close" /></extensionElements></endEvent>
+        <endEvent id="resolving-fixing"><extensionElements><coda:output name="outcome" value="fixing" /></extensionElements></endEvent>
       </subProcess>
       <boundaryEvent id="closed-while-resolving" name="PR 关闭" attachedToRef="resolving"><messageEventDefinition messageRef="closed" /></boundaryEvent>
       <sequenceFlow id="resolving-ended" sourceRef="closed-while-resolving" targetRef="merging-elsewhere" />
@@ -466,6 +500,9 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
       <exclusiveGateway id="after-resolving" name="重试还是关闭" default="resolved-retry" />
       <sequenceFlow id="resolved-close" sourceRef="after-resolving" targetRef="close">
         <conditionExpression xsi:type="tFormalExpression">=resolving.outcome = "close"</conditionExpression>
+      </sequenceFlow>
+      <sequenceFlow id="resolved-fixing" sourceRef="after-resolving" targetRef="merging-fixing">
+        <conditionExpression xsi:type="tFormalExpression">=resolving.outcome = "fixing"</conditionExpression>
       </sequenceFlow>
       <sequenceFlow id="resolved-retry" sourceRef="after-resolving" targetRef="merge" />
       <endEvent id="merging-elsewhere"><extensionElements><coda:output name="outcome" value="elsewhere" /></extensionElements></endEvent>

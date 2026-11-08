@@ -9,7 +9,7 @@ const manifest = JSON.parse(readFileSync(new URL('../../../plugins/composer/pack
 function plugin() {
   const handlers = new Map();
   activate({ protocols: { register(kind, id, handler) {
-    assert.equal(kind, 'submissions');
+    assert.equal(kind, 'coda/submission@1');
     assert.ok(!handlers.has(id), `模式 ${id} 不应重复注册`);
     handlers.set(id, handler);
   } }, watch: async () => ({ dispose() {} }) });
@@ -18,7 +18,7 @@ function plugin() {
 const chosen = { agent: 'codex', model: 'gpt-6.1-sol', effort: 'ultra', options: { 'service-tier': 'priority' } };
 const subagents = [{ who: chosen, when: '调研' }];
 function submission(id, { thread = 'child', values = {}, sent = 0, changedSinceSent = false } = {}) {
-  return { kind: 'submissions', id: 'request-1', revision: 1, status: {}, spec: {
+  return { kind: 'coda/submission@1', id: 'request-1', revision: 1, status: {}, spec: {
     composer: thread ?? 'new:p1', thread, projectId: 'p1', text: '原始正文',
     attachments: ['/tmp/example.txt'], quotes: ['引用'],
     agent: { agent: 'claude-sdk', settings: { model: 'claude-opus-5-5' } },
@@ -54,7 +54,7 @@ for (const [name, id, input, expected] of cases) test(name, async () => {
   assert.deepEqual(object, before, '不改正文、附件、引用、执行者或模式快照');
 });
 
-test('清单的五个模式注册 submissions 参与者，未开模式不补充', async () => {
+test('清单的五个模式注册 coda/submission@1 参与者，未开模式不补充', async () => {
   const handlers = plugin();
   assert.deepEqual([...handlers.keys()], manifest.contributes.composerModes.map(mode => mode.id));
   for (const [id, handler] of handlers) {

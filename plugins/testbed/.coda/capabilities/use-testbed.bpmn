@@ -94,7 +94,7 @@
       <endEvent id="noted" />
       <boundaryEvent id="black-failed" attachedToRef="black"><errorEventDefinition /></boundaryEvent>
       <sequenceFlow id="ask-black" sourceRef="black-failed" targetRef="black-trouble" />
-      <userTask id="black-trouble" name="测试机切黑屏失败" coda:assignee="user" coda:handback="false" coda:status="{{find.name}} 切黑屏失败，等你处理">
+      <userTask id="black-trouble" name="测试机切黑屏失败" coda:assignee="user" coda:status="{{find.name}} 切黑屏失败，等你处理">
         <documentation>测试机 {{find.name}}（{{inputs.device}}）用完后没能切黑屏，原因见运行页「切黑屏」这一步的日志。在你处理之前，它不会交给下一位。
 
 检查设备连接、黑屏 App 或插件设置「切黑屏命令」后选「重试」；已经手动处理好了就选「我处理好了，放锁」。</documentation>
@@ -133,7 +133,7 @@
       <endEvent id="stop-noted" />
       <boundaryEvent id="black-stop-failed" attachedToRef="black-stop"><errorEventDefinition /></boundaryEvent>
       <sequenceFlow id="ask-black-stop" sourceRef="black-stop-failed" targetRef="black-stop-trouble" />
-      <userTask id="black-stop-trouble" name="测试机切黑屏失败" coda:assignee="user" coda:handback="false" coda:status="{{find.name}} 切黑屏失败，等你处理">
+      <userTask id="black-stop-trouble" name="测试机切黑屏失败" coda:assignee="user" coda:status="{{find.name}} 切黑屏失败，等你处理">
         <documentation>测试机 {{find.name}}（{{inputs.device}}）没能切黑屏，原因见运行页「切黑屏（没有做完）」这一步的日志。在你处理之前，它不会交给下一位。
 
 检查设备连接、黑屏 App 或插件设置「切黑屏命令」后选「重试」；已经手动处理好了就选「我处理好了，放锁」。</documentation>
