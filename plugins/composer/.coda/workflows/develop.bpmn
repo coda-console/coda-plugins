@@ -299,10 +299,18 @@ PR：{{pr.url}}
     <sequenceFlow id="notes-ready" sourceRef="notes-route" targetRef="merge" />
     <endEvent id="stopped" name="暂不合并" />
     <scriptTask id="merge" name="Squash 合并" scriptFormat="bash" coda:timeout="10">
-      <extensionElements><coda:output name="commit" /></extensionElements>
+      <extensionElements><coda:output name="commit" /><coda:output name="route" /></extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" merge</script>
     </scriptTask>
-    <sequenceFlow id="merge-deploy-choice" sourceRef="merge" targetRef="deploy-choice" />
+    <sequenceFlow id="merge-route" sourceRef="merge" targetRef="after-merge" />
+    <exclusiveGateway id="after-merge" name="是否合并冲突" default="merge-deploy-choice" />
+    <sequenceFlow id="merge-conflict" sourceRef="after-merge" targetRef="merge-feedback"><conditionExpression xsi:type="tFormalExpression">=merge.route = "conflict"</conditionExpression></sequenceFlow>
+    <scriptTask id="merge-feedback" name="交回合并冲突" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements><coda:output name="feedback" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" review</script>
+    </scriptTask>
+    <sequenceFlow id="merge-review" sourceRef="merge-feedback" targetRef="report" />
+    <sequenceFlow id="merge-deploy-choice" sourceRef="after-merge" targetRef="deploy-choice" />
     <exclusiveGateway id="deploy-choice" name="是否部署" default="merged-preview" />
     <sequenceFlow id="merged-only" sourceRef="deploy-choice" targetRef="done"><conditionExpression xsi:type="tFormalExpression">=inputs.delivery != ""</conditionExpression></sequenceFlow>
     <sequenceFlow id="merged-deploy" sourceRef="deploy-choice" targetRef="deploy"><conditionExpression xsi:type="tFormalExpression">=approve.options.deploy</conditionExpression></sequenceFlow>
