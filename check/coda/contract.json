@@ -1,16 +1,16 @@
 {
-  "commit": "8d7cb856458f8b38318f3ef059c56822e69a1109",
+  "commit": "402488ad28a8c5e59903cba9e66c7a6c30a990ef",
   "packages": {
     "@0dep/piso": "5.2.0",
     "@agentclientprotocol/sdk": "1.4.0",
-    "@coda-console/protocol": "git+https://github.com/coda-console/coda-protocol.git#304a97abe55d8143ee66c1a55d01f5b5427eebb1",
+    "@coda-console/protocol": "git+https://github.com/coda-console/coda-protocol.git#196a8c2e5dda6fbb487071b22d12672db76a7dfc",
     "ajv": "8.20.0",
     "yaml": "2.9.1"
   },
   "files": {
     "check/coda/components/protocols/creation.mjs": "2b4a400d3064af4b5106077dc783c567910fef3c47b2d52af3f0d838c5accf19",
-    "check/coda/components/protocols/types.mjs": "30a39388d86bb052927b9c4e656580ca73185039a93b6d5bd6f2047faa5c485e",
-    "check/coda/adapters/provider-api.mjs": "0f6fd1853f91797fa173f57e339379aa6cc17f419e6a244fc3092578522061dc",
+    "check/coda/components/protocols/types.mjs": "f19134df148d87284aaee9f1b7bcf7e05364230959957a36520acccfc4ffbe1a",
+    "check/coda/adapters/provider-api.mjs": "a584316c3e0dafa19667f4288c54b8f894b49de72d9f62098d592b9084dec482",
     "check/coda/adapters/admission-api.mjs": "461b5a8a1ad73d7afed5db308813d02324e29c643b8e773ad127d4bdb00fb524",
     "check/coda/components/composers/schemas.mjs": "6d497f58147756e789f9a566b2366f2fe36c0c72310421fb02508bf24a04f2c0",
     "check/coda/components/plugins/agent-plugins.mjs": "7ca5c0303c6fedffa7b0bcd90546273356ebc410b101f203f2ee8e7503063403",
@@ -19,7 +19,7 @@
     "check/coda/components/plugins/plugin-source-rules.mjs": "cdbe62cc3264469ec91ef7b8ff011a4b8313210f02bd44feb6bfb19eb4624fb9",
     "check/coda/components/plugins/skill-document.mjs": "153ad3c096c7c9b7774bcf7dcc0ba603c962ee1ac8697c8a71e3f2c9ba9c92e6",
     "check/coda/components/prompt-recovery/prompt-recovery.mjs": "f43f21d24c19a58113d3304f9248225b12080ab00ed15eab74bf7b94642732de",
-    "check/coda/components/session-config/commands.mjs": "e454081dd94dd7403c2153174d829ee58d2276697eb4b274ad9cc08fd9689d73",
+    "check/coda/components/session-config/commands.mjs": "b8505802e25590435bf48d741522d85c8b185e8f2ae190d49e53eebd35a1d453",
     "check/coda/components/workflows/executor-labels.mjs": "dceca6ae60c0a4f3c3cc72a6c84f1489831790774c93caab96e4ddb493bc89e1",
     "check/coda/domain/agent-protocol.mjs": "769cc10dc21b3cef7718f94272aaef2d17d4882d42617b408cb47357abfc3bcb",
     "check/coda/domain/duration.mjs": "15dd64ef9b02342ad521c66e5968a569432a89dc7568d11afd3e6f3fe37e104b",
@@ -33,6 +33,6 @@
     "check/coda/resources/plugins/resources/panels/rules.mjs": "d5b12f3e0e5040224314e5d2de2bd49f5b1ed24ea205590ff99a54e8b4e96d7f",
     "check/coda/resources/plugins/resources/panels/sign-in.mjs": "1271a24e33b1b882a1fb9bee03b8e240db8b9bee1b5208f0e1c84499cfb1be7e",
     "check/coda/kernel/calls.mjs": "fe7589992fe4f35741f39ed4ddf9fa67812c26d2c52cbe61001d434b44b2fe6e",
-    "check/coda/builtin.json": "2fd2991f6ab6350bb495f3c1ce3b1cbe00b850572e22dfaa6880fe73d272717a"
+    "check/coda/builtin.json": "c70708a2f7cb77369f720ab3dee05d5f01b183585f3626cc277e869483d62a56"
   }
 }

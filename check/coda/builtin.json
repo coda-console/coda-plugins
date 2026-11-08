@@ -1221,7 +1221,7 @@
     "id": "composer",
     "displayName": "输入框模式",
     "description": "交接、子会话、! 命令、Ultra 与循环",
-    "version": "3.10.0",
+    "version": "4.0.0",
     "category": "工作流程",
     "icon": {
       "symbol": "character.cursor.ibeam",
@@ -1809,7 +1809,7 @@
     "id": "review",
     "displayName": "PR 生命流程",
     "description": "PR 从检查、评审到批准合并",
-    "version": "2.10.0",
+    "version": "2.11.0",
     "category": "工作流程",
     "icon": {
       "symbol": "checkmark.bubble.fill",

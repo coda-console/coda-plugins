@@ -3,9 +3,12 @@
 // reaches it while such a turn is going is queued, and its ACP answers it at once though it runs later.
 // So the goal is told as a timer that fires again after each turn (docs/agent-protocol.md「_coda/wait」): `handling` through
 // each of its turns, which Coda takes up as turns of their own, `waiting` between them, `done` once the goal is no longer
-// active. A Coda prompt Kimi answered at once without running it is held: its answer waits for the turn that runs it, the
-// first of Coda's prompts' turns that began after it was sent. What is said in a goal's turn or a held prompt's is told as
+// active, `failed` with the reason when the last main turn before that failed (Kimi pauses its goal after a turn fails). A Coda prompt Kimi answered at once without running it is held: its answer waits for the turn that runs it, the
+// first of Coda's prompts' turns that began after it was sent. A prompt whose turn failed is answered with that failure
+// (errors.mjs), which Kimi's ACP answers as `end_turn`. What is said in a goal's turn or a held prompt's is told as
 // this session's updates; a turn from before this agent process (`startedAt`) is another process's and is not told.
+import { failedAnswer, turnFailure } from './errors.mjs';
+
 const CONTINUES = '目标未完成前，每轮结束后自动继续';
 // How Kimi's ACP answers a turn that ended so.
 const STOPPED = { cancelled: 'cancelled', blocked: 'refusal' };
@@ -13,7 +16,7 @@ const STOPPED = { cancelled: 'cancelled', blocked: 'refusal' };
 export class KimiTurns {
   constructor({ sessionId, startedAt = 0 }) {
     this.sessionId = sessionId; this.startedAt = startedAt;
-    // The goal as told ({ id, active, state, turn }) and as the wire last left it. Main turns going, those whose content is
+    // The goal as told ({ id, active, state, turn, failure }) and as the wire last left it. Main turns going, those whose content is
     // told, the last Coda prompt's turn seen, and the prompts held.
     this.goal = null; this.latest = null; this.going = new Set(); this.telling = new Set(); this.user = null; this.held = [];
   }
@@ -45,14 +48,14 @@ export class KimiTurns {
     if (open(goal)) {
       goal.active = goal.id === entry.id && entry.active;
       if (goal.active || goal.turn !== undefined) return;
-      this.say(told, 'done');
+      this.finish(told);
     }
     this.start(told);
   }
   start(told) {
     const latest = this.latest;
     if (!latest?.active || this.goal?.id === latest.id) return;
-    this.goal = { id: latest.id, active: true, state: 'waiting', turn: undefined };
+    this.goal = { id: latest.id, active: true, state: 'waiting', turn: undefined, failure: null };
     told.push(wait({ sessionId: this.sessionId, waitId: latest.id, state: 'waiting', kind: 'timer', title: latest.title || 'Kimi 目标',
       detail: CONTINUES, recurring: true, stoppable: false }));
   }
@@ -67,28 +70,44 @@ export class KimiTurns {
       this.telling.add(turnId);
       this.say(told, 'handling');
     } else if (kind === 'user') {
-      this.user = { turnId, time, ended: false, claimed: false };
+      this.user = { turnId, time, ended: false, claimed: false, failure: null };
       const held = this.held.find(h => h.turnId === undefined && h.sentAt <= time);
       if (held) { held.turnId = turnId; this.user.claimed = true; this.telling.add(turnId); }
     }
   }
-  end({ turnId, reason }, told) {
+  end({ turnId, reason, error }, told) {
     if (!this.going.delete(turnId)) return;
     this.telling.delete(turnId);
-    if (this.user?.turnId === turnId) this.user.ended = true;
+    const failure = turnFailure(reason, error);
+    if (this.user?.turnId === turnId) { this.user.ended = true; this.user.failure = failure; }
+    if (open(this.goal)) this.goal.failure = failure;
     if (this.goal?.turn === turnId) this.settle(told);
     const i = this.held.findIndex(h => h.turnId === turnId);
-    if (i >= 0) told.push(answered(this.held.splice(i, 1)[0].answer, STOPPED[reason] ?? 'end_turn'));
+    if (i >= 0) {
+      const { answer } = this.held.splice(i, 1)[0];
+      told.push(failure ? failedAnswer(answer, failure) : answered(answer, STOPPED[reason] ?? 'end_turn'));
+    }
+  }
+  // How the turn of the prompt sent at `sentAt` failed, once it ended so; null otherwise. For an answer not held.
+  failure(sentAt) {
+    const user = this.user;
+    return user && !user.claimed && user.ended && user.time >= sentAt ? user.failure : null;
   }
   // The goal's turn is over: it waits for the next, or ends, and the goal that replaced it is told.
   settle(told) {
     this.goal.turn = undefined;
-    this.say(told, this.goal.active ? 'waiting' : 'done');
+    if (this.goal.active) this.say(told, 'waiting'); else this.finish(told);
     this.start(told);
   }
-  say(told, state) {
+  // The goal is no longer active: done, or failed as the last main turn did.
+  finish(told) {
+    const failure = this.goal.failure;
+    if (!failure) { this.say(told, 'done'); return; }
+    this.say(told, 'failed', { ...(failure.quota ? { title: '额度不足' } : {}), detail: failure.message.slice(0, 4000) });
+  }
+  say(told, state, more = {}) {
     this.goal.state = state;
-    told.push(wait({ sessionId: this.sessionId, waitId: this.goal.id, state }));
+    told.push(wait({ sessionId: this.sessionId, waitId: this.goal.id, state, ...more }));
   }
   // Coda stopped: Kimi's ACP cannot stop a turn it does not drive, so a held prompt is answered as stopped now, and what its
   // turn says if it still runs is not told.

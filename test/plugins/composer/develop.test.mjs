@@ -51,6 +51,11 @@ const session = continued ? value('--continue') : 'worker-' + calls.length;
 const branch = 'agent/' + session, cwd = join(root, session);
 const git = (...params) => execFileSync('git', params, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 if (!continued) execFileSync('git', ['worktree', 'add', '-b', branch, cwd, value('--commit')], { stdio: 'pipe' });
+if (task.mergeBase) {
+  git('fetch', 'origin', task.mergeBase);
+  const merged = require('node:child_process').spawnSync('git', ['merge', '--no-commit', 'FETCH_HEAD'], { cwd, encoding: 'utf8' });
+  if (merged.status !== 1 || !merged.stdout.includes('CONFLICT')) throw new Error('expected conflict');
+}
 writeFileSync(join(cwd, task.file), task.answer);
 git('add', task.file); git('commit', '-qm', task.answer);
 console.log(JSON.stringify({ session, branch, head: git('rev-parse', 'HEAD'), answer: task.answer }));
@@ -67,7 +72,7 @@ else if (args[1] === 'create') console.log('https://github.com/example/fixture/p
 else if (args[1] === 'merge') {
   const { execFileSync } = require('node:child_process');
   if (!args.includes('--repo')) execFileSync('git', ['symbolic-ref', '--short', 'HEAD']);
-  if (process.env.MERGE_EXIT) process.exit(Number(process.env.MERGE_EXIT));
+  if (process.env.MERGE_EXIT) { process.stderr.write(process.env.MERGE_STDERR || ''); process.exit(Number(process.env.MERGE_EXIT)); }
   if (process.env.DELETE_REMOTE === 'true') {
     const state = JSON.parse(readFileSync(join(process.env.CODA_ARTIFACTS, 'develop.json'), 'utf8'));
     execFileSync('git', ['push', 'origin', '--delete', state.lane], { stdio: 'pipe' });
@@ -79,9 +84,9 @@ else if (args[1] === 'view') {
     console.log(JSON.stringify({ headRefOid: process.env.PR_HEAD || state.head, statusCheckRollup: [{}] }));
     process.exit(Number(process.env.CHECKS_QUERY_EXIT || 0));
   }
-  if (args.includes('state,headRefOid,mergeCommit')) {
+  if (args.includes('state,headRefOid,mergeCommit') || args.includes('state,mergeable')) {
     const state = JSON.parse(readFileSync(join(process.env.CODA_ARTIFACTS, 'develop.json'), 'utf8'));
-    console.log(JSON.stringify({ state: process.env.PR_STATE || 'OPEN', headRefOid: process.env.PR_HEAD || state.head, mergeCommit: { oid: 'f'.repeat(40) } }));
+    console.log(JSON.stringify({ state: process.env.PR_STATE || 'OPEN', mergeable: process.env.PR_MERGEABLE || 'MERGEABLE', headRefOid: process.env.PR_HEAD || state.head, mergeCommit: { oid: 'f'.repeat(40) } }));
   } else console.log('f'.repeat(40));
 }
 else if (args[1] === 'checks') {
@@ -93,7 +98,7 @@ else if (args[1] === 'checks') {
   writeFileSync(join(root, 'agent-calls'), '[]'); writeFileSync(join(root, 'gh-calls'), '[]');
   const state = () => JSON.parse(readFileSync(join(artifacts, 'develop.json'), 'utf8'));
   const calls = name => JSON.parse(readFileSync(join(root, `${name}-calls`), 'utf8'));
-  const task = (file, answer, exit) => writeFileSync(join(root, 'agent-task'), JSON.stringify({ file, answer, exit }));
+  const task = (file, answer, exit, mergeBase) => writeFileSync(join(root, 'agent-task'), JSON.stringify({ file, answer, exit, mergeBase }));
   const run = (action, extra = {}, expected = 0) => {
     writeFileSync(env.GITHUB_OUTPUT, '');
     const result = spawnSync(process.execPath, [script, action], { cwd: work, env: { ...env, ...extra }, encoding: 'utf8' });
@@ -232,7 +237,7 @@ for (const scenario of [
   assert.equal(f.git('branch', '--show-current'), '');
   const branches = f.git('show-ref', '--heads');
   if (scenario.deleted) f.git('push', 'origin', '--delete', f.state().lane);
-  const extra = { PR_STATE: scenario.state, PR_HEAD: scenario.head || '', MERGE_EXIT: scenario.exit || '',
+  const extra = { PR_MERGEABLE: scenario.error ? 'CONFLICTING' : 'MERGEABLE', PR_STATE: scenario.state, PR_HEAD: scenario.head || '', MERGE_EXIT: scenario.exit || '',
     DELETE_REMOTE: String(!scenario.deleted) };
   const result = f.run('merge', extra, scenario.error ? 1 : Number(scenario.exit || 0));
   assert.equal(result.outputs.commit, scenario.error || scenario.exit ? undefined : 'f'.repeat(40));
@@ -247,6 +252,70 @@ for (const scenario of [
     assert.equal(f.git('ls-remote', 'origin', f.state().lane), '');
     assert.equal(f.run('merge', { PR_STATE: 'MERGED' }).outputs.commit, result.outputs.commit);
     assert.equal(f.calls('gh').filter(c => c.args[1] === 'merge').length, merges.length, '重跑不再合并');
+  }
+});
+
+for (const scenario of [
+  { name: '合并失败后确认冲突', mergeable: 'CONFLICTING', stderr: 'X Pull request is not mergeable', conflict: true },
+  { name: 'not mergeable 但 UNKNOWN 仍失败', mergeable: 'UNKNOWN', stderr: 'X Pull request is not mergeable' },
+  { name: 'not mergeable 但 MERGEABLE 仍失败', mergeable: 'MERGEABLE', stderr: 'X Pull request is not mergeable' },
+  { name: '错误文案变化仍按冲突退回', mergeable: 'CONFLICTING', conflict: true, stderr: '合并冲突' },
+  { name: '权限失败且无冲突仍失败', mergeable: 'MERGEABLE', stderr: 'HTTP 403: Forbidden' },
+  { name: '网络失败且无冲突仍失败', mergeable: 'UNKNOWN', stderr: 'network unavailable' },
+]) test(scenario.name, t => {
+  const f = fixture(t); f.run('lane'); f.run('pr');
+  const result = f.run('merge', { MERGE_EXIT: '7', MERGE_STDERR: scenario.stderr, PR_MERGEABLE: scenario.mergeable }, scenario.conflict ? 0 : 7);
+  assert.equal(result.stderr, scenario.stderr);
+  assert.deepEqual(result.outputs, scenario.conflict ? { route: 'conflict' } : {});
+  assert.equal(Boolean(f.state().feedback), Boolean(scenario.conflict));
+  const queries = f.calls('gh').filter(c => c.args.includes('state,mergeable'));
+  assert.equal(queries.length, 1, '合并失败后只查一次冲突状态');
+  const mergeIndex = f.calls('gh').findIndex(c => c.args[1] === 'merge');
+  assert.equal(f.calls('gh')[mergeIndex + 1].args.at(-1), 'state,mergeable');
+});
+
+test('合并冲突带反馈回审查，原执行者合入 base 后重走检查、更新同一 PR 并重新批准', async t => {
+  const f = fixture(t); f.run('lane'); f.task('base', 'worker change'); f.run('execute');
+  f.run('gate'); f.run('gate-passed', { RUNS: '[]' });
+  f.review('accept', '汇报'); f.run('accept'); f.run('pr');
+  const before = f.state();
+  f.run('approval', { APPROVAL: JSON.stringify({ choice: 'merge', options: { deploy: true, release: true }, note: '旧说明' }) });
+  f.git('switch', 'main');
+  writeFileSync(join(f.work, 'base'), 'target change'); f.git('add', 'base'); f.git('commit', '-qm', 'base advanced');
+  f.git('push', 'origin', 'main');
+  const baseHead = f.git('rev-parse', 'HEAD');
+  assert.deepEqual(f.run('merge', { MERGE_EXIT: '1', PR_MERGEABLE: 'CONFLICTING' }).outputs, { route: 'conflict' });
+  assert.equal(f.calls('gh').filter(c => c.args[1] === 'merge').length, 1);
+  assert.equal(f.state().head, before.head);
+  assert.equal(f.state().phase, 'check');
+  const feedback = f.run('review').outputs.feedback;
+  for (const text of ['合并冲突', '目标分支 main', 'git fetch origin main', '迁移版本号', '跑相关测试', '退回修改', '重新批准']) assert.ok(feedback.includes(text), text);
+  assert.equal(f.review('revise', feedback), 'revise');
+  f.task('base', 'resolved change', undefined, 'main'); f.run('revise');
+  assert.equal(f.state().executor.session, before.executor.session);
+  assert.ok(f.calls('agent').at(-1).prompt.includes(feedback));
+  f.git('merge-base', '--is-ancestor', baseHead, f.state().executor.head);
+  const head = f.run('gate').outputs.head;
+  assert.notEqual(head, before.head);
+  f.run('gate-passed', { RUNS: '[]' });
+  f.review('accept', '修复后的汇报'); assert.equal(f.run('accept').outputs.route, 'pr');
+  assert.equal(f.run('pr').outputs.checked, 'true');
+  assert.equal(f.state().pr, before.pr);
+  assert.equal(f.calls('gh').filter(c => c.args[1] === 'create').length, 1);
+  assert.equal(f.calls('gh').filter(c => c.args[1] === 'edit').length, 1);
+  f.run('github-checks');
+  assert.equal(f.run('approval', { APPROVAL: JSON.stringify({ choice: 'merge', options: {} }) }).outputs.route, 'merge', '新批准不沿用旧发布选项或要求发布说明');
+  assert.equal(f.run('merge').outputs.commit, 'f'.repeat(40));
+  const merged = f.calls('gh').filter(c => c.args[1] === 'merge').at(-1);
+  assert.equal(merged.args[merged.args.indexOf('--match-head-commit') + 1], head);
+  const { root, problem } = await readWorkflow(workflow, 'develop'); assert.ok(!problem, problem);
+  const nodes = Object.fromEntries(root.rootElements.find(e => e.$type === 'bpmn:Process').flowElements.map(e => [e.id, e]));
+  for (const [id, option] of [['merged-deploy', 'deploy'], ['to-publish-preview', 'preview'], ['to-publish-release', 'release']]) {
+    const expression = nodes[id].conditionExpression.body.slice(1);
+    const context = { approve: { options: { [option]: true } } };
+    assert.equal(evaluate(expression, context).value, true);
+    context.approve = { options: { [option]: false } };
+    assert.equal(evaluate(expression, context).value, false, '新批准卡取消选项后不部署或发布');
   }
 });
 
@@ -408,6 +477,11 @@ test('开发流程定义、回路、检查提交与部署发布选择符合运�
   assert.equal(params('tell-device').session, undefined, '通知运行所属会话');
   assert.equal(nodes['told-device-pr'].sourceRef.id, 'tell-device');
   assert.equal(nodes['told-device-pr'].targetRef.id, 'pr');
+  assert.equal(nodes['merge-route'].targetRef.id, 'after-merge');
+  assert.equal(route('after-merge', { merge: { route: 'conflict' } }), 'report');
+  assert.equal(route('after-merge', { merge: { route: 'merged', commit: 'merged' } }), 'deploy-choice');
+  assert.equal(nodes['merge-feedback'], undefined);
+  assert.equal(nodes['kinds-approve'].targetRef.id, 'approve', '新一轮必须重新进入用户批准任务');
   assert.equal(nodes['approve-route'].sourceRef.id, 'approve');
   assert.equal(nodes['approve-route'].targetRef.id, 'approval-result');
   const context = { inputs: { title: '修好输入框' }, run: { id: 'run-1' }, accept: { head: 'head-1' }, pr: { head: 'head-1' } };

@@ -60,7 +60,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export function firstMessage(value) {
   object(value, '首次发送');
   keys(value, ['requestId', 'projectId', 'title', 'agent', 'checkout', 'settings', 'text', 'attachments', 'quotes', 'handoffSource', 'parentThreadId',
-    'replyTo', 'threadId', 'modes', 'initiatedBy']);
+    'replyTo', 'threadId', 'modes', 'initiatedBy', 'link']);
   const initiatedBy = value.initiatedBy === undefined ? {} : (() => {
     const source = object(value.initiatedBy, '发起会话');
     keys(source, ['threadId', 'title']);
@@ -70,6 +70,16 @@ export function firstMessage(value) {
   })();
   const handoff = value.handoffSource === undefined ? {} : { handoffSource: text(value.handoffSource, '交接来源', 100) };
   const parent = value.parentThreadId === undefined ? {} : { parentThreadId: text(value.parentThreadId, '父会话', 100) };
+  // A session made in a session a plugin provides, as its bot (components/session-links): the `coda/session@1` record, this
+  // machine's or another's by its `remote:` reference, and what there wakes it — a message that @s or answers it
+  // (`mention`, the default), or any (`all`). That the record is one a provider has is checked as the session is made.
+  const link = value.link === undefined ? {} : (() => {
+    const named = object(value.link, '外部会话');
+    keys(named, ['record', 'wake']);
+    check(!parent.parentThreadId && !value.initiatedBy, 'invalid_input', '外部会话里的会话须为用户新建的独立会话');
+    check([undefined, 'mention', 'all'].includes(named.wake), 'invalid_input', 'wake 须为 mention 或 all');
+    return { link: { record: text(named.record, '外部会话', 2048), wake: named.wake ?? 'mention' } };
+  })();
   check(!parent.parentThreadId || handoff.handoffSource === parent.parentThreadId, 'invalid_input', '子会话必须引用父会话上下文');
   // Whom a child the user starts answers (#1904「回复权」): its parent, as a call of the parent's would (`parent`, the
   // default), or the user who started it (`sender`): under its parent all the same, which is where it belongs, not whom it
@@ -98,6 +108,7 @@ export function firstMessage(value) {
     ...handoff,
     ...initiatedBy,
     ...parent,
+    ...link,
     ...reply,
     ...(value.threadId === undefined ? {} : { threadId: value.threadId }),
     requestId: text(value.requestId, '请求标识', 100),

@@ -140,3 +140,66 @@ test('a prompt Kimi spoke in, or one it answered with nothing going, is passed o
   await r.drained();
   assert.deepEqual([told.at(-1).method, brief(out.at(-1))], ['session/cancel', ['answer', 4, 'cancelled']]);
 });
+
+// Kimi's ACP answers a prompt whose turn failed with `end_turn`; the failure is in the turn's end on its wire.
+const QUOTA = { code: 'provider.api_error', name: 'APIProviderQuotaExhaustedError', retryable: false,
+  message: "429 You've reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends." };
+const failed = (turnId, time, error) => ({ type: 'turn.ended', turnId, reason: 'failed', error, time });
+
+test('a prompt whose turn failed is answered with that failure, quota exhaustion classified; one that completed is not', async t => {
+  const f = await layout(t);
+  const { r, out, prompt } = await relay(t, f);
+  const answer = async (id, end) => {
+    prompt(id);
+    const ran = Date.now();
+    await f.write(...begin(id, ran, { kind: 'user' }), end(id, ran));
+    r.fromAgent({ jsonrpc: '2.0', id, result: { stopReason: 'end_turn' } });
+    await r.drained();
+    return out.at(-1);
+  };
+  assert.deepEqual(await answer(2, (id, time) => failed(id, time, QUOTA)), { jsonrpc: '2.0', id: 2,
+    error: { code: -32603, message: QUOTA.message, data: { _meta: { coda: { failure: { kind: 'quota_exhausted' } } } } } });
+  assert.deepEqual(await answer(3, (id, time) => failed(id, time, { code: 'provider.api_error', message: '500 internal error' })),
+    { jsonrpc: '2.0', id: 3, error: { code: -32603, message: '500 internal error' } });
+  assert.deepEqual(await answer(4, (id, time) => ended(id, time)), { jsonrpc: '2.0', id: 4, result: { stopReason: 'end_turn' } });
+  // Kimi answers a filtered response as `refusal` itself.
+  assert.deepEqual(await answer(5, (id, time) => failed(id, time, { code: 'provider.filtered', message: 'filtered' })),
+    { jsonrpc: '2.0', id: 5, result: { stopReason: 'end_turn' } });
+});
+
+test('a prompt held behind a goal turn is answered with the failure of the turn that ran it', async t => {
+  const f = await layout(t);
+  const { r, out, looked, prompt } = await relay(t, f);
+  const now = Date.now();
+  await f.write(goal(now - 10), ...begin(1, now - 5));
+  await looked();
+  prompt(2);
+  r.fromAgent({ jsonrpc: '2.0', id: 2, result: { stopReason: 'end_turn' } });
+  await r.drained();
+  assert.equal(out.some(m => m.id === 2), false);
+  const ran = Date.now() + 1;
+  await f.write(...begin(2, ran, { kind: 'user' }), ended(1, ran), failed(2, ran + 1, QUOTA));
+  await looked();
+  assert.deepEqual(out.at(-1), { jsonrpc: '2.0', id: 2,
+    error: { code: -32603, message: QUOTA.message, data: { _meta: { coda: { failure: { kind: 'quota_exhausted' } } } } } });
+});
+
+test('a goal Kimi paused after a turn failed ends failed with the reason; one whose next turn completed ends done', async t => {
+  const f = await layout(t), look = looker(f);
+  await look();
+  await f.write(goal(10), ...begin(1, 11), failed(1, 12, QUOTA),
+    { type: 'goal.update', goalId: 'g1', status: 'paused', reason: `Paused after provider API error: ${QUOTA.message}`, time: 13 });
+  const told = await look();
+  assert.deepEqual(told.map(brief), [['wait', 'g1', 'waiting'], ['wait', 'g1', 'handling'], ['wait', 'g1', 'waiting'], ['wait', 'g1', 'failed']]);
+  assert.deepEqual(told.at(-1).params, { sessionId: SESSION, waitId: 'g1', state: 'failed', title: '额度不足', detail: QUOTA.message });
+  await f.write({ type: 'goal.update', goalId: 'g1', status: 'active', time: 20 }, ...begin(2, 21), ...begin(3, 22),
+    failed(2, 22, { message: '500 internal error' }), ended(3, 24), { type: 'goal.update', goalId: 'g1', status: 'complete', time: 25 });
+  assert.deepEqual((await look()).map(brief), [['wait', 'g1:2', 'waiting'], ['wait', 'g1:2', 'handling'], ['wait', 'g1:2', 'waiting'],
+    ['wait', 'g1:2', 'handling'], ['wait', 'g1:2', 'waiting'], ['wait', 'g1:2', 'done']]);
+  // A Coda prompt's turn that failed while the goal waited pauses it too.
+  await f.write({ type: 'goal.create', goalId: 'g2', objective: '下一个目标', time: 30 }, ...begin(4, 31, { kind: 'user' }), failed(4, 32, QUOTA),
+    { type: 'goal.update', goalId: 'g2', status: 'paused', time: 33 });
+  const paused = await look();
+  assert.deepEqual(paused.map(brief), [['wait', 'g2', 'waiting'], ['wait', 'g2', 'failed']]);
+  assert.deepEqual(paused.at(-1).params, { sessionId: SESSION, waitId: 'g2', state: 'failed', title: '额度不足', detail: QUOTA.message });
+});
