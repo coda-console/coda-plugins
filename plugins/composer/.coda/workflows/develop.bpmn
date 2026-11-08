@@ -39,7 +39,21 @@
       <extensionElements><coda:output name="head" /></extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" gate</script>
     </scriptTask>
-    <sequenceFlow id="gate-checks" sourceRef="gate" targetRef="checks" />
+    <sequenceFlow id="gate-checks" sourceRef="gate" targetRef="gate-fork" />
+    <!-- 推出的提交也是随后验收要装的：独立交付开了设备验收时，在审查的同时调用项目的预编流程（coda:kind="prebuild"），不等它，也不管它成败。 -->
+    <parallelGateway id="gate-fork" />
+    <sequenceFlow id="gate-fork-checks" sourceRef="gate-fork" targetRef="checks" />
+    <sequenceFlow id="gate-fork-prebuild" sourceRef="gate-fork" targetRef="prebuild-choice" />
+    <exclusiveGateway id="prebuild-choice" name="是否预编验收要装的" default="prebuild-skip" />
+    <sequenceFlow id="prebuild-needed" sourceRef="prebuild-choice" targetRef="prebuild"><conditionExpression xsi:type="tFormalExpression">=inputs.devices and inputs.delivery = ""</conditionExpression></sequenceFlow>
+    <sequenceFlow id="prebuild-skip" sourceRef="prebuild-choice" targetRef="prebuilt" />
+    <serviceTask id="prebuild" name="预编验收要装的" coda:action="run-workflows">
+      <extensionElements><coda:param name="kind" value="prebuild" /><coda:param name="commit" value="=gate.head" /><coda:param name="inputs" value='=if inputs.device = "" then {} else { device: inputs.device }' /></extensionElements>
+    </serviceTask>
+    <boundaryEvent id="prebuild-failed" attachedToRef="prebuild"><errorEventDefinition /></boundaryEvent>
+    <sequenceFlow id="prebuild-failed-done" sourceRef="prebuild-failed" targetRef="prebuilt" />
+    <sequenceFlow id="prebuild-done" sourceRef="prebuild" targetRef="prebuilt" />
+    <endEvent id="prebuilt" />
     <scriptTask id="gate-passed" name="记录通过的检查" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
       <extensionElements><coda:env name="RUNS" value="=checks.runs" /></extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" gate-passed</script>
