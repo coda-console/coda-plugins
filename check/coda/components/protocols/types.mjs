@@ -1,6 +1,6 @@
 import Ajv2020 from 'ajv/dist/2020.js';
 import { parseProtocolName } from '@coda-console/protocol/protocol';
-import { AGENTS, GROUPS, THREADS } from '../../kernel/calls.mjs';
+import { AGENTS, GROUPS, THREADS } from '../../domain/resource-kinds.mjs';
 
 // The resource kinds an invocation may name until the resource is a protocol of its own (docs/plugins.md「调用」): `threads`,
 // `agents`, `groups`. Only Coda's own core operations use these; a plugin defines protocols under its namespace.
