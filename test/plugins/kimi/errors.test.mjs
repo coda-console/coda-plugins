@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { classifyKimiError } from '../../../plugins/kimi/agent/errors.mjs';
+import { classifyKimiError, turnFailure } from '../../../plugins/kimi/agent/errors.mjs';
 
 const reason = "403 You've reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends. To continue now, purchase extra usage or upgrade your plan: https://www.kimi.com/membership/subscription?tab=quota";
 
@@ -38,4 +38,13 @@ test('quota classification preserves a non-object error payload as details', () 
   const error = classifyKimiError({ id: 'quota', error: { code: -32000, message: `Authentication required: ${reason}`, data: 'upstream details' } }).error;
   assert.equal(error.data.details, 'upstream details');
   assert.equal(error.data._meta.coda.failure.kind, 'quota_exhausted');
+});
+
+test('a failed turn is a failure with its reason, a quota one only as Kimi classified it; other ends are none', () => {
+  const quota = "429 You've reached your 5-hour usage limit.";
+  assert.deepEqual(turnFailure('failed', { code: 'provider.api_error', name: 'APIProviderQuotaExhaustedError', message: quota }), { message: quota, quota: true });
+  assert.deepEqual(turnFailure('failed', { code: 'provider.api_error', name: 'APIStatusError', message: quota }), { message: quota, quota: false });
+  assert.deepEqual(turnFailure('failed', undefined), { message: 'Kimi 这一轮执行失败', quota: false });
+  assert.equal(turnFailure('failed', { code: 'provider.filtered', message: 'filtered' }), null);
+  for (const reason of ['completed', 'cancelled', 'blocked']) assert.equal(turnFailure(reason, { message: quota }), null);
 });

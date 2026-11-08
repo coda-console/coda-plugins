@@ -9,9 +9,10 @@ import { kimiDisplayNames } from './display.mjs';
 // has not run the prompt yet.
 // Nothing waits on a look longer than `hold`. CODA_DISABLE_RUNTIME_PATCHES=kimi leaves a plain relay, but for Coda's session
 // instructions, which go in front of a new session's first prompt either way (instructions.mjs). A known quota error in
-// a prompt's answer is classified at this boundary (errors.mjs), without retrying or changing other errors.
+// a prompt's answer is classified at this boundary (errors.mjs), without retrying or changing other errors; an `end_turn`
+// Kimi gave to a prompt whose turn its files say failed is passed on as that failure.
 import { SessionInstructions } from './instructions.mjs';
-import { classifyKimiError } from './errors.mjs';
+import { classifyKimiError, failedAnswer } from './errors.mjs';
 import { SUPPORTED, kimiSession } from './observe.mjs';
 import { KimiWaits } from './waits.mjs';
 import { KimiTurns } from './turns.mjs';
@@ -71,6 +72,8 @@ export class KimiRelay {
     this.queue = this.queue.then(async () => {
       if (waiting) await this.look({ fresh: !!asked?.prompt });
       if (sent?.quiet && message.result?.stopReason === 'end_turn' && this.turns?.hold(sent.at, message)) { this.prompts.add(message.id); return; }
+      const failure = sent && message.result?.stopReason === 'end_turn' ? this.turns?.failure(sent.at) : null;
+      if (failure) message = failedAnswer(message, failure);
       this.say(message);
       const sessionId = asked && !('error' in message) ? message.result?.sessionId ?? asked.sessionId : undefined;
       if (typeof sessionId === 'string') this.begin(sessionId, asked.cwd);
