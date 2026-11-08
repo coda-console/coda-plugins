@@ -74,8 +74,8 @@ export function kimiSession({ sessionId, cwd, env = {}, version, startedAt = 0 }
   // `waiting`, `handling`, `done` or `cancelled`, with the created time and fire cursor its next fire is counted from) and
   // the schedule config that count uses (`schedule`), and what its subagents said since the last look, to `emit` as their
   // own sessions' updates. `main` is what the main wire added since the last look, in its order, for turns.mjs: the goal
-  // as it changes, each main turn as it begins and ends, and what is said in a goal's or Coda's prompt's turn (as ACP
-  // updates); it opens with the goal and the turns still going as of the last look. A cron's prompt and a goal's objective
+  // as it changes, each main turn as it begins and ends (with the error a failed one ended with), and what is said in a
+  // goal's or Coda's prompt's turn (as ACP updates); it opens with the goal and the turns still going as of the last look. A cron's prompt and a goal's objective
   // do not leave here, only a short title cut from the first line. Null when the files are not this session's, or not laid
   // out as understood; a read that fails (a file being written) throws. A cron or goal event that is not the shape
   // understood is skipped, so one of them cannot hide the tasks.
@@ -171,7 +171,7 @@ export function kimiSession({ sessionId, cwd, env = {}, version, startedAt = 0 }
         turnEndedAt = event.time;
         for (const cron of crons.values()) if (cron.fireTurn === event.turnId) cron.fireEnded = true;
         if (span.turn?.turnId === event.turnId) span.turn = null;
-        if (fresh) main.push({ type: 'ended', turnId: event.turnId, reason: event.reason });
+        if (fresh) main.push({ type: 'ended', turnId: event.turnId, reason: event.reason, ...(object(event.error) ? { error: event.error } : {}) });
       } else if (event.type === 'goal.create' || event.type === 'goal.update' || event.type === 'goal.clear') {
         const next = noteGoal(goal, event);
         if (next === goal) continue;
