@@ -4,6 +4,8 @@
 
 从 2.0.0 起，host 在清单里声明实现 `coda/executor@1` 与 `coda/run@1`，把自己这台机器的执行环境发布为一条 `coda/executor@1` 记录（ID `host`）。别的机器或 Coda 对这条记录调用 `execute`，输入照协议包 executor@1；host 在本机执行任务，并只写这次调用开出的 `coda/run@1` 运行：进行中是 `working` 带进展，结束写 `completed`、`failed`（带退出码、输出末尾、摘要与步骤输出）或 `canceled`。终态之后不再改。取消是对运行调用 `cancel`，交给 host 停下原 worker。
 
+2.0.1：启动时先读上次运行留下的 `coda/executor@1` 记录，按它的 revision 接管；此前插件宿主重启后写这条记录会被 Coda 以 conflict 拒绝，host 模块载入失败。
+
 配置意图、能力和名额在本机持有。`host.enabled` 控制是否接活，默认 true；`host.capacity` 配置名额数；`host.labels` 是逗号分隔的自定义标签。系统／CPU、Node、Xcode、可用模拟器 runtime 与图形会话由本机探测，每分钟刷新，不启动模拟器。容量和占用订阅 `concurrency-groups`，包括旧流程与 run-held，公布值不构成预留。停止接活不终止已接收的任务。
 
 资源只接受 `{slots:1}` 或空对象；`exclusiveResources: ['slots']` 表示独占。host 将 slots 映射到本机组 host，开跑前通过同一名额账本最终准入，账本返回稳定名额序号。其他资源量不能模拟为多次申请。

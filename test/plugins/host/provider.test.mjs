@@ -36,7 +36,7 @@ function fixture(root, launches = [], controls = []) {
     protocols: {
       put: async object => {
         const previous = objects.get(`${object.kind}/${object.id}`);
-        if (previous) assert.equal(object.revision, previous.revision);
+        if (previous && object.revision !== previous.revision) throw Object.assign(new Error('协议对象已改变，请重新读取'), { code: 'conflict' });
         object = { ...object, status: previous?.status ?? object.status, instance: previous?.instance ?? `instance-${object.id}` };
         check(object); return save(object);
       },
@@ -88,6 +88,19 @@ test('the executor record is a coda/executor@1 object which follows configuratio
   assert.equal(f.objects.get(`${EXECUTOR}/host`).revision, revision);
   f.settings({ 'host.capacity': 1, 'host.enabled': false }); await host.refresh(); await f.flush();
   object = f.objects.get(`${EXECUTOR}/host`); assert.equal(object.status.accepting, false); assert.deepEqual(object.status.available, { slots: 0 });
+  await host.stop();
+});
+
+test('a restarted provider takes over the executor record its previous run left', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'host-provider-restart-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const f = fixture(root), first = hostOf(f);
+  await first.start(); await f.flush(); await first.stop();
+  const left = f.objects.get(`${EXECUTOR}/host`); assert.equal(left.status.accepting, false);
+  const host = hostOf(f);
+  await host.start(); await f.flush();
+  const object = f.objects.get(`${EXECUTOR}/host`);
+  assert.equal(object.instance, left.instance); assert.notEqual(object.revision, left.revision);
+  assert.equal(object.status.accepting, true); assert.equal(host.offered.revision, object.revision);
   await host.stop();
 });
 

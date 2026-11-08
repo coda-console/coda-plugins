@@ -15,6 +15,8 @@ export class HostProvider {
   async start() {
     if (!this.coda.resources?.acquire || !this.coda.protocols.resolve) throw new Error('host 需要 Coda 的引用解析与本机账本准入接口');
     this.discovered = await this.discover();
+    // The record a previous run left is written over at its revision, so read it before the first refresh.
+    (await this.coda.protocols.observe(EXECUTOR, event => { if (event.id === this.executorId) this.offered = event.object; }, 'local')).dispose();
     this.sources = new Sources(this.coda); await this.sources.start();
     this.engine = this.executions({ coda: this.coda, root: this.coda.plugin.state,
       sources: this.sources, offered: () => this.offered, environment: () => this.coda.environment() });
