@@ -22,6 +22,7 @@ plugins/magpie/          Magpie：把本机的 Magpie 网关作为模型服务�
 plugins/network-log/     网络记录：默认关闭，按需开启建连等待与定时探测采集；关闭后仍可查看历史
 plugins/review/          PR 生命流程：会话开的 PR 先跑项目的检查、再交叉评审，你批准后合并、部署与发布；也是写 PR 流程的样例
 plugins/testbed/         测试机：长插在 Mac 上的 iPhone、iPad 只经 use-testbed 使用，排到后装 App、交给会话操作、用完切黑屏；依赖宿主资源
+plugins/wechat/          微信：把手机上的微信群提供为 coda/session@1 外部会话（只读），经手机桥读数据，装在安卓手机节点上
 plugins/composer/        输入框模式与开发流程：Ultra 用 develop 委派代码修改，主 Agent 审查，设备验收后检查、批准、合并与部署；名单引用 composer.templates
 templates/agent/         最小的 Agent 插件：手写 ACP 的回声 Agent，演示会话指令、插话、Agent 活动与自主轮次
 templates/resource/      最小的资源插件：一个资源、两个读数、一个按钮
