@@ -4,12 +4,10 @@ import { test } from 'node:test';
 import { readWorkflow } from '@coda-console/protocol/workflow';
 import { evaluate } from 'feelin';
 
-test('personal devices leave the held scope without blackscreen on reply, failure, rejection or cancellation', async () => {
+async function heldScope() {
   const { root, problem } = await readWorkflow(readFileSync(new URL('../../../plugins/testbed/.coda/capabilities/use-testbed.bpmn', import.meta.url), 'utf8'), 'use-testbed');
   assert.ok(!problem, problem);
   const process = root.rootElements.find(element => element.$type === 'bpmn:Process');
-  const find = process.flowElements.find(element => element.id === 'find');
-  assert.ok(find.extensionElements.values.some(value => value.name === 'personal'));
   const held = process.flowElements.find(element => element.id === 'testbed');
   const node = id => held.flowElements.find(element => element.id === id);
   const next = (id, personal) => {
@@ -20,6 +18,31 @@ test('personal devices leave the held scope without blackscreen on reply, failur
       : flows[0];
     return flow.targetRef.id;
   };
+  return { process, held, node, next };
+}
+
+test('a personal device is lent by the user before anything is installed; a resident testbed goes straight on', async () => {
+  const { held, node, next } = await heldScope();
+  const lend = next('hold');
+  assert.equal(node(lend).$type, 'bpmn:ExclusiveGateway');
+  for (const personal of [false, undefined]) assert.equal(next(lend, personal), 'has-app');
+  const borrow = node(next(lend, true));
+  assert.equal(borrow.$type, 'bpmn:UserTask');
+  assert.equal(borrow.assignee, 'user');
+  assert.equal(next(borrow.id), 'has-app');
+  // Declining rejects the card, which raises its error boundary; the device is released without blackscreen.
+  const boundaries = held.flowElements.filter(element => element.$type === 'bpmn:BoundaryEvent' && element.attachedToRef === borrow);
+  assert.deepEqual(boundaries.map(boundary => boundary.eventDefinitions[0].$type).sort(), ['bpmn:ErrorEventDefinition', 'bpmn:MessageEventDefinition']);
+  for (const boundary of boundaries) {
+    const gateway = next(boundary.id);
+    assert.equal(next(gateway, true), 'stopped');
+  }
+});
+
+test('personal devices leave the held scope without blackscreen on reply, failure, rejection or cancellation', async () => {
+  const { process, node, next } = await heldScope();
+  const find = process.flowElements.find(element => element.id === 'find');
+  assert.ok(find.extensionElements.values.some(value => value.name === 'personal'));
   for (const [source, end, black] of [
     ['task', 'done', 'black'],
     ['install-failed', 'stopped', 'black-stop'],

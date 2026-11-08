@@ -13,7 +13,7 @@ iPhone、iPad 测试机由这个插件登记归属。每台设备是一个[并�
 [{ "id": "iphone-testbed", "name": "iPhone13pm", "udid": "…", "note": "…" }]
 ```
 
-`personal` 可省；`"personal": true` 表示维护者的个人设备，归还时不切黑屏。缺省为常驻测试机，沿用切黑屏行为。空间声明的属性均为文本，`personal` 发布为 `"true"` 或 `"false"`；读取时归一为布尔值。
+`personal` 可省；`"personal": true` 表示维护者的个人设备：拿在维护者手里、用来验收，借给会话之前先问维护者，归还时不切黑屏。缺省为常驻测试机，给 Agent 自助使用，不问，沿用切黑屏行为。空间声明的属性均为文本，`personal` 发布为 `"true"` 或 `"false"`；读取时归一为布尔值。
 `id` 是设备名（小写字母开头，字母、数字、连字符），`name` 显示名，`udid` 不重复；`note` 可省，是给拿到任务的会话的说明（这台 Mac 上怎么驱动这台设备、哪些东西不能碰），原样附在任务末尾。
 登记在哪个实例就归哪个实例，`devices.json` 是归属的唯一事实来源。插件启动时声明 `device:<id>`，把 `name`、`udid`、`note`、`personal` 发布到空间，以 `udid` 为唯一属性；文件变化时重新全量声明。空间里同一设备只能登记一次，同名或相同 UDID 的重复登记会使占用失败并报冲突。
 登记读不了时日志记录错误，保留已有声明；有效的空数组 `[]` 撤销全部声明。设备正被使用时不要改名或换 UDID。
@@ -28,12 +28,14 @@ iPhone、iPad 测试机由这个插件登记归属。每台设备是一个[并�
 **过程**：
 1. 「找测试机」：先查本地登记；没有这个 id 就用 `coda-resources group-owner device:<id>` 读取归属实例声明的显示名、UDID、说明和 `personal`。两边都没有则报「没有这台测试机」，列出本地可用设备，不排队。
 2. 「等测试机」：`hold-group` 为「占用测试机」这一段排进组 `device:<设备名>`（`capacity` 1、`borrow="no"`：每次使用都排队，做着上一次任务的会话再发起一次也排在后面），由引擎到归属实例排队，排到才往下走；之后到这一段结束都占着它。
-3. 有 `app` 就装上（`xcrun devicectl device install app`），再把任务交给调用的会话：要求是 `instructions`，加上设备名、UDID、借用方法和登记里的说明。
+3. 个人设备（`personal: true`）排到后先给用户一张卡片「借用 <显示名>」，写明哪个任务、要不要先装 App 和 `instructions`：选「借给它」才往下走；
+   选「现在不行」（备注可写什么时候方便）按拒绝结束，设备直接放开，调用者收到拒绝的理由。常驻测试机不出这张卡片。
+   有 `app` 就装上（`xcrun devicectl device install app`），再把任务交给调用的会话：要求是 `instructions`，加上设备名、UDID、借用方法和登记里的说明。
    做任务期间，这个会话（含子 Agent）用 `host-sim run --kind <设备名> -- <命令>` 操作设备：`host-sim` 经 `coda-run` 把命令交给能力 `run-on-device`，
    它用 `hold-group borrow="only"` 借这个组——只借给正在做这台设备任务的会话，别的情况立刻拒绝、不排队——借到后在会话的目录里、带会话的环境执行，
    附上 `HOST_SIM_LEASE=coda-run:<设备名>`（命令里再调用 `host-sim run --kind <设备名>` 直接执行，`host-sim check` 通过），退出码交回 `host-sim`。
    任务答复、撤回或运行被取消时，还在执行的这些命令随之停下（[并发组](https://github.com/coda-console/coda/blob/main/docs/workflows.md#并发组)「借用跟着任务走」），下一步等它们停完才开始。
-4. 个人设备（`personal: true`）在任务答复、出错、拒绝或取消后，等借用命令停完就直接离开「占用测试机」，放开设备，跳过切黑屏及其失败卡片。常驻测试机「切黑屏」：任务答复、借用的命令停完后，在发起的 Mac 上用 `xcrun devicectl device process launch --terminate-existing` 在设备上打开[黑屏 App](#黑屏-app)，限时 2 分钟；
+4. 个人设备在不借、任务答复、出错、拒绝或取消后，等借用命令停完就直接离开「占用测试机」，放开设备，跳过切黑屏及其失败卡片。常驻测试机「切黑屏」：任务答复、借用的命令停完后，在发起的 Mac 上用 `xcrun devicectl device process launch --terminate-existing` 在设备上打开[黑屏 App](#黑屏-app)，限时 2 分钟；
    设置「切黑屏命令」（`testbed.blackscreen`）里有这台设备的一行时，改为用 `sh` 执行那一行，设备的 UDID 在环境变量 `UDID` 里。
    装 App 或任务出错、任务被拒绝、运行被取消（流程等着 [`workflow.cancel`](https://github.com/coda-console/coda/blob/main/docs/workflows.md#执行与恢复)）时，同样先切黑屏；切黑屏时被取消，照样切完。
 5. 常驻测试机切不过去（命令失败或超时，如设备断开、锁屏或没装黑屏 App）：给用户一张卡片「测试机切黑屏失败」，选「重试」或「我处理好了，放锁」；处理之前设备一直占着，不交给下一位。

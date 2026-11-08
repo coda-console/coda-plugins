@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- 使用测试机（README.md）：测试机的唯一入口。先从本机的设备登记查出这台设备，再排进它的组 device:<设备名>，
-     按需装上 App，把任务交给调用的会话；会话做任务期间，它用 host-sim run --kind <设备> 的命令（能力 run-on-device）借用这个组。
+     个人设备排到后先问维护者借不借，答应了才装 App；常驻测试机不问。按需装上 App，把任务交给调用的会话；会话做任务期间，它用 host-sim run --kind <设备> 的命令（能力 run-on-device）借用这个组。
      任务答复、装包或任务出错、运行被取消，都先等借去的命令停完、常驻测试机再切黑屏，个人设备直接放开；切不过去就请用户处理，处理之前一直占着。
      能力：只被调用（workflow_run 或 callActivity），结果交给调用者。 -->
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -40,7 +40,22 @@
           <coda:param name="borrow" value="no" />
         </extensionElements>
       </serviceTask>
-      <sequenceFlow id="to-has-app" sourceRef="hold" targetRef="has-app" />
+      <sequenceFlow id="to-lend" sourceRef="hold" targetRef="lend" />
+      <!-- 个人设备在维护者手里：装 App、交给会话之前先问维护者，不答应就以拒绝结束，设备直接放开。常驻测试机给 Agent 自己用，不问。 -->
+      <exclusiveGateway id="lend" name="要问你吗" default="no-lend" />
+      <sequenceFlow id="to-borrow" sourceRef="lend" targetRef="borrow">
+        <conditionExpression xsi:type="tFormalExpression">=find.personal</conditionExpression>
+      </sequenceFlow>
+      <sequenceFlow id="no-lend" sourceRef="lend" targetRef="has-app" />
+      <userTask id="borrow" name="借用 {{find.name}}" coda:assignee="user" coda:status="等你答应借出 {{find.name}}" coda:completeLabel="借给它" coda:rejectLabel="现在不行">
+        <documentation>有会话要用你的 {{find.name}}（{{inputs.device}}）做「{{inputs.task}}」{{if inputs.app then "，先装上 " + inputs.app else ""}}。借出期间它会操作这台设备，做完答复后还给你。
+
+要做的事：
+{{inputs.instructions}}
+
+方便放下设备就选「借给它」；现在不行就选「现在不行」，可以在备注里写什么时候方便，会话会收到。</documentation>
+      </userTask>
+      <sequenceFlow id="lent" sourceRef="borrow" targetRef="has-app" />
       <exclusiveGateway id="has-app" default="no-app" />
       <sequenceFlow id="with-app" sourceRef="has-app" targetRef="install">
         <conditionExpression xsi:type="tFormalExpression">=inputs.app</conditionExpression>
@@ -63,7 +78,11 @@
       </userTask>
       <sequenceFlow id="used" sourceRef="task" targetRef="return-device" />
 
-      <!-- 装包或任务出错、运行被取消：个人设备直接归还，常驻测试机先切黑屏，再让运行以原来的原因结束。 -->
+      <!-- 不借、装包或任务出错、运行被取消：个人设备直接归还，常驻测试机先切黑屏，再让运行以原来的原因结束。 -->
+      <boundaryEvent id="borrow-cancelled" attachedToRef="borrow"><messageEventDefinition messageRef="cancel" /></boundaryEvent>
+      <boundaryEvent id="borrow-declined" attachedToRef="borrow"><errorEventDefinition /></boundaryEvent>
+      <sequenceFlow id="borrow-cancelled-return" sourceRef="borrow-cancelled" targetRef="return-stopped" />
+      <sequenceFlow id="borrow-declined-return" sourceRef="borrow-declined" targetRef="return-stopped" />
       <boundaryEvent id="install-cancelled" attachedToRef="install"><messageEventDefinition messageRef="cancel" /></boundaryEvent>
       <boundaryEvent id="install-failed" attachedToRef="install"><errorEventDefinition /></boundaryEvent>
       <boundaryEvent id="task-cancelled" attachedToRef="task"><messageEventDefinition messageRef="cancel" /></boundaryEvent>
