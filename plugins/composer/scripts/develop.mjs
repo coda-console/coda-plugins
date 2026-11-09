@@ -14,6 +14,17 @@ const instructions = `你是这次开发流程的执行者，自己完成这一�
 用户勾选发布后，未自行填写发布说明时，由主 Agent 在「写发布说明」任务中准备。
 回报改了什么、为什么、实际跑了哪些验证及未验证部分。`;
 
+// 用户开启时由主 Agent 写的第一项任务：备注第一行是功能名，其后是任务。
+if (action === 'brief') {
+  const [first = '', ...rest] = (JSON.parse(env.BRIEF).note ?? '').trim().split(/\r?\n/);
+  const title = first.trim(), task = rest.join('\n').trim();
+  output('feedback', title && task ? '' : '备注第一行写功能名，空一行后写第一项任务，两样都要有。');
+  output('route', title && task ? 'lane' : 'brief');
+  output('title', title);
+  output('task', task);
+  process.exit(0);
+}
+
 if (action === 'lane') {
   const base = env.BASE || gh('repo', 'view', '--json', 'defaultBranchRef', '--jq', '.defaultBranchRef.name');
   git('fetch', 'origin', base);
@@ -22,6 +33,7 @@ if (action === 'lane') {
   git('branch', lane, head);
   git('push', 'origin', `${lane}:refs/heads/${lane}`);
   writeFileSync(statePath, JSON.stringify({ title: env.TITLE, base, lane, head, task: env.TASK, approved: [], phase: 'preview', feedback: '', pr: '' }));
+  output('title', env.TITLE);
   process.exit(0);
 }
 
@@ -64,9 +76,11 @@ switch (action) {
     const prompt = join(env.RUNNER_TEMP, 'task.md');
     writeFileSync(prompt, `${instructions}\n\n${action === 'revise' ? state.feedback : state.task}\n`);
     const args = action === 'revise' ? ['--continue', state.executor.session] : ['--commit', state.head, '--title', state.title];
-    if (action === 'execute') for (const key of ['agent', 'model', 'effort', 'mode']) {
-      const value = env[key.toUpperCase()];
-      if (value) args.push(`--${key}`, value);
+    // 执行者是一组 Agent 选择（流程参数的 agent 类型）：没选的模型、强度、模式用 Agent 的默认值。
+    if (action === 'execute') {
+      const { options = {}, ...chosen } = JSON.parse(env.EXECUTOR);
+      for (const key of ['agent', 'model', 'effort', 'mode']) if (chosen[key]) args.push(`--${key}`, chosen[key]);
+      for (const [id, value] of Object.entries(options)) args.push('--option', `${id}=${value}`);
     }
     state.executor = JSON.parse(command('coda-agent', [...args, '--json', '--prompt-file', prompt]));
     state.feedback = '';
@@ -142,9 +156,11 @@ switch (action) {
     break;
   }
   case 'device': {
-    const { choice, note = '' } = JSON.parse(env.DEVICE);
-    const missing = choice === 'no' && !note.trim();
-    state.feedback = missing ? '选择「不行」必须在备注中写验收意见。' : choice === 'no' ? `设备验收不通过：\n${note}` : '';
+    // 「不行」必须附言（写意见或附截图）；截图的路径随意见交回主 Agent，它能直接看。
+    const { choice, note = '', attachments = [] } = JSON.parse(env.DEVICE);
+    const missing = choice === 'no' && !note.trim() && !attachments.length;
+    const files = attachments.length ? `附件：\n${attachments.map(path => `- ${path}`).join('\n')}` : '';
+    state.feedback = missing ? '选择「不行」必须写验收意见或附上截图。' : choice === 'no' ? `设备验收不通过：\n${[note.trim() && note, files].filter(Boolean).join('\n')}` : '';
     state.phase = 'preview';
     save();
     output('feedback', state.feedback);
