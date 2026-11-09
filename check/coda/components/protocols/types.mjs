@@ -27,7 +27,8 @@ export class ProtocolTypes {
     if (typeof participants !== 'function' || !object(contributions)) throw new TypeError(`${kind}: 需要 participants 与 contributions`);
     // Each operation is an input and either an immediate result or a run reference, as the protocol package defines them.
     // `join` names an input field holding the run of an open call that the operation adds to instead of opening one;
-    // `safe`, one that only reads and answers at once, whose request and answer neither side keeps.
+    // `safe`, one that only reads and answers at once, whose request and answer neither side keeps; `idempotent`, one that
+    // may change what it acts on but does the same again when sent again, kept by neither side as `safe` is.
     if (!object(operations)) throw new TypeError(`${kind}: operations 须为对象`);
     const compiled = new Map();
     for (const [name, operation] of Object.entries(operations)) {
@@ -36,7 +37,7 @@ export class ProtocolTypes {
       if (run === Object.hasOwn(operation, 'result') || !operation.input) throw new TypeError(`${kind}.${name}: 操作要写 input，并恰写 result 或 run`);
       if (join !== undefined && (!run || typeof join !== 'string' || !join)) throw new TypeError(`${kind}.${name}: join 只能用于运行，并写出输入里的字段`);
       compiled.set(name, { input: compile(operation.input), ...(run ? { run } : { result: compile(operation.result) }), ...(join ? { join } : {}),
-        ...(operation.safe === true ? { safe: true } : {}) });
+        ...(operation.safe === true ? { safe: true } : {}), ...(operation.idempotent === true ? { idempotent: true } : {}) });
     }
     const properties = {};
     for (const [field, { merge, schema }] of Object.entries(contributions)) {

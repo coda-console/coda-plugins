@@ -12,7 +12,6 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, normalize, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { settings as agentSettings } from '../session-config/commands.mjs';
 import { requireCondition as check, ContractError } from '../../domain/errors.mjs';
 import { isDuration } from '../../domain/duration.mjs';
 import { AGENT_ID } from '../../domain/values.mjs';
@@ -302,17 +301,12 @@ export function pickMatch(entries, session) {
     (!m.agent || m.agent === session?.agent) && (!m.model || m.model === session?.model) && (!m.effort || m.effort === session?.effort))
     .sort((a, b) => matchSpecificity(b[0]) - matchSpecificity(a[0]))[0]?.[0] ?? null;
 }
-// Whether the agent it names is installed is asked where it is used (a review, a step): a setting stays readable while a
-// plugin it names is uninstalled.
-function agentValue(value, where, code) {
-  check(value && typeof value === 'object' && !Array.isArray(value) && typeof value.agent === 'string' && AGENT_ID.test(value.agent), code,
-    `${where} 须为 Agent 组合，并指明 Agent`);
-  const { agent, ...rest } = value;
-  try { return { agent, ...agentSettings(rest) }; } catch (e) { throw new ContractError(code, `${where}：${e.message}`); }
-}
+// A value of a format a contribution point defines (`formats`, components/plugins/contribution-points.mjs), as it checks it.
+const pointFormat = name => [...CONTRIBUTION_POINTS.values()].map(point => point.formats?.[name]).find(Boolean);
 // A value as the declaration allows it; returns it normalised.
 export function checkValue(spec, value, where, code = 'invalid_input') {
-  if (spec.format === 'coda-agent') return agentValue(value, where, code);
+  const format = pointFormat(spec.format);
+  if (format) return format(value, where, code);
   // A whole row, as a table's default has it: its secrets are only ever written one by one, never declared.
   if (spec.columns) {
     check(value && typeof value === 'object' && !Array.isArray(value), code, `${where}须为一行`);

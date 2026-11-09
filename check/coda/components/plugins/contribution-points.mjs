@@ -3,8 +3,10 @@
 // checked in the whole manifest, @coda-console/protocol's contributionProblem), what a plugin's value of it is on the plugin (`read`, given
 // the value written, none when it writes none), what of it only one plugin may declare (`claim`, of the plugin read), and
 // what installing it confirms of it (`confirm`), how a plugin drawing no icon of its own is drawn (`icon`, of the plugin
-// read, none when it says nothing), and why one from elsewhere than Coda's own may not bring what it does (`builtinOnly`,
-// of the plugin read, none when it may). The plugins' base knows none of the keys: it asks the point a key names.
+// read, none when it says nothing), why one from elsewhere than Coda's own may not bring what it does (`builtinOnly`,
+// of the plugin read, none when it may), and the formats of a setting's value it defines (`formats`, by the name a
+// declaration writes: `(value, where, code)` checks one and returns it normalised, components/plugins/plugin-rules.mjs
+// checkValue). The plugins' base knows none of the keys, nor those formats: it asks the point a key or a format names.
 // A component defines its points as its module loads (components/workflows/contributions.mjs); what puts Coda together
 // loads those before any plugin is read (application/contributions.mjs), as the wait kinds are (kernel/wait-kinds.mjs).
 export class ContributionPoints {
