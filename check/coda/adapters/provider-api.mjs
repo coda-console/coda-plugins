@@ -15,6 +15,8 @@ export function providerAPI({ call, watch, connection, plugin, operations, repor
     setStatus: (kind, id, status, revision) => call('setStatus', [kind, id, status, revision]),
     delete: (kind, id) => call('delete', [kind, id]),
     publish: (kind, id, enabled = true) => call('publish', [kind, id, enabled]),
+    // An upload of this machine a post to a session names (`upload`): `{ id, name, size, mime?, duration?, …, path }`.
+    upload: id => call('upload', [id]),
     observe,
     handle(kind, operation, handler) {
       if (typeof kind !== 'string' || !kind || typeof operation !== 'string' || !operation || typeof handler !== 'function')

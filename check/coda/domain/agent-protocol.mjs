@@ -9,8 +9,9 @@ export const clientCapabilities = () => ({
   elicitation: { form: {}, url: {} },
   // A config option may be a switch: shown as one, its value on or off (`options`).
   session: { compaction: {}, configOptions: { boolean: {} } },
-  // Coda takes the agent's own waits, and relays what is asked of the session from outside to an agent that takes it.
-  _meta: { coda: { waits: {}, remote: {} } },
+  // Coda takes the agent's own waits and what its entry could not adapt, and relays what is asked of the session from
+  // outside to an agent that takes it.
+  _meta: { coda: { waits: {}, remote: {}, unrecognized: {} } },
 });
 // The remote entry (「远端入口」): an agent whose work is done elsewhere (a bot on its own computer) declares it; the code to
 // bind that place to its session is asked of Coda (`REMOTE_CODE`), and what that place then asks of the session is handed
@@ -37,6 +38,8 @@ export const currentModel = session => session?.configOptions?.find?.(x => x?.ca
 // What an agent may say of a wait of its own (「_coda/wait」); anything else is dropped unread.
 export const WAIT_STATES = new Set(AGENT_SCHEMAS['wait.json'].properties.state.enum);
 export const validWait = p => agentMessageProblem('_coda/wait', p) === null;
+// What an agent's entry got and could not adapt (「没适配的东西」); anything else is dropped unread.
+export const validUnrecognized = p => agentMessageProblem('_coda/unrecognized', p) === null;
 // What the agent's own check of a tool call said before running it (「工具调用的审核」): `_meta.coda.review` of the call's
 // `tool_call` or `tool_call_update`, as Coda keeps it; null for anything else. A risk it does not know is left out.
 export const toolReview = r => agentValueProblem('review.json', r) === null
