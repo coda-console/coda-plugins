@@ -129,7 +129,7 @@ test('steering after Codex stopped runs as the turn\'s next prompt, and the card
 
 test('the async message patch fails loudly once the locked adapter changes', () => {
   const bundle = readFileSync(resolveFrom('codex', '@agentclientprotocol/codex-acp'), 'utf8');
-  assert.match(shownCodexAsyncMessages(bundle), /return codexAsyncMessage\(event\.item, this\.codaStreamedMessages\.delete\(event\.item\.id\)\);/);
+  assert.match(shownCodexAsyncMessages(bundle), /return codexAgentMessage\(event\.item, this\.codaStreamedMessages\.delete\(event\.item\.id\)\);/);
   for (const [before, after] of [['agentMessagePhases = /* @__PURE__ */ new Map();', 'agentMessagePhases = new Map();'],
     ['async createTextEvent(event) {', 'async createTextEvent(delta) {'],
     ['return this.subagents.legacyCollaborationCompleted(event.item);\n      case "agentMessage":', 'return this.subagents.legacyCollaborationCompleted(event.item);\n      case "agentMessage2":']]) {

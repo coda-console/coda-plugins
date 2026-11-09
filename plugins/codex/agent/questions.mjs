@@ -1,7 +1,8 @@
 // Codex's messages to the user beside a turn (`send_user_message_async`, `request_user_input_async`, which OpenAI's model
 // catalogue gives the model whatever Codex runs): each is a completed agentMessage with `delivery: "async"`, and `questions`
 // when it asks, said without deltas. codex-acp 1.12.0 shows an agent message only from its deltas; the patch here says the
-// text of one it streamed nothing of, with its questions under `_meta.coda.asyncQuestions`. Codex's turn goes on without
+// text of one it streamed nothing of, with its questions under `_meta.coda.asyncQuestions` (through unrecognized.mjs, which
+// says the text of any other such message too). Codex's turn goes on without
 // the answer, which reaches it as a later user message. CodexQuestions asks Coda one form per call, the way Claude's
 // AskUserQuestion is asked (docs/agent-protocol.md「Claude 的提问」), and keeps Coda's turn going until every card of it has
 // its answer: given to Codex by steering while codex-acp's prompt runs, else as a prompt of the entry's own, whose output
@@ -27,14 +28,14 @@ const patches = [
   [`        return this.subagents.legacyCollaborationCompleted(event.item);
       case "agentMessage":
         this.rememberAgentMessagePhase(event.item);
-        return null;`, before => before.replace('return null;', 'return codexAsyncMessage(event.item, this.codaStreamedMessages.delete(event.item.id));')],
+        return null;`, before => before.replace('return null;', 'return codexAgentMessage(event.item, this.codaStreamedMessages.delete(event.item.id));')],
 ];
 export function shownCodexAsyncMessages(source) {
   for (const [before, after] of patches) {
     if (source.split(before).length !== 2) throw new Error('codex-acp async message patch no longer matches the locked adapter');
     source = source.replace(before, after(before));
   }
-  return `import { codexAsyncMessage } from ${JSON.stringify(import.meta.url)};\n${source.replace(/^#![^\n]*\n/, '')}`;
+  return `import { codexAgentMessage } from ${JSON.stringify(new URL('./unrecognized.mjs', import.meta.url).href)};\n${source.replace(/^#![^\n]*\n/, '')}`;
 }
 
 // One call's questions as a form: question i is the required field `q{i}`, its options a choice with one more for an answer
