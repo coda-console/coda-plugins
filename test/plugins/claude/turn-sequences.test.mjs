@@ -13,9 +13,6 @@ import { Seen, broken } from './turn-rules.mjs';
 const SEED = Number(process.env.CLAUDE_TURNS_SEED ?? 222);
 const RUNS = Number(process.env.CLAUDE_TURNS_RUNS ?? (process.env.CLAUDE_TURNS_SEED ? 1 : 10000));
 const STEPS = Number(process.env.CLAUDE_TURNS_STEPS ?? 60);
-// What the sequences found on main and is yet to be decided is left out unless named in CLAUDE_TURNS_KNOWN (steer, failed,
-// held: the places say which).
-const KNOWN = new Set((process.env.CLAUDE_TURNS_KNOWN ?? '').split(','));
 
 function generator(seed) {
   let a = seed >>> 0;
@@ -67,7 +64,7 @@ const ACTIONS = {
       const label = `p${w.prompts.length + 1}`;
       const answered = w.session.prompt({ prompt: [{ type: 'text', text: label }] });
       answered.catch(() => {});
-      w.prompts.push(label); w.unanswered = label; w.unansweredId = w.given;
+      w.prompts.push(label); w.unanswered = label;
       const pending = w.session.prompts.get(w.given), uuid = w.given;
       for (const key of ['resolve', 'reject']) {
         const settle = pending[key];
@@ -75,9 +72,8 @@ const ACTIONS = {
       }
     },
   },
-  // Known: a steer while the prompt is still queued, then a stop, drops both (cancelQueued) and leaves the prompt unanswered.
   steer: {
-    when: w => !!w.unanswered && (KNOWN.has('steer') || !queued(w)),
+    when: w => !!w.unanswered,
     apply: w => void w.session.steer({ prompt: [{ type: 'text', text: 'steer' }] }),
   },
   cancel: { when: () => true, apply: w => w.session.cancel({ sessionId: 'S' }) },
@@ -101,10 +97,9 @@ const ACTIONS = {
     },
   },
   // A turn of its own (meta), for a task's end or a wakeup that fires; its opening message may say which (SDKMessageOrigin
-  // task-notification: runId, subkind scheduled-trigger). Known: one that begins while Coda's prompt waits on a steer its turn
-  // left, and a stop then, leaves the prompt unanswered.
+  // task-notification: runId, subkind scheduled-trigger).
   wake: {
-    when: w => !w.sdk.turn && (w.sdk.notices.length > 0 || w.sdk.crons.size > 0) && !answering(w) && (KNOWN.has('held') || !held(w)),
+    when: w => !w.sdk.turn && (w.sdk.notices.length > 0 || w.sdk.crons.size > 0) && !answering(w),
     gen: (w, r) => {
       const cron = !w.sdk.notices.length || (w.sdk.crons.size > 0 && r() < 0.4);
       return cron ? { cron: r.int(64), origin: r() < 0.6 } : { notices: 1 + r.int(w.sdk.notices.length), origin: r() < 0.6 };
@@ -212,13 +207,13 @@ const ACTIONS = {
     apply: (w, { cron }) => void w.sdk.crons.delete(nth([...w.sdk.crons.keys()], cron)),
   },
   // The turn's end: its Stop hook (unless it was stopped), then its result, naming what it took in (user_message_uuids). It can
-  // fail, and ends as stopped once an interrupt reached it. Known: one that fails while Coda's prompt is queued behind it, and
-  // names none of Coda's prompts, answers that prompt as failed before it runs.
+  // fail, and ends as stopped once an interrupt reached it. It counts the messages still queued behind it (queued_turn_count),
+  // notices not among them.
   result: {
     when: w => !!w.sdk.turn && w.sdk.turn.foreground.size === 0,
     gen: (w, r) => ({ failed: r() < 0.15 }),
-    apply: (w, { failed: failing }) => {
-      const { sdk } = w, turn = sdk.turn, failed = failing && (KNOWN.has('failed') || !queued(w));
+    apply: (w, { failed }) => {
+      const { sdk } = w, turn = sdk.turn;
       // What the Stop hook in session.mjs gives the waits.
       if (!turn.interrupted) w.session.waits.scheduled([...sdk.crons.values()]);
       for (const id of turn.taken) sdk.closed.add(id);
@@ -226,7 +221,7 @@ const ACTIONS = {
       const named = turn.taken.slice(0, 64);
       w.emit({ type: 'result', subtype: failed ? 'error_during_execution' : 'success', is_error: failed, ...(failed ? { errors: ['这一轮失败了'] } : {}),
         stop_reason: turn.interrupted ? 'interrupt' : 'end_turn', ...(named.length ? { user_message_uuid: named.at(-1), user_message_uuids: named } : {}),
-        usage: {}, modelUsage: {}, total_cost_usd: 0 });
+        queued_turn_count: sdk.queue.length, usage: {}, modelUsage: {}, total_cost_usd: 0 });
       for (const asked of turn.asked) asked.abort();
     },
   },
@@ -263,10 +258,6 @@ function reach(w, asked) {
 const live = w => !!w.sdk.turn && !w.sdk.turn.interrupted;
 // An interrupt handled and not yet answered.
 const answering = w => w.sdk.interrupts.some(asked => asked.applied);
-// Coda's prompt whose turn ended, still waiting on a steer.
-const held = w => !!w.unanswered && w.sdk.closed.has(w.unansweredId);
-// Coda's prompt given and not yet taken by a turn.
-const queued = w => !!w.unanswered && w.sdk.queue.some(m => m.uuid === w.unansweredId);
 
 // A step done; what the session throws while it is fails it too.
 function apply(w, act) {
@@ -340,6 +331,24 @@ test('随机的轮次与等待项序列里，Coda 看到的始终守规则（#22
     assert.fail(`种子 ${seed}（CLAUDE_TURNS_SEED=${seed} 重放），缩短到 ${shortest.length} 步：\n${describe(shortest)}`);
   }
 });
+
+// Sequences the random ones found, played as they are: #222, and what main then did to a prompt it was answering.
+const SEQUENCES = {
+  // Claude Code's own turn for a task's end takes in a prompt Coda sent before it saw that turn: what the turn handled ends.
+  '自己开的一轮收进 Coda 的 prompt（#222）': [{ action: 'prompt' }, { action: 'begin', batch: 1, notices: true }, { action: 'task', foreground: false, listedFirst: false },
+    { action: 'result', failed: false }, { action: 'end', task: 23, how: 'updated', status: 'completed' }, { action: 'wake', notices: 1, origin: false },
+    { action: 'prompt' }, { action: 'tool', fold: 1, notices: false }, { action: 'result', failed: false }],
+  // A steer while the prompt is still queued, then a stop: both dropped, the prompt answered as stopped.
+  '还在排队的 prompt 与插话一起被丢弃': [{ action: 'prompt' }, { action: 'steer' }, { action: 'cancel' }, { action: 'interrupt' }, { action: 'receipt' }, { action: 'idle' }],
+  // A turn of Claude Code's own fails, naming no input, with Coda's prompt queued behind it: that prompt runs after.
+  '没点名输入的失败轮次后还有排队的 prompt': [{ action: 'prompt' }, { action: 'begin', batch: 1, notices: false }, { action: 'schedule', recurring: false, due: false },
+    { action: 'result', failed: false }, { action: 'prompt' }, { action: 'wake', cron: 31, origin: true }, { action: 'result', failed: true }],
+  // The prompt waits on a steer its turn left; Claude Code's own turn comes first, and the steer is dropped while it goes.
+  '等插话的 prompt 在别的轮次进行时丢了插话': [{ action: 'prompt' }, { action: 'cancel' }, { action: 'begin', batch: 1, notices: false },
+    { action: 'schedule', recurring: true, due: false }, { action: 'steer' }, { action: 'receipt' }, { action: 'result', failed: false },
+    { action: 'wake', cron: 59, origin: false }, { action: 'interrupt' }, { action: 'receipt' }, { action: 'result', failed: false }, { action: 'idle' }],
+};
+for (const [name, steps] of Object.entries(SEQUENCES)) test(`固定序列：${name}`, () => assert.equal(play(steps)?.failure ?? null, null));
 
 // The rules themselves, on what Coda is told.
 test('判定函数认出四条规则', () => {
