@@ -1,5 +1,5 @@
 import { requireCondition as check } from '../../domain/errors.mjs';
-import { AGENT_ID, keys, object, text } from '../../domain/values.mjs';
+import { AGENT_ID, attachments, keys, object, text } from '../../domain/values.mjs';
 
 // What a session runs with: its model, effort and mode, and the agent's other config options by their ID (`options`: a
 // choice's ID, or on and off for a switch), as the agent's catalog offers them (coda-protocol docs/agent-protocol.md「ACP 部分」).
@@ -25,12 +25,8 @@ export function settings(value = {}) {
     ...(options ? { options } : {}) };
 }
 
-// Upload IDs as the client names them are the request's identity. What is on disk is read once, when the
-// message is first accepted: an agent may since have changed or removed the file, and a replay must still match.
-export function attachments(value = []) {
-  check(Array.isArray(value) && value.length <= 20 && new Set(value).size === value.length, 'invalid_input', '附件列表无效');
-  return value.map(id => text(id, '附件标识', 100));
-}
+// Upload IDs as the client names them (domain/values.mjs), as a message and a card's answer take them.
+export { attachments };
 // A message without files keeps the request identity it always had.
 export const withAttachments = (value, ids) => ids.length ? { ...value, attachments: ids } : value;
 // Passages the user picked from the conversation, kept apart from their own words. Together they stay
