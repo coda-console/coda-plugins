@@ -1,10 +1,14 @@
-// What sessions take of plugins (components/plugins/contribution-points.mjs): the agents a plugin brings (schemas/agents.json),
-// what it tells every agent (instructions), the Agent Skills it lays into projects (skills), the commands it puts on their
-// PATH (commands) and the MCP servers their agents start (mcpServers), defined as this module loads.
+// What sessions take of plugins (components/plugins/contribution-points.mjs): the agents a plugin brings (schemas/agents.json)
+// and the settings naming one of them (`coda-agent`), what it tells every agent (instructions), the Agent Skills it lays
+// into projects (skills), the commands it puts on their PATH (commands) and the MCP servers their agents start
+// (mcpServers), defined as this module loads.
 // Descriptions only: nothing here imports a component, for the plugins read with them are read before any is made.
 import { join, normalize } from 'node:path';
 import { defineContributionPoint } from '../plugins/contribution-points.mjs';
 import { SCHEMAS } from '@coda-console/protocol/validate';
+import { requireCondition as check, ContractError } from '../../domain/errors.mjs';
+import { AGENT_ID } from '../../domain/values.mjs';
+import { settings } from './commands.mjs';
 import { iconFiles } from '../plugins/plugin-icons.mjs';
 import { readSkillDocument } from '../plugins/skill-document.mjs';
 
@@ -36,11 +40,22 @@ function skills(raw, dir) {
   });
 }
 
+// A setting's value that is an Agent combination (`format: coda-agent`): the agent it names, with the settings a session of it
+// starts with. Whether that agent is installed is asked where it is used (a review, a step): a setting stays readable while
+// a plugin it names is uninstalled.
+function agentValue(value, where, code) {
+  check(value && typeof value === 'object' && !Array.isArray(value) && typeof value.agent === 'string' && AGENT_ID.test(value.agent), code,
+    `${where} 须为 Agent 组合，并指明 Agent`);
+  const { agent, ...rest } = value;
+  try { return { agent, ...settings(rest) }; } catch (e) { throw new ContractError(code, `${where}：${e.message}`); }
+}
+
 // An agent is one plugin's: sessions name it by its ID alone. A plugin that draws no icon of its own and brings one agent
 // is drawn as that agent.
 defineContributionPoint({ key: 'agents', schema: SCHEMAS['agents.json'], read: (raw, dir) => ({ agents: agentDeclarations(raw, dir) }),
   claim: plugin => plugin.agents.map(a => `Agent ${a.id}`), icon: plugin => plugin.agents.length === 1 ? plugin.agents[0].icon : null,
-  confirm: plugin => ({ agents: plugin.agents.map(a => ({ id: a.id, displayName: a.displayName, command: a.command })) }) });
+  confirm: plugin => ({ agents: plugin.agents.map(a => ({ id: a.id, displayName: a.displayName, command: a.command })) }),
+  formats: { 'coda-agent': agentValue } });
 defineContributionPoint({ key: 'instructions', schema: SCHEMAS['instructions.json'], read: raw => raw ? { instructions: raw.trim() } : {},
   confirm: plugin => plugin.instructions ? { instructions: plugin.instructions } : {} });
 // Confirmed by name, each with what its SKILL.md says it is for.
