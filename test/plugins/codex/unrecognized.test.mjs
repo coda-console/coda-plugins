@@ -137,8 +137,9 @@ async function run(t, taken) {
     assert.equal(reply.error, undefined, JSON.stringify(reply.error));
     return reply.result;
   };
-  const capabilities = clientCapabilities();
-  await request('initialize', { protocolVersion: 1, clientCapabilities: taken ? { ...capabilities, _meta: { ...capabilities._meta, coda: { ...capabilities._meta.coda, unrecognized: {} } } } : capabilities });
+  // Coda's own capabilities, with or without taking reports, whichever its contract says.
+  const capabilities = clientCapabilities(), { unrecognized, ...coda } = capabilities._meta.coda;
+  await request('initialize', { protocolVersion: 1, clientCapabilities: { ...capabilities, _meta: { ...capabilities._meta, coda: taken ? { ...coda, unrecognized: {} } : coda } } });
   const { sessionId } = await request('session/new', { cwd: root, mcpServers: [] });
   assert.equal((await request('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'unrecognized' }] })).stopReason, 'end_turn');
   // The tools are read once the turn has ended.
