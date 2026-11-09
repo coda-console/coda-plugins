@@ -16,16 +16,17 @@ const hex = value => /^[0-9a-f]{40,64}$/.test(value ?? '') ? value : null;
 const git = args => execFileSync('git', args, { encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 const tryGit = args => { try { return git(args); } catch { return null; } };
 
-// The most specific row whose levels all equal the session's: `*`, then agent, agent|model, agent|model|effort.
-const reviewers = json('REVIEWERS', {}), session = json('SESSION', null);
+// The reviewer chosen for the run (simple.bpmn's `reviewer`), else the most specific row whose levels all equal the
+// session's: `*`, then agent, agent|model, agent|model|effort.
+const reviewers = json('REVIEWERS', {}), session = json('SESSION', null), picked = json('REVIEWER', null);
 const levels = key => key === '*' ? 0 : key.split('|').length;
-const row = Object.keys(reviewers).filter(key => {
+const row = picked ? null : Object.keys(reviewers).filter(key => {
   if (key === '*') return true;
   const [agent, model, effort] = key.split('|');
   return agent === session?.agent && (!model || model === session?.model) && (!effort || effort === session?.effort);
 }).sort((a, b) => levels(b) - levels(a))[0];
-if (!row) fail(`评审组合里没有适用于${session?.agent ? `「${[session.agent, session.model, session.effort].filter(Boolean).join(' · ')}」` : '这个会话'}的一行`);
-const reviewer = reviewers[row];
+if (!picked && !row) fail(`评审组合里没有适用于${session?.agent ? `「${[session.agent, session.model, session.effort].filter(Boolean).join(' · ')}」` : '这个会话'}的一行`);
+const reviewer = picked ?? reviewers[row];
 
 // What is reviewed: the event's pull request, or the explicit PR used to key this manual run before it started.
 const event = json('PULL_REQUEST', null), automatic = !!event?.head?.sha;
@@ -132,7 +133,7 @@ const commented = spawnSync('gh', ['pr', 'comment', pr.html_url, '--body', [`###
   `评审方 ${who}，提交 ${head.slice(0, 12)}，阻塞级别 ${SEVERITIES[blocking]} 及以上。`, report].join('\n\n')], { encoding: 'utf8' });
 const note = commented.status === 0 ? '' : `没能在 PR 上留评论：${(commented.stderr || '').trim().split('\n').at(-1) || '未知原因'}`;
 summary([`## 交叉评审 PR #${Number(pr.number)}：${verdict}`,
-  `评审方：${who}（评审组合「${row === '*' ? '其他作者' : row.split('|').join(' · ')}」）；提交 ${head.slice(0, 12)}；阻塞级别 ${SEVERITIES[blocking]} 及以上。`,
+  `评审方：${who}（${picked ? '发起时选的' : `评审组合「${row === '*' ? '其他作者' : row.split('|').join(' · ')}」`}）；提交 ${head.slice(0, 12)}；阻塞级别 ${SEVERITIES[blocking]} 及以上。`,
   report, note, prose].filter(Boolean).join('\n\n'));
 
 // For the process: the verdict, what blocks, the rules it was judged by, the change by top-level directory for the

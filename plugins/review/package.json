@@ -2,9 +2,9 @@
   "name": "@coda-console/review",
   "id": "review",
   "displayName": "PR 生命流程",
-  "description": "PR 从检查、评审到批准合并",
+  "description": "PR 从检查、评审到批准合并；简易开发",
   "icon": { "symbol": "checkmark.bubble.fill", "color": "purple" },
-  "version": "2.11.0",
+  "version": "2.12.0",
   "categories": [
     "工作流程"
   ],

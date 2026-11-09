@@ -35,15 +35,19 @@ test('manual review uses the explicit PR and rejects a missing one', t => {
   const stub = (name, body) => { writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`); chmodSync(join(bin, name), 0o755); };
   // GitHub has no such pull request: what gh is asked shows which one the review went for.
   stub('gh', 'echo "no pull request $3" >&2; exit 1');
-  const review = (pr = '') => {
+  const review = (pr = '', extra = {}) => {
     writeFileSync(summary, '');
     const done = spawnSync(process.execPath, [script], { cwd: root, encoding: 'utf8', env: { PATH: `${bin}:/usr/bin:/bin`, HOME: root, PR: pr,
-      REVIEWERS: JSON.stringify({ '*': { agent: 'codex' } }), SESSION: JSON.stringify({ agent: 'codex' }), GITHUB_STEP_SUMMARY: summary } });
+      REVIEWERS: JSON.stringify({ '*': { agent: 'codex' } }), SESSION: JSON.stringify({ agent: 'codex' }), GITHUB_STEP_SUMMARY: summary, ...extra } });
     return { code: done.status, said: done.stderr.trim().split('\n').at(-1), summary: readFileSync(summary, 'utf8').trim() };
   };
   assert.deepEqual(review('https://github.com/acme/app/pull/4'), { code: 1, said: '读不到 PR https://github.com/acme/app/pull/4：no pull request https://github.com/acme/app/pull/4',
     summary: '交叉评审没有进行：读不到 PR https://github.com/acme/app/pull/4：no pull request https://github.com/acme/app/pull/4' });
   assert.deepEqual([review().code, review().said], [1, '请填写 GitHub 返回的完整 PR 地址']);
+  // A reviewer chosen for the run (简易开发) is taken as it is: no row of the table need match the session.
+  const table = { REVIEWERS: JSON.stringify({ kimi: { agent: 'codex' } }) };
+  assert.match(review('', table).said, /评审组合里没有适用于「codex」的一行/);
+  assert.equal(review('', { ...table, REVIEWER: JSON.stringify({ agent: 'claude-sdk' }) }).said, '请填写 GitHub 返回的完整 PR 地址');
 });
 
 test('the session that opened the pull request is given the rules the reviewer was given, word for word', t => {
