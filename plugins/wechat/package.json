@@ -4,7 +4,7 @@
   "displayName": "微信",
   "description": "把手机上的微信群提供为 Coda 的外部会话",
   "icon": { "symbol": "bubble.left.and.bubble.right", "color": "green" },
-  "version": "0.2.0",
+  "version": "0.2.1",
   "categories": ["机器与资源"],
   "type": "module",
   "main": "main.mjs",
