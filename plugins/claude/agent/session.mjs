@@ -102,16 +102,7 @@ export class ClaudeSession {
       .onRequest('session/set_mode', async ({ params }) => { await this.configure('mode', params.modeId); return {}; })
       .onRequest('session/prompt', ({ params }) => this.prompt(params))
       .onRequest('_session/steering', params => params ?? {}, ({ params }) => this.steer(params))
-      .onNotification('session/cancel', ({ params }) => {
-        if (params.sessionId !== this.sessionId) return;
-        // While the session moves to another query there is none to interrupt: the turn waiting on the move is stopped there.
-        if (this.rerouting) this.cancelling = true;
-        // Messages sent into the turn and not taken yet (steer) are stopped with it: else Claude Code would run them after.
-        if (this.steering.size) this.dropRest({ stopReason: 'cancelled' });
-        // Prompts waiting behind a compaction Coda asked for have not begun: they are dropped with it, else they would run after.
-        else if (this.compacting && this.prompts.size) this.dropQueued();
-        else void this.query?.interrupt().catch(() => {});
-      })
+      .onNotification('session/cancel', ({ params }) => this.cancel(params))
       .onRequest('_coda/wait/stop', params => params, ({ params }) => this.stopWait(params))
       .onRequest('_coda/session/compact', params => params ?? {}, ({ params }) => this.compact(params))
       .connect(stream);
@@ -310,6 +301,17 @@ export class ClaudeSession {
     this.input.push({ type: 'user', uuid: id, session_id: this.sessionId, parent_tool_use_id: null, priority: 'next', message: { role: 'user', content } });
     this.heard(content);
     return { outcome: 'injected' };
+  }
+  // Coda stops what the session runs (session/cancel).
+  cancel({ sessionId }) {
+    if (sessionId !== this.sessionId) return;
+    // While the session moves to another query there is none to interrupt: the turn waiting on the move is stopped there.
+    if (this.rerouting) this.cancelling = true;
+    // Messages sent into the turn and not taken yet (steer) are stopped with it: else Claude Code would run them after.
+    if (this.steering.size) this.dropRest({ stopReason: 'cancelled' });
+    // Prompts waiting behind a compaction Coda asked for have not begun: they are dropped with it, else they would run after.
+    else if (this.compacting && this.prompts.size) this.dropQueued();
+    else void this.query?.interrupt().catch(() => {});
   }
   // What was said into the prompt and is not taken yet is not to run after it ends, stopped or failed: Claude Code drops it
   // (cancelQueued), and the prompt ends as `outcome` once nothing of it goes on — at the drop's receipt when no native turn
