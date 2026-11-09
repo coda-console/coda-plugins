@@ -24,13 +24,12 @@ export function step(pet, world, desk) {
   const left = desk.x + SIZE / 2 - 20, right = desk.x + desk.width - SIZE / 2 + 20, floor = ground(desk);
   if (pet.foot < floor - 0.5 || pet.vy < 0) {
     pet.vy += GRAVITY; pet.foot += pet.vy; pet.x = Math.max(left, Math.min(right, pet.x + pet.vx)); pet.vx *= 0.99;
-    if (pet.foot >= floor) {
-      pet.foot = floor; pet.squash = Math.min(1, Math.abs(pet.vy) / 14); pet.vx = 0; pet.vy = 0;
-      if (pet.state === 'fall') set(pet, 'idle');
-    }
-    return pet;
+    if (pet.foot < floor) return pet;
+    pet.squash = Math.min(1, Math.abs(pet.vy) / 14);
   }
-  pet.foot = floor;
+  // On the Dock: just landed, or let go where she stood.
+  pet.foot = floor; pet.vx = 0; pet.vy = 0;
+  if (pet.state === 'fall') set(pet, 'idle');
   if (pet.tucks && pet.tick - pet.touched > TUCK) { curl(pet, true, desk); return pet; }
   pet.squash *= 0.85;
   if (pet.happy > 0) pet.happy -= 1;

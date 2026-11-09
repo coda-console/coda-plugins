@@ -90,6 +90,9 @@ const screenPoint = p => {
 };
 const openWaiting = () => { const first = world.waiting[0]; if (first) coda.open(`coda://threads/${first.id}`).catch(e => console.warn(e.message)); };
 let lastTap = 0, hold = null, trail = [];
+const toggleMenu = () => {
+  if (pet.ball) { curl(pet, false, desk()); menu = true; } else { menu = !menu; touch(pet); }
+};
 
 listenGestures({
   tap() {
@@ -104,9 +107,9 @@ listenGestures({
     if (double) { menu = false; return curl(pet, true, desk()); }
     pat(pet, desk());
   },
-  // The menu: a right click or two fingers, or (with no right click on a phone) a long press.
-  two() { if (!pet.ball) { menu = !menu; touch(pet); } },
-  long() { if (!pet.ball) { menu = !menu; touch(pet); } },
+  // The menu: a right click or two fingers, or (with no right click on a phone) a long press. On the ball she comes out to it.
+  two: toggleMenu,
+  long: toggleMenu,
   drag: {
     start(p) {
       const s = screenPoint(p);

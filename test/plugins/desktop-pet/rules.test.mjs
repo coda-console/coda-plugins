@@ -55,6 +55,20 @@ test('picked up she hangs from the pointer; let go she falls with its speed and 
   assert.ok(pet.squash < 0.01, 'and she comes back to shape');
 });
 
+test('picked up and let go where she stood, moved only sideways, she stands again', () => {
+  const pet = run(createPet(desk), 10), hold = grab(pet, { x: pet.x, y: pet.foot - 60 });
+  carry(pet, hold, { x: 600, y: ground(desk) - 60 }, desk);
+  drop(pet, { x: 4, y: 0 });
+  run(pet, 1);
+  assert.deepEqual([pet.state, pose(pet, desk), pet.x, pet.foot], ['idle', 'idle', 600, ground(desk)]);
+  pat(pet, desk);
+  run(pet, 2);
+  assert.equal(pet.x, 600, 'the throw is spent: a hop later does not carry her off');
+  const seen = new Set();
+  for (let i = 0; i < 60 * 20; i++) { step(pet, idle, desk); seen.add(pet.state); }
+  assert.ok(seen.has('walk'), `she goes on wandering: ${[...seen]}`);
+});
+
 test('curled into a ball she keeps to the nearer edge and stays still; out of it she drops beside that edge', () => {
   const pet = run(createPet(desk), 10);
   curl(pet, true, desk);
