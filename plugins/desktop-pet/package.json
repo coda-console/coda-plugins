@@ -7,7 +7,7 @@
     "symbol": "pawprint.fill",
     "color": "pink"
   },
-  "version": "0.1.0",
+  "version": "0.1.1",
   "categories": [
     "Skills 与工具"
   ],
@@ -38,5 +38,12 @@
     "type": "git",
     "url": "git+https://github.com/coda-console/coda-plugins.git",
     "directory": "plugins/desktop-pet"
-  }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "main.mjs",
+    "view"
+  ]
 }
