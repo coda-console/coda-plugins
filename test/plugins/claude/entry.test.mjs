@@ -432,6 +432,38 @@ test('a background command is waited on from its start; it ends as a turn takes 
   assert.equal(wait(c, 'bg-4').at(-1).state, 'done');
 });
 
+// A turn of Claude Code's own takes in a prompt Coda sent while it went (#222): what it handles ends before the prompt is answered.
+test('a turn of Claude\'s own that takes in a prompt Coda sent meanwhile ends its own wait, and then answers the prompt once', async t => {
+  const c = await setup(t); await c.open();
+  await c.prompt('hello');
+  const end = c.query.own(); await c.emit();
+  const answered = c.prompt('运行结果'); await until(() => c.query.received.length === 2);
+  await c.emit({ type: 'assistant', message: { id: 'own-said', content: [{ type: 'text', text: '看看结果' }] } });
+  assert.equal(wait(c, 'turn-1').at(-1).state, 'handling');
+  end(); await c.emit();
+  const reply = await answered;
+  assert.deepEqual(reply.result, { stopReason: 'end_turn' });
+  assert.equal(c.out.filter(m => m.id === reply.id && !m.method).length, 1, 'answered once');
+  const told = c.out.filter(m => (m.method === '_coda/wait' && m.params.waitId === 'turn-1') || m === reply);
+  assert.deepEqual(told.map(m => m.params?.state ?? m.result.stopReason), ['handling', 'done', 'end_turn']);
+  assert.ok(c.query.inbox.length === 0 && !c.session.waits.handling && !c.session.waits.unclaimed, 'nothing left open');
+});
+
+test('a background command a turn of Claude\'s own takes up ends with it, though that turn took in a prompt Coda sent meanwhile', async t => {
+  const c = await setup(t); await c.open();
+  await c.prompt('hello');
+  await c.emit(system('task_started', { task_id: 'bg-1', task_type: 'local_bash', description: '后台', is_backgrounded: true }),
+    system('task_notification', { task_id: 'bg-1', status: 'completed' }));
+  const end = c.query.own(); await c.emit();
+  const answered = c.prompt('运行结果'); await until(() => c.query.received.length === 2);
+  await c.emit({ type: 'assistant', message: { id: 'own-said', content: [{ type: 'text', text: '看看结果' }] } });
+  assert.equal(wait(c, 'bg-1').at(-1).state, 'handling');
+  end(); await c.emit();
+  assert.deepEqual((await answered).result, { stopReason: 'end_turn' });
+  assert.deepEqual(wait(c, 'bg-1').map(w => w.state), ['waiting', 'handling', 'done']);
+  assert.ok(!c.session.waits.handling && !c.session.waits.unclaimed, 'nothing left open');
+});
+
 test('Coda stops a task through the SDK; the stop is confirmed by the task\'s own end', async t => {
   const c = await setup(t); await c.open();
   await c.prompt('background');
