@@ -19,6 +19,7 @@ import { serviceSettings } from '../../../plugins/claude/agent/providers.mjs';
 import { SessionTitle } from '../../../plugins/claude/agent/titles.mjs';
 import { ToolCallCache } from '../../../plugins/claude/agent/tools.mjs';
 import { ClaudeSessionLimits, accountHash } from '../../../plugins/claude/agent/limits.mjs';
+import { KNOWN_TOOLS } from '../../../plugins/claude/agent/registry.mjs';
 import { fixtureSdk, queries } from './fixture-sdk.mjs';
 import { substituted } from '../substitute.mjs';
 
@@ -1455,4 +1456,44 @@ test('a session that cannot compact now, or whose compaction fails or compacts n
     const c = await compactable(t);
     assert.equal((await c.ask('other')).error.code, -32602);
   });
+});
+
+// What the SDK sends that is not registered (registry.mjs), within a turn of Coda's: a new kind of message, of system message,
+// of content block in an assistant's and in a user's message, of result; and what is registered as not shown.
+const unregisteredTurn = c => [
+  system('brand_new', { content: '新的提示' }), system('brand_new', { content: '又一条' }), { type: 'new_kind', data: 1 },
+  system('hook_started', { hook_id: 'h' }), { type: 'tool_progress', tool_use_id: 't' }, system('post_turn_summary'),
+  { type: 'assistant', message: { id: 'm1', content: [{ type: 'text', text: '说话' }, { type: 'novel', text: '新块里的话' }, { type: 'opaque' }, { type: 'redacted_thinking', data: 'x' }] } },
+  { type: 'user', message: { content: [{ type: 'mystery', content: [{ type: 'text', text: '用户块的字' }] }, { type: 'image', source: {} }] } },
+  { type: 'result', subtype: 'error_new_kind', is_error: true, errors: ['新的失败'], user_message_uuid: c.query.inputId }];
+const reports = c => c.out.filter(m => m.method === '_coda/unrecognized').map(m => m.params);
+
+test('what the SDK sends that is not registered is told to Coda once a name, its text said; a native tool not known is told too', async t => {
+  const c = await setup(t);
+  await c.open({}, { _meta: { coda: { unrecognized: {} } } });
+  // The known tools one short: that one is new here. An MCP server's are the user's, never compared.
+  KNOWN_TOOLS.delete('Bash'); t.after(() => KNOWN_TOOLS.add('Bash'));
+  const pending = c.prompt('manual'); await until(() => c.query.inputId);
+  await c.emit(system('init', { tools: ['Read', 'Bash', 'mcp__coda__send'] }), system('init', { tools: ['Bash'] }), ...unregisteredTurn(c));
+  assert.equal((await pending).error.message, '新的失败', 'a result of a new subtype ends the turn as any result does');
+  const sessionId = c.sessionId, lost = name => ({ sessionId, kind: 'output', name, lost: true, detail: `Claude Code 发来了入口还不认识的内容（${name}），没有显示出来` });
+  assert.deepEqual(reports(c), [
+    { sessionId, kind: 'tool', name: 'tool:Bash', lost: false },
+    { sessionId, kind: 'output', name: 'sdk:system/brand_new', lost: false },
+    lost('sdk:new_kind'),
+    { sessionId, kind: 'output', name: 'block:novel', lost: false },
+    lost('block:opaque'),
+    { sessionId, kind: 'output', name: 'block:mystery', lost: false },
+    { sessionId, kind: 'output', name: 'sdk:result/error_new_kind', lost: false }]);
+  assert.deepEqual(c.said(), ['新的提示', '又一条', '说话', '新块里的话', '用户块的字']);
+});
+
+test('a client that has not said it takes them is told nothing of what is not registered, which is said all the same', async t => {
+  const c = await setup(t);
+  await c.open();
+  const pending = c.prompt('manual'); await until(() => c.query.inputId);
+  await c.emit(system('init', { tools: ['BrandNewTool'] }), ...unregisteredTurn(c));
+  await pending;
+  assert.deepEqual(reports(c), []);
+  assert.deepEqual(c.said(), ['新的提示', '又一条', '说话', '新块里的话', '用户块的字']);
 });
