@@ -33,7 +33,7 @@ function host() {
     objects.set(id, object); emit({ type: old ? 'MODIFIED' : 'ADDED', id, object }); return structuredClone(object);
   };
   const coda = { protocols: providerAPI({ call, watch, plugin: { id: manifest.id, ...manifest.contributes }, operations }) };
-  const read = (id, input = {}) => operations.get(JSON.stringify([SESSION, 'read']))(input, { record: objects.get(id) });
+  const read = (id, input = {}) => operations.get(JSON.stringify([SESSION, 'read']))(input, { record: { kind: SESSION, id } });
   return { coda, objects, published, read };
 }
 

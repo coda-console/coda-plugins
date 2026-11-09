@@ -2,7 +2,8 @@
 // the container, its members and the cursor of its newest message. `read` pages its messages from the phone bridge.
 //
 // A cursor is a message's `seq` in its group, in decimal. The record ID is `<account>:<group>`, and the account is the
-// record's container, so a read finds the group from the record alone.
+// record's container. The host hands `read` only the record's reference, so a read looks the record up among those we
+// observe and takes the account from its container.
 export const SESSION = 'coda/session@1';
 // The host stamps each published object with this plugin's id; we only react to our own. It tells us that id through
 // `coda.plugin.id`, so we follow whatever it calls us and fall back to our manifest id only when it says nothing.
@@ -80,8 +81,8 @@ export class WechatProvider {
     await this.write(id, { ...record.status, head: cursor(seq) });
   }
   // One more than asked shows whether there are more: past the page going forward, before it otherwise.
-  async read(record, { after, before, limit = LIMIT }) {
-    const account = record.spec.container.id, group = record.id.slice(account.length + 1);
+  async read({ id }, { after, before, limit = LIMIT }) {
+    const account = this.records.get(id).spec.container.id, group = id.slice(account.length + 1);
     const found = await this.bridge.messages(account, group, { after: position(after), before: position(before), limit: limit + 1 });
     const more = found.length > limit, page = !more ? found : after === undefined ? found.slice(1) : found.slice(0, limit);
     const messages = page.map(({ seq, ...message }) => ({ ...message, cursor: cursor(seq) }));
