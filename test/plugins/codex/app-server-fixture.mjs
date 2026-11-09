@@ -11,7 +11,9 @@
 // until `release` is there. The thread is written down (rollout.jsonl there, its `path`) once it is named or has a turn.
 // config/read gives the configured developer instructions from developer_instructions.txt there, when there is one.
 // A later turn whose input names `subagent` runs a subagent that answers and ends; one that names `background` leaves a
-// command in the background, listed until it is terminated.
+// command in the background, listed until it is terminated; one that names `send_user_message_async` or
+// `request_user_input_async` says that async message, the latter with the questions of FAKE_CODEX_QUESTIONS. What a turn
+// is steered with goes to steers.ndjson.
 import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -39,6 +41,7 @@ process.stdin.on('data', chunk => {
   for (let end; (end = buffer.indexOf('\n')) >= 0;) {
     const message = JSON.parse(buffer.slice(0, end)); buffer = buffer.slice(end + 1);
     if (message.id === undefined || !message.method) continue;
+    if (message.method === 'turn/steer') appendFileSync(join(process.env.FAKE_CODEX_STATE, 'steers.ndjson'), JSON.stringify(message.params) + '\n');
     if (sleeping && ['turn/steer', 'turn/interrupt'].includes(message.method)) {
       const { turn, item } = sleeping; sleeping = null;
       send({ id: message.id, result: message.method === 'turn/steer' ? { turnId: turn.id } : {} });
@@ -96,6 +99,12 @@ process.stdin.on('data', chunk => {
       continue;
     }
     const input = JSON.stringify(message.params.input ?? '');
+    for (const tool of ['send_user_message_async', 'request_user_input_async']) if (input.includes(tool) && !message.params.outputSchema) {
+      const questions = tool === 'request_user_input_async' ? JSON.parse(process.env.FAKE_CODEX_QUESTIONS) : null;
+      const text = questions ? questions.map(q => [q.title, ...(q.options ?? []).map(o => `- ${o}`)].join('\n')).join('\n\n') : '先说一声：开始发布了';
+      send({ method: 'item/completed', params: { threadId: thread.id, turnId: turn.id, item: { type: 'agentMessage', id: `${tool}-${turn.id}`, text,
+        phase: 'final_answer', memoryCitation: null, delivery: 'async', questions } } });
+    }
     if (input.includes('clock.sleep') && !message.params.outputSchema) {
       const item = { type: 'sleep', id: `sleep-${turn.id}`, durationMs: 7200000 };
       send({ method: 'item/started', params: { threadId: thread.id, turnId: turn.id, item } });

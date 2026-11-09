@@ -1,7 +1,8 @@
 // The Codex agent as Coda starts it (the plugin's `contributes.agents`): the locked codex-acp, run in this process with Coda's
 // patches, which fail the start once the adapter changes. Between it and Coda the entry speaks Coda's protocol for it
 // (waits.mjs, docs/agent-protocol.md), and of its own check of a call as that call's (reviews.mjs): its session instructions become the thread's developer instructions (instructions.mjs),
-// and a steer that finds no turn going is answered `promptRequired` (steering.mjs); the models of the model service chosen in
+// and a steer that finds no turn going is answered `promptRequired` (steering.mjs); Codex's async messages are shown and its
+// async questions asked as cards whose answers it is given within the same turn (questions.mjs); the models of the model service chosen in
 // Coda join Codex's own (providers.mjs). What Coda wants of Codex beyond ACP is set here: the mode a session starts in, and
 // which Codex program runs, through the account bridge when another plugin chooses the account (accounts.mjs).
 import { createRequire, registerHooks } from 'node:module';
@@ -27,6 +28,7 @@ import { explainCodexError, reportedCodexFailures } from './errors.mjs';
 import { reportedCodexSleeps } from './sleep.mjs';
 import { codexDisplayNames } from './display.mjs';
 import { trustedCodaMcpRequests } from './mcp-policy.mjs';
+import { CodexQuestions, shownCodexAsyncMessages } from './questions.mjs';
 
 const env = process.env;
 // Coda owns the permission boundary. An explicit launch mode or later ACP selection still wins.
@@ -51,14 +53,18 @@ if (!env.CODEX_PATH && accountSource(env) && env.CODA_PLUGIN_STATE) {
 
 const version = codexVersion();
 const waits = new CodexWaits({ agentInfo: version ? { name: 'codex', version } : null }), parse = line => { try { return JSON.parse(line); } catch { return null; } };
-const reviews = new CodexReviews(), say = message => process.stdout.write(`${JSON.stringify(message)}\n`);
-listen(line => { for (const message of waits.fromAgent(parse(line))) for (const each of reviews.fromAgent(message)) say(codexDisplayNames(explainCodexError(each))); });
-readLines(process.stdin).on('line', line => {
-  const message = parse(line);
-  if (!message || typeof message !== 'object') return;
+const reviews = new CodexReviews(), questions = new CodexQuestions(), say = message => process.stdout.write(`${JSON.stringify(message)}\n`);
+const toCodex = message => {
   const { agent, coda } = waits.fromCoda(message);
   for (const each of agent) input.write(`${JSON.stringify(each)}\n`);
   for (const each of coda) say(each);
+};
+const pass = ({ agent, coda }) => { for (const each of agent) toCodex(each); for (const each of coda) say(codexDisplayNames(explainCodexError(each))); };
+listen(line => { for (const message of waits.fromAgent(parse(line))) for (const each of reviews.fromAgent(message)) pass(questions.fromAgent(each)); });
+readLines(process.stdin).on('line', line => {
+  const message = parse(line);
+  if (!message || typeof message !== 'object') return;
+  pass(questions.fromCoda(message));
 }).on('close', () => input.end());
 
 // codex-acp as Node finds it from here (its package names dist/index.js as its main): the plugin's own dependency.
@@ -66,7 +72,7 @@ const adapter = new URL(import.meta.resolve('@agentclientprotocol/codex-acp'));
 registerHooks({ load(url, context, nextLoad) {
   const loaded = nextLoad(url, context);
   if (url !== adapter.href) return loaded;
-  return { ...loaded, source: reportedCodexSleeps(reportedCodexFailures(codexOptionsAsShown(relayedCodexStreams(orderedCodexTitles(followCodexProcessExit(continuedCodexSubagents(
-    promptRequiredCodexSteering(instructedCodexThreads(servedCodexModels(networkedCodexDevelopment(trustedCodaMcpRequests(Buffer.from(loaded.source).toString('utf8'))))))))))))) };
+  return { ...loaded, source: shownCodexAsyncMessages(reportedCodexSleeps(reportedCodexFailures(codexOptionsAsShown(relayedCodexStreams(orderedCodexTitles(followCodexProcessExit(continuedCodexSubagents(
+    promptRequiredCodexSteering(instructedCodexThreads(servedCodexModels(networkedCodexDevelopment(trustedCodaMcpRequests(Buffer.from(loaded.source).toString('utf8')))))))))))))) };
 } });
 await import(adapter.href);
