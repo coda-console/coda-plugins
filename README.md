@@ -246,6 +246,48 @@ Codex 调用 `clock.sleep` 时，会话底部显示一个后台等待项（例�
 Codex 没有只取消单个 sleep 的接口，因此等待项不提供单独的停止按钮。正常结束、插话唤醒、整轮取消或失败都会了结等待，
 子 Agent 的等待归它自己的会话。
 
+### Codex 异步消息与提问
+
+OpenAI 的模型目录给模型开了 `send_user_message_async` 与 `request_user_input_async`（不随 Codex 版本，本地设置关不掉）。
+Codex 把每次调用报成一条 `delivery: "async"` 的完整 Agent 消息、提问另带 `questions`，不发增量；codex-acp 1.12.0 只从增量显示 Agent 消息，
+插件打补丁接住它（适配器一变就启动失败）。Codex 的这一轮不等回答，回答之后作为新的用户消息到达它。
+
+- **消息**：没有收到过增量的异步消息，把它的文字作为 Agent 消息显示。
+- **提问**：文字照常作为 Agent 消息显示（Codex 把问题与选项写在里面，链接可以点开）；这次调用的全部问题再作为一张表单卡片，只用来收回答。
+  字段同 Claude 的提问：第 i 题是必填字段 `q{i}`，标题是问题；有选项时单选，末尾多一项「其他（写在下面）」配可选字段 `q{i}_other`；没有选项时填文字。
+- **这一轮**：卡片都有结果之前，Coda 的这一轮一直在进行，codex-acp 那次 `session/prompt` 的答复先不转给 Coda。
+  回答作为用户消息交给 Codex，每题一行：「回答你的提问「<问题>」：<答案>」；用户取消或卡片被撤回，就说「用户没有回答「<问题>」」。
+  codex-acp 那次 prompt 还在跑时经插话（`idleBehavior: "promptRequired"`）加进去；回 `promptRequired` 或已经跑完，入口自己向 codex-acp 发 `session/prompt`，
+  它的输出照常算在 Coda 的这一轮里，最后一次答复才结束这一轮。
+- **等卡片时**：停止会话撤回没答的卡片（`$/cancel_request`），把取消转给 codex-acp，这一轮按取消结束；
+  Codex 已停下时收到的插话作为下一次 `session/prompt` 跑、回 `injected`，仍算这一轮，卡片保留。
+
+### Codex 没适配的东西
+
+Codex 或 OpenAI 的服务端加了新东西（新的 item 类型、字段取值、通知，模型能用的新工具），入口不认识就会悄悄丢掉，谁也不知道。
+codex 入口分三层，让这类情况在升级时或运行时被发现，经 `_coda/unrecognized`（协议[没适配的东西](https://github.com/coda-console/coda-protocol/blob/main/docs/agent-protocol.md#没适配的东西)）报给 Coda：
+
+- **登记表与升级检查**：`agent/registry.json` 对锁定的 `@openai/codex` 的 app-server 协议，列出每种 ThreadItem 类型、agentMessage 的每个字段与
+  `delivery`、`phase` 的每个取值、codex-acp 收到的每个服务端通知与服务端请求，各注明转给 Coda（`shown: true`）还是明确不显示，附一句原因。
+  `scripts/check-codex-protocol.mjs` 用插件锁定的 Codex 跑 `codex app-server generate-json-schema --experimental`，有没登记的就失败并列出来。
+  `npm test` 跑它（`test/plugins/codex/protocol.test.mjs`），所以升级 `@openai/codex` 的 PR 要先登记新东西。
+  它要这个平台的 Codex 二进制：`@openai/codex` 的可选依赖，`install-plugins.mjs` 带 `--include=optional` 装上（CI 的 ubuntu x64 是 `@openai/codex-linux-x64`）；
+  没装上就失败，并说明怎么装，不跳过。
+- **运行时报告**：codex-acp 的补丁（适配器一变就启动失败）把到了却没登记的报上来。Coda 在握手里声明了 `_meta.coda.unrecognized` 才发，同一会话同一 `name` 只报一次。
+  - 没登记的 item 类型，完成时报 `item:<类型>`：有 `text`、`message` 或 `summary` 文字的照样作为 Agent 消息显示，报 `lost: false`；显示不了的报 `lost: true`。
+  - agentMessage 完成时有文字、没收到过增量，又不是已接住的 async：照样显示，报 `item:agentMessage.unstreamed`（`lost: false`）。这是「文字没送到 Coda」的通用兜底。
+  - agentMessage 没登记的字段（有值时）与 `delivery`、`phase` 的取值，报 `lost: false`，文字照常显示。
+  - 没登记的通知报 `notification:<方法>`（`lost: false`）；没登记的服务端请求报 `request:<方法>`（`lost: true`），照 codex-acp 原来的做法回 MethodNotFound。
+- **工具清单对照**：codex-acp 开的线程（`thread/start`、`thread/resume`，答复里有 rollout 的 `path`）一轮结束后，读 rollout 里给模型的 `additional_tools`，
+  按 `namespace.name`（托管的工具没有名字，按类型，如 `web_search`）对照 `agent/known-tools.json`，新出现的报 `tool:<namespace.name>`（`kind: tool`）。
+  MCP 工具（`mcp__<服务器>`）是用户配的，不比。每个线程读到工具为止，读文件不挡开会话，也不挡这一轮。
+
+升级 `@openai/codex` 时：
+
+1. 跑 `node scripts/check-codex-protocol.mjs`（`npm test` 也跑），把列出的新东西登记进 `agent/registry.json`；要转给 Coda 的，先在入口补上。
+2. 用新 Codex 跑一轮真实会话，看它的 rollout（`~/.codex/sessions/…`）里 `additional_tools` 的原生工具，把新的加进 `agent/known-tools.json`；入口专门接住的标「已适配」。
+3. codex-acp 跟着变了，补丁对不上会启动失败，照新代码改补丁。
+
 ### Codex 权限默认值与 Coda 工具
 
 从 codex 插件 1.9.0 起，未指定模式的会话默认「完全访问」（`agent-full-access`）：Codex 原生轮次使用
@@ -343,6 +385,7 @@ Codex 会话、资源与登录用的 Codex CLI 就是 `codex` 插件依赖的 `@
 Dependabot（`.github/dependabot.yml`）每周为它们各开一个 PR，连同 `package-lock.json` 一起改；合并后在 Coda「设置 › 插件」
 对该插件点「检查更新」；合并时勾选「部署」，`sync-coda` 给 Coda 开升级依赖的 PR。升 `@openai/codex` 时 codex-acp 经 `overrides` 跟着用新版本，
 Coda 根上的同一条 overrides 由 `sync-coda` 一起改（npm 只认根的，Coda 的测试会核对）；合并前用真实会话跑一轮。
+升 `@openai/codex` 还要登记新 Codex 带来的东西，见 [Codex 没适配的东西](#codex-没适配的东西)。
 升 `@anthropic-ai/claude-agent-sdk` 要先把新 SDK 的消息类型与内容块登记进 `plugins/claude/agent/registry.mjs`，`npm test` 里的升级检查会列出没登记的，
 见 [plugins/claude/README.md](plugins/claude/README.md)「认不出的东西」。
 

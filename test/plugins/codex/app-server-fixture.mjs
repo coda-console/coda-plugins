@@ -8,17 +8,22 @@
 // Codex fails it: the thread is not loaded.
 // What thread/start, thread/resume and thread/name/set are asked goes to threads.ndjson in the state directory, each turn/start to
 // prompts.ndjson. FAKE_CODEX_HOLD=thread/read holds the answer to thread/read, saying so by `held` in the state directory,
-// until `release` is there. The thread is written down (rollout.jsonl there, its `path`) once it is named or has a turn.
+// until `release` is there. The thread is written down (rollout.jsonl there, its `path`, as thread/start and thread/resume
+// answer it) once it is named or has a turn; a turn gives the model the tools of FAKE_CODEX_TOOLS (`additional_tools` there).
 // config/read gives the configured developer instructions from developer_instructions.txt there, when there is one.
 // A later turn whose input names `subagent` runs a subagent that answers and ends; one that names `background` leaves a
-// command in the background, listed until it is terminated.
+// command in the background, listed until it is terminated; one that names `send_user_message_async` or
+// `request_user_input_async` says that async message, the latter with the questions of FAKE_CODEX_QUESTIONS; one that names
+// `unrecognized` says what the Codex entry has not registered (two items of a new type with text, one without, a new
+// notification and request) beside what it has (an agent message streamed, another not). What a turn is steered with goes
+// to steers.ndjson, the answers to its requests to answers.ndjson.
 import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const died = join(process.env.FAKE_CODEX_STATE, 'died'), rollout = join(process.env.FAKE_CODEX_STATE, 'rollout.jsonl');
 const [failing, failingAt = '1'] = (process.env.FAKE_CODEX_FAIL_ONCE ?? '').split('#'), failingCalls = join(process.env.FAKE_CODEX_STATE, 'failing-calls');
 const send = message => process.stdout.write(`${JSON.stringify(message)}\n`);
-const thread = { id: 'fake-thread', turns: [], historyMode: 'paginated' };
+const thread = { id: 'fake-thread', turns: [], historyMode: 'paginated', path: rollout };
 const model = { id: 'fake', model: 'fake', displayName: 'Fake', description: '', isDefault: true, hidden: false,
   defaultReasoningEffort: 'medium', supportedReasoningEfforts: [{ reasoningEffort: 'medium', description: '' }], inputModalities: ['text'] };
 const models = process.env.FAKE_CODEX_MODELS ? JSON.parse(process.env.FAKE_CODEX_MODELS) : [model];
@@ -38,7 +43,9 @@ process.stdin.on('data', chunk => {
   buffer += chunk;
   for (let end; (end = buffer.indexOf('\n')) >= 0;) {
     const message = JSON.parse(buffer.slice(0, end)); buffer = buffer.slice(end + 1);
+    if (message.id !== undefined && !message.method) appendFileSync(join(process.env.FAKE_CODEX_STATE, 'answers.ndjson'), JSON.stringify(message) + '\n');
     if (message.id === undefined || !message.method) continue;
+    if (message.method === 'turn/steer') appendFileSync(join(process.env.FAKE_CODEX_STATE, 'steers.ndjson'), JSON.stringify(message.params) + '\n');
     if (sleeping && ['turn/steer', 'turn/interrupt'].includes(message.method)) {
       const { turn, item } = sleeping; sleeping = null;
       send({ id: message.id, result: message.method === 'turn/steer' ? { turnId: turn.id } : {} });
@@ -50,6 +57,9 @@ process.stdin.on('data', chunk => {
     if (['thread/start', 'thread/resume'].includes(message.method) && !message.params.ephemeral) instructions = message.params.developerInstructions ?? '';
     if (['thread/start', 'thread/resume', 'thread/name/set'].includes(message.method)) appendFileSync(join(process.env.FAKE_CODEX_STATE, 'threads.ndjson'), JSON.stringify({ method: message.method, params: message.params }) + '\n');
     if (['thread/name/set', 'turn/start'].includes(message.method)) appendFileSync(rollout, '');
+    if (message.method === 'turn/start' && !message.params.outputSchema && process.env.FAKE_CODEX_TOOLS) {
+      appendFileSync(rollout, JSON.stringify({ type: 'response_item', payload: { type: 'additional_tools', tools: JSON.parse(process.env.FAKE_CODEX_TOOLS) } }) + '\n');
+    }
     if (message.method === 'thread/read') {
       const answer = () => send({ id: message.id, result: { thread: { ...thread, path: rollout } } });
       if (process.env.FAKE_CODEX_HOLD !== 'thread/read') { answer(); continue; }
@@ -96,6 +106,28 @@ process.stdin.on('data', chunk => {
       continue;
     }
     const input = JSON.stringify(message.params.input ?? '');
+    for (const tool of ['send_user_message_async', 'request_user_input_async']) if (input.includes(tool) && !message.params.outputSchema) {
+      const questions = tool === 'request_user_input_async' ? JSON.parse(process.env.FAKE_CODEX_QUESTIONS) : null;
+      const text = questions ? questions.map(q => [q.title, ...(q.options ?? []).map(o => `- ${o}`)].join('\n')).join('\n\n') : '先说一声：开始发布了';
+      send({ method: 'item/completed', params: { threadId: thread.id, turnId: turn.id, item: { type: 'agentMessage', id: `${tool}-${turn.id}`, text,
+        phase: 'final_answer', memoryCitation: null, delivery: 'async', questions } } });
+    }
+    if (input.includes('unrecognized') && !message.params.outputSchema) {
+      const said = (method, item) => send({ method, params: { threadId: thread.id, turnId: turn.id, item } });
+      for (const [id, text] of [['foo-1', '新东西'], ['foo-2', '又一个新东西']]) {
+        said('item/started', { type: 'fooBar', id, text: '' });
+        said('item/completed', { type: 'fooBar', id, text });
+      }
+      said('item/completed', { type: 'bazQux', id: 'baz-1' });
+      const message = { type: 'agentMessage', phase: 'final_answer', memoryCitation: null, delivery: null, questions: null };
+      said('item/started', { ...message, id: 'streamed', text: '' });
+      send({ method: 'item/agentMessage/delta', params: { threadId: thread.id, turnId: turn.id, itemId: 'streamed', delta: '逐段的回复' } });
+      said('item/completed', { ...message, id: 'streamed', text: '逐段的回复' });
+      said('item/completed', { ...message, id: 'plain', text: '没有增量的回复' });
+      send({ method: 'thread/fooChanged', params: { threadId: thread.id } });
+      send({ method: 'thread/readState/changed', params: { threadId: thread.id } });
+      send({ id: 'fake-request', method: 'item/tool/bar', params: { threadId: thread.id, turnId: turn.id } });
+    }
     if (input.includes('clock.sleep') && !message.params.outputSchema) {
       const item = { type: 'sleep', id: `sleep-${turn.id}`, durationMs: 7200000 };
       send({ method: 'item/started', params: { threadId: thread.id, turnId: turn.id, item } });
