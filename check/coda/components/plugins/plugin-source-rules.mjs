@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto';
 import { normalize } from 'node:path';
 import { requireCondition as check } from '../../domain/errors.mjs';
 import { catalogChannelProblem, offerPoint, offeredCommands, offerProblem, withDependencies } from './plugin-extensions.mjs';
+import { CONTRIBUTION_POINTS } from './contribution-points.mjs';
 
 export const COMMIT = /^[0-9a-f]{40}$/;
 const ID = /^[a-z][a-z0-9-]{0,39}$/;
@@ -253,26 +254,26 @@ export function builtinProblem(id, source, builtin, installed) {
   if (fromElsewhere(row.source) && !sameSource(copy.source, row.source)) return null;
   return `与内置插件 ${id} 同名${copy.source?.repo || copy.source?.package ? '，来源不同' : ''}，请先卸载内置插件再安装`;
 }
-// What only one plugin may declare, as said to the user: an agent (sessions name it by its ID alone), a concurrency group
-// (any process takes it by its name), Git's credentials for an address, opening a kind of reference (a view's `handles`),
-// a composer mode's name and the character typed to enter one (the composer finds it by them)
-// and a key of `contributes` a point takes. A command, as a Skill or a variable, is a
-// project's: one two plugins of a project bring is neither's there (components/plugins/plugins.mjs launch).
-export const claims = plugin => [...plugin.agents.map(a => `Agent ${a.id}`), ...plugin.groups.map(g => `组 ${g.name}`),
-  ...(plugin.gitCredentials ?? []).map(c => `${c.url} 的 Git 凭据`), ...(plugin.views ?? []).flatMap(v => (v.handles ?? []).map(kind => `打开 ${kind} 引用`)),
-  ...(plugin.composerModes ?? []).flatMap(m => [`输入框模式 /${m.id}`, ...(m.trigger ? [`输入框里打 ${m.trigger} 进入的模式`] : [])]),
+// What only one plugin may declare, as said to the user: what a component's contribution point says (its `claim`: an
+// agent, which sessions name by its ID alone; a concurrency group, which any process takes by its name; Git's credentials
+// for an address; a composer mode's name and the character typed to enter one), opening a kind of reference (a view's
+// `handles`) and a key of `contributes` a point takes. A command, as a Skill or a variable, is a project's: one two plugins
+// of a project bring is neither's there (components/plugins/plugins.mjs launch).
+export const claims = plugin => [...[...CONTRIBUTION_POINTS.values()].flatMap(point => point.claim?.(plugin) ?? []),
+  ...(plugin.views ?? []).flatMap(v => (v.handles ?? []).map(kind => `打开 ${kind} 引用`)),
   ...Object.values(plugin.extensionPoints ?? {}).filter(p => p.contributes).map(p => `扩展点 contributes.${p.contributes}`)];
 // Why a plugin cannot sit beside those this machine has (`catalog`: built-in and installed, by ID; `builtin`: the plugins
-// Coda ships, by ID), or null: an installed built-in one's ID from another source (builtinProblem), or an agent, a group
-// or Git's credentials for an address another plugin declares. What it needs of the others — the plugins it depends on,
+// Coda ships, by ID), or null: an installed built-in one's ID from another source (builtinProblem), what a component's
+// contribution point lets only a built-in plugin bring (its `builtinOnly`, of the plugin read: why, none when it brings none
+// of it), or what only one plugin may declare (claims) another plugin declares. What it needs of the others — the plugins it depends on,
 // the points it plugs into or writes for (plugin-extensions.mjs offerProblem) — is checked once all of them are there.
 export function catalogProblem(plugin, catalog, builtin, installed) {
   const named = builtinProblem(plugin.id, plugin.source, builtin, installed);
   if (named) return named;
-  // Clients do not list a plugin's Git credentials in the confirmation yet: only one Coda ships may bring them.
-  if (plugin.gitCredentials?.length && plugin.source?.kind !== 'builtin') return '只有 Coda 自带的插件能提供 Git 凭据';
-  // Nor the command that lists repositories to choose from.
-  if (plugin.repositories && plugin.source?.kind !== 'builtin') return '只有 Coda 自带的插件能提供仓库列表';
+  if (plugin.source?.kind !== 'builtin') for (const point of CONTRIBUTION_POINTS.values()) {
+    const only = point.builtinOnly?.(plugin);
+    if (only) return only;
+  }
   const own = claims(plugin), twice = own.find((claim, i) => own.indexOf(claim) !== i);
   if (twice) return `${twice} 在插件里声明了两次`;
   for (const claim of own) {
@@ -310,41 +311,34 @@ export function catalogAfter(plugin, { catalog, siblings }) {
 // another plugin's points too, which that plugin runs — those it writes for a point under a key of `contributes`, where
 // the point says, the catalog beside it (`catalog`) declaring it —, those it puts on every session's PATH, those
 // answering clients' requests, and the one that makes each
-// machine ready for it, run as it is installed or updated), the groups it brings,
-// what it calls its workflows and capabilities, how many settings, and what it tells every agent.
+// machine ready for it, run as it is installed or updated), what a component's contribution point confirms (its
+// `confirm`: its agents and the commands it puts on sessions' PATH, the Agent Skills it lays into projects, the MCP
+// servers their agents start and what it tells every agent; the groups it brings, what it calls its capabilities; the
+// modes it puts the composer in), what it calls its workflows and how many settings.
 export function contributions(plugin, catalog = new Map()) {
   const offers = Object.entries(plugin.offers ?? {}).flatMap(([key, raw]) => {
     const found = offerPoint(new Map([...catalog, [plugin.id, plugin]]), key);
     return found ? [{ plugin: found.plugin.id, point: found.point, title: found.declared.title, ...offeredCommands(raw, found.declared) }] : [];
   });
   return {
-    // The Agent Skills it lays into the projects it applies to, by name; the variables it gives what starts there, each
-    // with its value as written, and the directories it puts on their PATH.
-    ...(plugin.skills?.length ? { skills: plugin.skills.map(s => s.name),
-      skillDescriptions: Object.fromEntries(plugin.skills.filter(s => s.description).map(s => [s.name, s.description])) } : {}),
+    // The variables it gives what starts in the projects it applies to, each with its value as written, and the
+    // directories it puts on their PATH.
     ...(plugin.environment?.length ? { environment: plugin.environment.map(({ name, value }) => ({ name, value })) } : {}),
     ...(plugin.path?.length ? { path: plugin.path } : {}),
-    agents: plugin.agents.map(a => ({ id: a.id, displayName: a.displayName, command: a.command })),
-    commands: plugin.commands.map(c => ({ name: c.name, command: c.command })),
     ...(plugin.endpoints?.length ? { endpoints: plugin.endpoints.map(e => ({ id: e.id, command: e.command, ...(e.checks ? { checks: e.checks } : {}) })) } : {}),
-    // The MCP servers its projects' agents start, word for word: what they run and the variables they are given as written.
-    ...(plugin.mcpServers?.length ? { mcpServers: plugin.mcpServers.map(({ name, command, args, env }) => ({ name, command, args, env })) } : {}),
     // Its module the plugin host runs (docs/plugins.md「插件宿主」): code of its own in Coda's Node on this machine.
     ...(plugin.main ? { main: plugin.main } : {}),
     // The pages it opens in the clients, by name, with where they stay and their icon there: they run in the client's
     // sandbox, not as commands here.
     ...(plugin.views?.length ? { views: plugin.views.map(v => ({ id: v.id, title: v.title, ...(v.in ? { in: v.in } : {}), ...(v.icon ? { icon: v.icon } : {}), ...(v.handles ? { handles: v.handles } : {}), ...(v.readout ? { readout: v.readout } : {}),
       ...(v.checkout ? { checkout: v.checkout } : {}) })) } : {}),
-    groups: plugin.groups.map(g => ({ name: g.name, capacity: g.capacity })),
-    // The modes it puts the composer in, as declared: the clients show them from this.
-    ...(plugin.composerModes?.length ? { composerModes: plugin.composerModes.map(({ schema: _, ...mode }) => mode) } : {}),
+    ...Object.assign({}, ...[...CONTRIBUTION_POINTS.values()].map(point => point.confirm?.(plugin))),
     extensions: plugin.extensions.map(e => ({ plugin: e.plugin, point: e.point, command: e.command })),
     // What it writes for points under keys of `contributes` (the resources plugin's panels): by point, how many and the
     // commands in them, each with what it is for.
     ...(offers.length ? { offers } : {}),
     ...(plugin.setup ? { setup: { command: plugin.setup.command } } : {}),
-    workflows: plugin.workflows, capabilities: plugin.capabilities, settings: Object.keys(plugin.properties).length,
-    ...(plugin.instructions ? { instructions: plugin.instructions } : {}),
+    workflows: plugin.workflows, settings: Object.keys(plugin.properties).length,
     // What each machine installs for it from npm, as read from its repository (components/plugins/plugin-sources.mjs inspect).
     ...(plugin.npm?.length ? { npm: plugin.npm } : {}),
   };

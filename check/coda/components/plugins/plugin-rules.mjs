@@ -16,13 +16,12 @@ import { settings as agentSettings } from '../session-config/commands.mjs';
 import { requireCondition as check, ContractError } from '../../domain/errors.mjs';
 import { isDuration } from '../../domain/duration.mjs';
 import { AGENT_ID } from '../../domain/values.mjs';
-import { agentDeclarations, iconFiles } from './agent-plugins.mjs';
+import { iconFiles } from './plugin-icons.mjs';
 import { checkCatalog, extensionsFor } from './plugin-extensions.mjs';
-import { manifestProblem, TYPES } from '@coda-console/protocol/validate';
+import { contributionProblem, manifestProblem, TYPES } from '@coda-console/protocol/validate';
 import { ownedProtocolsProblem } from '@coda-console/protocol/protocol';
 import { claims, COMMIT, INTEGRITY, NPM_VERSION, npmPluginId, repoAddress, sourcePath } from './plugin-source-rules.mjs';
-import { readSkillDocument } from './skill-document.mjs';
-import { executorLabels } from '../workflows/executor-labels.mjs';
+import { CONTRIBUTION_POINTS } from './contribution-points.mjs';
 
 const ID = /^[a-z][a-z0-9-]{0,39}$/;
 // The domains of the events Coda publishes itself; a plugin's are of a domain of its own (schemas/events.json).
@@ -32,8 +31,9 @@ export const BUILTIN_DIR = fileURLToPath(new URL('../../resources/plugins/', imp
 // The package the backend runs from (the runtime clone's, or the release's), whose npm dependencies may be built-in plugins
 // too (dependencyPlugins).
 const PACKAGE_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
-// What a plugin may contribute to Coda itself, the types schemas/plugin.json names; anything else in `contributes` is for
-// a point another plugin declares to take it (the resources plugin's `panels`), refused when none does.
+// What the plugins' base reads of `contributes` itself, the general types schemas/plugin.json names; any other key is a
+// contribution point's (contribution-points.mjs), or for a point another plugin declares to take it (the resources
+// plugin's `panels`), refused when neither does.
 export const CONTRIBUTES = TYPES;
 export const MODEL_PROVIDER = /^[a-z][a-z0-9-]{0,39}\/[a-z][a-z0-9-]{0,39}$/;
 // How many model services a setting of several may name.
@@ -47,7 +47,7 @@ const ROWS_AT_MOST = 50;
 // (`rows`), a row of named columns (`columns`), or a table whose entries all share one declaration (`entries`, its row
 // names `coda-agent-match` when `keys` says so). Option labels and descriptions are kept when there is one for each option.
 // Its default is a value of it, checked as any value is (checkValue).
-function setting(value, where) {
+export function setting(value, where) {
   const labels = list => Array.isArray(list) && value.enum && list.length === value.enum.length && list.every(d => typeof d === 'string');
   const out = { type: value.type, ...(value.format ? { format: value.format } : {}), ...(value.enum ? { enum: value.enum } : {}),
     ...(labels(value.enumItemLabels) ? { enumItemLabels: value.enumItemLabels } : {}), ...(labels(value.enumDescriptions) ? { enumDescriptions: value.enumDescriptions } : {}),
@@ -78,30 +78,13 @@ function setting(value, where) {
 const TELL_LIMIT = 4000;
 export const checkTold = text => check(typeof text === 'string' && text.trim() && text.length <= TELL_LIMIT && !text.includes('\0'), 'invalid_input',
   `要告诉的话须为不超过 ${TELL_LIMIT} 字的文字`);
-// The modes a composer can be put in (docs/plugins.md「输入框模式」, schemas/composer-modes.json), each with the composers
-// that offer it (`in`, a session's by default), whether it leaves after acceptance (`once`), and declarative parameters.
-const MODE_PLACES = ['session', 'new'];
-const composerModes = (modes = []) => modes.map((m, i) => ({ id: m.id, title: m.title.trim(), icon: m.icon,
-  ...(m.hint ? { hint: m.hint.trim() } : {}), ...(m.placeholder ? { placeholder: m.placeholder.trim() } : {}),
-  ...(m.sendLabel ? { sendLabel: m.sendLabel.trim() } : {}), once: m.once === true, ...(m.trigger ? { trigger: m.trigger } : {}),
-  in: m.in ? MODE_PLACES.filter(place => m.in.includes(place)) : ['session'],
-  ...(m.parameters !== undefined ? { parameters: parametersOf(m.parameters, `contributes.composerModes[${i}].parameters`), schema: structuredClone(m.parameters) } : {}) }));
-// A mode's parameters as read: each a setting, in the order written, which the clients show them in (JSON's objects keep
-// none of their own there); what it cannot go without, `required`.
-function parametersOf(value, where) {
-  const ordered = fields => Object.fromEntries(Object.entries(fields).map(([name, spec], i) => [name, { ...spec, order: spec.order ?? i }]));
-  const properties = Object.fromEntries(Object.entries(value.properties).map(([name, p], i) => {
-    const read = setting(p, `${where}.properties.${name}`);
-    return [name, { ...read, ...(p.presets ? { presets: structuredClone(p.presets) } : {}), ...(read.rows ? { rows: { ...read.rows, columns: ordered(read.rows.columns) } } : {}), order: read.order ?? i }];
-  }));
-  return { properties, ...(value.required?.length ? { required: [...value.required] } : {}) };
-}
 // Its icon (docs/plugins.md「插件页」): a symbol on a system colour as written, or its PDFs read as an agent's are; one that
-// draws none and brings one agent is drawn as that agent. Nothing else: the clients draw its category's.
-export function pluginIcon(declared, agents, dir) {
+// draws none is drawn as the first contribution point read with it says (its `icon`, of the plugin read: the one agent it
+// brings). Nothing else: the clients draw its category's.
+export function pluginIcon(declared, dir) {
   if (declared?.symbol) return { symbol: declared.symbol, color: declared.color };
   if (declared) return iconFiles(dir, declared);
-  return agents.length === 1 ? agents[0].icon : null;
+  return null;
 }
 // The README a plugin's page shows (docs/plugins.md「插件页」), as npm and GitHub find it in its directory; null without one.
 const README = /^readme(\.md|\.markdown)?$/i;
@@ -114,13 +97,19 @@ export const manifestCategory = manifest => Array.isArray(manifest?.categories) 
 // A plugin as its directory declares it. `id` is the one its manifest says (for a package whose name cannot be one: a scoped
 // package's, docs/plugins.md「插件的内容」), else its package name; a package from npm's without one, whatever npm calls it,
 // the ID its name gives (docs/plugins.md「从 npm 安装」): its package.json is not changed, for what it imports of itself.
-export function readPlugin(dir, source) {
+// A key a component defined a point for (components/plugins/contribution-points.mjs) is that point's to check, with its
+// schema, and to read, put on the plugin; the general ones are read here. `points`: the points read with, Coda's unless a test says.
+export function readPlugin(dir, source, points = CONTRIBUTION_POINTS) {
   let manifest;
   try { manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')); }
   catch (e) { throw new ContractError('invalid_plugin', `${dir} 没有可读的 package.json：${e.message}`); }
   check(manifest && typeof manifest === 'object' && !Array.isArray(manifest), 'invalid_plugin', 'package.json 须为对象');
   const problem = manifestProblem(manifest, dir);
   check(!problem, 'invalid_plugin', problem);
+  for (const point of points.values()) if (manifest.contributes?.[point.key] !== undefined) {
+    const wrong = contributionProblem(point.schema, manifest, point.key, dir);
+    check(!wrong, 'invalid_plugin', wrong);
+  }
   const named = manifest.id !== undefined;
   let id = named ? manifest.id : manifest.name;
   if (!named && source?.package && typeof manifest.name === 'string') try { id = npmPluginId(manifest.name); } catch {}
@@ -136,42 +125,30 @@ export function readPlugin(dir, source) {
   const required = configuration.required ?? [], activation = manifest.activationEvents ?? [], dependencies = manifest.extensionDependencies ?? [];
   const displayName = typeof manifest.displayName === 'string' ? manifest.displayName : id;
   // What it writes under keys of `contributes` that are none of Coda's: for the points other plugins declare (checkCatalog).
-  const offers = Object.fromEntries(Object.entries(contributes).filter(([key]) => !TYPES.includes(key)));
-  const agents = agentDeclarations(contributes.agents, dir), icon = pluginIcon(manifest.icon, agents, dir);
+  const offers = Object.fromEntries(Object.entries(contributes).filter(([key]) => !CONTRIBUTES.includes(key) && !points.get(key)));
+  const read = Object.assign({}, ...[...points.values()].map(point => point.read(contributes[point.key], dir)));
+  const icon = pluginIcon(manifest.icon, dir) ?? [...points.values()].map(point => point.icon?.(read)).find(Boolean);
   return { id, displayName, description: typeof manifest.description === 'string' ? manifest.description : '', version: String(manifest.version ?? ''),
     category: manifestCategory(manifest), ...(icon ? { icon } : {}), ...(readmeFile(dir) ? { readme: true } : {}),
     source, dir, title: typeof configuration.title === 'string' ? configuration.title : displayName, properties,
     ...(manifest.coda !== undefined ? { coda: manifest.coda } : {}),
     ...(manifest.main ? { main: posix.normalize(manifest.main) } : {}), ...(activation.includes('onStartupFinished') ? { startup: true } : {}),
     ...(required.length ? { required: [...required] } : {}), workflows: files('.coda/workflows'),
-    capabilities: [...(contributes.capabilities ?? [])].sort(), services: [...(contributes.services ?? [])],
-    groups: (contributes.groups ?? []).map(g => ({ name: g.name, capacity: g.capacity })),
-    commands: (contributes.commands ?? []).map(c => ({ name: c.name, command: c.command })),
-    ...(contributes.events?.length ? { events: contributes.events.map(e => ({ name: e.name, starts: e.starts !== false, ...(e.ends ? { ends: true } : {}) })) } : {}),
-    gitCredentials: (contributes.gitCredentials ?? []).map(c => ({ url: c.url, command: c.command })),
+    services: [...(contributes.services ?? [])],
+    ...read,
     endpoints: (contributes.endpoints ?? []).map(e => ({ id: e.id, command: e.command, ...(e.checks ? { checks: e.checks } : {}) })),
     // The entry as one path in its directory (`./view/a.html`, `view//a.html` are `view/a.html`): the clients load it by that.
     views: (contributes.views ?? []).map(v => ({ id: v.id, title: v.title, entry: posix.normalize(v.entry), ...(v.in?.length ? { in: [...v.in] } : {}),
       ...(v.icon ? { icon: v.icon } : {}), ...(v.handles?.length ? { handles: [...v.handles] } : {}), ...(v.readout ? { readout: v.readout } : {}),
       ...(v.checkout ? { checkout: v.checkout } : {}), ...(v.frame ? { frame: v.frame } : {}) })),
-    ...(contributes.composerModes?.length ? { composerModes: composerModes(contributes.composerModes) } : {}),
     ...(contributes.protocols?.length ? { protocols: structuredClone(contributes.protocols) } : {}),
     ...(contributes.protocolImplementations?.length ? { protocolImplementations: [...contributes.protocolImplementations] } : {}),
     ...(Object.keys(offers).length ? { offers } : {}),
-    agents,
     dependencies: [...dependencies], extensionPoints: extensionPoints(contributes.extensionPoints, dir),
     extensions: Object.entries(contributes.extensions ?? {}).map(([key, value]) => { const [plugin, point] = key.split('/'); return { plugin, point, command: value.command }; }),
-    ...(contributes.instructions ? { instructions: contributes.instructions.trim() } : {}), ...(contributes.setup ? { setup: { command: contributes.setup.command } } : {}),
-    ...(contributes.skills?.length ? { skills: skills(contributes.skills, dir) } : {}),
+    ...(contributes.setup ? { setup: { command: contributes.setup.command } } : {}),
     ...(Object.keys(contributes.environment ?? {}).length ? { environment: Object.entries(contributes.environment).map(([name, value]) => ({ name, value })) } : {}),
-    ...(contributes.path?.length ? { path: contributes.path.map(entry => pathEntry(entry)) } : {}),
-    ...(contributes.mcpServers && Object.keys(contributes.mcpServers).length ? { mcpServers: Object.entries(contributes.mcpServers).map(([name, server]) => ({ name,
-      command: server.command, args: [...(server.args ?? [])], env: Object.entries(server.env ?? {}).map(([variable, value]) => ({ name: variable, value })) })) } : {}),
-    ...(contributes.modelProviders?.length ? { modelProviders: contributes.modelProviders.map(p => ({ id: p.id, title: p.title.trim(), api: p.api, url: p.url,
-      ...(p.key ? { key: /^\$\{config:([^}]+)\}$/.exec(p.key)[1] } : {}) })) } : {}),
-    ...(contributes.executors?.length ? { executors: contributes.executors.map(e => ({ id: e.id, title: e.title.trim(),
-      labels: executorLabels(e.labels, `执行环境 ${e.id} 的 labels`, 'invalid_plugin'), command: e.command })) } : {}),
-    ...(contributes.repositories ? { repositories: { command: contributes.repositories.command } } : {}) };
+    ...(contributes.path?.length ? { path: contributes.path.map(entry => pathEntry(entry)) } : {}) };
 }
 // Its extension points (schemas/extension-points.json), each with what it says of itself: the schema of what others write for
 // one, read from its file.
@@ -226,18 +203,6 @@ export function mcpValues(plugin, settings, state, base) {
     const env = { ...base };
     for (const { name, value } of server.env) { const filled = fill(value); if (filled !== null) env[name] = filled; }
     return [{ name: server.name, command, args, env: Object.entries(env).map(([name, value]) => ({ name, value })) }];
-  });
-}
-// The Agent Skills it brings (docs/plugins.md「Skills」): directories of its own, each with its SKILL.md, named after the
-// directory as the agents find them. They are laid into the working copy of each project it applies to.
-export const SKILL = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-function skills(raw, dir) {
-  return raw.map(path => {
-    const relative = normalize(path).replace(/\/+$/, ''), name = relative.split('/').at(-1);
-    const skill = { name, path: join(dir, relative) };
-    // Descriptions are for browsing only; a missing or unreadable document is explained when opened.
-    try { skill.description = readSkillDocument({ dir, skills: [skill] }, name).description; } catch { /* Keep the declaration. */ }
-    return skill;
   });
 }
 // The plugins Coda ships: those in `dir`, which come from nowhere else, and its npm dependencies that are plugins

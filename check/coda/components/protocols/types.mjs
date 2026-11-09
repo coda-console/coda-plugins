@@ -1,11 +1,5 @@
 import Ajv2020 from 'ajv/dist/2020.js';
 import { parseProtocolName } from '@coda-console/protocol/protocol';
-import { AGENTS, GROUPS, THREADS } from '../../domain/resource-kinds.mjs';
-
-// The resource kinds an invocation may name until the resource is a protocol of its own (docs/plugins.md「调用」): `threads`,
-// `agents`, `groups`. Only Coda's own core operations use these; a plugin defines protocols under its namespace.
-const KINDS = new Set([AGENTS, GROUPS, THREADS]);
-export const resourceKind = value => KINDS.has(value);
 
 // Only JSON Schema rules: no coercion, custom keywords or executable constraints. Only the type's schemas
 // supply defaults. An absent field without a declared default stays absent.
@@ -28,7 +22,7 @@ export function validate(check, value, who) {
 export class ProtocolTypes {
   constructor() { this.types = new Map(); }
   register({ kind, spec, status, operations = {}, contributions = {}, participants = () => [] }, registered = () => {}, replace = false) {
-    if (!(parseProtocolName(kind) || resourceKind(kind)) || (this.types.has(kind) && !replace)) throw new TypeError(`协议名无效或已登记：${kind}`);
+    if (!parseProtocolName(kind) || (this.types.has(kind) && !replace)) throw new TypeError(`协议名无效或已登记：${kind}`);
     if (spec?.type !== 'object' || status?.type !== 'object') throw new TypeError(`${kind}: spec 与 status 须为对象 schema`);
     if (typeof participants !== 'function' || !object(contributions)) throw new TypeError(`${kind}: 需要 participants 与 contributions`);
     // Each operation is an input and either an immediate result or a run reference, as the protocol package defines them.

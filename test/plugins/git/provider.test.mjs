@@ -10,6 +10,7 @@ import { GitProvider } from '../../../plugins/git/lib/provider.mjs';
 import { SOURCE, SNAPSHOT } from '../../../plugins/git/lib/definitions.mjs';
 import { ProtocolTypes, validate } from '../../../check/coda/components/protocols/types.mjs';
 import { definitionProblem, ownedProtocolsProblem } from '@coda-console/protocol/protocol';
+import '../../../check/coda/application/contributions.mjs';
 import { readPlugin } from '../../../check/coda/components/plugins/plugin-rules.mjs';
 import { providerAPI } from '../../../check/coda/adapters/provider-api.mjs';
 
