@@ -5,6 +5,7 @@
 // withdraws them. A turn Claude begins on its own is told by what it handles. The plan windows it reports go to the file
 // the plugin's「Claude」resource reads (limits.json in CODA_PLUGIN_STATE, limits.mjs), not to Coda's session. Chosen, a session
 // that is to go on later is compacted before its cache expires, as the plugin's lifecycle process asks (compaction.mjs).
+// What the SDK sends that is not registered, and native tools not known, are told to Coda (registry.mjs).
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { realpath, stat } from 'node:fs/promises';
@@ -21,6 +22,7 @@ import { toolCallFields, ToolCallCache } from './tools.mjs';
 import { elicitationForm, questionForm } from './questions.mjs';
 import { ClaudeWaits } from './waits.mjs';
 import { CacheUse } from './compaction.mjs';
+import { ASSISTANT_BLOCKS, MESSAGES, USER_BLOCKS, Unrecognized, messageName } from './registry.mjs';
 
 // The Claude Agent SDK this entry runs, as the handshake's `agentInfo` names it (Coda's protocol「Agent 版本」).
 const SDK = (() => {
@@ -56,6 +58,8 @@ const CHUNKS = new Set(['agent_message_chunk', 'agent_thought_chunk']);
 const SAYING = new Set([...CHUNKS, 'tool_call', 'tool_call_update', 'plan']);
 // How many messages sent into a prompt (steer) may be waiting to be taken at once.
 const STEERING_LIMIT = 32;
+// The message types handled whatever their subtype (receive); a system message is handled by its subtype.
+const WHOLE = new Set(['assistant', 'user', 'stream_event', 'result', 'rate_limit_event']);
 
 class InputStream {
   queue = []; wake = null; ended = false;
@@ -89,12 +93,16 @@ export class ClaudeSession {
     // what the native turn going said of compacting (its boundary, its failure, its command's output), the compaction's once
     // that turn's result names its input.
     this.cacheUse = new CacheUse({ now }); this.compacting = null; this.turnCompaction = {};
+    this.unrecognized = new Unrecognized(params => this.notify('_coda/unrecognized', { sessionId: this.sessionId, ...params }));
   }
   connect(stream) {
     this.connection = agent({ name: 'coda-claude' })
-      .onRequest('initialize', () => ({ protocolVersion: PROTOCOL_VERSION, agentInfo: SDK ? { name: 'claude-agent-sdk', version: SDK } : { name: 'coda-claude', version: '1' },
-        agentCapabilities: { loadSession: true, sessionCapabilities: { additionalDirectories: {}, systemPrompt: {} }, _meta: { coda: { waits: {}, compact: {} } } },
-        _meta: { steering: { supported: true } } }))
+      .onRequest('initialize', params => params ?? {}, ({ params }) => {
+        this.unrecognized.taken = !!params.clientCapabilities?._meta?.coda?.unrecognized;
+        return { protocolVersion: PROTOCOL_VERSION, agentInfo: SDK ? { name: 'claude-agent-sdk', version: SDK } : { name: 'coda-claude', version: '1' },
+          agentCapabilities: { loadSession: true, sessionCapabilities: { additionalDirectories: {}, systemPrompt: {} }, _meta: { coda: { waits: {}, compact: {} } } },
+          _meta: { steering: { supported: true } } };
+      })
       // The SDK's own reading of these drops what its schema does not name, `systemPrompt` among them: they are read as sent.
       .onRequest('session/new', params => params ?? {}, ({ params }) => this.open(params))
       .onRequest('session/load', params => params ?? {}, ({ params }) => this.open(params, params.sessionId))
@@ -436,6 +444,8 @@ export class ClaudeSession {
     // result not the compaction's; the compaction's once its result names the compaction's input (result).
     const compacting = this.compacting && (m.type === 'result' ? takenIn(m).includes(this.compacting.id) : !conversing(m));
     if (!compacting) this.begin(m.type === 'user' && !parent && m.origin ? { origin: m.origin, text: text(m.message?.content) } : {});
+    const name = messageName(m);
+    if (!Object.hasOwn(MESSAGES, name)) this.unlisted(`sdk:${name}`, m, parent ?? this.sessionId, m.uuid, WHOLE.has(m.type));
     switch (m.type) {
       case 'system': return this.system(m);
       case 'stream_event': return this.stream(m.event, parent);
@@ -454,6 +464,7 @@ export class ClaudeSession {
         this.turning = true;
         this.turnError = null; this.turnLimits = null;
         this.terminal = m.terminal_slash_commands ?? [];
+        this.unrecognized.tools(m.tools ?? []);
         // Its effort is the one applied, the model's own included: what was chosen stays what it was. A query on the
         // service's model reports it by that service's name for it.
         this.current = { ...this.current, model: this.serviceModel ?? reportedModel(this.models, this.current.model, m.model), mode: m.permissionMode ?? this.current.mode };
@@ -511,6 +522,14 @@ export class ClaudeSession {
   commandOutput(m) {
     const said = m.content ?? m.stdout;
     if (typeof said === 'string') this.update(this.sessionId, { sessionUpdate: 'agent_message_chunk', messageId: m.uuid, content: { type: 'text', text: said } });
+  }
+  // A message, or a content block of an assistant's, not registered (registry.mjs) is told to Coda, and the text it carries (as
+  // the SDK's own carry it: `text`, or `content` as a string or text blocks, or its message's) is said as Claude's; with none
+  // the user saw nothing of it. One `handled` as its type is (a result, whatever its subtype) loses nothing.
+  unlisted(name, item, sessionId, messageId, handled = false) {
+    const said = handled ? '' : typeof item.text === 'string' ? item.text : text(item.content) || text(item.message?.content);
+    this.chunk(sessionId, 'text', messageId, said);
+    this.unrecognized.report('output', name, !handled && !said);
   }
   // A turn Claude began on its own is told by what it handles, before anything said or asked in it; its opening message, when
   // that comes first, may say what that is.
@@ -582,12 +601,16 @@ export class ClaudeSession {
         if (streamed) streamed.confirmed = true;
         this.chunk(sessionId, block.type, apiId, said.slice(streamed?.sent ?? 0));
         if (!parent && block.type === 'text') this.title?.append(said);
-      }
+      } else if (!Object.hasOwn(ASSISTANT_BLOCKS, block.type)) this.unlisted(`block:${block.type}`, block, sessionId, apiId);
     }
   }
   toolResults(m, parent) {
     for (const block of Array.isArray(m.message?.content) ? m.message.content : []) {
-      if (block.type !== 'tool_result') continue;
+      // A user's message is input to the model, never Claude's words: a block not registered is told to Coda as not shown.
+      if (block.type !== 'tool_result') {
+        if (!Object.hasOwn(USER_BLOCKS, block.type)) this.unrecognized.report('output', `block:${block.type}`, true);
+        continue;
+      }
       const content = this.tools.finish(block.tool_use_id, m.tool_use_result, block.is_error);
       if (!content) continue;
       const said = text(block.content);

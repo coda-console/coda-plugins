@@ -32,6 +32,7 @@
     "access": "public"
   },
   "devDependencies": {
-    "feelin": "8.2.0"
+    "feelin": "8.2.0",
+    "typescript": "6.0.3"
   }
 }

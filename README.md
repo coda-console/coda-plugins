@@ -386,6 +386,8 @@ Dependabot（`.github/dependabot.yml`）每周为它们各开一个 PR，连同 
 对该插件点「检查更新」；合并时勾选「部署」，`sync-coda` 给 Coda 开升级依赖的 PR。升 `@openai/codex` 时 codex-acp 经 `overrides` 跟着用新版本，
 Coda 根上的同一条 overrides 由 `sync-coda` 一起改（npm 只认根的，Coda 的测试会核对）；合并前用真实会话跑一轮。
 升 `@openai/codex` 还要登记新 Codex 带来的东西，见 [Codex 没适配的东西](#codex-没适配的东西)。
+升 `@anthropic-ai/claude-agent-sdk` 要先把新 SDK 的消息类型与内容块登记进 `plugins/claude/agent/registry.mjs`，`npm test` 里的升级检查会列出没登记的，
+见 [plugins/claude/README.md](plugins/claude/README.md)「认不出的东西」。
 
 ## 在 Coda 里安装
 
