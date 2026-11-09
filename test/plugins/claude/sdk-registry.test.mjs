@@ -20,30 +20,19 @@ test('one taken out of the registry fails the check, and is named', () => {
   assert.deepEqual(unregistered({ MESSAGES, ASSISTANT_BLOCKS, USER_BLOCKS: without(USER_BLOCKS, 'tool_result') }), ['USER_BLOCKS：tool_result']);
 });
 
-test('the declarations are read however they are written, and what cannot be read fails', async t => {
+test('the checker\'s reading: a union of aliases, intersections and imported blocks; a type or subtype not string literals fails, named', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'coda-sdk-registry-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const write = (name, text) => writeFile(join(dir, name), text);
-  await Promise.all(['api.mjs', 'blocks.mjs'].map(name => write(name, '')));
-  await write('api.d.mts', `export * from './blocks.mjs';\nexport interface Message { readonly content: Array<Text | Other>; role: 'assistant' }\n`);
-  await write('blocks.d.mts', `/** a block */ export interface Text { type: 'text'; text: string; }\nexport type Other = { "type": "other" } & { extra?: number };
-    export interface Param { content: string | Block[] }\ntype Block = Text | { type: 'image', source: { data: string } };\n`);
-  await write('sdk.d.ts', `import type { Message, Param as UserParam } from './api.mjs';
-    export declare type SDKMessage =
-      | Assistant // the assistant's
-      | User
-      | (System & { subtype: 'start' | 'stop' })
-      | Result;
-    type Assistant = { type: 'assistant'; message: Message; uuid: string };
-    interface User extends Base { type: "user"; message: UserParam }
-    interface Base { parent_tool_use_id: string | null; handler(input: { a: string; b: number }): Promise<void>; [key: string]: unknown }
-    type System = { type: 'system'; /* subtype: 'not this' */ at: () => void };
-    type Result = Ok | Failed;
-    type Ok = { type: 'result', subtype: 'ok', map: Map<string, { a: 1 }> };
-    declare type Failed = { type: 'result'; subtype: 'error_a' | 'error_b'; errors: string[] };\n`);
-  assert.deepEqual(declared(join(dir, 'sdk.d.ts')), {
-    messages: ['assistant', 'result/error_a', 'result/error_b', 'result/ok', 'system/start', 'system/stop', 'user'],
-    assistant: ['other', 'text'], user: ['image', 'text'] });
-  await write('open.d.ts', `export type SDKMessage = { type: 'assistant' } | { type: string };\n`);
-  assert.throws(() => declared(join(dir, 'open.d.ts')), /读不出 SDK 消息的 type/);
+  await write('blocks.d.ts', `export type Block = { type: 'text'; text: string } | { type: 'image' };\n`);
+  await write('sdk.d.ts', `import type { Block } from './blocks.js';
+    type Assistant = { type: 'assistant'; message: { content: Block[] } };
+    type User = { type: 'user'; message: { content: string | Array<Block | { type: 'tool_result' }> } };
+    type System = { type: 'system' } & { subtype: 'start' | 'stop' };
+    export type SDKMessage = Assistant | User | System;
+    export type Open = { type: 'system'; subtype: string };\n`);
+  assert.deepEqual(declared(join(dir, 'sdk.d.ts')), { messages: ['assistant', 'system/start', 'system/stop', 'user'],
+    assistant: ['image', 'text'], user: ['image', 'text', 'tool_result'] });
+  await write('open.d.ts', `import type { SDKMessage as Known, Open } from './sdk.js';\nexport type SDKMessage = Known | Open;\n`);
+  assert.throws(() => declared(join(dir, 'open.d.ts')), { message: 'Open 的 subtype 不全是字符串字面量：string' });
 });

@@ -1468,7 +1468,7 @@ const unregisteredTurn = c => [
   { type: 'result', subtype: 'error_new_kind', is_error: true, errors: ['新的失败'], user_message_uuid: c.query.inputId }];
 const reports = c => c.out.filter(m => m.method === '_coda/unrecognized').map(m => m.params);
 
-test('what the SDK sends that is not registered is told to Coda once a name, its text said; a native tool not known is told too', async t => {
+test('what the SDK sends that is not registered is told to Coda once a name, its text said but a user\'s message\'s; a native tool not known is told too', async t => {
   const c = await setup(t);
   await c.open({}, { _meta: { coda: { unrecognized: {} } } });
   // The known tools one short: that one is new here. An MCP server's are the user's, never compared.
@@ -1483,9 +1483,10 @@ test('what the SDK sends that is not registered is told to Coda once a name, its
     lost('sdk:new_kind'),
     { sessionId, kind: 'output', name: 'block:novel', lost: false },
     lost('block:opaque'),
-    { sessionId, kind: 'output', name: 'block:mystery', lost: false },
+    // A user's message is the model's input: its text is not Claude's to say.
+    lost('block:mystery'),
     { sessionId, kind: 'output', name: 'sdk:result/error_new_kind', lost: false }]);
-  assert.deepEqual(c.said(), ['新的提示', '又一条', '说话', '新块里的话', '用户块的字']);
+  assert.deepEqual(c.said(), ['新的提示', '又一条', '说话', '新块里的话']);
 });
 
 test('a client that has not said it takes them is told nothing of what is not registered, which is said all the same', async t => {
@@ -1495,5 +1496,5 @@ test('a client that has not said it takes them is told nothing of what is not re
   await c.emit(system('init', { tools: ['BrandNewTool'] }), ...unregisteredTurn(c));
   await pending;
   assert.deepEqual(reports(c), []);
-  assert.deepEqual(c.said(), ['新的提示', '又一条', '说话', '新块里的话', '用户块的字']);
+  assert.deepEqual(c.said(), ['新的提示', '又一条', '说话', '新块里的话']);
 });

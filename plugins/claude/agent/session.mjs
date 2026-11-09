@@ -523,14 +523,13 @@ export class ClaudeSession {
     const said = m.content ?? m.stdout;
     if (typeof said === 'string') this.update(this.sessionId, { sessionUpdate: 'agent_message_chunk', messageId: m.uuid, content: { type: 'text', text: said } });
   }
-  // A message or content block not registered (registry.mjs) is told to Coda, and the text it carries (as the SDK's own carry
-  // it: `text`, or `content` as a string or text blocks, or its message's) is said as Claude's; with none the user saw nothing
-  // of it. One `handled` as its type is (a result, whatever its subtype) loses nothing.
+  // A message, or a content block of an assistant's, not registered (registry.mjs) is told to Coda, and the text it carries (as
+  // the SDK's own carry it: `text`, or `content` as a string or text blocks, or its message's) is said as Claude's; with none
+  // the user saw nothing of it. One `handled` as its type is (a result, whatever its subtype) loses nothing.
   unlisted(name, item, sessionId, messageId, handled = false) {
     const said = handled ? '' : typeof item.text === 'string' ? item.text : text(item.content) || text(item.message?.content);
     this.chunk(sessionId, 'text', messageId, said);
-    const lost = !handled && !said;
-    this.unrecognized.report('output', name, lost, lost ? `Claude Code 发来了入口还不认识的内容（${name}），没有显示出来` : undefined);
+    this.unrecognized.report('output', name, !handled && !said);
   }
   // A turn Claude began on its own is told by what it handles, before anything said or asked in it; its opening message, when
   // that comes first, may say what that is.
@@ -607,8 +606,9 @@ export class ClaudeSession {
   }
   toolResults(m, parent) {
     for (const block of Array.isArray(m.message?.content) ? m.message.content : []) {
+      // A user's message is input to the model, never Claude's words: a block not registered is told to Coda as not shown.
       if (block.type !== 'tool_result') {
-        if (!Object.hasOwn(USER_BLOCKS, block.type)) this.unlisted(`block:${block.type}`, block, parent ?? this.sessionId, m.uuid);
+        if (!Object.hasOwn(USER_BLOCKS, block.type)) this.unrecognized.report('output', `block:${block.type}`, true);
         continue;
       }
       const content = this.tools.finish(block.tool_use_id, m.tool_use_result, block.is_error);

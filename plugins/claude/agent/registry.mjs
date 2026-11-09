@@ -114,16 +114,16 @@ export const KNOWN_TOOLS = new Set(JSON.parse(readFileSync(new URL('./known-tool
 export const messageName = m => typeof m.subtype === 'string' ? `${m.type}/${m.subtype}` : m.type;
 
 // What is told to Coda: once a name in the session (a process has one), and only when Coda takes it (its initialize's
-// `_meta.coda.unrecognized`, `taken`).
+// `_meta.coda.unrecognized`, `taken`). What was lost says so, for the note Coda keeps in the session.
 export class Unrecognized {
   taken = false; told = new Set();
   // `tell`: the notification's params but its session.
   constructor(tell) { this.tell = tell; }
-  report(kind, name, lost, detail) {
+  report(kind, name, lost) {
     name = name.slice(0, 200);
     if (!this.taken || this.told.has(name)) return;
     this.told.add(name);
-    this.tell({ kind, name, lost, ...(detail ? { detail } : {}) });
+    this.tell({ kind, name, lost, ...(lost ? { detail: `Claude Code 发来了入口还不认识的内容（${name}），没有显示出来` } : {}) });
   }
   // The native tools a turn's init lists that are not known here.
   tools(names) {
