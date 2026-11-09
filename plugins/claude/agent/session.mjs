@@ -102,16 +102,7 @@ export class ClaudeSession {
       .onRequest('session/set_mode', async ({ params }) => { await this.configure('mode', params.modeId); return {}; })
       .onRequest('session/prompt', ({ params }) => this.prompt(params))
       .onRequest('_session/steering', params => params ?? {}, ({ params }) => this.steer(params))
-      .onNotification('session/cancel', ({ params }) => {
-        if (params.sessionId !== this.sessionId) return;
-        // While the session moves to another query there is none to interrupt: the turn waiting on the move is stopped there.
-        if (this.rerouting) this.cancelling = true;
-        // Messages sent into the turn and not taken yet (steer) are stopped with it: else Claude Code would run them after.
-        if (this.steering.size) this.dropRest({ stopReason: 'cancelled' });
-        // Prompts waiting behind a compaction Coda asked for have not begun: they are dropped with it, else they would run after.
-        else if (this.compacting && this.prompts.size) this.dropQueued();
-        else void this.query?.interrupt().catch(() => {});
-      })
+      .onNotification('session/cancel', ({ params }) => this.cancel(params))
       .onRequest('_coda/wait/stop', params => params, ({ params }) => this.stopWait(params))
       .onRequest('_coda/session/compact', params => params ?? {}, ({ params }) => this.compact(params))
       .connect(stream);
@@ -311,13 +302,29 @@ export class ClaudeSession {
     this.heard(content);
     return { outcome: 'injected' };
   }
+  // Coda stops what the session runs (session/cancel).
+  cancel({ sessionId }) {
+    if (sessionId !== this.sessionId) return;
+    // While the session moves to another query there is none to interrupt: the turn waiting on the move is stopped there.
+    if (this.rerouting) this.cancelling = true;
+    // Messages sent into the turn and not taken yet (steer) are stopped with it: else Claude Code would run them after.
+    if (this.steering.size) this.dropRest({ stopReason: 'cancelled' });
+    // Prompts waiting behind a compaction Coda asked for have not begun: they are dropped with it, else they would run after.
+    else if (this.compacting && this.prompts.size) this.dropQueued();
+    else void this.query?.interrupt().catch(() => {});
+  }
   // What was said into the prompt and is not taken yet is not to run after it ends, stopped or failed: Claude Code drops it
   // (cancelQueued), and the prompt ends as `outcome` once nothing of it goes on — at the drop's receipt when no native turn
-  // is going (one held, whose own turn ended), else as the turn going ends (result).
+  // is going (one held, whose own turn ended), else as the turn going ends (result). A prompt dropped before any turn took it
+  // ends stopped then.
   dropRest(outcome) {
     this.ending = outcome;
     void this.query?.interrupt({ cancelQueued: true }).then(receipt => {
-      for (const id of receipt?.cancelled ?? []) this.steering.delete(id);
+      for (const id of receipt?.cancelled ?? []) {
+        this.steering.delete(id);
+        const prompt = this.prompts.get(id);
+        if (prompt) { this.prompts.delete(id); this.ending = null; prompt.resolve({ stopReason: 'cancelled' }); }
+      }
       this.dropped(receipt?.cancelled);
       if (this.held && !this.turning) this.settle(this.held, this.ending);
     }, () => {});
@@ -622,9 +629,10 @@ export class ClaudeSession {
     }
     // A message sent into the prompt's turn (steer) is the prompt's, and so is the turn Claude Code runs it in when the prompt's
     // own ended before taking it: the prompt is answered once none is left to take. Stopped or failed with some not taken
-    // yet, it ends once those are dropped (dropRest); one ending already ends as it was to.
+    // yet, it ends once those are dropped (dropRest); one ending already ends as it was to. One held whose messages were all
+    // dropped while another turn went ends as that turn ends.
     const steered = ids.filter(id => this.steering.delete(id)).length > 0;
-    const id = ids.find(id => this.prompts.has(id)) ?? (steered ? this.held : undefined);
+    const id = ids.find(id => this.prompts.has(id)) ?? (steered || !this.steering.size ? this.held : undefined);
     const cancelled = interrupted(m), failed = !cancelled && (m.is_error || m.subtype !== 'success');
     const error = failed ? claudeFailure(m.errors?.length || m.result ? errorText(m) : this.turnError?.message || errorText(m),
       { error: this.turnError?.error, limits: this.turnLimits, window: this.window }) : null;
@@ -638,8 +646,9 @@ export class ClaudeSession {
       const outcome = this.ending ?? (failed ? { failure: error } : { stopReason: cancelled ? 'cancelled' : 'end_turn' });
       if (this.ending || !this.steering.size) this.settle(id, outcome);
       else { this.held = id; if (cancelled || failed) this.dropRest(outcome); }
-    } else if (!own && failed && this.prompts.size) {
-      // A failure of the session itself names no input: none of those given can be said to have run.
+    } else if (!own && failed && this.prompts.size && !(m.queued_turn_count > 0)) {
+      // A failure of the session itself names no input: none of those given can be said to have run. Those still queued
+      // (queued_turn_count) run after it, each to a result of its own.
       for (const prompt of this.prompts.values()) prompt.reject(error);
       this.prompts.clear();
     }
