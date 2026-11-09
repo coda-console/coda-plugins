@@ -7,8 +7,21 @@ import { gh, git, output } from './shared.mjs';
 const env = process.env, action = process.argv[2];
 const statePath = join(env.CODA_ARTIFACTS, 'deliver.json');
 
+// 用户开启时由主 Agent 写的需求：备注第一行是需求名，其后是目标与完成标准。
+if (action === 'brief') {
+  const [first = '', ...rest] = (JSON.parse(env.RESPONSE).note ?? '').trim().split(/\r?\n/);
+  const title = first.trim(), goal = rest.join('\n').trim();
+  output('feedback', title && goal ? '' : '备注第一行写需求名，空一行后写目标与完成标准，两样都要有。');
+  output('route', title && goal ? 'init' : 'brief');
+  output('title', title);
+  output('goal', goal);
+  process.exit(0);
+}
+
 if (action === 'init') {
   writeFileSync(statePath, JSON.stringify({ title: env.TITLE, members: [], feedback: '', round: 0, head: '' }));
+  output('title', env.TITLE);
+  output('goal', env.GOAL);
   process.exit(0);
 }
 
@@ -16,11 +29,12 @@ const state = JSON.parse(readFileSync(statePath, 'utf8'));
 const save = () => writeFileSync(statePath, JSON.stringify(state));
 const links = () => state.members.map(member => member.url).join('\n');
 const localMembers = () => state.members.filter(member => new URL(member.url).pathname.split('/').slice(1, 3).join('/') === state.repository);
-// 人工任务的必填备注由脚本检查，缺少时回到同一张卡。
+// 人工任务的必填备注由脚本检查，缺少时回到同一张卡。用户附上的文件也算附言，路径随反馈交回主 Agent。
 const answer = (route, required) => {
-  const { note = '' } = JSON.parse(env.RESPONSE);
-  const missing = required && !note.trim();
-  state.feedback = missing ? '此选项必须填写备注。' : note;
+  const { note = '', attachments = [] } = JSON.parse(env.RESPONSE);
+  const missing = required && !note.trim() && !attachments.length;
+  const files = attachments.length ? `附件：\n${attachments.map(path => `- ${path}`).join('\n')}` : '';
+  state.feedback = missing ? '此选项必须填写备注。' : [note.trim() && note, files].filter(Boolean).join('\n');
   save();
   output('feedback', missing ? state.feedback : '');
   output('route', missing ? action : route);

@@ -21,7 +21,7 @@ function fixture(t, devices = true, delivery = '') {
     GITHUB_RUN_ID: 'run-1', GITHUB_OUTPUT: join(root, 'outputs'), TITLE: '修好输入框', TASK: '第一项：修好输入框', BASE: '', DEVICES: String(devices), DELIVERY: delivery,
     GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid', GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.invalid',
     GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'commit.gpgsign', GIT_CONFIG_VALUE_0: 'false', GIT_CONFIG_KEY_1: 'core.hooksPath', GIT_CONFIG_VALUE_1: '/dev/null',
-    FIXTURE: root, AGENT: 'codex', MODEL: '', EFFORT: '', MODE: '' };
+    FIXTURE: root, EXECUTOR: JSON.stringify({ agent: 'codex' }) };
   const git = (...args) => {
     const result = spawnSync('git', args, { cwd: work, env, encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr);
@@ -122,13 +122,14 @@ test('develop 从最新 base 开泳道，退回续作，逐项快进，验收后
   assert.equal(lane, 'lane/run-1');
   assert.equal(f.state().head, latest);
   assert.equal(f.git('ls-remote', 'origin', lane).split('\t')[0], latest);
-  f.task('one', 'first answer\nEOF_answer\n继续'); f.run('execute', { MODEL: 'cheap', EFFORT: 'low', MODE: 'auto' });
+  f.task('one', 'first answer\nEOF_answer\n继续'); f.run('execute', { EXECUTOR: JSON.stringify({ agent: 'codex', model: 'cheap', effort: 'low', mode: 'auto', options: { 'fast-mode': true } }) });
   const first = f.state().executor;
   assert.equal(f.git('ls-remote', 'origin', lane).split('\t')[0], latest, '执行者不推送');
   const report = f.run('review').outputs;
   assert.equal(report.answer, first.answer); assert.equal(report.branch, first.branch); assert.equal(report.head, first.head);
   const call = f.calls('agent')[0];
-  assert.deepEqual(call.args.slice(0, -2), ['--commit', latest, '--title', '修好输入框', '--agent', 'codex', '--model', 'cheap', '--effort', 'low', '--mode', 'auto', '--json']);
+  assert.deepEqual(call.args.slice(0, -2), ['--commit', latest, '--title', '修好输入框', '--agent', 'codex', '--model', 'cheap', '--effort', 'low', '--mode', 'auto',
+    '--option', 'fast-mode=true', '--json']);
   for (const text of ['执行者', '不再委派', 'AGENTS.md', '不推送', '不写防御性、冗余', '不顺手重构', '只跑与改动直接相关的快检查', '实际跑了哪些验证', '第一项']) assert.ok(call.prompt.includes(text), text);
   assert.equal(f.run('decide', { REVIEW: JSON.stringify({ choice: 'revise' }) }).outputs.route, 'review');
   assert.equal(f.review('revise', '  '), 'review');
@@ -169,6 +170,9 @@ test('develop 从最新 base 开泳道，退回续作，逐项快进，验收后
   assert.equal(f.state().feedback, '');
   assert.equal(f.run('device', { DEVICE: JSON.stringify({ choice: 'no' }) }).outputs.route, 'device');
   assert.equal(f.device('no'), 'device');
+  // 只附截图也算附言，路径随意见交回主 Agent。
+  assert.equal(f.run('device', { DEVICE: JSON.stringify({ choice: 'no', note: '', attachments: ['/uploads/a/shot.png'] }) }).outputs.route, 'review');
+  assert.equal(f.run('review').outputs.feedback, '设备验收不通过：\n附件：\n- /uploads/a/shot.png');
   assert.equal(f.device('no', '按钮没有响应'), 'review');
   assert.equal(f.run('review').outputs.feedback, '设备验收不通过：\n按钮没有响应');
   f.review('revise', '修复按钮回调'); f.task('two', 'button fixed'); f.run('revise');
@@ -193,6 +197,20 @@ test('develop 从最新 base 开泳道，退回续作，逐项快进，验收后
   assert.equal(f.calls('gh').filter(c => c.args[1] === 'create').length, 1);
   assert.equal(f.calls('gh').filter(c => c.args[1] === 'edit').length, 1);
   assert.equal(f.calls('gh').find(c => c.args[1] === 'edit').body, created.body);
+});
+
+test('用户开启时主 Agent 写的第一项任务：第一行是功能名，其后是任务，缺一样回到同一张卡', t => {
+  const f = fixture(t);
+  const brief = note => f.run('brief', { BRIEF: JSON.stringify({ choice: 'start', note }) }).outputs;
+  assert.deepEqual(brief('修好输入框\n\n## 背景\n输入框没反应\n\n## 验收\n- 能输入'),
+    { feedback: '', route: 'lane', title: '修好输入框', task: '## 背景\n输入框没反应\n\n## 验收\n- 能输入' });
+  for (const note of ['只有功能名', '', '  \n  ']) {
+    const written = brief(note);
+    assert.equal(written.route, 'brief', note);
+    assert.match(written.feedback, /第一行写功能名，空一行后写第一项任务/);
+  }
+  f.run('lane', { TITLE: '修好输入框', TASK: '第一项' });
+  assert.equal(f.state().task, '第一项');
 });
 
 test('检查失败回最近执行会话，修好更新 PR 重跑；交由 gh 删除泳道，分支已删除仍交出合并提交', t => {
@@ -443,10 +461,15 @@ test('开发流程定义、回路、检查提交与部署发布选择符合运�
     const flows = elements.filter(e => e.sourceRef === node);
     return (flows.find(e => e.conditionExpression && evaluate(e.conditionExpression.body.trim().slice(1), context).value) ?? node.default).targetRef.id;
   };
-  assert.equal(process.name, '开发'); assert.equal(process.concurrency, undefined);
-  assert.deepEqual(values(process).filter(v => v.required).map(v => v.name), ['title', 'task', 'devices']);
+  assert.equal(process.name, '监督开发'); assert.equal(process.concurrency, undefined);
+  // 用户在会话里开启时什么都不必填：功能名与第一项任务由主 Agent 写，执行者取发起会话的。
+  assert.deepEqual(values(process).filter(v => v.required).map(v => v.name), []);
+  for (const name of ['title', 'task']) assert.equal(values(process).find(v => v.name === name).default, '');
+  const executor = values(process).find(v => v.name === 'executor');
+  assert.deepEqual([executor.type, executor.defaultFrom, executor.label], ['agent', 'session.agent', '执行者']);
+  assert.ok(!values(process).some(v => ['agent', 'model', 'effort', 'mode'].includes(v.name)), '执行者是一个 Agent 选择');
   const devices = values(process).find(v => v.name === 'devices');
-  assert.equal(devices.type, 'boolean'); assert.equal(devices.default, undefined);
+  assert.equal(devices.type, 'boolean'); assert.equal(devices.default, 'false');
   assert.equal(devices.label, '设备验收');
   assert.equal(devices.description, '改了客户端、要在 Mac 或 iPhone 上验收时打开');
   assert.equal(params('accept').DEVICES, '=inputs.devices');
@@ -484,7 +507,7 @@ test('开发流程定义、回路、检查提交与部署发布选择符合运�
   assert.equal(nodes['kinds-approve'].targetRef.id, 'approve', '新一轮必须重新进入用户批准任务');
   assert.equal(nodes['approve-route'].sourceRef.id, 'approve');
   assert.equal(nodes['approve-route'].targetRef.id, 'approval-result');
-  const context = { inputs: { title: '修好输入框' }, run: { id: 'run-1' }, accept: { head: 'head-1' }, pr: { head: 'head-1' } };
+  const context = { lane: { title: '修好输入框' }, run: { id: 'run-1' }, accept: { head: 'head-1' }, pr: { head: 'head-1' } };
   const message = (id, field, extra = {}) => evaluate(params(id)[field].slice(1), { ...context, ...extra }).value;
   assert.equal(message('tell-device', 'text'), '功能「修好输入框」：用户设备验收通过，接下来开 PR、跑检查。');
   assert.equal(message('tell-device', 'key'), 'run-1:device:head-1');
@@ -569,9 +592,27 @@ test('开发流程定义、回路、检查提交与部署发布选择符合运�
       assert.equal(evaluate(option.shown.slice(1), { kinds }).value, kinds[option.id]);
     }
   }
-  const agent = params('execute').AGENT;
-  assert.equal(evaluate(agent.slice(1), { inputs: { agent: '' }, github: { event: { coda: { session: { agent: 'codex' } } } } }).value, 'codex');
-  assert.equal(evaluate(agent.slice(1), { inputs: { agent: 'kimi' } }).value, 'kimi');
+  const executorEnv = params('execute').EXECUTOR;
+  const session = { agent: 'codex', model: 'gpt-6', effort: 'high' };
+  assert.deepEqual(evaluate(executorEnv.slice(1), { inputs: { executor: null }, github: { event: { coda: { session } } } }).value, session, '取不到会话的（跨目录）用发起会话的');
+  assert.deepEqual(evaluate(executorEnv.slice(1), { inputs: { executor: { agent: 'kimi' } } }).value, { agent: 'kimi' });
+  // 没有第一项任务时，先交主 Agent 写；不叫醒它，随会话的下一条输入告诉它。
+  assert.equal(route('brief-choice', { inputs: { task: '' } }), 'brief');
+  assert.equal(route('brief-choice', { inputs: { task: '第一项' } }), 'lane');
+  assert.deepEqual([nodes.brief.wake, nodes.brief.assignee], ['false', undefined]);
+  assert.deepEqual(values(nodes.brief).map(v => [v.id, v.note]), [['start', 'required']]);
+  for (const [value, target] of [['brief', 'brief'], ['lane', 'lane']]) assert.equal(route('after-brief', { 'brief-result': { route: value } }), target);
+  for (const [field, given, written] of [['TITLE', 'title', 'title'], ['TASK', 'task', 'task']]) {
+    const expression = params('lane')[field].slice(1);
+    assert.equal(evaluate(expression, { inputs: { task: '', title: '' }, 'brief-result': { [written]: '写的' } }).value, '写的');
+    assert.equal(evaluate(expression, { inputs: { task: '给的', title: '给的' } }).value, '给的', given);
+  }
+  for (const [title, expected] of [['', '监督开发'], ['修好输入框', '开发：修好输入框']]) {
+    assert.equal(evaluate(process.title.slice(2, -2), { inputs: { title } }).value, expected);
+  }
+  // 用户拒绝验收或暂不合并时必须附言：写意见或附截图。
+  assert.deepEqual(values(nodes.device).map(v => [v.id, v.note]), [['yes', undefined], ['no', 'required']]);
+  assert.deepEqual(values(nodes.approve).map(v => [v.id, v.note]), [['merge', undefined], ['stop', 'required']]);
 });
 
 test('审查前检查失败自动续作同一会话，连续三次升级，成功记录提交和运行供 PR 复用', t => {

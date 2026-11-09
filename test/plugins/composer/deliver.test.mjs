@@ -121,6 +121,18 @@ test('设备退回后刷新成员，从新工作区重建同一个交付分支�
   assert.equal(f.answer('device', 'yes').route, 'report');
 });
 
+test('用户开启时主 Agent 写的需求：第一行需求名，其后是目标；验收不行只附截图也算附言', t => {
+  const f = fixture(t);
+  const brief = note => f.answer('brief', 'start', note);
+  assert.deepEqual(brief('输入框\n\n能正常输入，Mac 与 iPhone 都通过'), { feedback: '', route: 'init', title: '输入框', goal: '能正常输入，Mac 与 iPhone 都通过' });
+  for (const note of ['只有需求名', '']) assert.equal(brief(note).route, 'brief', note);
+  assert.deepEqual(f.run('init', { TITLE: '输入框', GOAL: '能输入' }).outputs, { title: '输入框', goal: '能输入' });
+  f.member(2, 'one', 'old'); f.confirm(); f.run('integrate');
+  const shot = f.run('device', { RESPONSE: JSON.stringify({ choice: 'no', note: '', attachments: ['/uploads/a/shot.png'] }) }).outputs;
+  assert.equal(shot.route, 'confirm');
+  assert.equal(f.run('context').outputs.feedback, '附件：\n- /uploads/a/shot.png');
+});
+
 test('集成冲突保留具体原因并失败，返回确认后可以修复重集成', t => {
   const f = fixture(t);
   f.member(2, 'base', 'first'); const two = f.member(3, 'base', 'second');
@@ -183,8 +195,23 @@ test('需求流程回路、人工任务、结果通知和部署发布顺序契�
     const node = nodes[id], flows = elements.filter(e => e.sourceRef === node);
     return (flows.find(e => e.conditionExpression && evaluate(e.conditionExpression.body.trim().slice(1), context).value) ?? node.default).targetRef.id;
   };
-  assert.deepEqual(values(process).map(v => [v.name, v.required]), [['title', true], ['goal', true], ['devices', true], ['device', undefined]]);
-  assert.equal(values(process)[2].type, 'boolean'); assert.equal(values(process)[2].default, undefined);
+  // 用户在会话里开启时什么都不必填：需求名与目标由主 Agent 写。
+  assert.deepEqual(values(process).map(v => [v.name, v.required, v.default]), [['title', undefined, ''], ['goal', undefined, ''], ['devices', undefined, 'false'], ['device', undefined, '']]);
+  assert.equal(values(process)[2].type, 'boolean');
+  assert.equal(route('brief-choice', { inputs: { goal: '' } }), 'brief');
+  assert.equal(route('brief-choice', { inputs: { goal: '目标' } }), 'init');
+  for (const [value, target] of [['brief', 'brief'], ['init', 'init']]) assert.equal(route('after-brief', { 'brief-result': { route: value } }), target);
+  assert.deepEqual([nodes.brief.wake, nodes.brief.assignee], ['false', undefined]);
+  assert.deepEqual(values(nodes.brief).map(v => [v.id, v.note]), [['start', 'required']]);
+  // 成员怎样发起写在任务里：Ultra 不再讲开发流程。
+  for (const text of ['workflow_run 发起 develop', 'delivery="{{run.id}}"', 'devices=false', 'project', '确认达标', '待交付']) assert.ok(nodes.brief.documentation[0].text.includes(text), text);
+  for (const [field, written] of [['TITLE', 'title'], ['GOAL', 'goal']]) {
+    const expression = params('init')[field].slice(1);
+    assert.equal(evaluate(expression, { inputs: { goal: '', title: '' }, 'brief-result': { [written]: '写的' } }).value, '写的');
+    assert.equal(evaluate(expression, { inputs: { goal: '给的', title: '给的' } }).value, '给的');
+  }
+  assert.deepEqual(values(nodes.device).map(v => [v.id, v.note]), [['yes', undefined], ['no', 'required']]);
+  assert.deepEqual(values(nodes.approve).map(v => [v.id, v.note]), [['merge', undefined], ['stop', 'required']]);
   assert.equal(nodes.start.eventDefinitions, undefined);
   for (const id of ['confirm', 'preview', 'report', 'release', 'verify']) assert.equal(nodes[id].assignee, undefined);
   for (const id of ['device', 'approve']) assert.equal(nodes[id].assignee, 'user');
@@ -244,7 +271,7 @@ test('需求流程回路、人工任务、结果通知和部署发布顺序契�
   assert.equal(params('tell-result').session, undefined);
   assert.equal(nodes['approval-route'].sourceRef.id, 'approval-note');
   assert.equal(nodes['approval-route'].targetRef.id, 'after-approval');
-  const context = { inputs: { title: '输入框' }, run: { id: 'run-1' }, 'confirm-result': { round: '2' }, merged: { commit: 'merged-head' } };
+  const context = { init: { title: '输入框' }, run: { id: 'run-1' }, 'confirm-result': { round: '2' }, merged: { commit: 'merged-head' } };
   const message = (id, field, extra) => {
     const result = evaluate(params(id)[field].slice(1), { ...context, ...extra });
     assert.equal(result.warnings.length, 0, JSON.stringify(result.warnings));

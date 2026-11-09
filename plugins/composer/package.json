@@ -4,7 +4,7 @@
   "displayName": "输入框模式",
   "description": "交接、子会话、! 命令、Ultra 与循环",
   "icon": { "symbol": "character.cursor.ibeam", "color": "blue" },
-  "version": "4.1.0",
+  "version": "5.0.0",
   "categories": [
     "工作流程"
   ],
@@ -143,7 +143,7 @@
         "id": "ultra",
         "title": "Ultra",
         "icon": "square.stack.3d.up",
-        "hint": "通过开发流程委派代码修改，主 Agent 亲自审查与验收；可与其他模式同时开启，点 × 退出。",
+        "hint": "主 Agent 定任务、做决定、审查，调研与核实交给名单里的执行者；可与其他模式同时开启，点 × 退出。",
         "placeholder": "要完成什么？",
         "in": [
           "session",
