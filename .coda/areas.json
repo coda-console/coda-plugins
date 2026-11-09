@@ -15,7 +15,6 @@
   "review 插件": ["plugins/review/"],
   "scheduler 插件": ["plugins/scheduler/"],
   "testbed 插件": ["plugins/testbed/"],
-  "wechat 插件": ["plugins/wechat/"],
   "测试": ["test/"],
   "文档": ["docs/", "README.md"],
   "仓库脚本与流程": ["scripts/", "check/", "bin/", ".github/", ".coda/"],
