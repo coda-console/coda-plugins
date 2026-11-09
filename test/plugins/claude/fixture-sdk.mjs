@@ -24,6 +24,7 @@ export function fixtureSdk(argv = []) {
       this.persist(); queries.set(this.id, this);
       // What the client writes is read as it comes (`received`, all of it), and turns run one at a time: a message marked `next`
       // that comes while one runs is taken into it at its next tool round (fold), as Claude Code does; else it runs after it.
+      // A turn of Claude Code's own (own) takes in at its tool rounds whatever is queued, marked `next` or not.
       this.inbox = []; this.received = [];
       void (async () => { for await (const m of prompt) { if (this.closed) break; this.received.push(m); this.inbox.push(m); this.arrived?.(); } })();
       void (async () => { while (!this.closed) { const m = this.paused ? undefined : this.inbox.shift(); if (m) await this.respond(m); else await new Promise(r => { this.arrived = r; }); } })();
@@ -272,10 +273,24 @@ export function fixtureSdk(argv = []) {
       this.emit({ type: 'result', subtype: 'success', is_error: false, stop_reason: 'end_turn', usage: {} });
       this.system('session_state_changed', { state: 'idle' });
     }
-    // The messages marked `next` that came while the turn ran, taken into it at a tool round: each said, and named by the result.
+    // The messages marked `next` that came while the turn ran, or any queued in a turn of Claude Code's own, taken into it at a
+    // tool round: each said, and named by the result.
     fold() {
-      for (const m of this.inbox.filter(m => m.priority === 'next')) { this.folded.push(m.uuid); this.text(`插话：${m.message.content}`); }
-      this.inbox = this.inbox.filter(m => m.priority !== 'next');
+      const taken = m => this.meta || m.priority === 'next';
+      for (const m of this.inbox.filter(taken)) { this.folded.push(m.uuid); this.text(`插话：${m.message.content}`); }
+      this.inbox = this.inbox.filter(m => !taken(m));
+    }
+    // A turn of Claude Code's own (meta), as a task's end opens one: what is given meanwhile waits behind it, until the test ends it
+    // (the function returned). It takes in what is queued by then at its last tool round, and its result names those, the last as
+    // `user_message_uuid` (sdk.d.ts 0.3.312).
+    own() {
+      const resume = this.pause(); this.meta = true; this.folded = []; this.init();
+      return () => {
+        this.fold(); this.meta = false;
+        this.emit({ type: 'result', subtype: 'success', is_error: false, stop_reason: 'end_turn', usage: {},
+          ...(this.folded.length ? { user_message_uuid: this.folded.at(-1), user_message_uuids: this.folded.slice(0, 64) } : {}) });
+        resume();
+      };
     }
     // `usage`: what each response of the main thread says it carried and wrote to the cache.
     text(text, id = randomUUID(), parent = null) {

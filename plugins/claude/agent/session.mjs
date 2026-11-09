@@ -629,15 +629,16 @@ export class ClaudeSession {
     const error = failed ? claudeFailure(m.errors?.length || m.result ? errorText(m) : this.turnError?.message || errorText(m),
       { error: this.turnError?.error, limits: this.turnLimits, window: this.window }) : null;
     this.turnError = null; this.turnLimits = null;
+    // A turn of Claude's own has no RPC reply to fail. End its own activity as failed with the reason, rather than
+    // saying the error as an answer and marking the work complete. The task that woke it retains its own outcome.
+    // It ends before a prompt it took in is answered: Coda opens a turn of Claude's own for what still handles then.
+    const own = this.waits.handling || this.waits.unclaimed;
+    if (own) this.waits.finished(error ? { error: error.message, title: error.data?._meta?.coda?.failure?.kind === 'quota_exhausted' ? '额度不足' : undefined } : {});
     if (id) {
       const outcome = this.ending ?? (failed ? { failure: error } : { stopReason: cancelled ? 'cancelled' : 'end_turn' });
       if (this.ending || !this.steering.size) this.settle(id, outcome);
       else { this.held = id; if (cancelled || failed) this.dropRest(outcome); }
-    } else if (this.waits.handling || this.waits.unclaimed) {
-      // A turn of Claude's own has no RPC reply to fail. End its own activity as failed with the reason, rather than
-      // saying the error as an answer and marking the work complete. The task that woke it retains its own outcome.
-      this.waits.finished(error ? { error: error.message, title: error.data?._meta?.coda?.failure?.kind === 'quota_exhausted' ? '额度不足' : undefined } : {});
-    } else if (failed && this.prompts.size) {
+    } else if (!own && failed && this.prompts.size) {
       // A failure of the session itself names no input: none of those given can be said to have run.
       for (const prompt of this.prompts.values()) prompt.reject(error);
       this.prompts.clear();
