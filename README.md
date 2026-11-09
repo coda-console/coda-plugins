@@ -21,6 +21,7 @@ plugins/host/            宿主资源：发布本机 coda/executor@1 执行环�
 plugins/magpie/          Magpie：把本机的 Magpie 网关作为模型服务提供给 Pi 等插件，安装时装好 Magpie 并让网关常驻
 plugins/network-log/     网络记录：默认关闭，按需开启建连等待与定时探测采集；关闭后仍可查看历史
 plugins/review/          PR 生命流程：会话开的 PR 先跑项目的检查、再交叉评审，你批准后合并、部署与发布；也是写 PR 流程的样例
+plugins/desktop-pet/     桌面宠物：Coda 娘待在 Mac 桌面上，Agent 在跑时打字，有事等你时举卡片叫你（Coda 的浮窗）
 plugins/testbed/         测试机：长插在 Mac 上的 iPhone、iPad 只经 use-testbed 使用，排到后装 App、交给会话操作、用完切黑屏；依赖宿主资源
 plugins/composer/        输入框模式与开发流程：Ultra 用 develop 委派代码修改，主 Agent 审查，设备验收后检查、批准、合并与部署；名单引用 composer.templates
 templates/agent/         最小的 Agent 插件：手写 ACP 的回声 Agent，演示会话指令、插话、Agent 活动与自主轮次

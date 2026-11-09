@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<style>
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; user-select: none; -webkit-user-select: none; cursor: default;
+               touch-action: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+  #pet { position: absolute; width: 128px; height: 128px; left: 36px; bottom: 0; transform-origin: 50% 94%; }
+  #pet img { width: 100%; height: 100%; display: block; pointer-events: none; -webkit-user-drag: none; }
+  #zzz { position: absolute; left: 112px; top: 64px; font: 700 15px -apple-system, sans-serif; color: #8fa2c8; text-shadow: 0 1px 2px rgba(0,0,0,.25); opacity: 0; }
+  #bubble { position: absolute; left: 50%; bottom: 128px; transform: translateX(-50%); max-width: 188px; padding: 6px 10px; border: 0; border-radius: 12px;
+            background: #fff; color: #1d1d1f; font: 600 12px -apple-system, "PingFang SC", sans-serif; text-align: center; box-shadow: 0 3px 12px rgba(0,0,0,.22); cursor: pointer; }
+  #bubble small { display: block; max-width: 168px; font-weight: 400; color: #6e6e73; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #bubble::after { content: ""; position: absolute; left: 50%; bottom: -5px; width: 10px; height: 10px; background: #fff; transform: translateX(-50%) rotate(45deg); }
+  #menu { position: absolute; left: 50%; bottom: 112px; transform: translateX(-50%); display: flex; gap: 4px; padding: 4px; border-radius: 12px;
+          background: rgba(255,255,255,.96); box-shadow: 0 3px 12px rgba(0,0,0,.22); }
+  #menu button { border: 0; border-radius: 8px; padding: 6px 9px; background: #f0eef3; color: #1d1d1f; font: 500 12px -apple-system, "PingFang SC", sans-serif; white-space: nowrap; cursor: pointer; }
+  #ball { position: absolute; left: 0; top: 0; width: 64px; height: 64px; display: none; }
+  #ball .ring { position: absolute; inset: 2px; border-radius: 50%; background: conic-gradient(#5ee8a8 0 33%, #ffcf5c 0 66%, #ff7a5c 0); box-shadow: 0 3px 8px rgba(0,0,0,.3); }
+  #ball .ring.spin { animation: spin 1.2s linear infinite; }
+  @keyframes spin { to { transform: rotate(1turn); } }
+  #ball img { position: absolute; inset: 6px; width: 52px; height: 52px; border-radius: 50%; background: #fff; object-fit: cover; pointer-events: none; -webkit-user-drag: none; }
+  #ball .badge { position: absolute; right: 0; top: 0; min-width: 20px; height: 20px; padding: 0 5px; box-sizing: border-box; border-radius: 10px; background: #ff9f0a; color: #fff;
+                 font: 700 12px/20px -apple-system, sans-serif; text-align: center; }
+  [hidden] { display: none !important; }
+</style></head>
+<body>
+  <div id="pet"><img id="sprite" alt=""><div id="zzz">z z</div></div>
+  <button id="bubble" hidden></button>
+  <div id="menu" hidden><button id="to-ball">缩成悬浮球</button><button id="put-away">收起</button></div>
+  <div id="ball"><div class="ring"></div><img id="face" alt=""><div class="badge" hidden></div></div>
+  <script type="module" src="pet.js"></script>
+</body></html>
