@@ -1,9 +1,9 @@
 {
-  "commit": "0eab9b16ec304580b6a03c96b14ba18ded392081",
+  "commit": "7c868b9eb75cc10ce781dd560ed1c85607741300",
   "packages": {
     "@0dep/piso": "5.2.0",
     "@agentclientprotocol/sdk": "1.4.0",
-    "@coda-console/protocol": "git+https://github.com/coda-console/coda-protocol.git#95abb122c6435df77bc35f620767123338a33f44",
+    "@coda-console/protocol": "git+https://github.com/coda-console/coda-protocol.git#3dc8cbccb73d6ba854f79d18ab9400cb69039c24",
     "ajv": "8.20.0",
     "yaml": "2.9.1"
   },
