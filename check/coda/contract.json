@@ -1,5 +1,5 @@
 {
-  "commit": "b2106498748ff6c7b028ac459d92921bca3d2e1f",
+  "commit": "3ba483979a98c03e4d4150a5f06d1c57c380263a",
   "packages": {
     "@0dep/piso": "5.2.0",
     "@agentclientprotocol/sdk": "1.4.0",
@@ -39,6 +39,6 @@
     "check/coda/resources/plugins/resources/panels/panels.mjs": "4862dccd91c29db76caf1033ffeab743c7943befaca7406a56467c470b90a1b8",
     "check/coda/resources/plugins/resources/panels/rules.mjs": "d5b12f3e0e5040224314e5d2de2bd49f5b1ed24ea205590ff99a54e8b4e96d7f",
     "check/coda/resources/plugins/resources/panels/sign-in.mjs": "1271a24e33b1b882a1fb9bee03b8e240db8b9bee1b5208f0e1c84499cfb1be7e",
-    "check/coda/builtin.json": "ea09ea0565a412eb0fe33d803133db39a1dcec8e50b19b8d9c57b80a2d08b35c"
+    "check/coda/builtin.json": "a92e59edb50e444394daef8160ed9bc9d593fccc57d09df7b4ec4f9997850624"
   }
 }

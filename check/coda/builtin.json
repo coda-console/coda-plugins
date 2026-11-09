@@ -1254,7 +1254,7 @@
     "id": "composer",
     "displayName": "输入框模式",
     "description": "交接、子会话、! 命令、Ultra 与循环",
-    "version": "4.1.0",
+    "version": "5.0.0",
     "category": "工作流程",
     "icon": {
       "symbol": "character.cursor.ibeam",
@@ -1265,8 +1265,8 @@
       "kind": "builtin",
       "package": "@coda-console/composer",
       "tag": "latest",
-      "version": "4.1.0",
-      "integrity": "sha512-Cv0K4io2K0VBuWyTrbQ9yL9I8oCN0H4LGL+eFl8jaUcFz3JSl+/SloAgOfv+8NE7UWSrjW3z1BYeGewYKSVeIw==",
+      "version": "5.0.0",
+      "integrity": "sha512-eWf93Kg/lokcmt+TuDIAmxds2U+QFs0S5KT1Jr68ebtBxN1+h1AObTZjrimH1sRpZrlYWZJhMW+iL1YXhibDeg==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/composer"
     },
@@ -1439,7 +1439,7 @@
         "id": "ultra",
         "title": "Ultra",
         "icon": "square.stack.3d.up",
-        "hint": "通过开发流程委派代码修改，主 Agent 亲自审查与验收；可与其他模式同时开启，点 × 退出。",
+        "hint": "主 Agent 定任务、做决定、审查，调研与核实交给名单里的执行者；可与其他模式同时开启，点 × 退出。",
         "placeholder": "要完成什么？",
         "once": false,
         "in": [
@@ -1841,8 +1841,8 @@
   {
     "id": "review",
     "displayName": "PR 生命流程",
-    "description": "PR 从检查、评审到批准合并",
-    "version": "2.11.0",
+    "description": "PR 从检查、评审到批准合并；简易开发",
+    "version": "2.12.0",
     "category": "工作流程",
     "icon": {
       "symbol": "checkmark.bubble.fill",
@@ -1853,8 +1853,8 @@
       "kind": "builtin",
       "package": "@coda-console/review",
       "tag": "latest",
-      "version": "2.11.0",
-      "integrity": "sha512-GMFBiWjfBV4Q3oPViA/wm6Adz1hu8bKNCHcSMn5nnV+FQG+/+NbdXUU7Amr69kElTWknJJ2fZtpmeEa4PZuvXw==",
+      "version": "2.12.0",
+      "integrity": "sha512-WjP7W8vQqfdF/l4jMgHqUz5VITx0JpyHY1oK0a1wEdbKHfIM+LuyY0LITR7k80mmc17QxXUOdRn8eq7vuSqNow==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/review"
     },
@@ -2001,7 +2001,8 @@
       }
     },
     "workflows": [
-      "pull-request"
+      "pull-request",
+      "simple"
     ],
     "services": [],
     "agents": [],
