@@ -8,6 +8,9 @@
     "color": "pink"
   },
   "version": "0.1.0",
+  "categories": [
+    "Skills 与工具"
+  ],
   "type": "module",
   "main": "main.mjs",
   "contributes": {

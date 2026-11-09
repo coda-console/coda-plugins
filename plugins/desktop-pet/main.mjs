@@ -1,16 +1,18 @@
 // The desktop pet's module in Coda's plugin host (Coda's docs/plugins.md「插件宿主」). It watches this machine's sessions
 // (`threads`: the turn each has under way, whether it needs the user) and tells every open pet how many agents are at work
 // and which sessions wait for the user (at most 20). The home page puts the pet on the desktop itself (a floating window, Coda's
-// docs/plugins.md「浮窗」) and asks the module to put it away, which tells the pets to close.
+// docs/plugins.md「浮窗」) and asks the module to put it away, which tells the pets to close. Each device has its own: a Mac's
+// home page hears of and puts away the Mac's pet, an iPhone's the iPhone's (`caller`).
 
 const rows = new Map();
-const pets = new Set(), homes = new Set();
+const pets = new Map(), homes = new Map();   // each open view, with the device it is on
+const device = view => view.caller?.device ?? 'local';
 let state = { running: 0, waiting: [] }, watching = null, timer = null;
 
 export function activate(coda) {
   coda.views.register('pet', {
     open(view) {
-      pets.add(view);
+      pets.set(view, device(view));
       view.onMessage(message => { if (message?.type === 'hello') view.postMessage({ type: 'coda', ...state }); });
       view.onClose(() => { pets.delete(view); tellHomes(); });
       tellHomes();
@@ -18,10 +20,10 @@ export function activate(coda) {
   });
   coda.views.register('home', {
     open(view) {
-      homes.add(view);
+      homes.set(view, device(view));
       view.onMessage(message => {
-        if (message?.type === 'hello') view.postMessage(status());
-        else if (message?.type === 'put-away') for (const pet of pets) pet.postMessage({ type: 'close' });
+        if (message?.type === 'hello') view.postMessage(status(homes.get(view)));
+        else if (message?.type === 'put-away') for (const [pet, on] of pets) if (on === homes.get(view)) pet.postMessage({ type: 'close' });
       });
       view.onClose(() => homes.delete(view));
     },
@@ -51,9 +53,9 @@ function update() {
   const next = { running, waiting: waiting.slice(0, 20) };
   if (JSON.stringify(next) === JSON.stringify(state)) return;
   state = next;
-  for (const pet of pets) pet.postMessage({ type: 'coda', ...state });
+  for (const pet of pets.keys()) pet.postMessage({ type: 'coda', ...state });
   tellHomes();
 }
 
-function status() { return { type: 'status', onDesk: pets.size > 0, ...state }; }
-function tellHomes() { for (const home of homes) home.postMessage(status()); }
+function status(on) { return { type: 'status', onDesk: [...pets.values()].includes(on), ...state }; }
+function tellHomes() { for (const [home, on] of homes) home.postMessage(status(on)); }

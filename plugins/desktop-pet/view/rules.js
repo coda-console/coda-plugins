@@ -4,10 +4,13 @@
 
 export const SIZE = 128, GRAVITY = 0.6, WALK = 0.7;
 const SLEEPY = 60 * 180;                         // three minutes without anything happening
+export const TUCK = 60 * 20;                     // twenty seconds without the user's hands, where she `tucks`
 
-export function createPet(desk, seed = 0x9e3779b9) {
+/** `tucks`: back into the ball once the user has left her alone a while, where she would stand over what the user uses (an
+ *  iPhone's pages, not a Mac's Dock). */
+export function createPet(desk, seed = 0x9e3779b9, { tucks = false } = {}) {
   return { x: desk.x + desk.width - SIZE - 40, foot: desk.y + desk.height, vx: 0, vy: 0, dir: -1, state: 'idle', since: 0, squash: 0,
-           happy: 0, held: false, wake: 0, ball: false, side: 1, ballY: 0, tick: 0, rng: seed >>> 0 };
+           happy: 0, held: false, wake: 0, touched: 0, tucks, ball: false, side: 1, ballY: 0, tick: 0, rng: seed >>> 0 };
 }
 
 const rand = pet => ((pet.rng = (Math.imul(pet.rng, 1103515245) + 12345) >>> 0) / 4294967296);
@@ -28,6 +31,7 @@ export function step(pet, world, desk) {
     return pet;
   }
   pet.foot = floor;
+  if (pet.tucks && pet.tick - pet.touched > TUCK) { curl(pet, true, desk); return pet; }
   pet.squash *= 0.85;
   if (pet.happy > 0) pet.happy -= 1;
   const age = pet.tick - pet.since;
@@ -68,21 +72,23 @@ export function pose(pet, desk) {
 // MARK: the user's hands
 
 export function wake(pet) { pet.wake = pet.tick; if (pet.state === 'sleep') set(pet, 'idle'); }
+/** The user's hands on her (as with each below): awake, and not left alone. */
+export function touch(pet) { wake(pet); pet.touched = pet.tick; }
 /** A tap on her: happy, with a hop when she stands. */
-export function pat(pet, desk) { wake(pet); pet.happy = 70; if (pet.foot >= ground(desk) - 1) pet.vy = -5; }
+export function pat(pet, desk) { touch(pet); pet.happy = 70; if (pet.foot >= ground(desk) - 1) pet.vy = -5; }
 /** Picked up at a point of the screens: she hangs from it. */
-export function grab(pet, point) { pet.held = true; pet.since = pet.tick; wake(pet); return { dx: point.x - pet.x, dy: point.y - pet.foot }; }
+export function grab(pet, point) { pet.held = true; pet.since = pet.tick; touch(pet); return { dx: point.x - pet.x, dy: point.y - pet.foot }; }
 export function carry(pet, hold, point, desk) { pet.x = point.x - hold.dx; pet.foot = Math.min(ground(desk), point.y - hold.dy); }
 /** Let go, moving as the pointer last moved (`velocity` in points a frame): she falls from there. */
 export function drop(pet, velocity) {
   pet.held = false;
   pet.vx = Math.max(-14, Math.min(14, velocity.x)); pet.vy = Math.max(-16, Math.min(6, velocity.y));
-  set(pet, 'fall'); wake(pet);
+  set(pet, 'fall'); touch(pet);
 }
 /** Into the ball at the nearer edge of the desk, or out of it beside that edge. */
 export function curl(pet, on, desk, ball = 64) {
   pet.ball = on;
   if (on) { pet.side = pet.x > desk.x + desk.width / 2 ? 1 : -1; pet.ballY = pet.foot - ball - 60; }
   else { pet.x = pet.side > 0 ? desk.x + desk.width - SIZE : desk.x + SIZE; pet.foot = pet.ballY + ball; pet.vy = -2; set(pet, 'fall'); }
-  wake(pet);
+  touch(pet);
 }

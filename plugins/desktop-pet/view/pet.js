@@ -1,13 +1,14 @@
 // Coda 娘 on the desktop: a floating window of Coda's (docs/plugins.md「浮窗」) that she stands in, moved along the top of
 // the Dock as she walks. What she does is view/rules.js's, a frame at a time (Coda's standard library loop.js); this page
 // draws her, places the window and hands her the user's input. Clicks reach the page only over her, her bubble and her
-// menu (`layout({ surfaces })`); elsewhere they go to the windows below.
+// menu (`layout({ surfaces })`); elsewhere they go to the windows below. On an iPhone she floats over Coda's pages: a ball at
+// the edge until tapped, and back into it once left alone a while, not to stand over what the user is doing.
 import { frameLoop } from 'coda-view://lib/v1/loop.js';
 import { listenGestures } from 'coda-view://lib/v1/gestures.js';
 import { Bridge } from 'coda-view://lib/v1/bridge.js';
-import { SIZE, createPet, step, pose, wake, pat, grab, carry, drop, curl } from './rules.js';
+import { SIZE, createPet, step, pose, wake, touch, pat, grab, carry, drop, curl } from './rules.js';
 
-const coda = window.coda;
+const coda = window.coda, phone = coda.platform === 'ios';
 const $ = id => document.getElementById(id);
 const W = 200, H = 196, FOOT = 8, BALL = 64, EDGE = 4;   // the window, her box at its bottom (feet 8 points above it), the ball
 
@@ -47,7 +48,7 @@ function draw() {
     $('ball').querySelector('.ring').classList.toggle('spin', world.running > 0);
     const badge = $('ball').querySelector('.badge');
     badge.hidden = !world.waiting.length; badge.textContent = String(world.waiting.length);
-    $('bubble').hidden = true; $('menu').hidden = true;
+    $('bubble').hidden = true; $('menu').hidden = true; menu = false;
     surfaces = [{ id: 'ball', x: 0, y: 0, width: BALL, height: BALL }];
   } else {
     const name = pose(pet, d), want = src(frame(name, pet.tick - pet.since));
@@ -103,7 +104,9 @@ listenGestures({
     if (double) { menu = false; return curl(pet, true, desk()); }
     pat(pet, desk());
   },
-  two() { if (!pet.ball) { menu = !menu; wake(pet); } },
+  // The menu: a right click or two fingers, or (with no right click on a phone) a long press.
+  two() { if (!pet.ball) { menu = !menu; touch(pet); } },
+  long() { if (!pet.ball) { menu = !menu; touch(pet); } },
   drag: {
     start(p) {
       const s = screenPoint(p);
@@ -134,6 +137,7 @@ bridge.on('coda', d => { world.running = d.running ?? 0; world.waiting = d.waiti
 bridge.on('close', () => coda.close());
 await readScreens();
 setInterval(readScreens, 3000);
-pet = createPet(desk());
+pet = createPet(desk(), undefined, { tucks: phone });
+if (phone) curl(pet, true, desk());
 bridge.send({ type: 'hello' });
 frameLoop(() => { step(pet, world, desk()); draw(); });

@@ -2,7 +2,7 @@
 // the frames, the user's input and what Coda says, the same every time.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { SIZE, createPet, step, pose, pat, grab, carry, drop, curl, ground } from '../../../plugins/desktop-pet/view/rules.js';
+import { SIZE, TUCK, createPet, step, pose, pat, grab, carry, drop, curl, ground } from '../../../plugins/desktop-pet/view/rules.js';
 
 const desk = { x: 0, y: 25, width: 1440, height: 800 };
 const idle = { running: 0, waiting: [] };
@@ -70,4 +70,19 @@ test('curled into a ball she keeps to the nearer edge and stays still; out of it
 test('the same frames and input give the same pet', () => {
   const a = run(createPet(desk, 7), 60 * 60), b = run(createPet(desk, 7), 60 * 60);
   assert.deepEqual(a, b);
+});
+
+test('where she tucks, she goes back into the ball once left alone a while; the user\'s hands keep her out, Coda\'s news does not', () => {
+  const pet = createPet(desk, undefined, { tucks: true });
+  curl(pet, true, desk);
+  curl(pet, false, desk);
+  run(pet, TUCK - 60);
+  assert.equal(pet.ball, false);
+  pat(pet, desk);
+  run(pet, TUCK - 60, { running: 1, waiting: [] });
+  assert.equal(pet.ball, false, 'patted: the wait starts again');
+  run(pet, 120, { running: 1, waiting: [] });
+  assert.equal(pet.ball, true, 'at work all the while, she tucks all the same');
+  const desktop = run(createPet(desk), TUCK * 2);
+  assert.equal(desktop.ball, false, 'on a desktop she stays out');
 });
