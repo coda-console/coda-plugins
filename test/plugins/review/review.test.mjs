@@ -27,6 +27,15 @@ test('GitHub-returned PR URLs share the event key without deriving repository id
     assert.equal(key(pr), null, pr);
 });
 
+test('a pull request starts the lifecycle as the plugin setting says, where neither the session nor its project set it', () => {
+  const source = readFileSync(new URL('../../../plugins/review/.coda/workflows/pull-request.bpmn', import.meta.url), 'utf8');
+  const expression = /<process id="pull-request"[^>]*coda:autoRun="=([^"]+)"/.exec(source)?.[1];
+  assert.equal(expression, 'vars.review.autoRun');
+  for (const on of [true, false]) assert.equal(evaluate(expression, { vars: { review: { autoRun: on } } }).value, on);
+  const manifest = JSON.parse(readFileSync(new URL('../../../plugins/review/package.json', import.meta.url), 'utf8'));
+  assert.deepEqual([manifest.contributes.configuration.properties['review.autoRun'].type, manifest.contributes.configuration.properties['review.autoRun'].default], ['boolean', true]);
+});
+
 test('manual review uses the explicit PR and rejects a missing one', t => {
   const root = mkdtempSync(join(tmpdir(), 'review-pr-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));

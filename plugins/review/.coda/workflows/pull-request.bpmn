@@ -17,7 +17,7 @@
   <message id="ready" name="pull_request.ready_for_review" />
   <message id="edited" name="pull_request.edited" />
   <message id="closed" name="pull_request.closed" />
-  <process id="pull-request" name="PR 生命流程" isExecutable="true"
+  <process id="pull-request" name="PR 生命流程" isExecutable="true" coda:autoRun="=vars.review.autoRun"
     coda:key='=lower case(if github.event.pull_request.html_url != null then github.event.pull_request.html_url
       else if matches(inputs.pr, "^https://github[.]com/[a-z0-9_.-]+/[a-z0-9_.-]+/pull/[1-9][0-9]*$", "i") then inputs.pr else null)'
     coda:title='PR {{if github.event.coda.heard = null then (if review.pr = null then inputs.pr else review.pr) else "#" + string(github.event.number) + " " + github.event.pull_request.title}}'>
