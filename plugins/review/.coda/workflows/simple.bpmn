@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- 简易开发（README.md「简易开发」）：主 Agent 自己把活干完，你在会话里开启它，流程推送、检查、评审一次，你验收、批准后合并。
-     交上改动：第一张任务交给主 Agent，不叫醒它，随会话的下一条输入告诉它；它把改动提交到自己的分支，答复改动汇报。
+     准备分支：改动交在哪条分支上由发起的 Agent 定，给了（或会话所在的）就用它；都没有时从目标分支的最新提交替它开一条。
+     交上改动：第一张任务交给主 Agent，不叫醒它，随会话的下一条输入告诉它；它把改动提交到那条分支，答复改动汇报。
      推送：流程把那个分支的最新提交推到自己的分支 simple/<运行>，开 PR 到目标分支；之后每次修改都推同一个分支、更新同一个 PR。
      检查：在这个提交上调用项目声明为检查的流程（coda:kind="check"），没通过交回主 Agent。
      评审：评审方（发起时选的，没选按设置「评审组合」）在只读会话里评审一次；要求修改交回主 Agent，它改，或写明不改的理由。之后只重跑检查，不评第二轮。
@@ -10,18 +11,29 @@
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="simple-definitions" targetNamespace="https://coda.pub/plugins/review">
   <process id="simple" name="简易开发" isExecutable="true" coda:kind="develop" coda:title="简易开发">
     <extensionElements>
-      <coda:input name="branch" label="分支" type="branch" defaultFrom="session.branch" required="true" description="主 Agent 提交改动的分支，默认是会话所在的分支" />
+      <coda:input name="branch" label="分支" type="branch" defaultFrom="session.branch" description="主 Agent 提交改动的分支，默认是会话所在的分支；都没有时流程从目标分支替它开 agent/simple-&lt;运行 ID&gt;" />
       <coda:input name="reviewer" label="评审方" type="agent" description="不选按插件设置「评审组合」：Claude 写的由 Codex 评，反之亦然" />
       <coda:input name="devices" label="设备验收" type="boolean" default="false" description="改了客户端、要在 Mac 或 iPhone 上验收时打开" />
       <coda:input name="device" label="验收设备" default="" description="测试机设备名，如 duo-testbed；验收期间独占它；留空不占设备" />
       <coda:input name="base" label="目标分支" default="" description="留空用仓库默认分支" />
     </extensionElements>
     <startEvent id="start" />
-    <sequenceFlow id="start-report" sourceRef="start" targetRef="report" />
+    <sequenceFlow id="start-lane" sourceRef="start" targetRef="lane" />
+
+    <!-- 改动交在哪条分支上：发起时给了（或会话所在的）就用它；没有就从目标分支的最新提交开一条，告诉主 Agent 在哪个仓库。 -->
+    <scriptTask id="lane" name="准备分支" coda:timeout="5" scriptFormat="bash">
+      <extensionElements>
+        <coda:env name="BRANCH" value="=inputs.branch" />
+        <coda:env name="BASE" value="=inputs.base" />
+        <coda:output name="branch" /><coda:output name="made" /><coda:output name="base" /><coda:output name="repo" />
+      </extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/simple.mjs" lane</script>
+    </scriptTask>
+    <sequenceFlow id="lane-report" sourceRef="lane" targetRef="report" />
 
     <userTask id="report" name="交上改动" coda:wake="false" coda:noteLabel="写给用户的改动汇报">
       <documentation>这次用简易开发：你自己把这次的改动做完，流程推送、跑项目检查、请{{if inputs.reviewer = null then "评审方" else " " + inputs.reviewer.agent + " "}}评审一次，用户验收、批准后合并。
-把改动提交到分支 {{inputs.branch}}（不用推送、不用开 PR），再答复。备注必填，是写给用户的改动汇报，会放在 PR 描述和批准卡最上面。约 8 行以内，只写用户能感知的变化和动到的端，不放实现细节、测试数量、文件清单，不贴代码：
+把改动提交到分支 {{lane.branch}}（不用推送、不用开 PR），再答复。{{if lane.made = true then "这条分支是流程从 " + lane.base + " 的最新提交替你开的，在仓库 " + lane.repo + " 里：在那里用 git worktree add 开你自己的工作树，改动提交到这条分支。" else ""}}备注必填，是写给用户的改动汇报，会放在 PR 描述和批准卡最上面。约 8 行以内，只写用户能感知的变化和动到的端，不放实现细节、测试数量、文件清单，不贴代码：
 做了什么
 - …（3～5 条）
 需要你知道：…（风险、没做的、顺带改的；没有写「无」）
@@ -34,7 +46,7 @@
     <!-- 每次交回改动都从这里走：读出分支的最新提交，推到流程的分支。没有新提交、或分支读不到，交回主 Agent。 -->
     <scriptTask id="push" name="推送改动" coda:timeout="5" scriptFormat="bash">
       <extensionElements>
-        <coda:env name="BRANCH" value="=inputs.branch" />
+        <coda:env name="BRANCH" value="=lane.branch" />
         <coda:env name="BASE" value="=inputs.base" />
         <coda:env name="REPORT" value="=report" />
         <coda:output name="route" /><coda:output name="feedback" /><coda:output name="head" /><coda:output name="lane" />
@@ -106,7 +118,7 @@
 {{review.rules}}
 
 请照这些规则独立核实：没有可达的触发路径的、属于规则说不报的、按严重程度的定义其实低于阻塞级别的，都不算成立。
-成立的就修改，提交到分支 {{inputs.branch}}，选「已修改」，备注写改了什么。不改的选「不改」，备注写明理由和依据的规则，会写进 PR 与批准卡，由用户批准时判断。之后只重跑检查，不再评审。</documentation>
+成立的就修改，提交到分支 {{lane.branch}}，选「已修改」，备注写改了什么。不改的选「不改」，备注写明理由和依据的规则，会写进 PR 与批准卡，由用户批准时判断。之后只重跑检查，不再评审。</documentation>
       <extensionElements>
         <coda:choice id="fixed" name="已修改" primary="true" />
         <coda:choice id="kept" name="不改" note="required" />
@@ -142,7 +154,7 @@
         <documentation>要在设备上验收的提交是 {{pr.head}}（PR {{pr.url}}）。
 只装改到的那一端：改了 Mac 用 workflow_run 发起 mac-preview-install，改了 iPhone 发起 ios-preview-install，都传 commit="{{pr.head}}"。等发起的安装都成功后答复「已装好」；有失败先处理，不能把发起当作装好。
 {{if inputs.device = "" then "" else "发起 ios-preview-install 时还要传 device=\"" + inputs.device + "\"。安装运行会借本段占着的设备，不另排队。"}}
-需要先修改时，修改并提交到分支 {{inputs.branch}}，选「已修改」，备注写改了什么。预览只装客户端，不从这个分支部署后端。</documentation>
+需要先修改时，修改并提交到分支 {{lane.branch}}，选「已修改」，备注写改了什么。预览只装客户端，不从这个分支部署后端。</documentation>
         <extensionElements>
           <coda:choice id="installed" name="已装好" primary="true" />
           <coda:choice id="changed" name="已修改" note="required" />
@@ -223,7 +235,7 @@
     <userTask id="fix" name="修改后答复" coda:noteLabel="改了什么">
       <documentation>{{problem.text}}
 
-修改并提交到分支 {{inputs.branch}}，再答复，备注写改了什么。流程会推送、重跑项目检查，更新同一个 PR。</documentation>
+修改并提交到分支 {{lane.branch}}，再答复，备注写改了什么。流程会推送、重跑项目检查，更新同一个 PR。</documentation>
       <extensionElements><coda:choice id="done" name="已修改" primary="true" /></extensionElements>
     </userTask>
     <sequenceFlow id="fix-push" sourceRef="fix" targetRef="push" />
@@ -266,7 +278,7 @@
     <scriptTask id="merge" name="合并" coda:timeout="10" coda:status="合并中" scriptFormat="bash">
       <extensionElements>
         <coda:env name="METHOD" value="=vars.review.mergeMethod" />
-        <coda:env name="BRANCH" value="=inputs.branch" />
+        <coda:env name="BRANCH" value="=lane.branch" />
         <coda:output name="route" /><coda:output name="commit" />
       </extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/simple.mjs" merge</script>

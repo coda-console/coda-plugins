@@ -1,10 +1,11 @@
-// The steps of the simple development flow (../.coda/workflows/simple.bpmn「简易开发」) other than the review itself: what
-// the lead agent hands in is pushed from its branch to the run's own branch and opened as one pull request, updated by every
-// later change. What the run has seen so far — the report, the head pushed, the review, what the user accepted on a device,
-// what the agent is to change next — stays in the run's artifacts, every step's checkout being its own.
+// The steps of the simple development flow (../.coda/workflows/simple.bpmn「简易开发」) other than the review itself: the
+// branch the lead agent hands its change in on, and what it hands in pushed from there to the run's own branch and opened as
+// one pull request, updated by every later change. What the run has seen so far — the report, the head pushed, the review,
+// what the user accepted on a device, what the agent is to change next — stays in the run's artifacts, every step's
+// checkout being its own.
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { json, output } from './step.mjs';
 
 const env = process.env, action = process.argv[2];
@@ -17,10 +18,26 @@ const save = value => writeFileSync(statePath, JSON.stringify(value));
 // What the agent is asked to change: kept for the next 「修改后答复」 (`problem`).
 const ask = (value, text) => { save({ ...value, feedback: text }); output('feedback', text); };
 
+const target = () => env.BASE || gh('repo', 'view', '--json', 'defaultBranchRef', '--jq', '.defaultBranchRef.name');
+
 switch (action) {
+  case 'lane': {
+    // The agent that started the run names its branch (or works on its session's); given none, one is cut here from the
+    // latest target for it, kept as it is when the run goes over this again. Only the branch: the agent opens its own
+    // worktree on it, in the repository this step's checkout shares its branches with.
+    if (env.BRANCH) { output('branch', env.BRANCH); output('made', 'false'); break; }
+    const base = target(), branch = `agent/simple-${env.GITHUB_RUN_ID}`;
+    git('fetch', '--quiet', 'origin', base);
+    if (!tryGit('rev-parse', '--verify', '--quiet', `refs/heads/${branch}`)) git('branch', '--no-track', branch, 'FETCH_HEAD');
+    output('branch', branch);
+    output('made', 'true');
+    output('base', base);
+    output('repo', dirname(git('rev-parse', '--path-format=absolute', '--git-common-dir')));
+    break;
+  }
   case 'push': {
     // The first time, before a pull request: the report the agent wrote, which heads the pull request and the approval card.
-    const now = state ?? { base: env.BASE || gh('repo', 'view', '--json', 'defaultBranchRef', '--jq', '.defaultBranchRef.name'),
+    const now = state ?? { base: target(),
       lane: `simple/${env.GITHUB_RUN_ID}`, head: '', pr: '', reviewed: false, deviceHead: '' };
     if (!now.pr) now.report = (json('REPORT', {}).note ?? '').trim();
     const back = now.pr ? 'fix' : 'report', branch = env.BRANCH;

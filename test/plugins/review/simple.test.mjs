@@ -2,7 +2,7 @@
 // against a throwaway repository, a fake gh and the run's artifacts.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -100,6 +100,24 @@ test('简易开发推送主 Agent 分支的最新提交到运行自己的分支�
   assert.equal(f.calls().filter(c => c.args[1] === 'create').length, 1);
 });
 
+test('准备分支：给了就用给的；没给就从目标分支的最新提交开 agent/simple-<运行>，再走同一遍时沿用', t => {
+  const f = fixture(t);
+  assert.deepEqual(f.run('lane'), { branch: 'agent/work', made: 'false' });
+  assert.equal(f.git('branch', '--list', 'agent/*'), '', '给了分支时不替主 Agent 开');
+  assert.equal(f.calls().length, 0);
+
+  const made = f.run('lane', { BRANCH: '' });
+  assert.deepEqual(made, { branch: 'agent/simple-run-1', made: 'true', base: 'main', repo: realpathSync(f.work) });
+  assert.equal(f.git('rev-parse', 'agent/simple-run-1'), f.git('rev-parse', 'origin/main'));
+  assert.deepEqual(f.calls().map(c => c.args[0]), ['repo'], '目标分支留空时读仓库的默认分支');
+  // 主 Agent 在这条分支上提交，推送照常；再走一遍准备分支，分支不被重置。
+  f.git('switch', '-q', 'agent/simple-run-1');
+  const head = f.commit('lane', '在流程开的分支上改');
+  assert.equal(f.run('push', { BRANCH: 'agent/simple-run-1', REPORT: JSON.stringify({ note: '汇报' }) }).head, head);
+  assert.equal(f.run('lane', { BRANCH: '', BASE: 'main' }).branch, 'agent/simple-run-1');
+  assert.equal(f.git('rev-parse', 'agent/simple-run-1'), head);
+});
+
 test('检查没过交回主 Agent 并写明运行；合并冲突交回，其余合并失败让步骤失败；合并后交出合并提交', t => {
   const f = fixture(t);
   f.git('switch', '-q', '-c', 'agent/work'); const head = f.commit('one', '改动');
@@ -131,7 +149,7 @@ test('简易开发的流程定义：开启时什么都不必选，第一张任�
   assert.equal(process.name, '简易开发');
   assert.equal(process.kind, 'develop');
   const inputs = Object.fromEntries(values(process).map(v => [v.name, v]));
-  assert.deepEqual([inputs.branch.type, inputs.branch.defaultFrom], ['branch', 'session.branch']);
+  assert.deepEqual([inputs.branch.type, inputs.branch.defaultFrom, inputs.branch.required], ['branch', 'session.branch', undefined], '没给、会话也没有时由准备分支开一条');
   assert.deepEqual([inputs.reviewer.type, inputs.reviewer.defaultFrom, inputs.reviewer.required], ['agent', undefined, undefined], '不选按评审组合');
   assert.deepEqual([inputs.devices.type, inputs.devices.default], ['boolean', 'false']);
   assert.deepEqual([nodes.report.wake, nodes.report.assignee], ['false', undefined]);
@@ -140,6 +158,15 @@ test('简易开发的流程定义：开启时什么都不必选，第一张任�
     assert.deepEqual(values(nodes[id]).map(v => [v.id, v.note]), choices, id);
   for (const id of ['device', 'approve']) assert.equal(nodes[id].assignee, 'user');
   for (const id of ['report', 'answer', 'fix', 'preview', 'notes']) assert.equal(nodes[id].assignee, undefined, id);
+  // 先准备分支，之后所有步骤与任务都用它定下的分支。
+  assert.equal(nodes['start-lane'].targetRef.id, 'lane');
+  assert.equal(nodes['lane-report'].targetRef.id, 'report');
+  assert.equal(params('lane').BRANCH, '=inputs.branch');
+  for (const id of ['push', 'merge']) assert.equal(params(id).BRANCH, '=lane.branch', id);
+  assert.doesNotMatch(workflow, /\{\{inputs\.branch\}\}/);
+  const told = evaluate(/\{\{(if lane\.made[\s\S]*?)\}\}/.exec(nodes.report.documentation[0].text)[1], { lane: { made: true, base: 'main', repo: '/work/app' } }).value;
+  assert.equal(told, '这条分支是流程从 main 的最新提交替你开的，在仓库 /work/app 里：在那里用 git worktree add 开你自己的工作树，改动提交到这条分支。');
+  assert.equal(evaluate(/\{\{(if lane\.made[\s\S]*?)\}\}/.exec(nodes.report.documentation[0].text)[1], { lane: { made: false, branch: 'agent/work' } }).value, '');
   // 推送：没推上去回到交上改动或修改；推上去跑检查。
   for (const [value, target] of [['report', 'report'], ['fix', 'problem'], ['checks', 'checks']]) assert.equal(route('pushed', { push: { route: value } }), target);
   // 开 PR 之后：没评审过先评审，要验收先验收，否则合并前检查。

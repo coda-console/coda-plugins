@@ -12,7 +12,7 @@
       <coda:input name="devices" label="设备验收" type="boolean" default="false" description="改了客户端、要在 Mac 或 iPhone 上验收时打开" />
       <coda:input name="device" label="验收设备" type="string" default="" description="测试机设备名，如 duo-testbed；验收期间独占它；留空不占设备" />
       <coda:input name="executor" label="执行者" type="agent" defaultFrom="session.agent" description="监督开发的执行者；不填用发起会话的" />
-      <coda:input name="branch" label="分支" type="branch" defaultFrom="session.branch" description="简易开发提交改动的分支，默认是会话所在的分支" />
+      <coda:input name="branch" label="分支" type="branch" defaultFrom="session.branch" description="简易开发提交改动的分支，默认是会话所在的分支；开在别的目录时自己给，不给由简易开发从目标分支开一条" />
       <coda:input name="base" label="目标分支" type="string" default="" description="留空用仓库默认分支" />
     </extensionElements>
     <startEvent id="start" />
