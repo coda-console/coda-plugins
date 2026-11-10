@@ -28,7 +28,7 @@ test('declarations follow atomic replacements; invalid/missing registration pres
   t.after(async () => { await deactivate(); console.error = original; });
   writeFileSync(file, JSON.stringify([phone]));
   await activate({ plugin: { state }, resources: { declareGroups: async groups => calls.push(groups) } });
-  assert.deepEqual(calls[0], [{ name: 'device:phone', attributes: { name: phone.name, udid: phone.udid, note: phone.note, personal: 'false' }, unique: ['udid'] }]);
+  assert.deepEqual(calls[0], [{ name: 'device:phone', attributes: { name: phone.name, udid: phone.udid, note: phone.note, personal: 'false', platform: 'ios', adb: '' }, unique: ['udid'] }]);
   writeFileSync(join(state, 'next'), JSON.stringify([{ ...phone, name: 'Changed', personal: true }]));
   renameSync(join(state, 'next'), file);
   await until(() => calls.at(-1)[0]?.attributes.name === 'Changed');

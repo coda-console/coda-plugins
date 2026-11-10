@@ -1,24 +1,30 @@
 ---
 name: testbed
-description: 测试机插件怎么用：会话或流程里用 use-testbed 排到 iPhone/iPad 测试机、按需装 App、拿到任务后用 host-sim run --kind <设备名> 操作并用 workflow_task 答复；流程里 callActivity 的写法与输出。要在真机上操作、验证或写真机验收流程时读。
+description: 测试机插件怎么用：会话或流程里用 use-testbed 排到 iPhone/iPad 或安卓测试机、按需装 App、拿到任务后用 host-sim run --kind <设备名> 操作并用 workflow_task 答复；流程里 callActivity 的写法与输出。要在真机上操作、验证或写真机验收流程时读。
 ---
 
 # 测试机
 
-测试机（`iphone-testbed`、`ipad-testbed` 这类设备）需要会话操作时经能力 `use-testbed` 使用：它排进设备的并发组 `device:<设备名>`，
+测试机（`iphone-testbed`、`ipad-testbed` 这类设备，以及安卓设备）需要会话操作时经能力 `use-testbed` 使用：它排进设备的并发组 `device:<设备名>`，
 按需装 App，把任务交给发起的会话；答复、出错、拒绝或运行被取消后，先等会话借设备还在跑的命令停下，常驻测试机再切黑屏、交出设备；个人设备直接交出，不切黑屏，也不出切黑屏失败卡片。
 
 设备登记每项可加 `"personal": true` 标记维护者的个人设备；缺省为常驻测试机。该字段随 `name`、`udid`、`note` 发布到空间，其他 Mac 经 `coda-resources group-owner` 也能读到。只有常驻测试机需要安装黑屏 App。
 常驻测试机给 Agent 自助使用；个人设备在维护者手里，排到后先出卡片问维护者借不借。选「现在不行」时这次调用以拒绝结束（理由在备注里），别反复重试，改用常驻测试机或按备注约的时间再借。
 
 登记在哪个实例就归哪个实例，`devices.json` 是归属的唯一事实来源。空间里同一设备只能登记一次，同名或相同 UDID 的重复登记会使占用失败并报冲突。任何实例的会话都能用，在归属实例排队。
-安装、会话的 host-sim 命令和切黑屏在发起的 Mac 上跑；这台 Mac 须与设备配对，跑 XCTest 还须有本机 runner。
+安装、会话的 host-sim 命令和切黑屏在发起的机器上跑：iPhone、iPad 要这台 Mac 与设备配对，跑 XCTest 还须有本机 runner；
+安卓设备要这台装着 adb、连得上登记的地址并已授权这台的 adb 公钥，否则一开始就失败并说明，不排队。
+
+安卓设备（登记里 `"platform": "android"`）经 adb 的 TCP 连接使用，不用 USB 线，也不要绕开 `use-testbed` 直接 `adb connect` 去用：
+排到时记下它的 `settings`，交出前改回、停掉 frida-server、回到桌面并熄屏。`settings` 以外的改动（App 数据、装的 App、文件）不复原，
+要留下或要清掉的写在答复里。
 
 ## 会话里
 
 1. 调用 `workflow_run`，`workflow` 为 `use-testbed`，`inputs` 给 `device`（设备名）和 `instructions`（要做什么、怎么答复）；
-   先装 App 就再给 `app`（`.app` 或 `.ipa` 的绝对路径），`task` 是任务名（默认「在测试机上验证」）。
-2. 排到后你会收到任务：用 `host-sim run --kind <设备名> -- <命令>` 操作设备（如 `xcrun devicectl …`）。
+   先装 App 就再给 `app`（`.app`、`.ipa` 或安卓的 `.apk` 的绝对路径），`task` 是任务名（默认「在测试机上验证」）。
+2. 排到后你会收到任务：用 `host-sim run --kind <设备名> -- <命令>` 操作设备（如 `xcrun devicectl …`；安卓设备如 `adb shell …`，
+   命令里 `ANDROID_SERIAL` 已是这台，frida、scrcpy 也照常用）。
    只有正在做这台设备任务的会话（含子会话）借得到，别的时候立刻拒绝、不排队。
 3. 做完用 `workflow_task` 答复；答复后还在跑的借用命令随之停下。
 

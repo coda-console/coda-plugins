@@ -1,28 +1,30 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- 使用测试机（README.md）：测试机的唯一入口。先从本机的设备登记查出这台设备，再排进它的组 device:<设备名>，
-     个人设备排到后先问维护者借不借，答应了才装 App；常驻测试机不问。按需装上 App，把任务交给调用的会话；会话做任务期间，它用 host-sim run --kind <设备> 的命令（能力 run-on-device）借用这个组。
-     任务答复、装包或任务出错、运行被取消，都先等借去的命令停完、常驻测试机再切黑屏，个人设备直接放开；切不过去就请用户处理，处理之前一直占着。
+<!-- 使用测试机（README.md）：测试机的唯一入口。先从本机的设备登记查出这台设备（安卓设备先用 adb 连上），再排进它的组 device:<设备名>，
+     排到后安卓设备记下设置；个人设备先问维护者借不借，答应了才装 App；常驻测试机不问。按需装上 App，把任务交给调用的会话；会话做任务期间，它用 host-sim run --kind <设备> 的命令（能力 run-on-device）借用这个组。
+     任务答复、装包或任务出错、运行被取消，都先等借去的命令停完、常驻测试机再切黑屏（安卓设备改回设置、熄屏），个人设备直接放开；切不过去就请用户处理，处理之前一直占着。
      能力：只被调用（workflow_run 或 callActivity），结果交给调用者。 -->
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xmlns:coda="https://coda.pub/schema/bpmn/1.0" id="use-testbed-definitions" targetNamespace="https://coda.pub/plugins/testbed">
   <message id="cancel" name="workflow.cancel" />
   <process id="use-testbed" name="使用测试机" isExecutable="true" coda:title="{{inputs.device}}：{{inputs.task}}">
     <extensionElements>
-      <coda:input name="device" required="true" description="设备名：它所在 Mac 的测试机插件登记的 id，如 iphone-testbed" />
+      <coda:input name="device" required="true" description="设备名：它所在机器的测试机插件登记的 id，如 iphone-testbed" />
       <coda:input name="instructions" required="true" description="要会话在测试机上做什么、做完怎么答复（写进交给会话的任务）" />
       <coda:input name="task" default="在测试机上验证" description="交给会话的任务名" />
-      <coda:input name="app" description="先装到测试机的 App（.app 或 .ipa 的绝对路径）；不填就不装" />
+      <coda:input name="app" description="先装到测试机的 App（.app、.ipa 或安卓的 .apk 的绝对路径）；不填就不装" />
     </extensionElements>
     <startEvent id="start" />
     <sequenceFlow id="to-find" sourceRef="start" targetRef="find" />
-    <!-- 这台 Mac 登记了哪台设备叫这个名字：显示名、UDID 与给会话的说明。没有登记就到此为止，不排队。 -->
-    <scriptTask id="find" name="找测试机" coda:checkout="false" coda:timeout="1" coda:status="找测试机 {{inputs.device}}" scriptFormat="bash">
+    <!-- 哪台设备叫这个名字：显示名、UDID、平台、adb 地址与给会话的说明。没有登记、或安卓设备这台连不上（没授权这台的 adb 公钥），就到此为止，不排队。 -->
+    <scriptTask id="find" name="找测试机" coda:checkout="false" coda:timeout="2" coda:status="找测试机 {{inputs.device}}" scriptFormat="bash">
       <extensionElements>
         <coda:env name="DEVICE" value="=inputs.device" />
         <coda:output name="name" />
         <coda:output name="udid" />
         <coda:output name="note" />
         <coda:output name="personal" />
+        <coda:output name="platform" />
+        <coda:output name="adb" />
       </extensionElements>
       <script>node "$CODA_PLUGIN_PATH/scripts/device.mjs"</script>
     </scriptTask>
@@ -40,7 +42,17 @@
           <coda:param name="borrow" value="no" />
         </extensionElements>
       </serviceTask>
-      <sequenceFlow id="to-lend" sourceRef="hold" targetRef="lend" />
+      <sequenceFlow id="to-note" sourceRef="hold" targetRef="note" />
+      <!-- 安卓设备记下借出时的设置，交出前照它改回；iPhone、iPad 没有要记的。 -->
+      <scriptTask id="note" name="记下设备状态" coda:checkout="false" coda:timeout="2" coda:status="记下 {{find.name}} 的设置" scriptFormat="bash">
+        <extensionElements>
+          <coda:env name="DEVICE" value="=inputs.device" />
+          <coda:env name="PLATFORM" value="=find.platform" />
+          <coda:env name="ADB" value="=find.adb" />
+        </extensionElements>
+        <script>node "$CODA_PLUGIN_PATH/scripts/snapshot.mjs"</script>
+      </scriptTask>
+      <sequenceFlow id="to-lend" sourceRef="note" targetRef="lend" />
       <!-- 个人设备在维护者手里：装 App、交给会话之前先问维护者，不答应就以拒绝结束，设备直接放开。常驻测试机给 Agent 自己用，不问。 -->
       <exclusiveGateway id="lend" name="要问你吗" default="no-lend" />
       <sequenceFlow id="to-borrow" sourceRef="lend" targetRef="borrow">
@@ -64,15 +76,17 @@
       <scriptTask id="install" name="装 App" coda:checkout="false" coda:timeout="15" coda:status="把 App 装到 {{find.name}}" scriptFormat="bash">
         <extensionElements>
           <coda:env name="UDID" value="=find.udid" />
+          <coda:env name="PLATFORM" value="=find.platform" />
+          <coda:env name="ADB" value="=find.adb" />
           <coda:env name="APP" value="=inputs.app" />
         </extensionElements>
-        <script>xcrun devicectl device install app --device "$UDID" "$APP"</script>
+        <script>if [ "$PLATFORM" = android ]; then adb -s "$ADB" install -r "$APP"; else xcrun devicectl device install app --device "$UDID" "$APP"; fi</script>
       </scriptTask>
       <sequenceFlow id="installed" sourceRef="install" targetRef="task" />
       <userTask id="task" name="=inputs.task" coda:status="{{find.name}} 交给会话使用">
         <documentation>{{inputs.instructions}}
 
-测试机 {{find.name}}（设备名 {{inputs.device}}，UDID {{find.udid}}）由这个任务占着，直到答复：本会话（含子 Agent）用 host-sim run --kind {{inputs.device}} -- &lt;命令&gt; 操作它，命令结束不会交出设备。答复之后还在执行的命令随之停下，{{if find.personal then "个人设备直接交给下一位。" else "测试机切黑屏，再交给下一位。"}}
+{{if find.platform = "android" then "安卓测试机 " + find.name + "（设备名 " + inputs.device + "，adb 地址 " + find.adb + "）由这个任务占着，直到答复：本会话（含子 Agent）用 host-sim run --kind " + inputs.device + " -- adb shell …（或别的用 adb 的命令，如 frida、scrcpy）操作它，命令里的 ANDROID_SERIAL 已是这台，命令结束不会交出设备。答复之后还在执行的命令随之停下，" + (if find.personal then "个人设备直接交给下一位。" else "借出时记下的设置被改回，停掉 frida-server、回到桌面并熄屏，再交给下一位：要留下的改动在答复里说明。") else "测试机 " + find.name + "（设备名 " + inputs.device + "，UDID " + find.udid + "）由这个任务占着，直到答复：本会话（含子 Agent）用 host-sim run --kind " + inputs.device + " -- &lt;命令&gt; 操作它，命令结束不会交出设备。答复之后还在执行的命令随之停下，" + (if find.personal then "个人设备直接交给下一位。" else "测试机切黑屏，再交给下一位。")}}
 
 {{find.note}}</documentation>
       </userTask>
@@ -83,6 +97,10 @@
       <boundaryEvent id="borrow-declined" attachedToRef="borrow"><errorEventDefinition /></boundaryEvent>
       <sequenceFlow id="borrow-cancelled-return" sourceRef="borrow-cancelled" targetRef="return-stopped" />
       <sequenceFlow id="borrow-declined-return" sourceRef="borrow-declined" targetRef="return-stopped" />
+      <boundaryEvent id="note-cancelled" attachedToRef="note"><messageEventDefinition messageRef="cancel" /></boundaryEvent>
+      <boundaryEvent id="note-failed" attachedToRef="note"><errorEventDefinition /></boundaryEvent>
+      <sequenceFlow id="note-cancelled-black" sourceRef="note-cancelled" targetRef="return-stopped" />
+      <sequenceFlow id="note-failed-black" sourceRef="note-failed" targetRef="return-stopped" />
       <boundaryEvent id="install-cancelled" attachedToRef="install"><messageEventDefinition messageRef="cancel" /></boundaryEvent>
       <boundaryEvent id="install-failed" attachedToRef="install"><errorEventDefinition /></boundaryEvent>
       <boundaryEvent id="task-cancelled" attachedToRef="task"><messageEventDefinition messageRef="cancel" /></boundaryEvent>
@@ -102,6 +120,8 @@
         <extensionElements>
           <coda:env name="DEVICE" value="=inputs.device" />
           <coda:env name="UDID" value="=find.udid" />
+          <coda:env name="PLATFORM" value="=find.platform" />
+          <coda:env name="ADB" value="=find.adb" />
           <coda:env name="COMMANDS" value="=vars.testbed.blackscreen" />
         </extensionElements>
         <script>node "$CODA_PLUGIN_PATH/scripts/blackscreen.mjs"</script>
@@ -113,10 +133,10 @@
       <endEvent id="noted" />
       <boundaryEvent id="black-failed" attachedToRef="black"><errorEventDefinition /></boundaryEvent>
       <sequenceFlow id="ask-black" sourceRef="black-failed" targetRef="black-trouble" />
-      <userTask id="black-trouble" name="测试机切黑屏失败" coda:assignee="user" coda:status="{{find.name}} 切黑屏失败，等你处理">
-        <documentation>测试机 {{find.name}}（{{inputs.device}}）用完后没能切黑屏，原因见运行页「切黑屏」这一步的日志。在你处理之前，它不会交给下一位。
+      <userTask id="black-trouble" name="测试机{{if find.platform = &quot;android&quot; then &quot;复原&quot; else &quot;切黑屏&quot;}}失败" coda:assignee="user" coda:status="{{find.name}} 切黑屏失败，等你处理">
+        <documentation>测试机 {{find.name}}（{{inputs.device}}）用完后没能{{if find.platform = "android" then "复原（改回借出时的设置、熄屏）" else "切黑屏"}}，原因见运行页「切黑屏」这一步的日志。在你处理之前，它不会交给下一位。
 
-检查设备连接、黑屏 App 或插件设置「切黑屏命令」后选「重试」；已经手动处理好了就选「我处理好了，放锁」。</documentation>
+检查{{if find.platform = "android" then "adb 连接（" + find.adb + "）" else "设备连接、黑屏 App"}}或插件设置「切黑屏命令」后选「重试」；已经手动处理好了就选「我处理好了，放锁」。</documentation>
         <extensionElements>
           <coda:choice id="retry" name="重试" />
           <coda:choice id="release" name="我处理好了，放锁" />
@@ -142,6 +162,8 @@
         <extensionElements>
           <coda:env name="DEVICE" value="=inputs.device" />
           <coda:env name="UDID" value="=find.udid" />
+          <coda:env name="PLATFORM" value="=find.platform" />
+          <coda:env name="ADB" value="=find.adb" />
           <coda:env name="COMMANDS" value="=vars.testbed.blackscreen" />
         </extensionElements>
         <script>node "$CODA_PLUGIN_PATH/scripts/blackscreen.mjs"</script>
@@ -152,10 +174,10 @@
       <endEvent id="stop-noted" />
       <boundaryEvent id="black-stop-failed" attachedToRef="black-stop"><errorEventDefinition /></boundaryEvent>
       <sequenceFlow id="ask-black-stop" sourceRef="black-stop-failed" targetRef="black-stop-trouble" />
-      <userTask id="black-stop-trouble" name="测试机切黑屏失败" coda:assignee="user" coda:status="{{find.name}} 切黑屏失败，等你处理">
-        <documentation>测试机 {{find.name}}（{{inputs.device}}）没能切黑屏，原因见运行页「切黑屏（没有做完）」这一步的日志。在你处理之前，它不会交给下一位。
+      <userTask id="black-stop-trouble" name="测试机{{if find.platform = &quot;android&quot; then &quot;复原&quot; else &quot;切黑屏&quot;}}失败" coda:assignee="user" coda:status="{{find.name}} 切黑屏失败，等你处理">
+        <documentation>测试机 {{find.name}}（{{inputs.device}}）没能{{if find.platform = "android" then "复原（改回借出时的设置、熄屏）" else "切黑屏"}}，原因见运行页「切黑屏（没有做完）」这一步的日志。在你处理之前，它不会交给下一位。
 
-检查设备连接、黑屏 App 或插件设置「切黑屏命令」后选「重试」；已经手动处理好了就选「我处理好了，放锁」。</documentation>
+检查{{if find.platform = "android" then "adb 连接（" + find.adb + "）" else "设备连接、黑屏 App"}}或插件设置「切黑屏命令」后选「重试」；已经手动处理好了就选「我处理好了，放锁」。</documentation>
         <extensionElements>
           <coda:choice id="retry" name="重试" />
           <coda:choice id="release" name="我处理好了，放锁" />

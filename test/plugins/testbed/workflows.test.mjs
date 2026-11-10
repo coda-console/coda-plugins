@@ -23,7 +23,9 @@ async function heldScope() {
 
 test('a personal device is lent by the user before anything is installed; a resident testbed goes straight on', async () => {
   const { held, node, next } = await heldScope();
-  const lend = next('hold');
+  // What an Android device is like is noted once it is held, before anything else is done with it.
+  assert.equal(next('hold'), 'note');
+  const lend = next('note');
   assert.equal(node(lend).$type, 'bpmn:ExclusiveGateway');
   for (const personal of [false, undefined]) assert.equal(next(lend, personal), 'has-app');
   const borrow = node(next(lend, true));
@@ -49,6 +51,8 @@ test('personal devices leave the held scope without blackscreen on reply, failur
     ['install-cancelled', 'stopped', 'black-stop'],
     ['task-failed', 'stopped', 'black-stop'], // Rejected user tasks raise the same error boundary.
     ['task-cancelled', 'stopped', 'black-stop'],
+    ['note-failed', 'stopped', 'black-stop'],
+    ['note-cancelled', 'stopped', 'black-stop'],
   ]) {
     for (const personal of [true, false, undefined]) {
       const gateway = next(source, personal);
