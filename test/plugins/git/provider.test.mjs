@@ -1,63 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import { writeFile, readFile, symlink, unlink } from 'node:fs/promises';
-import { fixture, command, env } from './helpers.mjs';
+import { fixture, command, env, host, idle } from './helpers.mjs';
 import { GitProvider } from '../../../plugins/git/lib/provider.mjs';
-import { SOURCE, SNAPSHOT } from '../../../plugins/git/lib/definitions.mjs';
-import { ProtocolTypes, validate } from '../../../check/coda/components/protocols/types.mjs';
+import { SOURCE, SNAPSHOT, SERVICE } from '../../../plugins/git/lib/definitions.mjs';
+import { ProtocolTypes } from '../../../check/coda/components/protocols/types.mjs';
 import { definitionProblem, ownedProtocolsProblem } from '@coda-console/protocol/protocol';
 import '../../../check/coda/application/contributions.mjs';
 import { readPlugin } from '../../../check/coda/components/plugins/plugin-rules.mjs';
-import { providerAPI } from '../../../check/coda/adapters/provider-api.mjs';
 
-// The plugin's reconciliation runs against the synchronized host API and real Git. Storage/transport belong
-// to Coda's tests; this fixture supplies events and rejects stale revisions, without starting a backend.
 const manifest = JSON.parse(readFileSync(new URL('../../../plugins/git/package.json', import.meta.url), 'utf8'));
-const definitions = manifest.contributes.protocols;
-function host(state) {
-  const types = new ProtocolTypes(), objects = new Map(), listeners = new Map(), runs = new Map();
-  for (const definition of definitions) types.register({ kind: definition.name, spec: definition.spec, status: definition.status, participants: () => [] });
-  const failures = []; let revision = 0;
-  const emit = (collection, event) => { for (const fn of listeners.get(collection) ?? []) fn(structuredClone(event)); };
-  const watch = async (collection, fn, filter) => {
-    const set = listeners.get(collection) ?? new Set(); listeners.set(collection, set); set.add(fn);
-    const entries = collection === 'workflow-runs' ? [...runs.values()] : [...objects.values()].filter(o => o.kind === collection);
-    for (const object of entries) if (!filter?.run || object.id === filter.run) fn({ type: 'ADDED', id: object.id, object: structuredClone(object) });
-    return { dispose: () => set.delete(fn) };
-  };
-  const call = async (method, args) => {
-    const [kind, id] = method === 'put' ? [args[0].kind, args[0].id] : args;
-    const key = `${kind}/${id}`, old = objects.get(key), type = types.get(kind);
-    if (method === 'publish') return;
-    if (method === 'delete') { objects.delete(key); if (old) emit(kind, { type: 'DELETED', id, object: old }); return; }
-    const expected = method === 'put' ? args[0].revision : args[3];
-    if (old && expected !== old.revision) throw new Error('revision conflict');
-    const spec = method === 'put' ? args[0].spec : old.spec, status = method === 'setStatus' ? args[2] : old?.status ?? {};
-    validate(type.spec, spec, 'spec'); validate(type.status, status, 'status');
-    if (old && JSON.stringify(old.spec) === JSON.stringify(spec) && JSON.stringify(old.status) === JSON.stringify(status)) return old;
-    const object = { kind, id, spec, status, instance: old?.instance ?? randomUUID(), revision: String(++revision) };
-    objects.set(key, object); emit(kind, { type: old ? 'MODIFIED' : 'ADDED', id, object }); return object;
-  };
-  const coda = { plugin: { state }, environment: async () => env, watch,
-    api: async path => { const run = runs.get(path.split('/').at(-1)); if (!run) throw new Error('run not found'); return run; },
-    services: { register: async (_id, handler) => { coda.handler = handler; return { dispose() {} }; } },
-    protocols: providerAPI({ call, watch, report: (...error) => failures.push(error) }),
-  };
-  return { coda, objects, failures, run(id, state = 'running') {
-    const object = { id, runId: id, state }; runs.set(id, object); emit('workflow-runs', { type: 'MODIFIED', id, object });
-  } };
-}
-async function idle(provider) {
-  for (let i = 0; i < 100; i++) {
-    const queue = provider.queue; await queue; await new Promise(resolve => setImmediate(resolve));
-    if (queue === provider.queue) return;
-  }
-  throw new Error('controller did not settle');
-}
 const put = (h, kind, id, spec, revision) => h.coda.protocols.put({ kind, id, spec, ...(revision ? { revision } : {}) });
 const get = (h, kind, id) => h.objects.get(`${kind}/${id}`);
 
@@ -79,7 +34,7 @@ test('清单里的协议定义合乎格式与命名空间，拒绝多余字段�
     assert.equal(definitionProblem(definition, { namespace: 'git', where: definition.name }), null);
     types.register({ kind: definition.name, spec: definition.spec, status: definition.status, participants: () => [] });
   }
-  assert.equal(readPlugin(dir, { kind: 'git' }).protocolImplementations.join(), [SOURCE, SNAPSHOT].join());
+  assert.equal(readPlugin(dir, { kind: 'git' }).protocolImplementations.join(), [SOURCE, SNAPSHOT, SERVICE].join());
   assert.equal(types.get(SOURCE).spec({ path: '/tmp/repo', machine: 'remote' }), false);
   assert.equal(types.get(SNAPSHOT).spec({ source: 'source', mode: 'commit', run: 'run' }), false);
 });

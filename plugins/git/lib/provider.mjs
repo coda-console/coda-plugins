@@ -1,12 +1,15 @@
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
-import { join } from 'node:path';
-import { SOURCE, SNAPSHOT } from './definitions.mjs';
+import { mkdir, readFile, writeFile, rename, realpath } from 'node:fs/promises';
+import { join, isAbsolute, relative } from 'node:path';
+import { SOURCE, SNAPSHOT, SERVICE } from './definitions.mjs';
 import { repository, git, createSnapshot, removeSnapshot, snapshotRef } from './git.mjs';
 import { smartHTTP, readBody, reply } from './http.mjs';
 
+const SERVICE_ID = 'git';
 const idOK = id => typeof id === 'string' && /^[a-zA-Z0-9_-]{1,100}$/.test(id);
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const autoSourceId = path => `worktree-${hash([path]).slice(0, 40)}`;
+const snapshotFromCall = id => /^snapshot-[a-f0-9]{40}$/.test(id);
 const url = id => `/v1/plugins/git/services/repository/repos/${id}`;
 const sameRepository = (a, b) => a.path === b.path && a.gitDir === b.gitDir && a.commonDir === b.commonDir;
 const ended = run => run?.finishedAt != null || ['succeeded', 'failed', 'cancelled'].includes(run?.state);
@@ -16,6 +19,7 @@ export class GitProvider {
     this.coda = coda;
     this.sources = new Map(); this.snapshots = new Map(); this.runs = new Map(); this.runWatches = new Map();
     this.identities = {}; this.repositories = new Map(); this.subscriptions = []; this.records = {}; this.queue = Promise.resolve();
+    this.holds = new Set(); this.waiters = new Map();
     this.active = false; this.stopped = false;
     this.file = join(coda.plugin.state, 'snapshots.json');
     this.identitiesFile = join(coda.plugin.state, 'sources.json');
@@ -27,16 +31,27 @@ export class GitProvider {
     try { this.identities = JSON.parse(await readFile(this.identitiesFile, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     for (const [kind, map] of [[SOURCE, this.sources], [SNAPSHOT, this.snapshots]]) {
       this.subscriptions.push(await this.coda.protocols.observe(kind, event => {
+        const previous = map.get(event.id);
         if (event.type === 'DELETED') map.delete(event.id); else map.set(event.id, event.object);
-        // Revoke HTTP access immediately, before the asynchronous controller catches up.
-        if (kind === SOURCE) this.repositories.delete(event.id);
+        // Revoke HTTP access immediately when the source is deleted or now names another repository;
+        // its own status writes do not change what it serves.
+        if (kind === SOURCE && (event.type === 'DELETED' || !previous || previous.instance !== event.object.instance ||
+            JSON.stringify(previous.spec) !== JSON.stringify(event.object.spec))) this.repositories.delete(event.id);
+        this.notify(kind, event.id);
       }, 'local'));
       this.subscriptions.push(await this.coda.protocols.control(kind, () => this.schedule(), 'local'));
     }
     this.active = true;
+    await this.ensureService();
+    this.subscriptions.push(await this.coda.protocols.handle(SERVICE, 'snapshot', (input, context) => this.snapshot(input, context)));
     await this.schedule();
     this.service = await this.coda.services.register('repository', (req, res, caller) =>
       req.url.startsWith('/repos/') ? this.http(req, res, caller) : this.manage(req, res, caller));
+  }
+  async ensureService() {
+    let held;
+    (await this.coda.protocols.observe(SERVICE, event => { if (event.id === SERVICE_ID) held = event.object; }, 'local')).dispose();
+    if (!held) await this.coda.protocols.put({ kind: SERVICE, id: SERVICE_ID, spec: {} });
   }
   schedule() {
     if (!this.active || this.stopped) return Promise.resolve();
@@ -57,6 +72,61 @@ export class GitProvider {
     // Always carry the observed version; do not relabel an old result with a newer revision.
     if (JSON.stringify(object.status) !== JSON.stringify(value))
       await this.coda.protocols.setStatus(object.kind, object.id, value, object.revision);
+  }
+  notify(kind, id) {
+    const set = this.waiters.get(`${kind}\0${id}`);
+    if (set) for (const check of [...set]) check();
+  }
+  waitFor(kind, id, done) {
+    const map = kind === SOURCE ? this.sources : this.snapshots, key = `${kind}\0${id}`;
+    return new Promise(resolve => {
+      const check = () => {
+        const object = map.get(id);
+        if (!object || !done(object)) return;
+        set.delete(check); if (!set.size) this.waiters.delete(key);
+        resolve(object);
+      };
+      let set = this.waiters.get(key);
+      if (!set) { set = new Set(); this.waiters.set(key, set); }
+      set.add(check); check();
+    });
+  }
+  // One local call from a workflow run: snapshot the worktree under `path`, publish it and its source, and answer.
+  async snapshot(input, { parent, requestId } = {}) {
+    if (parent?.kind !== 'workflow-runs' || typeof parent.id !== 'string' || !parent.id || parent.id.length > 2048)
+      throw new Error('snapshot 须由本机流程运行发起：parent 须为 { kind: "workflow-runs", id }');
+    if (typeof requestId !== 'string' || !requestId || requestId.length > 2048) throw new Error('snapshot 缺少请求 ID');
+    const path = input?.path;
+    if (typeof path !== 'string' || !isAbsolute(path) || path.includes('\0')) throw new Error('path 须为本机绝对路径');
+    const env = await this.coda.environment();
+    let dir, root;
+    try {
+      dir = await realpath(path);
+      root = await realpath(await git(dir, ['rev-parse', '--show-toplevel'], { env }));
+    } catch (error) { throw new Error(`path 不在任何 Git 工作副本里：${error.message}`); }
+    const workingDirectory = relative(root, dir);
+    if (workingDirectory.startsWith('..') || isAbsolute(workingDirectory)) throw new Error('path 不在工作副本根目录内');
+    const source = [...this.sources.values()].find(item => item.spec.path === root);
+    const sourceId = source?.id ?? autoSourceId(root);
+    this.holds.add(sourceId);
+    try {
+      if (!source) {
+        if (this.sources.has(sourceId)) throw new Error(`源 ${sourceId} 已被另一路径占用`);
+        await this.coda.protocols.put({ kind: SOURCE, id: sourceId, spec: { path: root } });
+      }
+      const sourceItem = await this.waitFor(SOURCE, sourceId, item => item.status?.ready === true || item.status?.reason);
+      if (!sourceItem.status.ready) throw new Error(sourceItem.status.reason ?? '源不可用');
+      const spec = { source: sourceId, mode: 'worktree', run: parent.id };
+      const snapshotId = `snapshot-${hash([parent.kind, parent.id, requestId]).slice(0, 40)}`;
+      const held = this.snapshots.get(snapshotId);
+      if (held && JSON.stringify(held.spec) !== JSON.stringify(spec)) throw new Error(`请求 ${requestId} 已用于另一个快照`);
+      if (!held) await this.coda.protocols.put({ kind: SNAPSHOT, id: snapshotId, spec });
+      const item = await this.waitFor(SNAPSHOT, snapshotId, object =>
+        object.status?.ready === true || object.status?.released === true || object.status?.reason);
+      if (!item.status.ready) throw new Error(item.status.reason ?? '快照未就绪');
+      await this.coda.protocols.publish(SNAPSHOT, snapshotId);
+      return { snapshot: { kind: SNAPSHOT, id: snapshotId }, commit: item.status.commit, workingDirectory: workingDirectory || '.' };
+    } finally { this.holds.delete(sourceId); void this.schedule().catch(() => {}); }
   }
   async followRuns() {
     const needed = new Set([...this.snapshots.values()].map(item => item.spec.run));
@@ -91,6 +161,7 @@ export class GitProvider {
   async reconcile() {
     const env = await this.coda.environment();
     await this.followRuns();
+    const snapshots = [...this.snapshots.values()];
     const instances = new Set([...this.sources.values()].map(source => source.instance));
     const retained = Object.fromEntries(Object.entries(this.identities).filter(([instance]) => instances.has(instance)));
     if (Object.keys(retained).length !== Object.keys(this.identities).length) await this.saveIdentities(retained);
@@ -122,9 +193,19 @@ export class GitProvider {
         delete this.records[token]; await this.save();
       } catch (error) { console.error('[git snapshot cleanup]', record.id, error.message); }
     }
-    for (const item of this.snapshots.values()) {
+    for (const item of snapshots) {
+      if (this.snapshots.get(item.id)?.revision !== item.revision) continue;
       const run = this.runs.get(item.spec.run);
-      if (ended(run)) { await this.status(item, { ready: false, released: true, reason: '关联运行已结束' }); continue; }
+      if (ended(run)) {
+        if (snapshotFromCall(item.id) && item.status?.released) {
+          try {
+            await this.coda.protocols.publish(SNAPSHOT, item.id, false);
+            await this.coda.protocols.delete(SNAPSHOT, item.id);
+            this.snapshots.delete(item.id);
+          } catch (error) { console.error('[git snapshot release]', item.id, error.message); }
+        } else await this.status(item, { ready: false, released: true, reason: '关联运行已结束' });
+        continue;
+      }
       const source = this.sources.get(item.spec.source), repo = this.repositories.get(item.spec.source);
       if (!source || !repo) { await this.status(item, { ready: false, reason: '源未登记或不可用' }); continue; }
       if (!run || run.error) { await this.status(item, { ready: false, reason: `无法确认关联运行：${run?.error ?? item.spec.run}` }); continue; }
@@ -149,6 +230,16 @@ export class GitProvider {
         if (this.snapshots.get(item.id)?.revision === item.revision)
           await this.status(item, { ready: false, reason: error.message });
       }
+    }
+    // Sources made for this call are temporary: once no live snapshot names one, unpublish and delete it.
+    const liveSources = new Set();
+    for (const item of this.snapshots.values()) if (!ended(this.runs.get(item.spec.run))) liveSources.add(item.spec.source);
+    for (const source of [...this.sources.values()]) {
+      if (source.id !== autoSourceId(source.spec.path) || liveSources.has(source.id) || this.holds.has(source.id)) continue;
+      try {
+        await this.coda.protocols.delete(SOURCE, source.id);
+        this.sources.delete(source.id); this.repositories.delete(source.id);
+      } catch (error) { console.error('[git source cleanup]', source.id, error.message); }
     }
   }
   async lookup(id) {

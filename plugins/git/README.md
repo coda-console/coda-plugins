@@ -1,10 +1,10 @@
 # Git 源与快照
 
-`@coda-console/git` 提供本机仓库、运行关联快照和只读 Git smart HTTP。需要系统 Git（支持 protocol v2、`--path-format=absolute`）及包含 provider／流式服务接口、协议定义写在清单里的 Coda（coda#2080、#2079、#2176）。不接收机器 ID、机器列表或空间配置，不依赖 host，不改变执行／部署准入。
+`@coda-console/git` 提供本机仓库、运行关联快照和只读 Git smart HTTP。插件启动时还写一条不发布的本机 `git/service@1` 记录，流程运行可以调用它直接从会话工作树拍快照。需要系统 Git（支持 protocol v2、`--path-format=absolute`）及包含 provider／流式服务接口、协议定义写在清单里的 Coda（coda#2080、#2079、#2176）。不接收机器 ID、机器列表或空间配置，不依赖 host，不改变执行／部署准入。
 
 ## 对象与本机管理入口
 
-协议名为 `git/source@1`、`git/snapshot@1`，按 Coda 的协议格式写在插件清单的 `contributes.protocols` 里，并在 `contributes.protocolImplementations` 里声明实现。由插件保存本机正本，`control` 办事员写 status 时带执行时观察到的 revision。代码里的协议名见 `lib/definitions.mjs`。
+协议名为 `git/source@1`、`git/snapshot@1`，按 Coda 的协议格式写在插件清单的 `contributes.protocols` 里，并在 `contributes.protocolImplementations` 里声明实现。由插件保存本机正本，`control` 办事员写 status 时带执行时观察到的 revision。代码里的协议名见 `lib/definitions.mjs`。另有本机固定记录 `git/service@1`，见「拍快照调用」。
 
 | 协议 | spec | status |
 | --- | --- | --- |
@@ -33,6 +33,26 @@ const subscription = await coda.protocols.observe('git/snapshot@1', event => {
 
 POST `…/snapshots/<id>/delete` 删除快照；POST `…/sources/<id>/delete` 撤下源并回收其快照 ref。POST `…/<sources|snapshots>/<id>/publish` `{ enabled: true|false }` 显式发布／撤下协议镜像；默认仅本机，不自动广播本地路径。跨机引用与入口由空间 Provider 映射，调用方不往本插件传机器参数。
 
+## 拍快照调用
+
+插件启动时在本机写一条固定记录 `git/service@1`／`git`，不发布，只接受本机调用。调用信封的 `parent` 须是本机流程运行 `{ kind: 'workflow-runs', id }`，它就是快照的 `run`；不是就拒绝并说明原因。流程运行调用 `snapshot`：
+
+```js
+const result = await call({
+  record: { kind: 'git/service@1', id: 'git' },
+  operation: 'snapshot',
+  input: { path: '/absolute/worktree/subdir' },
+  requestId: 'request-1',
+  parent: { kind: 'workflow-runs', id: runId },
+  awaited: true,
+});
+// { snapshot: { kind: 'git/snapshot@1', id }, commit, workingDirectory }
+```
+
+`path` 是任一工作副本里的本机绝对路径，主工作副本或 `git worktree` 建的工作树都行。插件用 `--show-toplevel` 找到根目录，为根目录准备源：已有同路径的源就复用，没有就按路径哈希新建 `worktree-<sha256 前 40 位>`。快照 id 由发起运行的引用和 `requestId` 派生，同一个请求重发得到同一条快照。插件等快照 `ready` 后发布快照，再返回；`workingDirectory` 是 `path` 相对根目录的路径（根目录为 `.`，不含 `..`）。快照失败时调用失败，并带上那条快照的 `reason`。
+
+源本身不发布：它的 spec 是本机路径，对方只用快照 status 里的 `url`（`repos/<source>`）和 `ref`，经调用方的转发入口取。这样按需建的源跟着快照走：不再有未结束运行引用它时，插件删除它，快照 ref 按运行回收。调用建的快照在运行结束后标为 `released`，随后撤下发布并删除；经管理入口手动登记的源和快照不受影响。
+
 ## 快照与回收
 
 工作树路径依次执行临时 `GIT_INDEX_FILE` → `read-tree HEAD` → `add -A` → `write-tree` → `commit-tree -p HEAD` → `update-ref`。保留执行位、符号链接，真实 index 与工作区均不修改；提交身份沿用父提交，不设置 Git 用户配置。制作过程中用户仍可编辑文件，因此它是 Git 逐文件读取的结果，不保证跨文件事务一致性。
@@ -41,7 +61,7 @@ POST `…/snapshots/<id>/delete` 删除快照；POST `…/sources/<id>/delete` �
 
 ## 只读 smart HTTP
 
-服务 `repository` 的 Git URL 为 `/v1/plugins/git/services/repository/repos/<source>`。由 Coda 先鉴权，再经流式通道交给插件；空间 Provider 可经 `/forward/<owner>/…` 到持有端，本插件只处理本机相对路径。使用已有 Coda 鉴权连接／代理入口，插件不另发 token、不开放匿名端口。
+服务 `repository` 的 Git URL 为 `/v1/plugins/git/services/repository/repos/<source>`。由 Coda 先鉴权，再经流式通道交给插件；Coda 经 `/v1/services/space/machines/<owner>/v1/plugins/git/services/repository/` 到持有端（空间 Provider 的镜像入口），本插件只处理本机相对路径。使用已有 Coda 鉴权连接／代理入口，插件不另发 token、不开放匿名端口。
 
 ```sh
 git -c protocol.version=2 fetch "$AUTHENTICATED_GIT_URL" \
