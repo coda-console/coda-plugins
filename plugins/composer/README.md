@@ -71,12 +71,12 @@ Agent 要把改动合进默认分支时，先发起「开工」（`kickoff`）�
 | `devices` | 「设备验收」，默认关；卡上两个开工选项的勾选默认取它 |
 | `device` | 「验收设备」，如 `duo-testbed`，默认空；验收期间独占它 |
 | `executor` | 监督开发的「执行者」，一组 Agent 选择，默认取发起会话的 |
-| `branch` | 简易开发提交改动的「分支」，默认是会话所在的分支（`defaultFrom="session.branch"`） |
+| `branch` | 简易开发提交改动的「分支」，默认是会话所在的分支（`defaultFrom="session.branch"`）；开在别的目录时会话没有分支，简易开发从目标分支替主 Agent 开一条 |
 | `base` | 「目标分支」，留空用仓库默认分支 |
 
 「开工」卡上写功能名、目标与范围、Agent 建议的做法，以及设备验收的建议；选项是「开工：简易开发」「开工：监督开发」和「先别」。两个开工选项各带勾选项「设备验收」，默认取 `devices`；卡上的附言可选。
 
-- 选简易开发：调用 `simple`，传 `branch`、按勾选得到的 `devices`、`device`、`base`。
+- 选简易开发：调用 `simple`，传 `branch`、按勾选得到的 `devices`、`device`、`base`。泳道由发起的 Agent 负责：开在别的目录、或要指定分支时，发起时就传 `branch`（分支可以之后再开，开始时只核对名字）；没传时 `simple` 从目标分支开 `agent/simple-<运行 ID>` 并告诉它。
 - 选监督开发：调用 `develop`，传 `title`、`task`（就是 `goal`；你在卡上写了附言时，在 `goal` 后另起一行「用户开工时补充：」接上附言）、按勾选得到的 `devices`、`device`、`executor`、`base`。
 - 选「先别」：不调用任何流程，直接结束，结束输出说明用户没有开工；有附言就一并带上。
 
