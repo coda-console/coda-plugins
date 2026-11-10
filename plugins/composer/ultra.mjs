@@ -1,4 +1,4 @@
-// Ultra 的开启、持续与关闭提示（见 README.md）：只管派活。开发流程由用户在会话里开启，规则写在流程的任务里，不在这里。
+// Ultra 的开启、持续与关闭提示（见 README.md）：只管派活。开发流程由用户在会话里开启，或经「开工」发起后由用户在开工卡上确认；规则写在流程的任务里，不在这里。
 // 委派规则改编自 oh-my-claudecode 的 docs/CLAUDE.md，见 THIRD_PARTY_NOTICES.md。
 
 // 名单供只读调研的 spawn 选执行者。
