@@ -64,7 +64,7 @@ test('找测试机 gives the registered device\'s name, UDID and note; one not r
   const state = registered(t, [phone]);
   const found = await step(t, 'device', { CODA_PLUGIN_STATE: state, DEVICE: phone.id });
   assert.equal(found.code, 0);
-  assert.equal(found.outputs, `name=${phone.name}\nudid=${phone.udid}\npersonal=false\nnote<<CODA_NOTE\n${phone.note}\nCODA_NOTE\n`);
+  assert.equal(found.outputs, `name=${phone.name}\nudid=${phone.udid}\npersonal=false\nplatform=ios\nadb=\nnote<<CODA_NOTE\n${phone.note}\nCODA_NOTE\n`);
   const personal = await step(t, 'device', { CODA_PLUGIN_STATE: registered(t, [{ ...phone, personal: true }]), DEVICE: phone.id });
   assert.equal(personal.code, 0, personal.stderr);
   assert.equal(personal.outputs, found.outputs.replace('personal=false', 'personal=true'));
@@ -166,12 +166,13 @@ test('在测试机上执行 runs the command handed over in the session\'s direc
   const at = temporary(t), spec = join(at, 'spec.json');
   const handed = (argv, cwd = at) => writeFileSync(spec, JSON.stringify({ argv, cwd, env: { PATH: process.env.PATH, MINE: 'yes' }, kind: phone.id }));
   handed(['sh', '-c', 'echo "lease=$HOST_SIM_LEASE mine=$MINE in=$(basename "$PWD") plugin=${CODA_PLUGIN_PATH:-none}"; exit 7']);
-  const ran = await step(t, 'run-on-device', { SPEC: spec });
+  const state = registered(t, [phone]);
+  const ran = await step(t, 'run-on-device', { SPEC: spec, CODA_PLUGIN_STATE: state });
   // The step succeeds whatever the command did: its status goes back to host-sim as the output.
   assert.deepEqual([ran.code, ran.stdout, ran.outputs], [0, `lease=coda-run:${phone.id} mine=yes in=${basename(at)} plugin=none\n`, 'exit_code=7\n']);
   assert.equal(existsSync(spec), false, 'the spec is gone once read');
   handed(['no-such-command-here']);
-  const missing = await step(t, 'run-on-device', { SPEC: spec });
+  const missing = await step(t, 'run-on-device', { SPEC: spec, CODA_PLUGIN_STATE: state });
   assert.deepEqual([missing.code, missing.outputs], [0, 'exit_code=127\n']);
   assert.deepEqual(readdirSync(at), []);
 });
@@ -180,7 +181,7 @@ test('run-on-device cancelled ends as cancelled, its command stopped with it', a
   const at = temporary(t), spec = join(at, 'spec.json'), output = join(at, 'output');
   writeFileSync(output, '');
   writeFileSync(spec, JSON.stringify({ argv: ['sh', '-c', 'touch started; sleep 60'], cwd: at, env: { PATH: process.env.PATH }, kind: phone.id }));
-  const child = spawn(process.execPath, [join(dir, 'scripts/run-on-device.mjs')], { detached: true, env: env({ SPEC: spec, GITHUB_OUTPUT: output }) });
+  const child = spawn(process.execPath, [join(dir, 'scripts/run-on-device.mjs')], { detached: true, env: env({ SPEC: spec, GITHUB_OUTPUT: output, CODA_PLUGIN_STATE: registered(t, [phone]) }) });
   const ended = new Promise(resolve => child.on('close', code => resolve(code)));
   for (let i = 0; i < 500 && !existsSync(join(at, 'started')); i++) await new Promise(resolve => setTimeout(resolve, 10));
   process.kill(-child.pid, 'SIGTERM');
