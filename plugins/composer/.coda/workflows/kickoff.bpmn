@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 开工（README.md「开工」）：Agent 要发起开发流程时先开这一条。第一步是把目标与范围写成卡交给用户，
+     用户在卡上选简易开发、监督开发或先别；选定后调用对应的开发流程，结束输出原样交回。
+     它是入口，不是一种流程实现，不声明 coda:kind。BPMN 2.0，由 Coda 执行（docs/workflows.md）。 -->
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="kickoff-definitions" targetNamespace="https://coda.pub/plugins/composer">
+  <process id="kickoff" name="开工" isExecutable="true" coda:title='=if inputs.title = "" then "开工" else "开工：" + inputs.title'>
+    <extensionElements>
+      <coda:input name="title" label="功能名" type="string" required="true" description="也是 PR 标题" />
+      <coda:input name="goal" label="目标、范围与完成标准" type="string" required="true" description="写成可以照着做的完整描述" />
+      <coda:input name="way" label="建议的做法" type="string" default="develop" description="Agent 建议的做法：simple（简易开发）或 develop（监督开发）" />
+      <coda:input name="devices" label="设备验收" type="boolean" default="false" description="改了客户端、要在 Mac 或 iPhone 上验收时打开" />
+      <coda:input name="device" label="验收设备" type="string" default="" description="测试机设备名，如 duo-testbed；验收期间独占它；留空不占设备" />
+      <coda:input name="executor" label="执行者" type="agent" defaultFrom="session.agent" description="监督开发的执行者；不填用发起会话的" />
+      <coda:input name="branch" label="分支" type="branch" defaultFrom="session.branch" description="简易开发提交改动的分支，默认是会话所在的分支" />
+      <coda:input name="base" label="目标分支" type="string" default="" description="留空用仓库默认分支" />
+    </extensionElements>
+    <startEvent id="start" />
+    <sequenceFlow id="start-kickoff" sourceRef="start" targetRef="card" />
+
+    <userTask id="card" name="开工" coda:assignee="user" coda:noteLabel="附言（可选）">
+      <documentation>功能：{{inputs.title}}
+目标、范围与完成标准：
+{{inputs.goal}}
+Agent 建议的做法：{{if inputs.way = "simple" then "简易开发" else "监督开发"}}。
+设备验收：{{if inputs.devices then "建议开启" else "未建议开启"}}{{if inputs.device = "" then "" else "，验收设备 " + inputs.device}}。
+选「开工：简易开发」由发起会话的 Agent 自己把改动做完，流程推送、检查、评审一次后由你验收、批准合并；选「开工：监督开发」把任务交给执行者，主 Agent 审查、验收后再由你批准合并。选「先别」不开工，附言会随结束结果带上。</documentation>
+      <extensionElements>
+        <coda:choice id="simple" name="开工：简易开发"><coda:option id="devices" name="设备验收" default="=inputs.devices" /></coda:choice>
+        <coda:choice id="develop" name="开工：监督开发"><coda:option id="devices" name="设备验收" default="=inputs.devices" /></coda:choice>
+        <coda:choice id="later" name="先别" />
+      </extensionElements>
+    </userTask>
+    <sequenceFlow id="kickoff-way" sourceRef="card" targetRef="way-choice" />
+
+    <exclusiveGateway id="way-choice" name="怎么开工" default="way-later" />
+    <sequenceFlow id="way-simple" sourceRef="way-choice" targetRef="simple-call"><conditionExpression xsi:type="tFormalExpression">=card.chose.simple</conditionExpression></sequenceFlow>
+    <sequenceFlow id="way-develop" sourceRef="way-choice" targetRef="develop-call"><conditionExpression xsi:type="tFormalExpression">=card.chose.develop</conditionExpression></sequenceFlow>
+    <sequenceFlow id="way-later" sourceRef="way-choice" targetRef="stopped" />
+
+    <callActivity id="simple-call" calledElement="simple">
+      <extensionElements>
+        <coda:param name="branch" value="=inputs.branch" />
+        <coda:param name="devices" value="=card.options.devices" />
+        <coda:param name="device" value="=inputs.device" />
+        <coda:param name="base" value="=inputs.base" />
+      </extensionElements>
+    </callActivity>
+    <sequenceFlow id="simple-done" sourceRef="simple-call" targetRef="done-simple" />
+    <endEvent id="done-simple" name="简易开发结束" coda:notify='=if simple-call.notify = false then false else true'>
+      <extensionElements><coda:output name="pr" value="=simple-call.pr" /><coda:output name="commit" value="=simple-call.commit" /></extensionElements>
+    </endEvent>
+
+    <callActivity id="develop-call" calledElement="develop">
+      <extensionElements>
+        <coda:param name="title" value="=inputs.title" />
+        <coda:param name="task" value='=if card.note = null or card.note = "" then inputs.goal else inputs.goal + "\n\n用户开工时补充：\n" + card.note' />
+        <coda:param name="devices" value="=card.options.devices" />
+        <coda:param name="device" value="=inputs.device" />
+        <coda:param name="executor" value="=inputs.executor" />
+        <coda:param name="base" value="=inputs.base" />
+      </extensionElements>
+    </callActivity>
+    <sequenceFlow id="develop-done" sourceRef="develop-call" targetRef="done-develop" />
+    <endEvent id="done-develop" name="监督开发结束" coda:notify='=if develop-call.notify = false then false else true'>
+      <extensionElements><coda:output name="pr" value="=develop-call.pr" /><coda:output name="commit" value="=develop-call.commit" /></extensionElements>
+    </endEvent>
+
+    <endEvent id="stopped" name="未开工" coda:notify="true">
+      <extensionElements><coda:output name="message" value='=if card.note = null or card.note = "" then "用户没有开工。" else "用户没有开工。\n\n附言：\n" + card.note' /></extensionElements>
+    </endEvent>
+  </process>
+</definitions>

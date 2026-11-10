@@ -461,7 +461,7 @@ test('开发流程定义、回路、检查提交与部署发布选择符合运�
     const flows = elements.filter(e => e.sourceRef === node);
     return (flows.find(e => e.conditionExpression && evaluate(e.conditionExpression.body.trim().slice(1), context).value) ?? node.default).targetRef.id;
   };
-  assert.equal(process.name, '监督开发'); assert.equal(process.concurrency, undefined);
+  assert.equal(process.name, '监督开发'); assert.equal(process.kind, 'develop'); assert.equal(process.concurrency, undefined);
   // 用户在会话里开启时什么都不必填：功能名与第一项任务由主 Agent 写，执行者取发起会话的。
   assert.deepEqual(values(process).filter(v => v.required).map(v => v.name), []);
   for (const name of ['title', 'task']) assert.equal(values(process).find(v => v.name === name).default, '');

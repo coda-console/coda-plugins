@@ -129,6 +129,7 @@ test('简易开发的流程定义：开启时什么都不必选，第一张任�
     return (flows.find(e => e.conditionExpression && evaluate(e.conditionExpression.body.trim().slice(1), context).value) ?? node.default).targetRef.id;
   };
   assert.equal(process.name, '简易开发');
+  assert.equal(process.kind, 'develop');
   const inputs = Object.fromEntries(values(process).map(v => [v.name, v]));
   assert.deepEqual([inputs.branch.type, inputs.branch.defaultFrom], ['branch', 'session.branch']);
   assert.deepEqual([inputs.reviewer.type, inputs.reviewer.defaultFrom, inputs.reviewer.required], ['agent', undefined, undefined], '不选按评审组合');

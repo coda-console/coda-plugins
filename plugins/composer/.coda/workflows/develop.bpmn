@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="develop-definitions" targetNamespace="https://coda.pub/plugins/composer">
-  <process id="develop" name="监督开发" isExecutable="true" coda:title='{{if inputs.title = "" then "监督开发" else "开发：" + inputs.title}}'>
+  <process id="develop" name="监督开发" isExecutable="true" coda:kind="develop" coda:title='{{if inputs.title = "" then "监督开发" else "开发：" + inputs.title}}'>
     <extensionElements>
       <coda:input name="title" label="功能名" default="" description="留空时由主 Agent 在第一张任务里写" />
       <coda:input name="task" label="第一项任务" default="" description="留空时由主 Agent 把和你聊定的需求写成第一项任务" />
@@ -357,6 +357,6 @@ PR：{{pr.url}}
       <extensionElements><coda:param name="kind" value="release" /><coda:param name="commit" value="=merge.commit" /><coda:param name="inputs" value='={ publish: "true", notes: if approval-result.route = "notes" then notes-result.notes else approve.note }' /></extensionElements>
     </serviceTask>
     <sequenceFlow id="published-release" sourceRef="publish-release" targetRef="done" />
-    <endEvent id="done" name="已完成" coda:notify='=if inputs.delivery != "" then true else approve.options.notify'><extensionElements><coda:output name="pr" value="=pr.url" /><coda:output name="commit" value="=merge.commit" /></extensionElements></endEvent>
+    <endEvent id="done" name="已完成" coda:notify='=if inputs.delivery != "" then true else approve.options.notify'><extensionElements><coda:output name="pr" value="=pr.url" /><coda:output name="commit" value="=merge.commit" /><coda:output name="notify" value='=if inputs.delivery != "" then true else approve.options.notify' /></extensionElements></endEvent>
   </process>
 </definitions>

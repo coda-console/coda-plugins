@@ -4,7 +4,7 @@
   "displayName": "输入框模式",
   "description": "交接、子会话、! 命令、Ultra 与循环",
   "icon": { "symbol": "character.cursor.ibeam", "color": "blue" },
-  "version": "5.0.0",
+  "version": "5.1.0",
   "categories": [
     "工作流程"
   ],
@@ -68,6 +68,7 @@
         }
       }
     },
+    "instructions": "要把改动合进默认分支时，先用 workflow_run 发起 kickoff（给 title、goal、建议的 way、要不要设备验收），用户在开工卡上选定后，流程会把下一步交给你；不要先改完再补开开发流程。",
     "composerModes": [
       {
         "id": "handoff",

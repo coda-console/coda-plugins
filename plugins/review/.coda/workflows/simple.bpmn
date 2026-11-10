@@ -8,7 +8,7 @@
      合并前检查、GitHub 检查都通过后请你批准；合并后按你勾选的部署、发布。BPMN 2.0，由 Coda 执行（docs/workflows.md）。 -->
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="simple-definitions" targetNamespace="https://coda.pub/plugins/review">
-  <process id="simple" name="简易开发" isExecutable="true" coda:title="简易开发">
+  <process id="simple" name="简易开发" isExecutable="true" coda:kind="develop" coda:title="简易开发">
     <extensionElements>
       <coda:input name="branch" label="分支" type="branch" defaultFrom="session.branch" required="true" description="主 Agent 提交改动的分支，默认是会话所在的分支" />
       <coda:input name="reviewer" label="评审方" type="agent" description="不选按插件设置「评审组合」：Claude 写的由 Codex 评，反之亦然" />
@@ -20,7 +20,7 @@
     <sequenceFlow id="start-report" sourceRef="start" targetRef="report" />
 
     <userTask id="report" name="交上改动" coda:wake="false" coda:noteLabel="写给用户的改动汇报">
-      <documentation>用户在这个会话里开启了简易开发：你自己把这次的改动做完，流程推送、跑项目检查、请{{if inputs.reviewer = null then "评审方" else " " + inputs.reviewer.agent + " "}}评审一次，用户验收、批准后合并。
+      <documentation>这次用简易开发：你自己把这次的改动做完，流程推送、跑项目检查、请{{if inputs.reviewer = null then "评审方" else " " + inputs.reviewer.agent + " "}}评审一次，用户验收、批准后合并。
 把改动提交到分支 {{inputs.branch}}（不用推送、不用开 PR），再答复。备注必填，是写给用户的改动汇报，会放在 PR 描述和批准卡最上面。约 8 行以内，只写用户能感知的变化和动到的端，不放实现细节、测试数量、文件清单，不贴代码：
 做了什么
 - …（3～5 条）
@@ -306,7 +306,7 @@
     </serviceTask>
     <sequenceFlow id="published" sourceRef="publish" targetRef="done" />
     <endEvent id="done" name="已合并" coda:notify="=approval.notify">
-      <extensionElements><coda:output name="pr" value="=pr.url" /><coda:output name="commit" value="=merge.commit" /></extensionElements>
+      <extensionElements><coda:output name="pr" value="=pr.url" /><coda:output name="commit" value="=merge.commit" /><coda:output name="notify" value="=approval.notify" /></extensionElements>
     </endEvent>
   </process>
 </definitions>
