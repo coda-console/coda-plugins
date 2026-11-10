@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
-import { Rpc } from '../../../plugins/grok-bot/agent/rpc.mjs';
+import { Rpc } from './rpc.mjs';
 import { bind, call, net, serveMcp, TOOLS } from '../../../plugins/grok-bot/remote/coda-bot.mjs';
 import { http, temporary } from './helpers.mjs';
 

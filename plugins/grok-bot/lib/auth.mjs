@@ -17,7 +17,7 @@ export function writePrivate(root, file, value) {
   renameSync(temp, file);
 }
 export class NativeAuth {
-  constructor({ root, fetcher, clock }) {
+  constructor({ root, fetcher = fetch, clock = { setTimeout, clearTimeout } }) {
     Object.assign(this, { root, fetcher, clock });
     this.file = root && join(root, 'native-auth.json');
     if (this.file) {
@@ -52,7 +52,7 @@ export class NativeAuth {
       });
       const renewed = await response.json().catch(() => ({}));
       if (!response.ok || renewed.shouldLogout || typeof renewed.access_token !== 'string' || !renewed.access_token)
-        throw Object.assign(new Error('Grok 登录续期失败，请发送 /login 重新登录'), { status: 401 });
+        throw Object.assign(new Error('Grok 登录续期失败，请在资源页重新登录'), { status: 401 });
       if (this.credentials !== auth) return; // A completed login supersedes an old refresh.
       const next = { ...auth, accessToken: renewed.access_token, refreshToken: renewed.refresh_token ?? auth.refreshToken };
       writePrivate(this.root, this.file, next);
@@ -72,7 +72,7 @@ export class NativeAuth {
         for (;;) {
           const response = await this.fetcher(url, { headers: clientHeaders(), redirect: 'error', signal: controller.signal });
           if (response.status === 404) { await pause(this.clock, 2000, controller.signal); continue; }
-          if (!response.ok) throw new Error(`登录失败 HTTP ${response.status}；请发送 /login 重试`);
+          if (!response.ok) throw new Error(`登录失败 HTTP ${response.status}；请在资源页重试`);
           const auth = await response.json();
           if (typeof auth.accessToken !== 'string' || !auth.accessToken) throw new Error('登录响应缺少 accessToken');
           writePrivate(this.root, this.file, auth);

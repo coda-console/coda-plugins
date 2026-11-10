@@ -1,4 +1,4 @@
-import { envelope } from '../../../plugins/grok-bot/agent/native.mjs';
+import { envelope } from '../../../plugins/grok-bot/lib/native.mjs';
 import { mailbox } from './helpers.mjs';
 export class FakeNative {
   constructor() { this.requests = []; this.calls = mailbox(); this.connections = []; this.entries = []; this.polls = 0; this.pollAnswers = [404, { accessToken: 'fixture-access' }]; }

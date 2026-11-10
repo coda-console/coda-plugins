@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { NativeAuth } from '../../../plugins/grok-bot/agent/auth.mjs';
+import { NativeAuth } from '../../../plugins/grok-bot/lib/auth.mjs';
 import { temporary, fakeClock } from './helpers.mjs';
 
 test('concurrent authentication rejection refreshes once, persists rotated tokens privately, then retries rejected reads', async t => {
@@ -34,7 +34,7 @@ test('failed refresh asks for login; network failure never retries an ambiguous 
     calls++;
     return new Response('{}', { status: new URL(url).pathname === '/oauth/token' ? 400 : 401 });
   } });
-  await assert.rejects(auth.client.request('ListGrokBotAgents', {}), /\/login/);
+  await assert.rejects(auth.client.request('ListGrokBotAgents', {}), /资源页/);
   assert.equal(calls, 2);
   auth.transport.fetcher = async () => { calls++; throw new Error('connection lost'); };
   await assert.rejects(auth.client.request('SendGrokBotUserMessage', {}), /connection lost/);
