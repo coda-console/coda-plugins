@@ -4,7 +4,7 @@
   "displayName": "Git 源与快照",
   "description": "登记本机 Git 源，提供只读快照",
   "icon": { "symbol": "arrow.triangle.branch", "color": "orange" },
-  "version": "0.3.0",
+  "version": "0.4.0",
   "categories": ["机器与资源"],
   "type": "module",
   "main": "main.mjs",
@@ -66,9 +66,53 @@
           "additionalProperties": false
         },
         "operations": {}
+      },
+      {
+        "name": "git/service@1",
+        "title": "Git 服务",
+        "description": "本机 Git 快照调用：从一个工作副本目录拍工作树快照并发布。",
+        "spec": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        },
+        "status": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        },
+        "operations": {
+          "snapshot": {
+            "description": "从本机工作副本的一个目录拍工作树快照，发布源与快照，立即返回快照引用、提交与目录。",
+            "input": {
+              "type": "object",
+              "properties": { "path": { "type": "string", "minLength": 1 } },
+              "required": ["path"],
+              "additionalProperties": false
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "snapshot": {
+                  "type": "object",
+                  "properties": {
+                    "kind": { "type": "string", "minLength": 1 },
+                    "id": { "type": "string", "minLength": 1 }
+                  },
+                  "required": ["kind", "id"],
+                  "additionalProperties": false
+                },
+                "commit": { "type": "string", "minLength": 1 },
+                "workingDirectory": { "type": "string", "minLength": 1 }
+              },
+              "required": ["snapshot", "commit", "workingDirectory"],
+              "additionalProperties": false
+            }
+          }
+        }
       }
     ],
-    "protocolImplementations": ["git/source@1", "git/snapshot@1"],
+    "protocolImplementations": ["git/source@1", "git/snapshot@1", "git/service@1"],
     "skills": ["skills/git-source"]
   },
   "engines": { "node": ">=24" },
