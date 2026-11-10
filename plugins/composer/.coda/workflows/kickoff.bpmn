@@ -47,7 +47,7 @@ Agent 建议的做法：{{if inputs.way = "simple" then "简易开发" else "监
       </extensionElements>
     </callActivity>
     <sequenceFlow id="simple-done" sourceRef="simple-call" targetRef="done-simple" />
-    <endEvent id="done-simple" name="简易开发结束" coda:notify="true">
+    <endEvent id="done-simple" name="简易开发结束" coda:notify='=if simple-call.notify = false then false else true'>
       <extensionElements><coda:output name="pr" value="=simple-call.pr" /><coda:output name="commit" value="=simple-call.commit" /></extensionElements>
     </endEvent>
 
@@ -62,11 +62,11 @@ Agent 建议的做法：{{if inputs.way = "simple" then "简易开发" else "监
       </extensionElements>
     </callActivity>
     <sequenceFlow id="develop-done" sourceRef="develop-call" targetRef="done-develop" />
-    <endEvent id="done-develop" name="监督开发结束" coda:notify="true">
+    <endEvent id="done-develop" name="监督开发结束" coda:notify='=if develop-call.notify = false then false else true'>
       <extensionElements><coda:output name="pr" value="=develop-call.pr" /><coda:output name="commit" value="=develop-call.commit" /></extensionElements>
     </endEvent>
 
-    <endEvent id="stopped" name="未开工">
+    <endEvent id="stopped" name="未开工" coda:notify="true">
       <extensionElements><coda:output name="message" value='=if card.note = null or card.note = "" then "用户没有开工。" else "用户没有开工。\n\n附言：\n" + card.note' /></extensionElements>
     </endEvent>
   </process>

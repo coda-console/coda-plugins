@@ -89,8 +89,31 @@ test('开工卡上的附言接在监督开发的任务后，设备验收勾选�
   // 被调用流程的结束输出原样成为「开工」的输出。
   assert.deepEqual(outputs('done-simple'), { pr: '=simple-call.pr', commit: '=simple-call.commit' });
   assert.deepEqual(outputs('done-develop'), { pr: '=develop-call.pr', commit: '=develop-call.commit' });
-  // 被调用流程的批准卡在最内层，不能决定外层是否叫醒；入口按默认叫醒发起会话。
-  assert.deepEqual([nodes['done-simple'].notify, nodes['done-develop'].notify], ['true', 'true']);
+  assert.deepEqual([nodes['done-simple'].notify, nodes['done-develop'].notify],
+    ['=if simple-call.notify = false then false else true', '=if develop-call.notify = false then false else true']);
+});
+
+test('结束通知跟随批准卡的勾选，暂不合并与先别都叫醒', async () => {
+  const entry = await definition(workflow, 'kickoff');
+  const simpleDefinition = await definition(simple, 'simple');
+  const developDefinition = await definition(develop, 'develop');
+  const simpleNotify = simpleDefinition.outputs('done').notify;
+  const developNotify = developDefinition.outputs('done').notify;
+  assert.equal(simpleDefinition.nodes.done.notify, simpleNotify);
+  assert.equal(developDefinition.nodes.done.notify, developNotify);
+  for (const notify of [true, false]) {
+    assert.equal(evaluate(simpleNotify.slice(1), { approval: { notify } }).value, notify);
+  }
+  for (const [delivery, notify, expected] of [['', false, false], ['', true, true], ['requirement-1', false, true]]) {
+    assert.equal(evaluate(developNotify.slice(1), { inputs: { delivery }, approve: { options: { notify } } }).value, expected);
+  }
+  const wake = (id, call, outputs) => evaluate(entry.nodes[id].notify.slice(1), { [call]: outputs }).value;
+  for (const [id, call] of [['done-simple', 'simple-call'], ['done-develop', 'develop-call']]) {
+    assert.equal(wake(id, call, { notify: false }), false, `${id}：明确取消勾选时不叫醒`);
+    assert.equal(wake(id, call, { notify: true }), true, `${id}：勾选时叫醒`);
+    assert.equal(wake(id, call, {}), true, `${id}：暂不合并没有 notify 输出时叫醒`);
+  }
+  assert.equal(entry.nodes.stopped.notify, 'true');
 });
 
 test('两个开发流程声明 coda:kind="develop"，简易开发的第一张任务不区分谁发起', async () => {

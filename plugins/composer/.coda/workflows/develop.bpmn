@@ -357,6 +357,6 @@ PR：{{pr.url}}
       <extensionElements><coda:param name="kind" value="release" /><coda:param name="commit" value="=merge.commit" /><coda:param name="inputs" value='={ publish: "true", notes: if approval-result.route = "notes" then notes-result.notes else approve.note }' /></extensionElements>
     </serviceTask>
     <sequenceFlow id="published-release" sourceRef="publish-release" targetRef="done" />
-    <endEvent id="done" name="已完成" coda:notify='=if inputs.delivery != "" then true else approve.options.notify'><extensionElements><coda:output name="pr" value="=pr.url" /><coda:output name="commit" value="=merge.commit" /></extensionElements></endEvent>
+    <endEvent id="done" name="已完成" coda:notify='=if inputs.delivery != "" then true else approve.options.notify'><extensionElements><coda:output name="pr" value="=pr.url" /><coda:output name="commit" value="=merge.commit" /><coda:output name="notify" value='=if inputs.delivery != "" then true else approve.options.notify' /></extensionElements></endEvent>
   </process>
 </definitions>

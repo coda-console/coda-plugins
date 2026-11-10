@@ -306,7 +306,7 @@
     </serviceTask>
     <sequenceFlow id="published" sourceRef="publish" targetRef="done" />
     <endEvent id="done" name="已合并" coda:notify="=approval.notify">
-      <extensionElements><coda:output name="pr" value="=pr.url" /><coda:output name="commit" value="=merge.commit" /></extensionElements>
+      <extensionElements><coda:output name="pr" value="=pr.url" /><coda:output name="commit" value="=merge.commit" /><coda:output name="notify" value="=approval.notify" /></extensionElements>
     </endEvent>
   </process>
 </definitions>
