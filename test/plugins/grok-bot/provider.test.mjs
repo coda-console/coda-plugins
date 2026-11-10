@@ -11,7 +11,19 @@ import { temporary } from './helpers.mjs';
 import { ProtocolTypes, validate } from '../../../check/coda/components/protocols/types.mjs';
 import { SESSION_PROTOCOL, RUN_PROTOCOL } from '@coda-console/protocol/protocol';
 const types = new ProtocolTypes();
-for (const d of [SESSION_PROTOCOL, RUN_PROTOCOL]) types.register({ ...d, kind: d.name, participants: () => [] });
+// Test the 5.7.0 activity contract while Coda's synced checker still pins 5.6.0.
+// coda-protocol 5114657bff89056ffe94fd8988478b0a8b2f37b4, session.json status.activity.
+const sessionProtocol = structuredClone(SESSION_PROTOCOL);
+sessionProtocol.status.properties.activity = {
+  type: 'object',
+  properties: {
+    participant: { type: 'string', minLength: 1, maxLength: 2048 },
+    text: { type: 'string', minLength: 1, maxLength: 200, not: { pattern: '[\\r\\n\\u2028\\u2029]' } },
+  },
+  required: ['participant', 'text'],
+  additionalProperties: false,
+};
+for (const d of [sessionProtocol, RUN_PROTOCOL]) types.register({ ...d, kind: d.name, participants: () => [] });
 const until = async fn => { for (let i=0; i<200; i++) { if (fn()) return; await delay(5); } assert.fail('condition timed out'); };
 function host(root) {
   const records = new Map(), watchers = [], handlers = new Map(); let revision = 0;

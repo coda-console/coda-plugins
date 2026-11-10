@@ -1,6 +1,6 @@
 # Grok Bot
 
-0.5.0 把每个 Bot 的原生主会话提供为 `coda/session@1` 记录，不再声明 ACP Agent。只供预览版安装。协议依照 5.7.0，契约检查暂时钉到 `coda-protocol` 提交 `5114657bff89056ffe94fd8988478b0a8b2f37b4`。
+0.5.0 把每个 Bot 的原生主会话提供为 `coda/session@1` 记录，不再声明 ACP Agent。只供预览版安装。协议依照 5.7.0。
 
 ## 登录与记录
 
