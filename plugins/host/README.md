@@ -6,6 +6,8 @@
 
 2.0.1：启动时先读上次运行留下的 `coda/executor@1` 记录，按它的 revision 接管；此前插件宿主重启后写这条记录会被 Coda 以 conflict 拒绝，host 模块载入失败。
 
+2.1.0：`run-held` 的构建在这台名额满时，可以带着会话的工作副本去空间里别的 Mac 跑，日志与退出码回到原会话，产物留在那台；模拟器和要用产物的构建仍在这台，见下文「去空间里别的 Mac」。
+
 配置意图、能力和名额在本机持有。`host.enabled` 控制是否接活，默认 true；`host.capacity` 配置名额数；`host.labels` 是逗号分隔的自定义标签。系统／CPU、Node、Xcode、可用模拟器 runtime 与图形会话由本机探测，每分钟刷新，不启动模拟器。容量和占用订阅 `concurrency-groups`，包括旧流程与 run-held，公布值不构成预留。停止接活不终止已接收的任务。
 
 资源只接受 `{slots:1}` 或空对象；`exclusiveResources: ['slots']` 表示独占。host 将 slots 映射到本机组 host，开跑前通过同一名额账本最终准入，账本返回稳定名额序号。其他资源量不能模拟为多次申请。
@@ -33,7 +35,8 @@
 或让脚本经 `host-sim` 自己排队（见下文）。流程步骤占不占名额由流程自己用 `coda:group="host"` 声明。
 
 **入口**：会话的 Agent 用 `workflow_run` 调用能力 `run-held`（持锁执行），`inputs` 给 `command`（要执行的命令，由 `$SHELL -c` 执行）、
-`cwd`（在哪个目录执行，绝对路径），用模拟器时 `what` 为 `模拟器`（默认 `构建`）。能力写了 `coda:inline` 与 `coda:subagents="false"`：
+`cwd`（在哪个目录执行，绝对路径），用模拟器时 `what` 为 `模拟器`（默认 `构建`），要用到构建产物时 `local` 为 true（默认 false）。
+能力写了 `coda:inline` 与 `coda:subagents="false"`：
 结束得快就随这次调用返回结果，否则结果之后送回会话（见 [Agent 工具](https://github.com/coda-console/coda/blob/main/docs/workflows.md#agent-工具)）；原生子 Agent 发起时拒绝，
 提示把这一步交回主 Agent 或用 `spawn` 派 Coda 子会话（见[流程属性](https://github.com/coda-console/coda/blob/main/docs/workflows.md#流程属性)）。从命令行（`coda-run`）发起同样拒绝：命令行说不出是会话里谁在要。
 
@@ -42,21 +45,31 @@
 提示改由 Agent 用 `workflow_run` 调用 `run-held` 执行这条命令；所以经 `host-sim` 自己排队的项目脚本（`scripts/check.sh` 的编译范围、iOS 构建与测试入口）
 在会话里整条交给 `run-held` 执行，脚本本身不必改写。别的 `--kind`（测试机的设备名）交给接在本插件扩展点 `kinds` 上的插件（[测试机](../testbed/README.md)）。
 
-**总时限**：`what=模拟器` 默认 60 分钟，其他 `run-held` 默认 30 分钟；从取得名额、进入执行步骤开始计时，不含排队。
+**总时限**：`what=模拟器` 默认 60 分钟，其他 `run-held` 默认 30 分钟；从命令启动开始计时，不含排队。
 长批次在 `inputs` 显式给 `timeoutMinutes`，如 `{ "command": "bash scripts/ios-ui-test.sh", "cwd": "/path/to/project", "what": "模拟器", "timeoutMinutes": 120 }`。
-`timeoutMinutes=0`（默认）按种类取值；显式值须大于 0、最多 1440 分钟。用引擎的中断计时器取消整组进程，保留 5 分钟清理宽限，之后才释放名额。
+`timeoutMinutes=0`（默认）按种类取值；显式值须大于 0、最多 1440 分钟。由 `scripts/run-held.mjs` 计时，到限先向整组进程发送 TERM（连同另起进程组的子进程），最多留 5 分钟收尾，之后才释放名额。
 
 **无输出上限**：`idleMinutes` 默认 10 分钟，从命令启动起，stdout 或 stderr 每次有新输出就重新计时；连续到限无输出即失败，先向整组进程发送 TERM（连同命令另起进程组的子进程，如 `swift build` 的编译器），最多留 5 分钟收尾。可在 `inputs` 设 `idleMinutes: 30` 调高，或 `idleMinutes: 0` 关闭（总时限仍生效）。失败结果与会话通知区分「执行超过总时限」「N 分钟无输出」「命令非零退出（退出码 N）」；输出 `failure_reason` 记录原因。run-held 因无输出或总时限失败、执行器超时时，若 macOS 上检测到 `SecurityAgent` 进程，失败原因会追加钥匙串授权框提示，见 [host-slots](skills/host-slots/SKILL.md#无人值守构建)。
 
-**过程**（`.coda/capabilities/run-held.bpmn`）：
-1. 「等名额」：`hold-group` 为「占用名额」这一段排进 `host`，容量读设置 `host.capacity`；状态行写「排队等构建名额 · 排第 N 位」或「排队等模拟器名额 · 排第 N 位」，
-   队伍一动就改，会话底部显示这项等待。
-2. 「执行」：在 `cwd` 里、带项目的环境（同流程步骤，不含插件与执行器自己的变量）执行命令（`scripts/run-held.mjs`），附上 `HOST_SIM_LEASE=coda-run:<种类>`：
-   命令里的项目脚本再调用 `host-sim run` 时直接执行，`host-sim check` 通过，`host-sim bind <udid>` 把它启动的模拟器登记给这一步。
-   `cwd` 不是存在的目录的绝对路径时不执行，退出码记为 2。
-   命令结束（含被取消）时关机并删除登记的模拟器，命令的退出码记为输出 `exit_code`；命令失败这一步也失败，Agent 收到的结果带着输出的末尾。
-   被取消时整组进程收到 TERM，这一步的脚本以 `exec` 运行，执行器等它删完模拟器才结束；收尾超过取消时限被强杀而留下的模拟器，由下面的定时清点删除。
-3. 离开「占用名额」这一段才放开名额，排在后面的随即进入。
+**过程**（`.coda/capabilities/run-held.bpmn`）分两条路：
+
+- **在这台**（`what=模拟器`，或 `local=true`）：走「占用名额」这一段。
+  1. 「等名额」：`hold-group` 为「占用名额」这一段排进 `host`，容量读设置 `host.capacity`；状态行写「排队等构建名额 · 排第 N 位」或「排队等模拟器名额 · 排第 N 位」，
+     队伍一动就改，会话底部显示这项等待。
+  2. 「执行」：在 `coda:source`（即 `cwd`）里、带项目的环境（同流程步骤，不含插件与执行器自己的变量）执行命令（`scripts/run-held.mjs`），附上 `HOST_SIM_LEASE=coda-run:<种类>`：
+     命令里的项目脚本再调用 `host-sim run` 时直接执行，`host-sim check` 通过，`host-sim bind <udid>` 把它启动的模拟器登记给这一步。
+     `cwd` 由 Coda 作为 `coda:source` 求值，须是本机存在的绝对目录，否则这一步失败并说明。
+     命令结束（含被取消）时关机并删除登记的模拟器，命令的退出码记为输出 `exit_code`；命令失败这一步也失败，Agent 收到的结果带着输出的末尾。
+     被取消时整组进程收到 TERM，这一步的脚本以 `exec` 运行，执行器等它删完模拟器才结束；收尾超过取消时限被强杀而留下的模拟器，由下面的定时清点删除。
+  3. 离开「占用名额」这一段才放开名额，排在后面的随即进入。
+- **可以去别台**（其余）：一个自己占着名额的脚本步骤，写了 `coda:group="host"`、`coda:runsOn="darwin"`、`coda:checkout="false"`、`coda:source="=inputs.cwd"`；
+  时限、取消收尾、状态、环境与输出都和上一条相同；总时限同样由 `run-held.mjs` 从命令启动时计，不在步骤上挂计时器（那一步从排队起就算进入了）。这台有空位时它就地跑，满了才按下面送走。
+
+**去空间里别的 Mac**：`what` 不是 `模拟器`、`local` 不为 true 时，这台名额满、空间里别台有空位、且 `cwd` 在一个有 origin 的 Git 工作副本里，
+Coda 就把那份工作副本拍成快照（含未提交、未跟踪的改动，不含被忽略的文件）推过去。别台在按「仓库 + 名额」固定的目录里检出，
+在对应这次工作副本的子目录里跑；被忽略的构建缓存（如 `node_modules`）留在那台，下次还在，所以第一次可能要装依赖。
+日志、退出码与步骤输出回到这次运行；构建产物留在那台，不回来。那台用自己的项目环境，只带这一步 `coda:env` 声明的变量。
+构建结果要装到设备、归档、上传，或后面的命令要读产物时，`inputs` 写 `"local": true`，只在这台跑；`what=模拟器` 一律在这台。
 
 **执行与中断**：命令由 Coda 的步骤执行器运行，不随 Agent 的调用结束：调用先返回了，命令照常执行，结果送回会话；
 要停下它用 `workflow_cancel`。命令不经过会话 Agent 自带的沙箱。

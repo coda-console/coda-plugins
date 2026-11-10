@@ -4,7 +4,7 @@
   "displayName": "宿主资源",
   "description": "本机运行器与 Xcode、模拟器的排队名额",
   "icon": { "symbol": "hammer.fill", "color": "gray" },
-  "version": "2.0.1",
+  "version": "2.1.0",
   "categories": [
     "机器与资源"
   ],
@@ -36,7 +36,7 @@
         "description": "host-sim 的其他 --kind（如测试机的设备名）：host-sim 把整条命令交给接在这里的第一个命令，参数原样附在后面"
       }
     },
-    "instructions": "Xcode 构建、模拟器及 host-sim 脚本用 workflow_run 调 run-held：inputs 给 command、cwd（绝对路径），模拟器加 what=模拟器。默认时限：模拟器60分钟、其他30分钟，timeoutMinutes 调高。idleMinutes 默认10分钟无输出即失败，可调高，0关闭。原生子 Agent 交主会话申请。其他命令直接执行，除非项目要求排队。",
+    "instructions": "Xcode 构建、模拟器及 host-sim 脚本用 workflow_run 调 run-held：inputs 给 command、cwd，模拟器加 what=模拟器；要产物加 local=true，否则满了可能去别的 Mac 跑。模拟器60、其他30分钟，timeoutMinutes 调高；idleMinutes 10分钟无输出即失败，0关闭。原生子 Agent 交主会话；其他命令直接执行。",
     "configuration": {
       "title": "宿主资源",
       "properties": {
