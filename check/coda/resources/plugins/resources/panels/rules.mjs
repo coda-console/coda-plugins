@@ -41,9 +41,10 @@ const object = (value, where, code) => check(value && typeof value === 'object' 
 
 // ---- Declarations (`contributes.resources`, or the panels before them) ----
 // A plugin's types as it declares them, in its order, each with the actions its buttons may take (none when it declares
-// none) and, with a `maxAge`, how long a reading may be shown again without asking.
+// none), how long a reading may be shown again without asking (`maxAge`), and how often a kind's reading is reported.
 export function panelDeclarations(raw = []) {
-  return raw.map(panel => ({ ...panel, actions: panel.actions ?? {}, ...(panel.maxAge ? { maxAgeMs: durationMs(panel.maxAge) } : {}) }));
+  return raw.map(panel => ({ ...panel, actions: panel.actions ?? {}, ...(panel.maxAge ? { maxAgeMs: durationMs(panel.maxAge) } : {}),
+    ...(panel.report ? { reportMs: durationMs(panel.report) } : {}) }));
 }
 
 // ---- What a panel's command prints ----

@@ -56,7 +56,12 @@ defineContributionPoint({ key: 'agents', schema: SCHEMAS['agents.json'], read: (
   claim: plugin => plugin.agents.map(a => `Agent ${a.id}`), icon: plugin => plugin.agents.length === 1 ? plugin.agents[0].icon : null,
   confirm: plugin => ({ agents: plugin.agents.map(a => ({ id: a.id, displayName: a.displayName, command: a.command })) }),
   formats: { 'coda-agent': agentValue } });
-defineContributionPoint({ key: 'instructions', schema: SCHEMAS['instructions.json'], read: raw => raw ? { instructions: raw.trim() } : {},
+// Its words to every agent: a text as written, or a command whose output they are as each session opens
+// (session-config/service.mjs pluginInstructions), declared as its other commands are (`{ command }`).
+const INSTRUCTIONS = { title: SCHEMAS['instructions.json'].title, description: '一段文字（不超过 200 字），或 { command }：开会话时运行，输出拼进会话指令',
+  anyOf: [{ $ref: 'instructions.json' }, { $ref: 'common.json#/$defs/commandHolder' }] };
+defineContributionPoint({ key: 'instructions', schema: INSTRUCTIONS,
+  read: raw => typeof raw === 'string' ? { instructions: raw.trim() } : raw ? { instructions: { command: raw.command } } : {},
   confirm: plugin => plugin.instructions ? { instructions: plugin.instructions } : {} });
 // Confirmed by name, each with what its SKILL.md says it is for.
 defineContributionPoint({ key: 'skills', schema: SCHEMAS['skills.json'], read: (raw, dir) => raw?.length ? { skills: skills(raw, dir) } : {},

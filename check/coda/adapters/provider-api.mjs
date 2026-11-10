@@ -16,6 +16,7 @@ export function providerAPI({ call, watch, connection, plugin, operations, repor
     delete: (kind, id) => call('delete', [kind, id]),
     publish: (kind, id, enabled = true) => call('publish', [kind, id, enabled]),
     // An upload of this machine a post to a session names (`upload`): `{ id, name, size, mime?, duration?, …, path }`.
+    remoteCode: id => call('remoteCode', [id]),
     upload: id => call('upload', [id]),
     observe,
     handle(kind, operation, handler) {

@@ -3,7 +3,8 @@
 // (`coda.watch("plugins")`), and each command runs with that plugin's own environment (`coda.environment(null, { plugin })`),
 // as Coda gives every process of the plugin's. A plugin declaring `resources` has those; one still declaring the panels
 // before them has its panels, read as they were (`format`), for the page to take as resources (docs/plugins.md「旧的面板」).
-// A type is read only when a page asks (opening it, refreshing), never in the background, and no reading is kept on disk.
+// A type is read when a page asks (opening it, refreshing, an action), or, for a kind declaring `report`, on its period
+// while this machine shows it; nothing else is read in the background, and no reading is kept on disk.
 // What every type gets from here and not from its plugin: one reading at a time (a second ask joins it), the last good
 // reading shown again within the type's `maxAge` and listed with it, and on failure the last good one kept and marked as
 // such. The machine keeps which it shows and which not, in this plugin's state; their order is their plugins'
@@ -21,13 +22,15 @@ const fail = (code, message) => { throw new PanelError(code, message); };
 export class Panels {
   // `onChange(key)`: a panel moved (its reading, its login, whether it is hidden); none for the list as a whole.
   // `run`: how a command runs (panels/command.mjs runCommand); `now()`: the time, as readings are dated by it.
-  constructor(coda, { run = runCommand, now = Date.now, readTimeoutMs = 30_000, actionTimeoutMs = 10 * 60_000 } = {}) {
-    this.coda = coda; this.run = run; this.now = now; this.readTimeoutMs = readTimeoutMs; this.actionTimeoutMs = actionTimeoutMs;
+  constructor(coda, { run = runCommand, now = Date.now, readTimeoutMs = 30_000, actionTimeoutMs = 10 * 60_000, timer = true } = {}) {
+    this.coda = coda; this.run = run; this.now = now; this.readTimeoutMs = readTimeoutMs; this.actionTimeoutMs = actionTimeoutMs; this.timerOn = timer;
     // `last`: each panel's last good items, for a failed reading to show again; `shown`: what its last reading answered.
     this.plugins = new Map(); this.last = new Map(); this.shown = new Map(); this.reading = new Map(); this.acting = new Map(); this.failures = new Map();
     this.logins = new Map(); this.envs = new Map(); this.listeners = new Set(); this.closing = new AbortController();
     this.file = join(coda.plugin.state ?? tmpdir(), 'hidden.json');
     this.hides = Promise.resolve();
+    // The kind types this module reported, by kind (`{ plugin, type }`), and why an upload last failed, said once.
+    this.reportedKinds = new Map(); this.reportSaid = new Map(); this.reportedAt = new Map(); this.timer = null;
   }
   listen(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
   // Nothing is told before the plugins' environments are there (`ready`): what a login says of whether its program is
@@ -45,11 +48,14 @@ export class Panels {
         // A login of a panel gone (its plugin removed, or a version without it) goes with it.
         const keys = new Set(this.installed().map(e => e.key));
         for (const [key, login] of this.logins) if (!keys.has(key)) { login.close(); this.logins.delete(key); }
-        if (this.ready) this.prepare().then(() => this.changed());
+        if (this.ready) this.prepare().then(() => { this.dropMissing(); this.forgetHidden(); this.changed(); });
       });
       this.unwatch = () => watched.dispose();
       await this.prepare();
       this.ready = true;
+      // A kind declaring a report is read on its own period while this machine shows it (none before it is chosen).
+      this.forgetHidden();
+      if (this.timerOn) { this.timer = setInterval(() => this.tick(), 1000); this.timer.unref?.(); }
     })();
     return this.started;
   }
@@ -89,6 +95,7 @@ export class Panels {
   view(entry, index) {
     const { plugin, panel, key, format } = entry, shown = this.shown.get(key), acting = this.acting.get(key);
     return { plugin: plugin.id, pluginName: plugin.name, panel: panel.id, title: panel.title, format, version: plugin.version ?? '', source: plugin.source ?? { kind: 'builtin' },
+      ...(panel.kind ? { kind: panel.kind } : {}),
       actions: Object.fromEntries(Object.entries(panel.actions ?? {}).map(([name, a]) => [name, a.confirm ? { confirm: a.confirm } : {}])),
       configurable: !!panel.displaySetting, signsIn: !!panel.signIn, hidden: this.hiddenOf(entry), index,
       signIn: panel.signIn ? this.login(entry).view() : null,
@@ -133,6 +140,7 @@ export class Panels {
   }
   async fetch(entry) {
     const { plugin, panel, key } = entry;
+    if (panel.reportMs) this.reportedAt.set(key, this.now());
     let failure;
     try {
       const result = await this.run(panel.command, { env: await this.env(plugin.id), timeoutMs: this.readTimeoutMs, signal: this.closing.signal });
@@ -140,6 +148,8 @@ export class Panels {
         const content = this.content(entry, result.stdout), at = this.now();
         this.last.set(key, { content, at }); this.failures.delete(key);
         this.shown.set(key, { ...content, readAt: at });
+        // A kind's reading is what this machine reports of it: a failed one reports nothing, so the last good objects stay.
+        if (entry.panel.kind) await this.report(entry, content.resources, at);
         return this.present(entry, { ...content, readAt: at });
       }
       failure = outcome(result, '读取');
@@ -157,6 +167,59 @@ export class Panels {
     if (format === 'resources') return { resources: resourceItems(output, panel, plugin.views ?? []) };
     const items = panelItems(output, panel, plugin.views ?? []);
     return { items: panel.displaySetting ? keepMissingMetrics(items, this.last.get(key)?.content.items ?? []) : items };
+  }
+  // A kind's reading reported to this machine's backend (GET /v1/resources gives it back to the page and explain): the
+  // fields Coda keeps are the name, the outside identity it is, its values, what is wrong, and when it was read. Buttons
+  // and what they send stay here; a failure reports nothing, so the last good objects stay.
+  async report(entry, resources, at) {
+    const { plugin, panel } = entry;
+    const body = { plugin: plugin.id, type: panel.id, kind: panel.kind, observedAt: new Date(at).toISOString(),
+      resources: resources.map(({ name, identity, values, error }) => ({ ...(name !== undefined ? { name } : {}), ...(identity !== undefined ? { identity } : {}),
+        values: values ?? [], ...(error !== undefined ? { error } : {}) })) };
+    try {
+      await this.coda.api('resource-reports', body);
+      this.reportedKinds.set(panel.kind, { plugin: plugin.id, type: panel.id });
+      this.reportSaid.delete(entry.key);
+    } catch (e) {
+      if (this.reportSaid.get(entry.key) === e.message) return;
+      this.reportSaid.set(entry.key, e.message);
+      console.error(`[资源] ${panel.title} 没有上报读数：${e.message}`);
+    }
+  }
+  // This machine no longer shows or has the type: its objects go, and it is not read on its period.
+  // This machine no longer shows or has the type: its objects go, and it is not read on its period. Asked whether this
+  // module reported it or not: after a restart neither it nor the backend remembers, while the kernel still has them.
+  forgetKind(kind) {
+    if (!kind) return Promise.resolve();
+    return this.coda.api('resource-reports/forget', { kind }).then(() => { this.reportedKinds.delete(kind); }, e => {
+      const said = `forget ${kind}`;
+      if (this.reportSaid.get(said) === e.message) return;
+      this.reportSaid.set(said, e.message);
+      console.error(`[资源] ${kind} 没有停止上报：${e.message}`);
+    });
+  }
+  // The kinds this machine hides now: their objects go once the module starts (and when they are hidden), even when this
+  // module has no memory of reading them.
+  forgetHidden() {
+    for (const entry of this.installed()) if (entry.panel.kind && this.hiddenOf(entry)) void this.forgetKind(entry.panel.kind);
+  }
+  // Kinds no longer declared by an installed plugin: their objects go.
+  dropMissing() {
+    const kinds = new Set(this.installed().filter(entry => entry.panel.kind).map(entry => entry.panel.kind));
+    for (const kind of [...this.reportedKinds.keys()]) if (!kinds.has(kind)) void this.forgetKind(kind);
+  }
+  // The kinds due to report now: each shown one with a report period, read again (and so reported once it ends).
+  tick() {
+    if (!this.ready) return;
+    const now = this.now();
+    for (const entry of this.installed()) {
+      const { panel } = entry;
+      if (!panel.kind || !panel.reportMs || this.hiddenOf(entry)) continue;
+      const last = this.reportedAt.get(entry.key);
+      if (last !== undefined && now - last < panel.reportMs) continue;
+      this.reportedAt.set(entry.key, now);
+      this.read(entry.key, { force: true }).catch(() => {});
+    }
   }
   // Runs one of a panel's actions with what its button sent, then reads the panel again. One action of a panel at a time;
   // one under way goes on to its end even when whoever asked has gone.
@@ -182,10 +245,13 @@ export class Panels {
   }
   // One type hidden or shown on this machine, the others as they were: one change at a time.
   hide(key, hidden) {
-    const change = this.hides.then(() => {
+    const entry = this.installed().find(e => e.key === key);
+    const change = this.hides.then(async () => {
       const next = { ...this.choices, [key]: !!hidden };
       this.keepHidden(next);
       this.choices = next;
+      // Hidden, a kind is neither read nor reported: what it gave the kernel goes.
+      if (hidden && entry?.panel.kind) await this.forgetKind(entry.panel.kind);
       this.changed(key);
     });
     this.hides = change.catch(() => {});
@@ -234,5 +300,5 @@ export class Panels {
     }
   }
   // The module going (the plugin host stopping): what runs in a process group of its own is made to end, as nothing would later.
-  close() { this.closing.abort(); this.unwatch?.(); for (const login of this.logins.values()) login.close('SIGKILL'); }
+  close() { this.closing.abort(); clearInterval(this.timer); this.unwatch?.(); for (const login of this.logins.values()) login.close('SIGKILL'); }
 }

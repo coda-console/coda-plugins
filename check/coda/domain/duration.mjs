@@ -2,6 +2,7 @@
 // (@0dep/piso): what plugin settings, panels and workflows all write a length of time in. And a length of time as whoever
 // is told it reads it, in words.
 import { parseDuration } from '@0dep/piso';
+import { requireCondition as check } from './errors.mjs';
 
 // A duration, not negative.
 export function isDuration(text) {
@@ -10,6 +11,12 @@ export function isDuration(text) {
 }
 // How long a duration is, counted back from `at` (a month is the one before it).
 export const durationMs = (text, at = Date.now()) => at - parseDuration(text).getStartAt(new Date(at)).getTime();
+
+// The time a duration before `now`: what an action's `…After` parameter leaves alone.
+export function before(text, now, where) {
+  check(isDuration(text), 'invalid_input', `${where} 须为 ISO 8601 时长，如 P30D、PT6H；现为 ${text || '（空）'}`);
+  return parseDuration(text).getStartAt(new Date(now)).getTime();
+}
 
 // How long, in words, for whom it is told to: to the second under a minute, to the minute after.
 export function duration(ms) {
