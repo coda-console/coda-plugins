@@ -12,15 +12,19 @@ import { resolveDevice } from './resolve-device.mjs';
 const spec = JSON.parse(readFileSync(process.env.SPEC, 'utf8'));
 rmSync(process.env.SPEC, { force: true });
 const env = { ...spec.env, HOST_SIM_LEASE: `coda-run:${spec.kind}` };
-// adb run inside it talks to the Android device lent (README.md「安卓测试机」). A device not found here is not one.
-try { const device = resolveDevice(spec.kind); if (device.platform === 'android') env.ANDROID_SERIAL = device.adb; } catch {}
-const child = spawn(spec.argv[0], spec.argv.slice(1), { cwd: spec.cwd, env, stdio: 'inherit' });
 let ending = false;
 // Cancelled (its task over, say): the step's process group is asked to stop, the command with it.
 for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(signal, () => { ending = true; });
+// adb run inside it talks to the Android device lent (README.md「安卓测试机」), never one the session's environment named.
+// The device not found now, the command is not run: it would not know which device it is on.
+let device;
+try { device = resolveDevice(spec.kind); } catch (error) { process.stderr.write(`找不到测试机 ${spec.kind}，不执行：${error.message}\n`); done(1); }
+if (device.platform === 'android') env.ANDROID_SERIAL = device.adb;
+const child = spawn(spec.argv[0], spec.argv.slice(1), { cwd: spec.cwd, env, stdio: 'inherit' });
 child.on('error', error => { process.stderr.write(`执行不了：${error.message}\n`); done(127); });
 child.on('close', (code, signal) => done(code ?? 128 + (constants.signals[signal] ?? 0)));
 
+// Its status to host-sim, and the end of this step.
 function done(status) {
   appendFileSync(process.env.GITHUB_OUTPUT, `exit_code=${status}\n`);
   process.exit(ending ? 143 : 0);

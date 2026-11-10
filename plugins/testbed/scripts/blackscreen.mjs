@@ -10,6 +10,15 @@ import { changes, command, connect, notDone, readSettings, script, snapshotFile 
 
 // As blackscreen/build.sh signs it.
 const APP = 'com.leavan.blackscreen';
+// None running is as good as stopped; one still running a few seconds after is not. The pattern does not match its own line.
+const CLEAN_UP = [
+  "pkill -f '[f]rida-server'",
+  "for i in 1 2 3 4 5; do pgrep -f '[f]rida-server' >/dev/null || break; sleep 1; done",
+  "if pgrep -f '[f]rida-server' >/dev/null; then echo 'frida-server 停不下来' >&2; exit 1; fi",
+  'input keyevent KEYCODE_HOME || exit 1',
+  'input keyevent KEYCODE_SLEEP || exit 1',
+  'sleep 3',
+];
 const android = process.env.PLATFORM === 'android';
 const own = JSON.parse(process.env.COMMANDS || '{}')[process.env.DEVICE]?.trim();
 if (android && !own) putBack();
@@ -27,9 +36,9 @@ function putBack() {
   const { DEVICE: device, ADB: address } = process.env, file = snapshotFile(process.env.CODA_PLUGIN_STATE, device);
   try {
     connect(address);
-    // The screen off first, frida-server stopped (not running, or the device not rooted: nothing to stop; its pattern does
-    // not match this script's own line), and a moment for what the system sets as the screen goes off.
-    script(address, ["pkill -f '[f]rida-server'", 'input keyevent KEYCODE_HOME', 'input keyevent KEYCODE_SLEEP', 'sleep 3']);
+    // frida-server stopped, the home screen and the screen off first, and a moment for what the system sets as the screen
+    // goes off; any of them not done fails it.
+    script(address, CLEAN_UP);
     // Lent before it was noted (the run cancelled while it waited, say): nothing of its settings to put back.
     const before = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')).settings : null;
     const wanted = before ? changes(before, readSettings(address)) : [];
