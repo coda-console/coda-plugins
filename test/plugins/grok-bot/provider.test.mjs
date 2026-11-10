@@ -208,3 +208,68 @@ test('restart marks an unfinished host run unknown without sending it again', as
   assert.equal(restarted.runs.get(context.run.id).status.result.code,'unknown');
   assert.equal(f.native.requests.filter(r=>r.method==='SendGrokBotUserMessage').length,0);
 });
+
+const liveEvent = live => ({ agentState: { live: [{ agentId: 'inspector', sessionId: '', ...live }] } });
+const settlement = { turnId: 'turn', outcome: 'success', settledAtMs: '100' };
+
+test('Watch live activity changes status only; busy work ignores old settlement and idle settlement clears it', async t => {
+  const f = await fixture(t), status = () => f.provider.records.get(f.id()).status;
+  f.native.emit(f.native.row('reply', { kind: 'send-message', message: { type: 'text', content: 'hello' } }, 1));
+  await until(() => status().head === '0:1');
+  const page = await f.provider.read(f.id()), requests = f.native.requests.length;
+  f.native.emit(liveEvent({ isRunning: true, activity: { kind: 'thinking' } }));
+  await until(() => status().activity?.text === 'Grok 正在思考');
+  assert.equal(status().activity.participant, status().participants.find(p => p.kind === 'agent').id);
+  f.native.emit(liveEvent({ isRunning: true, activity: { kind: 'tool', tool: 'SetStatus', detail: '检查机器' }, lastTurnSettlement: settlement }));
+  await until(() => status().activity?.text === '检查机器');
+  assert.equal(status().head, '0:1');
+  assert.deepEqual(await f.provider.read(f.id()), page);
+  assert.equal(f.native.requests.length, requests);
+  // Neither transcript flush nor the periodic Bot list refresh loses activity.
+  await f.provider.schedule(() => f.provider.flush(f.id()));
+  await f.provider.schedule(() => f.provider.sync());
+  assert.equal(status().activity.text, '检查机器');
+  f.native.emit(liveEvent({ hasRunningSubagents: true, lastTurnSettlement: settlement }));
+  await until(() => !Object.hasOwn(status(), 'activity'));
+  assert.equal(status().head, '0:1');
+  assert.deepEqual(await f.provider.read(f.id()), page);
+});
+
+test('activity uses a readable first line bounded to 200 characters and ignores other sessions', async t => {
+  const f = await fixture(t), status = () => f.provider.records.get(f.id()).status;
+  f.native.emit(liveEvent({ activity: { kind: 'tool', tool: 'ReadFile\r\nignored' } }));
+  await until(() => status().activity?.text === 'ReadFile');
+  const text = '思😀'.repeat(150);
+  f.native.emit(liveEvent({ activity: { kind: 'thinking', detail: `  ${text}\u2028ignored` } }));
+  await until(() => status().activity?.text === [...text].slice(0, 200).join(''));
+  assert.equal([...status().activity.text].length, 200);
+  assert.doesNotMatch(status().activity.text, /[\r\n\u2028\u2029]/u);
+  assert.equal(status().head, undefined);
+  assert.deepEqual((await f.provider.read(f.id())).messages, []);
+  f.native.emit(liveEvent({ agentId: 'other', lastTurnSettlement: settlement }));
+  f.native.emit(liveEvent({ sessionId: 'subagent', lastTurnSettlement: settlement }));
+  // A following main-session update is a barrier for the ignored events.
+  f.native.emit(liveEvent({ activity: { kind: 'tool', tool: 'Next' } }));
+  await until(() => status().activity?.text === 'Next');
+  f.native.emit(liveEvent({ lastTurnSettlement: { ...settlement, outcome: 'cancelled' } }));
+  await until(() => !Object.hasOwn(status(), 'activity'));
+});
+
+test('rebuilding the transcript mirror also rebuilds live state', async t => {
+  const f = await fixture(t), status = () => f.provider.records.get(f.id()).status;
+  const realTimeout = f.provider.clock.setTimeout;
+  f.provider.clock.setTimeout = (fn, ms) => realTimeout(fn, ms === 2000 ? 1 : ms);
+  f.native.emit(liveEvent({ activity: { kind: 'tool', tool: 'Before reconnect' } }));
+  await until(() => status().activity);
+  f.native.drop();
+  await until(() => f.native.connections.length === 2);
+  assert.equal(status().activity, undefined);
+  assert.equal(f.provider.mirrors.get(f.id()).live, undefined);
+  f.native.emit({ agentState: { ...liveEvent({ activity: { kind: 'tool', tool: 'After reconnect' } }).agentState, snapshot: true } });
+  await until(() => status().activity?.text === 'After reconnect');
+  f.native.generation = 1; f.native.entries = [];
+  f.native.emit({ cleared: { agentId: 'inspector', sessionId: '' } });
+  await until(() => f.native.connections.length === 3);
+  assert.equal(status().activity, undefined);
+  assert.equal(status().head, undefined);
+});

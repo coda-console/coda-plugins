@@ -1,6 +1,6 @@
 # Grok Bot
 
-0.5.0 把每个 Bot 的原生主会话提供为 `coda/session@1` 记录，不再声明 ACP Agent。只供预览版安装。协议依照 `@coda-console/protocol` 5.6.0。
+0.5.0 把每个 Bot 的原生主会话提供为 `coda/session@1` 记录，不再声明 ACP Agent。只供预览版安装。协议依照 5.7.0，契约检查暂时钉到 `coda-protocol` 提交 `5114657bff89056ffe94fd8988478b0a8b2f37b4`。
 
 ## 登录与记录
 
@@ -21,6 +21,12 @@ Provider 每 30 秒重新读取登录及 Bot 名单；每个 Bot 自动建立一
 - widget 是列出选项的消息。回复该消息、正文填选项标签或值时调用 `RespondGrokBotWidget`；原生条目的 `respondedValue` 作为一条 self 回复读出，指向原 widget 并 mentions Bot。确认这条回复后完成 post。
 - Routine 记录、活动、结算、思考均不造消息；Routine 的结论若由 Bot 发在主会话则正常读取。
 
+## 正在做的事
+
+同一 Watch 流的主 Bot `agentState.live` 保存在内存镜像，不增加原生请求。沿用 0.4.0 的 `live.activity.kind`：`tool` 优先显示 `detail`，其次 `tool`；`thinking` 显示 `detail`，未提供正文时显示「Grok 正在思考」。取首个可读行，按 Unicode 字符截到 200 字，`participant` 为 Bot 的参与者 ID。
+
+沿用 0.4.0 的忙碌判定：`isRunning`、`isComposingMessage`、`isRetrying`、`activity` 或 `awaiting` 任一存在时，不让附带的旧 `lastTurnSettlement` 清除当前活动。无这些忙碌信号且有 `lastTurnSettlement` 时删除整个 activity；独立子 Agent 运行不阻止清除。不以消息静默或超时判定停止。重连和游标重置时连同 transcript 重建 live 状态，等待 Watch 的新快照。activity 只写 status，不造消息、不进 read、不推进 head。
+
 ## 正文变化的依据与验证边界
 
 **未经真实历史核实。** 本次不读取真实凭据、不连接真实 xAI。依据是 0.4.0：
@@ -34,4 +40,4 @@ Provider 每 30 秒重新读取登录及 Bot 名单；每个 Bot 自动建立一
 
 ## 后续范围
 
-`status.activity` 等待协议 5.7.0。远端入口、绑定码和新工单工具等待 Coda 后端；`remote/coda-bot.mjs`、`remote/SKILL.md` 原样保留，本版不提供 `/bind` 或旧 ACP 转发。未改线上 Routine，未部署。停止第一版不做。
+远端入口、绑定码和新工单工具等待 Coda 后端；`remote/coda-bot.mjs`、`remote/SKILL.md` 原样保留，本版不提供 `/bind` 或旧 ACP 转发。未改线上 Routine，未部署。停止第一版不做。

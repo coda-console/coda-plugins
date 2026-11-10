@@ -74,7 +74,7 @@ export class Provider {
         if (!held) { this.records.set(id, await this.coda.protocols.put({ kind: SESSION, id, spec, status })); await this.coda.protocols.publish(SESSION, id); }
         else {
           if (JSON.stringify(held.spec) !== JSON.stringify(spec)) this.records.set(id, await this.coda.protocols.update(SESSION, id, spec, held.revision));
-          await this.write(id, { ...status, ...(held.status.head ? { head: held.status.head } : {}) });
+          await this.write(id, { ...status, ...this.activityStatus(id), ...(held.status.head ? { head: held.status.head } : {}) });
         }
         if (!this.watches.has(id)) {
           const controller = new AbortController();
@@ -94,6 +94,28 @@ export class Provider {
     const held = this.records.get(id);
     if (!held || JSON.stringify(held.status) === JSON.stringify(status)) return;
     this.records.set(id, await this.coda.protocols.setStatus(SESSION, id, status, held.revision));
+  }
+  activityStatus(id) {
+    const activity = this.mirrors.get(id)?.activity;
+    return activity ? { activity } : {};
+  }
+  async updateLive(id, live) {
+    const mirror = this.mirrors.get(id);
+    mirror.live = live;
+    // As in 0.4.0, a remembered settlement must not close active main-agent work.
+    const busy = !!(live.isRunning || live.isComposingMessage || live.isRetrying || live.activity || live.awaiting);
+    if (!busy && live.lastTurnSettlement) delete mirror.activity;
+    else if (live.activity) {
+      const a = live.activity;
+      const text = a.kind === 'tool' ? a.detail || a.tool || 'Grok 活动'
+        : a.kind === 'thinking' ? a.detail || 'Grok 正在思考' : undefined;
+      if (text) {
+        const line = text.trim().split(/[\r\n\u2028\u2029]/u)[0].trim();
+        if (line) mirror.activity = { participant: this.bots.get(id).bot, text: [...line].slice(0, 200).join('') };
+      }
+    }
+    const { activity, ...status } = this.records.get(id).status;
+    await this.write(id, { ...status, ...this.activityStatus(id) });
   }
   clearMirror(id) {
     const mirror = this.mirrors.get(id);
@@ -139,7 +161,7 @@ export class Provider {
     }
     writePrivate(this.coda.plugin.state, this.indexFile, this.index);
     const head = this.visible(id).at(-1)?.cursor;
-    await this.write(id, { participants: this.records.get(id).status.participants, state: 'active', ...(head ? { head } : {}) });
+    await this.write(id, { participants: this.records.get(id).status.participants, state: 'active', ...this.activityStatus(id), ...(head ? { head } : {}) });
     this.changes.emit(id);
   }
   visible(id) {
@@ -158,12 +180,19 @@ export class Provider {
         this.clearMirror(id);
         this.mirrors.set(id, { generation: baseline.generation, entries: new Map(), pending: new Map(),
           messages: previous?.generation === baseline.generation ? previous.messages : new Map() });
+        await this.schedule(async () => {
+          const { activity, ...status } = this.records.get(id).status;
+          await this.write(id, status);
+        });
         this.updateRows(id, baseline.entries);
         if (!this.mirrors.get(id).pending.size) await this.schedule(() => this.flush(id));
         const seq = baseline.entries.reduce((n, r) => BigInt(r.updatedSeq ?? r.seq) > BigInt(n) ? String(r.updatedSeq ?? r.seq) : n, '0');
         const stream = await this.auth.client.request('WatchGrokBotTranscripts', { cursors: [{ agentId: bot, sessionId: '', generation: baseline.generation, afterUpdatedSeq: seq }], includeUnlistedAgents: true, inlineBodyMaxBytes: 262144 }, { stream: true, signal });
         for await (const event of stream) {
           if (event.rows?.agentId === bot && !(event.rows.sessionId ?? '')) this.updateRows(id, event.rows.entries ?? []);
+          if (event.agentState) for (const live of event.agentState.live ?? [])
+            if (live.agentId === bot && !(live.sessionId ?? ''))
+              await this.schedule(() => this.updateLive(id, live));
           const reset = event.cleared ?? event.cursorTooOld;
           if (reset && (!reset.agentId || reset.agentId === bot) && !(reset.sessionId ?? '')) break;
         }
