@@ -42,7 +42,7 @@ Provider 每 30 秒重新读取登录及 Bot 名单；每个 Bot 自动建立一
 
 需要支持协议 5.7.0 记录远端入口的 Coda。资源页每个 Bot 有一个「绑定」按钮；只有点击后才申请绑定码并发送指令，不在启动或同步时自动发送。
 
-资源动作运行独立进程，通过私有 Unix socket 连接已激活的插件模块。模块确认记录仍属于当前账号的 Bot，调用 `coda.protocols.remoteCode(recordId)`，取返回的第一个 tailnet 入口，以账号本人的身份向该 Bot 发送一句话和一行 `node coda-bot.mjs bind <address> <code>`。未连接 tailnet 时直接报错，不发送；发送未确认时报告失败，不自动重发。socket 在临时私有目录中，状态目录只保存入口位置，不落盘绑定码，插件停止时清理。插件须已激活。
+资源按钮打开 bind 视图，将记录 ID 作为 args 交给模块注册的 open 回调；每次打开只发送一次。页面显示「正在发绑定指令…」，收到模块结果后显示「已发给 Bot」或错误原因。模块确认记录仍属于当前账号的 Bot，调用 `coda.protocols.remoteCode(recordId)`，取返回的第一个 tailnet 入口，以账号本人的身份向该 Bot 发送一句话和一行 `node coda-bot.mjs bind <address> <code>`。未连接 tailnet 时直接报错，不发送；发送未确认时报告失败，不自动重发。插件须已激活。
 
 在 Bot 云电脑保存 `remote/coda-bot.mjs`，让 Bot 阅读 `remote/SKILL.md`。先运行 `node coda-bot.mjs net`，然后执行收到的绑定命令。码有效期为 10 分钟；重新绑定会替换旧令牌。客户端经 `/v1/remote-caller/bind` 保存 token、record，经 `/v1/remote-caller` 调用工具；MCP 启动命令为 `node coda-bot.mjs mcp [recordId]`，多个 Bot 共用云电脑时必须指定各自记录 ID。旧版绑定需重新操作。
 
@@ -62,4 +62,4 @@ Provider 每 30 秒重新读取登录及 Bot 名单；每个 Bot 自动建立一
 >
 > 后续 Routine 先看已提工单的进度，再调查新问题。收到聊天里的工单结论后更新记录；失败先查原因，修复后再核实新证据。
 
-测试用假 HTTP 服务端验证远端请求，用假原生服务端验证按钮经独立进程到模块并以本人身份发送。未连接真实 Coda 5.7.0 或真实 Bot，未修改线上 Routine，未部署。停止第一版不做。
+测试用假 HTTP 服务端验证远端请求，用假原生服务端验证打开绑定视图后以本人身份发送，并向页面报告成功或错误。未连接真实 Coda 5.7.0 或真实 Bot，未修改线上 Routine，未部署。停止第一版不做。

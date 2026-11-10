@@ -1,4 +1,3 @@
-import { bindingServer } from './binding.mjs';
 import { EventEmitter } from 'node:events';
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -47,7 +46,16 @@ export class Provider {
       }),
     ];
     await this.schedule(() => this.sync());
-    this.closeBinding = await bindingServer(this.coda.plugin.state, id => this.schedule(() => this.bind(id)));
+    this.coda.views.register('bind', {
+      open: async view => {
+        try {
+          await this.schedule(() => this.bind(view.context.args?.record));
+          view.postMessage({ type: 'result', text: '已发给 Bot' });
+        } catch (error) {
+          view.postMessage({ type: 'result', text: error.message });
+        }
+      },
+    });
     this.polling = this.poll();
   }
   async bind(id) {
@@ -299,7 +307,6 @@ export class Provider {
     });
   }
   async stop() {
-    await this.closeBinding?.();
     this.controller.abort(); this.auth.close();
     for (const [id, w] of this.watches) { w.controller.abort(); this.clearMirror(id); }
     for (const h of this.handlers ?? []) h.dispose();

@@ -30,7 +30,8 @@
     "lib",
     "scripts",
     "remote",
-    "icons"
+    "icons",
+    "view"
   ],
   "contributes": {
     "protocolImplementations": [
@@ -46,12 +47,18 @@
         "signIn": {
           "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/login.mjs\"",
           "note": "打开官方登录链接确认；手机可能需要点 Continue。"
-        },
-        "actions": {
-          "bind": {
-            "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/bind.mjs\""
-          }
         }
+      }
+    ],
+    "views": [
+      {
+        "id": "bind",
+        "title": "绑定 Grok Bot",
+        "entry": "view/bind.html",
+        "in": [
+          "page"
+        ],
+        "frame": "document"
       }
     ]
   },
