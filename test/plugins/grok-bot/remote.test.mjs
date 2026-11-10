@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
-import { Rpc } from '../../../plugins/grok-bot/agent/rpc.mjs';
+import { Rpc } from './rpc.mjs';
 import { bind, call, net, serveMcp, TOOLS } from '../../../plugins/grok-bot/remote/coda-bot.mjs';
 import { http, temporary } from './helpers.mjs';
 
@@ -15,40 +15,41 @@ async function endpoint(t) {
   let serial = 0;
   const address = await http(t, (request, response, body) => {
     calls.push({ path: request.url, authorization: request.headers.authorization, body });
-    if (request.url === '/v1/remote-agent/bind') {
-      const sessionId = body.code.split(':')[0], token = `token-${++serial}`;
-      tokens.set(sessionId, token);
-      response.end(JSON.stringify({ token, session: { id: sessionId } }));
+    if (request.url === '/v1/remote-caller/bind') {
+      const recordId = body.code.split(':')[0], token = `token-${++serial}`;
+      tokens.set(recordId, token);
+      response.end(JSON.stringify({ token, record: recordId }));
     } else {
-      const sessionId = [...tokens].find(([, token]) => request.headers.authorization === `Bearer ${token}`)?.[0];
-      if (!sessionId) { response.writeHead(401); response.end(JSON.stringify({ error: { code: 'unauthorized', message: 'invalid token' } })); return; }
+      const recordId = [...tokens].find(([, token]) => request.headers.authorization === `Bearer ${token}`)?.[0];
+      if (!recordId) { response.writeHead(401); response.end(JSON.stringify({ error: { code: 'unauthorized', message: 'invalid token' } })); return; }
       if (body.method === 'fail') { response.writeHead(409); response.end(JSON.stringify({ error: { code: 'archived', message: '会话已归档' } })); return; }
-      const result = body.method === 'hello' ? { sessionId }
-        : body.method === 'tool' ? { content: [{ type: 'text', text: JSON.stringify(body.params) }] } : { echo: body, sessionId };
+      const result = body.method === 'hello' ? { recordId }
+        : body.method === 'tool' ? { content: [{ type: 'text', text: JSON.stringify(body.params) }] } : { echo: body, recordId };
       response.end(JSON.stringify({ result }));
     }
   });
   return { address, calls, tokens };
 }
 
-test('bind stores token privately, replaces just that session and keeps multiple Bots isolated', async t => {
+test('bind stores token privately, replaces just that record and keeps multiple Bots isolated', async t => {
   const home = temporary(t), remote = await endpoint(t);
+  writeFileSync(join(home, 'config.json'), JSON.stringify({ sessions: { old: { token: 'old-agent-token' } } }));
   const result = await bind(remote.address, 'first:code', { home });
-  assert.deepEqual(result, { sessionId: 'first', message: '已绑定；token 已保存，未打印。' });
+  assert.deepEqual(result, { recordId: 'first', message: '已绑定；token 已保存，未打印。' });
   const path = join(home, 'config.json');
   assert.equal(statSync(path).mode & 0o777, 0o600);
-  const old = JSON.parse(readFileSync(path)).sessions.first.token;
+  const old = JSON.parse(readFileSync(path)).records.first.token;
   await bind(remote.address, 'second:code', { home });
-  await assert.rejects(call('telemetry', { text: 'ambiguous' }, { home }), /多个 Bot/);
+  await assert.rejects(call('hello', { text: 'ambiguous' }, { home }), /多个 Bot/);
   await bind(remote.address, 'first:new-code', { home });
   const saved = JSON.parse(readFileSync(path));
-  assert.notEqual(saved.sessions.first.token, old);
-  assert.equal(Object.keys(saved.sessions).length, 2);
-  const reply = await call('telemetry', { text: 'hello' }, { home, session: 'first' });
-  assert.equal(reply.sessionId, 'first');
-  assert.equal(remote.calls.at(-1).authorization, `Bearer ${saved.sessions.first.token}`);
-  assert.equal((await call('telemetry', { text: 'other' }, { home, session: 'second' })).sessionId, 'second');
-  await assert.rejects(call('fail', {}, { home, session: 'first' }), /会话已归档/);
+  assert.notEqual(saved.records.first.token, old);
+  assert.equal(Object.keys(saved.records).length, 2);
+  const reply = await call('hello', { text: 'hello' }, { home, record: 'first' });
+  assert.equal(reply.recordId, 'first');
+  assert.equal(remote.calls.at(-1).authorization, `Bearer ${saved.records.first.token}`);
+  assert.equal((await call('hello', { text: 'other' }, { home, record: 'second' })).recordId, 'second');
+  await assert.rejects(call('fail', {}, { home, record: 'first' }), /会话已归档/);
   writeFileSync(join(home, 'config.lock'), '');
   await assert.rejects(bind(remote.address, 'first:code', { home }), /配置正在写入/);
 });
@@ -76,16 +77,20 @@ test('MCP initialize/list/call map every named tool through HTTP and check net b
     assert.equal(sent.method, tool.method);
     if (tool.tool) {
       assert.equal(sent.params.name, tool.tool);
-      assert.equal(sent.params.arguments.turn, undefined);
+      assert.deepEqual(sent.params.arguments, args);
       assert.deepEqual(result.content, [{ type: 'text', text: JSON.stringify(sent.params) }]);
+    } else {
+      assert.deepEqual(sent.params.inputs, args);
+      assert.equal(sent.params.workflow, 'bot-ticket');
+      assert.match(sent.params.requestId, /^[0-9a-f-]{36}$/);
     }
 
   }
   assert.equal(checks, TOOLS.length);
-  const failure = await rpc.request('tools/call', { name: 'coda_new_session', arguments: {} });
+  const failure = await rpc.request('tools/call', { name: 'coda_file_ticket', arguments: {} });
   assert.equal(failure.isError, true);
   const before = remote.calls.length;
-  for (const name of ['coda_input', 'coda_say', 'coda_done']) await assert.rejects(rpc.request('tools/call', { name, arguments: {} }), /Unknown tool/);
+  for (const name of ['coda_new_session', 'coda_agents', 'coda_send', 'coda_status', 'coda_telemetry']) await assert.rejects(rpc.request('tools/call', { name, arguments: {} }), /Unknown tool/);
   assert.equal(remote.calls.length, before);
   await assert.rejects(rpc.request('tools/call', { name: 'shell', arguments: {} }), /Unknown tool/);
 });
@@ -125,27 +130,6 @@ test('diagnostics exposes Coda filter types and forwards flat parameters unchang
   await rpc.request('tools/call', { name: 'coda_machine_diagnostics', arguments: args });
   assert.deepEqual(calls, [{ method: 'tool', params: { name: 'machine_diagnostics', arguments: args } }]);
 
-});
-
-test('MCP new_session exposes independent-session parameters and removes spawn/cancel', async t => {
-  const input = new PassThrough(), output = new PassThrough(), calls = [];
-  const lines = serveMcp({ input, output, ensureNet: async () => {}, invoke: async (method, params) => { calls.push({ method, params }); return {}; } });
-  const rpc = new Rpc(output, input);
-  t.after(() => { rpc.close(); lines.close(); input.end(); output.end(); });
-  const tools = (await rpc.request('tools/list', {})).tools;
-  const create = tools.find(tool => tool.name === 'coda_new_session');
-  // project may be left to the agent's link that names it; Coda refuses a call that names none.
-  assert.deepEqual(create.inputSchema.required, ['agent', 'prompt']);
-  assert.deepEqual(Object.keys(create.inputSchema.properties).sort(), ['project', 'agent', 'prompt', 'title', 'model', 'effort', 'mode', 'options', 'checkout'].sort());
-  assert.equal((await rpc.request('tools/call', { name: create.name, arguments: { prompt: 'fix' } })).isError, true);
-  const args = { project: 'remote-project-id', agent: 'codex', mode: 'agent', model: 'model-id', effort: 'high', title: 'Fix issue', prompt: 'Evidence and PR acceptance', options: { custom: true } };
-  await rpc.request('tools/call', { name: create.name, arguments: args });
-  assert.deepEqual(calls, [{ method: 'tool', params: { name: 'new_session', arguments: args } }]);
-  for (const name of ['coda_spawn', 'coda_cancel']) {
-    assert.equal(tools.some(tool => tool.name === name), false);
-    await assert.rejects(rpc.request('tools/call', { name, arguments: {} }), /Unknown tool/);
-  }
-  assert.equal(calls.length, 1);
 });
 
 // Execute the production recovery shell with fake OS commands. Only the
@@ -277,17 +261,26 @@ test('Running without system state does not fabricate a workspace snapshot', asy
   assert.equal(f.read().starts, undefined);
 });
 
-test('MCP send exposes explicit return parameters and forwards them unchanged', async t => {
+test('ticket forwards workflow/project and generates a fresh request ID per invocation', async t => {
   const home = temporary(t), remote = await endpoint(t);
   await bind(remote.address, 'only:code', { home });
+  assert.deepEqual(remote.calls[0].body, { code: 'only:code' });
+  assert.equal(remote.calls[0].path, '/v1/remote-caller/bind');
+  assert.equal(JSON.parse(readFileSync(join(home, 'config.json'))).records.only.record, 'only');
   const input = new PassThrough(), output = new PassThrough();
   const lines = serveMcp({ input, output, ensureNet: async () => {}, invoke: (method, params) => call(method, params, { home }) });
   const rpc = new Rpc(output, input);
   t.after(() => { rpc.close(); lines.close(); input.end(); output.end(); });
-  const tool = TOOLS.find(t => t.name === 'coda_send');
-  assert.equal(tool.inputSchema.properties.replyTo.type, 'string');
-  assert.equal(tool.inputSchema.properties.final.type, 'boolean');
-  const args = { childId: 'requester', replyTo: 'inspection', prompt: 'done', final: true };
-  await rpc.request('tools/call', { name: tool.name, arguments: args });
-  assert.deepEqual(remote.calls.at(-1).body.params.arguments, args);
+  const args = { workflow: 'other-ticket', project: 'project-id', title: 'title', detail: 'detail', evidence: 'log', key: 'component:failure' };
+  const ids = [];
+  for (let i = 0; i < 2; i++) {
+    await rpc.request('tools/call', { name: 'coda_file_ticket', arguments: args });
+    const sent = remote.calls.at(-1);
+    assert.equal(sent.path, '/v1/remote-caller');
+    const { requestId, ...params } = sent.body.params;
+    assert.deepEqual(params, { workflow: args.workflow, project: args.project, inputs: { title: args.title, detail: args.detail, evidence: args.evidence, key: args.key } });
+    ids.push(requestId);
+  }
+  assert.notEqual(ids[0], ids[1]);
+  assert.deepEqual(TOOLS.map(t => t.name).sort(), ['coda_machines', 'coda_machine_diagnostics', 'coda_read_thread', 'coda_read_tool_call', 'coda_workflow_list', 'coda_workflow_status', 'coda_file_ticket'].sort());
 });

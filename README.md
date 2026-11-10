@@ -12,7 +12,7 @@ plugins/codex/           Codex：入口在同一进程里运行锁定版本的 c
 plugins/claude/          Claude SDK：基于 Claude Agent SDK 的 ACP 入口（npm 依赖），资源「Claude」
 plugins/kimi/            Kimi Code：在运行机的 kimi acp 与 Coda 之间转发，资源「Kimi」
 plugins/grok/            Grok：转发运行机上 Grok CLI 的 ACP，并适配审批模式，资源「Grok」
-plugins/grok-bot/        Grok Bot：把 xAI 云端 Bot 接成长期会话，原生主会话、Grok Routine 运行记录与用户审批；数据工具依赖 Coda 远端 Agent 入口
+plugins/grok-bot/        Grok Bot：每个云端 Bot 的原生主会话是一条会话 Provider 记录，资源页登录
 plugins/opencode/        OpenCode：在运行机的 opencode acp 与 Coda 之间转发，送入会话指令与所选模型服务，模型按来源分组
 plugins/codex-accounts/  Codex 多账号：管理登录、自动续期与账号选择，接管资源「Codex」
 plugins/cursor/          Cursor：在运行机的 cursor-agent acp 与 Coda 之间转发，送入会话指令

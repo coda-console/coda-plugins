@@ -12,7 +12,6 @@ const exec = promisify(execFile);
 export const HOME = '/workspace/.coda-bot';
 const schema = (properties, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
 const string = description => ({ type: 'string', description });
-const anyObject = { type: 'object', additionalProperties: true };
 const proxy = (name, description, properties = {}, required = []) => ({ name: `coda_${name}`, description,
   inputSchema: schema(properties, required), method: 'tool', tool: name });
 export const TOOLS = [
@@ -25,25 +24,14 @@ export const TOOLS = [
       limit: { type: 'integer', minimum: 1, maximum: 500, default: 50, description: '网络探测报告条数' },
       client: string('网络客户端 ID：ios:<ID> 或 macos:<ID>'),
       verdict: { type: 'string', enum: ['ok', 'offline', 'internet_unreachable', 'server_unreachable', 'service_unavailable', 'ssh_failed', 'slow_network', 'slow_server'] } }, ['machine', 'kind']),
-  { name: 'coda_telemetry', description: 'GET 已配置看板的 /api/ JSON。常用 /api/overview、/api/installations/<id>、/api/hangs/<id>、/api/events、/api/tags；query 为过滤参数。',
-    inputSchema: schema({ path: string('/api/ 开头的只读路径'), query: anyObject }, ['path']), method: 'telemetry' },
   proxy('read_thread', '读取会话消息与工具摘要；完整工具结果用 coda_read_tool_call。', { reference: string('会话 ID 或 coda://threads/ 地址'), before: { type: 'integer' }, limit: { type: 'integer' }, historyVersion: { type: 'integer' }, tools: { type: 'boolean' } }, ['reference']),
   proxy('read_tool_call', '读取会话的一次工具调用及完整结果。', { reference: string('工具条目引用或 ID'), offset: { type: 'integer' }, maxBytes: { type: 'integer' } }, ['reference']),
-  proxy('agents', '列出可用 Agent、模型及目录，用于创建独立会话。', { project: string('项目名称或 ID') }),
-  proxy('status', '读取 Bot 当前会话状态；独立会话不会出现在 children 中，不能据此判断创建失败。要跟进独立会话请用 coda_read_thread，不要重复 new_session 或轮询。副作用工具的 turn 票据由适配器取得。'),
   proxy('workflow_status', '查看工作流运行的状态和失败证据。', { runId: string('工作流运行 ID 或 coda://workflow-runs/ 地址'), project: string('项目名称或 ID') }),
   proxy('workflow_list', '列出项目的工作流程。', { project: string('项目名称或 ID') }),
-  proxy('new_session', '像用户一样在目标目录开一个独立会话，每次要用户在 Coda 卡片上批准；不是你的子会话。立即返回请用户批准的回执，只会收到已开出/被拒绝/未能开出通知，工作结果不会推给你；记下会话引用，之后用 coda_read_thread 跟进，不要重复开同一任务。任务写清证据、重点代码路径、验收方式、按仓库惯例开 PR 并走完 PR 流程直到评审通过（含检查、交叉评审和自动评审评论）。GitHub 只读限制仅约束 Bot 自己，不要转述进任务或限制会话走 PR 流程。用户给了 Agent 链接（coda://agents/…）就原样填进 agent，不要拆成参数。',
-    { project: string('目标目录名字或 ID；别的机器上的目录按 ID。agent 填的链接已带目录时可省'),
-      agent: string('Agent ID（coda_agents 列出的），或用户给的 Agent 链接 coda://agents/…，原样照填：Coda 从链接取 Agent、机器、模型、强度、审批档位、目录与工作位置，链接写了的不要另写成不同的值'),
-      prompt: string('证据、重点代码路径、验收方式；按仓库惯例提交、开 PR 并走 PR 流程直到评审通过'), title: string('会话标题'), model: string('模型'), effort: string('推理强度'),
-      mode: string('独立会话的审批档位，codex 默认选择 agent；用户在卡片上批准'), options: anyObject,
-      checkout: { type: 'string', enum: ['shared', 'worktree'], description: 'shared（默认）在目录本身工作；worktree 从默认分支新建工作树' } }, ['agent', 'prompt']),
-  proxy('send', '给已有会话发消息，由 Coda 授权。明确回传委派结果时带 replyTo，直接唤醒原请求方，不建立反向等待。可能先返回「已提交」；不要轮询。', {
-    childId: string('目标会话 ID 或引用（沿用 Coda 参数名，不表示子会话）；回传时用原委派附带的地址'), prompt: string('消息或回传正文'),
-    replyTo: string('原委派附带的请求编号，只能回传给该请求的发起方'),
-    final: { type: 'boolean', description: '仅回传时使用，默认 true 表示委派完成；约定的进展或需要对方处理的问题用 false' },
-  }, ['childId', 'prompt']),
+  { name: 'coda_file_ticket', description: '为发现的问题提工单；同一问题始终使用相同 key，未结束的工单会复用。',
+    inputSchema: schema({ workflow: { ...string('工单流程'), default: 'bot-ticket' }, project: string('目录 ID'),
+      title: string('问题标题'), detail: string('现象、影响和处理要求'), evidence: string('证据'), key: string('同一问题的稳定指纹') },
+    ['title', 'detail', 'key']), method: 'file_ticket' },
 ];
 
 async function jsonPost(address, path, body, token, fetcher = fetch) {
@@ -57,8 +45,8 @@ async function jsonPost(address, path, body, token, fetcher = fetch) {
   return data;
 }
 async function config(home) {
-  try { return JSON.parse(await readFile(join(home, 'config.json'), 'utf8')); }
-  catch (error) { if (error.code === 'ENOENT') return { sessions: {} }; throw error; }
+  try { return { records: JSON.parse(await readFile(join(home, 'config.json'), 'utf8')).records ?? {} }; }
+  catch (error) { if (error.code === 'ENOENT') return { records: {} }; throw error; }
 }
 // Bind/config writes are serialized across Bots on the same cloud computer. A failed
 // lock is actionable (never steal a possibly live writer's lock or lose another Bot).
@@ -66,26 +54,23 @@ export async function bind(address, code, { home = HOME, fetcher = fetch } = {})
   await mkdir(home, { recursive: true, mode: 0o700 });
   const lock = await open(join(home, 'config.lock'), 'wx', 0o600).catch(error => { throw new Error(`绑定配置正在写入；请稍后重试。异常退出留下的 config.lock 须确认无 bind 进程后删除：${error.code}`); });
   try {
-    const answer = await jsonPost(address, '/v1/remote-agent/bind', { code }, undefined, fetcher);
+    const answer = await jsonPost(address, '/v1/remote-caller/bind', { code }, undefined, fetcher);
     if (typeof answer.token !== 'string' || !answer.token) throw new Error('绑定响应缺少 token');
-    // hello confirms possession through the authenticated route; Coda's session
-    // representation is deliberately opaque to this standalone client.
-    const { result } = await jsonPost(address, '/v1/remote-agent', { method: 'hello', params: {} }, answer.token, fetcher);
-    if (typeof result?.sessionId !== 'string') throw new Error('hello 缺少 sessionId');
+    if (typeof answer.record !== 'string' || !answer.record) throw new Error('绑定响应缺少 record');
     const saved = await config(home);
-    saved.sessions[result.sessionId] = { address, token: answer.token, session: answer.session };
+    saved.records[answer.record] = { address, token: answer.token, record: answer.record };
     const temporary = join(home, `config.${randomUUID()}.tmp`);
     await writeFile(temporary, `${JSON.stringify(saved, null, 2)}\n`, { mode: 0o600 });
     await rename(temporary, join(home, 'config.json'));
-    return { sessionId: result.sessionId, message: '已绑定；token 已保存，未打印。' };
+    return { recordId: answer.record, message: '已绑定；token 已保存，未打印。' };
   } finally { await lock.close(); await rm(join(home, 'config.lock')); }
 }
-export async function call(method, params, { home = HOME, session, fetcher = fetch } = {}) {
-  const saved = await config(home), ids = Object.keys(saved.sessions);
-  const selected = session ?? (ids.length === 1 ? ids[0] : undefined);
-  if (!selected || !Object.hasOwn(saved.sessions, selected)) throw new Error('请先 bind；有多个 Bot 时，mcp/call 命令须在末尾指定此 Bot 的会话 ID');
-  const { address, token } = saved.sessions[selected];
-  return (await jsonPost(address, '/v1/remote-agent', { method, params }, token, fetcher)).result;
+export async function call(method, params, { home = HOME, record, fetcher = fetch } = {}) {
+  const saved = await config(home), ids = Object.keys(saved.records);
+  const selected = record ?? (ids.length === 1 ? ids[0] : undefined);
+  if (!selected || !Object.hasOwn(saved.records, selected)) throw new Error('请先 bind；有多个 Bot 时，mcp/call 命令须在末尾指定此 Bot 的记录 ID');
+  const { address, token } = saved.records[selected];
+  return (await jsonPost(address, '/v1/remote-caller', { method, params }, token, fetcher)).result;
 }
 
 // Backfill a missing snapshot without replacing an existing workspace identity.
@@ -195,7 +180,9 @@ export function serveMcp({ input = process.stdin, output = process.stdout, ensur
       const args = params.arguments ?? {};
       if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('arguments 必须是对象');
       for (const key of tool.inputSchema.required) if (!(key in args)) throw new Error(`缺少参数 ${key}`);
-      const result = await invoke(tool.method, tool.tool ? { name: tool.tool, arguments: args } : args);
+      const { workflow = 'bot-ticket', project, ...inputs } = args;
+      const result = await invoke(tool.method, tool.tool ? { name: tool.tool, arguments: args }
+        : { workflow, ...(project === undefined ? {} : { project }), inputs, requestId: randomUUID() });
       // MCP tool results from Coda retain their content and isError flag.
       return tool.tool && Array.isArray(result?.content) ? result : { content: [{ type: 'text', text: JSON.stringify(result) }] };
     } catch (error) { return { isError: true, content: [{ type: 'text', text: error.message }] }; }
@@ -218,13 +205,13 @@ export async function main(args) {
   const [command, ...rest] = args;
   if (command === 'net') return console.log(JSON.stringify(await net()));
   if (command === 'bind' && rest.length === 2) return console.log(JSON.stringify(await bind(...rest)));
-  if (command === 'call' && rest.length >= 2) return console.log(JSON.stringify(await call(rest[0], JSON.parse(rest[1]), { session: rest[2] })));
+  if (command === 'call' && rest.length >= 2) return console.log(JSON.stringify(await call(rest[0], JSON.parse(rest[1]), { record: rest[2] })));
   if (command === 'mcp') {
-    serveMcp({ invoke: (method, params) => call(method, params, { session: rest[0] }) });
+    serveMcp({ invoke: (method, params) => call(method, params, { record: rest[0] }) });
     process.stdin.on('end', () => process.exit(0));
     return;
   }
-  throw new Error('用法：coda-bot.mjs net | bind <address> <code> | mcp [sessionId] | call <method> <json> [sessionId]');
+  throw new Error('用法：coda-bot.mjs net | bind <address> <code> | mcp [recordId] | call <method> <json> [recordId]');
 }
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   main(process.argv.slice(2)).catch(error => { console.error(error.message); process.exitCode = 1; });

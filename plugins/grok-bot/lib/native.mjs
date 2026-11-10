@@ -55,13 +55,13 @@ export class NativeClient {
   constructor({ token, teamId, fetcher = fetch, base = API }) {
     Object.assign(this, { token, teamId, fetcher, base });
   }
-  async request(method, value, { stream = false, signal = AbortSignal.timeout(30_000) } = {}) {
+  async request(method, value, { stream = false, service = SERVICE, signal = AbortSignal.timeout(30_000) } = {}) {
     const headers = { ...clientHeaders(), authorization: `Bearer ${this.token}`, 'connect-protocol-version': '1',
       'content-type': stream ? 'application/connect+json' : 'application/json',
       ...(stream ? { accept: 'application/connect+json', 'connect-accept-encoding': 'identity' } : {}),
       'x-request-id': randomUUID(), 'x-ghost-mode': 'true' };
     if (this.teamId != null) headers['x-cursor-team-id'] = String(this.teamId);
-    const response = await this.fetcher(`${this.base}/${SERVICE}/${method}`, {
+    const response = await this.fetcher(`${this.base}/${service}/${method}`, {
       method: 'POST', headers, body: stream ? envelope(value) : JSON.stringify(value), signal, redirect: 'error',
     });
     if (!response.ok) {

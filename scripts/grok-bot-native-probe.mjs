@@ -8,7 +8,7 @@ import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { API, NativeClient, frames, envelope, loginRequest } from '../plugins/grok-bot/agent/native.mjs';
+import { API, NativeClient, frames, envelope, loginRequest } from '../plugins/grok-bot/lib/native.mjs';
 export { NativeClient, frames, envelope, loginRequest };
 const STATE = process.env.CODA_GROK_NATIVE_STATE || join(homedir(), '.local', 'state', 'coda-grok-native-probe');
 const AUTH = join(STATE, 'auth.json');

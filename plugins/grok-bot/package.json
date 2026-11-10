@@ -3,9 +3,11 @@
   "id": "grok-bot",
   "displayName": "Grok Bot",
   "description": "把 Grok Bot 主会话接进 Coda",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "coda": {
-    "channels": ["preview"]
+    "channels": [
+      "preview"
+    ]
   },
   "type": "module",
   "engines": {
@@ -24,40 +26,44 @@
     "access": "public"
   },
   "files": [
-    "agent",
+    "main.mjs",
+    "lib",
+    "scripts",
     "remote",
-    "icons"
+    "icons",
+    "view"
   ],
   "contributes": {
-    "agents": [
-      {
-        "id": "grok-bot",
-        "lifecycle": "external",
-        "displayName": "Grok Bot",
-        "icon": {
-          "light": "icons/grok-bot.pdf",
-          "template": true
-        },
-        "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/agent/entry.mjs\"",
-        "setupHint": "发送 /login 完成官方登录，选择 Bot；发送 /bind 安装可选 Coda 数据工具。手机登录可能需要点 Continue。"
-      }
+    "protocolImplementations": [
+      "coda/session@1",
+      "coda/run@1"
     ],
-    "configuration": {
-      "title": "Grok Bot",
-      "properties": {
-        "grok-bot.telemetry": {
-          "title": "遥测看板地址",
-          "description": "可选的遥测看板 HTTP(S) 基地址。未配置时遥测工具明确报错。",
-          "type": "string"
-        },
-        "grok-bot.turnTimeout": {
-          "title": "本轮等待上限",
-          "description": "等待 Bot 完成本轮的最长时间（ISO 8601 周、日、时、分、秒，须大于零且不超过 24 天）。超时结束 Coda 轮次，云端未必停下。",
-          "type": "string",
-          "format": "duration",
-          "default": "PT30M"
+    "resources": [
+      {
+        "id": "account",
+        "title": "Grok Bot",
+        "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/resources.mjs\"",
+        "maxAge": "PT1M",
+        "signIn": {
+          "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/login.mjs\"",
+          "note": "打开官方登录链接确认；手机可能需要点 Continue。"
         }
       }
-    }
-  }
+    ],
+    "views": [
+      {
+        "id": "bind",
+        "title": "绑定 Grok Bot",
+        "entry": "view/bind.html",
+        "in": [
+          "page"
+        ],
+        "frame": "document"
+      }
+    ]
+  },
+  "main": "main.mjs",
+  "activationEvents": [
+    "onStartupFinished"
+  ]
 }
