@@ -27,7 +27,7 @@ export function messages({ entries, generation }, self, bot) {
   const result = [];
   for (const row of entries) {
     if (!conversation(row)) continue;
-    const body = decode(row), seq = String(row.updatedSeq ?? row.seq);
+    const body = decode(row), seq = row.exposed.seq;
     const base = `${generation}:${row.entryId}`;
     let text, sender;
     if (body.kind === 'message' && body.role === 'user') { text = body.content ?? ''; sender = self; }
@@ -46,8 +46,8 @@ export function messages({ entries, generation }, self, bot) {
     }
     const widget = body.message?.type === 'widget';
     const answered = widget && body.respondedValue !== undefined;
-    const edited = !answered && seq !== String(row.seq);
-    result.push({ id: edited ? `${base}:edit:${seq}` : base, cursor: cursor(generation, answered ? row.seq : seq), sender, text,
+    const edited = !answered && row.exposed.edited;
+    result.push({ id: edited ? `${base}:edit:${seq}` : base, cursor: cursor(generation, answered ? row.exposed.baseSeq : seq), sender, text,
       ...(edited ? { about: { message: base, change: 'edit' } } : {}),
       ...(body.replyToId ? { replyTo: `${generation}:${body.replyToId}` } : {}),
       ...(body.timestampMs ? { createdAt: new Date(Number(body.timestampMs)).toISOString() } : {}) });

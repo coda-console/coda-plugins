@@ -33,21 +33,23 @@ function host(root) {
   } };
   return { coda, records, save, handlers };
 }
-async function fixture(t, loggedIn = true) {
+async function fixture(t, loggedIn = true, setup = () => {}) {
   const root = temporary(t), native = new FakeNative(), h = host(root);
   if (loggedIn) writeFileSync(join(root, 'native-auth.json'), JSON.stringify({ accessToken: 'fixture' }));
   native.handler = async (method, params) => {
     if (method === 'GetMe') return Response.json({ authId: 'stable-account', name: '本人' });
-    if (method === 'SendGrokBotUserMessage') native.row(params.messageId, { kind: 'message', role: 'user', content: params.text, clientNonce: params.messageId, replyToId: params.replyToId });
+    if (method === 'SendGrokBotUserMessage') native.emit(native.row(params.messageId, { kind: 'message', role: 'user', content: params.text, clientNonce: params.messageId, replyToId: params.replyToId }));
     if (method === 'RespondGrokBotWidget') {
       const row = native.entries.find(r => r.entryId === params.entryId);
       const event = native.row(row.entryId, { ...decode(row), respondedValue: params.value }, 3);
-      event.rows.entries[0].seq = row.seq;
+      event.rows.entries[0].seq = row.seq; native.emit(event);
     }
   };
+  setup(native);
   const auth = new NativeAuth({ root, fetcher: native.fetch });
   const provider = new Provider(h.coda, { auth, stableMs: 10 });
   await provider.start(); t.after(() => provider.stop());
+  if (loggedIn) await until(() => native.connections.length);
   return { ...h, provider, native, auth, root, id: () => [...provider.bots.keys()][0] };
 }
 function run(f, requestId='request', input={text:'hello'}, id=requestId) {
@@ -90,16 +92,14 @@ test('read latest/before/after, edits, stable head and no Routine mirror', async
   assert.ok(!f.native.requests.some(r=>/Subagents|Automations/.test(r.method)));
 });
 
-test('post uses request-derived UUID once, confirms native echo, persists deduplication', async t => {
+test('post uses request-derived UUID and confirms the stream echo without reading history', async t => {
   const f=await fixture(t), context=run(f);
+  const reads=f.native.requests.filter(r=>r.method==='ListGrokBotTranscriptEntries').length;
   await f.provider.post({text:'hello'},context);
   const status=f.provider.runs.get(context.run.id).status; assert.equal(status.state,'completed');
   assert.equal(status.result.message.id,`0:${messageId('request',f.id(),context.parent)}`);
-  await f.provider.post({text:'hello'},context);
   assert.equal(f.native.requests.filter(r=>r.method==='SendGrokBotUserMessage').length,1);
-  const again=new Provider(f.coda,{auth:f.auth}); again.runs=f.provider.runs;
-  await again.post({text:'hello'},context);
-  assert.equal(f.native.requests.filter(r=>r.method==='SendGrokBotUserMessage').length,1);
+  assert.equal(f.native.requests.filter(r=>r.method==='ListGrokBotTranscriptEntries').length,reads);
 });
 
 test('widget is text options; reply responds once and completes with a self reply', async t => {
@@ -112,7 +112,6 @@ test('widget is text options; reply responds once and completes with a self repl
   assert.equal(f.provider.runs.get(context.run.id).status.state,'completed');
   assert.equal(f.native.requests.filter(r=>r.method==='RespondGrokBotWidget').length,1);
   assert.equal(f.native.requests.filter(r=>r.method==='SendGrokBotUserMessage').length,0);
-  await f.provider.stable(f.id(),f.provider.controller.signal);
   const reply=(await f.provider.read(f.id(),{after:'0:1'})).messages[0];
   assert.equal(reply.sender,f.provider.bots.get(f.id()).self); assert.equal(reply.replyTo,'0:widget');
   assert.deepEqual(reply.mentions,['inspector']);
@@ -121,33 +120,27 @@ test('widget is text options; reply responds once and completes with a self repl
 test('ambiguous write fails unknown and is never retried, unsupported media fails before sending', async t => {
   const f=await fixture(t); const original=f.native.handler;
   f.native.handler=async (method,params)=>{if(method==='SendGrokBotUserMessage')throw new Error('lost');return original(method,params);};
-  const context=run(f); await f.provider.post({text:'hello'},context); await f.provider.post({text:'hello'},context);
+  const context=run(f); await f.provider.post({text:'hello'},context);
   assert.equal(f.provider.runs.get(context.run.id).status.result.code,'unknown');
   assert.equal(f.native.requests.filter(r=>r.method==='SendGrokBotUserMessage').length,1);
   const input={text:'audio',parts:[{type:'audio',upload:'x'}]},other=run(f,'media',input);
   await f.provider.post(input,other); assert.equal(f.provider.runs.get(other.run.id).status.result.code,'unsupported');
 });
 
-test('a changing body does not advance head until a subsequent stable observation', async t => {
-  const f=await fixture(t); await until(()=>f.native.connections.length);
-  const original=f.native.handler; let changing=true, seq=0;
-  f.native.handler=async (method,params)=>{
-    if(method==='ListGrokBotTranscriptEntries' && changing) {
-      const e=f.native.row('stream',{kind:'send-message',message:{type:'text',content:`part ${++seq}`}},seq); e.rows.entries[0].seq='1';
-    }
-    return original(method,params);
-  };
-  f.native.emit({rows:{agentId:'inspector',entries:[]}});
-  await delay(45); assert.equal(f.provider.records.get(f.id()).status.head,undefined);
-  changing=false;
-  await until(()=>f.provider.records.get(f.id()).status.head===`0:${seq}`);
-});
-
-test('concurrent duplicate post does not race past the persistent request claim', async t => {
-  const f=await fixture(t), context=run(f);
-  await Promise.all([f.provider.post({text:'hello'},context),f.provider.post({text:'hello'},context)]);
-  assert.equal(f.native.requests.filter(r=>r.method==='SendGrokBotUserMessage').length,1);
-  assert.equal(f.provider.runs.get(context.run.id).status.state,'completed');
+test('only changed stream rows wait for stability; reads and settling never fetch history', async t => {
+  const f=await fixture(t);
+  const reads=f.native.requests.filter(r=>r.method==='ListGrokBotTranscriptEntries').length;
+  for(let seq=1;seq<=5;seq++) {
+    const event=f.native.row('stream',{kind:'send-message',message:{type:'text',content:`part ${seq}`}},seq);
+    event.rows.entries[0].seq='1'; f.native.emit(event);
+    await delay(3);
+    assert.equal(f.provider.records.get(f.id()).status.head,undefined);
+    assert.equal((await f.provider.read(f.id())).messages.length,0);
+  }
+  await until(()=>f.provider.records.get(f.id()).status.head==='0:5');
+  const page=await f.provider.read(f.id());
+  assert.equal(page.messages[0].id,'0:stream'); assert.equal(page.messages[0].about,undefined);
+  assert.equal(f.native.requests.filter(r=>r.method==='ListGrokBotTranscriptEntries').length,reads);
 });
 
 test('updatedSeq without a body change does not manufacture an edit', async t => {
@@ -158,4 +151,60 @@ test('updatedSeq without a body change does not manufacture an edit', async t =>
   f.native.emit({rows:{agentId:'inspector',entries:[row]}}); await delay(30);
   assert.equal((await f.provider.read(f.id(),{after:'0:1'})).messages.length,0);
   assert.equal(f.provider.records.get(f.id()).status.head,'0:1');
+});
+
+test('a completed stream in the baseline is ordinary; only changes after exposure become edits', async t => {
+  const f=await fixture(t,true,native=>{
+    const event=native.row('finished',{kind:'send-message',message:{type:'text',content:'finished before startup'}},9);
+    event.rows.entries[0].seq='5';
+  });
+  await until(()=>f.provider.records.get(f.id()).status.head==='0:9');
+  let page=await f.provider.read(f.id());
+  assert.equal(page.messages.length,1);
+  assert.equal(page.messages[0].id,'0:finished');
+  assert.equal(page.messages[0].cursor,'0:9');
+  assert.equal(page.messages[0].about,undefined);
+  const event=f.native.row('finished',{kind:'send-message',message:{type:'text',content:'changed after exposure'}},10);
+  event.rows.entries[0].seq='5'; f.native.emit(event);
+  await until(()=>f.provider.records.get(f.id()).status.head==='0:10');
+  page=await f.provider.read(f.id());
+  assert.equal(page.messages.length,2);
+  assert.equal(page.messages[0].text,'finished before startup');
+  assert.deepEqual(page.messages[1].about,{message:'0:finished',change:'edit'});
+  assert.equal(page.messages[1].id,'0:finished:edit:10');
+  assert.equal((await f.provider.read(f.id(),{after:'0:9'})).messages.length,1);
+});
+
+test('reconnect and cursor resets rebuild once, then resume incremental rows', async t => {
+  const f=await fixture(t);
+  // Keep the production reconnect delay out of this focused fake-server test.
+  const realTimeout=f.provider.clock.setTimeout;
+  f.provider.clock.setTimeout=(fn,ms)=>realTimeout(fn,ms===2000?1:ms);
+  const reads=()=>f.native.requests.filter(r=>r.method==='ListGrokBotTranscriptEntries').length;
+  assert.equal(reads(),1);
+  f.native.row('offline',{kind:'send-message',message:{type:'text',content:'during disconnect'}},1);
+  f.native.drop();
+  await until(()=>f.native.connections.length===2 && f.provider.records.get(f.id()).status.head==='0:1');
+  assert.equal(reads(),2);
+  f.native.emit({cursorTooOld:{agentId:'inspector',sessionId:''}});
+  await until(()=>f.native.connections.length===3); assert.equal(reads(),3);
+  f.native.generation=1; f.native.entries=[];
+  f.native.emit({cleared:{agentId:'inspector',sessionId:''}});
+  await until(()=>f.native.connections.length===4); assert.equal(reads(),4);
+  assert.equal(f.provider.records.get(f.id()).status.head,undefined);
+  assert.deepEqual((await f.provider.read(f.id())).messages,[]);
+  await assert.rejects(f.provider.read(f.id(),{after:'0:1'}),/重置/);
+  f.native.emit(f.native.row('new',{kind:'send-message',message:{type:'text',content:'new generation'}},1));
+  await until(()=>f.provider.records.get(f.id()).status.head==='1:1');
+  assert.equal((await f.provider.read(f.id())).messages[0].id,'1:new');
+  assert.equal(reads(),4);
+});
+
+test('restart marks an unfinished host run unknown without sending it again', async t => {
+  const f=await fixture(t), context=run(f);
+  await f.provider.stop();
+  const restarted=new Provider(f.coda,{auth:f.auth,stableMs:10});
+  t.after(()=>restarted.stop()); await restarted.start();
+  assert.equal(restarted.runs.get(context.run.id).status.result.code,'unknown');
+  assert.equal(f.native.requests.filter(r=>r.method==='SendGrokBotUserMessage').length,0);
 });

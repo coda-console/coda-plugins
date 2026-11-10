@@ -12,10 +12,11 @@ Provider 每 30 秒重新读取登录及 Bot 名单；每个 Bot 自动建立一
 
 ## 读取与发送
 
-- `read` 直接分页读取原生主会话 transcript，支持最新页、`after` 和 `before`；游标是 `<generation>:<updatedSeq>`，BigInt 比较，不丢 uint64 精度。历史重置后旧游标报错，需重新读取。
-- 订阅只触发历史复查及推进 `head`，不生成 ACP 轮次。连续两次历史读取相隔 1 秒且会话消息一致才发布 head（忽略活动与 Routine 条目）；持续变化就继续复查。`read` 不交付超过已确认 head 的版本。只持久化正文摘要和已交付序号，用于忽略正文未变的 updatedSeq 更新，不持久化正文镜像。
-- 修订以独立 ID `<generation>:<entryId>:edit:<updatedSeq>` 返回，`about: { message: <原消息 ID>, change: "edit" }`。原生历史只保留当前条目版本，Provider 不伪造已被覆盖的旧正文。
-- `post` 使用 Coda 已创建的 `coda/run@1`，handler 收下立即返回，后台发送、查 transcript 确认后写终态。messageId 是按调用方、记录 ID、requestId 派生的 UUID；发送前持久化请求占位，同请求不再发送。完成返回 `{ message: { id, cursor } }`；断线、接受后无回显等不确定结果为 `failed` / `unknown`。重启遗留运行也标为 `unknown`，不重发。
+- `read` 从内存中的原生主会话 transcript 镜像分页读取，支持最新页、`after` 和 `before`；游标是 `<generation>:<updatedSeq>`，BigInt 比较，不丢 uint64 精度。历史重置后旧游标报错，需重新读取。
+- 启动、重连及 `cleared` / `cursorTooOld` 时全量读取一次历史，重建每个 Bot 的条目镜像；之后只按 Watch 的 `rows` 增量更新。`read`、head 和发送回显确认不再拉历史。generation 不变时保留本进程已交付的消息版本；generation 改变则清空旧消息。
+- 变化的会话条目各自等待 1 秒无新正文变化才交付，不扫描或重拉完整历史；发布 head 不越过仍未稳定的较早条目。只持久化已暴露正文的摘要、序号及修订标记，不持久化正文镜像。
+- 一个条目首次稳定暴露时就是普通消息，ID 为 `<generation>:<entryId>`，cursor 取首次暴露时的 updatedSeq，即使它与原生 seq 不同。只有索引记录的已暴露正文再变化，才追加 `<base>:edit:<updatedSeq>`、带 `about: { message: <base>, change: "edit" }` 的修订。原生历史只保留当前版本，进程重启后不伪造已被覆盖的旧正文。
+- `post` 使用 Coda 已创建的 `coda/run@1`，handler 收下立即返回，后台发送并等待流事件更新镜像、确认回显后写终态。messageId 是按调用方、记录 ID、requestId 派生的 UUID；同请求只交给 handler 一次由 Coda 保证，插件不再保存 `posts.json` 或重复去重。完成返回 `{ message: { id, cursor } }`；断线、接受后无回显等不确定结果为 `failed` / `unknown`。重启遗留运行也标为 `unknown`，不重发。
 - 只收文字。草稿为无操作；未提供停止或取消。
 - widget 是列出选项的消息。回复该消息、正文填选项标签或值时调用 `RespondGrokBotWidget`；原生条目的 `respondedValue` 作为一条 self 回复读出，指向原 widget 并 mentions Bot。确认这条回复后完成 post。
 - Routine 记录、活动、结算、思考均不造消息；Routine 的结论若由 Bot 发在主会话则正常读取。
@@ -27,9 +28,9 @@ Provider 每 30 秒重新读取登录及 Bot 名单；每个 Bot 自动建立一
 1. `agent/watch.mjs` 的 `rows()` 按 `entryId` 保存 `updatedSeq` 和正文 SHA-256；同 ID 的更高序号且正文摘要变化会再次交给适配器。
 2. `agent/session.mjs` 的 `nativeEvent()` 对 `send-message` 保存旧文本；新文本以前文开头时追加后缀，否则输出「Grok 修订消息」。旧测试 `updatedSeq changes and process reload do not redisplay an already delivered body` 覆盖正文未变时去重；`transcript batches commit once, bound seen/hashes, and an evicted entry revision appears as new` 覆盖旧条目改写。
 
-这些代码证明旧实现允许正文再次变化，不能证明线上总以完整消息到达，也不能证明每次变化都是人工修订。当前 1 秒稳定窗口只是发布前的复查，不是上游完结信号；停顿后再次修改仍会以新修订交付。真实历史及稳定窗口是否合适留到预览空间真实环境验证。
+这些代码证明旧实现允许正文再次变化，不能证明线上总以完整消息到达，也不能证明每次变化都是人工修订。当前 1 秒稳定窗口只是对订阅条目的静默等待，不是上游完结信号；停顿后再次修改仍会以新修订交付。真实历史及稳定窗口是否合适留到预览空间真实环境验证。
 
-测试使用假原生服务端，覆盖登录后记录、增量/向前翻页、修订、稳定 head、post 幂等与未知结果、widget 回复以及 Routine 不镜像；记录及 read 输出按仓库协议契约校验。
+测试使用假原生服务端，覆盖登录后记录、增量/向前翻页、修订、稳定 head、启动前已完成的流式消息、断线/游标重置重建、无额外历史读取、post 的请求派生 ID、流回显与未知结果、widget 回复以及 Routine 不镜像；记录及 read 输出按仓库协议契约校验。
 
 ## 后续范围
 

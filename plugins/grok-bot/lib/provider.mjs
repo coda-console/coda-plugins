@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -17,12 +18,10 @@ export class Provider {
   constructor(coda, { auth, clock = { setTimeout, clearTimeout }, stableMs = 1000 } = {}) {
     Object.assign(this, { coda, clock, stableMs });
     this.auth = auth ?? new NativeAuth({ root: coda.plugin.state });
-    this.records = new Map(); this.bots = new Map(); this.runs = new Map(); this.waiting = new Map(); this.watches = new Map();
+    this.records = new Map(); this.bots = new Map(); this.runs = new Map(); this.waiting = new Map(); this.watches = new Map(); this.mirrors = new Map(); this.changes = new EventEmitter();
     this.controller = new AbortController(); this.queue = Promise.resolve(); this.jobs = new Set();
     this.indexFile = join(coda.plugin.state, 'transcript-index.json');
     try { this.index = JSON.parse(readFileSync(this.indexFile, 'utf8')); } catch (e) { if (e.code !== 'ENOENT') throw e; this.index = {}; }
-    this.file = join(coda.plugin.state, 'posts.json');
-    try { this.posts = JSON.parse(readFileSync(this.file, 'utf8')); } catch (e) { if (e.code !== 'ENOENT') throw e; this.posts = {}; }
   }
   schedule(fn) {
     const next = this.queue.then(fn);
@@ -84,7 +83,7 @@ export class Provider {
         }
       }
       for (const id of this.records.keys()) if (!listed.has(id)) {
-        this.watches.get(id)?.controller.abort(); this.watches.delete(id); this.bots.delete(id);
+        this.watches.get(id)?.controller.abort(); this.watches.delete(id); this.bots.delete(id); this.clearMirror(id);
         await this.coda.protocols.delete(SESSION, id); this.records.delete(id);
       }
     } catch (e) {
@@ -96,56 +95,96 @@ export class Provider {
     if (!held || JSON.stringify(held.status) === JSON.stringify(status)) return;
     this.records.set(id, await this.coda.protocols.setStatus(SESSION, id, status, held.revision));
   }
-  async stable(id, signal) {
-    const target = this.bots.get(id);
-    let previous = await history(this.auth.client, target.bot);
-    for (;;) {
-      await pause(this.clock, this.stableMs, signal);
-      const next = await history(this.auth.client, target.bot);
-      if (signature(messages(previous, target.self, target.bot)) === signature(messages(next, target.self, target.bot))) {
-        const entries = next.entries.filter(conversation).map(row => {
-          const key = `${id}:${next.generation}:${row.entryId}`, hash = signature(row.body);
-          const previous = this.index[key];
-          const seq = previous?.hash === hash ? previous.seq : String(row.updatedSeq ?? row.seq);
-          this.index[key] = { hash, seq };
-          return { ...row, updatedSeq: seq };
-        });
-        writePrivate(this.coda.plugin.state, this.indexFile, this.index);
-        const rows = messages({ ...next, entries }, target.self, target.bot), head = rows.at(-1)?.cursor;
-        await this.schedule(() => this.write(id, { participants: this.records.get(id).status.participants, state: 'active', ...(head ? { head } : {}) }));
-        return next;
-      }
-      previous = next;
+  clearMirror(id) {
+    const mirror = this.mirrors.get(id);
+    for (const pending of mirror?.pending.values() ?? []) this.clock.clearTimeout(pending.timer);
+    this.mirrors.delete(id);
+  }
+  updateRows(id, entries) {
+    const mirror = this.mirrors.get(id);
+    for (const row of entries) {
+      const old = mirror.entries.get(row.entryId);
+      if (old && BigInt(old.updatedSeq ?? old.seq) >= BigInt(row.updatedSeq ?? row.seq)) continue;
+      mirror.entries.set(row.entryId, row);
+      if (!conversation(row)) continue;
+      const pending = mirror.pending.get(row.entryId);
+      if (old?.body === row.body) continue;
+      if (pending) this.clock.clearTimeout(pending.timer);
+      const next = { row, ready: false };
+      mirror.pending.set(row.entryId, next);
+      next.timer = this.clock.setTimeout(() => {
+        next.ready = true;
+        void this.schedule(() => this.flush(id)).catch(() => {});
+      }, this.stableMs);
     }
+  }
+  async flush(id) {
+    const mirror = this.mirrors.get(id);
+    if (!mirror) return;
+    const target = this.bots.get(id);
+    // Do not advance past an earlier entry that is still changing.
+    const pending = [...mirror.pending.values()].sort((a, b) => BigInt(a.row.updatedSeq ?? a.row.seq) < BigInt(b.row.updatedSeq ?? b.row.seq) ? -1 : 1);
+    for (const item of pending) {
+      if (!item.ready) break;
+      const row = item.row, key = `${id}:${mirror.generation}:${row.entryId}`, hash = signature(row.body);
+      const previous = this.index[key];
+      const seq = previous?.hash === hash ? previous.seq : String(row.updatedSeq ?? row.seq);
+      const exposed = previous?.hash === hash ? previous : {
+        hash, seq, baseSeq: previous?.baseSeq ?? seq, edited: !!previous,
+      };
+      this.index[key] = exposed;
+      const rendered = messages({ generation: mirror.generation, entries: [{ ...row, exposed }] }, target.self, target.bot);
+      for (const message of rendered) mirror.messages.set(message.id, message);
+      mirror.pending.delete(row.entryId);
+    }
+    writePrivate(this.coda.plugin.state, this.indexFile, this.index);
+    const head = this.visible(id).at(-1)?.cursor;
+    await this.write(id, { participants: this.records.get(id).status.participants, state: 'active', ...(head ? { head } : {}) });
+    this.changes.emit(id);
+  }
+  visible(id) {
+    const rows = [...this.mirrors.get(id).messages.values()];
+    const senders = new Map(rows.map(m => [m.id, m.sender]));
+    return rows.map(m => m.replyTo && senders.has(m.replyTo) ? { ...m, mentions: [senders.get(m.replyTo)] } : m)
+      .sort((a, b) => position(a.cursor) < position(b.cursor) ? -1 : 1);
   }
   async watch(id, signal) {
     while (!signal.aborted) {
       try {
-        const baseline = await this.stable(id, signal), bot = this.bots.get(id).bot;
+        const bot = this.bots.get(id).bot;
+        const baseline = await history(this.auth.client, bot);
+        if (signal.aborted) break;
+        const previous = this.mirrors.get(id);
+        this.clearMirror(id);
+        this.mirrors.set(id, { generation: baseline.generation, entries: new Map(), pending: new Map(),
+          messages: previous?.generation === baseline.generation ? previous.messages : new Map() });
+        this.updateRows(id, baseline.entries);
+        if (!this.mirrors.get(id).pending.size) await this.schedule(() => this.flush(id));
         const seq = baseline.entries.reduce((n, r) => BigInt(r.updatedSeq ?? r.seq) > BigInt(n) ? String(r.updatedSeq ?? r.seq) : n, '0');
         const stream = await this.auth.client.request('WatchGrokBotTranscripts', { cursors: [{ agentId: bot, sessionId: '', generation: baseline.generation, afterUpdatedSeq: seq }], includeUnlistedAgents: true, inlineBodyMaxBytes: 262144 }, { stream: true, signal });
         for await (const event of stream) {
-          if (event.rows?.agentId === bot && !(event.rows.sessionId ?? '')) await this.stable(id, signal);
-          if (event.cleared || event.cursorTooOld) break;
+          if (event.rows?.agentId === bot && !(event.rows.sessionId ?? '')) this.updateRows(id, event.rows.entries ?? []);
+          const reset = event.cleared ?? event.cursorTooOld;
+          if (reset && (!reset.agentId || reset.agentId === bot) && !(reset.sessionId ?? '')) break;
         }
       } catch (e) {
         if (signal.aborted) break;
         await this.schedule(() => this.write(id, { ...this.records.get(id)?.status, state: 'unreachable', reason: e.message }));
       }
+      // A disconnected stream cannot establish stability. Rebuild before exposing pending rows.
+      const mirror = this.mirrors.get(id);
+      for (const p of mirror?.pending.values() ?? []) this.clock.clearTimeout(p.timer);
+      mirror?.pending.clear();
       try { await pause(this.clock, 2000, signal); } catch { break; }
     }
   }
   async read(id, { after, before, limit = 50 } = {}) {
     if (after && before) throw new Error('after 与 before 不能同时使用');
-    const target = this.bots.get(id);
-    if (!target) throw new Error('会话不可用，请在资源页登录');
-    const h = await history(this.auth.client, target.bot), head = this.records.get(id).status.head;
-    for (const c of [after, before]) if (c && !c.startsWith(`${h.generation}:`)) throw new Error('Grok 历史已重置，请重新读取');
-    h.entries = h.entries.map(row => {
-      const saved = this.index[`${id}:${h.generation}:${row.entryId}`];
-      return saved?.hash === signature(row.body) ? { ...row, updatedSeq: saved.seq } : row;
-    });
-    const rows = messages(h, target.self, target.bot).filter(m => head?.startsWith(`${h.generation}:`) && position(m.cursor) <= position(head)
+    const mirror = this.mirrors.get(id);
+    if (!mirror) throw new Error('会话不可用，请在资源页登录');
+    const head = this.records.get(id).status.head;
+    for (const c of [after, before]) if (c && !c.startsWith(`${mirror.generation}:`)) throw new Error('Grok 历史已重置，请重新读取');
+    const rows = this.visible(id).filter(m => head?.startsWith(`${mirror.generation}:`) && position(m.cursor) <= position(head)
       && (!after || position(m.cursor) > position(after)) && (!before || position(m.cursor) < position(before)));
     const page = after ? rows.slice(0, limit) : rows.slice(-limit);
     return { messages: page, cursor: page.at(-1)?.cursor ?? null, more: rows.length > page.length };
@@ -157,21 +196,17 @@ export class Provider {
   }
   async post(input, { record, requestId, parent, run }) {
     const key = messageId(requestId, record.id, parent);
-    if (this.posts[key]) {
-      if (!this.posts[key].status && this.posts[key].run === run.id) return;
-      await this.setRun(run.id, this.posts[key].status ?? { state: 'failed', result: { code: 'unknown', message: '此请求已尝试发送，不会重发' } }); return;
-    }
-    this.posts[key] = { run: run.id }; writePrivate(this.coda.plugin.state, this.file, this.posts);
     let attempted = false, status;
     try {
       const target = this.bots.get(record.id);
       if (!target) throw new Error('会话不可用');
       if (input.parts?.length) throw Object.assign(new Error('只支持文字'), { code: 'unsupported' });
-      const h = await history(this.auth.client, target.bot);
-      const all = messages(h, target.self, target.bot);
+      const h = this.mirrors.get(record.id);
+      if (!h) throw new Error('会话正在连接');
+      const all = this.visible(record.id);
       const reply = input.replyTo && all.find(m => m.id === input.replyTo);
       if (input.replyTo && !reply) throw new Error('回复的消息不存在');
-      const entry = reply && h.entries.find(r => `${h.generation}:${r.entryId}` === (reply.about?.message ?? reply.id));
+      const entry = reply && [...h.entries.values()].find(r => `${h.generation}:${r.entryId}` === (reply.about?.message ?? reply.id));
       const body = entry && decode(entry), widget = body?.message?.type === 'widget' && body.message.widget;
       const option = widget && widget.options.find(o => String(o.label ?? o.value) === input.text || String(o.value) === input.text);
       if (widget && (!option || body.respondedValue !== undefined || body.widgetSkipped)) throw new Error('选项无效或此问题已回答');
@@ -185,26 +220,41 @@ export class Provider {
         if (!answer.dispatched) throw new Error('Grok 未确认发送');
       }
       // Confirm in the native transcript, never invent a successful message cursor.
-      let found;
-      for (let i = 0; i < 20 && !found; i++) {
-        const current = await history(this.auth.client, target.bot);
-        const row = current.entries.find(r => {
+      const found = await this.echo(record.id, current => {
+        const row = [...current.entries.values()].find(r => {
           if (!conversation(r)) return false;
           const b = decode(r);
           return widget ? r.entryId === entry.entryId && b.respondedValue === option.value : b.clientNonce === key;
         });
-        if (row) found = messages({ ...current, entries: [row] }, target.self, target.bot).at(-1);
-        if (!found) await pause(this.clock, 250, this.controller.signal);
-      }
-      if (!found) throw new Error('尚未在 transcript 确认发送结果');
+        if (!row || current.pending.has(row.entryId)) return;
+        const base = `${current.generation}:${row.entryId}`;
+        return this.visible(record.id).find(m => widget ? m.replyTo === base && m.sender === target.self : m.id === base);
+      });
       status = { state: 'completed', result: { message: { id: found.id, cursor: found.cursor } } };
     } catch (e) { status = { state: 'failed', result: { code: attempted ? 'unknown' : e.code ?? 'invalid', message: e.message } }; }
-    this.posts[key] = { run: run.id, status }; writePrivate(this.coda.plugin.state, this.file, this.posts);
     await this.setRun(run.id, status);
+  }
+  echo(id, find) {
+    return new Promise((resolve, reject) => {
+      const signal = this.controller.signal;
+      const finish = (error, message) => {
+        this.clock.clearTimeout(timer); this.changes.off(id, check); signal.removeEventListener('abort', abort);
+        error ? reject(error) : resolve(message);
+      };
+      const check = () => {
+        const mirror = this.mirrors.get(id);
+        const message = mirror && find(mirror);
+        if (message) finish(null, message);
+      };
+      const abort = () => finish(new Error('发送确认已停止'));
+      const timer = this.clock.setTimeout(() => finish(new Error('尚未在 transcript 确认发送结果')), 5000);
+      this.changes.on(id, check); signal.addEventListener('abort', abort, { once: true });
+      if (signal.aborted) abort(); else check();
+    });
   }
   async stop() {
     this.controller.abort(); this.auth.close();
-    for (const w of this.watches.values()) w.controller.abort();
+    for (const [id, w] of this.watches) { w.controller.abort(); this.clearMirror(id); }
     for (const h of this.handlers ?? []) h.dispose();
     await Promise.allSettled([this.polling, ...[...this.watches.values()].map(w => w.running), ...this.jobs]);
     await this.queue;
