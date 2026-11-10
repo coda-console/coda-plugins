@@ -96,7 +96,7 @@
                 "snapshot": {
                   "type": "object",
                   "properties": {
-                    "kind": { "type": "string", "minLength": 1 },
+                    "kind": { "const": "git/snapshot@1" },
                     "id": { "type": "string", "minLength": 1 }
                   },
                   "required": ["kind", "id"],

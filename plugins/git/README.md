@@ -49,9 +49,9 @@ const result = await call({
 // { snapshot: { kind: 'git/snapshot@1', id }, commit, workingDirectory }
 ```
 
-`path` 是任一工作副本里的本机绝对路径，主工作副本或 `git worktree` 建的工作树都行。插件用 `--show-toplevel` 找到根目录，为根目录准备源：已有同路径的源就复用，没有就按路径哈希新建 `worktree-<sha256 前 40 位>`。快照 id 由发起运行的引用和 `requestId` 派生，同一个请求重发得到同一条快照。插件等快照 `ready` 后发布源与快照，再返回；`workingDirectory` 是 `path` 相对根目录的路径（根目录为 `.`，不含 `..`）。快照失败时调用失败，并带上那条快照的 `reason`。
+`path` 是任一工作副本里的本机绝对路径，主工作副本或 `git worktree` 建的工作树都行。插件用 `--show-toplevel` 找到根目录，为根目录准备源：已有同路径的源就复用，没有就按路径哈希新建 `worktree-<sha256 前 40 位>`。快照 id 由发起运行的引用和 `requestId` 派生，同一个请求重发得到同一条快照。插件等快照 `ready` 后发布快照，再返回；`workingDirectory` 是 `path` 相对根目录的路径（根目录为 `.`，不含 `..`）。快照失败时调用失败，并带上那条快照的 `reason`。
 
-这样按需建的源跟着快照走：不再有未结束运行引用它时，插件撤下它的发布、删除它，快照 ref 按运行回收。经管理入口手动登记的源不受影响。
+源本身不发布：它的 spec 是本机路径，对方只用快照 status 里的 `url`（`repos/<source>`）和 `ref`，经调用方的转发入口取。这样按需建的源跟着快照走：不再有未结束运行引用它时，插件删除它，快照 ref 按运行回收。调用建的快照在运行结束后标为 `released`，随后撤下发布并删除；经管理入口手动登记的源和快照不受影响。
 
 ## 快照与回收
 

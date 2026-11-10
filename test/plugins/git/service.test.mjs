@@ -50,7 +50,7 @@ test('工作树里的子目录拍快照：含改动与未跟踪文件，不含�
   assert.equal(item.status.ready, true);
   assert.equal(item.status.commit, result.commit);
   assert.equal(get(h, SOURCE, item.spec.source).status.ready, true);
-  assert.ok(h.published.has(`${SOURCE}/${item.spec.source}`));
+  assert.ok(!h.published.has(`${SOURCE}/${item.spec.source}`));
   assert.ok(h.published.has(`${SNAPSHOT}/${result.snapshot.id}`));
   assert.ok(get(h, SERVICE, 'git'));
   assert.ok(!h.published.has(`${SERVICE}/git`));
@@ -69,7 +69,7 @@ test('同一个 requestId 再调一次得到同一个快照，不另建', async 
   await provider.stop();
 });
 
-test('运行结束后回收快照 ref、删除按需源，手动登记的源保留', async t => {
+test('运行结束后删除调用建的快照与按需源，手动登记的源保留', async t => {
   const dir = await fixture(t), other = await fixture(t), h = host(join(dir, '.git', 'state'));
   const provider = new GitProvider(h.coda); t.after(() => provider.stop()); await provider.start();
   const linked = await linkedWorktree(dir); t.after(() => rm(linked, { recursive: true, force: true }));
@@ -78,7 +78,8 @@ test('运行结束后回收快照 ref、删除按需源，手动登记的源保�
   const result = await snapshot(h, { path: linked }, { parent, requestId: 'request-3' });
   const item = get(h, SNAPSHOT, result.snapshot.id), ref = item.status.ref, sourceId = item.spec.source;
   h.run('run', 'succeeded'); await idle(provider);
-  assert.equal(get(h, SNAPSHOT, result.snapshot.id).status.released, true);
+  assert.equal(get(h, SNAPSHOT, result.snapshot.id), undefined);
+  assert.ok(!h.published.has(`${SNAPSHOT}/${result.snapshot.id}`));
   assert.equal(await command(linked, ['for-each-ref', ref]), '');
   assert.equal(get(h, SOURCE, sourceId), undefined);
   assert.ok(!h.published.has(`${SOURCE}/${sourceId}`));

@@ -9,6 +9,7 @@ const SERVICE_ID = 'git';
 const idOK = id => typeof id === 'string' && /^[a-zA-Z0-9_-]{1,100}$/.test(id);
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const autoSourceId = path => `worktree-${hash([path]).slice(0, 40)}`;
+const snapshotFromCall = id => /^snapshot-[a-f0-9]{40}$/.test(id);
 const url = id => `/v1/plugins/git/services/repository/repos/${id}`;
 const sameRepository = (a, b) => a.path === b.path && a.gitDir === b.gitDir && a.commonDir === b.commonDir;
 const ended = run => run?.finishedAt != null || ['succeeded', 'failed', 'cancelled'].includes(run?.state);
@@ -30,9 +31,12 @@ export class GitProvider {
     try { this.identities = JSON.parse(await readFile(this.identitiesFile, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     for (const [kind, map] of [[SOURCE, this.sources], [SNAPSHOT, this.snapshots]]) {
       this.subscriptions.push(await this.coda.protocols.observe(kind, event => {
+        const previous = map.get(event.id);
         if (event.type === 'DELETED') map.delete(event.id); else map.set(event.id, event.object);
-        // Revoke HTTP access immediately, before the asynchronous controller catches up.
-        if (kind === SOURCE) this.repositories.delete(event.id);
+        // Revoke HTTP access immediately when the source is deleted or now names another repository;
+        // its own status writes do not change what it serves.
+        if (kind === SOURCE && (event.type === 'DELETED' || !previous || previous.instance !== event.object.instance ||
+            JSON.stringify(previous.spec) !== JSON.stringify(event.object.spec))) this.repositories.delete(event.id);
         this.notify(kind, event.id);
       }, 'local'));
       this.subscriptions.push(await this.coda.protocols.control(kind, () => this.schedule(), 'local'));
@@ -117,21 +121,9 @@ export class GitProvider {
       const held = this.snapshots.get(snapshotId);
       if (held && JSON.stringify(held.spec) !== JSON.stringify(spec)) throw new Error(`请求 ${requestId} 已用于另一个快照`);
       if (!held) await this.coda.protocols.put({ kind: SNAPSHOT, id: snapshotId, spec });
-      // A status write of the source clears the cached repository until the next reconciliation; that transient
-      // failure is retried, while a source that really became unavailable ends the call.
-      const item = await this.waitFor(SNAPSHOT, snapshotId, object => {
-        if (object.status?.ready === true || object.status?.released === true) return true;
-        if (!object.status?.reason) return false;
-        if (object.status.reason !== '源未登记或不可用') return true;
-        const current = this.sources.get(sourceId);
-        return !current || current.status?.ready === false;
-      });
-      if (!item.status.ready) {
-        const current = this.sources.get(sourceId);
-        throw new Error(item.status.reason === '源未登记或不可用' && current?.status?.reason
-          ? current.status.reason : item.status.reason ?? '快照未就绪');
-      }
-      await this.coda.protocols.publish(SOURCE, sourceId);
+      const item = await this.waitFor(SNAPSHOT, snapshotId, object =>
+        object.status?.ready === true || object.status?.released === true || object.status?.reason);
+      if (!item.status.ready) throw new Error(item.status.reason ?? '快照未就绪');
       await this.coda.protocols.publish(SNAPSHOT, snapshotId);
       return { snapshot: { kind: SNAPSHOT, id: snapshotId }, commit: item.status.commit, workingDirectory: workingDirectory || '.' };
     } finally { this.holds.delete(sourceId); void this.schedule().catch(() => {}); }
@@ -169,6 +161,7 @@ export class GitProvider {
   async reconcile() {
     const env = await this.coda.environment();
     await this.followRuns();
+    const snapshots = [...this.snapshots.values()];
     const instances = new Set([...this.sources.values()].map(source => source.instance));
     const retained = Object.fromEntries(Object.entries(this.identities).filter(([instance]) => instances.has(instance)));
     if (Object.keys(retained).length !== Object.keys(this.identities).length) await this.saveIdentities(retained);
@@ -179,11 +172,9 @@ export class GitProvider {
         const identity = this.identities[source.instance];
         if (identity && !sameRepository(identity, repo)) throw new Error('源路径已指向另一仓库，请删除源后重新登记');
         if (!identity) await this.saveIdentities({ ...this.identities, [source.instance]: { path: repo.path, gitDir: repo.gitDir, commonDir: repo.commonDir } });
-        if (this.sources.get(source.id)?.revision !== source.revision) continue;
         this.repositories.set(source.id, { ...repo, instance: source.instance, pathSpec: source.spec.path });
         await this.status(source, { ready: true, url: url(source.id) });
       } catch (error) {
-        if (this.sources.get(source.id)?.revision !== source.revision) continue;
         this.repositories.delete(source.id);
         await this.status(source, { ready: false, reason: error.message });
       }
@@ -202,9 +193,19 @@ export class GitProvider {
         delete this.records[token]; await this.save();
       } catch (error) { console.error('[git snapshot cleanup]', record.id, error.message); }
     }
-    for (const item of this.snapshots.values()) {
+    for (const item of snapshots) {
+      if (this.snapshots.get(item.id)?.revision !== item.revision) continue;
       const run = this.runs.get(item.spec.run);
-      if (ended(run)) { await this.status(item, { ready: false, released: true, reason: '关联运行已结束' }); continue; }
+      if (ended(run)) {
+        if (snapshotFromCall(item.id) && item.status?.released) {
+          try {
+            await this.coda.protocols.publish(SNAPSHOT, item.id, false);
+            await this.coda.protocols.delete(SNAPSHOT, item.id);
+            this.snapshots.delete(item.id);
+          } catch (error) { console.error('[git snapshot release]', item.id, error.message); }
+        } else await this.status(item, { ready: false, released: true, reason: '关联运行已结束' });
+        continue;
+      }
       const source = this.sources.get(item.spec.source), repo = this.repositories.get(item.spec.source);
       if (!source || !repo) { await this.status(item, { ready: false, reason: '源未登记或不可用' }); continue; }
       if (!run || run.error) { await this.status(item, { ready: false, reason: `无法确认关联运行：${run?.error ?? item.spec.run}` }); continue; }
@@ -236,7 +237,6 @@ export class GitProvider {
     for (const source of [...this.sources.values()]) {
       if (source.id !== autoSourceId(source.spec.path) || liveSources.has(source.id) || this.holds.has(source.id)) continue;
       try {
-        await this.coda.protocols.publish(SOURCE, source.id, false);
         await this.coda.protocols.delete(SOURCE, source.id);
         this.sources.delete(source.id); this.repositories.delete(source.id);
       } catch (error) { console.error('[git source cleanup]', source.id, error.message); }
