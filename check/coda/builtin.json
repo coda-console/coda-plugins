@@ -222,7 +222,7 @@
     "id": "github",
     "displayName": "GitHub",
     "description": "登录账号，推送时自动选对账号",
-    "version": "1.9.0",
+    "version": "1.10.0",
     "category": "模型与账号",
     "icon": {
       "symbol": "arrow.triangle.pull",
@@ -327,6 +327,7 @@
         {
           "id": "accounts",
           "title": "GitHub",
+          "kind": "github-accounts",
           "command": "node \"$CODA_PLUGIN_PATH/scripts/resources.mjs\"",
           "maxAge": "PT1M",
           "actions": {
@@ -357,7 +358,7 @@
     "id": "guide",
     "displayName": "Coda 使用指南",
     "description": "让 Agent 会回答 Coda 怎么用",
-    "version": "1.0.6",
+    "version": "1.0.9",
     "category": "工作流程",
     "icon": {
       "symbol": "book.fill",
@@ -467,7 +468,7 @@
     "id": "resources",
     "displayName": "资源",
     "description": "各台电脑的账号、额度与负载",
-    "version": "2.1.0",
+    "version": "2.4.0",
     "category": "机器与资源",
     "icon": {
       "symbol": "gauge.with.dots.needle.67percent",
@@ -481,6 +482,7 @@
     "title": "资源",
     "properties": {},
     "main": "main.mjs",
+    "startup": true,
     "workflows": [],
     "services": [],
     "agents": [],
@@ -535,6 +537,18 @@
               },
               "command": {
                 "$ref": "common.json#/$defs/command"
+              },
+              "kind": {
+                "description": "种类名：声明后这类资源成为节点内核里的可引用种类，由这台电脑上报读数；小写字母、数字和「-」，全空间唯一",
+                "type": "string",
+                "maxLength": 63,
+                "pattern": "^[a-z][a-z0-9-]{0,62}$"
+              },
+              "report": {
+                "description": "定时读这类资源并上报的间隔：ISO 8601 时长，最短 PT1M（分钟、小时、天或周）；只在写了 kind 时有意义，不写就只在打开页面、刷新或动作后读到时上报",
+                "type": "string",
+                "maxLength": 200,
+                "pattern": "^P(?!$)(?:(?!0+W)\\d+W)?(?:(?!0+D)\\d+D)?(?:T(?!0*H?0*M?$)(?:\\d+H)?(?:\\d+M)?)?$"
               },
               "maxAge": {
                 "description": "读数不重读还能再显示多久：ISO 8601 时长，如 PT5M（周、天与时分秒，不用年和月）",
@@ -611,7 +625,18 @@
               "title",
               "command"
             ],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "if": {
+              "required": [
+                "report"
+              ]
+            },
+            "then": {
+              "required": [
+                "kind"
+              ],
+              "description": "report 只在写了 kind 时有意义"
+            }
           },
           "$defs": {
             "question": {
@@ -854,7 +879,7 @@
     "id": "space",
     "displayName": "空间",
     "description": "把几台电脑组成一个空间",
-    "version": "1.1.0",
+    "version": "1.3.0",
     "category": "机器与资源",
     "icon": {
       "symbol": "square.stack.3d.up.fill",
@@ -866,12 +891,28 @@
     },
     "dir": "src/resources/plugins/space",
     "title": "空间",
-    "properties": {},
+    "properties": {
+      "space.notes": {
+        "type": "string",
+        "description": "写给 Agent 看的这台电脑的用法与注意事项，例如命令要怎么执行、哪些事不要在这台上做。Agent 在这台上做事之前会先读它；空间里每台各写各的。",
+        "title": "这台电脑的说明"
+      }
+    },
     "workflows": [],
     "services": [
       "space"
     ],
     "agents": [],
+    "instructions": {
+      "command": "\"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/machines.mjs\""
+    },
+    "skills": [
+      {
+        "name": "space",
+        "path": "src/resources/plugins/space/skills/space",
+        "description": "Coda 空间里的机器怎么查、怎么用：每台机器是一个资源，在一台上做事之前先读它的说明；机器离线或信息过期时怎么办；把活派到另一台走跨机器会话。要在别的机器上做事、选哪台机器、或用户问空间里有哪些机器时读。"
+      }
+    ],
     "commands": [],
     "capabilities": [],
     "groups": [],
@@ -941,7 +982,29 @@
     },
     "dir": "src/resources/plugins/workflows",
     "title": "工作流",
-    "properties": {},
+    "properties": {
+      "workflows.remoteCallerWorkflows": {
+        "type": "array",
+        "description": "本机所有绑定的会话记录共用；project 填本机目录 ID，workflow 填流程名。",
+        "title": "远端调用方可发起的流程",
+        "rows": {
+          "type": "object",
+          "columns": {
+            "project": {
+              "type": "string"
+            },
+            "workflow": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "project",
+            "workflow"
+          ]
+        },
+        "default": []
+      }
+    },
     "main": "main.mjs",
     "workflows": [],
     "services": [],
@@ -1254,7 +1317,7 @@
     "id": "composer",
     "displayName": "输入框模式",
     "description": "交接、子会话、! 命令、Ultra 与循环",
-    "version": "5.0.0",
+    "version": "5.1.0",
     "category": "工作流程",
     "icon": {
       "symbol": "character.cursor.ibeam",
@@ -1265,8 +1328,8 @@
       "kind": "builtin",
       "package": "@coda-console/composer",
       "tag": "latest",
-      "version": "5.0.0",
-      "integrity": "sha512-eWf93Kg/lokcmt+TuDIAmxds2U+QFs0S5KT1Jr68ebtBxN1+h1AObTZjrimH1sRpZrlYWZJhMW+iL1YXhibDeg==",
+      "version": "5.1.0",
+      "integrity": "sha512-mXPyYaRoKUbDJ4iPRn4nKifrwWSiOrdl2nGQSkdVLMdhGMvfpPezkkyFdXoiaiB2wgUoEnW4Jet3zCUmFeS87g==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/composer"
     },
@@ -1309,10 +1372,12 @@
     "startup": true,
     "workflows": [
       "deliver",
-      "develop"
+      "develop",
+      "kickoff"
     ],
     "services": [],
     "agents": [],
+    "instructions": "要把改动合进默认分支时，先用 workflow_run 发起 kickoff（给 title、goal、建议的 way、要不要设备验收），用户在开工卡上选定后，流程会把下一步交给你；不要先改完再补开开发流程。",
     "commands": [],
     "capabilities": [],
     "groups": [],
@@ -1842,7 +1907,7 @@
     "id": "review",
     "displayName": "PR 生命流程",
     "description": "PR 从检查、评审到批准合并；简易开发",
-    "version": "2.13.0",
+    "version": "2.14.0",
     "category": "工作流程",
     "icon": {
       "symbol": "checkmark.bubble.fill",
@@ -1853,8 +1918,8 @@
       "kind": "builtin",
       "package": "@coda-console/review",
       "tag": "latest",
-      "version": "2.13.0",
-      "integrity": "sha512-JC74T/YZdp32tFX/VTKtOFx1+fGdL5XsjLQz8t08nxoMeDTG6RroMat4waRtrmh5kUrgIUSfKqyt0xXOegIdlw==",
+      "version": "2.14.0",
+      "integrity": "sha512-TWiRGiDK+D8mABjBqUIQw3MlEu1zO6J17lzCdpuCTN9ODz6Lt1DL1K9G7QgzZedNI3B8rFEr6u9emPoKd4aOZg==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/review"
     },

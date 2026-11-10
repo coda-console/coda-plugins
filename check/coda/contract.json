@@ -1,9 +1,9 @@
 {
-  "commit": "47735aefcb41a796ca438fa9a4a4321827c9e3bf",
+  "commit": "469576ec25e0ce0bf34f3f596723eca8c5838f62",
   "packages": {
     "@0dep/piso": "5.2.0",
     "@agentclientprotocol/sdk": "1.4.0",
-    "@coda-console/protocol": "5.6.0",
+    "@coda-console/protocol": "5.9.0",
     "ajv": "8.20.0",
     "yaml": "2.9.1"
   },
@@ -11,7 +11,7 @@
     "check/coda/application/contributions.mjs": "7460dc676171e24802b165a72e83ec72c4115f5ed169abcad08963bd2d9d251f",
     "check/coda/components/protocols/creation.mjs": "2b4a400d3064af4b5106077dc783c567910fef3c47b2d52af3f0d838c5accf19",
     "check/coda/components/protocols/types.mjs": "6876689142866bd45fc085951f6ea9e1fc303334e3657e97cc9cf5e277311248",
-    "check/coda/adapters/provider-api.mjs": "2b0802b52ae4d894e92f1fa7647cf727556f4008ad5e63c14e6400dc24bb3a6e",
+    "check/coda/adapters/provider-api.mjs": "e8f622cc4d70dc641399b8a26d678d566006edd506893773b18a58f21fa8ed7b",
     "check/coda/adapters/admission-api.mjs": "461b5a8a1ad73d7afed5db308813d02324e29c643b8e773ad127d4bdb00fb524",
     "check/coda/components/composers/contributions.mjs": "43d3e15fb1f63b7b5c20716030d9537613809ed5cc2fb466a3678bfa308f9f92",
     "check/coda/components/composers/schemas.mjs": "6d497f58147756e789f9a566b2366f2fe36c0c72310421fb02508bf24a04f2c0",
@@ -25,20 +25,20 @@
     "check/coda/components/plugins/skill-document.mjs": "153ad3c096c7c9b7774bcf7dcc0ba603c962ee1ac8697c8a71e3f2c9ba9c92e6",
     "check/coda/components/prompt-recovery/prompt-recovery.mjs": "f43f21d24c19a58113d3304f9248225b12080ab00ed15eab74bf7b94642732de",
     "check/coda/components/session-config/commands.mjs": "7ce6b7872b3bf4dbc73b2af9a53cca4b5356ad32656903218757f449bb5abed4",
-    "check/coda/components/session-config/contributions.mjs": "830be1bf9e158d0090f16ed4be0ead4e33c7392531312299a3a637db8f470aa8",
+    "check/coda/components/session-config/contributions.mjs": "47936c682f23737a0e451e0600a9a88e5ed8088c406342bbfe36cd20558037eb",
     "check/coda/components/workflows/contributions.mjs": "824c9b29584821b5e75bad00f02f21adc5031369db4ee9a4a5a836dfd44f98f5",
     "check/coda/components/workflows/executor-labels.mjs": "dceca6ae60c0a4f3c3cc72a6c84f1489831790774c93caab96e4ddb493bc89e1",
     "check/coda/domain/agent-protocol.mjs": "df1424f562d6c3d83c703262f5ce50afe7b18aa6e29c4226cbe5e7148bff818a",
-    "check/coda/domain/duration.mjs": "d6d7235c6166e8fcf4155999b1e9a514cf2ef91da179d4c0e48162cff4b692f5",
+    "check/coda/domain/duration.mjs": "3f07411812362adcacfc288b1513f10e7d0ea1addcdc1b47ae553561f1d3430b",
     "check/coda/domain/errors.mjs": "8319c6759c5b16b692f5e0a6208d066e43882c571da1075bff8698761020daef",
     "check/coda/domain/resource-admission.mjs": "775b1d7067f9d8487a3504d737f3f4bea31adf77af3357ed42e313805e5188e7",
     "check/coda/domain/plugin-services.mjs": "940a72a14da980188a32c790c7f341d3ec0062a6e87ef1ebc9ef051798ea0a75",
     "check/coda/domain/values.mjs": "afb8bf30e374bed27fe41ee4b6d8c3c0b4dbe1dcfb6b62dad9d3d53b966706a1",
     "check/coda/kernel/agent-failures.mjs": "cbc215e2403d86f0acc765c2077197e0b529fc01e213db465c388361238ea8ce",
     "check/coda/resources/plugins/resources/panels/command.mjs": "606f28bf87f87dded9df2db892bc7624c770d795ffab88f2409998346920ae42",
-    "check/coda/resources/plugins/resources/panels/panels.mjs": "4862dccd91c29db76caf1033ffeab743c7943befaca7406a56467c470b90a1b8",
-    "check/coda/resources/plugins/resources/panels/rules.mjs": "d5b12f3e0e5040224314e5d2de2bd49f5b1ed24ea205590ff99a54e8b4e96d7f",
+    "check/coda/resources/plugins/resources/panels/panels.mjs": "452860c6b1b39dd9a67a8dadf4dac8f7773741b3608274494a8ac518a01f5b33",
+    "check/coda/resources/plugins/resources/panels/rules.mjs": "80da2709985c3866fff1698ea4d1c1afdf59cac2cc955605d3ec6c35f181eec6",
     "check/coda/resources/plugins/resources/panels/sign-in.mjs": "1271a24e33b1b882a1fb9bee03b8e240db8b9bee1b5208f0e1c84499cfb1be7e",
-    "check/coda/builtin.json": "b52c28a1cf24885472473ecb7104bab47e8657d5ee313287db36276df95ae0db"
+    "check/coda/builtin.json": "52ea5d8d20aceecd84597b55af8a931fe83a82c69b71d9334a3171d7e9897d9a"
   }
 }
