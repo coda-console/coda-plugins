@@ -17,10 +17,10 @@ function fixture(t, present) {
   writeFileSync(output, '');
   writeFileSync(join(root, 'pgrep'), '#!/bin/sh\necho "$*" >> "$PROBE_CALLS"\nexit ' + (present ? 0 : 1) + '\n', { mode: 0o755 });
   return { root, output, calls, env: { ...process.env, PATH: `${root}:${dirname(process.execPath)}:${process.env.PATH}`,
-    CODA_PLUGIN_PATH: plugin, PROBE_CALLS: calls, GITHUB_OUTPUT: output, RUNNER_TEMP: root, HELD_CWD: root, HELD_IDLE_MINUTES: '0.005' } };
+    CODA_PLUGIN_PATH: plugin, PROBE_CALLS: calls, GITHUB_OUTPUT: output, RUNNER_TEMP: root, HELD_IDLE_MINUTES: '0.005' } };
 }
 function execute(t, command, args, env, input) {
-  const child = spawn(command, args, { env, detached: true });
+  const child = spawn(command, args, { env, detached: true, cwd: env.RUNNER_TEMP });
   let stderr = '';
   child.stdout.resume(); child.stderr.on('data', value => { stderr += value; });
   t.after(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch {} });

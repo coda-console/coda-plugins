@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- 持锁执行（README.md）：会话的 Agent 用 workflow_run 交来的命令。排进这台 Mac 的名额组 host（容量是本插件为它声明的设置
      host.capacity），排到后在给定的目录里、带项目的环境执行，结束（含被取消）时删掉命令用 host-sim bind 登记的模拟器，再放开名额。
+     模拟器一律在这台跑；其余命令在这台名额满时，Coda 会带着 cwd 所在的工作副本（含未提交、未跟踪的改动，不含被忽略的文件）
+     去空间里别的 Mac 跑，日志、退出码与输出回到这次运行，产物留在那台。调用方写了 local=true 时也在这台跑。
      命令的退出码作为输出 exit_code。能力：只被调用，结果交给调用者；原生子 Agent 不能发起（coda:subagents="false"）。 -->
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xmlns:coda="https://coda.pub/schema/bpmn/1.0" id="run-held-definitions" targetNamespace="https://coda.pub/plugins/host">
@@ -9,11 +11,18 @@
       <coda:input name="command" required="true" description="要占着名额执行的命令，由 $SHELL -c 执行，如 bash scripts/build-ios.sh" />
       <coda:input name="cwd" required="true" description="在哪个目录执行：绝对路径，一般是你的工作目录" />
       <coda:input name="what" default="构建" description="排的是什么名额，写进状态行：构建或模拟器；模拟器默认总时限 60 分钟，其余 30 分钟" />
+      <coda:input name="local" type="boolean" default="false" description="构建要用到它产出的文件（装到设备上、归档、上传、后面的命令要读构建结果）时写 true，只在这台跑；否则这台名额满时可能去空间里别的 Mac 跑，产物留在那台" />
       <coda:input name="timeoutMinutes" type="number" default="0" description="执行总时限（分钟）：0 按种类默认，模拟器 60，其余 30；长批次可显式调高，最多 1440。不含排队，另有 5 分钟取消收尾宽限" />
       <coda:input name="idleMinutes" type="number" default="10" description="连续无 stdout 或 stderr 输出的上限（分钟），默认 10；0 关闭，可显式调高；到限先 TERM，另有 5 分钟收尾宽限" />
     </extensionElements>
     <startEvent id="start" />
-    <sequenceFlow id="to-held" sourceRef="start" targetRef="held" />
+    <sequenceFlow id="to-route" sourceRef="start" targetRef="route" />
+    <!-- 模拟器离不开这台；要用构建产物的也一样。其余可以去别台，能否真的去由 Coda 按名额与 cwd 的工作副本决定。 -->
+    <exclusiveGateway id="route" name="在哪台跑" default="elsewhere" />
+    <sequenceFlow id="here" sourceRef="route" targetRef="held">
+      <conditionExpression xsi:type="tFormalExpression">=inputs.what = "模拟器" or inputs.local</conditionExpression>
+    </sequenceFlow>
+    <sequenceFlow id="elsewhere" sourceRef="route" targetRef="elsewhere-run" />
     <!-- 占着名额的这一段：命令结束、收尾做完，离开它就放开。 -->
     <subProcess id="held" name="占用名额">
       <startEvent id="held-start" />
@@ -24,11 +33,11 @@
         </extensionElements>
       </serviceTask>
       <sequenceFlow id="to-run" sourceRef="hold" targetRef="command" />
-      <!-- exec：取消时整组收到 TERM，执行器等这个进程退出；它先等命令结束、删掉模拟器再退出，不被外层 shell 的退出带走。 -->
-      <scriptTask id="command" name="执行" coda:checkout="false" coda:timeout="1440" coda:cancelTimeout="5" coda:status="执行中：{{inputs.command}}" scriptFormat="bash">
+      <!-- exec：取消时整组收到 TERM，执行器等这个进程退出；它先等命令结束、删掉模拟器再退出，不被外层 shell 的退出带走。
+           coda:source 是调用方的 cwd，就地跑；这一步在 hold-group 段里，不会被推给别台。 -->
+      <scriptTask id="command" name="执行" coda:checkout="false" coda:source="=inputs.cwd" coda:timeout="1440" coda:cancelTimeout="5" coda:status="执行中：{{inputs.command}}" scriptFormat="bash">
         <extensionElements>
           <coda:env name="HELD_COMMAND" value="=inputs.command" />
-          <coda:env name="HELD_CWD" value="=inputs.cwd" />
           <coda:env name="HELD_WHAT" value="=inputs.what" />
           <coda:env name="HELD_IDLE_MINUTES" value="=inputs.idleMinutes" />
           <coda:output name="exit_code" />
@@ -51,7 +60,34 @@
       <sequenceFlow id="ran" sourceRef="command" targetRef="held-end" />
       <endEvent id="held-end" />
     </subProcess>
-    <sequenceFlow id="to-end" sourceRef="held" targetRef="end" />
+    <sequenceFlow id="held-done" sourceRef="held" targetRef="end" />
+    <!-- 自己占着名额的一步，写给 Coda 的推送条件：组 host、darwin 机器、不检出，源码是调用方的 cwd 所在工作副本。
+         这台满了而别台有空位时，Coda 拍那份工作副本的快照（含未提交、未跟踪的改动，不含被忽略的文件）推过去，
+         在那台按「仓库 + 名额」固定的目录里检出，在这一步对应的子目录里跑；被忽略的缓存留在那里。
+         日志、退出码和输出回到这次运行，产物留在那台。别台只带这一步声明的 coda:env。 -->
+    <scriptTask id="elsewhere-run" name="执行（可以去别台）" coda:group="host" coda:runsOn="darwin" coda:checkout="false" coda:source="=inputs.cwd" coda:timeout="1440" coda:cancelTimeout="5" coda:status="执行中：{{inputs.command}}" scriptFormat="bash">
+      <extensionElements>
+        <coda:env name="HELD_COMMAND" value="=inputs.command" />
+        <coda:env name="HELD_WHAT" value="=inputs.what" />
+        <coda:env name="HELD_IDLE_MINUTES" value="=inputs.idleMinutes" />
+        <coda:output name="exit_code" />
+        <coda:output name="failure_reason" />
+      </extensionElements>
+      <script>exec node "$CODA_PLUGIN_PATH/scripts/run-held.mjs"</script>
+    </scriptTask>
+    <!-- 与 command 相同的总时限：timeout 属性只接受常数，用引擎的中断计时器；取消后同样留 cancelTimeout 收尾。 -->
+    <boundaryEvent id="elsewhere-timed-out" name="执行总时限已到" attachedToRef="elsewhere-run" cancelActivity="true">
+      <timerEventDefinition>
+        <timeDuration xsi:type="tFormalExpression">=if inputs.timeoutMinutes &lt; 0 or inputs.timeoutMinutes &gt; 1440 then null else "PT" + string(if inputs.timeoutMinutes &gt; 0 then inputs.timeoutMinutes else if inputs.what = "模拟器" then 60 else 30) + "M"</timeDuration>
+      </timerEventDefinition>
+    </boundaryEvent>
+    <sequenceFlow id="elsewhere-timeout-failed" sourceRef="elsewhere-timed-out" targetRef="elsewhere-report-timeout" />
+    <scriptTask id="elsewhere-report-timeout" name="执行超过总时限" coda:checkout="false" scriptFormat="bash">
+      <extensionElements><coda:output name="failure_reason" /></extensionElements>
+      <script>exec node "$CODA_PLUGIN_PATH/scripts/report-timeout.mjs"</script>
+    </scriptTask>
+    <sequenceFlow id="elsewhere-ran" sourceRef="elsewhere-run" targetRef="end" />
+    <sequenceFlow id="elsewhere-timed-out-end" sourceRef="elsewhere-report-timeout" targetRef="end" />
     <endEvent id="end" />
   </process>
 </definitions>
