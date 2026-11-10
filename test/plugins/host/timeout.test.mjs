@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
-import { readWorkflow } from '@coda-console/protocol/workflow';
 import { keychainPromptHint as hint } from '../../../plugins/host/lib/keychain-prompt.mjs';
 import { Journal, runKey } from '../../../plugins/host/lib/journal.mjs';
 
@@ -17,7 +16,7 @@ function fixture(t, present) {
   writeFileSync(output, '');
   writeFileSync(join(root, 'pgrep'), '#!/bin/sh\necho "$*" >> "$PROBE_CALLS"\nexit ' + (present ? 0 : 1) + '\n', { mode: 0o755 });
   return { root, output, calls, env: { ...process.env, PATH: `${root}:${dirname(process.execPath)}:${process.env.PATH}`,
-    CODA_PLUGIN_PATH: plugin, PROBE_CALLS: calls, GITHUB_OUTPUT: output, RUNNER_TEMP: root, HELD_IDLE_MINUTES: '0.005' } };
+    CODA_PLUGIN_PATH: plugin, PROBE_CALLS: calls, GITHUB_OUTPUT: output, RUNNER_TEMP: root, HELD_IDLE_MINUTES: '0.005', HELD_TIMEOUT_MINUTES: '30' } };
 }
 function execute(t, command, args, env, input) {
   const child = spawn(command, args, { env, detached: true, cwd: env.RUNNER_TEMP });
@@ -44,17 +43,13 @@ for (const present of [false, true]) {
     assert.ok(readFileSync(f.output, 'utf8').endsWith(`failure_reason=0.005 分钟无输出${suffix}\n`));
     checkedOnce(f);
   });
-  test(`workflow total timeout checks SecurityAgent once (present=${present})`, async t => {
+  test(`total timeout checks SecurityAgent once (present=${present})`, { timeout: 5000 }, async t => {
     const f = fixture(t, present);
-    const { root, problem } = await readWorkflow(readFileSync(join(plugin, '.coda/capabilities/run-held.bpmn'), 'utf8'), 'run-held');
-    assert.ok(!problem, problem);
-    const held = root.rootElements.find(e => e.$type === 'bpmn:Process').flowElements.find(e => e.id === 'held');
-    const report = held.flowElements.find(e => e.id === 'report-timeout');
-    assert.equal(held.flowElements.find(e => e.id === 'timeout-failed').targetRef, report);
-    const result = await execute(t, '/bin/bash', ['-c', report.script], f.env);
+    const result = await execute(t, process.execPath, [join(plugin, 'scripts/run-held.mjs')],
+      { ...f.env, HELD_COMMAND: 'exec sleep 60', HELD_IDLE_MINUTES: '0', HELD_TIMEOUT_MINUTES: '0.005' });
     assert.equal(result.code, 1);
     assert.equal(result.stderr, `失败：执行超过总时限${suffix}\n`);
-    assert.equal(readFileSync(f.output, 'utf8'), `failure_reason=执行超过总时限${suffix}\n`);
+    assert.ok(readFileSync(f.output, 'utf8').endsWith(`failure_reason=执行超过总时限${suffix}\n`));
     checkedOnce(f);
   });
   test(`worker timeout preserves its SecurityAgent reason (present=${present})`, { timeout: 5000 }, async t => {
@@ -70,6 +65,15 @@ for (const present of [false, true]) {
     checkedOnce(f);
   });
 }
+
+for (const value of ['-1', '1441']) test(`a total timeout of ${value} minutes fails before the command runs`, async t => {
+  const f = fixture(t, false);
+  const result = await execute(t, process.execPath, [join(plugin, 'scripts/run-held.mjs')],
+    { ...f.env, HELD_COMMAND: 'echo ran', HELD_IDLE_MINUTES: '0', HELD_TIMEOUT_MINUTES: value });
+  assert.equal(result.code, 1);
+  assert.equal(result.stderr, `失败：总时限须在 0～1440 分钟之间：${value}\n`);
+  assert.equal(readFileSync(f.output, 'utf8'), `exit_code=2\nfailure_reason=总时限须在 0～1440 分钟之间：${value}\n`);
+});
 
 // A shell with job control puts its background job in a group of its own, as swift build does its compilers: TERM to the
 // command's group alone leaves it under launchd, holding the output pipe and the machine's memory.

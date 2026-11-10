@@ -57,34 +57,27 @@ test('run-held keeps simulator and local builds on this Mac, and lets other buil
   assert.equal(element('elsewhere-ran').targetRef, element('end'));
 });
 
-test('both run-held paths keep the same total timeout', async () => {
-  const { inputs, element, held } = await runHeld();
-  assert.equal(inputs.idleMinutes, 10);
-  const paths = [
-    [held.flowElements.find(element => element.id === 'command'), held.flowElements.find(element => element.id === 'timed-out'),
-      held.flowElements.find(element => element.id === 'timeout-failed'), held.flowElements.find(element => element.id === 'report-timeout')],
-    [element('elsewhere-run'), element('elsewhere-timed-out'), element('elsewhere-timeout-failed'), element('elsewhere-report-timeout')],
-  ];
-  for (const [command, timer, flow, report] of paths) {
-    assert.equal(timer.attachedToRef, command);
-    assert.equal(timer.cancelActivity, true);
-    assert.equal(flow.targetRef, report);
-    assert.equal(report.script, 'exec node "$CODA_PLUGIN_PATH/scripts/report-timeout.mjs"');
-    const expression = timer.eventDefinitions[0].timeDuration.body.trim().slice(1);
-    const limit = extra => evaluate(expression, { inputs: { ...inputs, ...extra } }).value;
-    assert.equal(limit({ what: '模拟器' }), 'PT60M');
-    assert.equal(limit({}), 'PT30M');
-    assert.equal(limit({ what: '其他命令' }), 'PT30M');
-    assert.equal(limit({ what: '模拟器', timeoutMinutes: 120 }), 'PT120M');
-    assert.equal(limit({ timeoutMinutes: 900 }), 'PT900M');
-    assert.equal(limit({ timeoutMinutes: -1 }), null);
-    assert.equal(limit({ timeoutMinutes: 1441 }), null);
+test('both run-held paths hand the total limit to run-held, counted from the command', async () => {
+  const { process, inputs, element, held } = await runHeld();
+  const command = held.flowElements.find(element => element.id === 'command');
+  const elsewhere = element('elsewhere-run');
+  for (const step of [command, elsewhere]) {
+    const value = step.extensionElements.values.find(value => value.name === 'HELD_TIMEOUT_MINUTES').value;
+    const minutes = extra => evaluate(value.trim().slice(1), { inputs: { ...inputs, ...extra } }).value;
+    assert.equal(minutes({}), 30);
+    assert.equal(minutes({ what: '模拟器' }), 60);
+    assert.equal(minutes({ what: '其他命令' }), 30);
+    assert.equal(minutes({ timeoutMinutes: 120 }), 120);
+    assert.equal(minutes({ timeoutMinutes: 1440 }), 1440);
+    assert.equal(minutes({ timeoutMinutes: -1 }), -1);
+    assert.equal(minutes({ timeoutMinutes: 1441 }), 1441);
+    assert.equal(step.timeout, 1440);
+    assert.equal(step.extensionElements.values.find(value => value.name === 'HELD_IDLE_MINUTES').value, '=inputs.idleMinutes');
   }
-  assert.equal(held.flowElements.find(element => element.id === 'command').extensionElements.values.find(value => value.name === 'HELD_IDLE_MINUTES').value, '=inputs.idleMinutes');
-  assert.equal(element('elsewhere-run').extensionElements.values.find(value => value.name === 'HELD_IDLE_MINUTES').value, '=inputs.idleMinutes');
-  assert.equal(element('elsewhere-timed-out-end').targetRef, element('end'));
-  const report = held.flowElements.find(element => element.id === 'report-timeout');
-  assert.ok(!held.flowElements.some(element => element.sourceRef === report || element.id === 'timed-out-end'));
+  // 没有挂在步骤上的计时边界事件：排队也算进入这一步，会把排队时间算进总时限。
+  assert.equal(process.flowElements.filter(element => element.$type === 'bpmn:BoundaryEvent').length, 0);
+  assert.equal(held.flowElements.filter(element => element.$type === 'bpmn:ScriptTask').length, 1);
+  assert.equal(process.flowElements.filter(element => element.$type === 'bpmn:ScriptTask').length, 1);
 });
 
 test('periodic simulator cleanup never enters the host queue', async () => {

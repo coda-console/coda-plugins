@@ -45,9 +45,9 @@
 提示改由 Agent 用 `workflow_run` 调用 `run-held` 执行这条命令；所以经 `host-sim` 自己排队的项目脚本（`scripts/check.sh` 的编译范围、iOS 构建与测试入口）
 在会话里整条交给 `run-held` 执行，脚本本身不必改写。别的 `--kind`（测试机的设备名）交给接在本插件扩展点 `kinds` 上的插件（[测试机](../testbed/README.md)）。
 
-**总时限**：`what=模拟器` 默认 60 分钟，其他 `run-held` 默认 30 分钟；从取得名额、进入执行步骤开始计时，不含排队。
+**总时限**：`what=模拟器` 默认 60 分钟，其他 `run-held` 默认 30 分钟；从命令启动开始计时，不含排队。
 长批次在 `inputs` 显式给 `timeoutMinutes`，如 `{ "command": "bash scripts/ios-ui-test.sh", "cwd": "/path/to/project", "what": "模拟器", "timeoutMinutes": 120 }`。
-`timeoutMinutes=0`（默认）按种类取值；显式值须大于 0、最多 1440 分钟。用引擎的中断计时器取消整组进程，保留 5 分钟清理宽限，之后才释放名额。
+`timeoutMinutes=0`（默认）按种类取值；显式值须大于 0、最多 1440 分钟。由 `scripts/run-held.mjs` 计时，到限先向整组进程发送 TERM（连同另起进程组的子进程），最多留 5 分钟收尾，之后才释放名额。
 
 **无输出上限**：`idleMinutes` 默认 10 分钟，从命令启动起，stdout 或 stderr 每次有新输出就重新计时；连续到限无输出即失败，先向整组进程发送 TERM（连同命令另起进程组的子进程，如 `swift build` 的编译器），最多留 5 分钟收尾。可在 `inputs` 设 `idleMinutes: 30` 调高，或 `idleMinutes: 0` 关闭（总时限仍生效）。失败结果与会话通知区分「执行超过总时限」「N 分钟无输出」「命令非零退出（退出码 N）」；输出 `failure_reason` 记录原因。run-held 因无输出或总时限失败、执行器超时时，若 macOS 上检测到 `SecurityAgent` 进程，失败原因会追加钥匙串授权框提示，见 [host-slots](skills/host-slots/SKILL.md#无人值守构建)。
 
@@ -63,7 +63,7 @@
      被取消时整组进程收到 TERM，这一步的脚本以 `exec` 运行，执行器等它删完模拟器才结束；收尾超过取消时限被强杀而留下的模拟器，由下面的定时清点删除。
   3. 离开「占用名额」这一段才放开名额，排在后面的随即进入。
 - **可以去别台**（其余）：一个自己占着名额的脚本步骤，写了 `coda:group="host"`、`coda:runsOn="darwin"`、`coda:checkout="false"`、`coda:source="=inputs.cwd"`；
-  时限、取消收尾、状态、环境与输出都和上一条相同，总时限的计时器与「执行超过总时限」也照样挂上。这台有空位时它就地跑，满了才按下面送走。
+  时限、取消收尾、状态、环境与输出都和上一条相同；总时限同样由 `run-held.mjs` 从命令启动时计，不在步骤上挂计时器（那一步从排队起就算进入了）。这台有空位时它就地跑，满了才按下面送走。
 
 **去空间里别的 Mac**：`what` 不是 `模拟器`、`local` 不为 true 时，这台名额满、空间里别台有空位、且 `cwd` 在一个有 origin 的 Git 工作副本里，
 Coda 就把那份工作副本拍成快照（含未提交、未跟踪的改动，不含被忽略的文件）推过去。别台在按「仓库 + 名额」固定的目录里检出，

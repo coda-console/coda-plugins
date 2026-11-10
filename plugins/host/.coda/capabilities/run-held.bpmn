@@ -3,6 +3,7 @@
      host.capacity），排到后在给定的目录里、带项目的环境执行，结束（含被取消）时删掉命令用 host-sim bind 登记的模拟器，再放开名额。
      模拟器一律在这台跑；其余命令在这台名额满时，Coda 会带着 cwd 所在的工作副本（含未提交、未跟踪的改动，不含被忽略的文件）
      去空间里别的 Mac 跑，日志、退出码与输出回到这次运行，产物留在那台。调用方写了 local=true 时也在这台跑。
+     总时限由 run-held.mjs 从命令启动时计时，不含排队：到限停下整棵进程树，留 5 分钟收尾。
      命令的退出码作为输出 exit_code。能力：只被调用，结果交给调用者；原生子 Agent 不能发起（coda:subagents="false"）。 -->
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xmlns:coda="https://coda.pub/schema/bpmn/1.0" id="run-held-definitions" targetNamespace="https://coda.pub/plugins/host">
@@ -34,28 +35,18 @@
       </serviceTask>
       <sequenceFlow id="to-run" sourceRef="hold" targetRef="command" />
       <!-- exec：取消时整组收到 TERM，执行器等这个进程退出；它先等命令结束、删掉模拟器再退出，不被外层 shell 的退出带走。
-           coda:source 是调用方的 cwd，就地跑；这一步在 hold-group 段里，不会被推给别台。 -->
+           coda:source 是调用方的 cwd，就地跑；这一步在 hold-group 段里，不会被推给别台。
+           HELD_TIMEOUT_MINUTES 是 0 按种类取值后的分钟数；总时限由脚本从命令启动时计，排队不算。 -->
       <scriptTask id="command" name="执行" coda:checkout="false" coda:source="=inputs.cwd" coda:timeout="1440" coda:cancelTimeout="5" coda:status="执行中：{{inputs.command}}" scriptFormat="bash">
         <extensionElements>
           <coda:env name="HELD_COMMAND" value="=inputs.command" />
           <coda:env name="HELD_WHAT" value="=inputs.what" />
           <coda:env name="HELD_IDLE_MINUTES" value="=inputs.idleMinutes" />
+          <coda:env name="HELD_TIMEOUT_MINUTES" value="=if inputs.timeoutMinutes = 0 then (if inputs.what = &quot;模拟器&quot; then 60 else 30) else inputs.timeoutMinutes" />
           <coda:output name="exit_code" />
           <coda:output name="failure_reason" />
         </extensionElements>
         <script>exec node "$CODA_PLUGIN_PATH/scripts/run-held.mjs"</script>
-      </scriptTask>
-      <!-- timeout 属性只接受常数；可配置总时限用引擎的中断计时器，取得名额后才进入 command。
-           中断仍由执行器 TERM、等待 cancelTimeout 收尾，再释放名额。1440 是引擎的硬上限。 -->
-      <boundaryEvent id="timed-out" name="执行总时限已到" attachedToRef="command" cancelActivity="true">
-        <timerEventDefinition>
-          <timeDuration xsi:type="tFormalExpression">=if inputs.timeoutMinutes &lt; 0 or inputs.timeoutMinutes &gt; 1440 then null else "PT" + string(if inputs.timeoutMinutes &gt; 0 then inputs.timeoutMinutes else if inputs.what = "模拟器" then 60 else 30) + "M"</timeDuration>
-        </timerEventDefinition>
-      </boundaryEvent>
-      <sequenceFlow id="timeout-failed" sourceRef="timed-out" targetRef="report-timeout" />
-      <scriptTask id="report-timeout" name="执行超过总时限" coda:checkout="false" scriptFormat="bash">
-        <extensionElements><coda:output name="failure_reason" /></extensionElements>
-        <script>exec node "$CODA_PLUGIN_PATH/scripts/report-timeout.mjs"</script>
       </scriptTask>
       <sequenceFlow id="ran" sourceRef="command" targetRef="held-end" />
       <endEvent id="held-end" />
@@ -64,30 +55,20 @@
     <!-- 自己占着名额的一步，写给 Coda 的推送条件：组 host、darwin 机器、不检出，源码是调用方的 cwd 所在工作副本。
          这台满了而别台有空位时，Coda 拍那份工作副本的快照（含未提交、未跟踪的改动，不含被忽略的文件）推过去，
          在那台按「仓库 + 名额」固定的目录里检出，在这一步对应的子目录里跑；被忽略的缓存留在那里。
-         日志、退出码和输出回到这次运行，产物留在那台。别台只带这一步声明的 coda:env。 -->
+         日志、退出码和输出回到这次运行，产物留在那台。别台只带这一步声明的 coda:env。
+         它自己占名额，从排队起就算进了这一步，所以总时限不能挂在步骤的计时器上；由 run-held 从命令启动时计。 -->
     <scriptTask id="elsewhere-run" name="执行（可以去别台）" coda:group="host" coda:runsOn="darwin" coda:checkout="false" coda:source="=inputs.cwd" coda:timeout="1440" coda:cancelTimeout="5" coda:status="执行中：{{inputs.command}}" scriptFormat="bash">
       <extensionElements>
         <coda:env name="HELD_COMMAND" value="=inputs.command" />
         <coda:env name="HELD_WHAT" value="=inputs.what" />
         <coda:env name="HELD_IDLE_MINUTES" value="=inputs.idleMinutes" />
+        <coda:env name="HELD_TIMEOUT_MINUTES" value="=if inputs.timeoutMinutes = 0 then (if inputs.what = &quot;模拟器&quot; then 60 else 30) else inputs.timeoutMinutes" />
         <coda:output name="exit_code" />
         <coda:output name="failure_reason" />
       </extensionElements>
       <script>exec node "$CODA_PLUGIN_PATH/scripts/run-held.mjs"</script>
     </scriptTask>
-    <!-- 与 command 相同的总时限：timeout 属性只接受常数，用引擎的中断计时器；取消后同样留 cancelTimeout 收尾。 -->
-    <boundaryEvent id="elsewhere-timed-out" name="执行总时限已到" attachedToRef="elsewhere-run" cancelActivity="true">
-      <timerEventDefinition>
-        <timeDuration xsi:type="tFormalExpression">=if inputs.timeoutMinutes &lt; 0 or inputs.timeoutMinutes &gt; 1440 then null else "PT" + string(if inputs.timeoutMinutes &gt; 0 then inputs.timeoutMinutes else if inputs.what = "模拟器" then 60 else 30) + "M"</timeDuration>
-      </timerEventDefinition>
-    </boundaryEvent>
-    <sequenceFlow id="elsewhere-timeout-failed" sourceRef="elsewhere-timed-out" targetRef="elsewhere-report-timeout" />
-    <scriptTask id="elsewhere-report-timeout" name="执行超过总时限" coda:checkout="false" scriptFormat="bash">
-      <extensionElements><coda:output name="failure_reason" /></extensionElements>
-      <script>exec node "$CODA_PLUGIN_PATH/scripts/report-timeout.mjs"</script>
-    </scriptTask>
     <sequenceFlow id="elsewhere-ran" sourceRef="elsewhere-run" targetRef="end" />
-    <sequenceFlow id="elsewhere-timed-out-end" sourceRef="elsewhere-report-timeout" targetRef="end" />
     <endEvent id="end" />
   </process>
 </definitions>

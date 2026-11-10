@@ -110,6 +110,7 @@ function held(t, inputs, extra = {}) {
   writeFileSync(output, '');
   const child = spawn(process.execPath, [join(dir, 'scripts/run-held.mjs')], { detached: true, cwd: inputs.cwd ?? at,
     env: env({ HELD_COMMAND: inputs.command, HELD_WHAT: inputs.what ?? '构建', RUNNER_TEMP: at, GITHUB_OUTPUT: output,
+      HELD_TIMEOUT_MINUTES: '30',
       CODA_PLUGIN_STATE: join(at, 'state'), CODA_ARTIFACTS: at, GITHUB_WORKSPACE: at, ...extra }) });
   let out = '', err = '';
   const ready = inputs.ready ? Promise.withResolvers() : null;
