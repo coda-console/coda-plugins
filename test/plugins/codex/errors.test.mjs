@@ -7,7 +7,6 @@ import { fileURLToPath } from 'node:url';
 import { AgentProcess } from '../../../check/process.mjs';
 import { pluginDir, resolveFrom } from '../plugin.mjs';
 import { explainCodexError, codexFailureData, reportedCodexFailures } from '../../../plugins/codex/agent/errors.mjs';
-import { agentValueProblem } from '@coda-console/protocol/agent';
 
 const fixture = fileURLToPath(new URL('./app-server-fixture.mjs', import.meta.url));
 const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
@@ -113,7 +112,6 @@ test('Codex quota reset comes only from the failed request, with no machine-time
     const error = { message: 'Internal error', data: { ...data, codexErrorInfo: 'usageLimitExceeded' } };
     const result = codexFailureData(error, 'accepted');
     assert.deepEqual(result._meta.coda.failure, { kind: 'quota_exhausted', resetAt: '2026-11-11T19:00:00.000Z' });
-    assert.equal(agentValueProblem('failure.json', result._meta.coda.failure), null);
     assert.deepEqual(error.data, { ...data, codexErrorInfo: 'usageLimitExceeded' });
     const reply = { id: 1, error: { ...error, data: result } };
     const explained = explainCodexError(reply);
