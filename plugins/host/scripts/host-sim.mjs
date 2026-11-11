@@ -55,12 +55,12 @@ else if (command === 'run' && held) {
   fail('只能在 Coda 的会话或流程步骤里用：名额由 Coda 排，终端里直接运行不排队，也不执行', 1);
 }
 
-// A kind this plugin does not hold: the whole command line to the first plugged into `kinds`, run as that plugin's.
+// A kind this plugin does not hold: run the first plugged-in command with its path, state and full resolved settings.
 function other() {
   const [plugged] = JSON.parse(process.env.CODA_PLUGIN_EXTENSIONS || '{}').kinds ?? [];
   if (!plugged) fail(`没有插件处理 --kind ${kind}：测试机要从商店装上「测试机」插件`, 2);
   follow(['/bin/sh', '-c', `${plugged.command} "$@"`, 'host-sim', ...args], { ...session(), CODA_NODE: process.env.CODA_NODE,
-    CODA_PLUGIN_PATH: plugged.path, ...(plugged.state ? { CODA_PLUGIN_STATE: plugged.state } : {}) });
+    CODA_PLUGIN_SETTINGS: JSON.stringify(plugged.settings ?? {}), CODA_PLUGIN_PATH: plugged.path, ...(plugged.state ? { CODA_PLUGIN_STATE: plugged.state } : {}) });
 }
 // Runs it in the foreground, ending as it ends; a signal to this process goes on to it.
 function follow([program, ...rest], env) {

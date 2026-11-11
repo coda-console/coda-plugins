@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- 在测试机上执行（README.md）：会话的 host-sim 为测试机交来的命令。测试机只借不排：它借的是
-     use-testbed 交给这个会话的任务所占的组 device:<设备名>，会话没在做那台设备的任务就立刻拒绝。借到后在会话的目录里、带会话的环境执行；
+     use-testbed 交给这个会话的任务所占的解析后的设备组，会话没在做那台设备的任务就立刻拒绝。借到后在会话的目录里、带会话的环境执行；
      任务答复、出错或被取消时，还在执行的命令随之停下，测试机等它停完才切黑屏。命令的退出码作为输出 exit_code，交给 host-sim。
      能力：只被调用，结果交给调用者。 -->
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -12,10 +12,14 @@
       <coda:input name="label" default="在测试机上执行" description="运行的标题：这条命令" />
     </extensionElements>
     <startEvent id="start" />
-    <sequenceFlow id="to-borrow" sourceRef="start" targetRef="borrow" />
+    <sequenceFlow id="to-borrow" sourceRef="start" targetRef="find" />
+    <callActivity id="find" name="找测试机" calledElement="resolve-testbed">
+      <extensionElements><coda:param name="device" value="=inputs.device" /></extensionElements>
+    </callActivity>
+    <sequenceFlow id="found" sourceRef="find" targetRef="borrow" />
     <serviceTask id="borrow" name="借测试机" coda:action="hold-group" coda:status="借测试机 {{inputs.device}}">
       <extensionElements>
-        <coda:param name="group" value="device:{{inputs.device}}" />
+        <coda:param name="group" value="=find.group" />
         <coda:param name="capacity" value="1" />
         <coda:param name="borrow" value="only" />
       </extensionElements>

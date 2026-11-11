@@ -4,7 +4,7 @@
   "displayName": "宿主资源",
   "description": "本机运行器与 Xcode、模拟器的排队名额",
   "icon": { "symbol": "hammer.fill", "color": "gray" },
-  "version": "2.2.0",
+  "version": "2.3.0",
   "categories": [
     "机器与资源"
   ],

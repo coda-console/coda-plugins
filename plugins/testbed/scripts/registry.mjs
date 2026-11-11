@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 // An entry without `platform` is an iPhone or iPad, as every entry was before Android devices.
-export const PLATFORMS = ['ios', 'android'];
+export const PLATFORMS = ['ios'];
 export const file = process.env.CODA_PLUGIN_STATE && join(process.env.CODA_PLUGIN_STATE, 'devices.json');
 export function devices(path = file, { missingIsEmpty = true } = {}) {
   let list;
@@ -19,9 +19,6 @@ export function devices(path = file, { missingIsEmpty = true } = {}) {
       throw new Error(`设备登记 ${path} 须有非空 udid`);
     if (!PLATFORMS.includes(device.platform ?? 'ios'))
       throw new Error(`设备登记 ${path} 里 ${device.id} 的 platform 须为 ${PLATFORMS.join(' 或 ')}`);
-    // An Android device is reached over adb's TCP transport: the address every machine using it connects to.
-    if (device.platform === 'android' && !/^[^\s:]+:\d+$/.test(device.adb ?? ''))
-      throw new Error(`设备登记 ${path} 里安卓设备 ${device.id} 须有 adb 地址（主机:端口）`);
   }
   // A device is held by the group of its name: one device under two names would be held twice, one name twice either device.
   for (const key of ['id', 'udid']) {

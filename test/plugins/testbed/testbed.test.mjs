@@ -46,7 +46,7 @@ test('the resources are each device registered here, who uses it, who borrowed i
     holders: [one('r5', 'iphone-testbed：xcrun devicectl', '会话甲', ago(0), { borrowed: true, leaving: false }), one('r3', 'iphone-testbed：看首页', '会话甲', ago(12), { borrowed: false, leaving: false })] },
   { name: 'host', occupied: 1, holders: [one('r1', 'testflight', null, ago(75), { borrowed: false, leaving: false })], queue: [] }];
   const read = async state => {
-    const { code, stdout, stderr } = await run(declaredPanel('testbed').command, env({ CODA_PLUGIN_STATE: state, CODA_GROUPS_STATE: JSON.stringify({ now, groups }) }));
+    const { code, stdout, stderr } = await run(declaredPanel('testbed').command, env({ CODA_PLUGIN_STATE: state, CODA_GROUPS_STATE: JSON.stringify({ now, groups }), CODA_PLUGIN_SETTINGS: JSON.stringify({ 'testbed.entities': [{ name: 'unreachable', entity: 'missing' }] }) }));
     return code === 0 ? readResources(stdout, declaredPanel('testbed')) : { code, stderr };
   };
   const [iphone, ipad] = await read(state);
@@ -64,7 +64,7 @@ test('找测试机 gives the registered device\'s name, UDID and note; one not r
   const state = registered(t, [phone]);
   const found = await step(t, 'device', { CODA_PLUGIN_STATE: state, DEVICE: phone.id });
   assert.equal(found.code, 0);
-  assert.equal(found.outputs, `name=${phone.name}\nudid=${phone.udid}\npersonal=false\nplatform=ios\nadb=\nnote<<CODA_NOTE\n${phone.note}\nCODA_NOTE\n`);
+  assert.equal(found.outputs, `group=device:${phone.id}\nentity=\nname=${phone.name}\nudid=${phone.udid}\npersonal=false\nplatform=ios\nadb=\nnote<<CODA_NOTE\n${phone.note}\nCODA_NOTE\n`);
   const personal = await step(t, 'device', { CODA_PLUGIN_STATE: registered(t, [{ ...phone, personal: true }]), DEVICE: phone.id });
   assert.equal(personal.code, 0, personal.stderr);
   assert.equal(personal.outputs, found.outputs.replace('personal=false', 'personal=true'));
@@ -117,17 +117,18 @@ test('the black screen build takes a build slot through host-sim: a command on a
 });
 
 // The testbed's host-sim, as the host plugin's host-sim hands a device kind to what is plugged into its point `kinds`.
-const kinds = () => JSON.stringify({ kinds: [{ command: manifest('testbed').contributes.extensions['host/kinds'].command, path: dir }] });
+const kinds = state => JSON.stringify({ kinds: [{ command: manifest('testbed').contributes.extensions['host/kinds'].command, path: dir, state }] });
 const hostCommand = manifest('host').contributes.commands.find(c => c.name === 'host-sim').command;
-const hostSim = (args, extra) => run(`${hostCommand} ${args}`, env({ ...extra, CODA_PLUGIN_EXTENSIONS: kinds() }, 'host'));
+const hostSim = (args, extra) => run(`${hostCommand} ${args}`, env({ ...extra, CODA_PLUGIN_EXTENSIONS: kinds(extra.CODA_PLUGIN_STATE) }, 'host'));
 
 test('a session\'s host-sim for a device hands the command to run-on-device with what to run, where and with what', async t => {
+  const state = registered(t, [phone]);
   const tools = temporary(t), log = join(tools, 'coda-run.log');
   // coda-run, standing in for Coda's: what it was asked, and the command the spec says, as run-on-device would read it.
   writeFileSync(join(tools, 'coda-run'), `#!/bin/sh\nprintf '%s\\n' "$@" > "${log}"\ncp "\${2#spec=}" "${tools}/spec.json"\nexit "\${STATUS:-6}"\n`, { mode: 0o755 });
   const temp = join(tools, 'tmp');
   mkdirSync(temp);
-  const asked = await hostSim(`run --kind ${phone.id} -- xcrun devicectl list`, { CODA_THREAD_ID: 'thread', HOST_SIM_DEVICES: 'stale', TMPDIR: temp, PATH: `${tools}:${process.env.PATH}` });
+  const asked = await hostSim(`run --kind ${phone.id} -- xcrun devicectl list`, { CODA_PLUGIN_STATE: state, CODA_THREAD_ID: 'thread', HOST_SIM_DEVICES: 'stale', TMPDIR: temp, PATH: `${tools}:${process.env.PATH}` });
   // What coda-run says is what host-sim says.
   assert.equal(asked.code, 6, asked.stderr);
   const [name, spec, device, label] = readFileSync(log, 'utf8').trim().split('\n');
@@ -139,7 +140,7 @@ test('a session\'s host-sim for a device hands the command to run-on-device with
   // The spec, the session's environment in it, goes once the run is over or never started (the device not lent: 1);
   // coda-run letting go (75) leaves the run going on, to read it later.
   const left = async status => {
-    const ended = await hostSim(`run --kind ${phone.id} -- true`, { CODA_THREAD_ID: 'thread', STATUS: String(status), TMPDIR: temp, PATH: `${tools}:${process.env.PATH}` });
+    const ended = await hostSim(`run --kind ${phone.id} -- true`, { CODA_PLUGIN_STATE: state, CODA_THREAD_ID: 'thread', STATUS: String(status), TMPDIR: temp, PATH: `${tools}:${process.env.PATH}` });
     assert.equal(ended.code, status);
     return readdirSync(join(temp, 'coda-host-sim'));
   };
@@ -147,18 +148,20 @@ test('a session\'s host-sim for a device hands the command to run-on-device with
   assert.equal((await left(75)).length, 1);
 });
 
-test('inside a command on the device, or a step holding its group, host-sim runs at once; elsewhere it says how to get the device', async () => {
-  const lease = await hostSim(`run --kind ${phone.id} -- sh -c 'echo "$HOST_SIM_LEASE"'`, { CODA_THREAD_ID: 'thread', HOST_SIM_LEASE: `coda-run:${phone.id}` });
+test('inside a command on the device, or a step holding its group, host-sim runs at once; elsewhere it says how to get the device', async t => {
+  const state = registered(t, [phone]);
+  const heldHostSim = (args, extra) => hostSim(args, { CODA_PLUGIN_STATE: state, ...extra });
+  const lease = await heldHostSim(`run --kind ${phone.id} -- sh -c 'echo "$HOST_SIM_LEASE"'`, { CODA_THREAD_ID: 'thread', HOST_SIM_LEASE: `coda-run:${phone.id}` });
   assert.deepEqual([lease.code, lease.stdout], [0, `coda-run:${phone.id}\n`]);
-  const group = await hostSim(`run --kind ${phone.id} -- sh -c 'echo "$HOST_SIM_LEASE"'`, { CODA_GROUPS: `host device:${phone.id}` });
+  const group = await heldHostSim(`run --kind ${phone.id} -- sh -c 'echo "$HOST_SIM_LEASE"'`, { CODA_GROUPS: `host device:${phone.id}` });
   assert.deepEqual([group.code, group.stdout], [0, `coda-group:device:${phone.id}\n`]);
-  assert.equal((await hostSim(`check --kind ${phone.id}`, { HOST_SIM_LEASE: `coda-run:${phone.id}` })).code, 0);
+  assert.equal((await heldHostSim(`check --kind ${phone.id}`, { HOST_SIM_LEASE: `coda-run:${phone.id}` })).code, 0);
   // Holding another device, or a build slot, is not holding this one.
-  const other = await hostSim(`check --kind ${phone.id}`, { CODA_THREAD_ID: 'thread', HOST_SIM_LEASE: 'coda-run:ipad-testbed' });
+  const other = await heldHostSim(`check --kind ${phone.id}`, { CODA_THREAD_ID: 'thread', HOST_SIM_LEASE: 'coda-run:ipad-testbed' });
   assert.equal(other.code, 1); assert.match(other.stderr, /不在测试机 iphone-testbed 里/);
-  const step = await hostSim(`run --kind ${phone.id} -- true`, { CODA_GROUPS: 'host' });
+  const step = await heldHostSim(`run --kind ${phone.id} -- true`, { CODA_GROUPS: 'host' });
   assert.equal(step.code, 1); assert.match(step.stderr, /这一步没有占着组 device:iphone-testbed：测试机调用能力 use-testbed/);
-  const outside = await hostSim(`run --kind ${phone.id} -- true`, {});
+  const outside = await heldHostSim(`run --kind ${phone.id} -- true`, {});
   assert.equal(outside.code, 1); assert.match(outside.stderr, /只能在 Coda 的会话或流程步骤里用/);
 });
 

@@ -96,10 +96,13 @@ test('inside a slot host-sim runs at once, the command told the slot is held, an
 
 test('another kind goes whole to the first command plugged into kinds, as that plugin\'s; none plugged in is refused', async t => {
   const other = temporary(t);
-  writeFileSync(join(other, 'kind.sh'), 'echo "plugin=$CODA_PLUGIN_PATH state=$CODA_PLUGIN_STATE args=$*"\nexit 5\n');
-  const kinds = { kinds: [{ command: `sh "${join(other, 'kind.sh')}"`, path: other, state: join(other, 'state') }] };
-  const handed = await hostSim('run --kind iphone-testbed -- true', { CODA_THREAD_ID: 'thread', CODA_PLUGIN_EXTENSIONS: JSON.stringify(kinds) });
-  assert.deepEqual([handed.code, handed.stdout], [5, `plugin=${other} state=${join(other, 'state')} args=run --kind iphone-testbed -- true\n`]);
+  writeFileSync(join(other, 'kind.sh'), 'echo "plugin=$CODA_PLUGIN_PATH state=$CODA_PLUGIN_STATE settings=$CODA_PLUGIN_SETTINGS args=$*"\nexit 5\n');
+  const kinds = { kinds: [{ command: `sh "${join(other, 'kind.sh')}"`, path: other, state: join(other, 'state'), settings: { 'testbed.entities': [{ name: 'xiaomi', entity: 'entity-id' }], 'testbed.blackscreen': {} } }] };
+  const handed = await hostSim('run --kind iphone-testbed -- true', { CODA_THREAD_ID: 'thread', CODA_PLUGIN_SETTINGS: JSON.stringify({ 'host.capacity': 2 }), CODA_PLUGIN_EXTENSIONS: JSON.stringify(kinds) });
+  assert.deepEqual([handed.code, handed.stdout], [5, `plugin=${other} state=${join(other, 'state')} settings=${JSON.stringify(kinds.kinds[0].settings)} args=run --kind iphone-testbed -- true\n`]);
+  delete kinds.kinds[0].settings;
+  const defaults = await hostSim('run --kind iphone-testbed -- true', { CODA_THREAD_ID: 'thread', CODA_PLUGIN_SETTINGS: '{"host.capacity":2}', CODA_PLUGIN_EXTENSIONS: JSON.stringify(kinds) });
+  assert.match(defaults.stdout, /settings=\{\} args=/);
   const none = await hostSim('run --kind iphone-testbed -- true', { CODA_THREAD_ID: 'thread' });
   assert.equal(none.code, 2); assert.match(none.stderr, /从商店装上「测试机」插件/);
 });
