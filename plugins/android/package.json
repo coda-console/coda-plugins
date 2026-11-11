@@ -1,0 +1,68 @@
+{
+  "name": "@coda-console/android",
+  "id": "android",
+  "displayName": "安卓手机",
+  "description": "由安卓手机自己保管本体，借出记录设置，归还复原并熄屏",
+  "version": "0.1.0",
+  "icon": {
+    "symbol": "smartphone",
+    "color": "green"
+  },
+  "categories": [
+    "机器与资源"
+  ],
+  "main": "main.mjs",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "configuration": {
+      "title": "安卓手机",
+      "properties": {
+        "android.name": {
+          "title": "手机名称",
+          "type": "string",
+          "default": "",
+          "description": "留空使用 ro.product.model。修改后重启插件生效。"
+        },
+        "android.address": {
+          "title": "adb 地址",
+          "type": "string",
+          "default": "",
+          "description": "留空使用 wlan0 的 IPv4；端口读取 persist.adb.tcp.port。修改后重启插件生效。"
+        },
+        "android.machines": {
+          "title": "可使用 adb 链路的机器",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "title": "机器 ID"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          },
+          "default": [],
+          "description": "填写机器 ID；留空不声明链路。adb 公钥须手工授权。修改后重启插件生效。"
+        }
+      }
+    }
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coda-console/coda-plugins.git",
+    "directory": "plugins/android"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "main.mjs",
+    "lib"
+  ]
+}
