@@ -145,11 +145,15 @@ head：{{report.head}}
       <startEvent id="acceptance-start" />
       <sequenceFlow id="acceptance-enter" sourceRef="acceptance-start" targetRef="device-lock-choice" />
       <exclusiveGateway id="device-lock-choice" name="是否占用验收设备" default="device-lock-skip" />
-      <sequenceFlow id="device-lock-needed" sourceRef="device-lock-choice" targetRef="device-lock"><conditionExpression xsi:type="tFormalExpression">=inputs.devices and inputs.device != ""</conditionExpression></sequenceFlow>
+      <sequenceFlow id="device-lock-needed" sourceRef="device-lock-choice" targetRef="device-resolve"><conditionExpression xsi:type="tFormalExpression">=inputs.devices and inputs.device != ""</conditionExpression></sequenceFlow>
       <sequenceFlow id="device-lock-skip" sourceRef="device-lock-choice" targetRef="preview" />
+      <callActivity id="device-resolve" name="解析验收设备" calledElement="resolve-testbed">
+        <extensionElements><coda:param name="device" value="=inputs.device" /></extensionElements>
+      </callActivity>
+      <sequenceFlow id="device-resolved" sourceRef="device-resolve" targetRef="device-lock" />
       <serviceTask id="device-lock" name="等验收设备" coda:action="hold-group" coda:status="等验收设备 {{inputs.device}}">
         <extensionElements>
-          <coda:param name="group" value="device:{{inputs.device}}" />
+          <coda:param name="group" value="=device-resolve.group" />
           <coda:param name="capacity" value="1" />
         </extensionElements>
       </serviceTask>

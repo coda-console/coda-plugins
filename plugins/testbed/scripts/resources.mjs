@@ -1,11 +1,12 @@
 // The test devices plugged into this Mac as resources (README.md): each one registered here (scripts/registry.mjs), with
 // who has it — its group device:<name>, as Coda says it is now (`CODA_GROUPS_STATE`) — and who waits. No device
 // registered, nothing to show; a registration that cannot be read fails the reading, saying why.
+import { aliases, resolveDevice } from './resolve-device.mjs';
 import { devices } from './registry.mjs';
 
 const { now, groups } = JSON.parse(process.env.CODA_GROUPS_STATE || '{"groups":[]}');
 let list;
-try { list = devices(); } catch (error) { console.error(error.message.slice(0, 200)); process.exit(1); }
+try { list = [...devices(), ...aliases().map(row => ({ id: row.name }))].map(device => resolveDevice(device.id)); } catch (error) { console.error(error.message.slice(0, 200)); process.exit(1); }
 
 const VALUES = 8;
 const clip = (text, n = 80) => text.length > n ? `${text.slice(0, n - 1)}…` : text;
@@ -13,7 +14,7 @@ const minutes = since => { const m = Math.max(0, Math.floor((now - since) / 60_0
 const who = x => clip(`${x.title || x.workflow}${x.thread ? ` · ${x.thread}` : ''}`);
 
 const resources = list.filter(d => d && typeof d.id === 'string').slice(0, 20).map(device => {
-  const group = groups.find(g => g.name === `device:${device.id}`) ?? { holders: [], queue: [] };
+  const group = groups.find(g => g.name === device.group) ?? { holders: [], queue: [] };
   // The use that holds it first; commands a session borrowed it for after.
   const holders = [...group.holders].sort((a, b) => a.borrowed - b.borrowed || a.since - b.since);
   const values = [

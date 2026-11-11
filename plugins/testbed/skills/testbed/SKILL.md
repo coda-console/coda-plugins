@@ -5,19 +5,10 @@ description: 测试机插件怎么用：会话或流程里用 use-testbed 排到
 
 # 测试机
 
-测试机（`iphone-testbed`、`ipad-testbed` 这类设备，以及安卓设备）需要会话操作时经能力 `use-testbed` 使用：它排进设备的并发组 `device:<设备名>`，
-按需装 App，把任务交给发起的会话；答复、出错、拒绝或运行被取消后，先等会话借设备还在跑的命令停下，常驻测试机再切黑屏、交出设备；个人设备直接交出，不切黑屏，也不出切黑屏失败卡片。
-
-设备登记每项可加 `"personal": true` 标记维护者的个人设备；缺省为常驻测试机。该字段随 `name`、`udid`、`note` 发布到空间，其他 Mac 经 `coda-resources group-owner` 也能读到。只有常驻测试机需要安装黑屏 App。
-常驻测试机给 Agent 自助使用；个人设备在维护者手里，排到后先出卡片问维护者借不借。选「现在不行」时这次调用以拒绝结束（理由在备注里），别反复重试，改用常驻测试机或按备注约的时间再借。
-
-登记在哪个实例就归哪个实例，`devices.json` 是归属的唯一事实来源。空间里同一设备只能登记一次，同名或相同 UDID 的重复登记会使占用失败并报冲突。任何实例的会话都能用，在归属实例排队。
-安装、会话的 host-sim 命令和切黑屏在发起的机器上跑：iPhone、iPad 要这台 Mac 与设备配对，跑 XCTest 还须有本机 runner；
-安卓设备要这台装着 adb、连得上登记的地址并已授权这台的 adb 公钥，否则一开始就失败并说明，不排队。
-
-安卓设备（登记里 `"platform": "android"`）经 adb 的 TCP 连接使用，不用 USB 线，也不要绕开 `use-testbed` 直接 `adb connect` 去用：
-排到时记下它的 `settings`，交出前改回、停掉 frida-server、回到桌面并熄屏。`settings` 以外的改动（App 数据、装的 App、文件）不复原，
-要留下或要清掉的写在答复里。
+iPhone、iPad 排 `device:<设备名>`；安卓设备名从空间共享设置 `testbed.entities`（行含 name、entity UUID）解析到 `entity:<UUID>`。不要自行拼组名或绕开 use-testbed 占用设备。
+iOS 登记在保管实例的 devices.json，个人设备 personal=true 借出前先询问维护者，归还不切黑屏；常驻 iOS 归还切黑屏，失败出人工处理卡片。
+安卓只引用保管方已登记的本体，排队前确认本体存在且本机有可达 adb 链路、连接已授权。排到后用链路 endpoint 连接；借出和归还由保管方负责，包括记录 settings、复原、停 frida、回桌面及熄屏。归还失败由核心标 failed、停队，等保管方重新声明重试；testbed 不出安卓放锁卡片。
+安装与 host-sim 命令在调用机器运行：iOS 须配对、有 runner；安卓须装 adb。settings 以外的改动在答复里说明。
 
 ## 会话里
 
@@ -44,4 +35,4 @@ description: 测试机插件怎么用：会话或流程里用 use-testbed 排到
 
 任务的答复是这一步的输出：`=verify.result`、`.note`、`.choice`。被拒绝、出错或被取消时这一步抛出 `CALL_FAILED`，用出错边界事件接住做自己的收尾。
 
-无需会话操作但需要独占设备的流程（如预览版直装、开发流程的设备验收），可自行用 `hold-group device:<id>`（capacity 1）占一段，由引擎到归属实例排队，测试机会话排在它后面；流程负责自己的操作与收尾。
+无需会话操作但要独占设备时，先 `callActivity calledElement="resolve-testbed"`，传 device，读返回的 group、platform、entity、adb，再用 `hold-group` 占返回的 group（capacity 1）。组名由 testbed 统一定义；使用设备验收时须安装 testbed。

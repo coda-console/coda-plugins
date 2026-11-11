@@ -25,15 +25,17 @@ for (const name of ['develop', 'deliver']) {
     assert.equal(device.default, '');
     assert.ok(!device.required);
     const params = Object.fromEntries(values(nodes['device-lock']).map(v => [v.name, v.value]));
-    assert.deepEqual(params, { group: 'device:{{inputs.device}}', capacity: '1' });
+    assert.deepEqual(params, { group: '=device-resolve.group', capacity: '1' });
     assert.equal(nodes['device-lock'].action, 'hold-group');
     assert.equal(nodes['device-lock'].status, '等验收设备 {{inputs.device}}');
     assert.equal(process.concurrency, undefined);
     assert.equal(route('acceptance-start'), 'device-lock-choice');
     for (const devices of [false, true]) for (const device of ['', 'duo-testbed']) {
       assert.equal(route('device-lock-choice', { inputs: { devices, device } }),
-        devices && device ? 'device-lock' : 'preview');
+        devices && device ? 'device-resolve' : 'preview');
     }
+    assert.equal(nodes['device-resolve'].calledElement, 'resolve-testbed');
+    assert.equal(route('device-resolve'), 'device-lock');
     assert.equal(route('device-lock'), 'preview');
     for (const id of ['preview', 'preview-result', 'device', 'device-result', 'device-lock']) {
       assert.ok(segment.flowElements.includes(nodes[id]));

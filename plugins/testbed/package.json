@@ -3,8 +3,11 @@
   "id": "testbed",
   "displayName": "测试机",
   "description": "排队使用 iPhone、iPad 与安卓测试机",
-  "icon": { "symbol": "iphone", "color": "gray" },
-  "version": "1.8.0",
+  "icon": {
+    "symbol": "iphone",
+    "color": "gray"
+  },
+  "version": "1.9.0",
   "categories": [
     "机器与资源"
   ],
@@ -21,11 +24,12 @@
     ],
     "capabilities": [
       "use-testbed",
-      "run-on-device"
+      "run-on-device",
+      "resolve-testbed"
     ],
     "extensions": {
       "host/kinds": {
-        "command": "\"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/host-sim.mjs\""
+        "command": "testbed-host-sim"
       }
     },
     "instructions": "要在 iPhone/iPad 或安卓测试机上操作或验证：调用 workflow_run，workflow 为 use-testbed，inputs 给 device（设备名）和 instructions；先装 App 再给 app（.app、.ipa 或 .apk 的绝对路径）。拿到任务后用 host-sim run --kind <设备名> 操作，做完用 workflow_task 答复。",
@@ -36,16 +40,45 @@
           "title": "切黑屏命令",
           "type": "object",
           "order": 1,
-          "description": "每台测试机用完、交给下一位之前怎么切黑屏。默认用 devicectl 在设备上打开黑屏 App（com.leavan.blackscreen），安卓设备改回借出时的设置、回到桌面并熄屏；某台要换做法就加一行：左边是设备名（归属实例的测试机插件登记的 id），右边是在发起的机器上执行的命令（sh，设备的 UDID 在 $UDID，安卓设备的 adb 地址在 $ADB 与 $ANDROID_SERIAL）。失败时请你处理后再交出设备。",
+          "description": "iPhone、iPad 用完后切黑屏的命令。左边是设备名，右边是发起机器执行的 sh 命令，UDID 在 $UDID。失败时请你处理后再交出设备。",
           "additionalProperties": {
             "type": "string"
           },
           "default": {}
+        },
+        "testbed.entities": {
+          "title": "安卓本体",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "title": "名字",
+                "type": "string"
+              },
+              "entity": {
+                "title": "本体 UUID",
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "entity"
+            ]
+          },
+          "default": [],
+          "description": "空间共享的设备别名：填写保管方已登记的本体 UUID。本机须有可达的 adb 链路。"
         }
       }
     },
     "skills": [
       "skills/testbed"
+    ],
+    "commands": [
+      {
+        "name": "testbed-host-sim",
+        "command": "\"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/host-sim.mjs\""
+      }
     ]
   },
   "license": "MIT",

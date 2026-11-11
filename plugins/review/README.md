@@ -150,3 +150,5 @@ prompts/principles/                 评审重点，一项一段，按设置取�
 - **改流程**：把这个目录复制到你自己的仓库，在 Coda 的「设置 › 插件」里卸载内置的 `review`，再「从仓库添加…」装你的那份（同名替换），
   之后按你的仓库更新、回退。改了插件 ID 也要先卸载内置的，否则每个 PR 会跑两条流程。
 - 改这里的 `review` 本身，照本仓库的规矩提 PR、升 `version`；Coda 再同步到合并后的提交（见仓库根的 README）。
+
+设备验收填写设备名时，先调用 testbed 的 `resolve-testbed` 再占用返回的组：iOS 为 device 组，安卓为本体 entity 组。此时须安装 testbed，review 不新增硬依赖。

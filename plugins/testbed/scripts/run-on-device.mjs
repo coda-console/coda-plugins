@@ -7,6 +7,7 @@
 import { spawn } from 'node:child_process';
 import { appendFileSync, readFileSync, rmSync } from 'node:fs';
 import { constants } from 'node:os';
+import { connect } from './android.mjs';
 import { resolveDevice } from './resolve-device.mjs';
 
 const spec = JSON.parse(readFileSync(process.env.SPEC, 'utf8'));
@@ -19,7 +20,10 @@ for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(signal, () => {
 // The device not found now, the command is not run: it would not know which device it is on.
 let device;
 try { device = resolveDevice(spec.kind); } catch (error) { process.stderr.write(`找不到测试机 ${spec.kind}，不执行：${error.message}\n`); done(1); }
-if (device.platform === 'android') env.ANDROID_SERIAL = device.adb;
+if (device.platform === 'android') {
+  try { connect(device.adb); } catch (error) { process.stderr.write(`${error.message}\n`); done(1); }
+  env.ANDROID_SERIAL = device.adb;
+}
 const child = spawn(spec.argv[0], spec.argv.slice(1), { cwd: spec.cwd, env, stdio: 'inherit' });
 child.on('error', error => { process.stderr.write(`执行不了：${error.message}\n`); done(127); });
 child.on('close', (code, signal) => done(code ?? 128 + (constants.signals[signal] ?? 0)));
