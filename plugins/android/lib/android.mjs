@@ -1,17 +1,24 @@
-import { spawnSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { NAMESPACES, parseList, changes, command, notDone } from './settings.mjs';
 
 // Android's root namespace, with the script on stdin rather than in shell arguments.
-export function nsenter(lines) {
-  const ran = spawnSync('nsenter', ['-t', '1', '-m', '--', 'sh'], {
-    input: `set -e\n${lines.join('\n')}\n`, encoding: 'utf8', timeout: 20_000, maxBuffer: 16 << 20,
+export async function nsenter(lines) {
+  return new Promise((resolve, reject) => {
+    const child = execFile('nsenter', ['-t', '1', '-m', '--', 'sh'], {
+      encoding: 'utf8', timeout: 20_000, maxBuffer: 16 << 20,
+    }, (error, stdout, stderr) => {
+      if (error) {
+        reject(typeof error.code === 'number' ? new Error(`nsenter 失败：${(stderr || stdout).trim()}`) : error);
+        return;
+      }
+      resolve(stdout);
+    });
+    child.stdin.on('error', reject);
+    child.stdin.end(`set -e\n${lines.join('\n')}\n`);
   });
-  if (ran.error) throw ran.error;
-  if (ran.status !== 0) throw new Error(`nsenter 失败：${(ran.stderr || ran.stdout).trim()}`);
-  return ran.stdout;
 }
 
 export function entityId(state, generate = randomUUID) {
@@ -38,23 +45,27 @@ export const CLEAN_UP = [
 
 export function device(state, run = nsenter) {
   const file = join(state, 'settings.json');
-  const readSettings = () => Object.fromEntries(NAMESPACES.map(name => [name, parseList(run([`settings list ${name}`]))]));
+  const readSettings = async () => {
+    const tables = {};
+    for (const name of NAMESPACES) tables[name] = parseList(await run([`settings list ${name}`]));
+    return tables;
+  };
   return {
-    lend() {
-      const settings = readSettings();
+    async lend() {
+      const settings = await readSettings();
       writeFileSync(file, JSON.stringify(settings));
     },
-    return() {
+    async return() {
       if (!existsSync(file)) {
-        run(HOME_AND_SLEEP);
+        await run(HOME_AND_SLEEP);
         return;
       }
-      run(CLEAN_UP);
+      await run(CLEAN_UP);
       const before = JSON.parse(readFileSync(file, 'utf8'));
-      const wanted = changes(before, readSettings());
+      const wanted = changes(before, await readSettings());
       if (wanted.length) {
-        run(wanted.map(command));
-        const left = notDone(wanted, readSettings());
+        await run(wanted.map(command));
+        const left = notDone(wanted, await readSettings());
         if (left.length) throw new Error(`有 ${left.length} 项设置没能改回：\n${left.map(command).join('\n')}`);
       }
       unlinkSync(file);
@@ -67,16 +78,17 @@ export function links(id, { address, port, machines }) {
   return [{ id: 'adb', entity: id, protocol: 'adb', endpoint: `${address}:${port}`, reach: { scope: 'machines', machines } }];
 }
 
-export function declarations(id, settings, run = nsenter) {
-  const getprop = key => run([`getprop ${key}`]).trim();
-  const model = getprop('ro.product.model');
+export async function declarations(id, settings, run = nsenter) {
+  const getprop = async key => (await run([`getprop ${key}`])).trim();
+  const model = await getprop('ro.product.model');
   const entities = [{ id, name: settings['android.name'] || model, category: 'android',
-    attributes: { model, android: getprop('ro.build.version.release'), serial: getprop('ro.serialno') }, capacity: 1 }];
+    attributes: { model, android: await getprop('ro.build.version.release'), serial: await getprop('ro.serialno') }, capacity: 1 }];
   const machines = (settings['android.machines'] ?? []).map(row => row.id);
-  const connections = machines.length ? links(id, {
-    machines,
-    address: settings['android.address'] || run(["ip -4 -o addr show dev wlan0 | awk '{print $4}' | cut -d/ -f1"]).trim(),
-    port: getprop('persist.adb.tcp.port'),
-  }) : [];
+  let connections = [];
+  if (machines.length) {
+    const address = settings['android.address']?.trim() || (await run(["ip -4 -o addr show dev wlan0 | awk '{print $4}' | cut -d/ -f1"])).trim();
+    if (!address) throw new Error('无法声明 adb 链路：android.address 为空，且 wlan0 没有 IPv4 地址');
+    connections = links(id, { machines, address, port: await getprop('persist.adb.tcp.port') });
+  }
   return { entities, links: connections };
 }

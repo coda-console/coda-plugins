@@ -8,7 +8,7 @@ export async function activate(coda) {
   handlers.push(coda.resources.handle('lend', () => phone.lend()));
   handlers.push(coda.resources.handle('return', () => phone.return()));
   const settings = JSON.parse((await coda.environment()).CODA_PLUGIN_SETTINGS || '{}');
-  const declared = declarations(id, settings);
+  const declared = await declarations(id, settings);
   await coda.resources.declareEntities(declared.entities);
   await coda.resources.declareLinks(declared.links);
 }
