@@ -1,5 +1,6 @@
 // The step of 文件事件服务守护 (plugins/host/README.md), run as Coda runs it, with pgrep, top and sudo standing in for the
-// machine's: the tests never restart this Mac's fseventsd.
+// machine's: the tests never restart this Mac's fseventsd. The script sees the platform the test says (macOS unless told), so
+// they run on CI's Linux too.
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -19,9 +20,10 @@ ${body}
     return join(at, name);
   };
   for (const name of ['output', 'summary']) writeFileSync(join(at, name), '');
+  writeFileSync(join(at, 'platform.mjs'), "Object.defineProperty(process, 'platform', { value: process.env.HOST_FSEVENTSD_TEST_PLATFORM });\n");
   const tools = { HOST_FSEVENTSD_PGREP: tool('pgrep', 'console.log("321")'), HOST_FSEVENTSD_TOP: tool('top', top), HOST_FSEVENTSD_SUDO: tool('sudo', sudo) };
   const go = (extra = { CODA_ARBITER: '1' }) => {
-    const env = pluginEnv('host', { ...tools, CODA_PLUGIN_STATE: at, THRESHOLD_MB: '512', GITHUB_OUTPUT: join(at, 'output'), GITHUB_STEP_SUMMARY: join(at, 'summary'), ...extra });
+    const env = pluginEnv('host', { ...tools, CODA_PLUGIN_STATE: at, NODE_OPTIONS: `--import=${join(at, 'platform.mjs')}`, HOST_FSEVENTSD_TEST_PLATFORM: 'darwin', THRESHOLD_MB: '512', GITHUB_OUTPUT: join(at, 'output'), GITHUB_STEP_SUMMARY: join(at, 'summary'), ...extra });
     if (!extra.CODA_ARBITER) delete env.CODA_ARBITER;
     return run('node "$CODA_PLUGIN_PATH/scripts/fseventsd-guard.mjs"', env);
   };
@@ -76,6 +78,15 @@ test('文件事件服务守护 does nothing outside this instance’s own backen
   const g = guard(t, { top: 'console.log("MEM\\n3.6G")' });
   const result = await g.go({});
   assert.equal(result.code, 0);
+  assert.equal(g.calls(), '');
+  assert.equal(g.output(), '');
+});
+
+test('文件事件服务守护 does nothing outside macOS', async t => {
+  const g = guard(t, { top: 'console.log("MEM\\n3.6G")' });
+  const result = await g.go({ CODA_ARBITER: '1', HOST_FSEVENTSD_TEST_PLATFORM: 'linux' });
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /不是 macOS/);
   assert.equal(g.calls(), '');
   assert.equal(g.output(), '');
 });
