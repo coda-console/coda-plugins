@@ -19,7 +19,6 @@ export function devices(path = file, { missingIsEmpty = true } = {}) {
       throw new Error(`设备登记 ${path} 须有非空 udid`);
     if (!PLATFORMS.includes(device.platform ?? 'ios'))
       throw new Error(`设备登记 ${path} 里 ${device.id} 的 platform 须为 ${PLATFORMS.join(' 或 ')}`);
-
   }
   // A device is held by the group of its name: one device under two names would be held twice, one name twice either device.
   for (const key of ['id', 'udid']) {

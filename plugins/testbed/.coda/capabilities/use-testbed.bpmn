@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- iOS 的黑屏与人工收尾保留；安卓离开占用段后由核心调用保管方归还。 -->
+<!-- 使用测试机（README.md）：测试机的唯一入口。先解析设备名：iOS 查登记、排 device:<设备名>；安卓查共享别名与可达 adb 链路、排 entity:<UUID>。
+     排到后安卓由保管方借出，调用机器连接 adb；个人 iOS 先问维护者借不借，答应了才装 App；常驻 iOS 不问。按需装 App，把任务交给调用的会话；会话的 host-sim 命令（run-on-device）借用同一个组。
+     任务答复、装包或任务出错、运行被取消，都先等借去的命令停完；常驻 iOS 切黑屏，失败请用户处理，处理前一直占着；个人 iOS 直接交出。
+     安卓不切黑屏、不出人工卡片，归还由核心调用保管方执行；失败由核心标记本体 failed 并停队，等保管方重新声明重试。
+     能力：只被调用（workflow_run 或 callActivity），结果交给调用者。 -->
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xmlns:coda="https://coda.pub/schema/bpmn/1.0" id="use-testbed-definitions" targetNamespace="https://coda.pub/plugins/testbed">
   <message id="cancel" name="workflow.cancel" />
@@ -13,6 +17,7 @@
     <startEvent id="start" />
     <sequenceFlow id="to-find" sourceRef="start" targetRef="find" />
 
+    <!-- 哪台设备叫这个名字：iOS 的显示名、UDID、说明；安卓的本体 UUID、可达 adb 链路。设备或本体不存在、没有可达链路、adb 连不上或未授权，就到此为止，不排队。 -->
     <scriptTask id="find" name="找测试机" coda:checkout="false" coda:timeout="2" coda:status="找测试机 {{inputs.device}}" scriptFormat="bash">
       <extensionElements>
         <coda:env name="DEVICE" value="=inputs.device" />
@@ -29,7 +34,7 @@
     </scriptTask>
     <sequenceFlow id="to-testbed" sourceRef="find" targetRef="testbed" />
 
-
+    <!-- 占着测试机的这一段：离开它就放开，所以 iOS 切黑屏在里面；安卓离开后由保管方归还。 -->
     <subProcess id="testbed" name="占用测试机">
       <startEvent id="testbed-start" />
       <sequenceFlow id="to-hold" sourceRef="testbed-start" targetRef="hold" />
@@ -37,12 +42,13 @@
         <extensionElements>
           <coda:param name="group" value="=find.group" />
           <coda:param name="capacity" value="1" />
-
+          <!-- 每次使用都排队：做着上一次任务的会话再发起一次，也排在它后面，不借它的。 -->
           <coda:param name="borrow" value="no" />
         </extensionElements>
       </serviceTask>
       <sequenceFlow id="to-connect" sourceRef="hold" targetRef="connect" />
 
+      <!-- 安卓本体由保管方借出后，调用机器连上解析得到的 adb endpoint；iPhone、iPad 没有要连的。 -->
       <scriptTask id="connect" name="连接测试机" coda:checkout="false" coda:timeout="2" coda:status="连接 {{find.name}}" scriptFormat="bash">
         <extensionElements>
           <coda:env name="DEVICE" value="=inputs.device" />
@@ -53,6 +59,7 @@
       </scriptTask>
       <sequenceFlow id="to-lend" sourceRef="connect" targetRef="lend" />
 
+      <!-- 个人设备在维护者手里：装 App、交给会话之前先问维护者，不答应就以拒绝结束，设备直接放开。常驻测试机给 Agent 自己用，不问。 -->
       <exclusiveGateway id="lend" name="要问你吗" default="no-lend" />
       <sequenceFlow id="to-borrow" sourceRef="lend" targetRef="borrow">
         <conditionExpression xsi:type="tFormalExpression">=find.personal</conditionExpression>
@@ -91,7 +98,7 @@
       </userTask>
       <sequenceFlow id="used" sourceRef="task" targetRef="return-device" />
 
-
+      <!-- 不借、连接、装包或任务出错、运行被取消：个人 iOS 直接归还，常驻 iOS 先切黑屏；安卓交由保管方归还，再让运行以原来的原因结束。 -->
       <boundaryEvent id="borrow-cancelled" attachedToRef="borrow"><messageEventDefinition messageRef="cancel" /></boundaryEvent>
       <boundaryEvent id="borrow-declined" attachedToRef="borrow"><errorEventDefinition /></boundaryEvent>
       <sequenceFlow id="borrow-cancelled-return" sourceRef="borrow-cancelled" targetRef="return-stopped" />
@@ -127,6 +134,7 @@
       </scriptTask>
       <sequenceFlow id="blacked" sourceRef="black" targetRef="done" />
 
+      <!-- 切黑屏时被取消：照样切完；运行随后以「已取消」结束。 -->
       <boundaryEvent id="black-cancelled" attachedToRef="black" cancelActivity="false"><messageEventDefinition messageRef="cancel" /></boundaryEvent>
       <sequenceFlow id="black-noted" sourceRef="black-cancelled" targetRef="noted" />
       <endEvent id="noted" />
@@ -135,7 +143,7 @@
       <userTask id="black-trouble" name="测试机切黑屏失败" coda:assignee="user" coda:status="{{find.name}} 切黑屏失败，等你处理">
         <documentation>测试机 {{find.name}}（{{inputs.device}}）用完后没能切黑屏，原因见运行页「切黑屏」这一步的日志。在你处理之前，它不会交给下一位。
 
-检查设备连接、黑屏 App或插件设置「切黑屏命令」后选「重试」；已经手动处理好了就选「我处理好了，放锁」。</documentation>
+检查设备连接、黑屏 App 或插件设置「切黑屏命令」后选「重试」；已经手动处理好了就选「我处理好了，放锁」。</documentation>
         <extensionElements>
           <coda:choice id="retry" name="重试" />
           <coda:choice id="release" name="我处理好了，放锁" />
@@ -176,7 +184,7 @@
       <userTask id="black-stop-trouble" name="测试机切黑屏失败" coda:assignee="user" coda:status="{{find.name}} 切黑屏失败，等你处理">
         <documentation>测试机 {{find.name}}（{{inputs.device}}）没能切黑屏，原因见运行页「切黑屏（没有做完）」这一步的日志。在你处理之前，它不会交给下一位。
 
-检查设备连接、黑屏 App或插件设置「切黑屏命令」后选「重试」；已经手动处理好了就选「我处理好了，放锁」。</documentation>
+检查设备连接、黑屏 App 或插件设置「切黑屏命令」后选「重试」；已经手动处理好了就选「我处理好了，放锁」。</documentation>
         <extensionElements>
           <coda:choice id="retry" name="重试" />
           <coda:choice id="release" name="我处理好了，放锁" />
@@ -193,7 +201,7 @@
       </endEvent>
     </subProcess>
 
-
+    <!-- 放开之后：做完了把任务的答复交给调用者；没做完（出错、被取消）就以原来的原因结束。 -->
     <sequenceFlow id="to-how" sourceRef="testbed" targetRef="how" />
     <exclusiveGateway id="how" default="to-end" />
     <sequenceFlow id="to-not-done" sourceRef="how" targetRef="not-done">

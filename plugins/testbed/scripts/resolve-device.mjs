@@ -1,4 +1,4 @@
-// Resolve names once for workflows, host-sim and resource readings. Links are already filtered to this machine by Coda.
+// Resolve names once for workflows and host-sim. Links are already filtered to this machine by Coda.
 import { execFileSync } from 'node:child_process';
 import { devices } from './registry.mjs';
 
@@ -19,7 +19,6 @@ export function resolveDevice(id, { list = devices(), entities = aliases(), grou
   }
   const local = list.find(device => device.id === id);
   const device = local ?? groupOwner(`device:${id}`)?.attributes;
-  if (device?.platform === 'android') throw new Error(`安卓测试机 ${id} 须在 testbed.entities 引用已登记的本体`);
   if (device) return { id, ...device, personal: local ? local.personal === true : device.personal === 'true', platform: 'ios', adb: '', entity: '', group: `device:${id}` };
   throw new Error(`没有这台测试机 ${id}；本地可用：${list.map(device => device.id).join('、') || '无'}`);
 }

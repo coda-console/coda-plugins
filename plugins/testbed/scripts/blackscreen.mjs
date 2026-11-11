@@ -1,3 +1,5 @@
+// Put an iPhone or iPad to its black screen before handing it on (README.md): launch the blackscreen/ app over
+// devicectl, or run the device's testbed.blackscreen command with its UDID in UDID. Output and exit status go to the step.
 import { spawn } from 'node:child_process';
 // As blackscreen/build.sh signs it.
 const APP = 'com.leavan.blackscreen';

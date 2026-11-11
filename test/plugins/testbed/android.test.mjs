@@ -28,7 +28,3 @@ test('link selection skips other protocols and follows Coda reachable-link order
   assert.equal(selectAdbLink([{ protocol: 'ssh' }, adb, { protocol: 'adb', endpoint: 'second' }]), adb);
   assert.equal(selectAdbLink([]), undefined);
 });
-
-test('legacy Android device ownership cannot retain a separate device queue', () => {
-  assert.throws(() => resolveDevice('xiaomi', { list: [], entities: [], groupOwner: () => ({ attributes: { platform: 'android' } }) }), /须在 testbed.entities 引用已登记的本体/);
-});

@@ -46,7 +46,7 @@ test('the resources are each device registered here, who uses it, who borrowed i
     holders: [one('r5', 'iphone-testbed：xcrun devicectl', '会话甲', ago(0), { borrowed: true, leaving: false }), one('r3', 'iphone-testbed：看首页', '会话甲', ago(12), { borrowed: false, leaving: false })] },
   { name: 'host', occupied: 1, holders: [one('r1', 'testflight', null, ago(75), { borrowed: false, leaving: false })], queue: [] }];
   const read = async state => {
-    const { code, stdout, stderr } = await run(declaredPanel('testbed').command, env({ CODA_PLUGIN_STATE: state, CODA_GROUPS_STATE: JSON.stringify({ now, groups }) }));
+    const { code, stdout, stderr } = await run(declaredPanel('testbed').command, env({ CODA_PLUGIN_STATE: state, CODA_GROUPS_STATE: JSON.stringify({ now, groups }), CODA_PLUGIN_SETTINGS: JSON.stringify({ 'testbed.entities': [{ name: 'unreachable', entity: 'missing' }] }) }));
     return code === 0 ? readResources(stdout, declaredPanel('testbed')) : { code, stderr };
   };
   const [iphone, ipad] = await read(state);
@@ -117,7 +117,7 @@ test('the black screen build takes a build slot through host-sim: a command on a
 });
 
 // The testbed's host-sim, as the host plugin's host-sim hands a device kind to what is plugged into its point `kinds`.
-const kinds = state => JSON.stringify({ kinds: [{ command: manifest('testbed').contributes.commands.find(c => c.name === 'testbed-host-sim').command, path: dir, state }] });
+const kinds = state => JSON.stringify({ kinds: [{ command: manifest('testbed').contributes.extensions['host/kinds'].command, path: dir, state }] });
 const hostCommand = manifest('host').contributes.commands.find(c => c.name === 'host-sim').command;
 const hostSim = (args, extra) => run(`${hostCommand} ${args}`, env({ ...extra, CODA_PLUGIN_EXTENSIONS: kinds(extra.CODA_PLUGIN_STATE) }, 'host'));
 

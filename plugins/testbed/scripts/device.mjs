@@ -1,3 +1,6 @@
+// Find the device's group, platform, entity and connection details for the step outputs. iOS uses its registration;
+// Android uses the shared alias and the custodian's reachable adb link. Connect before queueing so unreachable or
+// unauthorized devices fail here, before the caller waits for them.
 import { appendFileSync } from 'node:fs';
 import { connect } from './android.mjs';
 import { resolveDevice } from './resolve-device.mjs';

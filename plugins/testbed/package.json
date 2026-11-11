@@ -3,10 +3,7 @@
   "id": "testbed",
   "displayName": "测试机",
   "description": "排队使用 iPhone、iPad 与安卓测试机",
-  "icon": {
-    "symbol": "iphone",
-    "color": "gray"
-  },
+  "icon": { "symbol": "iphone", "color": "gray" },
   "version": "1.9.0",
   "categories": [
     "机器与资源"
@@ -29,7 +26,7 @@
     ],
     "extensions": {
       "host/kinds": {
-        "command": "testbed-host-sim"
+        "command": "\"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/host-sim.mjs\""
       }
     },
     "instructions": "要在 iPhone/iPad 或安卓测试机上操作或验证：调用 workflow_run，workflow 为 use-testbed，inputs 给 device（设备名）和 instructions；先装 App 再给 app（.app、.ipa 或 .apk 的绝对路径）。拿到任务后用 host-sim run --kind <设备名> 操作，做完用 workflow_task 答复。",
@@ -73,12 +70,6 @@
     },
     "skills": [
       "skills/testbed"
-    ],
-    "commands": [
-      {
-        "name": "testbed-host-sim",
-        "command": "\"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/host-sim.mjs\""
-      }
     ]
   },
   "license": "MIT",

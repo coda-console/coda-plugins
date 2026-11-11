@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!-- 供流程按设备名解析排队组、平台、本体和 adb 链路；与 use-testbed 共用解析与排队前连接检查。 -->
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0" targetNamespace="https://coda.pub/plugins/testbed" id="resolve-testbed-definitions">
   <process id="resolve-testbed" name="解析测试机" isExecutable="true">
     <extensionElements><coda:input name="device" required="true" /></extensionElements>
