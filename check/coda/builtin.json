@@ -1317,7 +1317,7 @@
     "id": "composer",
     "displayName": "输入框模式",
     "description": "交接、子会话、! 命令、Ultra 与循环",
-    "version": "5.1.0",
+    "version": "5.1.1",
     "category": "工作流程",
     "icon": {
       "symbol": "character.cursor.ibeam",
@@ -1328,8 +1328,8 @@
       "kind": "builtin",
       "package": "@coda-console/composer",
       "tag": "latest",
-      "version": "5.1.0",
-      "integrity": "sha512-mXPyYaRoKUbDJ4iPRn4nKifrwWSiOrdl2nGQSkdVLMdhGMvfpPezkkyFdXoiaiB2wgUoEnW4Jet3zCUmFeS87g==",
+      "version": "5.1.1",
+      "integrity": "sha512-mNqhja3Lw5nrBX7i+r+iU+i0wShOUs7OtEOedstqnMkY6WQPiimOATz43AYR7mKblbfLDB9zh+rrx8BUeb90HA==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/composer"
     },
@@ -1377,7 +1377,7 @@
     ],
     "services": [],
     "agents": [],
-    "instructions": "要把改动合进默认分支时，先用 workflow_run 发起 kickoff（给 title、goal、建议的 way、要不要设备验收），用户在开工卡上选定后，流程会把下一步交给你；不要先改完再补开开发流程。",
+    "instructions": "要把改动合进默认分支时，先用 workflow_run 发起 kickoff（给 title、goal、建议的 way、要不要设备验收；开在别的目录或要指定分支时给 branch），用户在开工卡上选定后，流程会把下一步交给你；不要先改完再补开开发流程。",
     "commands": [],
     "capabilities": [],
     "groups": [],
@@ -1907,7 +1907,7 @@
     "id": "review",
     "displayName": "PR 生命流程",
     "description": "PR 从检查、评审到批准合并；简易开发",
-    "version": "2.14.0",
+    "version": "2.15.0",
     "category": "工作流程",
     "icon": {
       "symbol": "checkmark.bubble.fill",
@@ -1918,8 +1918,8 @@
       "kind": "builtin",
       "package": "@coda-console/review",
       "tag": "latest",
-      "version": "2.14.0",
-      "integrity": "sha512-TWiRGiDK+D8mABjBqUIQw3MlEu1zO6J17lzCdpuCTN9ODz6Lt1DL1K9G7QgzZedNI3B8rFEr6u9emPoKd4aOZg==",
+      "version": "2.15.0",
+      "integrity": "sha512-YSVt911nBNnBQo3oePfQxnXNeKfFg+QvJd8YkPqKBWXP5OYyO8NrDg48PNnwav8SztVDT6OO42iOw4UsQwebLg==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/review"
     },

@@ -139,7 +139,7 @@ export function readPlugin(dir, source, points = CONTRIBUTION_POINTS) {
     // The entry as one path in its directory (`./view/a.html`, `view//a.html` are `view/a.html`): the clients load it by that.
     views: (contributes.views ?? []).map(v => ({ id: v.id, title: v.title, entry: posix.normalize(v.entry), ...(v.in?.length ? { in: [...v.in] } : {}),
       ...(v.icon ? { icon: v.icon } : {}), ...(v.handles?.length ? { handles: [...v.handles] } : {}), ...(v.readout ? { readout: v.readout } : {}),
-      ...(v.checkout ? { checkout: v.checkout } : {}), ...(v.frame ? { frame: v.frame } : {}) })),
+      ...(v.checkout ? { checkout: v.checkout } : {}), ...(v.frame ? { frame: v.frame } : {}), ...(v.provides?.length ? { provides: [...v.provides] } : {}) })),
     ...(contributes.protocols?.length ? { protocols: structuredClone(contributes.protocols) } : {}),
     ...(contributes.protocolImplementations?.length ? { protocolImplementations: [...contributes.protocolImplementations] } : {}),
     ...(Object.keys(offers).length ? { offers } : {}),

@@ -331,7 +331,7 @@ export function contributions(plugin, catalog = new Map()) {
     // The pages it opens in the clients, by name, with where they stay and their icon there: they run in the client's
     // sandbox, not as commands here.
     ...(plugin.views?.length ? { views: plugin.views.map(v => ({ id: v.id, title: v.title, ...(v.in ? { in: v.in } : {}), ...(v.icon ? { icon: v.icon } : {}), ...(v.handles ? { handles: v.handles } : {}), ...(v.readout ? { readout: v.readout } : {}),
-      ...(v.checkout ? { checkout: v.checkout } : {}) })) } : {}),
+      ...(v.checkout ? { checkout: v.checkout } : {}), ...(v.provides ? { provides: v.provides } : {}) })) } : {}),
     ...Object.assign({}, ...[...CONTRIBUTION_POINTS.values()].map(point => point.confirm?.(plugin))),
     extensions: plugin.extensions.map(e => ({ plugin: e.plugin, point: e.point, command: e.command })),
     // What it writes for points under keys of `contributes` (the resources plugin's panels): by point, how many and the
