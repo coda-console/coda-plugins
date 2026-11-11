@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- macOS 27 的 fseventsd 清理游标用完后不再回收路径记录（coda#2448）：超过阈值就重启它。不占名额；Apple 修好后删掉。 -->
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="fseventsd-guard-definitions" targetNamespace="https://coda.pub/plugins/host">
+  <process id="fseventsd-guard" name="文件事件服务守护" isExecutable="true" coda:title="文件事件服务守护" coda:autoRun="=vars.host.fseventsdGuard">
+    <startEvent id="due" name="到点" coda:scope="machine">
+      <timerEventDefinition>
+        <timeCycle xsi:type="tFormalExpression">=vars.host.fseventsdSchedule</timeCycle>
+      </timerEventDefinition>
+    </startEvent>
+    <sequenceFlow id="to-guard" sourceRef="due" targetRef="guard" />
+    <scriptTask id="guard" name="检查 fseventsd 占用" coda:checkout="false" coda:timeout="3" coda:status="{{guard.line}}" scriptFormat="bash">
+      <extensionElements>
+        <coda:env name="THRESHOLD_MB" value="=vars.host.fseventsdThresholdMB" />
+        <coda:output name="line" />
+      </extensionElements>
+      <script>node "$CODA_PLUGIN_PATH/scripts/fseventsd-guard.mjs"</script>
+    </scriptTask>
+    <sequenceFlow id="to-end" sourceRef="guard" targetRef="end" />
+    <endEvent id="end" />
+  </process>
+</definitions>

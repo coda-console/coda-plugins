@@ -101,3 +101,23 @@ Coda 就把那份工作副本拍成快照（含未提交、未跟踪的改动，
 
 - 装上后对这台机器的所有项目生效（[安装、停用与卸载](https://github.com/coda-console/coda/blob/main/docs/plugins.md#安装停用与卸载)），可按 Tag 限定或在项目里停用。
 
+
+## 守护文件事件服务（fseventsd）
+
+2.2.0 起带一个定时流程「文件事件服务守护」（`.coda/workflows/fseventsd-guard.bpmn`，`scripts/fseventsd-guard.mjs`）。
+macOS 27 的 `fseventsd` 清理游标用完后就再也不回收路径记录，常编译、开 worktree 的机器两三周会撞上：内存涨到几 GB、通知线程占满一个核（[coda#2448](https://github.com/coda-console/coda/issues/2448)）。
+只能重启它来恢复，根治要等 Apple；Apple 修好后在新版本里删掉这个流程。
+
+按 `host.fseventsdSchedule` 的周期（整个实例只跑一次，`coda:scope="machine"`，不申请名额），用 `top -l 1 -pid <pgrep -x fseventsd> -stats mem` 读它的占用，
+没超过 `host.fseventsdThresholdMB` 就只记下，超过了执行 `sudo -n killall fseventsd`，并在插件状态的 `fseventsd-guard.json` 里累计重启次数。
+运行的状态行写「fseventsd 占用 N MB · 累计重启 K 次」，重启的那次写「fseventsd 占用 N MB，超过 T MB，已重启 · 累计重启 K 次」；占用和阈值也写进步骤摘要。
+读不出占用、或重启失败（多半是没有免密 sudo）时这次运行失败，写明原因和要手动执行的命令 `sudo killall fseventsd`；不重试，下一个周期再看。
+只在 macOS 上、只在这个实例自己的正式后端（`CODA_ARBITER`）上做，测试或开发起的后端什么也不做。
+
+**设置**：`host.fseventsdGuard`「守护文件事件服务」，默认开，关掉后到点不再启动（流程的 `coda:autoRun`）；`host.fseventsdSchedule`「守护文件事件服务的周期」，ISO 8601 重复间隔，默认 `R/PT10M`（每 10 分钟）；`host.fseventsdThresholdMB`「fseventsd 占用阈值（MB）」，最小 64，默认 512。
+
+**免密规则**由人加，插件不改 sudoers。用 `sudo visudo -f /etc/sudoers.d/fseventsd` 写一行，只放行这一条命令（`<用户名>` 换成运行 Coda 的用户）：
+
+```
+<用户名> ALL=(root) NOPASSWD: /usr/bin/killall fseventsd
+```
