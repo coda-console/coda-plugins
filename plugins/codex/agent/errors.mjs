@@ -4,12 +4,31 @@ export function explainCodexError(message) {
   if (!message || typeof message !== 'object' || !('id' in message) || 'method' in message) return message;
   const error = message.error;
   if (!error || typeof error.message !== 'string') return message;
-  const parts = [error.message];
+  const resetAt = error.data?._meta?.coda?.failure?.resetAt;
+  const readable = text => resetAt ? text.replace(resetText, (_, prefix, time) => `${prefix}<t:${time}>`) : text;
+  const parts = [readable(error.message)];
   for (const value of [error.data?.message, error.data?.details, error.data]) {
-    const detail = typeof value === 'string' ? value.trim() : '';
+    const detail = typeof value === 'string' ? readable(value.trim()) : '';
     if (detail && !parts.some(part => part.includes(detail))) parts.push(detail);
   }
-  return parts.length === 1 ? message : { ...message, error: { ...error, message: parts.join('\n\n') } };
+  const explained = parts.join('\n\n');
+  return explained === error.message ? message : { ...message, error: { ...error, message: explained } };
+}
+
+// Only absolute reset times from the failed request are evidence. The account-wide rateLimits/read can contain several
+// model pools, without identifying which one blocked this turn; do not schedule a retry from an unrelated window.
+const resetText = /\b(try again at |resets (?:at )?)(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z)\b/gi;
+function quotaReset(error, data) {
+  for (const text of [data.additionalDetails, data.message, error.message]) {
+    if (typeof text !== 'string') continue;
+    let body; try { body = JSON.parse(text); } catch {}
+    const seconds = body?.error?.resets_at;
+    if (Number.isSafeInteger(seconds) && seconds > 0 && seconds <= 253402300799)
+      return new Date(seconds * 1000).toISOString();
+    const time = [...text.matchAll(resetText)][0]?.[2];
+    if (time && Number.isFinite(Date.parse(time)) && new Date(time).toISOString().slice(0, 19) === time.slice(0, 19))
+      return new Date(time).toISOString();
+  }
 }
 
 // Native service facts, not a retry policy: Coda decides when/how often to try again. Explicit permanent kinds win over
@@ -17,6 +36,11 @@ export function explainCodexError(message) {
 export function codexFailureData(error, input) {
   const data = error.data && typeof error.data === 'object' && !Array.isArray(error.data) ? error.data : {};
   const info = data.codexErrorInfo;
+  if (info === 'usageLimitExceeded') {
+    const resetAt = quotaReset(error, data);
+    return { ...data, _meta: { ...data._meta, coda: { ...data._meta?.coda,
+      failure: { kind: 'quota_exhausted', ...(resetAt ? { resetAt } : {}) } } } };
+  }
   const message = typeof data.message === 'string' ? data.message : typeof data.details === 'string' ? data.details : typeof error.data === 'string' ? error.data : error.message;
   let provider; try { provider = JSON.parse(message); } catch {}
   const status = provider?.status ?? (info && typeof info === 'object' ? Object.values(info)[0]?.httpStatusCode : null);

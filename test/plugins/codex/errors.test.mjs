@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { AgentProcess } from '../../../check/process.mjs';
 import { pluginDir, resolveFrom } from '../plugin.mjs';
 import { explainCodexError, codexFailureData, reportedCodexFailures } from '../../../plugins/codex/agent/errors.mjs';
+import { agentValueProblem } from '@coda-console/protocol/agent';
 
 const fixture = fileURLToPath(new URL('./app-server-fixture.mjs', import.meta.url));
 const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
@@ -16,7 +17,8 @@ test('native service failures expose facts; quota, authentication and bad reques
     data: { codexErrorInfo: info, message } }, 'accepted')._meta?.coda?.failure;
   for (const info of ['internalServerError', 'serverOverloaded', { responseStreamDisconnected: { httpStatusCode: 502 } },
     { responseTooManyFailedAttempts: { httpStatusCode: null } }]) assert.deepEqual(classify(info), { kind: 'service_unavailable', input: 'accepted' });
-  for (const info of ['usageLimitExceeded', 'unauthorized', 'contextWindowExceeded', 'sessionBudgetExceeded', 'badRequest',
+  assert.deepEqual(classify('usageLimitExceeded'), { kind: 'quota_exhausted' });
+  for (const info of ['unauthorized', 'contextWindowExceeded', 'sessionBudgetExceeded', 'badRequest',
     'sandboxError', 'threadRollbackFailed', 'cyberPolicy', { httpConnectionFailed: { httpStatusCode: 401 } }]) assert.equal(classify(info), undefined);
   assert.equal(codexFailureData({ code: -32603, message: 'Internal error', data: 'Usage limit reached' }, 'not_accepted')._meta, undefined);
   assert.deepEqual(codexFailureData({ code: -32603, message: 'Internal error' }, 'not_accepted')._meta.coda.failure,
@@ -77,7 +79,9 @@ for (const [name, env, input] of [
   ['model unavailable', { FAKE_CODEX_MODEL_ERROR: 'badRequest' }, 'accepted'],
   ['failed completion without an error notification', { FAKE_CODEX_MODEL_ERROR: 'internalServerError', FAKE_CODEX_MODEL_MESSAGE: 'Internal error', FAKE_CODEX_TERMINAL_ONLY: '1' }, 'accepted'],
   ['rejected turn start', { FAKE_CODEX_RPC_ERROR_METHOD: 'turn/start', FAKE_CODEX_RPC_ERROR: 'Internal error' }, 'not_accepted'],
-  ['quota exhausted', { FAKE_CODEX_MODEL_ERROR: 'usageLimitExceeded' }, null],
+  ['quota exhausted', { FAKE_CODEX_MODEL_ERROR: 'usageLimitExceeded' }, 'quota'],
+  ['quota without an error notification', { FAKE_CODEX_MODEL_ERROR: 'usageLimitExceeded', FAKE_CODEX_TERMINAL_ONLY: '1' }, 'quota'],
+  ['quota with reset', { FAKE_CODEX_MODEL_ERROR: 'usageLimitExceeded', FAKE_CODEX_MODEL_MESSAGE: 'Usage limit reached; try again at 2026-11-11T19:00:00Z' }, 'quota'],
   ['authentication failed', { FAKE_CODEX_MODEL_ERROR: 'unauthorized' }, null],
   ['invalid arguments', { FAKE_CODEX_MODEL_ERROR: 'badRequest', FAKE_CODEX_MODEL_MESSAGE: 'Invalid tool arguments' }, null],
 ]) test(`Codex reports ${name} for Coda to classify without retrying in the plugin`, async t => {
@@ -92,6 +96,33 @@ for (const [name, env, input] of [
   assert.equal(session.error, undefined);
   const reply = await request('session/prompt', { sessionId: session.result.sessionId, prompt: [{ type: 'text', text: 'original task' }] });
   assert.ok(reply.error, JSON.stringify(reply));
-  assert.deepEqual(reply.error.data?._meta?.coda?.failure, input ? { kind: 'service_unavailable', input } : undefined);
+  const resetAt = env.FAKE_CODEX_MODEL_MESSAGE?.includes('2026-11-11') ? '2026-11-11T19:00:00.000Z' : null;
+  assert.deepEqual(reply.error.data?._meta?.coda?.failure, input === 'quota' ?
+    { kind: 'quota_exhausted', ...(resetAt ? { resetAt } : {}) } : input ? { kind: 'service_unavailable', input } : undefined);
+  if (resetAt) assert.match(reply.error.message, /try again at <t:2026-11-11T19:00:00Z>/);
   assert.equal((await readFile(join(root, 'prompts.ndjson'), 'utf8')).trim().split('\n').length, 1);
+});
+
+test('Codex quota reset comes only from the failed request, with no machine-time-zone guesses', () => {
+  const seconds = Date.parse('2026-11-11T19:00:00Z') / 1000;
+  for (const data of [
+    { message: JSON.stringify({ error: { type: 'usage_limit_reached', resets_at: seconds } }) },
+    { message: 'Quota exhausted', additionalDetails: JSON.stringify({ error: { resets_at: seconds } }) },
+    { message: 'Usage limit reached; try again at 2026-11-11T19:00:00Z' },
+  ]) {
+    const error = { message: 'Internal error', data: { ...data, codexErrorInfo: 'usageLimitExceeded' } };
+    const result = codexFailureData(error, 'accepted');
+    assert.deepEqual(result._meta.coda.failure, { kind: 'quota_exhausted', resetAt: '2026-11-11T19:00:00.000Z' });
+    assert.equal(agentValueProblem('failure.json', result._meta.coda.failure), null);
+    assert.deepEqual(error.data, { ...data, codexErrorInfo: 'usageLimitExceeded' });
+    const reply = { id: 1, error: { ...error, data: result } };
+    const explained = explainCodexError(reply);
+    assert.equal(explainCodexError(explained), explained);
+  }
+  for (const message of ['Quota exhausted', 'try again at 7pm', 'try again in 5 minutes', 'try again at 2026-13-11T19:00:00Z',
+    'try again at 2026-02-30T19:00:00Z',
+    JSON.stringify({ error: { resets_at: null } }), JSON.stringify({ error: { resets_at: -1 } })]) {
+    const result = codexFailureData({ message: 'Internal error', data: { message, codexErrorInfo: 'usageLimitExceeded' } });
+    assert.deepEqual(result._meta.coda.failure, { kind: 'quota_exhausted' });
+  }
 });

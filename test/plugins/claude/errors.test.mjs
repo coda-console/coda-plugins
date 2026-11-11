@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { claudeFailure } from '../../../plugins/claude/agent/errors.mjs';
+import { agentValueProblem } from '@coda-console/protocol/agent';
 
 test('explicit Claude usage or credit exhaustion is quota; authentication, billing problems and generic rate limits are not', () => {
   for (const message of ["You've hit your session limit · resets 1am (Asia/Singapore)", "You've reached your weekly limit",
@@ -8,7 +9,7 @@ test('explicit Claude usage or credit exhaustion is quota; authentication, billi
     'Your org is out of usage · contact your admin']) {
     const error = claudeFailure(message);
     assert.equal(error.message, message);
-    assert.equal(error.data._meta.coda.failure.kind, 'quota_exhausted');
+    assert.deepEqual(error.data._meta.coda.failure, { kind: 'quota_exhausted' });
   }
   for (const [message, facts] of [
     ['HTTP 429 Too Many Requests', { error: 'rate_limit' }],
@@ -20,6 +21,19 @@ test('explicit Claude usage or credit exhaustion is quota; authentication, billi
     ['Payment method declined', { error: 'billing_error', limits: { status: 'rejected' } }],
     ['Rate limit reached', { limits: { status: 'allowed_warning', utilization: 1 } }],
   ]) assert.equal(claudeFailure(message, facts).data, undefined, message);
+});
+
+test('Claude exposes only an exact rejected window reset, even when the reason has no time to rewrite', () => {
+  for (const window of [
+    { status: 'rejected', resetsAt: Date.parse('2026-11-11T19:00:00Z') / 1000 },
+    { status: 'allowed', resetsAt: 1794423600 },
+    { status: 'rejected' }, { status: 'rejected', resetsAt: 0 }, { status: 'rejected', resetsAt: Number.MAX_SAFE_INTEGER },
+  ]) {
+    const failure = claudeFailure("You've reached your weekly limit", { window }).data._meta.coda.failure;
+    assert.equal(agentValueProblem('failure.json', failure), null);
+    assert.deepEqual(failure, window.status === 'rejected' && window.resetsAt === Date.parse('2026-11-11T19:00:00Z') / 1000 ?
+      { kind: 'quota_exhausted', resetAt: '2026-11-11T19:00:00.000Z' } : { kind: 'quota_exhausted' });
+  }
 });
 
 test('a quota reason says the reset of the window that limits now as a time mark, not in the machine\'s time zone', () => {

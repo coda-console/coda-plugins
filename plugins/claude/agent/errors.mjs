@@ -10,12 +10,13 @@ const exhausted = message => /^(?:You've (?:hit|reached) your (?:session|weekly|
 // which the CLI sends only as a window moves), the reason says it as a time mark instead, which each client writes in
 // its own time zone (Coda's docs/agent-protocol.md「文字里的时刻」).
 const windowReset = /^(You've (?:hit|reached) your [^·]+ · resets )[^·()]+ \([^()]+\)/;
-const marked = (message, window) => window?.status === 'rejected' && Number.isSafeInteger(window.resetsAt) && window.resetsAt > 0
-  ? message.replace(windowReset, (_, said) => `${said}<t:${new Date(window.resetsAt * 1000).toISOString()}>`) : message;
+const resetTime = window => window?.status === 'rejected' && Number.isSafeInteger(window.resetsAt) && window.resetsAt > 0 &&
+  window.resetsAt <= 253402300799 ? new Date(window.resetsAt * 1000).toISOString() : undefined;
 
 export function claudeFailure(message, { error, limits, window } = {}) {
   const quota = (!error || ['rate_limit', 'billing_error'].includes(error)) &&
     (exhausted(message) || (error === 'rate_limit' && limits?.status === 'rejected'));
-  const data = quota ? { _meta: { coda: { failure: { kind: 'quota_exhausted' } } } } : undefined;
-  return new RequestError(-32603, quota ? marked(message, window) : message, data);
+  const resetAt = quota ? resetTime(window) : undefined;
+  const data = quota ? { _meta: { coda: { failure: { kind: 'quota_exhausted', ...(resetAt ? { resetAt } : {}) } } } } : undefined;
+  return new RequestError(-32603, resetAt ? message.replace(windowReset, (_, said) => `${said}<t:${resetAt}>`) : message, data);
 }
