@@ -97,7 +97,8 @@ Edit、MultiEdit 与 Write 的输入生成标准 `diff` 预览；成功结果用
 计划工具归 `think`，Task/Agent 子 Agent、MCP 与未知工具归 `other`，子 Agent 的活动卡片沿用原有报告。
 进行中的工具保留到结果到达；为处理重复结果，已完成调用仅缓存最近 128 条，且估算字符串存储不超过 4 MiB。超限 diff 正常发送但不缓存，淘汰后忽略重复结果，不覆盖客户端已有的 diff。
 
-Claude 的额度耗尽按[执行失败](https://github.com/coda-console/coda-protocol/blob/main/docs/agent-protocol.md#额度不足)报 `quota_exhausted`，保留上游给出的重置时间；
+Claude 的额度耗尽按[执行失败](https://github.com/coda-console/coda-protocol/blob/main/docs/agent-protocol.md#额度不足)报 `quota_exhausted`；
+本轮窗口为 `rejected` 且有有效的 Unix 秒 `resetsAt` 时，同时写 `failure.resetAt`（UTC ISO 8601），并保持正文的 `<t:…>` 改写。没有确切时间就不写。
 只认明确的额度原因，或本轮 `rate_limit` 错误配合订阅窗口的 `rejected`，不把普通 429、登录失败或额度预警算进去。
 SDK 作为 `assistant` 消息发来的 API 错误不当成回复正文；由本轮 `result` 报告失败。
 后台结果或定时唤醒后的自主轮次没有 `session/prompt` 可回复，失败时以自己的活动卡片报 `failed` 和原因，额度耗尽的卡片标题为「额度不足」；
@@ -364,7 +365,12 @@ Codex 的原生失败统一以 ACP 错误结束，包括只有 `turn/completed.f
 插件将服务端内部错误、5xx、响应流中断、模型容量不足，以及已知的 `model '…' is not enabled in rustponsesapi` 报成
 `error.data._meta.coda.failure: {kind: "service_unavailable", input: "accepted"}`。新轮请求明确被拒绝、只给
 `Internal error` 时按临时故障报告 `input: "not_accepted"`；这表示允许有限重试，不表示已确定历史故障根因。
-明确的额度耗尽、认证、上下文限制、参数、配置或沙箱错误不带此标记。
+额度耗尽 `usageLimitExceeded` 单独报 `failure.kind: "quota_exhausted"`；认证、上下文限制、参数、配置或沙箱错误不带此标记。
+Codex 仅从本次错误的 `additionalDetails`、`message` 或外层错误正文提取重置时间：JSON 的 `error.resets_at`（有效 Unix 秒），
+或 `try again at` / `resets at` / `resets` 后明确带 `Z` 的 ISO 8601 时间；取到就写 UTC `failure.resetAt`，可读正文中的这些 ISO 时间改写为 `<t:…>`。
+未给时间、只有相对时间或没有时区时不写。`account/rateLimits/read` 是账号级快照，可能含多个模型额度池，
+失败未指出阻断本轮的额度池，因此不从该快照推断重置时间，也不另开连接查询。
+Coda 对接时，`backend/test/codex-errors.test.mjs` 中 `usageLimitExceeded` 原先预期的 `unknown` 应改为 `quota_exhausted`；没有时间仍属额度不足。
 插件不做退避或重新发送；Coda 按通用协议统一退避，客户端只支持 ACP 时仍能读到完整错误。
 
 Kimi 2.1.1 会把五小时额度耗尽（`403 You've reached your 5-hour usage limit.`）误报为 ACP `auth_required`。
