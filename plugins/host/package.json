@@ -4,7 +4,7 @@
   "displayName": "宿主资源",
   "description": "本机运行器与 Xcode、模拟器的排队名额",
   "icon": { "symbol": "hammer.fill", "color": "gray" },
-  "version": "2.1.0",
+  "version": "2.2.0",
   "categories": [
     "机器与资源"
   ],
@@ -67,6 +67,28 @@
           "type": "string",
           "default": "",
           "description": "逗号分隔的自定义能力标签；系统、CPU、Xcode、模拟器与 Node 标签由本机探测。"
+        },
+        "host.fseventsdGuard": {
+          "title": "守护文件事件服务",
+          "type": "boolean",
+          "order": 3,
+          "default": true,
+          "description": "只在 macOS 上做：定时读 fseventsd 的内存占用，超过阈值就重启它（绕开 macOS 27 路径记录不再回收的问题）。重启需要本机免密 sudo killall fseventsd，没有时这次运行失败并写明要手动执行的命令。"
+        },
+        "host.fseventsdSchedule": {
+          "title": "守护文件事件服务的周期",
+          "type": "string",
+          "order": 4,
+          "default": "R/PT10M",
+          "description": "多久检查一次 fseventsd 的占用：不占名额。ISO 8601 重复间隔，R/PT10M 是每 10 分钟一次，从 Coda 第一次登记这个周期起算；最短 5 分钟。"
+        },
+        "host.fseventsdThresholdMB": {
+          "title": "fseventsd 占用阈值（MB）",
+          "type": "integer",
+          "order": 5,
+          "minimum": 64,
+          "default": 512,
+          "description": "fseventsd 的内存占用超过这么多 MB 就重启它。"
         }
       }
     },

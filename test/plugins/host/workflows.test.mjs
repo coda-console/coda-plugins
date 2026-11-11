@@ -85,3 +85,13 @@ test('periodic simulator cleanup never enters the host queue', async () => {
   assert.equal(process.flowElements.filter(element => element.$type === 'bpmn:ScriptTask').length, 1);
   assert.ok(process.flowElements.every(element => !element.group && !element.action && element.$type !== 'bpmn:SubProcess'));
 });
+
+test('fseventsd guard runs once per machine, only while its setting is on, and never enters the host queue', async () => {
+  const process = await processOf('workflows', 'fseventsd-guard');
+  assert.equal(process.autoRun, '=vars.host.fseventsdGuard');
+  const start = process.flowElements.find(element => element.$type === 'bpmn:StartEvent');
+  assert.equal(start.scope, 'machine');
+  assert.equal(start.eventDefinitions[0].timeCycle.body, '=vars.host.fseventsdSchedule');
+  assert.equal(process.flowElements.filter(element => element.$type === 'bpmn:ScriptTask').length, 1);
+  assert.ok(process.flowElements.every(element => !element.group && !element.action && element.$type !== 'bpmn:SubProcess'));
+});
