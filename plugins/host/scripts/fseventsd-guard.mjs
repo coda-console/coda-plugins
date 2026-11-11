@@ -54,11 +54,12 @@ try { await exec(tool('SUDO', 'sudo'), ['-n', 'killall', 'fseventsd']); }
 catch (error) {
   const reason = (error.stderr || error.message).trim().split('\n').at(-1);
   const line = `fseventsd 占用 ${used} MB，超过 ${threshold} MB，重启失败：${reason}`;
-  report(line, `${line}\n\n手动执行 \`sudo killall fseventsd\`。`);
-  console.error(`${line}
-请手动执行：sudo killall fseventsd
+  // The log's last line is also the run's status line: the reason goes last.
+  console.error(`请手动执行：sudo killall fseventsd
 要让守护自己重启，用 sudo visudo -f /etc/sudoers.d/fseventsd 加一条只放行这条命令的免密规则：
 ${userInfo().username} ALL=(root) NOPASSWD: /usr/bin/killall fseventsd`);
+  report(line, `${line}\n\n手动执行 \`sudo killall fseventsd\`。`);
+  console.error(line);
   process.exit(1);
 }
 writeFileSync(file, JSON.stringify({ restarts: ++restarts }));

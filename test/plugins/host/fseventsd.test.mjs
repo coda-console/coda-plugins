@@ -68,6 +68,7 @@ test('文件事件服务守护 fails with the command to run by hand when sudo r
   assert.match(result.stderr, /重启失败：sudo: a password is required/);
   assert.match(result.stderr, /请手动执行：sudo killall fseventsd/);
   assert.match(result.stderr, /NOPASSWD: \/usr\/bin\/killall fseventsd/);
+  assert.equal(result.stderr.trim().split('\n').at(-1), 'fseventsd 占用 900 MB，超过 512 MB，重启失败：sudo: a password is required');
   assert.equal(g.restarts(), 0);
 });
 
