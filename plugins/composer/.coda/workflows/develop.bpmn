@@ -74,7 +74,7 @@
     <sequenceFlow id="prebuild-done" sourceRef="prebuild" targetRef="prebuilt" />
     <endEvent id="prebuilt" />
     <scriptTask id="gate-passed" name="记录通过的检查" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
-      <extensionElements><coda:env name="RUNS" value="=checks.runs" /><coda:output name="base" /><coda:output name="task" /><coda:output name="first" /></extensionElements>
+      <extensionElements><coda:env name="RUNS" value="=checks.runs" /><coda:output name="base" /><coda:output name="task" /><coda:output name="first" /><coda:output name="checks" /></extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" gate-passed</script>
     </scriptTask>
     <sequenceFlow id="gate-passed-review" sourceRef="gate-passed" targetRef="reviews-choice" />
@@ -98,6 +98,7 @@
           <coda:param name="head" value="=gate.head" />
           <coda:param name="task" value="=gate-passed.task" />
           <coda:param name="reviewer" value="=slot.who" />
+          <coda:param name="evidence" value="=gate-passed.checks" />
         </extensionElements>
       </callActivity>
       <boundaryEvent id="review-failed" attachedToRef="review-call"><errorEventDefinition /></boundaryEvent>
@@ -148,10 +149,11 @@ head：{{report.head}}
 审查要点：架构是否得当、改动是否最小、有没有防御性或冗余代码、有没有无关改动，实际验证是否足够。检查通过和执行者的回答不能代替你读 diff；不要自己改代码，修改都交给执行者。
 评审者的发现是否成立由你判断，不成立的不必转给执行者。
 选择「退回修改」时备注必填，给具体意见；同一个执行会话继续修改。
+选择「让执行者合并目标分支」时备注可选，写了就附在固定说明后面；同一个执行会话把最新目标分支合入当前分支并解冲突（目标分支上有相关改动、版本号会撞时选它），不算退回。
 选择「通过，再派一项」时备注必填，写自足的下一项任务；先合进泳道，再用开工时的执行者开新的执行会话。
 选择「换备用执行者重做」时备注必填，写为什么换、接手的人要注意什么；备用执行者从泳道当前提交新开执行会话重做这一项，之后的退回修改续它。没填备用执行者时选它会回到这张卡。
 流程自己跑项目检查；执行者只需跑直接相关的快检查，不必用 run-held 跑整套编译。
-选择「通过，可以验收」时，归属需求则直接开 PR；独立交付开启设备验收则进入安装与验收，否则直接开 PR。同一 head 复用本次已通过的项目检查，PR 阶段另等 GitHub 检查。
+选择「通过，可以验收」时，流程先试合并目标分支的最新提交：有冲突就不动泳道，把冲突的文件交给同一个执行会话合并，之后照常检查、评审再回到这张卡，同样不算退回；没有冲突才往下走。归属需求则直接开 PR；独立交付开启设备验收则进入安装与验收，否则直接开 PR。同一 head 复用本次已通过的项目检查，PR 阶段另等 GitHub 检查。
 选择「通过，可以验收」时备注必填，写给用户的改动汇报，会原样放在批准卡和 PR 描述最上面。约 8 行以内，只写用户能感知的变化和动到的端，不放实现细节、测试数量、文件清单，不贴代码：
 做了什么
 - …（3～5 条）
@@ -159,6 +161,7 @@ head：{{report.head}}
 执行者已通过的 head 已在泳道上时 diff 为空；请结合反馈和本运行先前的通过记录审查。</documentation>
       <extensionElements>
         <coda:choice id="revise" name="退回修改" />
+        <coda:choice id="sync" name="让执行者合并目标分支" />
         <coda:choice id="next" name="通过，再派一项" />
         <coda:choice id="swap" name="换备用执行者重做" />
         <coda:choice id="accept" name="通过，可以验收" primary="true" />
@@ -187,14 +190,15 @@ head：{{report.head}}
       <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" swap</script>
     </scriptTask>
     <sequenceFlow id="swap-report" sourceRef="swap" targetRef="gate" />
-    <scriptTask id="accept" name="快进泳道并推送" scriptFormat="bash" coda:timeout="5">
+    <scriptTask id="accept" name="试合并并快进泳道" scriptFormat="bash" coda:timeout="5">
       <extensionElements><coda:env name="DEVICES" value="=inputs.devices" /><coda:env name="DELIVERY" value="=inputs.delivery" /><coda:output name="head" /><coda:output name="lane" /><coda:output name="route" /></extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" accept</script>
     </scriptTask>
     <sequenceFlow id="accept-after" sourceRef="accept" targetRef="after-accept" />
-    <exclusiveGateway id="after-accept" name="继续执行还是验收" default="accept-preview" />
+    <exclusiveGateway id="after-accept" name="合并目标分支、继续执行还是验收" default="accept-preview" />
     <sequenceFlow id="accept-next" sourceRef="after-accept" targetRef="execute"><conditionExpression xsi:type="tFormalExpression">=accept.route = "execute"</conditionExpression></sequenceFlow>
     <sequenceFlow id="accept-check" sourceRef="after-accept" targetRef="pr"><conditionExpression xsi:type="tFormalExpression">=accept.route = "pr"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="accept-sync" sourceRef="after-accept" targetRef="revise"><conditionExpression xsi:type="tFormalExpression">=accept.route = "sync"</conditionExpression></sequenceFlow>
     <sequenceFlow id="accept-preview" sourceRef="after-accept" targetRef="acceptance" />
     <subProcess id="acceptance" name="安装与设备验收" coda:optional="true">
       <startEvent id="acceptance-start" />

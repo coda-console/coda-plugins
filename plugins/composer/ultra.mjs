@@ -15,7 +15,11 @@ export function on(subagents) {
     'Conserve the lead agent\'s tokens and context while preserving quality. Keep task framing, difficult decisions, dispatch ' +
       'and the review of what others bring back in this session; small targeted reads for framing and review belong here.',
     'Dispatch research, investigation and verification that do not change code to Coda\'s `spawn`, choosing each executor from the list by task. ' +
-      'Give each a concrete, self-contained task and ask for concise conclusions, sources and actual evidence. Do not repeat their routine work.',
+      'Write each brief to stand alone: the goal and the decision it serves, what is already known or ruled out, the scope and what to leave alone, ' +
+      'where to look, and what to return: conclusions first, then sources and actual evidence (paths, commands, output). Do not repeat their routine work.',
+    'When a result falls short, act on the cause. A brief that left something out: rewrite it and send it to the same session. ' +
+      'A claim without evidence: ask that session for the evidence. A wrong result from a clear brief: give the task to another entry of the list. ' +
+      'A session that died or a tool that failed: retry. Do not quietly redo the work yourself.',
     'Do not use native subagents unless explicitly requested. If concurrency is full, wait; if spawn is unavailable, report the blocker ' +
       'instead of switching to another delegation channel.',
     subagents.length

@@ -307,11 +307,13 @@ test('合并冲突带反馈回审查，原执行者合入 base 后重走检查�
   assert.equal(f.state().head, before.head);
   assert.equal(f.state().phase, 'check');
   const feedback = f.run('review').outputs.feedback;
-  for (const text of ['合并冲突', '目标分支 main', 'git fetch origin main', '迁移版本号', '跑相关测试', '退回修改', '重新批准']) assert.ok(feedback.includes(text), text);
-  assert.equal(f.review('revise', feedback), 'revise');
+  for (const text of ['合并冲突', '目标分支 main', '让执行者合并目标分支', '不计退回', '重新批准']) assert.ok(feedback.includes(text), text);
+  assert.ok(!feedback.includes('用「退回修改」'), '不再让主 Agent 退回修改');
+  assert.equal(f.review('sync'), 'revise');
+  assert.equal(f.run('review').outputs.returns, '0');
   f.task('base', 'resolved change', undefined, 'main'); f.run('revise');
   assert.equal(f.state().executor.session, before.executor.session);
-  assert.ok(f.calls('agent').at(-1).prompt.includes(feedback));
+  for (const text of ['目标分支是 main', 'git fetch origin main', '合并（merge）', '不要变基', '数据库迁移等版本号', '顺延']) assert.ok(f.calls('agent').at(-1).prompt.includes(text), text);
   f.git('merge-base', '--is-ancestor', baseHead, f.state().executor.head);
   const head = f.run('gate').outputs.head;
   assert.notEqual(head, before.head);
@@ -485,7 +487,8 @@ test('开发流程定义、回路、检查提交与部署发布选择符合运�
   assert.equal(nodes.review.assignee, undefined, '默认交给发起会话 Agent');
   assert.equal(nodes.device.assignee, 'user'); assert.equal(nodes.approve.assignee, 'user');
   for (const [value, target] of [['review', 'report'], ['revise', 'revise'], ['swap', 'swap'], ['accept', 'accept']]) assert.equal(route('how', { decide: { route: value } }), target);
-  for (const [value, target] of [['execute', 'execute'], ['pr', 'pr'], ['preview', 'acceptance']]) assert.equal(route('after-accept', { accept: { route: value } }), target);
+  for (const [value, target] of [['execute', 'execute'], ['pr', 'pr'], ['preview', 'acceptance'], ['sync', 'revise']]) assert.equal(route('after-accept', { accept: { route: value } }), target);
+  assert.equal(route('how', { decide: { route: 'revise' } }), 'revise', '「让执行者合并目标分支」与退回修改走同一个会话续作');
   assert.deepEqual(values(nodes.preview).map(v => [v.id, v.name]), [['installed', '已装好'], ['review', '回到审查']]);
   assert.match(nodes.preview.documentation[0].text, /preview-result.feedback/);
   assert.equal(nodes['preview-result-flow'].targetRef.id, 'preview-result');
@@ -866,7 +869,7 @@ test('填了几位评审者就调用几次，参数是这次交付；首次评�
   const { deliver } = await reviewing();
   const agents = { reviewer: { agent: 'a1', model: 'm1' }, reviewer2: { agent: 'a2' }, reviewerOnce: { agent: 'a3', effort: 'high' } };
   const context = (filled, first) => ({ inputs: { reviewer: null, reviewer2: null, reviewerOnce: null, ...Object.fromEntries(filled.map(slot => [slot, agents[slot]])) },
-    gate: { head: 'h'.repeat(40) }, 'gate-passed': { base: 'b'.repeat(40), task: '第一项任务', first } });
+    gate: { head: 'h'.repeat(40) }, 'gate-passed': { base: 'b'.repeat(40), task: '第一项任务', first, checks: 'test: succeeded coda://workflow-runs/c1' } });
   const outcome = { reviewer: { decision: 'APPROVE', line: 'ok', findings: '[]', report: 'r1' }, reviewer2: { decision: 'APPROVE', line: 'ok', findings: '[]', report: 'r2' },
     reviewerOnce: { decision: 'APPROVE', line: 'ok', findings: '[]', report: 'r3' } };
   assert.deepEqual(deliver(context([], true)), { calls: [], reviews: null }, '都不填时不进评审');
@@ -880,7 +883,7 @@ test('填了几位评审者就调用几次，参数是这次交付；首次评�
     [['reviewer2'], false, ['reviewer2']],
   ]) {
     const { calls, reviews } = deliver(context(filled, first), outcome);
-    assert.deepEqual(calls, called.map(slot => ({ called: 'review-commit', base: 'b'.repeat(40), head: 'h'.repeat(40), task: '第一项任务', reviewer: agents[slot] })), `${filled} ${first}`);
+    assert.deepEqual(calls, called.map(slot => ({ called: 'review-commit', base: 'b'.repeat(40), head: 'h'.repeat(40), task: '第一项任务', reviewer: agents[slot], evidence: 'test: succeeded coda://workflow-runs/c1' })), `${filled} ${first}`);
     if (!called.length) { assert.equal(reviews, null); continue; }
     assert.deepEqual(reviews.map(r => r.state), ['reviewer', 'reviewer2', 'reviewerOnce'].map(slot => called.includes(slot) ? 'done' : 'skipped'));
     for (const r of reviews.filter(r => r.state === 'done')) assert.deepEqual(r, { state: 'done', slot: r.slot, who: JSON.stringify(agents[r.slot]), head: 'h'.repeat(40), ...outcome[r.slot] });
@@ -890,12 +893,26 @@ test('填了几位评审者就调用几次，参数是这次交付；首次评�
 test('gate-passed 给评审对照的泳道提交与任务书，首次只在新执行会话后的第一次通过', t => {
   const f = fixture(t, false); f.run('lane'); f.task('code', 'first'); f.run('execute');
   const passed = () => f.run('gate-passed', { RUNS: '[]' }).outputs;
-  assert.deepEqual(passed(), { base: f.state().head, task: f.state().task, first: 'true' });
+  assert.deepEqual(passed(), { base: f.state().head, task: f.state().task, first: 'true', checks: '此提交未声明项目检查流程。' });
   f.review('revise', '再改改'); f.task('code', 'second'); f.run('revise');
   assert.equal(passed().first, 'false', '同一会话修改后的交付不算第一次');
   f.review('next', '第二项：补齐状态'); assert.equal(f.run('accept').outputs.route, 'execute');
   f.task('two', 'next task'); f.run('execute');
-  assert.deepEqual(passed(), { base: f.state().head, task: '第二项：补齐状态', first: 'true' }, '下一项任务的第一次交付');
+  assert.deepEqual(passed(), { base: f.state().head, task: '第二项：补齐状态', first: 'true', checks: '此提交未声明项目检查流程。' }, '下一项任务的第一次交付');
+});
+
+test('交给评审者的已有验证与审查卡上的「项目检查结果」是同一段，没声明检查流程时是那一句说明', async t => {
+  const { deliver, nodes } = await reviewing();
+  const runs = [{ workflow: 'test', state: 'succeeded', runId: 'check-1' }, { workflow: 'lint', state: 'succeeded', runId: 'check-2' }];
+  for (const given of [runs, []]) {
+    const f = fixture(t, false); f.run('lane'); f.task('code', 'first'); f.run('execute');
+    const passed = f.run('gate-passed', { RUNS: JSON.stringify(given) }).outputs;
+    const { calls } = deliver({ inputs: { reviewer: { agent: 'a1' }, reviewer2: null, reviewerOnce: null }, gate: { head: f.state().executor.head }, 'gate-passed': { ...passed, first: true } },
+      { reviewer: { decision: 'APPROVE', line: 'ok', findings: '[]', report: 'r' } });
+    assert.equal(calls[0].evidence, f.run('review').outputs.checks);
+    assert.equal(calls[0].evidence, given.length ? 'test: succeeded coda://workflow-runs/check-1\nlint: succeeded coda://workflow-runs/check-2' : '此提交未声明项目检查流程。');
+  }
+  assert.match(nodes.review.documentation[0].text, /项目检查结果：\n\{\{report\.checks\}\}/);
 });
 
 test('审查材料带上每位评审者的结果：没评成的写原因，别人的发现照常；发现多时卡片只留严重程度、标题和位置', async t => {
@@ -970,7 +987,7 @@ test('备用执行者不设默认可不填；「换备用执行者重做」新�
   const backup = inputs.executor2;
   assert.deepEqual([backup.type, backup.label, backup.default, backup.defaultFrom, backup.required], ['agent', '备用执行者', undefined, undefined, undefined]);
   const choices = nodes.review.extensionElements.values;
-  assert.deepEqual(choices.map(v => [v.id, v.name]), [['revise', '退回修改'], ['next', '通过，再派一项'], ['swap', '换备用执行者重做'], ['accept', '通过，可以验收']]);
+  assert.deepEqual(choices.map(v => [v.id, v.name]), [['revise', '退回修改'], ['sync', '让执行者合并目标分支'], ['next', '通过，再派一项'], ['swap', '换备用执行者重做'], ['accept', '通过，可以验收']]);
   assert.equal(route('how', { decide: { route: 'swap' } }), 'swap');
   assert.equal(next('swap'), 'gate', '换人后的交付照常推送、检查、评审、审查');
   assert.match(nodes.swap.script, /develop\.mjs" swap/);
@@ -1050,5 +1067,83 @@ test('换人后的第一次交付，首次评审者会评', async t => {
   const once = { agent: 'a3' };
   const { calls } = deliver({ inputs: { reviewer: null, reviewer2: null, reviewerOnce: once }, gate: { head: f.state().executor.head }, 'gate-passed': { ...passed, first: passed.first === 'true' } },
     { reviewerOnce: { decision: 'APPROVE', line: 'ok', findings: '[]', report: 'r' } });
-  assert.deepEqual(calls, [{ called: 'review-commit', base: f.state().head, head: f.state().executor.head, task: f.state().task, reviewer: once }]);
+  assert.deepEqual(calls, [{ called: 'review-commit', base: f.state().head, head: f.state().executor.head, task: f.state().task, reviewer: once, evidence: '此提交未声明项目检查流程。' }]);
+});
+
+// 目标分支在执行者开工之后前进：clean 的不碰同一个文件，冲突的改同一个文件。
+const advance = (f, file, text) => {
+  f.git('switch', 'main');
+  writeFileSync(join(f.work, file), text); f.git('add', file); f.git('commit', '-qm', `base ${file}`); f.git('push', '-q', 'origin', 'main');
+  return f.git('rev-parse', 'HEAD');
+};
+const delivered = f => { f.run('gate'); f.run('gate-passed', { RUNS: '[]' }); };
+const syncTexts = ['目标分支是 main', 'git fetch origin main', '合并（merge）', '不要变基', '泳道只能快进', '数据库迁移等版本号', '顺延', '跑和冲突相关的测试', '只做这件事', '回报冲突了哪些文件', '不需要合并'];
+
+test('通过可以验收：目标分支有不冲突的新提交时照常快进泳道，不产生合并提交', t => {
+  const f = fixture(t, false); f.run('lane'); f.task('code', 'worker change'); f.run('execute'); delivered(f);
+  advance(f, 'other', 'other');
+  const lane = f.state().lane, head = f.state().executor.head;
+  f.review('accept', '汇报');
+  assert.equal(f.run('accept').outputs.route, 'pr');
+  assert.equal(f.git('ls-remote', 'origin', lane).split('\t')[0], head);
+  assert.equal(f.git('rev-list', '--parents', '-n', '1', head).split(' ').length, 2, '执行者的提交不是合并提交，流程没有另外提交');
+  assert.equal(f.state().approved.length, 1);
+  assert.equal(f.state().feedback, '');
+});
+
+test('通过可以验收：目标分支有冲突的新提交时泳道不动、不记入已通过，同一会话收到固定说明，不算退回；合并后再通过照常快进', t => {
+  const f = fixture(t, false); f.run('lane'); f.task('base', 'worker change'); f.run('execute'); delivered(f);
+  const lane = f.state().lane, before = f.state(), laneHead = f.git('ls-remote', 'origin', lane).split('\t')[0];
+  const baseHead = advance(f, 'base', 'target change');
+  f.review('accept', '汇报');
+  assert.deepEqual(f.run('accept').outputs, { route: 'sync' });
+  assert.equal(f.git('ls-remote', 'origin', lane).split('\t')[0], laneHead, '泳道没动');
+  assert.equal(f.git('ls-remote', 'origin', 'main').split('\t')[0], baseHead, '目标分支没动');
+  assert.equal(f.git('show-ref', '--heads', 'main').split(' ')[0], baseHead);
+  assert.equal(f.state().approved.length, 0, '不记入已通过');
+  assert.equal(f.state().head, before.head);
+  assert.equal(f.state().returns, 0);
+  const feedback = f.run('review').outputs.feedback;
+  for (const text of [...syncTexts, '冲突的文件', '- base']) assert.ok(feedback.includes(text), text);
+  assert.equal(f.run('review').outputs.returns, '0');
+  f.task('base', 'resolved', undefined, 'main'); f.run('revise');
+  assert.equal(f.state().executor.session, before.executor.session, '同一执行会话');
+  assert.deepEqual(f.calls('agent').at(-1).args.slice(0, -2), ['--continue', before.executor.session, '--json']);
+  for (const text of [...syncTexts, '- base']) assert.ok(f.calls('agent').at(-1).prompt.includes(text), text);
+  f.git('merge-base', '--is-ancestor', baseHead, f.state().executor.head);
+  delivered(f);
+  assert.equal(f.state().reviewed, true);
+  f.review('accept', '修复后的汇报');
+  assert.equal(f.run('accept').outputs.route, 'pr');
+  assert.equal(f.git('ls-remote', 'origin', lane).split('\t')[0], f.state().executor.head);
+  assert.equal(f.state().approved.length, 1);
+  assert.equal(f.state().returns, 0);
+});
+
+test('通过，再派一项不试合并：目标分支有冲突也照常快进泳道', t => {
+  const f = fixture(t, false); f.run('lane'); f.task('base', 'worker change'); f.run('execute'); delivered(f);
+  advance(f, 'base', 'target change');
+  f.review('next', '第二项：补齐状态');
+  assert.equal(f.run('accept').outputs.route, 'execute');
+  assert.equal(f.git('ls-remote', 'origin', f.state().lane).split('\t')[0], f.state().head);
+  assert.equal(f.state().approved.length, 1);
+});
+
+for (const note of ['版本号会撞，注意迁移', '', '  ']) test(`让执行者合并目标分支（备注 ${JSON.stringify(note)}）：同一会话续作，带固定说明，不算退回，之后首次评审者不评`, t => {
+  const f = fixture(t, false); f.run('lane'); f.task('code', 'first'); f.run('execute');
+  const session = f.state().executor.session;
+  assert.equal(f.run('gate-passed', { RUNS: '[]' }).outputs.first, 'true');
+  assert.equal(f.review('sync', note), 'revise');
+  assert.equal(f.state().returns, 0);
+  assert.equal(f.state().head, f.git('ls-remote', 'origin', f.state().lane).split('\t')[0], '泳道没动');
+  f.task('code', 'merged'); f.run('revise');
+  assert.equal(f.state().executor.session, session);
+  const prompt = f.calls('agent').at(-1).prompt;
+  assert.deepEqual(f.calls('agent').at(-1).args.slice(0, -2), ['--continue', session, '--json']);
+  for (const text of syncTexts) assert.ok(prompt.includes(text), text);
+  assert.ok(!prompt.includes('冲突的文件'), '没试合并，没有冲突文件');
+  assert.equal(prompt.includes('主 Agent 的备注'), Boolean(note.trim()));
+  if (note.trim()) assert.ok(prompt.endsWith(`主 Agent 的备注：\n${note}\n`));
+  assert.equal(f.run('review').outputs.returns, '0');
+  assert.equal(f.run('gate-passed', { RUNS: '[]' }).outputs.first, 'false', '同一会话继续，首次评审者不再评');
 });

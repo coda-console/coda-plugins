@@ -14,6 +14,13 @@ const instructions = `你是这次开发流程的执行者，自己完成这一�
 用户勾选发布后，未自行填写发布说明时，由主 Agent 在「写发布说明」任务中准备。
 回报改了什么、为什么、实际跑了哪些验证及未验证部分。`;
 
+// 让执行者把目标分支合进自己的分支：试合并发现冲突和主 Agent 选「让执行者合并目标分支」用同一段说明。
+const syncText = (base, files = []) => `目标分支是 ${base}。${files.length ? `\n试合并发现这次提交与它冲突的文件：\n${files.map(file => `- ${file}`).join('\n')}` : ''}
+先 git fetch origin ${base}，再把 origin/${base} 合并（merge）进当前分支，不要变基：泳道只能快进，变基会改写已经在泳道里的提交，之后就合不进泳道了。
+解决冲突；数据库迁移等版本号和目标分支撞号时，顺延自己这边的。
+跑和冲突相关的测试后提交，只做这件事。回报冲突了哪些文件、各自怎么解决的、跑了什么。
+目标分支没有新提交时，直接回报不需要合并。`;
+
 // 用户开启时由主 Agent 写的第一项任务：备注第一行是功能名，其后是任务。
 if (action === 'brief') {
   const [first = '', ...rest] = (JSON.parse(env.BRIEF).note ?? '').trim().split(/\r?\n/);
@@ -69,6 +76,19 @@ const changes = () => {
   const line = ({ files, added, deleted }) => `${files} 个文件 +${added} -${deleted}`;
   return [`改动：${line(total)}`, ...Object.entries(areas).sort(([, a], [, b]) => b.added + b.deleted - a.added - a.deleted).map(([area, group]) => `- ${area}：${line(group)}`)].join('\n');
 };
+
+// 只试不合：merge-tree 不产生提交，不动任何引用、索引和工作区。干净返回 undefined，有冲突返回冲突的文件。
+const conflicts = () => {
+  git('fetch', 'origin', state.base);
+  const result = spawnSync('git', ['merge-tree', '--write-tree', '--name-only', '--no-messages', '-z', 'FETCH_HEAD', state.executor.head], { encoding: 'utf8' });
+  if (result.error) throw result.error;
+  if (result.status === 0) return;
+  if (result.status !== 1) { process.stderr.write(result.stderr); process.exit(result.status ?? 1); }
+  return [...new Set(result.stdout.split('\0').slice(1).filter(Boolean))];
+};
+
+// 这次交付的项目检查结果，每个检查一行：审查卡的「项目检查结果」和交给评审者的已有验证是同一段。
+const checks = () => state.checks?.head === state.executor.head ? state.checks.runs.map(r => `${r.workflow}: ${r.state} coda://workflow-runs/${r.runId}`).join('\n') || '此提交未声明项目检查流程。' : '此提交项目检查未通过。';
 
 // 「评审」各份的结果，只取评这次交付的。卡片正文的上限（4000 字）是协议对 BPMN 里字面的检查，展开后的不限；
 // 评审这一段也按这个数收着：放不下时每条只留严重程度、标题和位置，说明和评审原文写在产物里。
@@ -134,6 +154,7 @@ switch (action) {
     output('base', state.head);
     output('task', state.task);
     output('first', String(!state.reviewed));
+    output('checks', checks());
     state.reviewed = true;
     save();
     break;
@@ -147,7 +168,7 @@ switch (action) {
     break;
   }
   case 'review':
-    output('checks', state.checks?.head === state.executor.head ? state.checks.runs.map(r => `${r.workflow}: ${r.state} coda://workflow-runs/${r.runId}`).join('\n') || '此提交未声明项目检查流程。' : '此提交项目检查未通过。');
+    output('checks', checks());
     for (const [name, value] of Object.entries({ ...state.executor, lane: state.lane, feedback: state.feedback, returns: state.returns })) output(name, value);
     output('reviews', reviews());
     break;
@@ -159,16 +180,24 @@ switch (action) {
     if (blocked) state.feedback = blocked;
     else {
       state.choice = choice;
-      state.feedback = note;
+      state.feedback = choice === 'sync' ? `${syncText(state.base)}${note.trim() ? `\n\n主 Agent 的备注：\n${note}` : ''}` : note;
       if (choice === 'accept') state.report = note;
-      // 退回次数只数主 Agent 的「退回修改」；检查失败的自动退回和换人都不算。
+      // 退回次数只数主 Agent 的「退回修改」；检查失败的自动退回、换人和合并目标分支都不算。
       if (choice === 'revise') state.returns++;
     }
     save();
-    output('route', blocked ? 'review' : ['revise', 'swap'].includes(choice) ? choice : 'accept');
+    output('route', blocked ? 'review' : choice === 'sync' ? 'revise' : ['revise', 'swap'].includes(choice) ? choice : 'accept');
     break;
   }
   case 'accept': {
+    // 通过可以验收时先试合并目标分支：有冲突就不动泳道，把说明交给同一执行会话；「再派一项」不试。
+    const files = state.choice === 'accept' ? conflicts() : undefined;
+    if (files) {
+      state.feedback = syncText(state.base, files);
+      save();
+      output('route', 'sync');
+      break;
+    }
     git('fetch', 'origin', state.lane);
     git('switch', '-C', state.lane, 'FETCH_HEAD');
     // 顺序任务只能快进；Git 的错误会说明分叉，流程停在这里交回主 Agent。
@@ -273,7 +302,7 @@ switch (action) {
     if (result.status !== 0) {
       const failed = JSON.parse(gh('pr', 'view', state.pr, '--json', 'state,mergeable'));
       if (failed.state === 'OPEN' && failed.mergeable === 'CONFLICTING') {
-        state.feedback = `PR ${state.pr} 与目标分支 ${state.base} 存在合并冲突，提交 ${state.head}。\n请主 Agent 审查后用「退回修改」交给执行者：运行 git fetch origin ${state.base}，将最新目标分支合入当前执行分支并解冲突；迁移版本号等撞号要顺延，跑相关测试并提交。之后重新经过项目检查、审查、更新 PR、合并前检查和 GitHub 检查，再重新批准合并及部署、发布选项。`;
+        state.feedback = `PR ${state.pr} 与目标分支 ${state.base} 存在合并冲突，提交 ${state.head}。\n请主 Agent 审查后选「让执行者合并目标分支」（不是「退回修改」，不计退回），由同一个执行会话把最新目标分支合入并解冲突。之后重新经过项目检查、审查、更新 PR、合并前检查和 GitHub 检查，再重新批准合并及部署、发布选项。`;
         state.phase = 'check';
         save();
         output('route', 'conflict');
