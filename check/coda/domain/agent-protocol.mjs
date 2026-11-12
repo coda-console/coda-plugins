@@ -25,6 +25,11 @@ export const SIGNED_OUT = -32000;
 // the session, appended in one text block.
 export const takesInstructions = init => init?.agentCapabilities?.sessionCapabilities?.systemPrompt != null;
 export const systemPrompt = text => ({ mode: 'append', content: [{ type: 'text', text }] });
+// Without that entry, the first non-command prompt of a new native session carries the same instructions.
+export const INSTRUCTIONS_OPENING = '<coda-session-instructions>';
+export const instructionsBlock = text => ({ type: 'text', text: `${INSTRUCTIONS_OPENING}\n`
+  + 'Instructions from Coda, the client this session runs in, for the whole session. They are not part of the user\'s message.\n\n'
+  + `${text}\n</coda-session-instructions>\n` });
 // Steering (「插话」): declared beside the capabilities, as the extension has it, and sent only while a turn is under way.
 // The agent answers `STEERED` when the message joined the running turn and `NOT_STEERED` when the turn had ended; anything
 // else leaves the message of unknown fate.
