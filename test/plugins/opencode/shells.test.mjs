@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { OpenCodeShells } from '../../../plugins/opencode/agent/shells.mjs';
+import { CHECKED, OpenCodeShells } from '../../../plugins/opencode/agent/shells.mjs';
 import { shellEnvironment } from '../../../plugins/opencode/agent/shell-channel.mjs';
 import { providerEnvironment } from '../../../plugins/opencode/agent/providers.mjs';
 
@@ -123,6 +123,37 @@ test('missing native integration is explicit, but lookalike metadata from anothe
   update({ sessionUpdate: 'tool_call', toolCallId: 'call', name: 'shell' }); update(result);
   assert.deepEqual(f.messages.map(m => m.state), ['waiting', 'failed']);
   assert.match(f.messages.at(-1).detail, /未建立.*未确认/);
+});
+
+// OpenCode saying it is `version` to a Coda that takes what is not adapted when `taken`, a session opened then loaded again,
+// and another opened: what it says of them.
+function handshake(version, { taken = true } = {}) {
+  const said = [], b = new OpenCodeShells({ owns: () => true, say: m => said.push(m), interrupt: () => {} });
+  b.fromCoda({ jsonrpc: '2.0', id: 0, method: 'initialize', params: { clientCapabilities: taken ? { _meta: { coda: { unrecognized: {} } } } : {} } });
+  b.fromAgent({ jsonrpc: '2.0', id: 0, result: { protocolVersion: 1, agentInfo: { name: 'OpenCode', version } } });
+  b.fromCoda({ jsonrpc: '2.0', id: 1, method: 'session/new', params: { cwd: '/work', mcpServers: [] } });
+  b.fromAgent({ jsonrpc: '2.0', id: 1, result: { sessionId: 'root' } });
+  b.fromCoda({ jsonrpc: '2.0', id: 2, method: 'session/load', params: { sessionId: 'root', cwd: '/work', mcpServers: [] } });
+  b.fromAgent({ jsonrpc: '2.0', id: 2, result: {} });
+  b.fromCoda({ jsonrpc: '2.0', id: 3, method: 'session/new', params: { cwd: '/work', mcpServers: [] } });
+  b.fromAgent({ jsonrpc: '2.0', id: 3, result: { sessionId: 'other' } });
+  return said;
+}
+
+// Red if the version checked were reported, or reporting began to say anything else.
+test('OpenCode of the version checked reports nothing unadapted', () => {
+  assert.equal(CHECKED, '2.1.4');
+  assert.deepEqual(handshake('2.1.4'), []);
+});
+
+// Red if another version went unsaid again, were said twice for a session, to a Coda that does not take it, or without its
+// version and what the user may not see.
+test('another version of OpenCode is said once a session, by name, with its version and what may go unseen', () => {
+  const said = handshake('2.2.7');
+  assert.deepEqual(said.map(m => [m.method, m.params.sessionId, m.params.kind, m.params.name, m.params.lost]),
+    [['_coda/unrecognized', 'root', 'output', 'plugin:version', true], ['_coda/unrecognized', 'other', 'output', 'plugin:version', true]]);
+  assert.equal(said[0].params.detail, '这个版本的 OpenCode（2.2.7）没有核对过（核对过的是 2.1.4），后台命令在底部可能看不见');
+  assert.deepEqual(handshake('2.2.7', { taken: false }), []);
 });
 
 test('native plugin injection preserves JSONC, user plugins, and one-pass template expansion', () => {

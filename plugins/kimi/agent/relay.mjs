@@ -10,7 +10,9 @@ import { kimiDisplayNames } from './display.mjs';
 // Nothing waits on a look longer than `hold`. CODA_DISABLE_RUNTIME_PATCHES=kimi leaves a plain relay, but for Coda's session
 // instructions, which go in front of a new session's first prompt either way (instructions.mjs). A known quota error in
 // a prompt's answer is classified at this boundary (errors.mjs), without retrying or changing other errors; an `end_turn`
-// Kimi gave to a prompt whose turn its files say failed is passed on as that failure.
+// Kimi gave to a prompt whose turn its files say failed is passed on as that failure. A Kimi whose files are not as understood
+// (another version, another layout) is relayed as it would be anyway, but said so once a session and way, to a Coda that takes
+// it (`_coda/unrecognized`, docs/agent-protocol.md「没适配的东西」): the user is told what goes unseen.
 import { SessionInstructions } from './instructions.mjs';
 import { classifyKimiError, failedAnswer } from './errors.mjs';
 import { SUPPORTED, kimiSession } from './observe.mjs';
@@ -20,6 +22,9 @@ import { KimiTurns } from './turns.mjs';
 const record = value => value && typeof value === 'object' && !Array.isArray(value);
 // What Kimi says in a turn, as opposed to what it says of the session.
 const SAID = new Set(['agent_message_chunk', 'agent_thought_chunk', 'tool_call', 'tool_call_update', 'plan']);
+// Each way Kimi's files are not as understood (observe.mjs), by the name it is told by.
+const UNREAD = { 'files:version': '这个版本的 Kimi 没有核对过', 'files:state.version': '会话的 state.json 版本对不上',
+  'files:wire.protocol_version': '主 Agent 的 wire 协议版本对不上', 'files:layout': '会话文件的布局对不上' };
 
 export class KimiRelay {
   // `say`: a message to Coda; `tell`: one to Kimi.
@@ -29,6 +34,8 @@ export class KimiRelay {
     // Coda's requests whose answers are read here, by id; the prompts going, each with when it was sent and whether Kimi
     // said nothing in it yet.
     this.asked = new Map(); this.prompts = new Set(); this.sent = new Map();
+    // Whether Coda takes what is not understood, and what it was told, by session and name.
+    this.taken = false; this.told = new Set();
     this.version = null; this.session = null; this.waits = null; this.turns = null; this.content = []; this.instructions = new SessionInstructions();
     // What Kimi said, passed on in order behind any message that waits for a look.
     this.queue = Promise.resolve();
@@ -39,8 +46,10 @@ export class KimiRelay {
     if (coda) { this.queue = this.queue.then(() => this.say(coda)); return; }
     message = agent;
     if (!this.plain && 'id' in message && typeof message.method === 'string') {
-      if (message.method === 'initialize') this.asked.set(message.id, { initialize: true });
-      else if (['session/new', 'session/load'].includes(message.method)) this.asked.set(message.id, { cwd: message.params?.cwd, sessionId: message.params?.sessionId });
+      if (message.method === 'initialize') {
+        this.asked.set(message.id, { initialize: true });
+        this.taken = record(message.params?.clientCapabilities?._meta?.coda?.unrecognized);
+      } else if (['session/new', 'session/load'].includes(message.method)) this.asked.set(message.id, { cwd: message.params?.cwd, sessionId: message.params?.sessionId });
       else if (message.method === 'session/prompt') {
         this.asked.set(message.id, { prompt: true }); this.prompts.add(message.id); this.sent.set(message.id, { at: Date.now(), quiet: true });
       }
@@ -81,10 +90,19 @@ export class KimiRelay {
   }
   begin(sessionId, cwd) {
     this.unfollow();
-    this.session = this.makeSession({ sessionId, cwd, env: this.env, version: this.version, startedAt: this.startedAt });
+    this.session = this.makeSession({ sessionId, cwd, env: this.env, version: this.version, startedAt: this.startedAt,
+      unread: reason => this.unread(sessionId, reason) });
     this.waits = new KimiWaits({ sessionId, startedAt: this.startedAt });
     this.turns = new KimiTurns({ sessionId, startedAt: this.startedAt });
     this.observe();
+  }
+  // A look at the session's files that found them not as understood (`name`, observe.mjs), told once.
+  unread(sessionId, name) {
+    const key = `${sessionId}\n${name}`;
+    if (!Object.hasOwn(UNREAD, name) || !this.taken || this.told.has(key)) return;
+    this.told.add(key);
+    this.say({ jsonrpc: '2.0', method: '_coda/unrecognized', params: { sessionId, kind: 'output', name, lost: true,
+      detail: `Kimi ${this.version ?? '（版本未知）'}：${UNREAD[name]}（核对过的是 ${SUPPORTED}），后台任务、子 Agent、定时看不见，失败的一轮可能显示成成功` } });
   }
   // Waits, at most `hold`, for a look at the files: one begun after this, when `fresh`.
   look({ fresh = false } = {}) {
