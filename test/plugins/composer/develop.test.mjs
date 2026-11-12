@@ -484,7 +484,7 @@ test('开发流程定义、回路、检查提交与部署发布选择符合运�
   assert.match(nodes.review.documentation[0].text, /git diff \{\{report.lane\}\}\.\.\.\{\{report.head\}\}/);
   assert.equal(nodes.review.assignee, undefined, '默认交给发起会话 Agent');
   assert.equal(nodes.device.assignee, 'user'); assert.equal(nodes.approve.assignee, 'user');
-  for (const [value, target] of [['review', 'report'], ['revise', 'revise'], ['accept', 'accept']]) assert.equal(route('how', { decide: { route: value } }), target);
+  for (const [value, target] of [['review', 'report'], ['revise', 'revise'], ['swap', 'swap'], ['accept', 'accept']]) assert.equal(route('how', { decide: { route: value } }), target);
   for (const [value, target] of [['execute', 'execute'], ['pr', 'pr'], ['preview', 'acceptance']]) assert.equal(route('after-accept', { accept: { route: value } }), target);
   assert.deepEqual(values(nodes.preview).map(v => [v.id, v.name]), [['installed', '已装好'], ['review', '回到审查']]);
   assert.match(nodes.preview.documentation[0].text, /preview-result.feedback/);
@@ -959,4 +959,92 @@ test('发现的标题和位置里的换行压成空格，说明原样', async t 
   const card = f.run('review', { REVIEWS: JSON.stringify(reviews) }).outputs.reviews;
   assert.equal(card, `评审者（a1）：要改\n- [P2] 标题 第二行（a.mjs:1 b.mjs:2）\n  说明\n  第二行\n评审原文：${path}`);
   assert.ok(readFileSync(path, 'utf8').startsWith('评审者（a1）：要改\n- [P2] 标题 第二行（a.mjs:1 b.mjs:2）\n  说明\n  第二行'));
+});
+
+// 备用执行者：审查卡上由主 Agent 决定换不换；换了是新开会话从泳道当前提交重做同一项，退回次数只数「退回修改」。
+test('备用执行者不设默认可不填；「换备用执行者重做」新开会话回 gate，「再派一项」仍用执行者；审查卡显示退回次数', async () => {
+  const { process, nodes, route, next } = await reviewing();
+  const inputs = Object.fromEntries((process.extensionElements?.values ?? []).map(v => [v.name, v]));
+  const backup = inputs.executor2;
+  assert.deepEqual([backup.type, backup.label, backup.default, backup.defaultFrom, backup.required], ['agent', '备用执行者', undefined, undefined, undefined]);
+  const choices = nodes.review.extensionElements.values;
+  assert.deepEqual(choices.map(v => [v.id, v.name]), [['revise', '退回修改'], ['next', '通过，再派一项'], ['swap', '换备用执行者重做'], ['accept', '通过，可以验收']]);
+  assert.equal(route('how', { decide: { route: 'swap' } }), 'swap');
+  assert.equal(next('swap'), 'gate', '换人后的交付照常推送、检查、评审、审查');
+  assert.match(nodes.swap.script, /develop\.mjs" swap/);
+  const env = node => Object.fromEntries(node.extensionElements.values.map(v => [v.name, v.value]));
+  assert.equal(env(nodes.swap).EXECUTOR, '=inputs.executor2');
+  assert.doesNotMatch(env(nodes.execute).EXECUTOR, /executor2/, '再派一项仍用开工时的执行者');
+  for (const [executor2, expected] of [[null, false], [{ agent: 'a2' }, true]]) assert.equal(evaluate(env(nodes.decide).BACKUP.slice(1), { inputs: { executor2 } }).value, expected);
+  const card = context => nodes.review.documentation[0].text.replace(/\{\{([\s\S]*?)\}\}/g, (_, expression) => evaluate(expression, context).value ?? '');
+  const report = { session: 's', branch: 'b', head: 'h', lane: 'l', checks: '', answer: '', reviews: '', feedback: '', returns: '2' };
+  const none = card({ report, inputs: { executor2: null } }), filled = card({ report, inputs: { executor2: { agent: 'a2', model: 'm2' } } });
+  assert.ok(none.includes('这一项任务已退回 2 次'));
+  assert.ok(none.includes('备用执行者：未指定，不能换人'));
+  assert.ok(filled.includes('备用执行者：a2 · m2'));
+  assert.match(nodes.review.documentation[0].text, /选择「换备用执行者重做」时备注必填/);
+});
+
+test('换备用执行者重做：新开会话从泳道当前提交开工，带任务书、备注和上一位的分支与提交；之后退回续新会话，退回次数只数退回修改', t => {
+  const f = fixture(t, false); f.run('lane'); f.task('code', 'first'); f.run('execute');
+  const laneHead = f.state().head, first = f.state().executor;
+  const returns = () => f.run('review').outputs.returns;
+  const passed = () => f.run('gate-passed', { RUNS: '[]' }).outputs.first;
+  assert.equal(returns(), '0');
+  assert.equal(passed(), 'true');
+  assert.equal(f.review('revise', '改一下'), 'revise'); assert.equal(returns(), '1');
+  f.task('code', 'second'); f.run('revise');
+  assert.equal(f.state().executor.session, first.session);
+  const previous = f.state().executor;
+  assert.equal(f.run('gate-failed').outputs.route, 'revise'); assert.equal(returns(), '1', '检查失败的自动退回不算');
+  f.task('code', 'third'); f.run('revise');
+  const before = f.state().executor;
+
+  const swap = f.run('decide', { REVIEW: JSON.stringify({ choice: 'swap', note: '上一位绕远了，接手的人只改输入框' }), BACKUP: 'true' }).outputs.route;
+  assert.equal(swap, 'swap');
+  f.task('redo', 'redo'); f.run('swap', { EXECUTOR: JSON.stringify({ agent: 'backup', model: 'm2', options: { fast: true } }) });
+  const call = f.calls('agent').at(-1), swapped = f.state().executor;
+  assert.deepEqual(call.args.slice(0, -2), ['--commit', laneHead, '--title', '修好输入框', '--agent', 'backup', '--model', 'm2', '--option', 'fast=true', '--json'], '新开会话，不是续旧会话');
+  assert.notEqual(swapped.session, before.session);
+  assert.equal(f.git('rev-parse', `${swapped.head}^`), laneHead, '上一位没被接受的提交不带过来');
+  for (const text of ['不再委派', '第一项：修好输入框', '上一位绕远了，接手的人只改输入框', before.branch, before.head, '可以参考，也可以不用']) assert.ok(call.prompt.includes(text), text);
+  assert.ok(!call.prompt.includes(previous.head), '只给上一位最后的提交');
+  assert.equal(returns(), '1', '换人不算退回');
+  assert.equal(passed(), 'true', '换人后的第一次交付算这项任务的第一次');
+  assert.equal(passed(), 'false');
+
+  assert.equal(f.review('revise', '再改改'), 'revise'); assert.equal(returns(), '2');
+  f.task('redo', 'redo again'); f.run('revise');
+  assert.deepEqual(f.calls('agent').at(-1).args.slice(0, -2), ['--continue', swapped.session, '--json'], '之后的退回续新会话');
+
+  f.review('next', '第二项：补齐状态'); assert.equal(f.run('accept').outputs.route, 'execute');
+  f.task('two', 'next task'); f.run('execute');
+  assert.deepEqual(f.calls('agent').at(-1).args.slice(0, 6), ['--commit', f.state().head, '--title', '修好输入框', '--agent', 'codex'], '再派一项用执行者');
+  assert.equal(returns(), '0', '新一项任务归零');
+});
+
+test('没填备用执行者时选「换备用执行者重做」：回到审查卡说明，不开会话、运行不失败；没写备注同样回去', t => {
+  const f = fixture(t, false); f.run('lane'); f.task('code', 'first'); f.run('execute');
+  const executor = f.state().executor, calls = f.calls('agent').length;
+  const decide = (note, BACKUP) => f.run('decide', { REVIEW: JSON.stringify({ choice: 'swap', note }), BACKUP }).outputs.route;
+  assert.equal(decide('换人', 'false'), 'review');
+  assert.match(f.run('review').outputs.feedback, /没有填备用执行者/);
+  assert.equal(decide('  ', 'true'), 'review');
+  assert.match(f.run('review').outputs.feedback, /换备用执行者重做必须在备注中写/);
+  assert.equal(f.calls('agent').length, calls);
+  assert.deepEqual(f.state().executor, executor);
+  assert.equal(f.run('review').outputs.returns, '0');
+});
+
+test('换人后的第一次交付，首次评审者会评', async t => {
+  const { deliver } = await reviewing();
+  const f = fixture(t, false); f.run('lane'); f.task('code', 'first'); f.run('execute');
+  f.run('gate-passed', { RUNS: '[]' });
+  f.run('decide', { REVIEW: JSON.stringify({ choice: 'swap', note: '换人' }), BACKUP: 'true' });
+  f.task('redo', 'redo'); f.run('swap', { EXECUTOR: JSON.stringify({ agent: 'backup' }) });
+  const passed = f.run('gate-passed', { RUNS: '[]' }).outputs;
+  const once = { agent: 'a3' };
+  const { calls } = deliver({ inputs: { reviewer: null, reviewer2: null, reviewerOnce: once }, gate: { head: f.state().executor.head }, 'gate-passed': { ...passed, first: passed.first === 'true' } },
+    { reviewerOnce: { decision: 'APPROVE', line: 'ok', findings: '[]', report: 'r' } });
+  assert.deepEqual(calls, [{ called: 'review-commit', base: f.state().head, head: f.state().executor.head, task: f.state().task, reviewer: once }]);
 });

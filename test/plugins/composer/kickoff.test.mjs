@@ -31,7 +31,7 @@ test('开工卡的三条答复：调用简易开发、调用监督开发、先�
   assert.equal(process.name, '开工');
   assert.equal(process.kind, undefined, '入口不是一种开发实现');
   const inputs = Object.fromEntries(values(process).map(v => [v.name, v]));
-  assert.deepEqual(Object.keys(inputs), ['title', 'goal', 'way', 'devices', 'device', 'executor', 'reviewer', 'reviewer2', 'reviewerOnce', 'branch', 'base']);
+  assert.deepEqual(Object.keys(inputs), ['title', 'goal', 'way', 'devices', 'device', 'executor', 'executor2', 'reviewer', 'reviewer2', 'reviewerOnce', 'branch', 'base']);
   for (const name of ['title', 'goal']) assert.equal(inputs[name].required, true);
   assert.equal(inputs.way.default, 'develop');
   assert.deepEqual([inputs.devices.type, inputs.devices.default], ['boolean', 'false']);
@@ -62,6 +62,7 @@ test('开工卡的三条答复：调用简易开发、调用监督开发、先�
     devices: '=card.options.devices',
     device: '=inputs.device',
     executor: '=inputs.executor',
+    executor2: '=inputs.executor2',
     reviewer: '=inputs.reviewer',
     reviewer2: '=inputs.reviewer2',
     reviewerOnce: '=inputs.reviewerOnce',
@@ -128,20 +129,20 @@ test('两个开发流程声明 coda:kind="develop"，简易开发的第一张任
   assert.doesNotMatch(simpleDefinition.nodes.report.documentation[0].text, /用户在这个会话里开启了/);
 });
 
-test('评审者的三个位置：不设默认、可不填，原样交给监督开发；开工卡只读列出执行者与评审者', async () => {
+test('备用执行者与评审者的三个位置：不设默认、可不填，原样交给监督开发；开工卡只读列出执行者、备用执行者与评审者', async () => {
   const { process, nodes, values } = await definition(workflow, 'kickoff');
   const inputs = Object.fromEntries(values(process).map(v => [v.name, v]));
-  for (const [name, label] of [['reviewer', '评审者'], ['reviewer2', '第二评审者'], ['reviewerOnce', '首次评审者']]) {
+  for (const [name, label] of [['executor2', '备用执行者'], ['reviewer', '评审者'], ['reviewer2', '第二评审者'], ['reviewerOnce', '首次评审者']]) {
     const input = inputs[name];
     assert.deepEqual([input.type, input.label, input.default, input.defaultFrom, input.required], ['agent', label, undefined, undefined, undefined], name);
   }
   const card = nodes.card.documentation[0].text;
   const expand = context => card.replace(/\{\{([\s\S]*?)\}\}/g, (_, expression) => evaluate(expression, context).value ?? '');
   const base = { title: '修好输入框', goal: '目标', way: 'develop', devices: false, device: '' };
-  const none = expand({ inputs: { ...base, executor: null, reviewer: null, reviewer2: null, reviewerOnce: null } });
-  for (const line of ['- 执行者：发起会话的 Agent', '- 评审者（每次交付都评）：未指定', '- 第二评审者（每次交付都评）：未指定', '- 首次评审者（只评每项任务第一次通过项目检查的那次交付）：未指定']) assert.ok(none.includes(line), line);
-  const filled = expand({ inputs: { ...base, executor: { agent: 'a1' }, reviewer: { agent: 'a2', model: 'm2', effort: 'high' }, reviewer2: null, reviewerOnce: { agent: 'a3', effort: 'low' } } });
-  for (const line of ['- 执行者：a1', '- 评审者（每次交付都评）：a2 · m2 · high', '- 第二评审者（每次交付都评）：未指定', '- 首次评审者（只评每项任务第一次通过项目检查的那次交付）：a3 · low']) assert.ok(filled.includes(line), line);
+  const none = expand({ inputs: { ...base, executor: null, executor2: null, reviewer: null, reviewer2: null, reviewerOnce: null } });
+  for (const line of ['- 执行者：发起会话的 Agent', '- 备用执行者（主 Agent 审查时可换它重做当前这项）：未指定', '- 评审者（每次交付都评）：未指定', '- 第二评审者（每次交付都评）：未指定', '- 首次评审者（只评每项任务第一次通过项目检查的那次交付）：未指定']) assert.ok(none.includes(line), line);
+  const filled = expand({ inputs: { ...base, executor: { agent: 'a1' }, executor2: { agent: 'a4', model: 'm4' }, reviewer: { agent: 'a2', model: 'm2', effort: 'high' }, reviewer2: null, reviewerOnce: { agent: 'a3', effort: 'low' } } });
+  for (const line of ['- 执行者：a1', '- 备用执行者（主 Agent 审查时可换它重做当前这项）：a4 · m4', '- 评审者（每次交付都评）：a2 · m2 · high', '- 第二评审者（每次交付都评）：未指定', '- 首次评审者（只评每项任务第一次通过项目检查的那次交付）：a3 · low']) assert.ok(filled.includes(line), line);
   assert.match(card, /卡上不能改，要换人选「先别」并在附言里说明/);
   // 流程只定位置：谁来评由发起的 Agent 填，流程里不写任何 Agent 或模型。
   for (const xml of [workflow, develop]) assert.doesNotMatch(xml, /codex|claude|kimi|grok|opencode|cursor|gpt|sonnet|opus|haiku|gemini/i);

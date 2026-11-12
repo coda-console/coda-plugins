@@ -93,20 +93,27 @@ const reviews = () => {
 };
 
 switch (action) {
+  // 换备用执行者（swap）与执行一项任务一样新开会话、从泳道当前提交开工，接手的是同一项任务：上一位没被接受的提交不带过来，只告诉它在哪。
   case 'execute':
+  case 'swap':
   case 'revise': {
     const prompt = join(env.RUNNER_TEMP, 'task.md');
-    writeFileSync(prompt, `${instructions}\n\n${action === 'revise' ? state.feedback : state.task}\n`);
-    const args = action === 'revise' ? ['--continue', state.executor.session] : ['--commit', state.head, '--title', state.title];
+    const text = action === 'revise' ? state.feedback : action === 'execute' ? state.task
+      : `${state.task}\n\n主 Agent 把这一项换给你重做：\n${state.feedback}\n\n上一位执行者的分支 ${state.executor.branch}、提交 ${state.executor.head} 在本机仓库可读，可以参考，也可以不用。`;
+    writeFileSync(prompt, `${instructions}\n\n${text}\n`);
+    const fresh = action !== 'revise';
+    const args = fresh ? ['--commit', state.head, '--title', state.title] : ['--continue', state.executor.session];
     // 执行者是一组 Agent 选择（流程参数的 agent 类型）：没选的模型、强度、模式用 Agent 的默认值。
-    if (action === 'execute') {
+    if (fresh) {
       const { options = {}, ...chosen } = JSON.parse(env.EXECUTOR);
       for (const key of ['agent', 'model', 'effort', 'mode']) if (chosen[key]) args.push(`--${key}`, chosen[key]);
       for (const [id, value] of Object.entries(options)) args.push('--option', `${id}=${value}`);
     }
     state.executor = JSON.parse(command('coda-agent', [...args, '--json', '--prompt-file', prompt]));
     state.feedback = '';
-    if (action === 'execute') { state.failures = []; state.reviewed = false; }
+    // 新会话的第一次交付算这项任务的第一次；退回次数只在新的一项任务开始时归零。
+    if (fresh) { state.failures = []; state.reviewed = false; }
+    if (action === 'execute') state.returns = 0;
     save();
     break;
   }
@@ -140,20 +147,24 @@ switch (action) {
   }
   case 'review':
     output('checks', state.checks?.head === state.executor.head ? state.checks.runs.map(r => `${r.workflow}: ${r.state} coda://workflow-runs/${r.runId}`).join('\n') || '此提交未声明项目检查流程。' : '此提交项目检查未通过。');
-    for (const [name, value] of Object.entries({ ...state.executor, lane: state.lane, feedback: state.feedback })) output(name, value);
+    for (const [name, value] of Object.entries({ ...state.executor, lane: state.lane, feedback: state.feedback, returns: state.returns })) output(name, value);
     output('reviews', reviews());
     break;
   case 'decide': {
     const { choice, note = '' } = JSON.parse(env.REVIEW);
-    const missing = !note.trim();
-    if (missing) state.feedback = { revise: '退回修改必须在备注中写具体意见。', next: '通过，再派一项必须在备注中写下一项任务。', accept: '通过，可以验收必须在备注中写给用户的改动汇报。' }[choice];
+    // 引擎不能按条件隐藏答复：没填备用执行者时「换备用执行者重做」照样能选，选了回到审查卡说明。
+    const blocked = !note.trim() ? { revise: '退回修改必须在备注中写具体意见。', next: '通过，再派一项必须在备注中写下一项任务。', accept: '通过，可以验收必须在备注中写给用户的改动汇报。', swap: '换备用执行者重做必须在备注中写为什么换、接手的人要注意什么。' }[choice]
+      : choice === 'swap' && env.BACKUP !== 'true' ? '没有填备用执行者，不能换人重做；请改选别的答复。' : '';
+    if (blocked) state.feedback = blocked;
     else {
       state.choice = choice;
       state.feedback = note;
       if (choice === 'accept') state.report = note;
+      // 退回次数只数主 Agent 的「退回修改」；检查失败的自动退回和换人都不算。
+      if (choice === 'revise') state.returns++;
     }
     save();
-    output('route', missing ? 'review' : choice === 'revise' ? 'revise' : 'accept');
+    output('route', blocked ? 'review' : ['revise', 'swap'].includes(choice) ? choice : 'accept');
     break;
   }
   case 'accept': {
