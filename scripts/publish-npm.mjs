@@ -33,6 +33,22 @@ export function published(spec, run = spawnSync) {
   throw new Error(`读取 ${spec} 失败：${result.error?.message ?? result.stderr ?? result.stdout}`);
 }
 
+// npm's own words for a version that is already there; a bare E403 may be missing permission and must still fail.
+const EXISTS = /Cannot publish over previously staged version|You cannot publish over the previously published versions?/;
+
+// The registry can lag behind a version published moments ago, so `published` says absent. If npm then refuses it as existing,
+// it is published; any other failure stops the release.
+export function publish(spec, cwd, run = spawnSync) {
+  const result = run('npm', ['publish', '--access=public', '--ignore-scripts', `--registry=${REGISTRY}`], { cwd, encoding: 'utf8' });
+  if (result.stdout) process.stdout.write(result.stdout);
+  if (result.stderr) process.stderr.write(result.stderr);
+  if (result.status === 0) return false;
+  const exists = EXISTS.exec(`${result.stderr ?? ''}\n${result.stdout ?? ''}`);
+  if (!exists) throw new Error(`发布 ${spec} 失败：${result.error?.message ?? `npm 退出码 ${result.status}`}`);
+  console.log(`${spec} 已在 npm 上（${exists[0]}），当作已发布`);
+  return true;
+}
+
 const npm = (args, cwd) => execFileSync('npm', [...args, `--registry=${REGISTRY}`], { cwd, stdio: 'inherit' });
 
 async function main() {
@@ -46,7 +62,7 @@ async function main() {
     }
     if (!bootstrap) {
       if (published(`${name}@${version}`)) { console.log(`${name}@${version} 已发布，跳过`); continue; }
-      npm(['publish', '--access=public', '--ignore-scripts'], dir);
+      publish(`${name}@${version}`, dir);
       continue;
     }
     if (!published(name)) {

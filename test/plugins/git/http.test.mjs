@@ -120,3 +120,24 @@ test('浅克隆源仍可提供 v2 fetch', async t => {
   assert.equal(await command(target, ['rev-parse', 'main']), await command(dir, ['rev-parse', 'HEAD']));
   await command(target, ['fsck', '--full']);
 });
+
+test('拒绝取源码的请求时记一行日志：状态、原因、源与三个请求头，不含鉴权头；正常请求不记', async t => {
+  const dir = await fixture(t), { base } = await server(t, dir);
+  const logged = []; t.mock.method(console, 'error', (...args) => logged.push(args.join(' ')));
+  const send = (path, headers) => new Promise((resolve, reject) => {
+    const req = request(`${base}${path}`, { method: 'POST', headers }, res => { res.resume(); res.on('end', () => resolve(res.statusCode)); });
+    req.on('error', reject); req.end();
+  });
+  const upload = { 'Git-Protocol': 'version=2', 'Content-Type': 'application/x-git-upload-pack-request' };
+  assert.equal(await send('/repos/source/git-upload-pack', { 'Git-Protocol': 'version=2', 'Content-Type': 'text/plain', Authorization: 'Bearer top-secret', Cookie: 'sid=top-secret' }), 415);
+  assert.deepEqual(logged, ['[git http] 415 需要 upload-pack 请求 POST source=source content-type="text/plain" content-encoding=无 git-protocol="version=2"']);
+  logged.length = 0;
+  assert.equal(await send('/repos/source/git-upload-pack', { ...upload, 'Content-Encoding': 'gzip' }), 415);
+  assert.deepEqual(logged, ['[git http] 415 不接受压缩请求体 POST source=source content-type="application/x-git-upload-pack-request" content-encoding="gzip" git-protocol="version=2"']);
+  logged.length = 0;
+  assert.equal(await send('/repos/source/HEAD', {}), 404);
+  assert.deepEqual(logged, ['[git http] 404 不允许的 Git 路径 POST path="/repos/source/HEAD" content-type=无 content-encoding=无 git-protocol=无']);
+  logged.length = 0;
+  assert.equal((await raw(base, '/repos/source/info/refs?service=git-upload-pack')).status, 200);
+  assert.deepEqual(logged, []);
+});

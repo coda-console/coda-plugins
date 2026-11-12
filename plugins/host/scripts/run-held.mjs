@@ -10,7 +10,7 @@
 import { spawn, execFile } from 'node:child_process';
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { constants } from 'node:os';
+import { constants, hostname } from 'node:os';
 import { promisify } from 'node:util';
 import { keychainPromptSuffix } from '../lib/keychain-prompt.mjs';
 import { processTree, signalTree } from '../lib/process-tree.mjs';
@@ -35,6 +35,8 @@ if (!(timeoutMinutes > 0 && timeoutMinutes <= 1440)) {
   stopReason = `总时限须在 0～1440 分钟之间：${timeout ?? ''}`;
   await done(2);
 } else {
+  // Not the command's output: written before it starts, so it neither resets nor postpones the idle timer.
+  process.stdout.write(`在 ${hostname()} 上执行\n`);
   const child = spawn(env.SHELL || '/bin/sh', ['-c', command], { env, stdio: ['inherit', 'pipe', 'pipe'] });
   // Stop the entire command tree, with what it started in groups of its own (lib/process-tree.mjs), retaining the same
   // five-minute cleanup grace as the workflow's cancelTimeout. The first reason wins.

@@ -4,7 +4,7 @@
   "displayName": "Git 源与快照",
   "description": "登记本机 Git 源，提供只读快照",
   "icon": { "symbol": "arrow.triangle.branch", "color": "orange" },
-  "version": "0.4.0",
+  "version": "0.4.1",
   "categories": ["机器与资源"],
   "type": "module",
   "main": "main.mjs",
