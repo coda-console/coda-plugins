@@ -1463,6 +1463,7 @@ test('a session that cannot compact now, or whose compaction fails or compacts n
 const unregisteredTurn = c => [
   system('brand_new', { content: '新的提示' }), system('brand_new', { content: '又一条' }), { type: 'new_kind', data: 1 },
   system('hook_started', { hook_id: 'h' }), { type: 'tool_progress', tool_use_id: 't' }, system('post_turn_summary'),
+  system('dev_intent', { kind: 'ios_app', trigger: 'xcode_project' }), { type: 'command_lifecycle', command_uuid: 'c', state: 'queued' },
   { type: 'assistant', message: { id: 'm1', content: [{ type: 'text', text: '说话' }, { type: 'novel', text: '新块里的话' }, { type: 'opaque' }, { type: 'redacted_thinking', data: 'x' }] } },
   { type: 'user', message: { content: [{ type: 'mystery', content: [{ type: 'text', text: '用户块的字' }] }, { type: 'image', source: {} }] } },
   { type: 'result', subtype: 'error_new_kind', is_error: true, errors: ['新的失败'], user_message_uuid: c.query.inputId }];

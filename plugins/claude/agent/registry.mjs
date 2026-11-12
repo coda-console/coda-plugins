@@ -59,8 +59,10 @@ export const MESSAGES = {
   'system/post_turn_summary': internal,
   'system/task_summary': internal,
   'system/session_metadata': internal,
+  'system/dev_intent': internal,
   active_goal: internal,
   autocompact_state: internal,
+  command_lifecycle: internal,
 };
 
 const results = hidden('服务端工具的结果，给模型读的');
