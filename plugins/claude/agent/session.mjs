@@ -103,7 +103,7 @@ export class ClaudeSession {
           agentCapabilities: { loadSession: true, sessionCapabilities: { additionalDirectories: {}, systemPrompt: {} }, _meta: { coda: { waits: {}, compact: {} } } },
           _meta: { steering: { supported: true } } };
       })
-      // Keep the existing parsers for Coda's session requests; stable v1 field preservation is checked over the wire.
+      // Read these requests as sent: the SDK's own parsers drop fields its schema does not name.
       .onRequest('session/new', params => params ?? {}, ({ params }) => this.open(params))
       .onRequest('session/load', params => params ?? {}, ({ params }) => this.open(params, params.sessionId))
       .onRequest('session/set_config_option', ({ params }) => this.configure(params.configId, params.value))
