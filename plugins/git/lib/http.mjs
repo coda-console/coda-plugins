@@ -52,15 +52,15 @@ export function reply(res, status, value) {
   res.end(JSON.stringify(typeof value?.error === 'string' ? { ...value, error: { message: value.error } } : value));
 }
 
-const PATH = /^\/repos\/([a-zA-Z0-9_-]{1,100})\/(info\/refs\?service=git-upload-pack|git-upload-pack)$/;
+const ROUTE = /^\/repos\/([a-zA-Z0-9_-]{1,100})\/(info\/refs\?service=git-upload-pack|git-upload-pack)$/;
 
 export function smartHTTP({ lookup, environment }) {
   const children = new Set();
-  // A rejected request is logged once: status, reason, method, source (the raw path if it is not one), and the three headers
+  // A request ending in 4xx or 5xx is logged once: status, reason, method, source (the raw path if it is not one), and the three headers
   // that decide it. Never the authorization header, cookies or the body.
   const send = (req, res, status, value) => {
-    if (status >= 400 && status < 500) {
-      const path = PATH.exec(req.url);
+    if (status >= 400) {
+      const path = ROUTE.exec(req.url);
       const header = name => req.headers[name] === undefined ? '无' : JSON.stringify(req.headers[name]);
       console.error('[git http]', status, value.error, req.method, path ? `source=${path[1]}` : `path=${JSON.stringify(req.url)}`,
         `content-type=${header('content-type')}`, `content-encoding=${header('content-encoding')}`, `git-protocol=${header('git-protocol')}`);
@@ -72,7 +72,7 @@ export function smartHTTP({ lookup, environment }) {
     try {
       if (!caller?.local && !['client', 'backend'].includes(caller?.role)) return send(req, res, 403, { error: '需要 Coda 鉴权身份' });
       // Match the raw URL. Do not normalize encoded slashes, dot segments, extra queries or absolute paths.
-      const match = PATH.exec(req.url);
+      const match = ROUTE.exec(req.url);
       if (!match) return send(req, res, req.url.includes('receive-pack') ? 403 : 404, { error: '不允许的 Git 路径' });
       const discovery = match[2].startsWith('info/');
       if (req.method !== (discovery ? 'GET' : 'POST')) return send(req, res, 405, { error: '不允许的方法' });

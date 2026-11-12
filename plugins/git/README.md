@@ -70,7 +70,7 @@ git -c protocol.version=2 fetch "$AUTHENTICATED_GIT_URL" \
 
 仅允许 GET `info/refs?service=git-upload-pack` 和 POST `git-upload-pack`，必须带 `Git-Protocol: version=2`；映射为 CGI `HTTP_GIT_PROTOCOL`。完整读入请求（最多 32 MiB、不接受压缩请求体），再送 `git http-backend`；输入写完才转发 CGI 响应头，响应 pack 按背压流式发送。客户端断开、服务注销或宿主结束时停止子进程。
 
-以 4xx 拒绝请求时，插件日志记一行 `[git http]`：状态码、拒绝原因（即回给对方的那句）、请求方法、路径里的源 id（路径不合规则时记原始路径），以及请求头 `content-type`、`content-encoding`、`git-protocol` 的实际值（没有写「无」）。不记鉴权头、Cookie 和请求体；成功的请求不记；检查本身不变。
+以 4xx、5xx 结束时，插件日志记一行 `[git http]`：状态码、拒绝原因（即回给对方的那句）、请求方法、路径里的源 id（路径不合规则时记原始路径），以及请求头 `content-type`、`content-encoding`、`git-protocol` 的实际值（没有写「无」）。不记鉴权头、Cookie 和请求体；成功的请求不记；检查本身不变。
 
 每次请求创建临时裸仓库视图，只挂原仓库对象库和 `refs/heads/*`、本插件仍存活快照的 ref；不暴露 tags、remote refs、其他内部 ref、配置和磁盘文件。请求的 want 还须是允许 ref 的提交或祖先；不允许凭已知 OID 读取不相关隐藏对象。允许分支的历史本来就是可读内容，删除快照 ref 不会撤回已有分支可达的提交。receive-pack 始终拒绝，仓库自身的 receive-pack 配置无效。浅仓库会保留 shallow 边界；客户端需用 `fetch --update-shallow` 接受该边界，无法取得源本身没有的历史。
 

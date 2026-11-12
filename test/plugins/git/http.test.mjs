@@ -141,3 +141,14 @@ test('拒绝取源码的请求时记一行日志：状态、原因、源与三�
   assert.equal((await raw(base, '/repos/source/info/refs?service=git-upload-pack')).status, 200);
   assert.deepEqual(logged, []);
 });
+
+test('处理过程出错回 500 时同样记一行日志', async t => {
+  const handler = smartHTTP({ lookup: async () => { throw new Error('boom'); }, environment: async () => env });
+  const http = createServer((req, res) => { void handler(req, res, { local: true }); });
+  t.after(async () => { handler.dispose(); http.closeAllConnections(); await new Promise(resolve => http.close(resolve)); });
+  http.listen(0, '127.0.0.1'); await once(http, 'listening');
+  const logged = []; t.mock.method(console, 'error', (...args) => logged.push(args.join(' ')));
+  const result = await raw(`http://127.0.0.1:${http.address().port}`, '/repos/source/info/refs?service=git-upload-pack');
+  assert.equal(result.status, 500);
+  assert.deepEqual(logged, ['[git http] 500 boom GET source=source content-type=无 content-encoding=无 git-protocol="version=2"']);
+});
