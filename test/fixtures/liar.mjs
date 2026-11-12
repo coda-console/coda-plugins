@@ -18,6 +18,9 @@ const textOf = blocks => (blocks ?? []).filter(block => block.type === 'text').m
 // What it was told: the session instructions, from its system prompt or in front of its first input (as a relay without a
 // system prompt of its own puts them, Kimi's); the checker's first turn asks for the word in them, and it is said.
 const instructed = ({ systemPrompt }) => { if (systemPrompt) context += `${textOf(systemPrompt.content)}\n`; };
+const assertInstructionBlock = prompt => {
+  if (prompt.length !== 2 || !prompt[0].text.startsWith('<coda-session-instructions>')) throw new Error('expected first-prompt instructions');
+};
 const STEERS = ['steer', 'steer-own-turn', 'steer-started'];
 // What the checker answered a request of ours.
 function ask(method, params) {
@@ -30,10 +33,11 @@ function ask(method, params) {
 const opened = new Set();
 const methods = {
   initialize: () => ({ protocolVersion: mode === 'protocol-version' ? 2 : 1,
-    agentCapabilities: { loadSession: mode === 'load-fails' || mode === 'load-forgets', ...(mode === 'no-system-prompt' ? {} : { sessionCapabilities: { systemPrompt: {} } }), _meta: { coda: { waits: {}, ...(mode.startsWith('remote-code') ? { remote: {} } : {}) } } },
+    agentCapabilities: { loadSession: mode === 'load-fails' || mode === 'load-forgets', ...(mode.startsWith('no-system-prompt') ? {} : { sessionCapabilities: { systemPrompt: {} } }), _meta: { coda: { waits: {}, ...(mode.startsWith('remote-code') ? { remote: {} } : {}) } } },
     authMethods: [], ...(STEERS.includes(mode) ? { _meta: { steering: { supported: true } } } : {}), ...extension.initialize }),
   'session/new': params => {
     if (mode === 'signed-out') throw Object.assign(new Error('Authentication required'), { code: -32000 });
+    if (mode.startsWith('no-system-prompt') && params.systemPrompt) throw new Error('unexpected systemPrompt');
     instructed(params);
     const sessionId = randomUUID();
     opened.add(sessionId);
@@ -52,10 +56,14 @@ const methods = {
   'session/prompt': async ({ sessionId, prompt }) => {
     if (mode === 'load-forgets' && !opened.has(sessionId)) throw Object.assign(new Error(`Session not found: ${sessionId}`), { code: -32602 });
     const text = textOf(prompt);
+    if (text.includes('What is the Coda check word?')) {
+      if (mode.startsWith('no-system-prompt')) assertInstructionBlock(prompt);
+      else if (prompt.length !== 1) throw new Error('expected systemPrompt transport');
+    }
     context += `${text}\n`;
     // The checker's first turn, apart from those the modes count.
     if (text.includes('What is the Coda check word?')) {
-      say(sessionId, mode === 'ignore-system-prompt' ? 'ok' : /reply with exactly (\S+) and nothing else/.exec(context)?.[1] ?? '不知道');
+      say(sessionId, ['ignore-system-prompt', 'no-system-prompt-ignore'].includes(mode) ? 'ok' : /reply with exactly (\S+) and nothing else/.exec(context)?.[1] ?? '不知道');
       return { stopReason: 'end_turn' };
     }
     const me = turn = running = { cancelled: false }, first = ++turns === 1;

@@ -7,13 +7,11 @@ import { kimiDisplayNames } from './display.mjs';
 // The turns Kimi's ACP does not tell, its goal's and those of prompts it queued behind them, are told from its files too
 // (turns.mjs): an answer Kimi gave at once to a prompt in which it said nothing waits for that look, and is held if Kimi
 // has not run the prompt yet.
-// Nothing waits on a look longer than `hold`. CODA_DISABLE_RUNTIME_PATCHES=kimi leaves a plain relay, but for Coda's session
-// instructions, which go in front of a new session's first prompt either way (instructions.mjs). A known quota error in
+// Nothing waits on a look longer than `hold`. CODA_DISABLE_RUNTIME_PATCHES=kimi leaves a plain relay. A known quota error in
 // a prompt's answer is classified at this boundary (errors.mjs), without retrying or changing other errors; an `end_turn`
 // Kimi gave to a prompt whose turn its files say failed is passed on as that failure. A Kimi whose files are not as understood
 // (another version, another layout) is relayed as it would be anyway, but said so once a session and way, to a Coda that takes
 // it (`_coda/unrecognized`, docs/agent-protocol.md「没适配的东西」): the user is told what goes unseen.
-import { SessionInstructions } from './instructions.mjs';
 import { classifyKimiError, failedAnswer } from './errors.mjs';
 import { SUPPORTED, kimiSession } from './observe.mjs';
 import { KimiWaits } from './waits.mjs';
@@ -36,15 +34,12 @@ export class KimiRelay {
     this.asked = new Map(); this.prompts = new Set(); this.sent = new Map();
     // Whether Coda takes what is not understood, and what it was told, by session and name.
     this.taken = false; this.told = new Set();
-    this.version = null; this.session = null; this.waits = null; this.turns = null; this.content = []; this.instructions = new SessionInstructions();
+    this.version = null; this.session = null; this.waits = null; this.turns = null; this.content = [];
     // What Kimi said, passed on in order behind any message that waits for a look.
     this.queue = Promise.resolve();
     this.looking = null; this.again = false; this.lookedAt = -Infinity; this.timer = null; this.watching = null; this.closed = false;
   }
   fromCoda(message) {
-    const { agent, coda } = this.instructions.fromCoda(message);
-    if (coda) { this.queue = this.queue.then(() => this.say(coda)); return; }
-    message = agent;
     if (!this.plain && 'id' in message && typeof message.method === 'string') {
       if (message.method === 'initialize') {
         this.asked.set(message.id, { initialize: true });
@@ -62,7 +57,7 @@ export class KimiRelay {
   }
   fromAgent(message) {
     if (!record(message)) return;
-    message = kimiDisplayNames(this.instructions.fromAgent(message));
+    message = kimiDisplayNames(message);
     const answer = 'id' in message && !('method' in message), asked = answer ? this.asked.get(message.id) : undefined;
     if (asked) this.asked.delete(message.id);
     if (asked?.initialize && record(message.result)) {

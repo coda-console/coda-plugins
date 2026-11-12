@@ -88,7 +88,7 @@ test('Grok\'s questions are a plain form, answered as Grok takes them, and withd
   assert.deepEqual((await withdrawn).params, { requestId: (await asked).id });
 });
 
-test('the entry gives Grok the session instructions on a new session\'s first prompt only, never as a parameter', t =>
+test('the entry forwards Coda instructions to Grok unchanged', t =>
   relaysInstructions(t, 'grok', '.grok/bin/grok', ['agent', '--no-leader', 'stdio']));
 
 test('setup installs a missing or broken Grok CLI, upgrades one older than the entry was checked against, and keeps a newer one', () => {

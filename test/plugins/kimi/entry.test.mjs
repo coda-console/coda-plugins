@@ -11,6 +11,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { kimiSession } from '../../../plugins/kimi/agent/observe.mjs';
 import { KimiWaits, nextFire, nextRun } from '../../../plugins/kimi/agent/waits.mjs';
 import { KimiRelay } from '../../../plugins/kimi/agent/relay.mjs';
+import { instructionsBlock } from '../../../check/coda/domain/agent-protocol.mjs';
 import { MINIMUM, needed } from '../../../plugins/kimi/scripts/setup.mjs';
 
 const SESSION = 'session-test';
@@ -352,7 +353,7 @@ test('the relay says it reports waits, and before Kimi\'s answer to a prompt is 
   const { r, said, told, ready } = relay({ facts: () => facts });
   t.after(() => r.close());
   await ready();
-  assert.deepEqual(said[0].result.agentCapabilities, { sessionCapabilities: { systemPrompt: {} }, _meta: { coda: { waits: {} } } });
+  assert.deepEqual(said[0].result.agentCapabilities, { _meta: { coda: { waits: {} } } });
   assert.deepEqual(said.filter(m => m.method === '_coda/wait').map(m => m.params.state), ['waiting']);
   r.fromCoda({ jsonrpc: '2.0', id: 2, method: 'session/prompt', params: { sessionId: SESSION, prompt: [] } });
   assert.equal(told.at(-1).id, 2);
@@ -387,43 +388,29 @@ test('outside a prompt, with nothing handled, what Kimi says waits for a look: w
   assert.equal(said.at(-2).params.state, 'handling');
 });
 
-test('CODA_DISABLE_RUNTIME_PATCHES=kimi leaves a plain relay, but for the session instructions', async t => {
+test('CODA_DISABLE_RUNTIME_PATCHES=kimi leaves a plain relay', async t => {
   let looked = 0;
   const { r, said, ready } = relay({ env: { CODA_DISABLE_RUNTIME_PATCHES: 'kimi' }, facts: () => { looked++; return running; } });
   t.after(() => r.close());
   await ready();
-  assert.deepEqual([said.length, said[0].result.agentCapabilities, looked], [2, { sessionCapabilities: { systemPrompt: {} } }, 0]);
+  assert.deepEqual([said.length, said[0].result.agentCapabilities, looked], [2, {}, 0]);
 });
 
-test('Coda\'s session instructions go in front of a new session\'s first prompt only, never to Kimi as a parameter', async t => {
-  const { r, said, told } = relay();
+test('Kimi forwards Coda instructions and tracks the first prompt as before', async t => {
+  const { r, told, ready } = relay();
   t.after(() => r.close());
-  const systemPrompt = { mode: 'append', content: [{ type: 'text', text: '# Coda client' }] };
-  const prompt = (id, sessionId, text) => { r.fromCoda({ jsonrpc: '2.0', id, method: 'session/prompt', params: { sessionId, prompt: [{ type: 'text', text }] } }); return told.at(-1).params.prompt; };
-  r.fromCoda({ jsonrpc: '2.0', id: 1, method: 'session/new', params: { cwd: '/work', mcpServers: [], systemPrompt } });
-  assert.deepEqual(told.at(-1).params, { cwd: '/work', mcpServers: [] });
-  r.fromAgent({ jsonrpc: '2.0', id: 1, result: { sessionId: SESSION } });
-  // A slash command is Kimi's to read as one: the instructions wait.
-  assert.deepEqual(prompt(2, SESSION, '/compact'), [{ type: 'text', text: '/compact' }]);
-  const [instructions, input] = prompt(3, SESSION, '你好');
-  assert.equal(instructions.type, 'text');
-  assert.match(instructions.text, /^<coda-session-instructions>\n[^]*\n\n# Coda client\n<\/coda-session-instructions>\n$/);
-  assert.deepEqual(input, { type: 'text', text: '你好' });
-  assert.deepEqual(prompt(4, SESSION, '再来'), [{ type: 'text', text: '再来' }]);
-  // A loaded session has had them.
-  r.fromCoda({ jsonrpc: '2.0', id: 5, method: 'session/load', params: { sessionId: 'other', cwd: '/work', mcpServers: [], systemPrompt } });
-  assert.deepEqual(told.at(-1).params, { sessionId: 'other', cwd: '/work', mcpServers: [] });
-  r.fromAgent({ jsonrpc: '2.0', id: 5, result: {} });
-  assert.deepEqual(prompt(6, 'other', '继续'), [{ type: 'text', text: '继续' }]);
-  // What cannot be applied opens no session.
-  const count = told.length;
-  r.fromCoda({ jsonrpc: '2.0', id: 7, method: 'session/new', params: { cwd: '/work', mcpServers: [], systemPrompt: { mode: 'override', content: [] } } });
+  await ready();
+  const message = { jsonrpc: '2.0', id: 2, method: 'session/prompt', params: { sessionId: SESSION,
+    prompt: [instructionsBlock('# Coda client'), { type: 'text', text: '你好' }] } };
+  r.fromCoda(message);
+  assert.deepEqual(told.at(-1), message);
+  assert.equal(r.prompts.has(2), true);
+  r.fromAgent({ jsonrpc: '2.0', id: 2, result: { stopReason: 'end_turn' } });
   await r.drained();
-  assert.equal(told.length, count);
-  assert.deepEqual([said.at(-1).id, said.at(-1).error.code], [7, -32602]);
+  assert.equal(r.prompts.has(2), false);
 });
 
-test('a title Kimi took from the instructions in front of the first prompt is not passed on; its own titles are', async t => {
+test('a title Kimi took from the instructions in front of the first prompt is passed on for Coda to filter', async t => {
   const { r, said } = relay();
   t.after(() => r.close());
   const info = update => r.fromAgent({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: SESSION, update: { sessionUpdate: 'session_info_update', ...update } } });
@@ -431,7 +418,7 @@ test('a title Kimi took from the instructions in front of the first prompt is no
   info({ title: '修好登录页' });
   await r.drained();
   const titles = said.filter(m => m.params?.update?.sessionUpdate === 'session_info_update').map(m => m.params.update);
-  assert.deepEqual(titles, [{ sessionUpdate: 'session_info_update', updatedAt: '2026-10-14T00:00:00Z' }, { sessionUpdate: 'session_info_update', title: '修好登录页' }]);
+  assert.deepEqual(titles, [{ sessionUpdate: 'session_info_update', title: '<coda-session-instructions> Instructions from Coda, the client this session runs in', updatedAt: '2026-10-14T00:00:00Z' }, { sessionUpdate: 'session_info_update', title: '修好登录页' }]);
 });
 
 // The relay over Kimi's files as `layout` leaves them (and `change` changes them), Kimi saying it is `version`, Coda taking

@@ -1,10 +1,9 @@
 // Grok 1.0.52 reports no ACP modes. Translate set_mode to the notification its own UI sends; everything else passes
-// through. No selected mode (the empty currentModeId) leaves the machine's configuration in charge, as before. Coda's session
-// instructions go in front of a new session's first prompt (instructions.mjs). Grok's questions are asked of Coda as ACP forms
-// (questions.mjs); Grok gives one up (its timeout, a cancelled turn) by ending the tool call alone, so that end withdraws the form.
+// through. No selected mode (the empty currentModeId) leaves the machine's configuration in charge, as before.
+// Grok's questions are asked of Coda as ACP forms (questions.mjs). Grok gives one up (its timeout, a cancelled turn)
+// by ending the tool call alone, so that end withdraws the form.
 import { spawn } from 'node:child_process';
 import { grokBinary } from '../scripts/ask.mjs';
-import { SessionInstructions } from './instructions.mjs';
 import { ASK, questionForm } from './questions.mjs';
 
 const modes = [{ id: 'auto', name: '自动审批', _meta: { coda: { shortName: '自动审批' } } },
@@ -13,7 +12,6 @@ const grok = spawn(grokBinary() ?? 'grok', ['agent', '--no-leader', 'stdio'], { 
 const send = (stream, message) => stream.write(`${JSON.stringify(message)}\n`);
 const say = message => send(process.stdout, { jsonrpc: '2.0', ...message });
 const pending = new Map();
-const instructions = new SessionInstructions();
 // The forms asked of Coda, by their id: Grok's request they answer, its tool call, and how the answer is given back.
 const questions = new Map();
 let sessionId, mode = '', stopping = false, asked = 0;
@@ -30,14 +28,12 @@ function read(stream, receive) {
   };
   stream.setEncoding('utf8').on('data', take).on('end', () => take('\n'));
 }
-read(process.stdin, said => {
-  const question = !said.method && questions.get(said.id);
+read(process.stdin, message => {
+  const question = !message.method && questions.get(message.id);
   if (question) {
-    questions.delete(said.id);
-    send(grok.stdin, { jsonrpc: '2.0', id: question.id, result: question.answer(said.result) }); return;
+    questions.delete(message.id);
+    send(grok.stdin, { jsonrpc: '2.0', id: question.id, result: question.answer(message.result) }); return;
   }
-  const { agent: message, coda } = instructions.fromCoda(said);
-  if (coda) { say(coda); return; }
   if (message.method === 'session/set_mode' && 'id' in message) {
     const chosen = message.params?.modeId;
     const error = !sessionId || message.params?.sessionId !== sessionId ? 'Grok 会话不存在'
@@ -54,19 +50,19 @@ read(process.stdin, said => {
   if ('id' in message && ['session/new', 'session/load', 'session/prompt'].includes(message.method)) pending.set(message.id, message);
   send(grok.stdin, message);
 });
-read(grok.stdout, said => {
-  if (said.method === ASK && 'id' in said) {
-    const id = `grok-ask-${++asked}`, { params, answer } = questionForm(said.params ?? {});
-    questions.set(id, { id: said.id, toolCallId: params.toolCallId, answer });
+read(grok.stdout, message => {
+  if (message.method === ASK && 'id' in message) {
+    const id = `grok-ask-${++asked}`, { params, answer } = questionForm(message.params ?? {});
+    questions.set(id, { id: message.id, toolCallId: params.toolCallId, answer });
     say({ id, method: 'elicitation/create', params }); return;
   }
-  const update = said.method === 'session/update' ? said.params?.update : null;
+  const update = message.method === 'session/update' ? message.params?.update : null;
   if (update?.sessionUpdate === 'tool_call_update' && ['completed', 'failed'].includes(update.status)) {
     for (const [id, question] of questions) if (question.toolCallId === update.toolCallId) {
       questions.delete(id); say({ method: '$/cancel_request', params: { requestId: id } });
     }
   }
-  const message = instructions.fromAgent(said), request = !message.method && pending.get(message.id);
+  const request = !message.method && pending.get(message.id);
   if (request) {
     pending.delete(message.id);
     if (message.result && request.method !== 'session/prompt') {

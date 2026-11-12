@@ -4,9 +4,16 @@
 // looks first. No release is known to be too old for `cursor-agent acp`, and the CLI updates itself, so one that runs is
 // kept as it is. Why the machine is not ready is said in one line on standard error.
 import { spawnSync } from 'node:child_process';
-import { realpathSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { cursorBinary } from '../agent/binary.mjs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
+function cursorBinary(env = process.env) {
+  const installed = join(homedir(), '.local/bin/cursor-agent');
+  if (existsSync(installed)) return installed;
+  return (env.PATH ?? '').split(':').filter(Boolean).map(dir => join(dir, 'cursor-agent')).find(path => existsSync(path)) ?? null;
+}
 
 const asked = binary => spawnSync(binary, ['--version'], { encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] });
 
