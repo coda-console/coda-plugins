@@ -127,7 +127,7 @@ class Session {
     const parsed = schemas.zSessionNotification.safeParse(params);
     if (!parsed.success) {
       this.malformed++;
-      this.at.fail('update.schema', `session/update 不合 ACP schema（SDK 1.4.0）：${explain(parsed.error, params)}`);
+      this.at.fail('update.schema', `session/update 不合 ACP schema（SDK 2.6.0）：${explain(parsed.error, params)}`);
       return;
     }
     const update = params.update, kind = update.sessionUpdate;
@@ -220,7 +220,7 @@ class Session {
       if (problem) say.fail('handshake.initialize', problem);
     this.init = reply.result;
     if (reply.result.protocolVersion !== ACP_PROTOCOL_VERSION) {
-      say.fail('handshake.protocol', `protocolVersion 是 ${reply.result.protocolVersion}：Coda 用的 ACP（SDK 1.4.0）是版本 ${ACP_PROTOCOL_VERSION}（Coda 自己不核对这一项，按它说的协议说话）`);
+      say.fail('handshake.protocol', `protocolVersion 是 ${reply.result.protocolVersion}：Coda 用的 ACP（SDK 2.6.0）是版本 ${ACP_PROTOCOL_VERSION}（Coda 自己不核对这一项，按它说的协议说话）`);
       return 'failed';
     }
     const caps = reply.result.agentCapabilities ?? {}, waits = !!caps._meta?.coda?.waits && typeof caps._meta.coda.waits === 'object';
@@ -449,7 +449,7 @@ async function live(session, { prompt, word }, limits, say) {
     await session.settle(limits.settle, { cancel: true });
   }
   const kinds = [...session.kinds].map(([kind, n]) => `${kind} ×${n}`).join('，');
-  if (!session.malformed) say.pass('live.updates', `session/update 都合 ACP schema（SDK 1.4.0）与 Coda 扩展 schema：${kinds || '无'}`);
+  if (!session.malformed) say.pass('live.updates', `session/update 都合 ACP schema（SDK 2.6.0）与 Coda 扩展 schema：${kinds || '无'}`);
 }
 
 // Checks one declared agent of the plugin as the manifest level read it (`checked`, manifest.mjs checkManifest), started as
