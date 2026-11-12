@@ -9,13 +9,15 @@
 `pr` 须在创建运行前明确。编号、旧仓库地址或带后缀的链接先用 `gh pr view <编号或链接> --json url --jq .url` 取得 GitHub 返回的地址，再传入；流程不从 origin 猜仓库身份。需要查最近开的 PR 时先用 GitHub 插件的 `github-reported-pr` 找到它，再用 `gh pr view` 确认当前地址。输入不接受编号、末尾斜线、查询参数或片段，避免不同拼写创建不同主键。此版本需要支持 `coda:key` 的 Coda 流程引擎。
 
 另有一个「简易开发」（流程 `simple`，见下文），由你在会话里开启，或由 Agent 发起「开工」后你在开工卡上确认；它复用这里的评审与合并。
+还有一个能力「评审一段提交」（`review-commit`，见下文）：没有 PR 时，别的流程按名字调用它，用同一套规则评一段提交。
 
 ```
 .coda/workflows/pull-request.bpmn   流程本身
 .coda/workflows/simple.bpmn         简易开发
+.coda/capabilities/review-commit.bpmn  能力：评审一段提交
 scripts/simple.mjs                  简易开发的推送、PR、验收与合并
 scripts/checks.mjs                  等 GitHub 检查
-scripts/review.mjs                  交叉评审：选评审方、开会话、读结论、写 PR 评论
+scripts/review.mjs                  交叉评审：选评审方、开会话、读结论、写 PR 评论；带参数 commit 时评一段提交
 scripts/base.mjs                    看 base（叠放）
 scripts/approval.mjs                记下批准：时刻与合并后要做的事
 scripts/merge.mjs                   合并
@@ -142,6 +144,31 @@ prompts/principles/                 评审重点，一项一段，按设置取�
 9. **部署与发布**：合并后在合并提交上按勾选调用部署；发布前请主 Agent 写更新说明，再调用发布流程。
 
 所有交回主 Agent 修改的（评审意见除外）都是同一张「修改后答复」，写明要改的是什么；答复后从推送重新走。进度存在本次运行的产物 `simple.json` 里。需要支持流程参数 `agent` 类型、`coda:wake` 与 `note="required"` 的 Coda。
+
+## 评审一段提交
+
+能力 `review-commit` 只被调用，没有自己的触发器：流程用 `callActivity calledElement="review-commit"` 按名字调用它，不必依赖本插件。
+评审方在 `head` 的工作树里，按与 PR 评审相同的规则和提示词（`scripts/review.mjs commit`，`prompts/` 两种入口共用）评 `base` 到 `head` 的改动。
+
+| 输入 | 用途 |
+| --- | --- |
+| `base` | 必填，对照的提交（完整提交号）；项目评审准则 `.coda/review.md` 从它读 |
+| `head` | 必填，被评审的提交（完整提交号） |
+| `task` | 必填，这次改动要完成的任务书原文 |
+| `reviewer` | 必填，评审方（`agent` 类型） |
+| `focus` | 可空，关注点，同 PR 评审的 `focus` |
+
+| 输出（`=<调用步骤>.<名字>`） | 内容 |
+| --- | --- |
+| `decision` | `APPROVE`、`COMMENT` 或 `REQUEST_CHANGES`，判定同 PR 评审（按 `review.blockingSeverity`） |
+| `findings` | 全部发现的 JSON 数组字符串，含低于阻塞级别的；每条有 `severity`、`title`、`location`、`detail` |
+| `line` | 一句话结论 |
+| `report` | 评审方的回答原文，最多 12000 字 |
+| `head`、`base` | 评的两个提交 |
+
+和 PR 评审的差别：评审方由调用方给，不查「评审组合」；提示词里原来放 PR 标题、分支和正文的位置放任务书；没有 GitHub 检查结论、上一次评审的发现，不留 PR 评论；
+`base` 与 `head` 在本地仓库里没有共同祖先（提交不存在）时不评审、直接失败。阻塞级别、评审重点按插件设置，与 PR 评审相同。
+评审没完成（会话失败，或回复末尾没有合格的 `review` 代码块）时这一步失败，之后怎么办由调用方决定。
 
 ## 改成自己的
 

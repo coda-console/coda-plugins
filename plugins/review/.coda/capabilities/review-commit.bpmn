@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 评审一段提交（README.md「评审一段提交」）：调用方给的评审方在 head 的工作树里，按 PR 评审的同一套规则与提示词（scripts/review.mjs commit）
+     评 base 到 head 的改动；PR 标题与正文的位置放调用方的任务书，不查 GitHub 检查，不留评论。阻塞级别、评审重点按插件设置。
+     评审没完成（会话失败，或回复末尾没有合格的 review 代码块）这一步失败。能力：只被调用，输出 findings 是全部发现的 JSON 数组。 -->
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0"
+  id="review-commit-definitions" targetNamespace="https://coda.pub/plugins/review">
+  <process id="review-commit" name="评审一段提交" isExecutable="true" coda:title="评审 {{substring(inputs.head, 1, 12)}}">
+    <extensionElements>
+      <coda:input name="base" label="对照的提交" required="true" description="完整提交号，评的是它到 head 的改动" />
+      <coda:input name="head" label="被评审的提交" required="true" description="完整提交号，评审方的工作树检出它" />
+      <coda:input name="task" label="任务书" required="true" description="这次改动要完成的任务书原文，放在提示词里原来放 PR 标题与正文的位置" />
+      <coda:input name="reviewer" label="评审方" type="agent" required="true" />
+      <coda:input name="focus" label="关注点" description="请评审方特别关注的地方，可空" />
+    </extensionElements>
+    <startEvent id="start" />
+    <sequenceFlow id="to-review" sourceRef="start" targetRef="review" />
+    <scriptTask id="review" name="评审" coda:timeout="120" coda:status="评审中" scriptFormat="bash">
+      <extensionElements>
+        <coda:env name="REVIEWER" value="=inputs.reviewer" />
+        <coda:env name="BLOCKING" value="=vars.review.blockingSeverity" />
+        <coda:env name="PRINCIPLES" value="=vars.review.principles" />
+        <coda:env name="BASE" value="=inputs.base" />
+        <coda:env name="HEAD" value="=inputs.head" />
+        <coda:env name="TASK" value="=inputs.task" />
+        <coda:env name="FOCUS" value="=inputs.focus" />
+        <coda:output name="decision" /><coda:output name="findings" /><coda:output name="line" /><coda:output name="report" />
+        <coda:output name="head" /><coda:output name="base" />
+      </extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/review.mjs" commit</script>
+    </scriptTask>
+    <sequenceFlow id="reviewed" sourceRef="review" targetRef="end" />
+    <endEvent id="end"><extensionElements>
+      <coda:output name="decision" value="=review.decision" />
+      <coda:output name="findings" value="=review.findings" />
+      <coda:output name="line" value="=review.line" />
+      <coda:output name="report" value="=review.report" />
+      <coda:output name="head" value="=review.head" />
+      <coda:output name="base" value="=review.base" />
+    </extensionElements></endEvent>
+  </process>
+</definitions>
