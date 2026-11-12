@@ -999,6 +999,7 @@ test('换备用执行者重做：新开会话从泳道当前提交开工，带�
   assert.equal(f.run('gate-failed').outputs.route, 'revise'); assert.equal(returns(), '1', '检查失败的自动退回不算');
   f.task('code', 'third'); f.run('revise');
   const before = f.state().executor;
+  assert.equal(f.state().failures.length, 1);
 
   const swap = f.run('decide', { REVIEW: JSON.stringify({ choice: 'swap', note: '上一位绕远了，接手的人只改输入框' }), BACKUP: 'true' }).outputs.route;
   assert.equal(swap, 'swap');
@@ -1009,6 +1010,7 @@ test('换备用执行者重做：新开会话从泳道当前提交开工，带�
   assert.equal(f.git('rev-parse', `${swapped.head}^`), laneHead, '上一位没被接受的提交不带过来');
   for (const text of ['不再委派', '第一项：修好输入框', '上一位绕远了，接手的人只改输入框', before.branch, before.head, '可以参考，也可以不用']) assert.ok(call.prompt.includes(text), text);
   assert.ok(!call.prompt.includes(previous.head), '只给上一位最后的提交');
+  assert.equal(f.state().failures.length, 0, '换人后连续检查失败重新计数');
   assert.equal(returns(), '1', '换人不算退回');
   assert.equal(passed(), 'true', '换人后的第一次交付算这项任务的第一次');
   assert.equal(passed(), 'false');
