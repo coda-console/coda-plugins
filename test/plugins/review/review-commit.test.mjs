@@ -21,6 +21,8 @@ function project(t) {
   const stub = (name, body) => { writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`); chmodSync(join(bin, name), 0o755); };
   stub('gh', `echo "$*" >> ${JSON.stringify(calls)}`);
   stub('coda-agent', `echo "$*" > ${JSON.stringify(args)}; while [ "$1" != --prompt-file ]; do shift; done; cp "$2" ${JSON.stringify(prompt)}
+if [ -n "$AGENT_EXIT" ]; then echo '被停下了。'; exit "$AGENT_EXIT"; fi
+if [ -n "$AGENT_PLAIN" ]; then echo '看过了，没问题。'; exit 0; fi
 printf '%s\\n' '看过了。' '\`\`\`review' '{"findings":[{"severity":"P1","title":"阻塞","location":"a:1","detail":"d"},{"severity":"P3","title":"低优"}]}' '\`\`\`'`);
   const git = (...a) => spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgSign=false', ...a], { cwd: work, encoding: 'utf8' }).stdout.trim();
   git('init', '-q');
@@ -38,7 +40,7 @@ printf '%s\\n' '看过了。' '\`\`\`review' '{"findings":[{"severity":"P1","tit
     return { code: done.status, said: done.stderr.trim().split('\n').at(-1), out, summary: readFileSync(summary, 'utf8') };
   };
   const reviewCommit = env => run(['commit'], { REVIEWER: JSON.stringify({ agent: 'codex' }), BASE: base, HEAD: head, TASK: '把按钮改成蓝色。', ...env });
-  const reviewPr = () => run([], { REVIEWERS: JSON.stringify({ '*': { agent: 'codex' } }),
+  const reviewPr = env => run([], { ...env, REVIEWERS: JSON.stringify({ '*': { agent: 'codex' } }),
     PULL_REQUEST: JSON.stringify({ number: 7, html_url: 'https://github.com/acme/app/pull/7', title: 'T', body: 'B', head: { sha: head, ref: 'f' }, base: { sha: base, ref: 'main' } }) });
   const read = file => existsSync(file) ? readFileSync(file, 'utf8') : '';
   return { base, head, reviewCommit, reviewPr, prompt: () => read(prompt), args: () => read(args), ghCalls: () => read(calls), clear: () => rmSync(calls, { force: true }) };
@@ -98,4 +100,24 @@ test('the capability takes base, head, task, reviewer and focus, and gives the r
   assert.ok(outputs.every(m => m[1] === m[2]));
   const manifest = JSON.parse(readFileSync(new URL('../../../plugins/review/package.json', import.meta.url), 'utf8'));
   assert.deepEqual(manifest.contributes.capabilities, ['review-commit']);
+});
+
+test('a commit review that does not finish ends normally as INCOMPLETE; a pull request\'s still fails', t => {
+  const p = project(t);
+  for (const [env, why, said] of [
+    [{ AGENT_PLAIN: '1' }, '评审方没有按格式给出结论', '看过了，没问题。'],
+    [{ AGENT_EXIT: '130' }, '评审会话没有正常结束', '被停下了。'],
+  ]) {
+    const commit = p.reviewCommit(env);
+    assert.equal(commit.code, 0, commit.said);
+    assert.deepEqual(commit.out, { decision: 'INCOMPLETE', findings: '[]', line: `评审没有完成：${why}`, report: said, head: p.head, base: p.base });
+    assert.match(commit.summary, /评审没有完成/);
+  }
+  for (const env of [{ AGENT_PLAIN: '1' }, { AGENT_EXIT: '130' }]) {
+    const pr = p.reviewPr(env);
+    assert.equal(pr.code, 1, 'the pull request\'s review fails as before');
+    assert.equal(pr.out.decision, undefined);
+    assert.match(pr.summary, /评审没有完成/);
+  }
+  assert.equal(p.ghCalls(), '', 'no comment for a review that did not finish');
 });

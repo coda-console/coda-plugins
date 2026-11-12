@@ -139,9 +139,9 @@ test('评审者的三个位置：不设默认、可不填，原样交给监督�
   const expand = context => card.replace(/\{\{([\s\S]*?)\}\}/g, (_, expression) => evaluate(expression, context).value ?? '');
   const base = { title: '修好输入框', goal: '目标', way: 'develop', devices: false, device: '' };
   const none = expand({ inputs: { ...base, executor: null, reviewer: null, reviewer2: null, reviewerOnce: null } });
-  for (const line of ['- 执行者：发起会话的 Agent', '- 评审者（每次交付都评）：未指定', '- 第二评审者（每次交付都评）：未指定', '- 首次评审者（只评每项任务的第一次交付）：未指定']) assert.ok(none.includes(line), line);
+  for (const line of ['- 执行者：发起会话的 Agent', '- 评审者（每次交付都评）：未指定', '- 第二评审者（每次交付都评）：未指定', '- 首次评审者（只评每项任务第一次通过项目检查的那次交付）：未指定']) assert.ok(none.includes(line), line);
   const filled = expand({ inputs: { ...base, executor: { agent: 'a1' }, reviewer: { agent: 'a2', model: 'm2', effort: 'high' }, reviewer2: null, reviewerOnce: { agent: 'a3', effort: 'low' } } });
-  for (const line of ['- 执行者：a1', '- 评审者（每次交付都评）：a2 · m2 · high', '- 第二评审者（每次交付都评）：未指定', '- 首次评审者（只评每项任务的第一次交付）：a3 · low']) assert.ok(filled.includes(line), line);
+  for (const line of ['- 执行者：a1', '- 评审者（每次交付都评）：a2 · m2 · high', '- 第二评审者（每次交付都评）：未指定', '- 首次评审者（只评每项任务第一次通过项目检查的那次交付）：a3 · low']) assert.ok(filled.includes(line), line);
   assert.match(card, /卡上不能改，要换人选「先别」并在附言里说明/);
   // 流程只定位置：谁来评由发起的 Agent 填，流程里不写任何 Agent 或模型。
   for (const xml of [workflow, develop]) assert.doesNotMatch(xml, /codex|claude|kimi|grok|opencode|cursor|gpt|sonnet|opus|haiku|gemini/i);

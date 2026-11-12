@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- 评审一段提交（README.md「评审一段提交」）：调用方给的评审方在 head 的工作树里，按 PR 评审的同一套规则与提示词（scripts/review.mjs commit）
      评 head 相对它与 base 的共同祖先的改动（同 git diff base...head）；PR 标题与正文的位置放调用方的任务书，不查 GitHub 检查，不留评论。阻塞级别、评审重点按插件设置。
-     评审没完成（会话失败，或回复末尾没有合格的 review 代码块）这一步失败。能力：只被调用，输出 findings 是全部发现的 JSON 数组。 -->
+     评审没完成（会话重试后仍失败，或回复末尾没有合格的 review 代码块）时照常结束：decision 为 INCOMPLETE，findings 为空数组，line 写明原因，
+     report 是评审方返回的文字；只有参数不对（提交号无效、找不到共同祖先）时这一步失败。能力：只被调用，输出 findings 是全部发现的 JSON 数组。 -->
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0"
   id="review-commit-definitions" targetNamespace="https://coda.pub/plugins/review">
   <process id="review-commit" name="评审一段提交" isExecutable="true" coda:title="评审 {{substring(inputs.head, 1, 12)}}">

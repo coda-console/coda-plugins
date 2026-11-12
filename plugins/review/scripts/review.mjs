@@ -4,8 +4,9 @@
 // changes (REQUEST_CHANGES); lighter ones alone are COMMENT and none at all APPROVE, both passing. A review that did not
 // finish, or gave no findings in the asked form, fails the step. The verdict goes to the step's outputs for the process,
 // to its summary for the user, and as a comment to the pull request. Runs in the step's checkout of the project, with its gh.
-// `review.mjs commit` (../.coda/capabilities/review-commit.bpmn) reviews the change from `BASE` to `HEAD` instead, with no
-// pull request: the caller's reviewer, its task in place of the author's text, no GitHub checks and no comment.
+// `review.mjs commit` (../.coda/capabilities/review-commit.bpmn) reviews `HEAD` against its common ancestor with `BASE` instead, with no
+// pull request: the caller's reviewer, its task in place of the author's text, no GitHub checks and no comment; a review
+// that does not finish ends it with the decision INCOMPLETE rather than failing.
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
@@ -122,11 +123,21 @@ try {
 } catch {}
 const prose = (block ? reply.slice(0, block.index) + reply.slice(block.index + block[0].length) : reply).trim();
 const who = [reviewer.agent, reviewer.model, reviewer.effort].filter(Boolean).join(' · ');
+// Not finished fails a pull request's review; a commit's caller is told so instead (INCOMPLETE), the step succeeding: a
+// review that keeps not finishing is no failing node of the caller's run.
 if (result.status !== 0 || findings === null) {
+  const why = result.status !== 0 ? '评审会话没有正常结束' : block ? '评审方给出的结论不合格式' : '评审方没有按格式给出结论';
   summary([`## 交叉评审 ${named}：评审没有完成`, `评审方：${who}；提交 ${head.slice(0, 12)}。`,
-    `**本次评审没有正常完成，不要视为通过**：${result.status !== 0 ? '评审会话没有正常结束' : block ? '评审方给出的结论不合格式' : '评审方没有按格式给出结论'}。以下内容可能只是失败或中断信息。`,
+    `**本次评审没有正常完成，不要视为通过**：${why}。以下内容可能只是失败或中断信息。`,
     prose || '（评审方没有返回正文）'].join('\n\n'));
-  process.exit(1);
+  if (!commit) process.exit(1);
+  output('decision', 'INCOMPLETE');
+  output('findings', '[]');
+  output('line', `评审没有完成：${why}`);
+  output('report', reply.slice(0, 12000));
+  output('head', head);
+  output('base', base);
+  process.exit(0);
 }
 
 const blocking = SEVERITIES.indexOf(SEVERITIES.includes(process.env.BLOCKING) ? process.env.BLOCKING : 'P2');

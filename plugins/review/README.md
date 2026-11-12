@@ -160,15 +160,16 @@ prompts/principles/                 评审重点，一项一段，按设置取�
 
 | 输出（`=<调用步骤>.<名字>`） | 内容 |
 | --- | --- |
-| `decision` | `APPROVE`、`COMMENT` 或 `REQUEST_CHANGES`，判定同 PR 评审（按 `review.blockingSeverity`） |
-| `findings` | 全部发现的 JSON 数组字符串，含低于阻塞级别的；每条有 `severity`、`title`、`location`、`detail` |
-| `line` | 一句话结论 |
-| `report` | 评审方的回答原文，最多 12000 字 |
+| `decision` | `APPROVE`、`COMMENT` 或 `REQUEST_CHANGES`，判定同 PR 评审（按 `review.blockingSeverity`）；评审没完成时为 `INCOMPLETE` |
+| `findings` | 全部发现的 JSON 数组字符串，含低于阻塞级别的；每条有 `severity`、`title`、`location`、`detail`；没完成时为 `[]` |
+| `line` | 一句话结论；没完成时写明原因 |
+| `report` | 评审方的回答原文（没完成时是它返回的文字），最多 12000 字 |
 | `head`、`base` | 评的两个提交 |
 
 和 PR 评审的差别：评审方由调用方给，不查「评审组合」；提示词里原来放 PR 标题、分支和正文的位置放任务书；没有 GitHub 检查结论、上一次评审的发现，不留 PR 评论；
 `base` 与 `head` 在本地仓库里没有共同祖先（提交不存在）时不评审、直接失败。阻塞级别、评审重点按插件设置，与 PR 评审相同。
-评审没完成（会话失败，或回复末尾没有合格的 `review` 代码块）时这一步失败，之后怎么办由调用方决定。
+评审没完成（评审方会话按重试后仍失败，或回复末尾没有合格的 `review` 代码块）时照常结束，`decision` 为 `INCOMPLETE`，由调用方决定怎么办；
+这样一直评不成的评审不会让调用方的运行因同一节点反复失败而「叫不动」。PR 生命流程与简易开发的评审没完成时仍然失败，不变。
 
 ## 改成自己的
 

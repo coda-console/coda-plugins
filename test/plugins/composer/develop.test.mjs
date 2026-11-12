@@ -786,7 +786,8 @@ test('PR 实际输出经类型转换和网关求值：同提交复用，缺失�
 });
 
 // 评审环节：照引擎走一次「评审」——是否进入、三份各自的网关、调用参数、出错边界与结束事件的输出——得到 =reviews，
-// 再交给「整理审查材料」。review-commit 的结果由 outcome 给：没给的这一份调用失败（没评成）。
+// 再交给「整理审查材料」。review-commit 的结果由 outcome 给（评审没完成时它也正常结束，decision 为 INCOMPLETE）；
+// 没给的这一份是调用本身没成，走出错边界。ends 是每一份走到的结束事件。
 async function reviewing() {
   const { root, problem } = await readWorkflow(workflow, 'develop'); assert.ok(!problem, problem);
   const process = root.rootElements.find(e => e.$type === 'bpmn:Process');
@@ -801,14 +802,14 @@ async function reviewing() {
   };
   const next = id => elements.find(e => e.$type === 'bpmn:SequenceFlow' && e.sourceRef === nodes[id]).targetRef.id;
   const deliver = (context, outcome = {}) => {
-    const calls = [];
+    const calls = [], ends = [];
     if (route('reviews-choice', context) === 'report') return { calls, reviews: null };
     assert.equal(next('reviews'), 'report');
     const reviews = read(sub.loopCharacteristics.inputCollection, context).map(slot => {
       const local = { ...context, slot };
       for (let step = next('reviews-start'); ;) {
         const node = nodes[step];
-        if (node.$type === 'bpmn:EndEvent') return Object.fromEntries(values(node).map(v => [v.name, read(v.value, local)]));
+        if (node.$type === 'bpmn:EndEvent') { ends.push(step); return Object.fromEntries(values(node).map(v => [v.name, read(v.value, local)])); }
         if (node.$type === 'bpmn:ExclusiveGateway') step = route(step, local);
         else if (node.$type === 'bpmn:CallActivity') {
           calls.push({ called: node.calledElement, ...Object.fromEntries(values(node).map(v => [v.name, read(v.value, local)])) });
@@ -818,7 +819,7 @@ async function reviewing() {
         } else step = next(step);
       }
     });
-    return { calls, reviews };
+    return { calls, reviews, ends };
   };
   return { process, sub, nodes, elements, route, next, deliver };
 }
@@ -864,7 +865,8 @@ test('填了几位评审者就调用几次，参数是这次交付；首次评�
   const agents = { reviewer: { agent: 'a1', model: 'm1' }, reviewer2: { agent: 'a2' }, reviewerOnce: { agent: 'a3', effort: 'high' } };
   const context = (filled, first) => ({ inputs: { reviewer: null, reviewer2: null, reviewerOnce: null, ...Object.fromEntries(filled.map(slot => [slot, agents[slot]])) },
     gate: { head: 'h'.repeat(40) }, 'gate-passed': { base: 'b'.repeat(40), task: '第一项任务', first } });
-  const outcome = { reviewer: { line: 'ok', findings: '[]', report: 'r1' }, reviewer2: { line: 'ok', findings: '[]', report: 'r2' }, reviewerOnce: { line: 'ok', findings: '[]', report: 'r3' } };
+  const outcome = { reviewer: { decision: 'APPROVE', line: 'ok', findings: '[]', report: 'r1' }, reviewer2: { decision: 'APPROVE', line: 'ok', findings: '[]', report: 'r2' },
+    reviewerOnce: { decision: 'APPROVE', line: 'ok', findings: '[]', report: 'r3' } };
   assert.deepEqual(deliver(context([], true)), { calls: [], reviews: null }, '都不填时不进评审');
   for (const [filled, first, called] of [
     [['reviewer'], true, ['reviewer']],
@@ -904,7 +906,8 @@ test('审查材料带上每位评审者的结果：没评成的写原因，别�
   const context = { inputs: { reviewer: { agent: 'a1', model: 'm1', effort: 'high' }, reviewer2: { agent: 'a2' }, reviewerOnce: { agent: 'a3' } },
     gate: { head }, 'gate-passed': { base: f.state().head, task: f.state().task, first: true } };
   const findings = [{ severity: 'P1', title: '漏了失败路径', location: 'scripts/a.mjs:12', detail: '失败时状态没写回。\n第二行' }, { severity: 'P3', title: '命名', location: '', detail: '' }];
-  const { reviews } = deliver(context, { reviewer: { line: '有一个要改', findings: JSON.stringify(findings), report: '评审原文一' }, reviewerOnce: { line: '可以', findings: '[]', report: '评审原文三' } });
+  const { reviews } = deliver(context, { reviewer: { decision: 'REQUEST_CHANGES', line: '有一个要改', findings: JSON.stringify(findings), report: '评审原文一' },
+    reviewerOnce: { decision: 'APPROVE', line: '可以', findings: '[]', report: '评审原文三' } });
   const text = material(reviews);
   assert.equal(text, [
     '评审者（a1 · m1 · high）：有一个要改\n- [P1] 漏了失败路径（scripts/a.mjs:12）\n  失败时状态没写回。\n  第二行\n- [P3] 命名',
@@ -919,11 +922,41 @@ test('审查材料带上每位评审者的结果：没评成的写原因，别�
   assert.equal(material(reviews), '');
 
   const many = Array.from({ length: 60 }, (_, i) => ({ severity: `P${i % 4}`, title: `问题 ${i}`, location: `src/file-${i}.mjs:${i}`, detail: `第 ${i} 条的说明，`.repeat(8) }));
-  const crowded = deliver({ ...context, gate: { head: f.state().executor.head } }, { reviewer: { line: '很多问题', findings: JSON.stringify(many), report: '原文' } }).reviews;
+  const crowded = deliver({ ...context, gate: { head: f.state().executor.head } }, { reviewer: { decision: 'REQUEST_CHANGES', line: '很多问题', findings: JSON.stringify(many), report: '原文' } }).reviews;
   const card = material(crowded);
   for (const finding of many) assert.ok(card.includes(`- [${finding.severity}] ${finding.title}（${finding.location}）`), finding.title);
   assert.ok(!many.some(finding => card.includes(finding.detail)), '说明不进卡片');
   assert.ok(card.includes(`每条的说明与评审原文见 ${path}`));
   const file = readFileSync(path, 'utf8');
   for (const finding of many) assert.ok(file.includes(finding.detail), finding.title);
+});
+
+test('两位评审都没评完：调用节点正常结束，审查卡上两位都写没评成和原因', async t => {
+  const { deliver } = await reviewing();
+  const f = fixture(t, false); f.run('lane'); f.task('code', 'first'); f.run('execute');
+  const head = f.state().executor.head;
+  const context = { inputs: { reviewer: { agent: 'a1' }, reviewer2: { agent: 'a2', model: 'm2' }, reviewerOnce: null },
+    gate: { head }, 'gate-passed': { base: f.state().head, task: f.state().task, first: true } };
+  const incomplete = why => ({ decision: 'INCOMPLETE', line: `评审没有完成：${why}`, findings: '[]', report: '被停下了。' });
+  const { calls, reviews, ends } = deliver(context, { reviewer: incomplete('评审会话没有正常结束'), reviewer2: incomplete('评审方没有按格式给出结论') });
+  assert.equal(calls.length, 2);
+  // 两份都从调用的正常出口走到 review-done，没有经过出错边界：「评审这次交付」这个节点没有失败。
+  assert.deepEqual(ends, ['review-done', 'review-done', 'review-skipped']);
+  assert.deepEqual(reviews.slice(0, 2).map(r => [r.state, r.decision]), [['done', 'INCOMPLETE'], ['done', 'INCOMPLETE']]);
+  const card = f.run('review', { REVIEWS: JSON.stringify(reviews) }).outputs.reviews;
+  assert.equal(card, ['评审者（a1）：没评成：评审没有完成：评审会话没有正常结束', '第二评审者（a2 · m2）：没评成：评审没有完成：评审方没有按格式给出结论'].join('\n\n')
+    + `\n评审原文：${join(f.env.CODA_ARTIFACTS, 'reviews.md')}`);
+  assert.ok(readFileSync(join(f.env.CODA_ARTIFACTS, 'reviews.md'), 'utf8').includes('被停下了。'), '评审方返回的文字留在产物里');
+});
+
+test('发现的标题和位置里的换行压成空格，说明原样', async t => {
+  const { deliver } = await reviewing();
+  const f = fixture(t, false); f.run('lane'); f.task('code', 'first'); f.run('execute');
+  const head = f.state().executor.head, path = join(f.env.CODA_ARTIFACTS, 'reviews.md');
+  const context = { inputs: { reviewer: { agent: 'a1' }, reviewer2: null, reviewerOnce: null }, gate: { head }, 'gate-passed': { base: f.state().head, task: f.state().task, first: true } };
+  const findings = [{ severity: 'P2', title: '标题\n第二行', location: 'a.mjs:1\r\n  b.mjs:2', detail: '说明\n第二行' }];
+  const { reviews } = deliver(context, { reviewer: { decision: 'REQUEST_CHANGES', line: '要改', findings: JSON.stringify(findings), report: '原文' } });
+  const card = f.run('review', { REVIEWS: JSON.stringify(reviews) }).outputs.reviews;
+  assert.equal(card, `评审者（a1）：要改\n- [P2] 标题 第二行（a.mjs:1 b.mjs:2）\n  说明\n  第二行\n评审原文：${path}`);
+  assert.ok(readFileSync(path, 'utf8').startsWith('评审者（a1）：要改\n- [P2] 标题 第二行（a.mjs:1 b.mjs:2）\n  说明\n  第二行'));
 });

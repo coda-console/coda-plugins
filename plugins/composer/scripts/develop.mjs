@@ -72,6 +72,8 @@ const changes = () => {
 
 // 「评审」各份的结果，只取评这次交付的。卡片正文的上限（4000 字）是协议对 BPMN 里字面的检查，展开后的不限；
 // 评审这一段也按这个数收着：放不下时每条只留严重程度、标题和位置，说明和评审原文写在产物里。
+// 评审没完成（INCOMPLETE）的写「没评成」与 review-commit 给的原因；调用本身没成（lost）的指向本运行那一步。
+// 标题、位置各占一行里的一段，其中的换行压成空格，说明原样。
 const SLOTS = { reviewer: '评审者', reviewer2: '第二评审者', reviewerOnce: '首次评审者' };
 const reviews = () => {
   const results = (env.REVIEWS ? JSON.parse(env.REVIEWS) : []).filter(r => r.head === state.executor.head);
@@ -80,7 +82,9 @@ const reviews = () => {
   const render = detailed => results.map(r => {
     const who = `${SLOTS[r.slot]}（${[r.who.agent, r.who.model, r.who.effort].filter(Boolean).join(' · ')}）`;
     if (r.state === 'lost') return `${who}：没评成。调用 review-commit 没有成功，原因见本运行 coda://workflow-runs/${env.GITHUB_RUN_ID} 的「评审这次交付」（workflow_status）。`;
-    const findings = JSON.parse(r.findings).map(f => `- [${f.severity}] ${f.title}${f.location ? `（${f.location}）` : ''}${detailed && f.detail ? `\n  ${f.detail.replace(/\n/g, '\n  ')}` : ''}`);
+    if (r.decision === 'INCOMPLETE') return `${who}：没评成：${r.line}`;
+    const flat = text => text.replace(/\s*[\r\n]+\s*/g, ' ');
+    const findings = JSON.parse(r.findings).map(f => `- [${f.severity}] ${flat(f.title)}${f.location ? `（${flat(f.location)}）` : ''}${detailed && f.detail ? `\n  ${f.detail.replace(/\n/g, '\n  ')}` : ''}`);
     return [`${who}：${r.line}`, ...findings].join('\n');
   }).join('\n\n');
   const full = render(true);
