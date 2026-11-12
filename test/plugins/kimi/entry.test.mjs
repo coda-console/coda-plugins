@@ -434,6 +434,60 @@ test('a title Kimi took from the instructions in front of the first prompt is no
   assert.deepEqual(titles, [{ sessionUpdate: 'session_info_update', updatedAt: '2026-10-14T00:00:00Z' }, { sessionUpdate: 'session_info_update', title: '修好登录页' }]);
 });
 
+// The relay over Kimi's files as `layout` leaves them (and `change` changes them), Kimi saying it is `version`, Coda taking
+// what is not adapted when `taken`: all it said, and what of it said Kimi's files are not as understood.
+async function reported(t, { version = '2.1.1', taken = true, change = async () => {} } = {}) {
+  const f = await layout(t);
+  await f.task('job', { status: 'running', startedAt: 1 });
+  await change(f);
+  const said = [];
+  const r = new KimiRelay({ say: m => said.push(m), tell: () => {}, env: { KIMI_CODE_HOME: f.home }, startedAt: 0, every: 10, hold: 500 });
+  t.after(() => r.close());
+  r.fromCoda({ jsonrpc: '2.0', id: 0, method: 'initialize', params: { clientCapabilities: taken ? { _meta: { coda: { unrecognized: {} } } } : {} } });
+  r.fromAgent({ jsonrpc: '2.0', id: 0, result: { protocolVersion: 1, agentCapabilities: {}, agentInfo: { name: 'Kimi Code CLI', version } } });
+  r.fromCoda({ jsonrpc: '2.0', id: 1, method: 'session/new', params: { cwd: f.cwd, mcpServers: [] } });
+  r.fromAgent({ jsonrpc: '2.0', id: 1, result: { sessionId: SESSION } });
+  await r.drained();
+  // Looked at three times in all: what is not understood stays so.
+  await r.look({ fresh: true }); await r.look({ fresh: true });
+  return { said, told: said.filter(m => m.method === '_coda/unrecognized').map(m => m.params) };
+}
+const UNSEEN = '后台任务、子 Agent、定时看不见，失败的一轮可能显示成成功';
+
+// Red if a version or layout that matches were reported, or reporting changed anything else Coda is told: the waits
+// capability, the task's wait.
+test('a Kimi of the version checked, its files as understood, is relayed as before and reports nothing unadapted', async t => {
+  const taken = await reported(t), before = await reported(t, { taken: false });
+  assert.deepEqual(taken.told, []);
+  assert.deepEqual(taken.said, before.said);
+  assert.deepEqual(taken.said[0].result.agentCapabilities._meta, { coda: { waits: {} } });
+  assert.deepEqual(taken.said.filter(m => m.method === '_coda/wait').map(m => [m.params.waitId, m.params.state]), [['job', 'waiting']]);
+});
+
+// Red if another version's reason were dropped again (observe.mjs `unread`), said each look, said to a Coda that does not take
+// it, said without the version or the sentence the user reads, or if it now read the files or declared waits.
+test('another version of Kimi is relayed plainly and said once, by name, with its version and what goes unseen', async t => {
+  const { said, told } = await reported(t, { version: '2.6.0' });
+  assert.equal(told.length, 1);
+  assert.deepEqual({ ...told[0], detail: undefined }, { sessionId: SESSION, kind: 'output', name: 'files:version', lost: true, detail: undefined });
+  assert.match(told[0].detail, /^Kimi 2\.6\.0：这个版本的 Kimi 没有核对过（核对过的是 2\.1\.1），/);
+  assert.ok(told[0].detail.endsWith(UNSEEN), told[0].detail);
+  assert.equal(said[0].result.agentCapabilities._meta, undefined);
+  assert.deepEqual(said.filter(m => m.method === '_coda/wait'), []);
+  assert.deepEqual((await reported(t, { version: '2.6.0', taken: false })).told, []);
+});
+
+// Red if one of the three layout checks lost its reason, or they were told by one name: each is counted apart.
+test('Kimi 2.1.1 files not laid out as understood are said once each, by which way they differ', async t => {
+  const state = (await reported(t, { change: f => writeFile(join(f.session, 'state.json'), JSON.stringify({ ...f.state, version: 3 })) })).told;
+  assert.deepEqual(state.map(p => p.name), ['files:state.version']);
+  assert.match(state[0].detail, /^Kimi 2\.1\.1：会话的 state\.json 版本对不上/);
+  const wire = (await reported(t, { change: f => writeFile(f.wire, JSON.stringify({ type: 'metadata', protocol_version: '1.6' }) + '\n') })).told;
+  assert.deepEqual(wire.map(p => p.name), ['files:wire.protocol_version']);
+  const task = (await reported(t, { change: f => f.task('job', { kind: 'thread', status: 'running', startedAt: 1 }) })).told;
+  assert.deepEqual(task.map(p => [p.name, p.lost]), [['files:layout', true]]);
+});
+
 test('setup installs a missing or broken Kimi CLI, upgrades one older than the file layout the relay reads, and keeps a newer one', () => {
   const run = (status, stdout = '', stderr = '') => () => ({ status, stdout, stderr });
   assert.equal(MINIMUM, '2.1.1');

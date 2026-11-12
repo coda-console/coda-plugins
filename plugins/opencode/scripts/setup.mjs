@@ -7,11 +7,12 @@ import { spawnSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { opencodeBinary } from '../agent/binary.mjs';
+import { CHECKED } from '../agent/shells.mjs';
 
 // The release the entry was checked against: OpenCode 2, whose ACP says a model service's wait (retries.mjs), as OpenCode 1
 // never does, sitting out a Retry-After of any length in silence. It reports the current model, loads a session in a new
 // process, and takes over OpenCode 1's sessions, under their IDs.
-export const MINIMUM = '2.1.4';
+export const MINIMUM = CHECKED;
 // The first x.y.z a version command prints; whether one is older than another.
 export const versionIn = text => /(\d+)\.(\d+)\.(\d+)/.exec(text ?? '')?.slice(1).join('.') ?? null;
 export function older(version, than) {

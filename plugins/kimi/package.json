@@ -3,7 +3,7 @@
   "id": "kimi",
   "displayName": "Kimi Code",
   "description": "用 Kimi Code 跑会话",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "categories": [
     "Agent"
   ],
@@ -39,7 +39,7 @@
         "signIn": {
           "command": "exec sh \"$CODA_PLUGIN_PATH/scripts/login.sh\"",
           "installed": "test -x \"$HOME/.kimi-code/bin/kimi\" || command -v kimi >/dev/null",
-          "install": "exec sh \"$CODA_PLUGIN_PATH/scripts/install.sh\"",
+          "install": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/setup.mjs\"",
           "note": "登录保存在这台机器的 Kimi CLI 里，由它自己续期。"
         }
       }

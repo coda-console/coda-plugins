@@ -126,7 +126,7 @@ test('the type shows the login and its quota, asks who it is once per state of t
 
 // What `kimi login` 2.1.1 prints, then waits until the user confirms (a file here). It opens the link with whichever `open`
 // comes first on its PATH: this one records which, and never runs it.
-test('a Kimi login passes on its link and code, opens no browser on the machine, and is installed by its own installer, touching nothing else', async t => {
+test('a Kimi login passes on its link and code, opens no browser on the machine, and is installed by its own installer at the version checked, touching nothing else', async t => {
   const m = await machine(t, 'ok', { signedIn: false }), state = join(m.home, 'state');
   await mkdir(state);
   await writeFile(m.binary, `#!/bin/sh
@@ -136,11 +136,13 @@ printf 'Opening browser for Kimi device login: https://www.kimi.com/code/authori
 printf 'If the browser did not open, paste the URL above and enter code: AXWD-2GDC\\nWaiting for authorization to complete…' >&2
 while [ ! -e "${m.home}/confirmed" ]; do sleep 0.02; done
 `, { mode: 0o755 });
-  // The installer is the CLI's own, fetched by bash: a bash here notes how it was run instead.
+  // The installer is the CLI's own, fetched by bash: a bash here notes how it was run instead, and leaves a CLI of the
+  // version it was asked for.
   const bin = join(m.home, 'fake-bin');
   await mkdir(bin);
-  await writeFile(join(bin, 'bash'), `#!/bin/sh\nprintf '%s\\n' "$KIMI_NO_MODIFY_PATH" "$PATH" "$2" > "${m.home}/installed"\n`, { mode: 0o755 });
-  const env = pluginEnv('kimi', { HOME: m.home, PATH: `${bin}:${join(m.home, '.kimi-code/bin')}:/usr/bin:/bin`, CODA_PLUGIN_STATE: state });
+  await writeFile(join(bin, 'bash'), `#!/bin/sh\nprintf '%s\\n' "$KIMI_NO_MODIFY_PATH" "$PATH" "$2" "$KIMI_VERSION" > "${m.home}/installed"
+printf '#!/bin/sh\\necho kimi %s\\n' "$KIMI_VERSION" > "${m.binary}" && chmod 755 "${m.binary}"\n`, { mode: 0o755 });
+  const env = pluginEnv('kimi', { HOME: m.home, PATH: `${bin}:${join(m.home, '.kimi-code/bin')}:/usr/bin:/bin`, CODA_PLUGIN_STATE: state, CODA_NODE: process.execPath });
   assert.equal(installed(declared.signIn.installed, env), true);
   const login = signIn(t, declared.signIn.command, env);
   await login.printed(/Waiting for authorization/);
@@ -152,10 +154,14 @@ while [ ! -e "${m.home}/confirmed" ]; do sleep 0.02; done
   await writeFile(join(m.home, 'confirmed'), '');
   assert.equal(await login.ended, 0);
 
+  // The install button shows when there is no CLI. Without KIMI_VERSION the installer would put the latest, whose files the
+  // relay has not been checked against.
+  await rm(m.binary);
   const result = await run(declared.signIn.install, env, { timeoutMs: 10_000 });
-  assert.equal(result.code, 0, result.stderr);
-  const [noModify, path, script] = (await readFile(join(m.home, 'installed'), 'utf8')).trim().split('\n');
+  assert.deepEqual([result.code, result.stdout.trim()], [0, 'Kimi CLI 2.1.1'], result.stderr);
+  const [noModify, path, script, version] = (await readFile(join(m.home, 'installed'), 'utf8')).trim().split('\n');
   assert.equal(noModify, '1');
   assert.ok(!path.split(':').includes(join(m.home, '.kimi-code/bin')), 'its directory is left off PATH, so an older kimi is not renamed');
   assert.equal(script, 'set -o pipefail; curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash');
+  assert.equal(version, '2.1.1');
 });

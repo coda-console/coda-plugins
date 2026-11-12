@@ -1,13 +1,15 @@
 // The plugin's setup (`contributes.setup`), which Coda runs on each machine when the user installs or updates the plugin: it
-// ends well once the machine can run the agent. Without a Kimi CLI that runs, or with one older than MINIMUM (the file layout
-// the relay reads, agent/observe.mjs), Kimi's own installer (install.sh) puts the latest in ~/.kimi-code/bin, where the agent
-// looks first; a newer one is kept. Why the machine is not ready is said in one line on standard error.
+// ends well once the machine can run the agent; the「Kimi」resource type's install runs it too. Without a Kimi CLI that runs, or
+// with one older than MINIMUM (the file layout the relay reads, agent/observe.mjs), Kimi's own installer (install.sh) puts that
+// version (KIMI_VERSION) in ~/.kimi-code/bin, where the agent looks first; a newer one is kept. Why the machine is not ready
+// is said in one line on standard error.
 import { spawnSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { kimiBinary } from '../agent/binary.mjs';
+import { SUPPORTED } from '../agent/observe.mjs';
 
-export const MINIMUM = '2.1.1';
+export const MINIMUM = SUPPORTED;
 // The first x.y.z a version command prints; whether one is older than another.
 export const versionIn = text => /(\d+)\.(\d+)\.(\d+)/.exec(text ?? '')?.slice(1).join('.') ?? null;
 export function older(version, than) {
@@ -32,7 +34,8 @@ if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToP
   const before = needed(kimiBinary());
   if (before.action !== 'none') {
     // What the installer prints goes to standard error with the rest of its story.
-    const installed = spawnSync('sh', [fileURLToPath(new URL('./install.sh', import.meta.url))], { stdio: ['ignore', 2, 2] });
+    const installed = spawnSync('sh', [fileURLToPath(new URL('./install.sh', import.meta.url))], { stdio: ['ignore', 2, 2],
+      env: { ...process.env, KIMI_VERSION: MINIMUM } });
     if (installed.status !== 0) { console.error(`${before.reason}，安装失败（退出码 ${installed.status ?? installed.signal}）`); process.exit(1); }
   }
   const after = needed(kimiBinary());

@@ -6,12 +6,12 @@ import { KimiSubagentBridge, loopUpdate } from './subagents.mjs';
 
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
 const identifier = value => typeof value === 'string' && /^[\w-]+$/.test(value);
-const unread = () => null;
 
 // What Kimi keeps of a session in its own files (KIMI_CODE_HOME): its tasks, its main agent's turns, the crons it scheduled
 // (`cron.add` / `cron.delete` / `cron.cursor` on the main wire) and its subagents' own conversations, which its ACP does
 // not tell. These files are an implementation detail, not an ACP contract. Accept only the layout inspected in 2.1.1; a
-// new version simply loses this observation.
+// new version simply loses this observation, and says which way its files are not as understood (`unread`, relay.mjs).
+// The one place the version checked is written: setup installs it (scripts/setup.mjs).
 export const SUPPORTED = '2.1.1';
 // Bounded ordinary-file reads also prevent a broken index/FIFO from holding up
 // the entry. No paths, prompts, task output or credentials leave this module.
@@ -40,8 +40,9 @@ async function contained(root, path) {
 }
 
 // The session `sessionId` that Kimi keeps for `cwd`. `startedAt`: when this agent process started; a subagent's run from
-// before it is another process's, whose conversation is not told again.
-export function kimiSession({ sessionId, cwd, env = {}, version, startedAt = 0 }) {
+// before it is another process's, whose conversation is not told again. `unread`: why a look found nothing, each time.
+export function kimiSession({ sessionId, cwd, env = {}, version, startedAt = 0, unread: told = () => {} }) {
+  const unread = reason => { told(reason); return null; };
   const home = env.KIMI_CODE_HOME || join(env.HOME || homedir(), '.kimi-code');
   let directory;
   let subagents;
@@ -80,7 +81,7 @@ export function kimiSession({ sessionId, cwd, env = {}, version, startedAt = 0 }
   // out as understood; a read that fails (a file being written) throws. A cron or goal event that is not the shape
   // understood is skipped, so one of them cannot hide the tasks.
   async observe({ signal, emit = () => {} }) {
-    if (version !== SUPPORTED) return unread('unsupported_version');
+    if (version !== SUPPORTED) return unread('files:version');
     if (!identifier(sessionId) || !isAbsolute(home ?? '') || !isAbsolute(cwd ?? '')) return unread('unbound_session');
     const root = await realpath(join(home, 'sessions')), workspace = await realpath(cwd);
     if (!directory) {
@@ -98,10 +99,11 @@ export function kimiSession({ sessionId, cwd, env = {}, version, startedAt = 0 }
     }
     const session = await contained(root, directory);
     const state = JSON.parse(await read(join(session, 'state.json'), 1024 * 1024, signal));
-    if (state.version !== 2 || state.id !== sessionId || typeof state.cwd !== 'string' ||
-      await realpath(state.cwd) !== workspace || !object(state.agents) || !object(state.agents.main)) return unread('unsupported_layout');
+    if (state.version !== 2) return unread('files:state.version');
+    if (state.id !== sessionId || typeof state.cwd !== 'string' ||
+      await realpath(state.cwd) !== workspace || !object(state.agents) || !object(state.agents.main)) return unread('files:layout');
     const agents = Object.keys(state.agents);
-    if (agents.length > 256 || !agents.every(identifier)) return unread('unsupported_layout');
+    if (agents.length > 256 || !agents.every(identifier)) return unread('files:layout');
 
     const records = [];
     for (const id of agents) {
@@ -110,16 +112,16 @@ export function kimiSession({ sessionId, cwd, env = {}, version, startedAt = 0 }
       try { tasks = await contained(agent, join(agent, 'tasks')); }
       catch (error) { if (error.code === 'ENOENT') continue; throw error; }
       const files = await readdir(tasks, { withFileTypes: true });
-      if (files.length > 4096) return unread('unsupported_layout');
+      if (files.length > 4096) return unread('files:layout');
       for (const file of files) {
         signal.throwIfAborted();
         if (!file.name.endsWith('.json')) continue;
-        if (!file.isFile()) return unread('unsupported_layout');
+        if (!file.isFile()) return unread('files:layout');
         const task = JSON.parse(await read(join(tasks, file.name), 1024 * 1024, signal));
         if (!object(task) || !identifier(task.taskId) || file.name !== `${task.taskId}.json` ||
-          !['agent', 'process'].includes(task.kind) || typeof task.status !== 'string') return unread('unsupported_layout');
+          !['agent', 'process'].includes(task.kind) || typeof task.status !== 'string') return unread('files:layout');
         if (task.status !== 'running' && (!['completed', 'failed', 'killed', 'lost', 'timed_out'].includes(task.status) ||
-          !Number.isSafeInteger(task.endedAt) || task.endedAt <= 0)) return unread('unsupported_layout');
+          !Number.isSafeInteger(task.endedAt) || task.endedAt <= 0)) return unread('files:layout');
         records.push(task);
       }
     }
@@ -132,7 +134,8 @@ export function kimiSession({ sessionId, cwd, env = {}, version, startedAt = 0 }
     const wire = await read(join(session, 'agents/main/wire.jsonl'), 32 * 1024 * 1024, signal);
     const lines = wire.trimEnd().split('\n');
     const metadata = JSON.parse(lines.shift());
-    if (metadata.type !== 'metadata' || metadata.protocol_version !== '1.5') return unread('unsupported_layout');
+    if (metadata.type !== 'metadata') return unread('files:layout');
+    if (metadata.protocol_version !== '1.5') return unread('files:wire.protocol_version');
     // `cron.delete` is written when a fire is delivered and when CronDelete removes a job during a turn that is not that
     // fire. Which one it was is kept with the job: the open `cron_job` turn, that turn once it ended, or the delete that
     // landed inside some other turn already going. A delete before any such turn is not a cancel: the fire's turn.prompt
@@ -166,7 +169,7 @@ export function kimiSession({ sessionId, cwd, env = {}, version, startedAt = 0 }
         }
       } else if (event.type === 'turn.ended') {
         if (event.agentId !== 'main' || !going.has(event.turnId) || !['completed', 'cancelled', 'failed', 'blocked'].includes(event.reason) ||
-          !Number.isSafeInteger(event.time) || event.time <= 0) return unread('unsupported_layout');
+          !Number.isSafeInteger(event.time) || event.time <= 0) return unread('files:layout');
         going.delete(event.turnId);
         turnEndedAt = event.time;
         for (const cron of crons.values()) if (cron.fireTurn === event.turnId) cron.fireEnded = true;
