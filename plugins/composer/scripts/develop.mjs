@@ -1,66 +1,48 @@
-// 每一步的工作区都会回收；泳道进度和已通过的改动留在本次运行的产物里。
-import { spawnSync } from 'node:child_process';
-import { waitForGitHubChecks } from './github-checks.mjs';
+// 需求运行（README.md「监督开发」）：一个需求一条泳道 lane/<运行 ID>，主 Agent 用泳道 PR（lane-pr）往里提改动，提交验收后泳道开 PR 进目标分支。
+// 每步的工作区都会回收；反馈与汇报暂存在本次运行的产物里。进度以 GitHub 为准：泳道分支、已合并的泳道 PR 和泳道进目标分支的 PR，从头重跑也接得上。
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { command, gh, git, output } from './shared.mjs';
+import { waitForGitHubChecks } from './github-checks.mjs';
+import { checksText, gh, git, mergePr, openPr, output, reviewsText } from './shared.mjs';
 
 const env = process.env, action = process.argv[2];
 const statePath = join(env.CODA_ARTIFACTS, 'develop.json');
-const instructions = `你是这次开发流程的执行者，自己完成这一项任务，不继承主 Agent 的协调职责，不再委派。
-只做这一项，在当前分支提交，不推送、不开 PR、不合并、不部署。
-遵守仓库的 AGENTS.md。只改必需的地方，不写防御性、冗余的代码，不顺手重构。
-只跑与改动直接相关的快检查；流程会在审查前自己跑项目检查，构建、全套和界面检查不在这里重复，不必再用 run-held 跑整套编译。
-用户勾选发布后，未自行填写发布说明时，由主 Agent 在「写发布说明」任务中准备。
-回报改了什么、为什么、实际跑了哪些验证及未验证部分。`;
 
-// 让执行者把目标分支合进自己的分支：试合并发现冲突和主 Agent 选「让执行者合并目标分支」用同一段说明。
-const syncText = (base, files = []) => `目标分支是 ${base}。${files.length ? `\n试合并发现这次提交与它冲突的文件：\n${files.map(file => `- ${file}`).join('\n')}` : ''}
-先 git fetch origin ${base}，再把 origin/${base} 合并（merge）进当前分支，不要变基：泳道只能快进，变基会改写已经在泳道里的提交，之后就合不进泳道了。
-解决冲突；数据库迁移等版本号和目标分支撞号时，顺延自己这边的。
-跑和冲突相关的测试后提交，只做这件事。回报冲突了哪些文件、各自怎么解决的、跑了什么。
-目标分支没有新提交时，直接回报不需要合并。`;
-
-// 用户开启时由主 Agent 写的第一项任务：备注第一行是功能名，其后是任务。
+// 用户开启时由主 Agent 写的需求：备注第一行是需求名，其后是目标与完成标准。
 if (action === 'brief') {
   const [first = '', ...rest] = (JSON.parse(env.BRIEF).note ?? '').trim().split(/\r?\n/);
-  const title = first.trim(), task = rest.join('\n').trim();
-  output('feedback', title && task ? '' : '备注第一行写功能名，空一行后写第一项任务，两样都要有。');
-  output('route', title && task ? 'lane' : 'brief');
+  const title = first.trim(), goal = rest.join('\n').trim();
+  output('feedback', title && goal ? '' : '备注第一行写需求名，空一行后写目标与完成标准，两样都要有。');
+  output('route', title && goal ? 'lane' : 'brief');
   output('title', title);
-  output('task', task);
+  output('goal', goal);
   process.exit(0);
 }
 
+// 从目标分支最新提交建泳道；远端已有同名泳道时沿用（运行从头重跑）。
 if (action === 'lane') {
   const base = env.BASE || gh('repo', 'view', '--json', 'defaultBranchRef', '--jq', '.defaultBranchRef.name');
-  git('fetch', 'origin', base);
-  const head = git('rev-parse', 'FETCH_HEAD');
   const lane = `lane/${env.GITHUB_RUN_ID}`;
-  git('branch', lane, head);
-  git('push', 'origin', `${lane}:refs/heads/${lane}`);
-  writeFileSync(statePath, JSON.stringify({ title: env.TITLE, base, lane, head, task: env.TASK, approved: [], phase: 'preview', feedback: '', pr: '' }));
-  output('title', env.TITLE);
+  if (git('ls-remote', '--heads', 'origin', lane)) console.error(`远端已有泳道 ${lane}，沿用`);
+  else {
+    git('fetch', 'origin', base);
+    git('push', 'origin', `FETCH_HEAD:refs/heads/${lane}`);
+  }
+  writeFileSync(statePath, JSON.stringify({ title: env.TITLE, goal: env.GOAL, base, lane, feedback: '', report: '' }));
+  for (const [name, value] of Object.entries({ title: env.TITLE, goal: env.GOAL, base, lane })) output(name, value);
   process.exit(0);
 }
 
 const state = JSON.parse(readFileSync(statePath, 'utf8'));
 const save = () => writeFileSync(statePath, JSON.stringify(state));
-const cleanup = () => {
-  if (!state.checkRef) return;
-  if (git('ls-remote', 'origin', state.checkRef)) git('push', 'origin', '--delete', state.checkRef);
-  delete state.checkRef;
-  save();
-};
-const body = () => state.approved.map((item, index) => `## 第 ${index + 1} 项\n\n<details><summary>任务</summary>\n\n${item.task}\n\n</details>\n\n${item.answer}\n\n提交：${item.head}`).join('\n\n');
+// 回到「需求进行中」的原因，主 Agent 答复后清掉。
+const back = reason => { state.feedback = reason; save(); };
 
-// 与 PR 的 Files changed 一致：目标分支最新提交到 head 的三点 diff，按 .coda/areas.json 的最长前缀归区域。
-const changes = () => {
-  git('fetch', 'origin', state.lane);
-  git('fetch', 'origin', state.base);
+// 与 PR 的 Files changed 一致：目标分支最新提交到泳道 head 的三点 diff，按 .coda/areas.json 的最长前缀归区域。
+const changes = base => {
   const declared = git('ls-tree', '--name-only', state.head, '.coda/areas.json') ? JSON.parse(git('show', `${state.head}:.coda/areas.json`)) : {};
   const prefixes = Object.entries(declared).flatMap(([area, list]) => list.map(prefix => [prefix, area])).sort((a, b) => b[0].length - a[0].length);
-  const fields = git('diff', '--numstat', '-z', '-M', `FETCH_HEAD...${state.head}`).split('\0');
+  const fields = git('diff', '--numstat', '-z', '-M', `${base}...${state.head}`).split('\0');
   const areas = {}, total = { files: 0, added: 0, deleted: 0 };
   for (let i = 0; i < fields.length - 1; i++) {
     const [added, deleted, name] = fields[i].split('\t');
@@ -77,151 +59,84 @@ const changes = () => {
   return [`改动：${line(total)}`, ...Object.entries(areas).sort(([, a], [, b]) => b.added + b.deleted - a.added - a.deleted).map(([area, group]) => `- ${area}：${line(group)}`)].join('\n');
 };
 
-// 只试不合：merge-tree 不产生提交，不动任何引用、索引和工作区。干净返回 undefined，有冲突返回冲突的文件。
-const conflicts = () => {
-  git('fetch', 'origin', state.base);
-  const result = spawnSync('git', ['merge-tree', '--write-tree', '--name-only', '--no-messages', '-z', 'FETCH_HEAD', state.executor.head], { encoding: 'utf8' });
-  if (result.error) throw result.error;
-  if (result.status === 0) return;
-  if (result.status !== 1) { process.stderr.write(result.stderr); process.exit(result.status ?? 1); }
-  return [...new Set(result.stdout.split('\0').slice(1).filter(Boolean))];
-};
-
-// 这次交付的项目检查结果，每个检查一行：审查卡的「项目检查结果」和交给评审者的已有验证是同一段。
-const checks = () => state.checks?.head === state.executor.head ? state.checks.runs.map(r => `${r.workflow}: ${r.state} coda://workflow-runs/${r.runId}`).join('\n') || '此提交未声明项目检查流程。' : '此提交项目检查未通过。';
-
-// 「评审」各份的结果，只取评这次交付的。卡片正文的上限（4000 字）是协议对 BPMN 里字面的检查，展开后的不限；
-// 评审这一段也按这个数收着：放不下时每条只留严重程度、标题和位置，说明和评审原文写在产物里。
-// 评审没完成（INCOMPLETE）的写「没评成」与 review-commit 给的原因；调用本身没成（lost）的指向本运行那一步。
-// 标题、位置各占一行里的一段，其中的换行压成空格，说明原样。
-const SLOTS = { reviewer: '评审者', reviewer2: '第二评审者', reviewerOnce: '首次评审者' };
-const reviews = () => {
-  const results = (env.REVIEWS ? JSON.parse(env.REVIEWS) : []).filter(r => r.head === state.executor.head);
-  if (!results.length) return '';
-  const path = join(env.CODA_ARTIFACTS, 'reviews.md');
-  const render = detailed => results.map(r => {
-    const agent = JSON.parse(r.who);
-    const who = `${SLOTS[r.slot]}（${[agent.agent, agent.model, agent.effort].filter(Boolean).join(' · ')}）`;
-    if (r.state === 'lost') return `${who}：没评成。调用 review-commit 没有成功，原因见本运行 coda://workflow-runs/${env.GITHUB_RUN_ID} 的「评审这次交付」（workflow_status）。`;
-    if (r.decision === 'INCOMPLETE') return `${who}：没评成：${r.line}`;
-    const flat = text => text.replace(/\s*[\r\n]+\s*/g, ' ');
-    const findings = JSON.parse(r.findings).map(f => `- [${f.severity}] ${flat(f.title)}${f.location ? `（${flat(f.location)}）` : ''}${detailed && f.detail ? `\n  ${f.detail.replace(/\n/g, '\n  ')}` : ''}`);
-    return [`${who}：${r.line}`, ...findings].join('\n');
-  }).join('\n\n');
-  const full = render(true);
-  writeFileSync(path, [full, ...results.filter(r => r.state === 'done').map(r => `## ${SLOTS[r.slot]}的评审原文\n\n${r.report}`)].join('\n\n'));
-  return full.length <= 4000 ? `${full}\n评审原文：${path}` : `${render(false)}\n发现较多，这里只列严重程度、标题和位置；每条的说明与评审原文见 ${path}`;
+// 合进泳道的泳道 PR，从 GitHub 读，按编号先后。
+const lanePrs = () => {
+  const merged = JSON.parse(gh('pr', 'list', '--base', state.lane, '--state', 'merged', '--limit', '200', '--json', 'number,title,url'));
+  return merged.sort((a, b) => a.number - b.number).map(pr => `- ${pr.title}（${pr.url}）`).join('\n') || '（还没有合进泳道的泳道 PR）';
 };
 
 switch (action) {
-  // 换备用执行者（swap）与执行一项任务一样新开会话、从泳道当前提交开工，接手的是同一项任务：上一位没被接受的提交不带过来，只告诉它在哪。
-  case 'execute':
-  case 'swap':
-  case 'revise': {
-    const prompt = join(env.RUNNER_TEMP, 'task.md');
-    const text = action === 'revise' ? state.feedback : action === 'execute' ? state.task
-      : `${state.task}\n\n主 Agent 把这一项换给你重做：\n${state.feedback}\n\n上一位执行者的分支 ${state.executor.branch}、提交 ${state.executor.head} 在本机仓库可读，可以参考，也可以不用。`;
-    writeFileSync(prompt, `${instructions}\n\n${text}\n`);
-    const fresh = action !== 'revise';
-    const args = fresh ? ['--commit', state.head, '--title', state.title] : ['--continue', state.executor.session];
-    // 执行者是一组 Agent 选择（流程参数的 agent 类型）：没选的模型、强度、模式用 Agent 的默认值。
-    if (fresh) {
-      const { options = {}, ...chosen } = JSON.parse(env.EXECUTOR);
-      for (const key of ['agent', 'model', 'effort', 'mode']) if (chosen[key]) args.push(`--${key}`, chosen[key]);
-      for (const [id, value] of Object.entries(options)) args.push('--option', `${id}=${value}`);
-    }
-    state.executor = JSON.parse(command('coda-agent', [...args, '--json', '--prompt-file', prompt]));
-    state.feedback = '';
-    // 新会话的第一次交付算这项任务的第一次；退回次数只在新的一项任务开始时归零。
-    if (fresh) { state.failures = []; state.reviewed = false; }
-    if (action === 'execute') state.returns = 0;
-    save();
+  case 'resume':
+    output('reason', state.feedback);
     break;
-  }
-  case 'gate':
-    state.checkRef = `refs/heads/composer-check/${env.GITHUB_RUN_ID}`;
-    // 记录本轮检查分支，accept 推入泳道后删除。
-    save();
-    console.error(`推送执行者提交 ${state.executor.head} 到 ${state.checkRef}`);
-    git('push', '--no-follow-tags', '--force', 'origin', `${state.executor.head}:${state.checkRef}`);
-    output('head', state.executor.head);
-    break;
-  case 'gate-passed':
-    state.checks = { head: state.executor.head, runs: JSON.parse(env.RUNS) };
-    state.failures = [];
-    state.feedback = '';
-    // 评审对照泳道当前的提交；首次评审者只评这项任务第一次通过检查的交付。
-    output('base', state.head);
-    output('task', state.task);
-    output('first', String(!state.reviewed));
-    output('checks', checks());
-    state.reviewed = true;
-    save();
-    break;
-  case 'gate-failed': {
-    const failure = `项目检查未通过，提交 ${state.executor.head}。运行：coda://workflow-runs/${env.GITHUB_RUN_ID}。请用 workflow_status 查看项目检查调用的失败流程、步骤和日志尾，修复后提交。`;
-    delete state.checks;
-    state.failures.push(failure);
-    state.feedback = state.failures.join('\n\n');
-    save();
-    output('route', state.failures.length >= 3 ? 'review' : 'revise');
-    break;
-  }
-  case 'review':
-    output('checks', checks());
-    for (const [name, value] of Object.entries({ ...state.executor, lane: state.lane, feedback: state.feedback, returns: state.returns })) output(name, value);
-    output('reviews', reviews());
-    break;
-  case 'decide': {
-    const { choice, note = '' } = JSON.parse(env.REVIEW);
-    // 引擎不能按条件隐藏答复：没填备用执行者时「换备用执行者重做」照样能选，选了回到审查卡说明。
-    const blocked = !note.trim() ? { revise: '退回修改必须在备注中写具体意见。', next: '通过，再派一项必须在备注中写下一项任务。', accept: '通过，可以验收必须在备注中写给用户的改动汇报。', swap: '换备用执行者重做必须在备注中写为什么换、接手的人要注意什么。' }[choice]
-      : choice === 'swap' && env.BACKUP !== 'true' ? '没有填备用执行者，不能换人重做；请改选别的答复。' : '';
-    if (blocked) state.feedback = blocked;
-    else {
-      state.choice = choice;
-      state.feedback = choice === 'sync' ? `${syncText(state.base)}${note.trim() ? `\n\n主 Agent 的备注：\n${note}` : ''}` : note;
-      if (choice === 'accept') state.report = note;
-      // 退回次数只数主 Agent 的「退回修改」；检查失败的自动退回、换人和合并目标分支都不算。
-      if (choice === 'revise') state.returns++;
-    }
-    save();
-    output('route', blocked ? 'review' : choice === 'sync' ? 'revise' : ['revise', 'swap'].includes(choice) ? choice : 'accept');
-    break;
-  }
-  case 'accept': {
-    // 通过可以验收时先试合并目标分支：有冲突就不动泳道，把说明交给同一执行会话；「再派一项」不试。
-    const files = state.choice === 'accept' ? conflicts() : undefined;
-    if (files) {
-      state.feedback = syncText(state.base, files);
+  case 'progress': {
+    const { choice, note = '' } = JSON.parse(env.PROGRESS);
+    const missing = !note.trim() && { submit: '提交验收必须在备注中写给用户的改动汇报。', pause: '暂停必须在备注中写为什么暂停、等什么。' }[choice];
+    if (!missing) {
+      if (choice === 'submit') state.report = note;
+      state.feedback = '';
       save();
-      output('route', 'sync');
-      break;
     }
+    output('feedback', missing || '');
+    output('route', missing ? 'progress' : choice);
+    break;
+  }
+  case 'paused': {
+    const { choice, note = '' } = JSON.parse(env.PAUSED);
+    if (choice === 'continue') back(`用户在「需求已暂停」选了继续。${note.trim() ? `\n用户的话：\n${note}` : ''}`);
+    output('route', choice);
+    break;
+  }
+  // 开或更新泳道进目标分支的 PR：汇报、合进泳道的泳道 PR、改动区域。已开着的 PR 从 GitHub 找，不靠运行暂存。
+  case 'pr': {
+    git('fetch', 'origin', state.base);
+    const base = git('rev-parse', 'FETCH_HEAD');
     git('fetch', 'origin', state.lane);
-    git('switch', '-C', state.lane, 'FETCH_HEAD');
-    // 顺序任务只能快进；Git 的错误会说明分叉，流程停在这里交回主 Agent。
-    git('merge', '--ff-only', state.executor.head);
-    git('push', 'origin', `HEAD:refs/heads/${state.lane}`);
-    cleanup();
-    state.head = state.executor.head;
-    if (state.approved.at(-1)?.head !== state.head) state.approved.push({ task: state.task, head: state.head, answer: state.executor.answer });
-    const next = state.choice === 'next';
-    if (next) { state.task = state.feedback; state.phase = 'preview'; }
-    state.feedback = '';
+    state.head = git('rev-parse', 'FETCH_HEAD');
+    const summary = `${state.report}\n\n泳道 PR：\n${lanePrs()}\n\n${changes(base)}`;
+    const path = join(env.RUNNER_TEMP, 'pr.md');
+    writeFileSync(path, summary);
+    state.pr = gh('pr', 'list', '--head', state.lane, '--base', state.base, '--state', 'open', '--limit', '1', '--json', 'url', '--jq', '.[].url');
+    if (state.pr) gh('pr', 'edit', state.pr, '--body-file', path);
+    else state.pr = openPr('--base', state.base, '--head', state.lane, '--title', state.title, '--body-file', path);
     save();
+    output('checked', String(state.checks?.head === state.head));
+    output('url', state.pr);
     output('head', state.head);
+    output('base', base);
     output('lane', state.lane);
-    output('route', next ? 'execute' : !env.DELIVERY && env.DEVICES === 'true' && state.phase !== 'check' ? 'preview' : 'pr');
+    output('summary', summary);
+    output('task', `需求：${state.title}\n\n目标与完成标准：\n${state.goal}\n\n主 Agent 的汇报：\n${state.report}`);
+    break;
+  }
+  case 'checks-passed':
+    state.checks = { head: state.head, runs: JSON.parse(env.RUNS) };
+    save();
+    break;
+  case 'github-checks': {
+    const status = await waitForGitHubChecks(state.pr, state.head);
+    if (status !== 0) process.exit(status);
+    output('evidence', `项目检查：\n${checksText(state.checks, state.head)}\n合并前检查与 GitHub 检查已通过。`);
+    break;
+  }
+  case 'check-failed':
+    back(`${env.STEP}未通过，泳道 head ${state.head}。\n运行：coda://workflow-runs/${env.GITHUB_RUN_ID}\n请用 workflow_status 查看本运行「${env.STEP}」及其调用的失败流程，读取错误和日志；提泳道 PR 修好后再提交验收。`);
+    break;
+  case 'reviewed':
+    output('reviews', reviewsText(env.REVIEWS, state.head, '评审整条泳道'));
+    break;
+  case 'review': {
+    const { choice, note = '' } = JSON.parse(env.REVIEW);
+    if (choice === 'progress') back(`整体评审后主 Agent 选了回到进行中。${note.trim() ? `\n${note}` : ''}\n评审的发现与原文：${join(env.CODA_ARTIFACTS, 'reviews.md')}`);
+    output('route', choice);
     break;
   }
   case 'preview': {
     const { choice, note = '' } = JSON.parse(env.PREVIEW);
-    const missing = choice === 'review' && !note.trim();
-    state.feedback = missing ? '回到审查必须在备注中写具体意见。' : choice === 'review' ? `安装预览版需处理：\n${note}` : '';
-    save();
-    output('feedback', state.feedback);
-    output('route', missing ? 'preview' : choice === 'review' ? 'review' : 'device');
+    const missing = choice === 'progress' && !note.trim();
+    if (choice === 'progress' && !missing) back(`安装预览版需处理：\n${note}`);
+    output('feedback', missing ? '回到进行中必须在备注中写具体意见。' : '');
+    output('route', missing ? 'preview' : choice === 'progress' ? 'progress' : 'device');
     break;
   }
   case 'device': {
@@ -229,15 +144,22 @@ switch (action) {
     const { choice, note = '', attachments = [] } = JSON.parse(env.DEVICE);
     const missing = choice === 'no' && !note.trim() && !attachments.length;
     const files = attachments.length ? `附件：\n${attachments.map(path => `- ${path}`).join('\n')}` : '';
-    state.feedback = missing ? '选择「不行」必须写验收意见或附上截图。' : choice === 'no' ? `设备验收不通过：\n${[note.trim() && note, files].filter(Boolean).join('\n')}` : '';
-    state.phase = 'preview';
-    save();
-    output('feedback', state.feedback);
-    output('route', missing ? 'device' : choice === 'no' ? 'review' : 'pr');
+    if (choice === 'no' && !missing) back(`设备验收不通过：\n${[note.trim() && note, files].filter(Boolean).join('\n')}`);
+    output('feedback', missing ? '选择「不行」必须写验收意见或附上截图。' : '');
+    output('route', missing ? 'device' : choice === 'no' ? 'progress' : 'passed');
+    break;
+  }
+  case 'delivery': {
+    const { choice, note = '' } = JSON.parse(env.DELIVERY_RESULT);
+    const missing = choice === 'revise' && !note.trim();
+    if (choice === 'revise' && !missing) back(`所属需求退回修改：\n${note}`);
+    output('feedback', missing ? '退回修改必须在备注中写具体意见。' : '');
+    output('route', missing ? 'delivery' : choice === 'revise' ? 'progress' : 'merge');
     break;
   }
   case 'approval': {
     const { choice, note = '', options = {} } = JSON.parse(env.APPROVAL);
+    if (choice === 'stop') back(`用户选了暂不合并：\n${note}`);
     const missing = choice === 'merge' && (options.preview || options.release) && !note.trim();
     output('route', missing ? 'notes' : choice === 'stop' ? 'stop' : 'merge');
     break;
@@ -250,67 +172,14 @@ switch (action) {
     output('notes', note);
     break;
   }
-  case 'pr': {
-    const path = join(env.RUNNER_TEMP, 'pr.md');
-    const summary = `${state.report}\n\n${changes()}`;
-    writeFileSync(path, `${summary}\n\n<details><summary>执行记录</summary>\n\n${body()}\n\n</details>`);
-    if (state.pr) gh('pr', 'edit', state.pr, '--body-file', path);
-    else state.pr = gh('pr', 'create', '--base', state.base, '--head', state.lane, '--title', state.title, '--body-file', path);
-    state.phase = 'check';
-    save();
-    output('checked', String(state.checks?.head === state.head));
-    output('url', state.pr);
-    output('head', state.head);
-    output('summary', summary);
-    break;
-  }
-  case 'github-checks': {
-    const status = await waitForGitHubChecks(state.pr, state.head);
-    if (status !== 0) process.exit(status);
-    break;
-  }
-  case 'delivery': {
-    const { choice, note = '' } = JSON.parse(env.DELIVERY_RESULT);
-    const missing = choice === 'revise' && !note.trim();
-    state.feedback = missing ? '退回修改必须在备注中写具体意见。' : choice === 'revise' ? `所属需求退回修改：\n${note}` : '';
-    save();
-    output('feedback', state.feedback);
-    output('route', missing ? 'delivery' : choice === 'revise' ? 'review' : 'merge');
-    break;
-  }
-  case 'check-failed':
-    state.feedback = `${env.STEP}未通过，提交 ${state.head}。\n运行：coda://workflow-runs/${env.GITHUB_RUN_ID}\n请用 workflow_status 查看本运行「${env.STEP}」及其调用的失败流程，读取错误和日志，把具体修复意见写入「退回修改」的备注，继续最近的执行会话。通过后重跑检查。`;
-    state.phase = 'check';
-    save();
-    break;
+  // 用合并提交进目标分支：目标分支的 first-parent 历史里一个需求一个提交，泳道里每个泳道 PR 一个提交。
   case 'merge': {
-    const pr = JSON.parse(gh('pr', 'view', state.pr, '--json', 'state,headRefOid,mergeCommit'));
-    if (pr.state === 'MERGED') {
-      if (pr.headRefOid !== state.head) throw new Error(`PR 已合并，但 head 不一致：预期 ${state.head}，实际 ${pr.headRefOid}`);
-      output('route', 'merged');
-      output('commit', pr.mergeCommit.oid);
+    const commit = mergePr(state.pr, state.head, 'merge');
+    if (!commit) {
+      back(`PR ${state.pr} 与目标分支 ${state.base} 存在合并冲突，泳道 head ${state.head}。\n请发起 sync=true 的泳道 PR，让执行者把最新目标分支合进来、解冲突、顺延撞号的迁移版本；合进泳道后再提交验收，重新跑检查、批准合并及部署、发布选项。`);
+      output('route', 'conflict');
       break;
     }
-    if (pr.state === 'CLOSED') throw new Error(`PR 已关闭但未合并：${state.pr}`);
-    // 显式 --repo 让 gh 只删除远端分支，避免在分离 HEAD 中操作本地分支。
-    const url = new URL(state.pr);
-    const repo = `${url.host}/${url.pathname.split('/').slice(1, 3).join('/')}`;
-    const result = spawnSync('gh', ['pr', 'merge', state.pr, '--repo', repo, '--squash', '--match-head-commit', state.head, '--delete-branch'], { encoding: 'utf8' });
-    if (result.error) throw result.error;
-    process.stdout.write(result.stdout);
-    process.stderr.write(result.stderr);
-    if (result.status !== 0) {
-      const failed = JSON.parse(gh('pr', 'view', state.pr, '--json', 'state,mergeable'));
-      if (failed.state === 'OPEN' && failed.mergeable === 'CONFLICTING') {
-        state.feedback = `PR ${state.pr} 与目标分支 ${state.base} 存在合并冲突，提交 ${state.head}。\n请主 Agent 审查后选「让执行者合并目标分支」（不是「退回修改」，不计退回），由同一个执行会话把最新目标分支合入并解冲突。之后重新经过项目检查、审查、更新 PR、合并前检查和 GitHub 检查，再重新批准合并及部署、发布选项。`;
-        state.phase = 'check';
-        save();
-        output('route', 'conflict');
-        break;
-      }
-      process.exit(result.status ?? 1);
-    }
-    const commit = gh('pr', 'view', state.pr, '--json', 'mergeCommit', '--jq', '.mergeCommit.oid');
     output('route', 'merged');
     output('commit', commit);
     break;

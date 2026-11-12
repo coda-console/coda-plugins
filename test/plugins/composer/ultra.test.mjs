@@ -9,6 +9,8 @@ test('Ultra 名单给只读 spawn 按任务选执行者，带上选项', () => {
   assert.match(full, /- agent=codex model=gpt-6\.1-sol effort=ultra mode=agent options=\{"service-tier":"priority"\}: 任何工作/);
   assert.match(full, /Choose executors from this list by task, passing agent\/model\/effort\/mode\/options to spawn/);
   assert.match(full, /Use your own agent and model only when no entry covers the work/);
+  assert.match(full, /When you start a lane PR \(lane-pr\), pick its executor, backup executor and reviewers from this list the same way:\n- agent=codex/);
+  assert.doesNotMatch(on([]), /lane-pr/, '名单为空时不提');
   assert.match(STILL_ON, /choosing the executor from the list by task and passing agent\/model\/effort\/mode\/options/);
   assert.ok(on([]).endsWith('Use your own agent and model for Coda spawn.'));
 });
