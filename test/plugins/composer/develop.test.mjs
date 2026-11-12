@@ -796,6 +796,8 @@ async function reviewing() {
   const nodes = Object.fromEntries(elements.map(e => [e.id, e]));
   const values = node => node.extensionElements?.values ?? [];
   const read = (value, context) => value.startsWith('=') ? evaluate(value.slice(1), context).value : value;
+  // 引擎把结束事件的输出一律转成文字（对象、列表是 JSON 文本，null 是空字符串），再把 'true'、'false' 还原成布尔。
+  const output = value => { const given = value === null || value === undefined ? '' : typeof value === 'object' ? JSON.stringify(value) : String(value); return given === 'true' ? true : given === 'false' ? false : given; };
   const route = (id, context) => {
     const node = nodes[id], flows = elements.filter(e => e.sourceRef === node);
     return (flows.find(e => e.conditionExpression && evaluate(e.conditionExpression.body.trim().slice(1), context).value) ?? node.default).targetRef.id;
@@ -809,7 +811,7 @@ async function reviewing() {
       const local = { ...context, slot };
       for (let step = next('reviews-start'); ;) {
         const node = nodes[step];
-        if (node.$type === 'bpmn:EndEvent') { ends.push(step); return Object.fromEntries(values(node).map(v => [v.name, read(v.value, local)])); }
+        if (node.$type === 'bpmn:EndEvent') { ends.push(step); return Object.fromEntries(values(node).map(v => [v.name, output(read(v.value, local))])); }
         if (node.$type === 'bpmn:ExclusiveGateway') step = route(step, local);
         else if (node.$type === 'bpmn:CallActivity') {
           calls.push({ called: node.calledElement, ...Object.fromEntries(values(node).map(v => [v.name, read(v.value, local)])) });
@@ -881,7 +883,7 @@ test('填了几位评审者就调用几次，参数是这次交付；首次评�
     assert.deepEqual(calls, called.map(slot => ({ called: 'review-commit', base: 'b'.repeat(40), head: 'h'.repeat(40), task: '第一项任务', reviewer: agents[slot] })), `${filled} ${first}`);
     if (!called.length) { assert.equal(reviews, null); continue; }
     assert.deepEqual(reviews.map(r => r.state), ['reviewer', 'reviewer2', 'reviewerOnce'].map(slot => called.includes(slot) ? 'done' : 'skipped'));
-    for (const r of reviews.filter(r => r.state === 'done')) assert.deepEqual(r, { state: 'done', slot: r.slot, who: agents[r.slot], head: 'h'.repeat(40), ...outcome[r.slot] });
+    for (const r of reviews.filter(r => r.state === 'done')) assert.deepEqual(r, { state: 'done', slot: r.slot, who: JSON.stringify(agents[r.slot]), head: 'h'.repeat(40), ...outcome[r.slot] });
   }
 });
 
