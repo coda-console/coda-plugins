@@ -74,7 +74,7 @@
     <sequenceFlow id="prebuild-done" sourceRef="prebuild" targetRef="prebuilt" />
     <endEvent id="prebuilt" />
     <scriptTask id="gate-passed" name="记录通过的检查" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
-      <extensionElements><coda:env name="RUNS" value="=checks.runs" /><coda:output name="base" /><coda:output name="task" /><coda:output name="first" /></extensionElements>
+      <extensionElements><coda:env name="RUNS" value="=checks.runs" /><coda:output name="base" /><coda:output name="task" /><coda:output name="first" /><coda:output name="checks" /></extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" gate-passed</script>
     </scriptTask>
     <sequenceFlow id="gate-passed-review" sourceRef="gate-passed" targetRef="reviews-choice" />
@@ -98,6 +98,7 @@
           <coda:param name="head" value="=gate.head" />
           <coda:param name="task" value="=gate-passed.task" />
           <coda:param name="reviewer" value="=slot.who" />
+          <coda:param name="evidence" value="=gate-passed.checks" />
         </extensionElements>
       </callActivity>
       <boundaryEvent id="review-failed" attachedToRef="review-call"><errorEventDefinition /></boundaryEvent>

@@ -62,6 +62,35 @@ test('a commit is reviewed against its task, with no pull request, no gh and no 
   assert.doesNotMatch(done.summary, /PR|评论/);
 });
 
+test('a commit review says there is no pull request, and hands over the caller\'s evidence only when given', t => {
+  const p = project(t);
+  const none = '这段提交还没有 PR，不必去找 PR 或 CI 记录。';
+  assert.equal(p.reviewCommit().code, 0);
+  const bare = p.prompt();
+  assert.ok(bare.includes(none));
+  assert.doesNotMatch(bare, /已有的验证证据|\{\{/);
+  const evidence = 'test: succeeded coda://workflow-runs/check-1\nlint: succeeded coda://workflow-runs/check-2';
+  assert.equal(p.reviewCommit({ EVIDENCE: `${evidence}\n` }).code, 0);
+  const given = p.prompt();
+  assert.ok(given.includes(none));
+  assert.ok(given.includes(`发起评审的会话提供了这段提交已有的验证证据，按下面评审规则里对已有验证证据的要求复用：\n\n${evidence}\n\n`), given);
+  assert.ok(given.indexOf(evidence) < given.indexOf('把按钮改成蓝色。'), 'before the task, not inside it');
+  assert.ok(!given.slice(given.indexOf('<<<PR-DATA')).includes('已有的验证证据'), 'not in the task or the focus');
+  assert.equal(p.reviewCommit({ EVIDENCE: '   ' }).code, 0);
+  assert.equal(p.prompt().replace(/PR-DATA-[0-9a-f]{8}/g, 'M'), bare.replace(/PR-DATA-[0-9a-f]{8}/g, 'M'), 'blank evidence is none');
+});
+
+test('a pull request review\'s prompt is word for word what it was, whatever EVIDENCE is in the environment', t => {
+  const p = project(t);
+  assert.equal(p.reviewPr().code, 0);
+  const plain = p.prompt();
+  assert.doesNotMatch(plain, /没有 PR|已有的验证证据/);
+  assert.equal(p.reviewPr({ EVIDENCE: '不该出现' }).code, 0);
+  assert.equal(p.prompt().replace(/PR-DATA-[0-9a-f]{8}/g, 'M'), plain.replace(/PR-DATA-[0-9a-f]{8}/g, 'M'));
+  assert.equal(p.reviewPr({ CHECKS: '\n- test: success' }).code, 0);
+  assert.ok(p.prompt().includes('这个提交上的 GitHub 检查都已有结果：\n- test: success'));
+});
+
 test('both entries read the same findings from the same reply; a commit gets every one of them', t => {
   const p = project(t);
   const commit = p.reviewCommit(), pr = p.reviewPr();
@@ -88,11 +117,13 @@ test('a base or head that is not a commit of the project is refused, saying whic
   assert.equal(p.prompt(), '', 'no reviewer was asked');
 });
 
-test('the capability takes base, head, task, reviewer and focus, and gives the review step\'s outputs', async () => {
+test('the capability takes base, head, task, reviewer, focus and evidence, and gives the review step\'s outputs', async () => {
   const source = readFileSync(capability, 'utf8');
   assert.equal(await workflowProblem(source, 'review-commit'), null);
   assert.deepEqual([...source.matchAll(/<coda:input name="(\w+)"[^>]*\/>/g)].map(m => [m[1], m[0].includes('required="true"')]),
-    [['base', true], ['head', true], ['task', true], ['reviewer', true], ['focus', false]]);
+    [['base', true], ['head', true], ['task', true], ['reviewer', true], ['focus', false], ['evidence', false]]);
+  assert.match(source, /<coda:input name="evidence" label="已有验证"/);
+  assert.match(source, /<coda:env name="EVIDENCE" value="=inputs\.evidence" \/>/);
   assert.match(source, /<coda:input name="reviewer"[^>]*type="agent"/);
   assert.match(source, /scripts\/review\.mjs" commit</);
   const outputs = [...source.matchAll(/<coda:output name="(\w+)" value="=review\.(\w+)" \/>/g)];

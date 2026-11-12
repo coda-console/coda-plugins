@@ -869,7 +869,7 @@ test('填了几位评审者就调用几次，参数是这次交付；首次评�
   const { deliver } = await reviewing();
   const agents = { reviewer: { agent: 'a1', model: 'm1' }, reviewer2: { agent: 'a2' }, reviewerOnce: { agent: 'a3', effort: 'high' } };
   const context = (filled, first) => ({ inputs: { reviewer: null, reviewer2: null, reviewerOnce: null, ...Object.fromEntries(filled.map(slot => [slot, agents[slot]])) },
-    gate: { head: 'h'.repeat(40) }, 'gate-passed': { base: 'b'.repeat(40), task: '第一项任务', first } });
+    gate: { head: 'h'.repeat(40) }, 'gate-passed': { base: 'b'.repeat(40), task: '第一项任务', first, checks: 'test: succeeded coda://workflow-runs/c1' } });
   const outcome = { reviewer: { decision: 'APPROVE', line: 'ok', findings: '[]', report: 'r1' }, reviewer2: { decision: 'APPROVE', line: 'ok', findings: '[]', report: 'r2' },
     reviewerOnce: { decision: 'APPROVE', line: 'ok', findings: '[]', report: 'r3' } };
   assert.deepEqual(deliver(context([], true)), { calls: [], reviews: null }, '都不填时不进评审');
@@ -883,7 +883,7 @@ test('填了几位评审者就调用几次，参数是这次交付；首次评�
     [['reviewer2'], false, ['reviewer2']],
   ]) {
     const { calls, reviews } = deliver(context(filled, first), outcome);
-    assert.deepEqual(calls, called.map(slot => ({ called: 'review-commit', base: 'b'.repeat(40), head: 'h'.repeat(40), task: '第一项任务', reviewer: agents[slot] })), `${filled} ${first}`);
+    assert.deepEqual(calls, called.map(slot => ({ called: 'review-commit', base: 'b'.repeat(40), head: 'h'.repeat(40), task: '第一项任务', reviewer: agents[slot], evidence: 'test: succeeded coda://workflow-runs/c1' })), `${filled} ${first}`);
     if (!called.length) { assert.equal(reviews, null); continue; }
     assert.deepEqual(reviews.map(r => r.state), ['reviewer', 'reviewer2', 'reviewerOnce'].map(slot => called.includes(slot) ? 'done' : 'skipped'));
     for (const r of reviews.filter(r => r.state === 'done')) assert.deepEqual(r, { state: 'done', slot: r.slot, who: JSON.stringify(agents[r.slot]), head: 'h'.repeat(40), ...outcome[r.slot] });
@@ -893,12 +893,26 @@ test('填了几位评审者就调用几次，参数是这次交付；首次评�
 test('gate-passed 给评审对照的泳道提交与任务书，首次只在新执行会话后的第一次通过', t => {
   const f = fixture(t, false); f.run('lane'); f.task('code', 'first'); f.run('execute');
   const passed = () => f.run('gate-passed', { RUNS: '[]' }).outputs;
-  assert.deepEqual(passed(), { base: f.state().head, task: f.state().task, first: 'true' });
+  assert.deepEqual(passed(), { base: f.state().head, task: f.state().task, first: 'true', checks: '此提交未声明项目检查流程。' });
   f.review('revise', '再改改'); f.task('code', 'second'); f.run('revise');
   assert.equal(passed().first, 'false', '同一会话修改后的交付不算第一次');
   f.review('next', '第二项：补齐状态'); assert.equal(f.run('accept').outputs.route, 'execute');
   f.task('two', 'next task'); f.run('execute');
-  assert.deepEqual(passed(), { base: f.state().head, task: '第二项：补齐状态', first: 'true' }, '下一项任务的第一次交付');
+  assert.deepEqual(passed(), { base: f.state().head, task: '第二项：补齐状态', first: 'true', checks: '此提交未声明项目检查流程。' }, '下一项任务的第一次交付');
+});
+
+test('交给评审者的已有验证与审查卡上的「项目检查结果」是同一段，没声明检查流程时是那一句说明', async t => {
+  const { deliver, nodes } = await reviewing();
+  const runs = [{ workflow: 'test', state: 'succeeded', runId: 'check-1' }, { workflow: 'lint', state: 'succeeded', runId: 'check-2' }];
+  for (const given of [runs, []]) {
+    const f = fixture(t, false); f.run('lane'); f.task('code', 'first'); f.run('execute');
+    const passed = f.run('gate-passed', { RUNS: JSON.stringify(given) }).outputs;
+    const { calls } = deliver({ inputs: { reviewer: { agent: 'a1' }, reviewer2: null, reviewerOnce: null }, gate: { head: f.state().executor.head }, 'gate-passed': { ...passed, first: true } },
+      { reviewer: { decision: 'APPROVE', line: 'ok', findings: '[]', report: 'r' } });
+    assert.equal(calls[0].evidence, f.run('review').outputs.checks);
+    assert.equal(calls[0].evidence, given.length ? 'test: succeeded coda://workflow-runs/check-1\nlint: succeeded coda://workflow-runs/check-2' : '此提交未声明项目检查流程。');
+  }
+  assert.match(nodes.review.documentation[0].text, /项目检查结果：\n\{\{report\.checks\}\}/);
 });
 
 test('审查材料带上每位评审者的结果：没评成的写原因，别人的发现照常；发现多时卡片只留严重程度、标题和位置', async t => {
@@ -1053,7 +1067,7 @@ test('换人后的第一次交付，首次评审者会评', async t => {
   const once = { agent: 'a3' };
   const { calls } = deliver({ inputs: { reviewer: null, reviewer2: null, reviewerOnce: once }, gate: { head: f.state().executor.head }, 'gate-passed': { ...passed, first: passed.first === 'true' } },
     { reviewerOnce: { decision: 'APPROVE', line: 'ok', findings: '[]', report: 'r' } });
-  assert.deepEqual(calls, [{ called: 'review-commit', base: f.state().head, head: f.state().executor.head, task: f.state().task, reviewer: once }]);
+  assert.deepEqual(calls, [{ called: 'review-commit', base: f.state().head, head: f.state().executor.head, task: f.state().task, reviewer: once, evidence: '此提交未声明项目检查流程。' }]);
 });
 
 // 目标分支在执行者开工之后前进：clean 的不碰同一个文件，冲突的改同一个文件。

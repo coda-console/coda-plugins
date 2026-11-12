@@ -87,6 +87,9 @@ const conflicts = () => {
   return [...new Set(result.stdout.split('\0').slice(1).filter(Boolean))];
 };
 
+// 这次交付的项目检查结果，每个检查一行：审查卡的「项目检查结果」和交给评审者的已有验证是同一段。
+const checks = () => state.checks?.head === state.executor.head ? state.checks.runs.map(r => `${r.workflow}: ${r.state} coda://workflow-runs/${r.runId}`).join('\n') || '此提交未声明项目检查流程。' : '此提交项目检查未通过。';
+
 // 「评审」各份的结果，只取评这次交付的。卡片正文的上限（4000 字）是协议对 BPMN 里字面的检查，展开后的不限；
 // 评审这一段也按这个数收着：放不下时每条只留严重程度、标题和位置，说明和评审原文写在产物里。
 // 评审没完成（INCOMPLETE）的写「没评成」与 review-commit 给的原因；调用本身没成（lost）的指向本运行那一步。
@@ -151,6 +154,7 @@ switch (action) {
     output('base', state.head);
     output('task', state.task);
     output('first', String(!state.reviewed));
+    output('checks', checks());
     state.reviewed = true;
     save();
     break;
@@ -164,7 +168,7 @@ switch (action) {
     break;
   }
   case 'review':
-    output('checks', state.checks?.head === state.executor.head ? state.checks.runs.map(r => `${r.workflow}: ${r.state} coda://workflow-runs/${r.runId}`).join('\n') || '此提交未声明项目检查流程。' : '此提交项目检查未通过。');
+    output('checks', checks());
     for (const [name, value] of Object.entries({ ...state.executor, lane: state.lane, feedback: state.feedback, returns: state.returns })) output(name, value);
     output('reviews', reviews());
     break;
