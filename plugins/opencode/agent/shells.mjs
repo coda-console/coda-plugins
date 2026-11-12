@@ -2,8 +2,9 @@
 // forwards just those facts over a private local socket. A completed shell *tool call* only started the job. Keep the
 // wait until its native completion notification has been handled, so Coda does not retire the process between turns.
 // The native events are not documented and were checked with CHECKED alone, as OpenCode's handshake names it: under another
-// version they may go by other names and its background commands untold. That is said once a session, to a Coda that takes
-// it (`_coda/unrecognized`, docs/agent-protocol.md「没适配的东西」); nothing else changes. Setup keeps none older (scripts/setup.mjs).
+// version they may go by other names and its background commands untold. That is told once a session, to a Coda that takes
+// it (`_coda/unrecognized`, docs/agent-protocol.md「没适配的东西」), as nothing lost: the entry works on as before, and a command
+// whose events do not come is reported failed on its own (below). Setup keeps none older (scripts/setup.mjs).
 export const CHECKED = '2.1.4';
 const record = x => x && typeof x === 'object' && !Array.isArray(x);
 const id = x => typeof x === 'string' && x.length > 0 && x.length <= 180;
@@ -65,8 +66,8 @@ export class OpenCodeShells {
     const sessionId = result.sessionId ?? asked.sessionId;
     if (!this.taken || this.version === CHECKED || !id(sessionId) || this.told.has(sessionId)) return;
     this.told.add(sessionId);
-    this.say({ jsonrpc: '2.0', method: '_coda/unrecognized', params: { sessionId, kind: 'output', name: 'plugin:version', lost: true,
-      detail: `这个版本的 OpenCode（${this.version ?? '版本未知'}）没有核对过（核对过的是 ${CHECKED}），后台命令在底部可能看不见` } });
+    this.say({ jsonrpc: '2.0', method: '_coda/unrecognized', params: { sessionId, kind: 'output', name: 'plugin:version', lost: false,
+      detail: `这个版本的 OpenCode（${this.version ?? '版本未知'}）没有核对过（核对过的是 ${CHECKED}）；后台命令的事件要是对不上，会在那条命令上单独报出来` } });
   }
   report(shell, fields) {
     this.say({ jsonrpc: '2.0', method: '_coda/wait', params: {

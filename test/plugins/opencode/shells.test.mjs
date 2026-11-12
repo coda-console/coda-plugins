@@ -146,13 +146,14 @@ test('OpenCode of the version checked reports nothing unadapted', () => {
   assert.deepEqual(handshake('2.1.4'), []);
 });
 
-// Red if another version went unsaid again, were said twice for a session, to a Coda that does not take it, or without its
-// version and what the user may not see.
-test('another version of OpenCode is said once a session, by name, with its version and what may go unseen', () => {
+// Red if another version went unsaid again, were said twice for a session, to a Coda that does not take it, without its
+// version, or as lost. Not lost: the entry works on as before and the native events most likely still come; where they do
+// not, the command is reported failed on its own. Lost would put a note「这部分没有显示」in every such session, untrue.
+test('another version of OpenCode is told once a session, by name and version, as nothing lost', () => {
   const said = handshake('2.2.7');
   assert.deepEqual(said.map(m => [m.method, m.params.sessionId, m.params.kind, m.params.name, m.params.lost]),
-    [['_coda/unrecognized', 'root', 'output', 'plugin:version', true], ['_coda/unrecognized', 'other', 'output', 'plugin:version', true]]);
-  assert.equal(said[0].params.detail, '这个版本的 OpenCode（2.2.7）没有核对过（核对过的是 2.1.4），后台命令在底部可能看不见');
+    [['_coda/unrecognized', 'root', 'output', 'plugin:version', false], ['_coda/unrecognized', 'other', 'output', 'plugin:version', false]]);
+  assert.equal(said[0].params.detail, '这个版本的 OpenCode（2.2.7）没有核对过（核对过的是 2.1.4）；后台命令的事件要是对不上，会在那条命令上单独报出来');
   assert.deepEqual(handshake('2.2.7', { taken: false }), []);
 });
 
