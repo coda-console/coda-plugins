@@ -80,7 +80,8 @@ const reviews = () => {
   if (!results.length) return '';
   const path = join(env.CODA_ARTIFACTS, 'reviews.md');
   const render = detailed => results.map(r => {
-    const who = `${SLOTS[r.slot]}（${[r.who.agent, r.who.model, r.who.effort].filter(Boolean).join(' · ')}）`;
+    const agent = JSON.parse(r.who);
+    const who = `${SLOTS[r.slot]}（${[agent.agent, agent.model, agent.effort].filter(Boolean).join(' · ')}）`;
     if (r.state === 'lost') return `${who}：没评成。调用 review-commit 没有成功，原因见本运行 coda://workflow-runs/${env.GITHUB_RUN_ID} 的「评审这次交付」（workflow_status）。`;
     if (r.decision === 'INCOMPLETE') return `${who}：没评成：${r.line}`;
     const flat = text => text.replace(/\s*[\r\n]+\s*/g, ' ');
