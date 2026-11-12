@@ -1,5 +1,5 @@
 // The components' contribution points (components/plugins/contribution-points.mjs), defined as this module loads: what
-// puts Coda together (application/service.mjs, the tests, the plugin contract) imports it once, before any plugin is read.
+// puts Coda together (application/assembly.mjs, the tests, the plugin contract) imports it once, before any plugin is read.
 // In this order what only one plugin may declare is said (plugin-source-rules.mjs claims): sessions', workflows', Git's,
 // the composer's.
 import '../components/session-config/contributions.mjs';
