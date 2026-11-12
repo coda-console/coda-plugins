@@ -4,7 +4,7 @@
   "displayName": "输入框模式",
   "description": "交接、子会话、! 命令、Ultra 与循环",
   "icon": { "symbol": "character.cursor.ibeam", "color": "blue" },
-  "version": "5.1.2",
+  "version": "5.2.0",
   "categories": [
     "工作流程"
   ],

@@ -9,6 +9,9 @@
       <coda:input name="device" label="验收设备" type="string" default="" description="测试机设备名，如 duo-testbed；验收期间独占它；留空不占设备" />
       <coda:input name="delivery" label="所属需求" type="string" default="" description="需求运行的 ID；留空为独立交付" />
       <coda:input name="executor" label="执行者" type="agent" defaultFrom="session.agent" description="做每一项任务的 Agent；不填用发起会话的" />
+      <coda:input name="reviewer" label="评审者" type="agent" description="项目检查通过后评每一次交付；不填不评" />
+      <coda:input name="reviewer2" label="第二评审者" type="agent" description="与评审者同时评每一次交付；不填不评" />
+      <coda:input name="reviewerOnce" label="首次评审者" type="agent" description="只评每项任务的第一次交付；不填不评" />
       <coda:input name="base" label="目标分支" default="" description="留空用仓库默认分支" />
     </extensionElements>
     <startEvent id="start" />
@@ -70,17 +73,52 @@
     <sequenceFlow id="prebuild-done" sourceRef="prebuild" targetRef="prebuilt" />
     <endEvent id="prebuilt" />
     <scriptTask id="gate-passed" name="记录通过的检查" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
-      <extensionElements><coda:env name="RUNS" value="=checks.runs" /></extensionElements>
+      <extensionElements><coda:env name="RUNS" value="=checks.runs" /><coda:output name="base" /><coda:output name="task" /><coda:output name="first" /></extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" gate-passed</script>
     </scriptTask>
-    <sequenceFlow id="gate-passed-review" sourceRef="gate-passed" targetRef="report" />
+    <sequenceFlow id="gate-passed-review" sourceRef="gate-passed" targetRef="reviews-choice" />
+    <!-- 检查通过后、整理审查材料前，填了的评审者各评一次这次交付（首次评审者只评每项任务的第一次）；一个都不评时直接整理。
+         三个位置各一份、同时进行，每份都走到自己的结束事件：没轮到的跳过，评审没评成（调用失败，含没有插件提供 review-commit）记下来照常结束。
+         各份都结束才往下走；结果按位置顺序是一个列表，由「整理审查材料」带进审查卡，评审不挡流程。 -->
+    <exclusiveGateway id="reviews-choice" name="是否有人评审" default="reviews-skip" />
+    <sequenceFlow id="reviews-needed" sourceRef="reviews-choice" targetRef="reviews"><conditionExpression xsi:type="tFormalExpression">=inputs.reviewer != null or inputs.reviewer2 != null or (inputs.reviewerOnce != null and gate-passed.first)</conditionExpression></sequenceFlow>
+    <sequenceFlow id="reviews-skip" sourceRef="reviews-choice" targetRef="report" />
+    <subProcess id="reviews" name="评审" coda:optional="true">
+      <multiInstanceLoopCharacteristics coda:inputCollection='=[{slot: "reviewer", who: inputs.reviewer}, {slot: "reviewer2", who: inputs.reviewer2}, {slot: "reviewerOnce", who: if gate-passed.first then inputs.reviewerOnce else null}]' coda:inputElement="slot" />
+      <startEvent id="reviews-start" />
+      <sequenceFlow id="reviews-enter" sourceRef="reviews-start" targetRef="review-choice" />
+      <exclusiveGateway id="review-choice" name="这一位评不评" default="review-skip" />
+      <sequenceFlow id="review-needed" sourceRef="review-choice" targetRef="review-call"><conditionExpression xsi:type="tFormalExpression">=slot.who != null</conditionExpression></sequenceFlow>
+      <sequenceFlow id="review-skip" sourceRef="review-choice" targetRef="review-skipped" />
+      <callActivity id="review-call" name="评审这次交付" calledElement="review-commit">
+        <extensionElements>
+          <coda:param name="base" value="=gate-passed.base" />
+          <coda:param name="head" value="=gate.head" />
+          <coda:param name="task" value="=gate-passed.task" />
+          <coda:param name="reviewer" value="=slot.who" />
+        </extensionElements>
+      </callActivity>
+      <boundaryEvent id="review-failed" attachedToRef="review-call"><errorEventDefinition /></boundaryEvent>
+      <sequenceFlow id="review-failed-lost" sourceRef="review-failed" targetRef="review-lost" />
+      <sequenceFlow id="review-call-done" sourceRef="review-call" targetRef="review-done" />
+      <endEvent id="review-skipped"><extensionElements><coda:output name="state" value="skipped" /></extensionElements></endEvent>
+      <endEvent id="review-lost"><extensionElements>
+        <coda:output name="state" value="lost" /><coda:output name="slot" value="=slot.slot" /><coda:output name="who" value="=slot.who" /><coda:output name="head" value="=gate.head" />
+      </extensionElements></endEvent>
+      <endEvent id="review-done"><extensionElements>
+        <coda:output name="state" value="done" /><coda:output name="slot" value="=slot.slot" /><coda:output name="who" value="=slot.who" /><coda:output name="head" value="=gate.head" />
+        <coda:output name="line" value="=review-call.line" /><coda:output name="findings" value="=review-call.findings" /><coda:output name="report" value="=review-call.report" />
+      </extensionElements></endEvent>
+    </subProcess>
+    <sequenceFlow id="reviews-report" sourceRef="reviews" targetRef="report" />
     <exclusiveGateway id="gate-route" name="连续失败是否达到三次" default="gate-revise" />
     <sequenceFlow id="gate-escalate" sourceRef="gate-route" targetRef="report"><conditionExpression xsi:type="tFormalExpression">=check-feedback.route = "review"</conditionExpression></sequenceFlow>
     <sequenceFlow id="gate-revise" sourceRef="gate-route" targetRef="revise" />
     <scriptTask id="report" name="整理审查材料" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
       <extensionElements>
+        <coda:env name="REVIEWS" value="=reviews" />
         <coda:output name="session" /><coda:output name="branch" /><coda:output name="head" />
-        <coda:output name="checks" /><coda:output name="answer" /><coda:output name="lane" /><coda:output name="feedback" />
+        <coda:output name="checks" /><coda:output name="answer" /><coda:output name="lane" /><coda:output name="feedback" /><coda:output name="reviews" />
       </extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" review</script>
     </scriptTask>
@@ -98,11 +136,13 @@ head：{{report.head}}
 
 执行者回答：
 {{report.answer}}
+{{if report.reviews = "" then "" else "\n评审者的发现：\n" + report.reviews}}
 
 待处理反馈：
 {{report.feedback}}
 
 审查要点：架构是否得当、改动是否最小、有没有防御性或冗余代码、有没有无关改动，实际验证是否足够。检查通过和执行者的回答不能代替你读 diff；不要自己改代码，修改都交给执行者。
+评审者的发现是否成立由你判断，不成立的不必转给执行者。
 选择「退回修改」时备注必填，给具体意见；同一个执行会话继续修改。
 选择「通过，再派一项」时备注必填，写自足的下一项任务；先合进泳道，再开新的执行会话。
 流程自己跑项目检查；执行者只需跑直接相关的快检查，不必用 run-held 跑整套编译。

@@ -148,11 +148,11 @@ prompts/principles/                 评审重点，一项一段，按设置取�
 ## 评审一段提交
 
 能力 `review-commit` 只被调用，没有自己的触发器：流程用 `callActivity calledElement="review-commit"` 按名字调用它，不必依赖本插件。
-评审方在 `head` 的工作树里，按与 PR 评审相同的规则和提示词（`scripts/review.mjs commit`，`prompts/` 两种入口共用）评 `base` 到 `head` 的改动。
+评审方在 `head` 的工作树里，按与 PR 评审相同的规则和提示词（`scripts/review.mjs commit`，`prompts/` 两种入口共用）评 `head` 相对它与 `base` 的共同祖先的改动（同 `git diff base...head`；两者分叉时不是从 `base` 算起）。
 
 | 输入 | 用途 |
 | --- | --- |
-| `base` | 必填，对照的提交（完整提交号）；项目评审准则 `.coda/review.md` 从它读 |
+| `base` | 必填，对照的提交（完整提交号）：评的是 `head` 相对两者共同祖先的改动；项目评审准则 `.coda/review.md` 从它读 |
 | `head` | 必填，被评审的提交（完整提交号） |
 | `task` | 必填，这次改动要完成的任务书原文 |
 | `reviewer` | 必填，评审方（`agent` 类型） |

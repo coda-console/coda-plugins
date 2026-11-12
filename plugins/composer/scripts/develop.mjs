@@ -70,6 +70,24 @@ const changes = () => {
   return [`改动：${line(total)}`, ...Object.entries(areas).sort(([, a], [, b]) => b.added + b.deleted - a.added - a.deleted).map(([area, group]) => `- ${area}：${line(group)}`)].join('\n');
 };
 
+// 「评审」各份的结果，只取评这次交付的。卡片正文的上限（4000 字）是协议对 BPMN 里字面的检查，展开后的不限；
+// 评审这一段也按这个数收着：放不下时每条只留严重程度、标题和位置，说明和评审原文写在产物里。
+const SLOTS = { reviewer: '评审者', reviewer2: '第二评审者', reviewerOnce: '首次评审者' };
+const reviews = () => {
+  const results = (env.REVIEWS ? JSON.parse(env.REVIEWS) : []).filter(r => r.head === state.executor.head);
+  if (!results.length) return '';
+  const path = join(env.CODA_ARTIFACTS, 'reviews.md');
+  const render = detailed => results.map(r => {
+    const who = `${SLOTS[r.slot]}（${[r.who.agent, r.who.model, r.who.effort].filter(Boolean).join(' · ')}）`;
+    if (r.state === 'lost') return `${who}：没评成。调用 review-commit 没有成功，原因见本运行 coda://workflow-runs/${env.GITHUB_RUN_ID} 的「评审这次交付」（workflow_status）。`;
+    const findings = JSON.parse(r.findings).map(f => `- [${f.severity}] ${f.title}${f.location ? `（${f.location}）` : ''}${detailed && f.detail ? `\n  ${f.detail.replace(/\n/g, '\n  ')}` : ''}`);
+    return [`${who}：${r.line}`, ...findings].join('\n');
+  }).join('\n\n');
+  const full = render(true);
+  writeFileSync(path, [full, ...results.filter(r => r.state === 'done').map(r => `## ${SLOTS[r.slot]}的评审原文\n\n${r.report}`)].join('\n\n'));
+  return full.length <= 4000 ? `${full}\n评审原文：${path}` : `${render(false)}\n发现较多，这里只列严重程度、标题和位置；每条的说明与评审原文见 ${path}`;
+};
+
 switch (action) {
   case 'execute':
   case 'revise': {
@@ -84,7 +102,7 @@ switch (action) {
     }
     state.executor = JSON.parse(command('coda-agent', [...args, '--json', '--prompt-file', prompt]));
     state.feedback = '';
-    if (action === 'execute') state.failures = [];
+    if (action === 'execute') { state.failures = []; state.reviewed = false; }
     save();
     break;
   }
@@ -100,6 +118,11 @@ switch (action) {
     state.checks = { head: state.executor.head, runs: JSON.parse(env.RUNS) };
     state.failures = [];
     state.feedback = '';
+    // 评审对照泳道当前的提交；首次评审者只评这项任务第一次通过检查的交付。
+    output('base', state.head);
+    output('task', state.task);
+    output('first', String(!state.reviewed));
+    state.reviewed = true;
     save();
     break;
   case 'gate-failed': {
@@ -114,6 +137,7 @@ switch (action) {
   case 'review':
     output('checks', state.checks?.head === state.executor.head ? state.checks.runs.map(r => `${r.workflow}: ${r.state} coda://workflow-runs/${r.runId}`).join('\n') || '此提交未声明项目检查流程。' : '此提交项目检查未通过。');
     for (const [name, value] of Object.entries({ ...state.executor, lane: state.lane, feedback: state.feedback })) output(name, value);
+    output('reviews', reviews());
     break;
   case 'decide': {
     const { choice, note = '' } = JSON.parse(env.REVIEW);

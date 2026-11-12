@@ -784,3 +784,146 @@ test('PR 实际输出经类型转换和网关求值：同提交复用，缺失�
   f.review('accept', '汇报'); f.run('accept');
   assert.equal(next(f.run('pr').outputs), 'gate', '新提交不能复用旧检查');
 });
+
+// 评审环节：照引擎走一次「评审」——是否进入、三份各自的网关、调用参数、出错边界与结束事件的输出——得到 =reviews，
+// 再交给「整理审查材料」。review-commit 的结果由 outcome 给：没给的这一份调用失败（没评成）。
+async function reviewing() {
+  const { root, problem } = await readWorkflow(workflow, 'develop'); assert.ok(!problem, problem);
+  const process = root.rootElements.find(e => e.$type === 'bpmn:Process');
+  const sub = process.flowElements.find(e => e.id === 'reviews');
+  const elements = [...process.flowElements, ...sub.flowElements];
+  const nodes = Object.fromEntries(elements.map(e => [e.id, e]));
+  const values = node => node.extensionElements?.values ?? [];
+  const read = (value, context) => value.startsWith('=') ? evaluate(value.slice(1), context).value : value;
+  const route = (id, context) => {
+    const node = nodes[id], flows = elements.filter(e => e.sourceRef === node);
+    return (flows.find(e => e.conditionExpression && evaluate(e.conditionExpression.body.trim().slice(1), context).value) ?? node.default).targetRef.id;
+  };
+  const next = id => elements.find(e => e.$type === 'bpmn:SequenceFlow' && e.sourceRef === nodes[id]).targetRef.id;
+  const deliver = (context, outcome = {}) => {
+    const calls = [];
+    if (route('reviews-choice', context) === 'report') return { calls, reviews: null };
+    assert.equal(next('reviews'), 'report');
+    const reviews = read(sub.loopCharacteristics.inputCollection, context).map(slot => {
+      const local = { ...context, slot };
+      for (let step = next('reviews-start'); ;) {
+        const node = nodes[step];
+        if (node.$type === 'bpmn:EndEvent') return Object.fromEntries(values(node).map(v => [v.name, read(v.value, local)]));
+        if (node.$type === 'bpmn:ExclusiveGateway') step = route(step, local);
+        else if (node.$type === 'bpmn:CallActivity') {
+          calls.push({ called: node.calledElement, ...Object.fromEntries(values(node).map(v => [v.name, read(v.value, local)])) });
+          const given = outcome[slot.slot];
+          local[step] = given;
+          step = given ? next(step) : next(elements.find(e => e.attachedToRef === node && e.eventDefinitions?.[0].$type === 'bpmn:ErrorEventDefinition').id);
+        } else step = next(step);
+      }
+    });
+    return { calls, reviews };
+  };
+  return { process, sub, nodes, elements, route, next, deliver };
+}
+
+test('评审者的位置不设默认可不填；评审在项目检查通过后、整理材料前，检查失败升级的路不经过它', async () => {
+  const { process, sub, nodes, elements, route, next } = await reviewing();
+  const inputs = Object.fromEntries((process.extensionElements?.values ?? []).map(v => [v.name, v]));
+  for (const [name, label] of [['reviewer', '评审者'], ['reviewer2', '第二评审者'], ['reviewerOnce', '首次评审者']]) {
+    assert.deepEqual([inputs[name].type, inputs[name].label, inputs[name].default, inputs[name].defaultFrom, inputs[name].required], ['agent', label, undefined, undefined, undefined], name);
+  }
+  assert.equal(next('checks'), 'gate-passed');
+  assert.equal(next('gate-passed'), 'reviews-choice');
+  assert.equal(nodes['gate-escalate'].targetRef.id, 'report', '连续三次检查失败直接升级，不评审');
+  assert.equal(nodes['checks-feedback'].targetRef.id, 'check-feedback', '检查没过不评审');
+  assert.equal(sub.optional, true, '没人评审时卡片上不出现这一段');
+  assert.equal(sub.loopCharacteristics.isSequential, false, '三份同时进行');
+  // 每一份从开始走得到的都是结束事件：跳过、评完、没评成各一个，出错边界接住调用失败。
+  const inner = sub.flowElements, ends = inner.filter(e => e.$type === 'bpmn:EndEvent').map(e => e.id);
+  assert.deepEqual(ends, ['review-skipped', 'review-lost', 'review-done']);
+  const boundary = inner.filter(e => e.$type === 'bpmn:BoundaryEvent');
+  assert.deepEqual(boundary.map(e => [e.attachedToRef.id, e.eventDefinitions[0].$type, e.eventDefinitions[0].errorRef, e.cancelActivity]), [['review-call', 'bpmn:ErrorEventDefinition', undefined, true]]);
+  for (const node of inner.filter(e => !['bpmn:SequenceFlow', 'bpmn:EndEvent'].includes(e.$type))) {
+    const outgoing = inner.filter(e => e.sourceRef === node);
+    assert.ok(outgoing.length, `${node.id} 有出口`);
+    const reached = new Set(), walk = id => { if (reached.has(id)) return; reached.add(id); for (const e of inner.filter(f => f.sourceRef?.id === id)) walk(e.targetRef.id); };
+    walk(node.id);
+    assert.ok([...reached].some(id => ends.includes(id)), `${node.id} 走得到结束事件`);
+  }
+  assert.deepEqual(inner.filter(e => e.$type === 'bpmn:SequenceFlow' && ends.includes(e.sourceRef.id)), [], '结束事件之后没有连线');
+  assert.equal(elements.filter(e => e.$type === 'bpmn:ParallelGateway' && sub.flowElements.includes(e)).length, 0, '汇合由多实例完成，不另设并行网关');
+  assert.equal(nodes['review-call'].calledElement, 'review-commit');
+  assert.equal(route('reviews-choice', { inputs: { reviewer: null, reviewer2: null, reviewerOnce: null }, 'gate-passed': { first: true } }), 'report');
+  const review = nodes.review.documentation[0].text;
+  assert.match(review, /评审者的发现是否成立由你判断，不成立的不必转给执行者。/);
+  const section = review.match(/\{\{(if report\.reviews[\s\S]*?)\}\}/)[1];
+  assert.equal(evaluate(section, { report: { reviews: '' } }).value, '');
+  assert.equal(evaluate(section, { report: { reviews: '评审者（a）：可以' } }).value, '\n评审者的发现：\n评审者（a）：可以');
+  assert.equal(nodes.report.extensionElements.values.find(v => v.name === 'REVIEWS').value, '=reviews');
+});
+
+test('填了几位评审者就调用几次，参数是这次交付；首次评审者只评每项任务的第一次', async () => {
+  const { deliver } = await reviewing();
+  const agents = { reviewer: { agent: 'a1', model: 'm1' }, reviewer2: { agent: 'a2' }, reviewerOnce: { agent: 'a3', effort: 'high' } };
+  const context = (filled, first) => ({ inputs: { reviewer: null, reviewer2: null, reviewerOnce: null, ...Object.fromEntries(filled.map(slot => [slot, agents[slot]])) },
+    gate: { head: 'h'.repeat(40) }, 'gate-passed': { base: 'b'.repeat(40), task: '第一项任务', first } });
+  const outcome = { reviewer: { line: 'ok', findings: '[]', report: 'r1' }, reviewer2: { line: 'ok', findings: '[]', report: 'r2' }, reviewerOnce: { line: 'ok', findings: '[]', report: 'r3' } };
+  assert.deepEqual(deliver(context([], true)), { calls: [], reviews: null }, '都不填时不进评审');
+  for (const [filled, first, called] of [
+    [['reviewer'], true, ['reviewer']],
+    [['reviewer', 'reviewer2'], true, ['reviewer', 'reviewer2']],
+    [['reviewer', 'reviewer2', 'reviewerOnce'], true, ['reviewer', 'reviewer2', 'reviewerOnce']],
+    [['reviewer', 'reviewer2', 'reviewerOnce'], false, ['reviewer', 'reviewer2']],
+    [['reviewerOnce'], true, ['reviewerOnce']],
+    [['reviewerOnce'], false, []],
+    [['reviewer2'], false, ['reviewer2']],
+  ]) {
+    const { calls, reviews } = deliver(context(filled, first), outcome);
+    assert.deepEqual(calls, called.map(slot => ({ called: 'review-commit', base: 'b'.repeat(40), head: 'h'.repeat(40), task: '第一项任务', reviewer: agents[slot] })), `${filled} ${first}`);
+    if (!called.length) { assert.equal(reviews, null); continue; }
+    assert.deepEqual(reviews.map(r => r.state), ['reviewer', 'reviewer2', 'reviewerOnce'].map(slot => called.includes(slot) ? 'done' : 'skipped'));
+    for (const r of reviews.filter(r => r.state === 'done')) assert.deepEqual(r, { state: 'done', slot: r.slot, who: agents[r.slot], head: 'h'.repeat(40), ...outcome[r.slot] });
+  }
+});
+
+test('gate-passed 给评审对照的泳道提交与任务书，首次只在新执行会话后的第一次通过', t => {
+  const f = fixture(t, false); f.run('lane'); f.task('code', 'first'); f.run('execute');
+  const passed = () => f.run('gate-passed', { RUNS: '[]' }).outputs;
+  assert.deepEqual(passed(), { base: f.state().head, task: f.state().task, first: 'true' });
+  f.review('revise', '再改改'); f.task('code', 'second'); f.run('revise');
+  assert.equal(passed().first, 'false', '同一会话修改后的交付不算第一次');
+  f.review('next', '第二项：补齐状态'); assert.equal(f.run('accept').outputs.route, 'execute');
+  f.task('two', 'next task'); f.run('execute');
+  assert.deepEqual(passed(), { base: f.state().head, task: '第二项：补齐状态', first: 'true' }, '下一项任务的第一次交付');
+});
+
+test('审查材料带上每位评审者的结果：没评成的写原因，别人的发现照常；发现多时卡片只留严重程度、标题和位置', async t => {
+  const { deliver } = await reviewing();
+  const f = fixture(t, false); f.run('lane'); f.task('code', 'first'); f.run('execute');
+  const head = f.state().executor.head, path = join(f.env.CODA_ARTIFACTS, 'reviews.md');
+  const material = reviews => f.run('review', { REVIEWS: reviews === null ? '' : JSON.stringify(reviews) }).outputs.reviews;
+  assert.equal(material(null), '', '没有评审者时没有这一段');
+
+  const context = { inputs: { reviewer: { agent: 'a1', model: 'm1', effort: 'high' }, reviewer2: { agent: 'a2' }, reviewerOnce: { agent: 'a3' } },
+    gate: { head }, 'gate-passed': { base: f.state().head, task: f.state().task, first: true } };
+  const findings = [{ severity: 'P1', title: '漏了失败路径', location: 'scripts/a.mjs:12', detail: '失败时状态没写回。\n第二行' }, { severity: 'P3', title: '命名', location: '', detail: '' }];
+  const { reviews } = deliver(context, { reviewer: { line: '有一个要改', findings: JSON.stringify(findings), report: '评审原文一' }, reviewerOnce: { line: '可以', findings: '[]', report: '评审原文三' } });
+  const text = material(reviews);
+  assert.equal(text, [
+    '评审者（a1 · m1 · high）：有一个要改\n- [P1] 漏了失败路径（scripts/a.mjs:12）\n  失败时状态没写回。\n  第二行\n- [P3] 命名',
+    `第二评审者（a2）：没评成。调用 review-commit 没有成功，原因见本运行 coda://workflow-runs/run-1 的「评审这次交付」（workflow_status）。`,
+    `首次评审者（a3）：可以\n评审原文：${path}`,
+  ].join('\n\n'));
+  for (const raw of ['评审原文一', '评审原文三', '失败时状态没写回。']) assert.ok(readFileSync(path, 'utf8').includes(raw), raw);
+  assert.equal(f.run('review', { REVIEWS: JSON.stringify(reviews) }).status, 0, '评审没评成不让这一步失败');
+
+  // 评的不是这次交付（之前的提交、检查连续失败后升级）时不带。
+  f.task('code', 'second'); f.run('revise');
+  assert.equal(material(reviews), '');
+
+  const many = Array.from({ length: 60 }, (_, i) => ({ severity: `P${i % 4}`, title: `问题 ${i}`, location: `src/file-${i}.mjs:${i}`, detail: `第 ${i} 条的说明，`.repeat(8) }));
+  const crowded = deliver({ ...context, gate: { head: f.state().executor.head } }, { reviewer: { line: '很多问题', findings: JSON.stringify(many), report: '原文' } }).reviews;
+  const card = material(crowded);
+  for (const finding of many) assert.ok(card.includes(`- [${finding.severity}] ${finding.title}（${finding.location}）`), finding.title);
+  assert.ok(!many.some(finding => card.includes(finding.detail)), '说明不进卡片');
+  assert.ok(card.includes(`每条的说明与评审原文见 ${path}`));
+  const file = readFileSync(path, 'utf8');
+  for (const finding of many) assert.ok(file.includes(finding.detail), finding.title);
+});
