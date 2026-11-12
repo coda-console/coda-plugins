@@ -9,7 +9,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { cleared } from './coda/components/plugins/plugin-rules.mjs';
 import { RETRY_DELAYS, continuationPrompt, serviceFailure } from './coda/components/prompt-recovery/prompt-recovery.mjs';
-import { NOT_STEERED, OPEN_LIMIT, REMOTE_CODE, SIGNED_OUT, STEERED, STEERING, STOP_LIMIT, TERM_GRACE, clientCapabilities, currentModel, steeringParams, supportsSteering, systemPrompt,
+import { NOT_STEERED, OPEN_LIMIT, REMOTE_CODE, SIGNED_OUT, STEERED, STEERING, STOP_LIMIT, TERM_GRACE, clientCapabilities, currentModel, steeringParams, supportsSteering, systemPrompt, instructionsBlock,
   takesInstructions } from './coda/domain/agent-protocol.mjs';
 import { agentErrorMessage } from './coda/kernel/agent-failures.mjs';
 import { temporary } from './leftovers.mjs';
@@ -230,8 +230,7 @@ class Session {
         ? '声明了 _meta.coda.waits' : '没声明 _meta.coda.waits（只是声明，登记照收）'}${caps.sessionCapabilities?.additionalDirectories != null ? '，收 additionalDirectories' : ''}，${this.steering
         ? '声明了插话（_meta.steering）' : '没声明插话'}`);
       if (this.instructed) say.pass('handshake.system-prompt', '声明了会话指令（sessionCapabilities.systemPrompt）：session/new、session/load 带 Coda 的指令（append 模式）');
-      else say.fail('handshake.system-prompt', 'initialize 没声明 agentCapabilities.sessionCapabilities.systemPrompt：Coda 照 ACP 的规矩不发会话指令（回复在 Mac、iPhone 上怎样显示、回复语言、插件说明），接入 Coda 的 Agent 必须声明。'
-        + '有原生系统提示词入口的放在那里；没有的，在原生会话第一次 session/prompt 时把指令作为单独、明确分隔的一段放在用户输入前面送入，之后与 session/load 恢复的会话不再送');
+      else say.pass('handshake.system-prompt', '没声明会话指令：Coda 在新会话第一轮的用户输入前送入单独的指令文本块');
     }
     if (sessionId && !this.canLoad) { say.fail('handshake.load', '新进程的 initialize 不再声明 loadSession：Coda 恢复不了这个会话'); return 'failed'; }
     const method = sessionId ? 'session/load' : 'session/new';
@@ -267,7 +266,7 @@ class Session {
   async prompt(text, { cancel = false, steer = null, as = 'live.turn', attempt = 0, accepted = false } = {}) {
     const say = this.say.live, id = randomUUID(), rule = cancel ? 'live.cancel' : as;
     const turn = this.last = this.turn = { started: Date.now(), updates: 0, text: '', barrier: null, workAfterCancel: [], readCancel: false, replied: null, steered: null };
-    const reply = this.proc.request('session/prompt', { sessionId: this.sessionId, prompt: [{ type: 'text', text }] },
+    const reply = this.proc.request('session/prompt', { sessionId: this.sessionId, prompt: Array.isArray(text) ? text : [{ type: 'text', text }] },
       { id, timeout: this.limits.turn, onReply: () => { turn.readCancel = !!turn.barrier?.answered; turn.replied = Date.now(); this.turn = null; this.track(); this.changed(); } });
     reply.catch(() => { if (this.turn === turn) { this.turn = null; this.track(); this.changed(); } });
     let cancelledAt = null;
@@ -303,7 +302,7 @@ class Session {
       // waited at least as long as it asks.
       const failure = serviceFailure(m.error), upstream = failure?.retryAfterMs ?? 0, base = this.limits.retryDelays[attempt];
       const wait = base === undefined || upstream > RETRY_DELAYS.at(-1) ? undefined : Math.max(base, upstream);
-      if (!cancel && !text.startsWith('/') && failure && wait !== undefined) {
+      if (!cancel && !(typeof text === 'string' && text.startsWith('/')) && failure && wait !== undefined) {
         say.info('live.service-retry', `服务暂不可用，按 Coda 策略 ${secs(wait)} 秒后第 ${attempt + 1} 次重试`);
         await delay(wait);
         accepted ||= failure.input === 'accepted';
@@ -394,12 +393,11 @@ async function inputEnd({ agent, checked, base, limits, say }) {
 // The first turn asks for the word in the session instructions (docs/agent-protocol.md「会话指令」): they are to be in the
 // agent's context before it, whether its own system prompt took them or they went in front of the user's input.
 async function instructions(session, word, limits, say) {
-  if (!session.instructed) { say.skip('live.instructions', '没声明会话指令：Coda 不发 systemPrompt，指令是否生效查不了'); return true; }
-  if (!await session.prompt(CHECK_QUESTION, { as: 'live.instructions' })) return false;
+  const prompt = session.instructed ? CHECK_QUESTION : [instructionsBlock(session.instructions), { type: 'text', text: CHECK_QUESTION }];
+  if (!await session.prompt(prompt, { as: 'live.instructions' })) return false;
   const text = session.last.text;
   if (text.includes(word)) say.pass('live.instructions', `会话指令在第一轮之前生效：第一轮问指令里的检查词，回复里有 ${word}`);
-  else say.fail('live.instructions', `会话指令没在第一轮之前生效：session/new 的 systemPrompt 里写了检查词 ${word}，第一轮问它，回复${text ? `「${short(text)}」` : '没有文字'}，没有说出它。`
-    + '有原生系统提示词入口的放在那里；没有的，在原生会话第一次 session/prompt 时把指令作为单独、明确分隔的一段放在用户输入前面送入');
+  else say.fail('live.instructions', `会话指令没有生效：${session.instructed ? 'session/new 的 systemPrompt' : '第一轮的指令文本块'}里写了检查词 ${word}，回复${text ? `「${short(text)}」` : '没有文字'}，没有说出它。`);
   await delay(limits.pause);
   return true;
 }

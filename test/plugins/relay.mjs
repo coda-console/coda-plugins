@@ -8,9 +8,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AgentProcess } from '../../check/process.mjs';
 import { pluginDir } from './plugin.mjs';
+import { instructionsBlock } from '../../check/coda/domain/agent-protocol.mjs';
 
 const quote = s => `'${s.replaceAll("'", "'\\''")}'`;
-const systemPrompt = text => ({ mode: 'append', content: [{ type: 'text', text }] });
 
 export async function relaysInstructions(t, id, binary, argv) {
   const manifest = JSON.parse(readFileSync(join(pluginDir(id), 'package.json'), 'utf8'));
@@ -25,16 +25,18 @@ export async function relaysInstructions(t, id, binary, argv) {
   const open = async () => { const p = start(); agents.push(p); return p; };
   const request = async (p, method, params) => (await p.request(method, params, { timeout: 5000 }));
   const prompt = async (p, text) => {
-    assert.equal((await request(p, 'session/prompt', { sessionId: 'native', prompt: [{ type: 'text', text }] })).result.stopReason, 'end_turn');
+    assert.equal((await request(p, 'session/prompt', { sessionId: 'native', prompt: Array.isArray(text) ? text : [{ type: 'text', text }] })).result.stopReason, 'end_turn');
     return JSON.parse(messages.filter(m => m.params?.update?.content).at(-1).params.update.content.text);
   };
 
   const p = await open();
   const init = (await request(p, 'initialize', { protocolVersion: 1, clientCapabilities: {} })).result;
-  assert.deepEqual(init.agentCapabilities.sessionCapabilities, { list: {}, systemPrompt: {} });
-  assert.equal((await request(p, 'session/new', { cwd: home, mcpServers: [], systemPrompt: { mode: 'override', content: [] } })).error.code, -32602);
-  assert.equal((await request(p, 'session/new', { cwd: home, mcpServers: [], systemPrompt: systemPrompt('# Coda client') })).result.sessionId, 'native');
-  const first = await prompt(p, '你好');
+  assert.deepEqual(init.agentCapabilities.sessionCapabilities, { list: {} });
+  assert.equal((await request(p, 'session/new', { cwd: home, mcpServers: [] })).result.sessionId, 'native');
+  assert.deepEqual((await prompt(p, '/compact')).prompt, [{ type: 'text', text: '/compact' }]);
+  const input = [instructionsBlock('# Coda client'), { type: 'text', text: '你好' }];
+  const first = await prompt(p, input);
+  assert.deepEqual(first.prompt, input, 'Coda supplies the instruction block; the entry forwards both blocks unchanged');
   assert.deepEqual(first.argv, argv);
   assert.equal(first.leaked, false, 'the agent is not given systemPrompt');
   assert.equal(first.prompt.length, 2);
@@ -44,7 +46,7 @@ export async function relaysInstructions(t, id, binary, argv) {
   // A loaded session has had them.
   const q = await open();
   await request(q, 'initialize', { protocolVersion: 1, clientCapabilities: {} });
-  assert.ok((await request(q, 'session/load', { sessionId: 'native', cwd: home, mcpServers: [], systemPrompt: systemPrompt('# Coda client') })).result);
+  assert.ok((await request(q, 'session/load', { sessionId: 'native', cwd: home, mcpServers: [] })).result);
   const loaded = await prompt(q, '继续');
   assert.deepEqual([loaded.leaked, loaded.prompt], [false, [{ type: 'text', text: '继续' }]]);
   // It ends as the CLI ends, once Coda's side closes.

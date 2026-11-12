@@ -13,9 +13,9 @@ plugins/claude/          Claude SDK：基于 Claude Agent SDK 的 ACP 入口（n
 plugins/kimi/            Kimi Code：在运行机的 kimi acp 与 Coda 之间转发，资源「Kimi」
 plugins/grok/            Grok：转发运行机上 Grok CLI 的 ACP，并适配审批模式，资源「Grok」
 plugins/grok-bot/        Grok Bot：每个云端 Bot 的原生主会话是一条会话 Provider 记录，资源页登录
-plugins/opencode/        OpenCode：在运行机的 opencode acp 与 Coda 之间转发，送入会话指令与所选模型服务，模型按来源分组
+plugins/opencode/        OpenCode：在运行机的 opencode acp 与 Coda 之间转发，送入所选模型服务，模型按来源分组
 plugins/codex-accounts/  Codex 多账号：管理登录、自动续期与账号选择，接管资源「Codex」
-plugins/cursor/          Cursor：在运行机的 cursor-agent acp 与 Coda 之间转发，送入会话指令
+plugins/cursor/          Cursor：直接启动运行机的 cursor-agent acp
 plugins/git/             Git 源与快照：本机仓库 provider、运行关联的工作树／提交快照、临时 ref 回收与只读 smart HTTP v2
 plugins/host/            宿主资源：发布本机 coda/executor@1 执行环境，执行 execute 并写 coda/run@1；Xcode 构建、Apple 模拟器与项目要求排队的命令共用这台机器的一组名额（组 host、持锁执行 run-held、host-sim），资源「构建名额」
 plugins/magpie/          Magpie：把本机的 Magpie 网关作为模型服务提供给 Pi 等插件，安装时装好 Magpie 并让网关常驻
@@ -79,13 +79,13 @@ OpenCode 已按来源分组去掉模型的 provider 前缀，沿用现有名称�
 
 ### 会话指令与设置动作
 
-Coda 的会话指令（`systemPrompt`）各插件都声明并接受，只接受 `append` 模式的文本块，其他回 -32602、不建立会话：
+Claude、Codex 声明并原生接受 Coda 的会话指令（`systemPrompt`），只接受 `append` 模式的文本块，其他回 -32602、不建立会话：
 Claude 追加在 `claude_code` 预设的系统提示词后面；Codex 经 `thread/start`、`thread/resume` 作为 `developerInstructions` 交给 Codex，
 接在会话目录下 Codex 自己配置的 `developer_instructions`（`config/read`）后面
 （codex-acp 按 ACP 的 schema 读请求会丢掉 `systemPrompt`，入口改放在请求的 `_meta` 里交给打过补丁的 codex-acp）。
-Kimi、Grok、OpenCode、Cursor 的 CLI 不接受它：入口不转给 CLI，在 `session/new` 建立的原生会话第一次 `session/prompt` 时，
+Kimi、Grok、OpenCode、Cursor 不声明支持它，插件不用为此写代码。Coda 后端在 `session/new` 建立的原生会话第一次非斜杠命令的 `session/prompt` 时，
 把指令包在 `<coda-session-instructions>` 里作为单独的一段文本放在用户输入前面，之后与 `session/load` 恢复的会话不再送；
-第一条是斜杠命令时留到下一条。Codex 与 Claude 另声明插话：一轮已经结束时收到的 `_session/steering` 回 `promptRequired`，不另开一轮。
+Agent 报来的标题以指令块开头时由 Coda 丢掉。Codex 与 Claude 另声明插话：一轮已经结束时收到的 `_session/steering` 回 `promptRequired`，不另开一轮。
 Claude 把一轮进行中的插话标上 `priority: 'next'` 交给 Claude Code，回 `injected`：Claude Code 在这一轮的下一个工具间隙把它并进去，
 不打断正在跑的工具；这一轮没再调工具就结束时，Claude Code 紧接着为它另跑一轮，入口把那一轮也算进原来的 `session/prompt`，跑完才答复。
 这一轮被停止或失败时，还没并进去的插话随之撤掉（`interrupt` 带 `cancelQueued`），不会在之后再跑，原来的 `session/prompt` 等撤掉了才答复。
@@ -445,9 +445,9 @@ Agent 进程的环境是会话的环境再加插件进程的那组变量（资�
 照 [接入协议](https://github.com/coda-console/coda-protocol/blob/main/docs/agent-protocol.md) 实现，另外几条容易漏的：
 
 - 标准输出只写 JSON-RPC，一行一条；日志写标准错误（Coda 不读它）。请求 ID 是字符串。
-- 必须接受会话指令：`initialize` 结果声明 `agentCapabilities.sessionCapabilities.systemPrompt: {}`，`session/new`、`session/load` 收到的
-  `systemPrompt`（`append` 模式）在第一轮之前生效。没有原生系统提示词入口的，在原生会话第一次 `session/prompt` 时把指令作为单独、明确分隔的一段
-  放在用户输入前面送入，之后与 `session/load` 恢复的会话不再送。
+- 原生接受会话指令的 Agent 在 `initialize` 声明 `agentCapabilities.sessionCapabilities.systemPrompt: {}`，让 `session/new`、`session/load` 的
+  `systemPrompt`（`append` 模式）在第一轮之前生效。没有原生入口的不要声明：Coda 后端会在新会话第一次非斜杠命令的 `session/prompt` 中，
+  把指令作为单独的文本块放在用户输入前面；`session/load` 不再送，插件不用处理。
 - 插话可选：在 `initialize` 结果顶层声明 `_meta.steering.supported: true`，就要处理 `_session/steering`：一轮进行中回 `injected`，
   这一轮已经结束回 `promptRequired`（`reason: "noRunningTurn"`），且不自己另开一轮。
 - `session/new` 要报当前模型：`configOptions` 里 `category: "model"` 的那一项的 `currentValue`（或 `models.currentModelId`）。Coda 每轮开始前核对，没有就不发这一轮。
@@ -517,8 +517,8 @@ npx github:coda-console/coda-plugins#<提交> <插件目录>
 | 级 | 要不要登录 | 查什么 |
 | --- | --- | --- |
 | 清单（总是） | 不要 | `package.json` 的通用键对协议 schema 校验（`manifestProblem`），再照 Coda 读成插件（`readPlugin`：登记的贡献点各按自己的 schema 查、读，ID、设置名在 ID 之下）；其余写给别的插件扩展点的键，要有 Coda 自带的或旁边依赖的插件声明这个类型。资源类型与旧的面板按资源插件给扩展点 `resources`、`panels` 带的 schema 查。`.coda/workflows/` 里的每个流程（含能力）按协议的流程方言读（`workflowProblem`）：不是 BPMN、认不出的 `coda:` 属性或元素、没有的动作或动作不接受的参数都算失败。另有只提醒的：分类、版本、图标页面太小、旧的 Agent ID `claude` |
-| 握手（默认） | 不要 | `sh -c` 启动 `command`（环境是 Coda 的 `pluginEnv` 给的：`CODA_NODE`、`CODA_PLUGIN_PATH`、临时的 `CODA_PLUGIN_STATE`、设置默认值的 `CODA_PLUGIN_SETTINGS`；依赖的插件在旁边（同一个父目录里同名的目录）时 `CODA_PLUGIN_DEPENDENCIES` 给它的目录，Coda 自带的不在这里、不给），发与 Coda 相同的 `initialize`，要求 `protocolVersion` 为 1；能力声明的 `_meta.coda` 与顶层插话声明交协议 schema 校验；声明会话指令（`sessionCapabilities.systemPrompt`，没声明算失败）；`session/new` 带会话指令，给出会话与当前模型，配置选项的 `_meta.coda.default` 交协议校验；错误里声明的执行失败也查协议 schema，回 -32000 记为未登录、跳过后面的检查（不算失败）；像 Coda 一样对进程组发 SIGTERM，5 秒内要退出（超过 0.8 秒提醒）；另起一个进程，关掉标准输入后 5 秒内不退出只提醒。资源类型（或旧的面板）由 Coda 资源插件的 `Panels` 读一次（30 秒），输出合格式 |
-| 一轮（`--live`） | 要 | 第一轮问会话指令里的检查词（一个随机词），回复里要有它；再发一轮提示词（默认「只回复 ok」）收到 `stopReason`；每条 `session/update` 先过 ACP SDK 的 schema，工具审核、用量与默认选项标记再过协议 schema；`_coda/wait` 用协议的 `agentMessageProblem` 校验形状，另查会话归属、登记与终态（子 Agent 不带 `childSessionId`、定时不带 `at` 只提醒）；扩展形状问题按现有规则报告协议返回的「位置：说明」；远端绑定码请求先查协议参数再查本会话归属；执行失败的形状交协议校验，重试预算照 Coda 策略；审批与提问一律回拒绝，在一轮之外发来的算失败；再发一轮并 `session/cancel`，30 秒内要结束，读到取消后还在做事或拖过 5 秒才答复却不回 `cancelled` 算失败（见下）；有自主轮次的也取消一次；声明插话的，答复用协议的 `agentResultProblem` 校验，一轮结束后插话要回 `promptRequired` 且不自己另开一轮，一轮进行中插话要回 `injected` 或 `promptRequired`（`injected` 的那一轮照常回 `stopReason`）；声明 `loadSession` 的，新开进程 `session/load`（同样带会话指令）要成功，随后在新进程里再跑一轮也要收到 `stopReason` |
+| 握手（默认） | 不要 | `sh -c` 启动 `command`（环境是 Coda 的 `pluginEnv` 给的：`CODA_NODE`、`CODA_PLUGIN_PATH`、临时的 `CODA_PLUGIN_STATE`、设置默认值的 `CODA_PLUGIN_SETTINGS`；依赖的插件在旁边（同一个父目录里同名的目录）时 `CODA_PLUGIN_DEPENDENCIES` 给它的目录，Coda 自带的不在这里、不给），发与 Coda 相同的 `initialize`，要求 `protocolVersion` 为 1；能力声明的 `_meta.coda` 与顶层插话声明交协议 schema 校验；检查会话指令能力（`sessionCapabilities.systemPrompt`，没声明也通过，由 Coda 在第一轮送入）；声明了的 `session/new` 带会话指令，给出会话与当前模型，配置选项的 `_meta.coda.default` 交协议校验；错误里声明的执行失败也查协议 schema，回 -32000 记为未登录、跳过后面的检查（不算失败）；像 Coda 一样对进程组发 SIGTERM，5 秒内要退出（超过 0.8 秒提醒）；另起一个进程，关掉标准输入后 5 秒内不退出只提醒。资源类型（或旧的面板）由 Coda 资源插件的 `Panels` 读一次（30 秒），输出合格式 |
+| 一轮（`--live`） | 要 | 声明了会话指令的经 `systemPrompt` 送入，没声明的在第一轮前加契约的 `instructionsBlock`；第一轮问会话指令里的检查词（一个随机词），回复里要有它；再发一轮提示词（默认「只回复 ok」）收到 `stopReason`；每条 `session/update` 先过 ACP SDK 的 schema，工具审核、用量与默认选项标记再过协议 schema；`_coda/wait` 用协议的 `agentMessageProblem` 校验形状，另查会话归属、登记与终态（子 Agent 不带 `childSessionId`、定时不带 `at` 只提醒）；扩展形状问题按现有规则报告协议返回的「位置：说明」；远端绑定码请求先查协议参数再查本会话归属；执行失败的形状交协议校验，重试预算照 Coda 策略；审批与提问一律回拒绝，在一轮之外发来的算失败；再发一轮并 `session/cancel`，30 秒内要结束，读到取消后还在做事或拖过 5 秒才答复却不回 `cancelled` 算失败（见下）；有自主轮次的也取消一次；声明插话的，答复用协议的 `agentResultProblem` 校验，一轮结束后插话要回 `promptRequired` 且不自己另开一轮，一轮进行中插话要回 `injected` 或 `promptRequired`（`injected` 的那一轮照常回 `stopReason`）；声明 `loadSession` 的，新开进程 `session/load`（声明了的同样带会话指令）要成功，随后在新进程里再跑一轮也要收到 `stopReason` |
 
 **取消后的 `stopReason` 怎么判**：检查发 `session/cancel` 时紧跟一个只会得到 -32601 的探测请求（`_codaCheck/barrier`）。Agent 按顺序读，
 探测的答复一定写在它读到取消之后，所以本轮的答复与 `session/update` 落在探测答复的前后，就说明它们写出时读没读到取消。

@@ -82,7 +82,7 @@ describe('this repository', () => {
   test('plugins/cursor passes the manifest level', async () => {
     const { report, plugin: cursor } = await checkPlugin(at('plugins/cursor'), { manifestOnly: true });
     assertPasses(report, ['manifest.name', 'manifest.agents']);
-    assert.equal(cursor.agents[0].command, 'exec "$CODA_NODE" "$CODA_PLUGIN_PATH/agent/entry.mjs"');
+    assert.equal(cursor.agents[0].command, 'if [ -x "$HOME/.local/bin/cursor-agent" ]; then exec "$HOME/.local/bin/cursor-agent" acp; else exec cursor-agent acp; fi');
   });
   test('the command line exits 0 on a pass and 1 on a failure', () => {
     const run = (...args) => spawnSync(process.execPath, [at('bin/check.mjs'), ...args], { encoding: 'utf8' });
@@ -115,7 +115,7 @@ describe('a liar fails on the rule it breaks', () => {
     ['ignore-sigterm', 'handshake.sigterm', {}],
     ['load-fails', 'handshake.load', { live: true }],
     ['load-forgets', 'live.load-turn', { live: true }],
-    ['no-system-prompt', 'handshake.system-prompt', { live: true }],
+    ['no-system-prompt-ignore', 'live.instructions', { live: true }],
     ['ignore-system-prompt', 'live.instructions', { live: true }],
     ['steer-own-turn', 'live.steering', { live: true }],
     ['steer-started', 'live.steering', { live: true }],
@@ -129,6 +129,12 @@ describe('a liar fails on the rule it breaks', () => {
     assertPasses(report, ['handshake.system-prompt', 'live.instructions', 'live.turn', 'live.cancel']);
     assert.match(report.items.find(item => item.rule === 'live.cancel').message, /stopReason cancelled/);
     assert.ok(rules(report, 'skip').includes('live.steering'), 'steering is optional');
+  });
+  test('an agent without systemPrompt follows the instructions in the first prompt', async () => {
+    const { report } = await checkPlugin(plugin({ mode: 'no-system-prompt' }), { live: true, limits });
+    assertPasses(report, ['handshake.system-prompt', 'live.instructions', 'live.turn', 'live.cancel']);
+    assert.match(report.items.find(item => item.rule === 'handshake.system-prompt').message, /第一轮/);
+    assert.deepEqual(failed(report), []);
   });
   test('one that steers answers promptRequired once its turn has ended', async () => {
     const { report } = await checkPlugin(plugin({ mode: 'steer' }), { live: true, limits });

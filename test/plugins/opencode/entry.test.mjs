@@ -1,11 +1,10 @@
-// The OpenCode entry (plugins/opencode/agent/): `opencode acp` relayed, Coda's session instructions in front of a new
-// session's first prompt; the setup's decision (scripts/setup.mjs) against a stand-in `--version`.
+// The OpenCode entry relays `opencode acp` with Coda's input unchanged; the setup's decision (scripts/setup.mjs) against a stand-in `--version`.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { MINIMUM, needed } from '../../../plugins/opencode/scripts/setup.mjs';
 import { relaysInstructions } from '../relay.mjs';
 
-test('the entry relays opencode acp from ~/.opencode/bin and gives it the session instructions on the first prompt only', t =>
+test('the entry relays opencode acp from ~/.opencode/bin and forwards Coda instructions unchanged', t =>
   relaysInstructions(t, 'opencode', '.opencode/bin/opencode', ['acp']));
 
 test('setup installs a missing or broken OpenCode, upgrades one older than Coda\'s contract needs (OpenCode 1 among them), and keeps a newer one', () => {
