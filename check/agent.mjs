@@ -263,10 +263,10 @@ class Session {
   // `steer`, that message is sent into the turn once the agent first says something, as Coda steers a turn under way; its
   // answer is the turn's `steered`. `as`: the rule the turn is said under; one but `live.turn` is judged by the caller, from
   // `last` (the turn).
-  async prompt(text, { cancel = false, steer = null, as = 'live.turn', attempt = 0, accepted = false } = {}) {
+  async prompt(input, { cancel = false, steer = null, as = 'live.turn', attempt = 0, accepted = false } = {}) {
     const say = this.say.live, id = randomUUID(), rule = cancel ? 'live.cancel' : as;
     const turn = this.last = this.turn = { started: Date.now(), updates: 0, text: '', barrier: null, workAfterCancel: [], readCancel: false, replied: null, steered: null };
-    const reply = this.proc.request('session/prompt', { sessionId: this.sessionId, prompt: Array.isArray(text) ? text : [{ type: 'text', text }] },
+    const reply = this.proc.request('session/prompt', { sessionId: this.sessionId, prompt: Array.isArray(input) ? input : [{ type: 'text', text: input }] },
       { id, timeout: this.limits.turn, onReply: () => { turn.readCancel = !!turn.barrier?.answered; turn.replied = Date.now(); this.turn = null; this.track(); this.changed(); } });
     reply.catch(() => { if (this.turn === turn) { this.turn = null; this.track(); this.changed(); } });
     let cancelledAt = null;
@@ -302,11 +302,11 @@ class Session {
       // waited at least as long as it asks.
       const failure = serviceFailure(m.error), upstream = failure?.retryAfterMs ?? 0, base = this.limits.retryDelays[attempt];
       const wait = base === undefined || upstream > RETRY_DELAYS.at(-1) ? undefined : Math.max(base, upstream);
-      if (!cancel && !(typeof text === 'string' && text.startsWith('/')) && failure && wait !== undefined) {
+      if (!cancel && !(typeof input === 'string' && input.startsWith('/')) && failure && wait !== undefined) {
         say.info('live.service-retry', `服务暂不可用，按 Coda 策略 ${secs(wait)} 秒后第 ${attempt + 1} 次重试`);
         await delay(wait);
         accepted ||= failure.input === 'accepted';
-        return this.prompt(accepted ? continuationPrompt : text, { as, attempt: attempt + 1, accepted });
+        return this.prompt(accepted ? continuationPrompt : input, { as, attempt: attempt + 1, accepted });
       }
       say.fail(rule, `session/prompt 回了错误 ${m.error.code}：${agentErrorMessage(m.error)}（Coda 把这一轮记为失败）`);
       return null;
