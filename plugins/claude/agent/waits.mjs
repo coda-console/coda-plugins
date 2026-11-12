@@ -65,6 +65,7 @@ export class ClaudeWaits {
         stoppable: true, model: this.models.get(known.childSessionId) });
       return;
     }
+    // local_bash and mcp_task share the ordinary task lifecycle; only local_agent owns a child session.
     const subagent = native.task_type === 'local_agent', toolUseId = cut(native.tool_use_id, 200);
     const task = { taskId: native.task_id, waitId: native.task_id.slice(0, 200), run: 1, kind: subagent ? 'subagent' : 'task', toolUseId, runId: native.run_id,
       listed: listed || native.is_backgrounded === true, parentTaskId: native.parent_task_id, ...(subagent ? { childSessionId: toolUseId ?? native.task_id.slice(0, 200) } : {}) };

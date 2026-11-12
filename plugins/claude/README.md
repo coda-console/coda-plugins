@@ -32,3 +32,23 @@ Claude Code 会自己长出新东西：SDK 升级带来新的消息类型，服�
    检查读不出声明时，按报错补读法或改登记，不要跳过。
 3. 用新 SDK 跑一轮真实会话，把新出现的原生工具加进 `agent/known-tools.json`（会话里没登记的工具会报成 `tool:<名字>`，遥测按 Agent 版本计数）；
    要按读写、命令等显示的，同时在 `agent/tools.mjs` 里归类。
+
+### SDK 0.3.312 → 0.3.322（2026-11-13）
+
+依据 npm 发布包的 `sdk.d.ts` 对比和 [SDK CHANGELOG](https://github.com/anthropics/claude-agent-sdk-typescript/blob/main/CHANGELOG.md)；消息联合只新增 `system/session_writes_lost`，内容块类型无新增。保持升级前功能，不打开新的开关。
+
+| 新消息、事件或字段 | 去向 |
+| --- | --- |
+| `system/session_writes_lost`；`error_code: ENOSPC/EDQUOT`、`lost: transcript/global_config`、`transcript_session_ids` | `registry.mjs` 登记为有意忽略。SDK 明确允许忽略；已收到的结果不变，Coda 自己的记录照旧，不将其报为没适配。 |
+| `task_type: mcp_task` | `waits.mjs` 的普通 `task`（与 `local_bash` 一样），沿用开始、转后台、快照、结束、停止；不打开 `CLAUDE_AUTO_BACKGROUND_TASKS`。 |
+| result 的 `credential_expires_at`（成功与失败均可带） | 有意不消费；登录仍由现有认证及资源路径管理，不增加到期时间展示或跨层参数。 |
+| `startup_failure_reason: sandbox_required_unavailable / initialize_not_first / config_file_invalid` | 仍按 `result/error_during_execution` 处理，`errors` 原文经 `errorText`、`claudeFailure` 报执行失败；不额外按原因改变重试策略。 |
+| hook 回调失败的 warning | 既有 `system/notification` 登记为运行机通知、有意不显示；不启用新增 `HookCallbackMatcher.onFailure: block`。默认 `continue` 不变。 |
+| `agentProgressSummaries` 延后或省略摘要 | 既有 `system/task_progress` 有意忽略；等待项靠生命周期，不靠心跳或摘要。 |
+| control initialize 的 `hook_on_failure_supported`；响应的 `pending_elicitation_requests` | SDK 控制层使用；插件只取模型、命令、账号，不自行接管控制响应或重放表单。现有表单继续经 `onElicitation`。 |
+| `set_has_subscribers` 控制请求、MCP call 的 `check_permissions`、readFile 的 `lossy` | 控制层接口，插件不调用；不增加订阅、直接 MCP 调用或文件读取功能。 |
+| 真实会话 init 的 `ArtifactComments / ArtifactData / DesignSync / SendToProject / SendToProjectContext` | 补进 `known-tools.json`；沿用通用工具调用及结果，不误报未适配。发布包 `BUILTIN_TOOL_NAMES` 两版相比没有新增名。 |
+| `TaskCreate` 结果的 `task.description`；Read 不再返回 `file_unchanged` | 沿用 `tool_result` 的既有工具结果处理，不按这些字段分支。 |
+| `prewarm` 进入 `/core`；`Settings.permissions.blockWritesOutsideWorkingDirectories / blockReadsExemptPaths / workingDirectoriesAsGiven / denyInsteadOfPrompting`、`disableReplyCheck / disableWindowsBashCommandSplit`；`PushNotificationInput.status` 可省略 | 有意不启用；继续使用现有 `query`、Stop hook 和设置。 |
+
+ACP 2.6.0 只使用默认 stable v1。逐项经过真实连接的解析测试：`initialize` 保留 `clientCapabilities._meta.coda.unrecognized`；`new/load` 保留目录、MCP 配置及其环境变量、`systemPrompt`、`_meta`；`prompt` 保留文本及内容块的 `_meta`；配置值与模式照常到达处理器；`_session/steering`、`_coda/wait/stop`、`_coda/session/compact` 沿用原自有解析器。未发现 Coda 用到的字段被新版裁掉，因而没有新增解析器。`new/load` 原注释中“schema 不认识 systemPrompt”在 2.6.0 已不成立。

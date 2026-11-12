@@ -103,7 +103,7 @@ export class ClaudeSession {
           agentCapabilities: { loadSession: true, sessionCapabilities: { additionalDirectories: {}, systemPrompt: {} }, _meta: { coda: { waits: {}, compact: {} } } },
           _meta: { steering: { supported: true } } };
       })
-      // The SDK's own reading of these drops what its schema does not name, `systemPrompt` among them: they are read as sent.
+      // Read these requests as sent: the SDK's own parsers drop fields its schema does not name.
       .onRequest('session/new', params => params ?? {}, ({ params }) => this.open(params))
       .onRequest('session/load', params => params ?? {}, ({ params }) => this.open(params, params.sessionId))
       .onRequest('session/set_config_option', ({ params }) => this.configure(params.configId, params.value))

@@ -1499,3 +1499,90 @@ test('a client that has not said it takes them is told nothing of what is not re
   assert.deepEqual(reports(c), []);
   assert.deepEqual(c.said(), ['新的提示', '又一条', '说话', '新块里的话']);
 });
+
+test('ACP 2 stable v1 preserves Coda request fields through the registered parsers', async t => {
+  const c = await setup(t);
+  const meta = { coda: { review: { id: 'review' } }, steering: { idleBehavior: 'promptRequired' } };
+  await c.request('initialize', { protocolVersion: 1, clientCapabilities: { _meta: { coda: { unrecognized: {} } } }, _meta: meta });
+  assert.equal(c.session.unrecognized.taken, true);
+  const sessionId = 'session', prompt = [{ type: 'text', text: 'hello', _meta: meta }];
+  const base = { sessionId, _meta: meta };
+  const systemPrompt = { mode: 'append', content: [{ type: 'text', text: 'instructions' }] };
+  const opened = { cwd: c.cwd, mcpServers: [{ name: 'coda', command: 'node', args: ['shim.mjs'], env: [{ name: 'A', value: 'B' }], _meta: meta }],
+    additionalDirectories: ['/tmp'], systemPrompt, _meta: meta };
+  for (const [method, handler, params] of [
+    ['session/new', 'open', opened], ['session/load', 'open', { ...opened, sessionId }],
+    ['session/prompt', 'prompt', { ...base, prompt }], ['_session/steering', 'steer', { ...base, prompt }],
+    ['_coda/wait/stop', 'stopWait', { ...base, waitId: 'task' }], ['_coda/session/compact', 'compact', base],
+  ]) {
+    let received;
+    c.session[handler] = value => { received = value; return {}; };
+    assert.ok((await c.request(method, params)).result, method);
+    assert.deepEqual(received, params, method);
+  }
+  let configured;
+  c.session.configure = (id, value) => { configured = [id, value]; return {}; };
+  assert.ok((await c.request('session/set_config_option', { ...base, configId: 'effort', value: 'high' })).result);
+  assert.deepEqual(configured, ['effort', 'high']);
+  assert.ok((await c.request('session/set_mode', { ...base, modeId: 'auto' })).result);
+  assert.deepEqual(configured, ['mode', 'auto']);
+});
+
+test('MCP tasks use ordinary waits when backgrounded, complete and stop by their native id', async t => {
+  const c = await setup(t);
+  await c.open();
+  await c.emit(system('task_started', { task_id: 'mcp', task_type: 'mcp_task', tool_use_id: 'call', description: 'MCP job', is_backgrounded: false }));
+  assert.deepEqual(wait(c, 'mcp'), []);
+  await c.emit(system('task_updated', { task_id: 'mcp', patch: { is_backgrounded: true } }));
+  assert.equal(wait(c, 'mcp')[0].kind, 'task');
+  assert.equal(wait(c, 'mcp')[0].toolCallId, 'call');
+  await c.emit(system('task_notification', { task_id: 'mcp', status: 'completed' }), system('session_state_changed', { state: 'idle' }));
+  assert.equal(wait(c, 'mcp').at(-1).state, 'done');
+  await c.emit(system('background_tasks_changed', { tasks: [{ task_id: 'mcp-stop', task_type: 'mcp_task', description: 'stop me' }] }));
+  let stopped;
+  c.query.stopTask = async id => { stopped = id; };
+  assert.ok((await c.request('_coda/wait/stop', { sessionId: c.sessionId, waitId: 'mcp-stop' })).result);
+  assert.equal(stopped, 'mcp-stop');
+});
+
+test('session writes lost is intentionally ignored after a result, without unrecognized output or changing that result', async t => {
+  const c = await setup(t);
+  await c.request('initialize', { protocolVersion: 1, clientCapabilities: { _meta: { coda: { unrecognized: {} } } } });
+  const opened = (await c.request('session/new', { cwd: c.cwd, mcpServers: [] })).result;
+  c.sessionId = opened.sessionId; c.query = queries.get(opened.sessionId);
+  const result = await c.prompt('hello');
+  const before = c.out.length;
+  for (const error_code of ['ENOSPC', 'EDQUOT'])
+    await c.emit(system('session_writes_lost', { error_code, lost: ['transcript', 'global_config'], transcript_session_ids: [c.sessionId] }));
+  assert.deepEqual(result.result, { stopReason: 'end_turn' });
+  assert.deepEqual(c.out.slice(before).filter(m => m.method), []);
+});
+
+test('new startup failure reasons retain their errors, and credential expiry does not alter results', async t => {
+  for (const reason of [null, 'sandbox_required_unavailable', 'initialize_not_first', 'config_file_invalid']) await t.test(reason ?? 'success', async t => {
+    const c = await setup(t); await c.open();
+    c.session.unrecognized.taken = true;
+    const pending = c.prompt('manual'); await until(() => c.query.inputId);
+    await c.emit({ type: 'result', subtype: reason ? 'error_during_execution' : 'success', is_error: !!reason,
+      ...(reason ? { startup_failure_reason: reason, errors: [`startup: ${reason}`] } : {}),
+      credential_expires_at: '2026-12-01T00:00:00Z', user_message_uuid: c.query.inputId });
+    const reply = await pending;
+    if (reason) assert.equal(reply.error.message, `startup: ${reason}`);
+    else assert.deepEqual(reply.result, { stopReason: 'end_turn' });
+    assert.deepEqual(c.out.filter(m => m.method === '_coda/unrecognized'), []);
+  });
+});
+
+test('native tools observed with SDK 0.3.322 use generic tool calls without unrecognized reports', async t => {
+  const c = await setup(t); await c.open();
+  c.session.unrecognized.taken = true;
+  const names = ['ArtifactComments', 'ArtifactData', 'DesignSync', 'SendToProject', 'SendToProjectContext'];
+  await c.emit(system('init', { tools: names }));
+  for (const name of names) {
+    await c.emit({ type: 'assistant', message: { id: name, content: [{ type: 'tool_use', id: name, name, input: {} }] } },
+      { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: name, content: 'ok' }] } });
+    assert.equal(c.updates().find(u => u.sessionUpdate === 'tool_call' && u.toolCallId === name).title, name);
+    assert.equal(c.updates().findLast(u => u.toolCallId === name).status, 'completed');
+  }
+  assert.deepEqual(c.out.filter(m => m.method === '_coda/unrecognized'), []);
+});

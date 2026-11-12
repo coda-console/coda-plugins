@@ -2,7 +2,7 @@
   "commit": "8cb0da14acae31719a5021e1d5e04aa705f63175",
   "packages": {
     "@0dep/piso": "5.2.0",
-    "@agentclientprotocol/sdk": "1.4.0",
+    "@agentclientprotocol/sdk": "2.6.0",
     "@coda-console/protocol": "5.10.0",
     "ajv": "8.20.0",
     "yaml": "2.9.1"

@@ -1,7 +1,7 @@
 // ACP's own parsers, from the SDK version Coda pins (package.json). They are its generated zod schemas, which the SDK does
-// not export by name: read from the file next to its entry point.
+// not export by name: read from the stable v1 file relative to its entry point.
 const sdk = import.meta.resolve('@agentclientprotocol/sdk');
-export const schemas = await import(new URL('./schema/zod.gen.js', sdk));
+export const schemas = await import(new URL('../schema/zod.gen.js', sdk));
 
 // One line on why a value does not parse. A union (a session update is one of many kinds) names the branch it meant: the
 // one whose `sessionUpdate` matched.

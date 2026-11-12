@@ -49,6 +49,7 @@ export const MESSAGES = {
   'system/memory_recall': hidden('召回的记忆，已作为上下文交给模型'),
   'system/elicitation_complete': hidden('链接表单完成的确认；表单本身经 onElicitation 转给 Coda'),
   'system/permission_denied': hidden('被拒的工具调用；拒绝的原因在工具结果里，随工具调用显示'),
+  'system/session_writes_lost': hidden('本机记录未存盘（ENOSPC/EDQUOT；transcript/global_config），SDK 明确允许忽略；已收到的结果和 Coda 记录仍有效'),
   'system/mirror_error': hidden('会话记录镜像（SessionStore）写入失败，入口不用镜像'),
   'system/informational': hidden('终端里的提示行（状态、钩子的反馈），不是 Claude 说的话'),
   tool_progress: hidden('工具运行中的心跳；工具调用本身照常显示'),
