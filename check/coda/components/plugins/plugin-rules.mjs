@@ -135,7 +135,7 @@ export function readPlugin(dir, source, points = CONTRIBUTION_POINTS) {
     ...(required.length ? { required: [...required] } : {}), workflows: files('.coda/workflows'),
     services: [...(contributes.services ?? [])],
     ...read,
-    endpoints: (contributes.endpoints ?? []).map(e => ({ id: e.id, command: e.command, ...(e.checks ? { checks: e.checks } : {}) })),
+    endpoints: (contributes.endpoints ?? []).map(e => ({ id: e.id, command: e.command })),
     // The entry as one path in its directory (`./view/a.html`, `view//a.html` are `view/a.html`): the clients load it by that.
     views: (contributes.views ?? []).map(v => ({ id: v.id, title: v.title, entry: posix.normalize(v.entry), ...(v.in?.length ? { in: [...v.in] } : {}),
       ...(v.icon ? { icon: v.icon } : {}), ...(v.handles?.length ? { handles: [...v.handles] } : {}), ...(v.readout ? { readout: v.readout } : {}),

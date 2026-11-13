@@ -66,6 +66,39 @@
     "extensions": []
   },
   {
+    "id": "change-setting",
+    "displayName": "改插件设置",
+    "description": "Agent 提议改一项插件设置，你在卡片上看过改前改后点「应用」，由 Coda 写入",
+    "version": "1.0.0",
+    "category": "工作流程",
+    "icon": {
+      "symbol": "slider.horizontal.3",
+      "color": "indigo"
+    },
+    "readme": true,
+    "source": {
+      "kind": "builtin"
+    },
+    "dir": "src/resources/plugins/change-setting",
+    "title": "改插件设置",
+    "properties": {},
+    "workflows": [],
+    "services": [],
+    "agents": [],
+    "instructions": "要改插件设置（如 composer.templates）时调用 workflow_run，workflow 为 change-setting，inputs 给 plugin、setting、value（新值的 JSON 文本，null 为清除）、reason（必写，一行），写目录覆盖时加 project；先不给 value 调一次读当前值。用户点「应用」后由 Coda 写入；密文不经这里。",
+    "commands": [],
+    "capabilities": [
+      "change-setting"
+    ],
+    "groups": [],
+    "gitCredentials": [],
+    "endpoints": [],
+    "views": [],
+    "dependencies": [],
+    "extensionPoints": {},
+    "extensions": []
+  },
+  {
     "id": "changes",
     "displayName": "变更",
     "description": "看会话改了哪些文件",
@@ -971,7 +1004,7 @@
     "id": "workflows",
     "displayName": "工作流",
     "description": "流程模板、运行进度与流程图",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "category": "工作流程",
     "icon": {
       "symbol": "flowchart.fill",
@@ -1318,7 +1351,7 @@
     "id": "composer",
     "displayName": "输入框模式",
     "description": "交接、子会话、! 命令、Ultra 与循环",
-    "version": "5.3.0",
+    "version": "7.0.0",
     "category": "工作流程",
     "icon": {
       "symbol": "character.cursor.ibeam",
@@ -1329,8 +1362,8 @@
       "kind": "builtin",
       "package": "@coda-console/composer",
       "tag": "latest",
-      "version": "5.3.0",
-      "integrity": "sha512-8A7YXODXWnvYp4o+aUau1DUcdZgIXjX0Z5p0P9JTxbaiV6Jy4r+HVnhiVDKxhcCL+4jSYE6HnjliIPegiZuWFw==",
+      "version": "7.0.0",
+      "integrity": "sha512-8z9L4EUKYJW8765d+PuQxR7ijgI2av0xWoJzKjffYvTBd+k57i9E5SPc1Y3RWFejKgmKq47uxXLPmrzQ8qAEkw==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/composer"
     },
@@ -1374,11 +1407,12 @@
     "workflows": [
       "deliver",
       "develop",
-      "kickoff"
+      "kickoff",
+      "lane-pr"
     ],
     "services": [],
     "agents": [],
-    "instructions": "要把改动合进默认分支时，先用 workflow_run 发起 kickoff（给 title、goal、建议的 way、要不要设备验收；开在别的目录或要指定分支时给 branch），用户在开工卡上选定后，流程会把下一步交给你；不要先改完再补开开发流程。",
+    "instructions": "要把改动合进默认分支时，一个需求开一次 kickoff（给 title、goal、建议的 way、要不要设备验收；开在别的目录或要指定分支时给 branch），用户在开工卡上选定后流程把下一步交给你，不要先改完再补开。需求是用户想一起验收、一起上线的一件事，只有必须先上线才能往下做时才拆成几个；小修走简易开发；需求里的每一块用 lane-pr 提。",
     "commands": [],
     "capabilities": [],
     "groups": [],
@@ -1671,7 +1705,7 @@
     "id": "grok",
     "displayName": "Grok",
     "description": "用 Grok CLI 跑会话",
-    "version": "1.6.0",
+    "version": "1.6.1",
     "category": "Agent",
     "icon": {
       "light": "JVBERi0xLjcKJbXtrvsKNCAwIG9iago8PCAvTGVuZ3RoIDUgMCBSCiAgIC9GaWx0ZXIgL0ZsYXRlRGVjb2RlCj4+CnN0cmVhbQp4nFVTTcoVQQzc9ymyFoxJ57eP4RFkwG/zXKj3Byv9UJCBGZLupCpVGSXB81nx0rPp+bF+Lrm5Xx/05ZvQx+9Vzpqke7Nt+kFqxaedKlg96EXqyqpGtbm3IwyOTirjMkTF0puqUL3oIQ3nszed5D3noezapHpY7KB7cIvi65y1p2AL60EmhE2CTrNnLMQA2EXVnHIu7EGjhyIvgAYSQHhRN1oHKTjsxMEeCFSU8jmJTn7eHLzZfFpo9h1O9+E4mAnDnInF361wHtuoBVL8LYha1Mrig6kpXFKE8RU3tIRDmsw4AxQOwiIQvMUHVaEIbfRDFKaLIED22MIiTjZcLxLkRZkJu/VF+pewOEiMX1ZvwyxpvSjlOqZArw54aNDMR/TNvpN8gxwcPWx1KIEPNigyHQNgdLqSwzDBiNB/ZHfgO0TU5kYRpDvqww8HmNDe8eu/eEJLFigHm1OwEGpYHsH5vvevN10zDK4/l2G1EtLhNdjWRhsTNrVz0IbZVbRAUzg3bh4uJKJAKwhoqdeFrjvCTPLQLqAHJYrRTRmE0Bpu0wIRrVl354oZyEdXWOZ+NRvAmL0dGfA1djipWH60egjCpt9VO3kWXOvEJXDGD4Y9tD2Gjx+p149ZxBd9/7S+rj95P69MCmVuZHN0cmVhbQplbmRvYmoKNSAwIG9iagogICA0ODQKZW5kb2JqCjMgMCBvYmoKPDwKICAgL0V4dEdTdGF0ZSA8PAogICAgICAvYTAgPDwgL0NBIDEgL2NhIDEgPj4KICAgPj4KPj4KZW5kb2JqCjcgMCBvYmoKPDwgL1R5cGUgL09ialN0bQogICAvTGVuZ3RoIDggMCBSCiAgIC9OIDEKICAgL0ZpcnN0IDQKICAgL0ZpbHRlciAvRmxhdGVEZWNvZGUKPj4Kc3RyZWFtCnicM1Mw4IrmiuUCAAY4AV0KZW5kc3RyZWFtCmVuZG9iago4IDAgb2JqCiAgIDE2CmVuZG9iago5IDAgb2JqCjw8IC9UeXBlIC9PYmpTdG0KICAgL0xlbmd0aCAxMiAwIFIKICAgL04gNAogICAvRmlyc3QgMjMKICAgL0ZpbHRlciAvRmxhdGVEZWNvZGUKPj4Kc3RyZWFtCnicVZFBa8MwDIXv/hW6jCUMEtlNtraEHppAGWMQ2t7GDsYxqWHEwXbG+u9nO03HMDro48nvCVFAQhFKJAxoSQmlsHopSFVBfr6OEvKW99ISAMjfVGfhAxggHOEzolpPgwNKdrs40RrdTUIaSARXRgPN6DorILk4N9ptnkfaGz5elLCZNn2azt8YyZ3SQ8OdhKTZMmTPFLFEyhA3T7h+REwXk79Y8OCtw3zLjQw5QrII3mWn+F7/+LjoH92wWEvowXm5heKuPxg9jVBVoQn97BHpgk6eGj7YMXiJ64JfwZlJLl3tVY38VkIeD/sAfebAj9LqyQhpYXX3PPlB4ebo1l/h33o1d/xL97ft/AVuy3nRLxI/bsgKZW5kc3RyZWFtCmVuZG9iagoxMiAwIG9iagogICAyNzcKZW5kb2JqCjEzIDAgb2JqCjw8IC9UeXBlIC9YUmVmCiAgIC9MZW5ndGggNTkKICAgL0ZpbHRlciAvRmxhdGVEZWNvZGUKICAgL1NpemUgMTQKICAgL1cgWzEgMiAyXQogICAvUm9vdCAxMSAwIFIKICAgL0luZm8gMTAgMCBSCj4+CnN0cmVhbQp4nGNgYPj/n4mBk4EBRDAxMoUxMDAy8AMJJgeQGDuINQ9IMCuACFOIOkYQwczIsg8oxnKVgQEA1JwFgQplbmRzdHJlYW0KZW5kb2JqCnN0YXJ0eHJlZgoxMjM3CiUlRU9GCg==",
@@ -1682,8 +1716,8 @@
       "kind": "builtin",
       "package": "@coda-console/grok",
       "tag": "latest",
-      "version": "1.6.0",
-      "integrity": "sha512-BPmNhauZXOTCdnyuVoydvVdH/szTHFDlaISF0CfcgIFyMv2jMKrElDy7+H97nGexKIpLLp+iZuUmSIj7L4sxog==",
+      "version": "1.6.1",
+      "integrity": "sha512-wTcJA1Tj88iSM8T5zr/J24ytk2kkpNuTialaYwJfCpemeIPRtHOjGDuVXbL0h475foXqVLXgXNpmAomNu6ejoQ==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/grok"
     },
@@ -1749,7 +1783,7 @@
     "id": "kimi",
     "displayName": "Kimi Code",
     "description": "用 Kimi Code 跑会话",
-    "version": "1.4.2",
+    "version": "1.4.3",
     "category": "Agent",
     "icon": {
       "light": "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",
@@ -1761,8 +1795,8 @@
       "kind": "builtin",
       "package": "@coda-console/kimi",
       "tag": "latest",
-      "version": "1.4.2",
-      "integrity": "sha512-gDyvovmD2bDIamrnteyH3u5QWUIqE1nPvSsuFzJRGZh1wn6kdc2yCoSeukdteRejDxl9bdhlnMDjhVeDsGObkA==",
+      "version": "1.4.3",
+      "integrity": "sha512-f8JFMkfkAe8kNPQTS17rDWaz6inr1D0uG+wY0TwkQyVinObNK2cklh495kF5DpCl381rEvpPZTuc5nQeJ0te5Q==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/kimi"
     },
@@ -1828,7 +1862,7 @@
     "id": "opencode",
     "displayName": "OpenCode",
     "description": "用 OpenCode 跑会话",
-    "version": "2.3.1",
+    "version": "2.3.2",
     "category": "Agent",
     "icon": {
       "light": "JVBERi0xLjcKJbXtrvsKNCAwIG9iago8PCAvTGVuZ3RoIDUgMCBSCiAgIC9GaWx0ZXIgL0ZsYXRlRGVjb2RlCj4+CnN0cmVhbQp4nDNUMABCXUMgYWRkqpCcy1XIVaigX2yukF6soF9hoeCSrxDIFcgFAKn0CNoKZW5kc3RyZWFtCmVuZG9iago1IDAgb2JqCiAgIDQ1CmVuZG9iagozIDAgb2JqCjw8CiAgIC9FeHRHU3RhdGUgPDwKICAgICAgL3M3IDcgMCBSCiAgID4+CiAgIC9YT2JqZWN0IDw8IC94OCA4IDAgUiA+Pgo+PgplbmRvYmoKMTAgMCBvYmoKPDwgL1R5cGUgL1hPYmplY3QKICAgL0xlbmd0aCA0MAogICAvRmlsdGVyIC9GbGF0ZURlY29kZQogICAvU3VidHlwZSAvRm9ybQogICAvQkJveCBbIDAgMCAxODAgMjI1IF0KICAgL0dyb3VwIDw8CiAgICAgIC9UeXBlIC9Hcm91cAogICAgICAvUyAvVHJhbnNwYXJlbmN5CiAgICAgIC9JIHRydWUKICAgICAgL0NTIC9EZXZpY2VSR0IKICAgPj4KICAgL1Jlc291cmNlcwo8PAogICAvRXh0R1N0YXRlIDw8CiAgICAgIC9nczAgPDwgL0JNIC9Ob3JtYWwgL1NNYXNrIC9Ob25lIC9DQSAxLjAgL2NhIDEuMCA+PgogICAgICAvYTAgPDwgL0NBIDEgL2NhIDEgPj4KICAgPj4KICAgL1hPYmplY3QgPDwgL3gxMSAxMSAwIFIgPj4KPj4KPj4Kc3RyZWFtCnicK+Qy0DM3VTAAQRgjOZdLP9FAIb1YQb/C0FDBJZ8rkAsApsoIhQplbmRzdHJlYW0KZW5kb2JqCjggMCBvYmoKPDwgL1R5cGUgL1hPYmplY3QKICAgL0xlbmd0aCAyOAogICAvRmlsdGVyIC9GbGF0ZURlY29kZQogICAvU3VidHlwZSAvRm9ybQogICAvQkJveCBbIDAgMCAxODAgMjI1IF0KICAgL0dyb3VwIDw8CiAgICAgIC9UeXBlIC9Hcm91cAogICAgICAvUyAvVHJhbnNwYXJlbmN5CiAgICAgIC9JIHRydWUKICAgICAgL0NTIC9EZXZpY2VSR0IKICAgPj4KICAgL1Jlc291cmNlcwo8PAogICAv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",
@@ -1840,8 +1874,8 @@
       "kind": "builtin",
       "package": "@coda-console/opencode",
       "tag": "latest",
-      "version": "2.3.1",
-      "integrity": "sha512-p63RbuHzQE3NkiHPL3x90Lv4Kso8YVYY9rc3/wLGZxh2XhQAFBo0ibFfHy71DKhF6/80DYB39xmJoIq3BPjWrQ==",
+      "version": "2.3.2",
+      "integrity": "sha512-cYe5vYftuIV9daeToj/ZhHn6imqjHqEALV1dgO2u0Ptj7sJqzNIEceiXPRszcSx+TwaKHnwKJo26fOEtawEgZQ==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/opencode"
     },
