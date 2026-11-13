@@ -57,6 +57,10 @@
             "opencode": {
               "agent": "claude-sdk",
               "mode": "auto"
+            },
+            "*": {
+              "agent": "codex",
+              "mode": "agent"
             }
           }
         },

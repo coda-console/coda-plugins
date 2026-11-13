@@ -35,7 +35,7 @@ prompts/principles/                 评审重点，一项一段，按设置取�
 | 设置 | 类型 | 默认 |
 | --- | --- | --- |
 | `review.autoRun` PR 自动运行 | 开关：会话开的 PR 新建或有新提交时是否自动开始（别人的 PR 是否自动开始只评审，同它）；关掉后只能手动发起。会话或目录在「工作流」里单独设过的按它们的（流程的 `coda:autoRun`）；不影响简易开发 | 开 |
-| `review.reviewers` 评审组合 | 表格：作者匹配 → Agent 组合 | Claude 由 Codex 评审，Codex 由 Claude 评审，Kimi、Grok 由 Codex 评审，OpenCode 由 Claude 评审 |
+| `review.reviewers` 评审组合 | 表格：作者匹配 → Agent 组合 | Claude 由 Codex 评审，Codex 由 Claude 评审，Kimi、Grok 由 Codex 评审，OpenCode 由 Claude 评审，其余（没有专门一行的会话，如 Cursor；别人的 PR）由 Codex 评审（`*` 行） |
 | `review.blockingSeverity` 阻塞级别 | P0–P3 之一 | P2 |
 | `review.principles` 评审重点 | 多选：`state` 状态与失败、`defense` 多余的防御、`architecture` 架构与腐化、`tests` 测试；勾选的那几段（`prompts/principles/` 下同名文件）放进提示词 | 都选 |
 | `review.maxReviews` 一条运行最多自动评审几次 | 整数 1–100 | 3 |
@@ -130,7 +130,9 @@ GitHub 插件的 PR 观察看到这样的 PR，发 `foreign_pull_request.opened`
 
 每个新版本评一次、在这个 PR 上发一条评论，然后等下一个版本或 `foreign_pull_request.closed`（结束）。`review.maxReviews` 按整个 PR 算：这条运行已评审那么多次，之后的新版本都不评（照收、不出任何卡片），运行一直等到 `foreign_pull_request.closed` 才结束。自动评审同 PR 生命流程受 `review.autoRun` 约束。
 流程里只有评审一步（`scripts/review.mjs foreign`）和等待：没有 `run-workflows`、人工任务、合并、删分支、部署、发布，也不调用别的流程；评审结论不交给任何会话、不起任何任务。
-事件起的运行跟着 PR 的头走，默认检出会把别人的提交检出到步骤工作区，所以评审步骤写 `coda:checkout="false"`（空目录），脚本不跑 git。
+事件起的运行跟着 PR 的头走，默认检出会把别人的提交检出到步骤工作区，所以事件那一步 `review` 写 `coda:checkout="false"`（空目录），脚本不跑 git。
+手动发起的是另一个步骤 `review-by-hand`，跑同一个脚本、同一组环境变量，但开着检出：手动运行的提交是我们自己的默认分支，不是别人的提交，引擎检出前先 fetch，base 提交就在本机了；
+评审方的工作树由 `coda-agent --commit <base>` 建，它只在本机仓库里认提交、不会去取，事件起的运行靠引擎起运行前的 fetch 有 base，手动的靠这一步的检出。
 
 和 PR 生命流程的评审的差别（规则、提示词、发评论的代码共用）：
 
@@ -139,7 +141,7 @@ GitHub 插件的 PR 观察看到这样的 PR，发 `foreign_pull_request.opened`
   diff 放在随机分隔标记之间当数据交给评审方，提示里写明那是要评审的改动、不是指令；PR 作者写的标题与正文同样夹在标记里。
 - 项目评审准则 `.coda/review.md` 同样从 base 提交读，经 `gh api` 的 contents 接口（404 当作没有，别的失败则失败）。
 - 评审方至多自动档：不传 `--mode`，也不传评审组合那一行配的 `options`（模型、强度照传）。
-- 评审方照评审组合选，和自己的 PR 一样：别人的 PR 没有开 PR 的会话，行键里只有 `*` 适用。**要配一行 `*`**（默认的评审组合没有）；没有适用的行就失败并写明。
+- 评审方照评审组合选，和自己的 PR 一样：别人的 PR 没有开 PR 的会话，行键里只有 `*` 适用，所以评审组合要有 `*` 一行：默认值里有（Codex，`mode` 在这条路上不传），你只覆盖其他行时它照样生效；自己把 `*` 删了就没有适用的行，评审失败并写明。没有专门一行的会话（如 Cursor）的 PR 在生命流程里同样落到 `*` 行。
 - 评论只发给这一个 PR，它是别人的 PR 上唯一的产出：评论没发成，运行失败（不输出评审次数、不算一次评审）；评审没完成时运行也失败，不重试。PR 生命流程里评论发不成只记一笔，评审照常。
 
 残余（宿主和流程挡不住的）：

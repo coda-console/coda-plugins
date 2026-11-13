@@ -110,6 +110,21 @@ test('the change reviewed is the one of the event\'s two commits, whatever the a
   assert.ok(other.code === 0 && f.prompt().includes('ANOTHER VERSION'), 'the fake tells the versions apart');
 });
 
+test('the plugin\'s default reviewers give a pull request nobody\'s session opened a reviewer: the * row', t => {
+  const f = fixture(t);
+  const defaults = JSON.parse(readFileSync(new URL('../../../plugins/review/package.json', import.meta.url), 'utf8')).contributes.configuration.properties['review.reviewers'].default;
+  const agent = done => done.calls.find(c => c.name === 'coda-agent').args;
+  // Somebody else's pull request has no session; no row but * can be its.
+  const foreign = f.review({ PULL_REQUEST: JSON.stringify(f.event), REVIEWERS: JSON.stringify(defaults), SESSION: '' });
+  assert.equal(foreign.code, 0, foreign.said);
+  assert.deepEqual(agent(foreign).slice(0, 2), ['--agent', 'codex']);
+  assert.ok(!agent(foreign).includes('--mode'));
+  // A session without a row of its own (cursor) falls to it as well; one with a row keeps it.
+  const lifecycle = session => f.run([scripts('review')], { REVIEWERS: JSON.stringify(defaults), SESSION: JSON.stringify({ agent: session }), PULL_REQUEST: JSON.stringify(f.event) });
+  assert.deepEqual(agent(lifecycle('cursor')).slice(0, 4), ['--agent', 'codex', '--mode', 'agent']);
+  assert.deepEqual(agent(lifecycle('codex')).slice(0, 2), ['--agent', 'claude-sdk']);
+});
+
 test('a comment that cannot be made fails the review of someone else\'s pull request and counts nothing; the lifecycle\'s review goes on', t => {
   const f = fixture(t);
   const env = { PULL_REQUEST: JSON.stringify(f.event), LAST: JSON.stringify({ count: 2 }), COMMENT_FAIL: 'HTTP 403: Resource not accessible by integration' };
@@ -221,7 +236,7 @@ test('the review-only flow starts on the foreign events and by hand, reviews eac
   const limit = 3, at = count => ({ review: { count: count === null ? null : String(count) }, vars: { review: { maxReviews: limit } }, github: { event: { coda: { heard: true } } } });
   // A version arrives: it is reviewed, then the run waits for the next one; closed ends it.
   for (const start of ['new', 'pushed']) assert.deepEqual(g.walk(start, at(null)), ['whether', 'review'], start);
-  assert.deepEqual(g.walk('review', at(1)), ['after-review', 'waiting']);
+  assert.deepEqual(g.walk('review', at(1)), ['waiting']);
   assert.deepEqual(g.walk('waiting', at(1)), ['whether', 'review']);
   assert.deepEqual(g.walk('waiting', at(limit - 1)), ['whether', 'review']);
   assert.deepEqual(g.walk('closed-while-waiting', at(1)), ['closed-elsewhere']);
@@ -236,9 +251,11 @@ test('the review-only flow starts on the foreign events and by hand, reviews eac
   assert.deepEqual(g.walk('capped-close', at(limit)), ['closed-elsewhere']);
   assert.deepEqual([...g.reach('capped')].sort(), ['capped', 'capped-close', 'closed-elsewhere', 'skipped']);
   assert.ok(!g.reach('capped').has('review') && !g.reach('capped').has('whether'));
-  // By hand: one review, then the run ends with its verdict; it does not wait.
-  assert.deepEqual(g.walk('asked', { github: { event: { coda: { heard: null } } } }), ['review']);
-  assert.deepEqual(g.walk('review', { github: { event: { coda: { heard: null } } } }), ['after-review', 'reviewed-by-hand']);
+  // By hand: one review, by its own step, then the run ends with its verdict; it does not wait.
+  assert.deepEqual(g.walk('asked'), ['review-by-hand']);
+  assert.deepEqual(g.walk('review-by-hand'), ['reviewed-by-hand']);
+  assert.equal(g.nodes['reviewed-by-hand'].status, '=review-by-hand.line');
+  assert.ok(!g.reach('asked').has('waiting') && !g.reach('asked').has('whether'));
 });
 
 test('the review-only flow has no node that checks, asks, merges, deletes, deploys, publishes or calls another flow', async () => {
@@ -247,11 +264,19 @@ test('the review-only flow has no node that checks, asks, merges, deletes, deplo
     'bpmn:IntermediateCatchEvent', 'bpmn:BoundaryEvent'];
   assert.deepEqual(Object.values(g.nodes).filter(n => !allowed.includes(n.$type)).map(n => `${n.$type} ${n.id}`), []);
   const scripts = Object.values(g.nodes).filter(n => n.$type === 'bpmn:ScriptTask');
-  assert.deepEqual(scripts.map(n => [n.id, n.script]), [['review', 'node "${CODA_PLUGIN_PATH}/scripts/review.mjs" foreign']]);
+  const run = 'node "${CODA_PLUGIN_PATH}/scripts/review.mjs" foreign';
+  assert.deepEqual(scripts.map(n => [n.id, n.script]), [['review', run], ['review-by-hand', run]]);
+  // The two steps are one: the same environment, the same outputs.
+  const parts = id => g.nodes[id].extensionElements.values.map(v => [v.$type, v.name, v.value]);
+  assert.deepEqual(parts('review-by-hand'), parts('review'));
   const source = workflow('pull-request-review');
-  // The engine follows an event-started run to the pull request's head and checks it out for a step unless told not to: the
-  // steps here are told, and run in an empty directory. The script, run there, needs no repository (the tests above).
-  for (const step of source.match(/<scriptTask [^>]*>/g)) assert.match(step, /coda:checkout="false"/, step);
+  // The engine follows an event-started run to the pull request's head and checks it out for a step unless told not to: that
+  // step is told, and runs in an empty directory; the script, run there, needs no repository (the tests above). A manual run's
+  // commit is our own default branch, which the engine fetches before it checks it out: its step is left to, and the base
+  // commit is in the local repository for coda-agent, which does not fetch.
+  const step = id => new RegExp(`<scriptTask id="${id}"[^>]*>`).exec(source)[0];
+  assert.match(step('review'), /coda:checkout="false"/);
+  assert.doesNotMatch(step('review-by-hand'), /coda:checkout/);
   assert.equal(/<process id="pull-request-review"[^>]*coda:autoRun="=([^"]+)"/.exec(source)?.[1], 'vars.review.autoRun');
   assert.doesNotMatch(source, /coda:action=|callActivity|userTask|run-workflows|workflow-kinds|merge\.mjs|delete-branch|publish-event|coda:notify|coda:wake/);
   // What it passes to the reviewer is the event's pull request, the explicit one and the settings: nothing it was not given.
