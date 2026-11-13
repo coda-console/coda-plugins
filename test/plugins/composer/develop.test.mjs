@@ -245,7 +245,7 @@ test('合并：用合并提交进目标分支（--merge），冲突带着原因�
 
   assert.deepEqual(f.run('merge', { MERGE_EXIT: '1', PR_MERGEABLE: 'CONFLICTING' }).outputs, { route: 'conflict' });
   const text = f.reason();
-  for (const part of ['合并冲突', '目标分支 main', 'sync=true 的泳道 PR', '再提交验收', '重新跑检查、批准合并']) assert.ok(text.includes(part), part);
+  for (const part of ['合并冲突', '目标分支 main', 'sync=true 的泳道 PR', '再提交验收', '重新跑检查、批准合并及合并后的流程']) assert.ok(text.includes(part), part);
   for (const [mergeable, stderr] of [['UNKNOWN', 'network unavailable'], ['MERGEABLE', 'HTTP 403: Forbidden']]) {
     const result = f.run('merge', { MERGE_EXIT: '7', MERGE_STDERR: stderr, PR_MERGEABLE: mergeable }, 7);
     assert.equal(result.stderr, stderr);
@@ -306,39 +306,64 @@ test('GitHub 检查等待全部完成，检查失败和查询错误保持失败�
   assert.deepEqual(failed.outputs, {});
 });
 
-test('发布说明：勾选发布而备注为空交主 Agent 写，空说明不放行，非发布选择不要求', t => {
+// hook-joiners 给批准卡的列表：发布预览版、发布正式版都要发布说明（notes）。
+const JOINERS = JSON.stringify([
+  { id: 'deploy', name: '部署', detail: '预览空间', default: false },
+  { id: 'publish-preview', name: '发布预览版', default: false, inputs: [{ id: 'notes', label: '发布说明' }] },
+  { id: 'publish-release', name: '发布正式版', default: false, inputs: [{ id: 'notes', label: '发布说明' }] },
+]);
+
+test('合并后的流程：从批准卡读出勾了哪些加入者、卡上写了的文字与没写的输入；主 Agent 补写的并进 inputs，没写字的失败', t => {
   const f = fixture(t); f.run('lane');
-  for (const preview of [false, true]) for (const release of [false, true]) for (const note of ['', '  ', '修复输入问题']) {
-    const { outputs } = f.run('approval', { APPROVAL: JSON.stringify({ choice: 'merge', options: { preview, release }, note }) });
-    assert.equal(outputs.route, (preview || release) && !note.trim() ? 'notes' : 'merge');
-  }
-  for (const note of [undefined, '', '  ']) assert.deepEqual(f.run('notes', { NOTES: JSON.stringify({ note }) }).outputs, { route: 'notes', feedback: '请在备注填写面向用户的发布说明。', notes: note ?? '' });
-  assert.deepEqual(f.run('notes', { NOTES: JSON.stringify({ note: '主 Agent 的发布说明' }) }).outputs, { route: 'ready', feedback: '', notes: '主 Agent 的发布说明' });
+  const approve = (options, inputs = {}) => f.run('approval', { APPROVAL: JSON.stringify({ choice: 'merge', options, inputs, note: '' }), JOINERS }).outputs;
+  const none = { deploy: false, 'publish-preview': false, 'publish-release': false, notify: true };
+  assert.deepEqual(approve(none, { notes: '' }), { route: 'merge', only: '[]', picked: '', inputs: '{}', missing: '', asks: '' });
+  assert.deepEqual(approve({ ...none, deploy: true }), { route: 'merge', only: '["deploy"]', picked: '部署', inputs: '{}', missing: '', asks: '' });
+  assert.deepEqual(approve({ ...none, deploy: true, 'publish-preview': true, 'publish-release': true }, { notes: '  ' }),
+    { route: 'merge', only: '["deploy","publish-preview","publish-release"]', picked: '部署、发布预览版、发布正式版', inputs: '{}', missing: 'notes', asks: '「发布说明」：发布预览版、发布正式版要' });
+  assert.deepEqual(approve({ ...none, 'publish-preview': true }, { notes: ' 修复输入问题 ' }),
+    { route: 'merge', only: '["publish-preview"]', picked: '发布预览版', inputs: '{"notes":"修复输入问题"}', missing: '', asks: '' });
+  assert.equal(f.reason(), '', '合并不回到进行中');
+
+  const fill = (extra, code = 0) => f.run('inputs', extra, code);
+  assert.deepEqual(fill({ INPUTS: '{"notes":"卡上写的"}', MISSING: '', ASKS: '', FILLS: '' }).outputs, { inputs: '{"notes":"卡上写的"}' });
+  const fills = JSON.stringify([{ result: 'completed', choice: 'done', note: ' 主 Agent 写的 ' }, { result: 'completed', choice: 'done', note: '另一段' }]);
+  assert.deepEqual(fill({ INPUTS: '{"keep":"卡上的"}', MISSING: 'notes,extra', ASKS: '「发布说明」：发布预览版要\n「别的」：部署要', FILLS: fills }).outputs,
+    { inputs: '{"keep":"卡上的","notes":"主 Agent 写的","extra":"另一段"}' });
+  const empty = fill({ INPUTS: '{}', MISSING: 'notes', ASKS: '「发布说明」：发布预览版要', FILLS: JSON.stringify([{ result: 'completed', note: '', attachments: ['/a.png'] }]) }, 1);
+  assert.match(empty.stderr, /「发布说明」：发布预览版要：没有填写，不运行合并后的流程/);
+  assert.deepEqual(empty.outputs, {});
 });
 
-test('需求运行的定义：输入、进行中的三种答复、暂停卡、收尾各处失败回到进行中、整体评审、合并方式与部署发布', async () => {
+test('需求运行的定义：输入、进行中的三种答复、暂停卡、收尾各处失败回到进行中、整体评审、合并方式与合并后的流程', async () => {
   const { process, elements, nodes, values, params, route, next } = await definition();
   assert.equal(process.name, '监督开发'); assert.equal(process.kind, 'develop'); assert.equal(process.concurrency, undefined);
   const inputs = Object.fromEntries(values(process).map(v => [v.name, v]));
-  assert.deepEqual(Object.keys(inputs), ['title', 'goal', 'devices', 'device', 'hold', 'delivery', 'reviewer', 'reviewer2', 'reviewer3', 'base']);
+  assert.deepEqual(Object.keys(inputs), ['title', 'devices', 'device', 'hold', 'delivery', 'reviewer', 'reviewer2', 'reviewer3', 'base']);
   assert.deepEqual(Object.values(inputs).filter(v => v.required), [], '用户在会话里开启时什么都不必填');
-  for (const name of ['title', 'goal', 'device', 'delivery', 'base']) assert.equal(inputs[name].default, '', name);
+  for (const name of ['title', 'device', 'delivery', 'base']) assert.equal(inputs[name].default, '', name);
   assert.deepEqual([inputs.devices.type, inputs.devices.default], ['boolean', 'false']);
   for (const name of ['reviewer', 'reviewer2', 'reviewer3']) assert.deepEqual([inputs[name].type, inputs[name].default, inputs[name].defaultFrom], ['agent', undefined, undefined], name);
   assert.equal(nodes.start.eventDefinitions, undefined, '不订阅 PR 事件');
   assert.ok(manifest.files.includes('.coda/workflows')); assert.ok(manifest.files.includes('scripts'));
   for (const [title, expected] of [['', '监督开发'], ['输入框', '需求：输入框']]) assert.equal(evaluate(process.title.slice(2, -2), { inputs: { title } }).value, expected);
 
-  // 没有目标时先交主 Agent 写需求，不叫醒它。
-  assert.equal(route('brief-choice', { inputs: { goal: '' } }), 'brief');
-  assert.equal(route('brief-choice', { inputs: { goal: '目标' } }), 'lane');
+  // 目标是发起时带的需求文字（run.message）；需求名和它缺一样就先交主 Agent 写需求，不叫醒它。
+  for (const [title, message, target] of [['', '', 'brief'], ['输入框', '', 'brief'], ['', '能输入', 'brief'], ['输入框', '能输入', 'lane']]) {
+    assert.equal(route('brief-choice', { inputs: { title }, run: { message } }), target, `${title}|${message}`);
+  }
+  const briefed = [...nodes.brief.documentation[0].text.matchAll(/{{(.*?)}}/gs)].find(m => m[1].includes('run.message'))[1];
+  assert.equal(evaluate(briefed, { run: { message: '' } }).value, '');
+  assert.equal(evaluate(briefed, { run: { message: '能输入' } }).value, '发起时带的需求：\n能输入\n');
   assert.deepEqual([nodes.brief.wake, nodes.brief.assignee], ['false', undefined]);
   assert.deepEqual(values(nodes.brief).map(v => [v.id, v.note]), [['start', 'required']]);
   for (const [value, target] of [['brief', 'brief'], ['lane', 'lane']]) assert.equal(route('after-brief', { 'brief-result': { route: value } }), target);
   for (const [field, written] of [['TITLE', 'title'], ['GOAL', 'goal']]) {
     const expression = params('lane')[field].slice(1);
-    assert.equal(evaluate(expression, { inputs: { goal: '', title: '' }, 'brief-result': { [written]: '写的' } }).value, '写的');
-    assert.equal(evaluate(expression, { inputs: { goal: '给的', title: '给的' } }).value, '给的');
+    for (const [title, message] of [['', ''], ['输入框', ''], ['', '能输入']]) {
+      assert.equal(evaluate(expression, { inputs: { title }, run: { message }, 'brief-result': { [written]: '写的' } }).value, '写的', `${field} ${title}|${message}`);
+    }
+    assert.equal(evaluate(expression, { inputs: { title: '输入框' }, run: { message: '能输入' } }).value, field === 'TITLE' ? '输入框' : '能输入');
   }
 
   // 进行中：交主 Agent，三种答复；每次进来都经过「整理回来的原因」。
@@ -425,35 +450,50 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   assert.equal(tell('text'), '需求「输入框」：用户设备验收通过，接下来等用户批准合并。');
   assert.equal(tell('key'), 'run-1:device:head-1');
   assert.equal(next('tell-device'), 'delivery-choice');
-  assert.equal(route('delivery-choice', { inputs: { delivery: '' } }), 'kinds');
+  assert.equal(route('delivery-choice', { inputs: { delivery: '' } }), 'joiners');
   assert.equal(route('delivery-choice', { inputs: { delivery: 'deliver-1' } }), 'delivery');
   assert.deepEqual(values(nodes.delivery).map(v => [v.id, v.name]), [['revise', '退回修改'], ['merge', '放行合并']]);
   for (const [value, target] of [['delivery', 'delivery'], ['progress', 'resume'], ['merge', 'merge']]) assert.equal(route('after-delivery', { 'delivery-result': { route: value } }), target);
-  assert.equal(next('kinds'), 'approve');
+  // 批准卡：勾选项是项目在泳道 head 上加入挂点 merged 的流程，卡上只有数据，不写引导。
+  assert.equal(nodes.joiners.action, 'hook-joiners');
+  assert.deepEqual(params('joiners'), { hook: 'merged', commit: '=pr.head' });
+  assert.equal(next('joiners'), 'approve');
   assert.equal(nodes.approve.assignee, 'user');
   assert.deepEqual(values(nodes.approve).map(v => [v.id, v.note]), [['merge', undefined], ['stop', 'required']]);
-  assert.match(nodes.approve.documentation[0].text, /合并提交/);
-  for (const [value, target] of [['notes', 'write-notes'], ['stop', 'resume'], ['merge', 'merge']]) assert.equal(route('after-approval', { 'approval-result': { route: value } }), target);
-  assert.equal(route('notes-route', { 'notes-result': { route: 'notes' } }), 'write-notes');
-  assert.equal(route('notes-route', { 'notes-result': { route: 'ready' } }), 'merge');
+  assert.deepEqual(values(nodes.approve)[0].options.map(o => [o.$type, o.value ?? o.id, o.default]), [['coda:OptionList', '=joiners.list', undefined], ['coda:Option', 'notify', 'true']]);
+  const face = nodes.approve.documentation[0].text;
+  for (const text of ['{{pr.summary}}', '{{pr.url}}', '项目检查、合并前检查、GitHub 检查已通过']) assert.ok(face.includes(text), text);
+  assert.doesNotMatch(face, /勾选|默认|发布说明|暂不合并|部署/);
+  const envs = id => Object.fromEntries(values(nodes[id]).filter(v => v.$type === 'coda:Env').map(v => [v.name, v.value]));
+  const outputs = id => values(nodes[id]).filter(v => v.$type === 'coda:Output').map(v => v.name);
+  assert.deepEqual(envs('approval-result'), { APPROVAL: '=approve', JOINERS: '=joiners.list' });
+  assert.deepEqual(outputs('approval-result'), ['route', 'only', 'picked', 'inputs', 'missing', 'asks']);
+  for (const [value, target] of [['stop', 'resume'], ['merge', 'merge']]) assert.equal(route('after-approval', { 'approval-result': { route: value } }), target);
   assert.equal(route('after-merge', { merge: { route: 'conflict' } }), 'resume');
-  assert.equal(route('after-merge', { merge: { route: 'merged' } }), 'deploy-choice');
+  assert.equal(route('after-merge', { merge: { route: 'merged' } }), 'merged-choice');
   assert.ok(!elements.some(e => e.id === 'stopped'), '暂不合并不再结束运行');
+  for (const id of ['kinds', 'write-notes', 'notes-result', 'deploy', 'publish-preview', 'publish-release']) assert.ok(!nodes[id], id);
 
-  for (const delivery of ['', 'deliver-1']) for (const deploy of [false, true]) for (const preview of [false, true]) for (const release of [false, true]) {
-    const options = { deploy, preview, release }, called = [], context = { inputs: { delivery }, approve: { options } };
-    for (let step = 'deploy-choice'; step !== 'done';) {
-      if (nodes[step].action === 'run-workflows') called.push(params(step).kind);
+  // 合并后：成员运行不跑；独立交付只跑勾了的，没写的文字先交主 Agent 逐项写。
+  for (const delivery of ['', 'deliver-1']) for (const only of ['[]', '["deploy","publish-preview"]']) for (const missing of ['', 'notes']) {
+    const visited = [], context = { inputs: { delivery }, 'approval-result': { only, missing } };
+    for (let step = 'merged-choice'; step !== 'done';) {
+      visited.push(step);
       step = nodes[step].$type === 'bpmn:ExclusiveGateway' ? route(step, context) : next(step);
     }
-    assert.deepEqual(called, delivery ? [] : ['deploy', 'preview', 'release'].filter(kind => options[kind]));
+    const runs = !delivery && only !== '[]';
+    assert.deepEqual(visited.filter(id => !nodes[id].$type.endsWith('Gateway')), runs ? [...(missing ? ['fill'] : []), 'merged-inputs', 'run-merged'] : [], `${delivery}|${only}|${missing}`);
   }
-  assert.deepEqual(params('deploy'), { kind: 'deploy', commit: '=merge.commit' });
-  for (const id of ['publish-preview', 'publish-release']) {
-    const notes = note => evaluate(params(id).inputs.slice(1), { 'approval-result': { route: note ? 'merge' : 'notes' }, 'notes-result': { notes: '主 Agent 写的' }, approve: { note } }).value.notes;
-    assert.equal(notes('用户写的'), '用户写的'); assert.equal(notes(''), '主 Agent 写的');
-  }
-  assert.deepEqual(elements.filter(e => e.action === 'run-workflows').map(e => e.id), ['prebuild', 'checks', 'premerge', 'deploy', 'publish-preview', 'publish-release']);
+  const loop = nodes.fill.loopCharacteristics;
+  assert.deepEqual([loop.isSequential, loop.inputElement], [true, 'input']);
+  assert.deepEqual(evaluate(loop.inputCollection.slice(1), { 'approval-result': { missing: 'notes,extra' } }).value, ['notes', 'extra']);
+  assert.equal(nodes.fill.assignee, undefined, '交主 Agent');
+  assert.deepEqual(values(nodes.fill).map(v => [v.id, v.note]), [['done', 'required']]);
+  const asked = [...nodes.fill.documentation[0].text.matchAll(/{{(.*?)}}/gs)].find(m => m[1].includes('loopCounter'))[1];
+  assert.equal(evaluate(asked, { 'approval-result': { asks: '「发布说明」：发布预览版要\n「别的」：部署要' }, loopCounter: 2 }).value, '「别的」：部署要');
+  assert.deepEqual(envs('merged-inputs'), { INPUTS: '=approval-result.inputs', MISSING: '=approval-result.missing', ASKS: '=approval-result.asks', FILLS: '=fill' });
+  assert.deepEqual(params('run-merged'), { hook: 'merged', only: '=approval-result.only', commit: '=merge.commit', inputs: '=merged-inputs.inputs' });
+  assert.deepEqual(elements.filter(e => e.action === 'run-workflows').map(e => e.id), ['prebuild', 'checks', 'premerge', 'run-merged']);
   for (const context of [{ inputs: { delivery: '' }, approve: { options: { notify: false } } }, { inputs: { delivery: 'deliver-1' } }]) {
     assert.equal(evaluate(nodes.done.notify.slice(1), context).value, context.inputs.delivery ? true : false);
   }

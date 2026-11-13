@@ -4,21 +4,20 @@
   <process id="deliver" name="需求交付" isExecutable="true" coda:title='{{if inputs.title = "" then "需求交付" else "交付：" + inputs.title}}'>
     <extensionElements>
       <coda:input name="title" label="需求名" default="" description="留空时由主 Agent 在第一张任务里写" />
-      <coda:input name="goal" label="目标与完成标准" default="" description="留空时由主 Agent 把和你聊定的需求写成目标与完成标准" />
       <coda:input name="devices" label="设备验收" type="boolean" default="false" description="改了客户端、要在 Mac 或 iPhone 上统一验收时打开" />
       <coda:input name="device" label="验收设备" type="string" default="" description="测试机设备名，如 duo-testbed；验收期间独占它；留空不占设备" />
     </extensionElements>
     <startEvent id="start" />
     <sequenceFlow id="start-brief" sourceRef="start" targetRef="brief-choice" />
-    <!-- 用户在会话里开启时没有目标：第一张任务交给主 Agent，不叫醒它，随会话的下一条输入告诉它。 -->
-    <exclusiveGateway id="brief-choice" name="是否已有目标" default="brief-given" />
-    <sequenceFlow id="brief-needed" sourceRef="brief-choice" targetRef="brief"><conditionExpression xsi:type="tFormalExpression">=inputs.goal = ""</conditionExpression></sequenceFlow>
-    <sequenceFlow id="brief-given" sourceRef="brief-choice" targetRef="init" />
+    <!-- 目标是发起时带的需求文字（run.message）。需求名和它都有时直接开始；否则第一张任务交给主 Agent，不叫醒它，随会话的下一条输入告诉它。 -->
+    <exclusiveGateway id="brief-choice" name="是否已有目标" default="brief-needed" />
+    <sequenceFlow id="brief-needed" sourceRef="brief-choice" targetRef="brief" />
+    <sequenceFlow id="brief-given" sourceRef="brief-choice" targetRef="init"><conditionExpression xsi:type="tFormalExpression">=inputs.title != "" and run.message != ""</conditionExpression></sequenceFlow>
     <userTask id="brief" name="写需求" coda:wake="false" coda:noteLabel="第一行需求名，空一行后是目标与完成标准">
       <documentation>用户在这个会话里开启了需求交付：一个需求跨几个仓库，要一起验收、一起批准合并。你是主 Agent，每个仓库开一个需求运行（监督开发），达标后统一交付。
 现在把和用户聊定的需求写下来：备注第一行是需求名，空一行后是目标与完成标准。
-答复后，为每个要改的仓库在那里用 workflow_run 发起 develop（需求运行）：传 title、goal（这个仓库要做的部分与完成标准）、delivery="{{run.id}}"、devices=false，跨仓库用 project。在各需求运行的「需求进行中」里用泳道 PR 把改动合进它的泳道，做完提交验收；成员可以同时进行，各自检查通过后停在「待交付」；全部达标后在本运行的「确认达标」按合并顺序列出成员 PR（各泳道进目标分支的 PR）。
-设备验收：{{if inputs.devices then "开启，全部成员集成后统一验收一次" else "未开启"}}{{if inputs.device = "" then "" else "，验收设备 " + inputs.device}}。
+答复后，为每个要改的仓库在那里用 workflow_run 发起 develop（需求运行）：传 title、message（这个仓库要做的部分与完成标准）、delivery="{{run.id}}"、devices=false，跨仓库用 project。在各需求运行的「需求进行中」里用泳道 PR 把改动合进它的泳道，做完提交验收；成员可以同时进行，各自检查通过后停在「待交付」；全部达标后在本运行的「确认达标」按合并顺序列出成员 PR（各泳道进目标分支的 PR）。
+{{if run.message = "" then "" else "发起时带的需求：\n" + run.message + "\n"}}设备验收：{{if inputs.devices then "开启，全部成员集成后统一验收一次" else "未开启"}}{{if inputs.device = "" then "" else "，验收设备 " + inputs.device}}。
 {{if brief-result.feedback = null then "" else brief-result.feedback}}</documentation>
       <extensionElements><coda:choice id="start" name="开始拆分" primary="true" note="required" /></extensionElements>
     </userTask>
@@ -33,8 +32,8 @@
     <sequenceFlow id="brief-init" sourceRef="after-brief" targetRef="init" />
     <scriptTask id="init" name="准备交付" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
       <extensionElements>
-        <coda:env name="TITLE" value='=if inputs.goal = "" then brief-result.title else inputs.title' />
-        <coda:env name="GOAL" value='=if inputs.goal = "" then brief-result.goal else inputs.goal' />
+        <coda:env name="TITLE" value='=if inputs.title != "" and run.message != "" then inputs.title else brief-result.title' />
+        <coda:env name="GOAL" value='=if inputs.title != "" and run.message != "" then run.message else brief-result.goal' />
         <coda:output name="title" /><coda:output name="goal" />
       </extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/deliver.mjs" init</script>
@@ -167,31 +166,31 @@ PR：链接
       <script>node "${CODA_PLUGIN_PATH}/scripts/deliver.mjs" report</script>
     </scriptTask>
     <sequenceFlow id="report-route" sourceRef="report-result" targetRef="after-report" />
-    <exclusiveGateway id="after-report" name="汇报是否填写" default="report-kinds" />
+    <exclusiveGateway id="after-report" name="汇报是否填写" default="report-joiners" />
     <sequenceFlow id="report-note" sourceRef="after-report" targetRef="report"><conditionExpression xsi:type="tFormalExpression">=report-result.route = "report"</conditionExpression></sequenceFlow>
-    <sequenceFlow id="report-kinds" sourceRef="after-report" targetRef="kinds" />
-    <serviceTask id="kinds" name="项目部署与发布选项" coda:action="workflow-kinds">
-      <extensionElements><coda:param name="commit" value="=confirm-result.commit" /></extensionElements>
+    <sequenceFlow id="report-joiners" sourceRef="after-report" targetRef="joiners" />
+    <serviceTask id="joiners" name="合并后的流程" coda:action="hook-joiners">
+      <extensionElements><coda:param name="hook" value="merged" /><coda:param name="commit" value="=confirm-result.commit" /></extensionElements>
     </serviceTask>
-    <sequenceFlow id="kinds-approve" sourceRef="kinds" targetRef="approve" />
+    <sequenceFlow id="joiners-approve" sourceRef="joiners" targetRef="approve" />
     <userTask id="approve" name="批准交付" coda:assignee="user" coda:noteLabel="备注">
-      <documentation>勾选发布后，主 Agent 会准备发布说明；若你填写了备注，将直接用作发布说明。暂不合并时请在备注说明原因。
-{{report-result.body}}
+      <documentation>{{report-result.body}}
 
 成员 PR：
 {{confirm-result.members}}
 {{if approval-result.route = "approval" then approval-result.feedback else ""}}</documentation>
       <extensionElements>
-        <coda:choice id="merge" name="批准合并" primary="true"><coda:option id="deploy" name="部署" detail="全部成员合并后统一部署一次" coda:shown="=kinds.deploy" />
-          <coda:option id="preview" name="发布预览版" detail="调用项目里的预览发布流程" coda:shown="=kinds.preview" />
-          <coda:option id="release" name="发布正式版" detail="调用项目里的正式发布流程" coda:shown="=kinds.release" />
-        </coda:choice>
+        <coda:choice id="merge" name="批准合并" primary="true"><coda:optionList value="=joiners.list" /></coda:choice>
         <coda:choice id="stop" name="暂不合并" note="required" />
       </extensionElements>
     </userTask>
     <sequenceFlow id="approve-result-flow" sourceRef="approve" targetRef="approval-result" />
     <scriptTask id="approval-result" name="记录批准意见" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
-      <extensionElements><coda:env name="RESPONSE" value="=approve" /><coda:output name="route" /><coda:output name="feedback" /></extensionElements>
+      <extensionElements>
+        <coda:env name="RESPONSE" value="=approve" /><coda:env name="JOINERS" value="=joiners.list" />
+        <coda:output name="route" /><coda:output name="feedback" />
+        <coda:output name="only" /><coda:output name="picked" /><coda:output name="inputs" /><coda:output name="missing" /><coda:output name="asks" />
+      </extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/deliver.mjs" approval</script>
     </scriptTask>
     <sequenceFlow id="approval-note-route" sourceRef="approval-result" targetRef="approval-note" />
@@ -200,25 +199,7 @@ PR：链接
     <sequenceFlow id="approval-route" sourceRef="approval-note" targetRef="after-approval" />
     <exclusiveGateway id="after-approval" name="交付选择" default="approval-release" />
     <sequenceFlow id="approval-confirm" sourceRef="after-approval" targetRef="context"><conditionExpression xsi:type="tFormalExpression">=approval-result.route = "confirm"</conditionExpression></sequenceFlow>
-    <sequenceFlow id="approval-write-notes" sourceRef="after-approval" targetRef="write-notes"><conditionExpression xsi:type="tFormalExpression">=approval-result.route = "notes"</conditionExpression></sequenceFlow>
     <sequenceFlow id="approval-release" sourceRef="after-approval" targetRef="release" />
-    <userTask id="write-notes" name="写发布说明" coda:noteLabel="发布说明（必填）">
-      <documentation>已勾选发布类别：{{if approve.options.preview then "预览版" else ""}} {{if approve.options.release then "正式版" else ""}}
-成员 PR：
-{{confirm-result.members}}
-请主 Agent 按上次公开版本以来合并的改动，写面向用户的发布说明，备注必填。请结合本次批准的改动，不要使用审查意见作为发布说明。
-{{if notes-result.feedback = null then "" else notes-result.feedback}}</documentation>
-      <extensionElements><coda:choice id="ready" name="说明已写好" primary="true" /></extensionElements>
-    </userTask>
-    <sequenceFlow id="write-notes-result" sourceRef="write-notes" targetRef="notes-result" />
-    <scriptTask id="notes-result" name="记录发布说明" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
-      <extensionElements><coda:env name="RESPONSE" value="=write-notes" /><coda:output name="route" /><coda:output name="feedback" /><coda:output name="notes" /></extensionElements>
-      <script>node "${CODA_PLUGIN_PATH}/scripts/deliver.mjs" notes</script>
-    </scriptTask>
-    <sequenceFlow id="notes-result-route" sourceRef="notes-result" targetRef="notes-route" />
-    <exclusiveGateway id="notes-route" name="发布说明是否填写" default="notes-ready" />
-    <sequenceFlow id="notes-missing" sourceRef="notes-route" targetRef="write-notes"><conditionExpression xsi:type="tFormalExpression">=notes-result.route = "notes"</conditionExpression></sequenceFlow>
-    <sequenceFlow id="notes-ready" sourceRef="notes-route" targetRef="release" />
     <userTask id="release" name="放行合并" coda:noteLabel="本项目最后一个合并提交">
       <documentation>需求：{{init.title}}
 成员 PR（按合并顺序）：
@@ -227,7 +208,7 @@ PR：链接
 1. 被依赖的仓库在前：先给提供被钉版本的包的成员选「放行合并」，等合并并发布新版本。
 2. 再给钉这些包的仓库成员选「退回修改」，回到它的「需求进行中」，提泳道 PR 更新钉定的包版本；重新提交验收、检查通过并回到待交付。
 3. 最后放行依赖方成员，等全部合并完成。
-无对应仓库成员时跳过该项。成员运行不部署，本需求在全部合并后按用户勾选依次部署、发布预览版、发布正式版，每类一次。
+无对应仓库成员时跳过该项。成员运行不运行合并后的流程，本需求在全部合并后运行用户勾选的。
 全部合并后答复，备注必填，只写本项目最后一个合并提交；没有本仓库成员时写本项目当前目标分支提交。
 {{if merged.feedback = null then "" else merged.feedback}}</documentation>
       <extensionElements><coda:choice id="merged" name="全部已合并" primary="true" /></extensionElements>
@@ -237,34 +218,47 @@ PR：链接
       <extensionElements><coda:env name="RESPONSE" value="=release" /><coda:output name="route" /><coda:output name="feedback" /><coda:output name="commit" /></extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/deliver.mjs" merged</script>
     </scriptTask>
-    <sequenceFlow id="merged-route" sourceRef="merged" targetRef="deploy-choice" />
-    <exclusiveGateway id="deploy-choice" name="是否部署" default="merged-preview" />
-    <sequenceFlow id="merged-note" sourceRef="deploy-choice" targetRef="release"><conditionExpression xsi:type="tFormalExpression">=merged.route = "merged"</conditionExpression></sequenceFlow>
-    <sequenceFlow id="merged-deploy" sourceRef="deploy-choice" targetRef="deploy"><conditionExpression xsi:type="tFormalExpression">=approve.options.deploy</conditionExpression></sequenceFlow>
-    <sequenceFlow id="merged-preview" sourceRef="deploy-choice" targetRef="publish-preview-choice" />
-    <serviceTask id="deploy" name="部署" coda:action="run-workflows">
-      <extensionElements><coda:param name="kind" value="deploy" /><coda:param name="commit" value="=merged.commit" /></extensionElements>
+    <sequenceFlow id="merged-route" sourceRef="merged" targetRef="merged-choice" />
+    <!-- 合并后：运行批准卡上勾的流程（挂点 merged 的 only），它们要的文字卡上没写的先交主 Agent 逐项写。 -->
+    <exclusiveGateway id="merged-choice" name="是否运行合并后的流程" default="merged-fill-choice" />
+    <sequenceFlow id="merged-note" sourceRef="merged-choice" targetRef="release"><conditionExpression xsi:type="tFormalExpression">=merged.route = "merged"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="merged-only" sourceRef="merged-choice" targetRef="verify"><conditionExpression xsi:type="tFormalExpression">=approval-result.only = "[]"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="merged-fill-choice" sourceRef="merged-choice" targetRef="fill-choice" />
+    <exclusiveGateway id="fill-choice" name="是否有没写的文字" default="fill-skip" />
+    <sequenceFlow id="fill-needed" sourceRef="fill-choice" targetRef="fill"><conditionExpression xsi:type="tFormalExpression">=approval-result.missing != ""</conditionExpression></sequenceFlow>
+    <sequenceFlow id="fill-skip" sourceRef="fill-choice" targetRef="merged-inputs" />
+    <userTask id="fill" name="填写合并后流程要的文字" coda:noteLabel="要填的文字">
+      <documentation>用户批准交付时勾的流程要一段文字，批准卡上没有写：
+{{split(approval-result.asks, "\n")[loopCounter]}}
+需求：{{init.title}}
+成员 PR：
+{{confirm-result.members}}
+主 Agent：按这次交付合并进来的改动写这段面向用户的文字，不用审查意见；备注只放文字本身。</documentation>
+      <extensionElements><coda:choice id="done" name="已写好" primary="true" note="required" /></extensionElements>
+      <multiInstanceLoopCharacteristics isSequential="true" coda:inputCollection='=split(approval-result.missing, ",")' coda:inputElement="input" />
+    </userTask>
+    <sequenceFlow id="fill-inputs" sourceRef="fill" targetRef="merged-inputs" />
+    <scriptTask id="merged-inputs" name="整理合并后流程的参数" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements>
+        <coda:env name="INPUTS" value="=approval-result.inputs" /><coda:env name="MISSING" value="=approval-result.missing" />
+        <coda:env name="ASKS" value="=approval-result.asks" /><coda:env name="FILLS" value="=fill" />
+        <coda:output name="inputs" />
+      </extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/deliver.mjs" inputs</script>
+    </scriptTask>
+    <sequenceFlow id="merged-inputs-run" sourceRef="merged-inputs" targetRef="run-merged" />
+    <serviceTask id="run-merged" name="合并后的流程" coda:action="run-workflows">
+      <extensionElements>
+        <coda:param name="hook" value="merged" /><coda:param name="only" value="=approval-result.only" />
+        <coda:param name="commit" value="=merged.commit" /><coda:param name="inputs" value="=merged-inputs.inputs" />
+      </extensionElements>
     </serviceTask>
-    <sequenceFlow id="deployed" sourceRef="deploy" targetRef="publish-preview-choice" />
-    <exclusiveGateway id="publish-preview-choice" name="是否发布预览版" default="skip-publish-preview" />
-    <sequenceFlow id="to-publish-preview" sourceRef="publish-preview-choice" targetRef="publish-preview"><conditionExpression xsi:type="tFormalExpression">=approve.options.preview</conditionExpression></sequenceFlow>
-    <sequenceFlow id="skip-publish-preview" sourceRef="publish-preview-choice" targetRef="publish-release-choice" />
-    <serviceTask id="publish-preview" name="发布预览版" coda:action="run-workflows">
-      <extensionElements><coda:param name="kind" value="preview" /><coda:param name="commit" value="=merged.commit" /><coda:param name="inputs" value='={ notes: if approval-result.route = "notes" then notes-result.notes else approve.note }' /></extensionElements>
-    </serviceTask>
-    <sequenceFlow id="published-preview" sourceRef="publish-preview" targetRef="publish-release-choice" />
-    <exclusiveGateway id="publish-release-choice" name="是否发布正式版" default="skip-publish-release" />
-    <sequenceFlow id="to-publish-release" sourceRef="publish-release-choice" targetRef="publish-release"><conditionExpression xsi:type="tFormalExpression">=approve.options.release</conditionExpression></sequenceFlow>
-    <sequenceFlow id="skip-publish-release" sourceRef="publish-release-choice" targetRef="verify" />
-    <serviceTask id="publish-release" name="发布正式版" coda:action="run-workflows">
-      <extensionElements><coda:param name="kind" value="release" /><coda:param name="commit" value="=merged.commit" /><coda:param name="inputs" value='={ publish: "true", notes: if approval-result.route = "notes" then notes-result.notes else approve.note }' /></extensionElements>
-    </serviceTask>
-    <sequenceFlow id="published-release" sourceRef="publish-release" targetRef="verify" />
+    <sequenceFlow id="run-merged-verify" sourceRef="run-merged" targetRef="verify" />
     <userTask id="verify" name="真实环境验证" coda:noteLabel="验证结论（有问题时必填）">
       <documentation>需求：{{init.title}}
 目标与完成标准：{{init.goal}}
 本项目合并提交：{{merged.commit}}
-{{if approve.options.deploy then "已完成统一部署，请主 Agent 按目标在部署后的真实环境走一遍。" else "用户未勾部署，请主 Agent 在当前真实环境按目标验证，并在备注说明未部署造成的未验证部分。"}}
+{{if approval-result.only = "[]" then "用户没有勾合并后的流程，请主 Agent 在当前真实环境按目标验证，并在备注说明没有部署造成的未验证部分。" else "已运行合并后的流程：" + approval-result.picked + "。请主 Agent 按目标在真实环境走一遍。"}}
 选「通过」或「有问题」；有问题时备注必填，写实际问题和未达标之处，结论会通知发起会话。
 {{if verify-result.feedback = null then "" else verify-result.feedback}}</documentation>
       <extensionElements><coda:choice id="yes" name="通过" primary="true" /><coda:choice id="no" name="有问题" /></extensionElements>
@@ -281,7 +275,7 @@ PR：链接
     <serviceTask id="tell-result" name="告诉发起会话验证结论" coda:action="tell-session">
       <extensionElements>
         <coda:param name="key" value='=run.id + ":verified:" + merged.commit' />
-        <coda:param name="text" value='="需求「" + init.title + "」：" + (if approve.options.deploy then "已部署，" else "未部署，") + "真实环境验证" + (if verify.chose.yes then "通过。" else "有问题。") + "\n" + verify.note + "\n提交：" + merged.commit' />
+        <coda:param name="text" value='="需求「" + init.title + "」：" + (if approval-result.only = "[]" then "没有运行合并后的流程，" else "已运行" + approval-result.picked + "，") + "真实环境验证" + (if verify.chose.yes then "通过。" else "有问题。") + "\n" + verify.note + "\n提交：" + merged.commit' />
       </extensionElements>
     </serviceTask>
     <sequenceFlow id="result-done" sourceRef="tell-result" targetRef="done" />

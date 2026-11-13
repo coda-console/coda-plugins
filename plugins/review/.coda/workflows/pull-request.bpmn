@@ -7,7 +7,7 @@
      合并：请你批准，再在这个提交上调用项目声明为合并前检查的流程（coda:kind="premerge"），都通过才合并；没通过或 GitHub 没合并就交给开 PR 的会话，
      它推了新提交、评审通过后按你的批准合并，不再问。
      删除分支：你勾选后，等 GitHub 确认合并，再删除仍指向该提交的远程源分支；本地分支与工作树保留。
-     部署与发布：合并后按你勾选的，在合并提交上调用项目里声明为这一类的流程（coda:kind）。
+     合并后的流程：合并后在合并提交上运行你在批准卡上勾的流程（项目里加入挂点 merged 的）。
      PR 在 GitHub 上合并或关闭，运行随之结束。也可以手动发起（传 GitHub 返回的 PR 地址），只评审一次。BPMN 2.0，由 Coda 执行（docs/workflows.md）。 -->
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="pull-request-definitions" targetNamespace="https://coda.pub/plugins/review">
@@ -293,10 +293,15 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
         <sequenceFlow id="as-approved" sourceRef="standing" targetRef="premerge">
           <conditionExpression xsi:type="tFormalExpression">=number(approval.at) > number(review.changesAt)</conditionExpression>
         </sequenceFlow>
-        <sequenceFlow id="ask" sourceRef="standing" targetRef="kinds" />
-        <!-- 批准卡只给项目有的部署、发布：项目在这个提交上没有这一类流程，就没有那个勾选项；有合并前检查的才在卡上说先跑它。 -->
-        <serviceTask id="kinds" name="看项目有哪些部署、发布" coda:action="workflow-kinds" />
-        <sequenceFlow id="kinds-known" sourceRef="kinds" targetRef="approve" />
+        <sequenceFlow id="ask" sourceRef="standing" targetRef="joiners" />
+        <!-- 批准卡只放做决定用得到的数据和控件；合并后的勾选项是项目在这个提交上加入挂点 merged 的流程（hook-joiners），默认勾不勾由它们自己声明。 -->
+        <serviceTask id="joiners" name="合并后的流程" coda:action="hook-joiners">
+          <extensionElements>
+            <coda:param name="hook" value="merged" />
+            <coda:param name="commit" value="=reviewing.head" />
+          </extensionElements>
+        </serviceTask>
+        <sequenceFlow id="joiners-known" sourceRef="joiners" targetRef="approve" />
 
         <userTask id="approve" name="批准合并" coda:assignee="user" coda:status="评审通过：等你批准合并">
           <documentation>PR #{{github.event.number}} 可以合并。
@@ -306,17 +311,13 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
 - **检查**：{{if checks.lines = null or checks.lines = "" then "没有" else checks.lines}}
 - **PR**：{{github.event.pull_request.html_url}}
 
-最近一次评审（提交 {{review.head}}；点「让 Agent 处理评审意见」才交给开 PR 的会话）：
-{{review.report}}
-
-「合并」以 {{vars.review.mergeMethod}} 方式合并提交 {{reviewing.head}}{{if kinds.premerge then "，先在它上面跑项目的合并前检查，都通过才合并" else ""}}。没合并成（合并前检查没通过，或 GitHub 没合并：冲突、检查没过等）就交给开 PR 的会话处理，它推送的新版本评审通过后按这次的选择合并，不再问你；评审要求修改则这次批准作废。</documentation>
+最近一次评审（提交 {{review.head}}）：
+{{review.report}}</documentation>
           <extensionElements>
             <coda:choice id="merge" name="合并" primary="true">
               <coda:option default='=list contains(vars.review.mergeOptions, "deleteBranch")' id="deleteBranch" name="合并后删除远程分支" detail="删除这个 PR 的远程源分支，本地分支和工作树保留" />
-              <coda:option default='=list contains(vars.review.mergeOptions, "deploy")' id="deploy" name="部署" detail="调用项目里的部署流程" coda:shown="=kinds.deploy" />
-              <coda:option default='=list contains(vars.review.mergeOptions, "preview")' id="preview" name="发布预览版" detail="调用项目里的预览发布流程" coda:shown="=kinds.preview" />
-              <coda:option default='=list contains(vars.review.mergeOptions, "release")' id="release" name="发布正式版" detail="调用项目里的正式发布流程" coda:shown="=kinds.release" />
-              <coda:option default='=list contains(vars.review.mergeOptions, "notify")' id="notify" name="全部完成后通知 Agent" detail="合并及所选删除分支、部署、发布结束后通知" />
+              <coda:optionList value="=joiners.list" />
+              <coda:option default='=list contains(vars.review.mergeOptions, "notify")' id="notify" name="全部完成后通知 Agent" detail="合并及所选删除分支、合并后的流程结束后通知" />
             </coda:choice>
             <coda:choice id="send" name="让 Agent 处理评审意见" />
             <coda:choice id="close" name="关闭 PR" detail="不合并，在 GitHub 上关闭这个 PR" />
@@ -346,17 +347,19 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
         <sequenceFlow id="back-to-approve" sourceRef="not-handled" targetRef="approve" />
 
         <!-- 记下你批准的时刻和合并后要做的事：之后评审再要求修改（review.changesAt 更晚）这次批准才作废；
-             合并后的删分支、部署、发布与通知都照这里，不论 Coda 先从合并步骤还是先从 GitHub 得知合并了。 -->
+             合并后的删分支、合并后的流程与通知都照这里，不论 Coda 先从合并步骤还是先从 GitHub 得知合并了。 -->
         <scriptTask id="approval" name="记下批准" coda:timeout="5" coda:checkout="false" scriptFormat="bash">
           <extensionElements>
             <coda:env name="APPROVED" value="=approve" />
+            <coda:env name="JOINERS" value="=joiners.list" />
             <coda:output name="at" />
             <coda:output name="deleteBranch" />
-            <coda:output name="deploy" />
-            <coda:output name="release" />
-            <coda:output name="releaseKinds" />
             <coda:output name="notify" />
             <coda:output name="what" />
+            <coda:output name="only" />
+            <coda:output name="inputs" />
+            <coda:output name="missing" />
+            <coda:output name="asks" />
           </extensionElements>
           <script>node "${CODA_PLUGIN_PATH}/scripts/approval.mjs"</script>
         </scriptTask>
@@ -573,73 +576,53 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
     </scriptTask>
     <sequenceFlow id="branch-deleted" sourceRef="delete-branch" targetRef="delivering-or-not" />
 
-    <exclusiveGateway id="delivering-or-not" name="部署或发布吗" default="merged-only" />
+    <exclusiveGateway id="delivering-or-not" name="运行合并后的流程吗" default="merged-only" />
     <sequenceFlow id="to-delivering" sourceRef="delivering-or-not" targetRef="delivering">
-      <conditionExpression xsi:type="tFormalExpression">=approval.deploy or approval.release</conditionExpression>
+      <conditionExpression xsi:type="tFormalExpression">=approval.only != "[]"</conditionExpression>
     </sequenceFlow>
     <sequenceFlow id="merged-only" sourceRef="delivering-or-not" targetRef="merged-here" />
     <endEvent id="merged-here" coda:status="已合并" coda:notify="=approval.notify" />
 
-    <!-- 部署与发布：项目自己声明哪些流程是部署（coda:kind="deploy"）、预览发布（preview）、正式发布（release），这里在合并提交上调用它们；
-         项目没有这一类的流程，这一步直接过去。先部署，再请开 PR 的会话写更新说明、发布。失败时运行失败，交回开 PR 的会话。 -->
-    <subProcess id="delivering" name="部署与发布" coda:optional="true">
+    <!-- 合并后的流程：在合并提交上运行你勾的（项目里加入挂点 merged 的流程，only）；它们要的文字卡上没写的，先请开 PR 的会话逐项写。
+         失败时运行失败，交回开 PR 的会话。 -->
+    <subProcess id="delivering" name="合并后的流程" coda:optional="true">
       <startEvent id="delivering-in" />
-      <sequenceFlow id="dl-in" sourceRef="delivering-in" targetRef="deploying" />
-      <exclusiveGateway id="deploying" name="部署吗" default="not-deploying" />
-      <sequenceFlow id="to-deploy" sourceRef="deploying" targetRef="deploy">
-        <conditionExpression xsi:type="tFormalExpression">=approval.deploy</conditionExpression>
+      <sequenceFlow id="dl-in" sourceRef="delivering-in" targetRef="fill-choice" />
+      <exclusiveGateway id="fill-choice" name="有没写的文字吗" default="fill-skip" />
+      <sequenceFlow id="fill-needed" sourceRef="fill-choice" targetRef="fill">
+        <conditionExpression xsi:type="tFormalExpression">=approval.missing != ""</conditionExpression>
       </sequenceFlow>
-      <sequenceFlow id="not-deploying" sourceRef="deploying" targetRef="releasing" />
-      <serviceTask id="deploy" name="部署" coda:action="run-workflows" coda:status="部署中">
-        <extensionElements>
-          <coda:param name="kind" value="deploy" />
-          <coda:param name="commit" value="=github.event.pull_request.merge_commit_sha" />
-        </extensionElements>
-      </serviceTask>
-      <sequenceFlow id="deployed" sourceRef="deploy" targetRef="releasing" />
-      <exclusiveGateway id="releasing" name="发布吗" default="deploy-only" />
-      <sequenceFlow id="to-notes" sourceRef="releasing" targetRef="notes">
-        <conditionExpression xsi:type="tFormalExpression">=approval.release</conditionExpression>
-      </sequenceFlow>
-      <sequenceFlow id="deploy-only" sourceRef="releasing" targetRef="delivered" />
-      <endEvent id="delivered" coda:status="已合并并部署" />
-
-      <userTask id="notes" name="写更新说明" coda:status="发布：写更新说明" coda:completeLabel="提交并继续发布" coda:rejectLabel="无法提供更新说明" coda:noteLabel="更新说明">
-        <documentation>PR #{{github.event.number}}（{{github.event.pull_request.html_url}}）已合并，接下来按用户的选择发布。
-
-请写这次发布的更新说明：Markdown，面向用户，写这次改了什么、用户会注意到什么变化，不写内部实现，不超过 2000 字。用 completed 答复，note 里只放更新说明本身。做不了就用 rejected 并说明原因，由用户来写。</documentation>
+      <sequenceFlow id="fill-skip" sourceRef="fill-choice" targetRef="merged-inputs" />
+      <userTask id="fill" name="填写合并后流程要的文字" coda:status="合并后：填写流程要的文字" coda:noteLabel="要填的文字">
+        <documentation>用户批准合并时勾的流程要一段文字，批准卡上没有写：
+{{split(approval.asks, "\n")[loopCounter]}}
+PR #{{github.event.number}}（{{github.event.pull_request.html_url}}）已合并。
+按这次合并进来的改动写这段面向用户的文字（Markdown，不写内部实现，不用审查意见），备注只放文字本身。</documentation>
+        <extensionElements><coda:choice id="done" name="已写好" primary="true" note="required" /></extensionElements>
+        <multiInstanceLoopCharacteristics isSequential="true" coda:inputCollection='=split(approval.missing, ",")' coda:inputElement="input" />
       </userTask>
-      <sequenceFlow id="noted" sourceRef="notes" targetRef="publishing" />
-      <boundaryEvent id="no-notes" name="做不了" attachedToRef="notes"><errorEventDefinition /></boundaryEvent>
-      <sequenceFlow id="to-notes-user" sourceRef="no-notes" targetRef="notes-user" />
-      <userTask id="notes-user" name="写更新说明" coda:assignee="user" coda:status="发布：等你写更新说明" coda:completeLabel="提交并继续发布" coda:rejectLabel="不再发布" coda:noteLabel="更新说明">
-        <documentation>PR #{{github.event.number}}（{{github.event.pull_request.html_url}}）已合并，接下来按你的选择发布。开 PR 的会话没写更新说明，理由在这次运行的「写更新说明」任务里。
-
-请填写面向用户的更新说明（Markdown，不超过 2000 字）。</documentation>
-      </userTask>
-      <sequenceFlow id="noted-by-user" sourceRef="notes-user" targetRef="publishing" />
-      <boundaryEvent id="not-releasing" name="不再发布" attachedToRef="notes-user"><errorEventDefinition /></boundaryEvent>
-      <sequenceFlow id="to-unreleased" sourceRef="not-releasing" targetRef="unreleased" />
-      <endEvent id="unreleased" coda:status="你决定不再发布" />
-
-      <scriptTask id="publishing" name="整理发布参数" coda:timeout="5" coda:checkout="false" scriptFormat="bash">
+      <sequenceFlow id="filled" sourceRef="fill" targetRef="merged-inputs" />
+      <scriptTask id="merged-inputs" name="整理合并后流程的参数" coda:timeout="5" coda:checkout="false" scriptFormat="bash">
         <extensionElements>
-          <coda:env name="AGENT" value="=notes" />
-          <coda:env name="USER" value="=notes-user" />
+          <coda:env name="INPUTS" value="=approval.inputs" />
+          <coda:env name="MISSING" value="=approval.missing" />
+          <coda:env name="ASKS" value="=approval.asks" />
+          <coda:env name="FILLS" value="=fill" />
           <coda:output name="inputs" />
         </extensionElements>
-        <script>node "${CODA_PLUGIN_PATH}/scripts/notes.mjs"</script>
+        <script>node "${CODA_PLUGIN_PATH}/scripts/approval.mjs" inputs</script>
       </scriptTask>
-      <sequenceFlow id="to-publish" sourceRef="publishing" targetRef="publish" />
-      <serviceTask id="publish" name="发布" coda:action="run-workflows" coda:status="发布中">
+      <sequenceFlow id="to-run-merged" sourceRef="merged-inputs" targetRef="run-merged" />
+      <serviceTask id="run-merged" name="合并后的流程" coda:action="run-workflows" coda:status="运行合并后的流程">
         <extensionElements>
-          <coda:param name="kind" value="=approval.releaseKinds" />
+          <coda:param name="hook" value="merged" />
+          <coda:param name="only" value="=approval.only" />
           <coda:param name="commit" value="=github.event.pull_request.merge_commit_sha" />
-          <coda:param name="inputs" value="=publishing.inputs" />
+          <coda:param name="inputs" value="=merged-inputs.inputs" />
         </extensionElements>
       </serviceTask>
-      <sequenceFlow id="published" sourceRef="publish" targetRef="released-end" />
-      <endEvent id="released-end" coda:status="已发布" />
+      <sequenceFlow id="ran-merged" sourceRef="run-merged" targetRef="delivered" />
+      <endEvent id="delivered" coda:status="已合并，合并后的流程已结束" />
     </subProcess>
     <sequenceFlow id="to-delivered" sourceRef="delivering" targetRef="delivering-done" />
     <endEvent id="delivering-done" coda:notify="=approval.notify" />

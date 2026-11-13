@@ -142,7 +142,7 @@ test('the approval keeps the selected cleanup for the workflow, and merging dele
   const c = setup(t);
   // baseOf asks gh for these two fields; the same fixture can supply them alongside the PR fields.
   c.pr.base = 'main'; c.pr.main = 'main';
-  for (const options of [{}, { deleteBranch: false }, { deleteBranch: true, deploy: true }]) {
+  for (const options of [{}, { deleteBranch: false }, { deleteBranch: true, notify: true }]) {
     const approved = c.run('approval', { APPROVED: JSON.stringify({ options }) });
     assert.equal(approved.status, 0, approved.stderr);
     assert.match(approved.outputs, new RegExp(`deleteBranch<<EOF_deleteBranch\n${options.deleteBranch === true}\nEOF_deleteBranch`));

@@ -6,7 +6,7 @@
      检查：在这个提交上调用项目声明为检查的流程（coda:kind="check"），没通过交回主 Agent。
      评审：评审方（发起时选的，没选按设置「评审组合」）在只读会话里评审一次；要求修改交回主 Agent，它改，或写明不改的理由。之后只重跑检查，不评第二轮。
      设备验收（可选）：主 Agent 装预览版，你在设备上验收，「不行」交回主 Agent。
-     合并前检查、GitHub 检查都通过后请你批准；合并后按你勾选的部署、发布。BPMN 2.0，由 Coda 执行（docs/workflows.md）。 -->
+     合并前检查、GitHub 检查都通过后请你批准；合并后运行你勾选的合并后流程（挂点 merged）。BPMN 2.0，由 Coda 执行（docs/workflows.md）。 -->
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="simple-definitions" targetNamespace="https://coda.pub/plugins/review">
   <process id="simple" name="简易开发" isExecutable="true" coda:kind="develop" coda:title="简易开发">
@@ -223,7 +223,7 @@
     <sequenceFlow id="github-checked" sourceRef="github-checks" targetRef="github-how" />
     <exclusiveGateway id="github-how" name="都过了吗" default="github-passed" />
     <sequenceFlow id="github-failed" sourceRef="github-how" targetRef="github-feedback"><conditionExpression xsi:type="tFormalExpression">=not(github-checks.passed)</conditionExpression></sequenceFlow>
-    <sequenceFlow id="github-passed" sourceRef="github-how" targetRef="kinds" />
+    <sequenceFlow id="github-passed" sourceRef="github-how" targetRef="joiners" />
     <scriptTask id="github-feedback" name="交回 GitHub 检查失败" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
       <extensionElements><coda:env name="STEP" value="GitHub 检查" /><coda:env name="LINES" value="=github-checks.lines" /></extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/simple.mjs" failed</script>
@@ -244,23 +244,20 @@
     </userTask>
     <sequenceFlow id="fix-push" sourceRef="fix" targetRef="push" />
 
-    <serviceTask id="kinds" name="看项目有哪些部署、发布" coda:action="workflow-kinds">
-      <extensionElements><coda:param name="commit" value="=pr.head" /></extensionElements>
+    <!-- 合并卡只放做决定用得到的数据和控件；勾选项是项目在这个提交上加入挂点 merged 的流程（hook-joiners），默认勾不勾由它们自己声明。 -->
+    <serviceTask id="joiners" name="合并后的流程" coda:action="hook-joiners">
+      <extensionElements><coda:param name="hook" value="merged" /><coda:param name="commit" value="=pr.head" /></extensionElements>
     </serviceTask>
-    <sequenceFlow id="kinds-approve" sourceRef="kinds" targetRef="approve" />
+    <sequenceFlow id="joiners-approve" sourceRef="joiners" targetRef="approve" />
     <userTask id="approve" name="批准合并" coda:assignee="user" coda:status="检查通过：等你批准合并">
       <documentation>{{pr.summary}}
 
 - **检查**：项目检查、合并前检查{{if github-checks.lines = null or github-checks.lines = "" then "" else "、GitHub 检查" + github-checks.lines}}
-- **PR**：{{pr.url}}
-
-「合并」以 {{vars.review.mergeMethod}} 方式合并提交 {{pr.head}}，随后按勾选部署、发布。「暂不合并」须写明原因，交给主 Agent 跟进。</documentation>
+- **PR**：{{pr.url}}</documentation>
       <extensionElements>
         <coda:choice id="merge" name="合并" primary="true">
-          <coda:option default='=list contains(vars.review.mergeOptions, "deploy")' id="deploy" name="部署" detail="调用项目里的部署流程" coda:shown="=kinds.deploy" />
-          <coda:option default='=list contains(vars.review.mergeOptions, "preview")' id="preview" name="发布预览版" detail="调用项目里的预览发布流程" coda:shown="=kinds.preview" />
-          <coda:option default='=list contains(vars.review.mergeOptions, "release")' id="release" name="发布正式版" detail="调用项目里的正式发布流程" coda:shown="=kinds.release" />
-          <coda:option default="true" id="notify" name="全部完成后通知 Agent" detail="合并及所选部署、发布结束后通知" />
+          <coda:optionList value="=joiners.list" />
+          <coda:option default="true" id="notify" name="全部完成后通知 Agent" detail="合并及所选流程结束后通知" />
         </coda:choice>
         <coda:choice id="stop" name="暂不合并" note="required" />
       </extensionElements>
@@ -272,9 +269,9 @@
     <endEvent id="stopped" name="暂不合并" />
     <scriptTask id="approval" name="记下批准" coda:timeout="5" coda:checkout="false" scriptFormat="bash">
       <extensionElements>
-        <coda:env name="APPROVED" value="=approve" />
-        <coda:output name="at" /><coda:output name="deleteBranch" /><coda:output name="deploy" /><coda:output name="release" />
-        <coda:output name="releaseKinds" /><coda:output name="notify" /><coda:output name="what" />
+        <coda:env name="APPROVED" value="=approve" /><coda:env name="JOINERS" value="=joiners.list" />
+        <coda:output name="at" /><coda:output name="deleteBranch" /><coda:output name="notify" /><coda:output name="what" />
+        <coda:output name="only" /><coda:output name="inputs" /><coda:output name="missing" /><coda:output name="asks" />
       </extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/approval.mjs"</script>
     </scriptTask>
@@ -288,39 +285,42 @@
       <script>node "${CODA_PLUGIN_PATH}/scripts/simple.mjs" merge</script>
     </scriptTask>
     <sequenceFlow id="merge-how" sourceRef="merge" targetRef="merged" />
-    <exclusiveGateway id="merged" name="合并了吗" default="merged-deploy" />
+    <exclusiveGateway id="merged" name="合并了吗" default="merged-after" />
     <sequenceFlow id="merge-conflict" sourceRef="merged" targetRef="problem"><conditionExpression xsi:type="tFormalExpression">=merge.route = "conflict"</conditionExpression></sequenceFlow>
-    <sequenceFlow id="merged-deploy" sourceRef="merged" targetRef="deploying" />
+    <sequenceFlow id="merged-after" sourceRef="merged" targetRef="after-merged" />
 
-    <exclusiveGateway id="deploying" name="部署吗" default="not-deploying" />
-    <sequenceFlow id="to-deploy" sourceRef="deploying" targetRef="deploy"><conditionExpression xsi:type="tFormalExpression">=approval.deploy</conditionExpression></sequenceFlow>
-    <sequenceFlow id="not-deploying" sourceRef="deploying" targetRef="releasing" />
-    <serviceTask id="deploy" name="部署" coda:action="run-workflows" coda:status="部署中">
-      <extensionElements><coda:param name="kind" value="deploy" /><coda:param name="commit" value="=merge.commit" /></extensionElements>
-    </serviceTask>
-    <sequenceFlow id="deployed" sourceRef="deploy" targetRef="releasing" />
-    <exclusiveGateway id="releasing" name="发布吗" default="not-releasing" />
-    <sequenceFlow id="to-notes" sourceRef="releasing" targetRef="notes"><conditionExpression xsi:type="tFormalExpression">=approval.release</conditionExpression></sequenceFlow>
-    <sequenceFlow id="not-releasing" sourceRef="releasing" targetRef="done" />
-    <userTask id="notes" name="写更新说明" coda:status="发布：写更新说明" coda:completeLabel="提交并继续发布" coda:rejectLabel="无法提供更新说明" coda:noteLabel="更新说明">
-      <documentation>PR {{pr.url}} 已合并，接下来按用户的选择发布。
-
-请写这次发布的更新说明：Markdown，面向用户，写这次改了什么、用户会注意到什么变化，不写内部实现，不超过 2000 字。用 completed 答复，note 里只放更新说明本身。</documentation>
+    <!-- 合并后：运行批准卡上勾的流程（only），它们要的文字卡上没写的先交主 Agent 逐项写。 -->
+    <exclusiveGateway id="after-merged" name="运行合并后的流程吗" default="to-fill-choice" />
+    <sequenceFlow id="nothing-after" sourceRef="after-merged" targetRef="done"><conditionExpression xsi:type="tFormalExpression">=approval.only = "[]"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="to-fill-choice" sourceRef="after-merged" targetRef="fill-choice" />
+    <exclusiveGateway id="fill-choice" name="有没写的文字吗" default="fill-skip" />
+    <sequenceFlow id="fill-needed" sourceRef="fill-choice" targetRef="fill"><conditionExpression xsi:type="tFormalExpression">=approval.missing != ""</conditionExpression></sequenceFlow>
+    <sequenceFlow id="fill-skip" sourceRef="fill-choice" targetRef="merged-inputs" />
+    <userTask id="fill" name="填写合并后流程要的文字" coda:status="合并后：填写流程要的文字" coda:noteLabel="要填的文字">
+      <documentation>用户批准合并时勾的流程要一段文字，批准卡上没有写：
+{{split(approval.asks, "\n")[loopCounter]}}
+PR {{pr.url}} 已合并，合并提交 {{merge.commit}}。
+按这次合并进来的改动写这段面向用户的文字（Markdown，不写内部实现，不用审查意见），备注只放文字本身。</documentation>
+      <extensionElements><coda:choice id="done" name="已写好" primary="true" note="required" /></extensionElements>
+      <multiInstanceLoopCharacteristics isSequential="true" coda:inputCollection='=split(approval.missing, ",")' coda:inputElement="input" />
     </userTask>
-    <sequenceFlow id="noted" sourceRef="notes" targetRef="publishing" />
-    <scriptTask id="publishing" name="整理发布参数" coda:timeout="5" coda:checkout="false" scriptFormat="bash">
-      <extensionElements><coda:env name="AGENT" value="=notes" /><coda:output name="inputs" /></extensionElements>
-      <script>node "${CODA_PLUGIN_PATH}/scripts/notes.mjs"</script>
-    </scriptTask>
-    <sequenceFlow id="to-publish" sourceRef="publishing" targetRef="publish" />
-    <serviceTask id="publish" name="发布" coda:action="run-workflows" coda:status="发布中">
+    <sequenceFlow id="filled" sourceRef="fill" targetRef="merged-inputs" />
+    <scriptTask id="merged-inputs" name="整理合并后流程的参数" coda:timeout="5" coda:checkout="false" scriptFormat="bash">
       <extensionElements>
-        <coda:param name="kind" value="=approval.releaseKinds" />
-        <coda:param name="commit" value="=merge.commit" />
-        <coda:param name="inputs" value="=publishing.inputs" />
+        <coda:env name="INPUTS" value="=approval.inputs" /><coda:env name="MISSING" value="=approval.missing" />
+        <coda:env name="ASKS" value="=approval.asks" /><coda:env name="FILLS" value="=fill" />
+        <coda:output name="inputs" />
+      </extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/approval.mjs" inputs</script>
+    </scriptTask>
+    <sequenceFlow id="to-run-merged" sourceRef="merged-inputs" targetRef="run-merged" />
+    <serviceTask id="run-merged" name="合并后的流程" coda:action="run-workflows" coda:status="运行合并后的流程">
+      <extensionElements>
+        <coda:param name="hook" value="merged" /><coda:param name="only" value="=approval.only" />
+        <coda:param name="commit" value="=merge.commit" /><coda:param name="inputs" value="=merged-inputs.inputs" />
       </extensionElements>
     </serviceTask>
-    <sequenceFlow id="published" sourceRef="publish" targetRef="done" />
+    <sequenceFlow id="ran-merged" sourceRef="run-merged" targetRef="done" />
     <endEvent id="done" name="已合并" coda:notify="=approval.notify">
       <extensionElements><coda:output name="pr" value="=pr.url" /><coda:output name="commit" value="=merge.commit" /><coda:output name="notify" value="=approval.notify" /></extensionElements>
     </endEvent>
