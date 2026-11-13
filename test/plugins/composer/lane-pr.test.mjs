@@ -266,14 +266,12 @@ test('审查答复：退回和换人必须写备注，没填备用执行者不�
   assert.ok(f.state().feedback.endsWith('主 Agent 的备注：\n版本号会撞'));
   f.task('code', 'third'); f.run('revise');
   assert.equal(f.run('review').outputs.returns, '1', '合并泳道不算退回');
-  assert.equal(f.run('gate-passed', { RUNS: '[]' }).outputs.first, 'false', '同一会话继续，首次评审者不再评');
 
   assert.equal(f.decide('swap', '上一位绕远了', 'true'), 'swap');
   f.task('redo', 'redo'); f.run('swap', { EXECUTOR: JSON.stringify({ agent: 'backup', model: 'm2' }) });
   const call = f.calls('agent').at(-1);
   assert.deepEqual(call.args.slice(0, -2), ['--commit', laneHead, '--title', '输入框可以输入', '--agent', 'backup', '--model', 'm2', '--json']);
   for (const text of ['输入框没反应', '上一位绕远了', first.branch, '可以参考，也可以不用']) assert.ok(call.prompt.includes(text), text);
-  assert.equal(f.run('gate-passed', { RUNS: '[]' }).outputs.first, 'true', '换人后的第一次交付算第一次');
   assert.equal(f.run('review').outputs.returns, '1', '换人不算退回');
   assert.equal(f.decide('abandon'), 'abandon');
 });
@@ -288,7 +286,7 @@ test('审查前检查失败自动续作同一会话，连续三次交回主 Agen
   }
   assert.equal(f.run('review').outputs.feedback.split('项目检查未通过').length - 1, 3);
   const passed = f.run('gate-passed', { RUNS: JSON.stringify([{ workflow: 'test', state: 'succeeded', runId: 'check-1' }]) }).outputs;
-  assert.deepEqual(passed, { base: f.remote('lane/req-1'), task: f.env.TASK, first: 'true', checks: 'test: succeeded coda://workflow-runs/check-1' });
+  assert.deepEqual(passed, { base: f.remote('lane/req-1'), task: f.env.TASK, checks: 'test: succeeded coda://workflow-runs/check-1' });
   assert.equal(f.run('review').outputs.checks, passed.checks);
 });
 
@@ -321,11 +319,11 @@ test('泳道 PR 流程定义：输入、回路、审查卡答复、结束输出�
   const { process, sub, elements, nodes, values, params, route, next } = await definition();
   assert.equal(process.name, '泳道 PR'); assert.equal(process.kind, undefined, '不是一种开发流程实现');
   const inputs = Object.fromEntries(values(process).map(v => [v.name, v]));
-  assert.deepEqual(Object.keys(inputs), ['lane', 'title', 'task', 'sync', 'executor', 'executor2', 'reviewer', 'reviewer2', 'reviewerOnce']);
+  assert.deepEqual(Object.keys(inputs), ['lane', 'title', 'task', 'sync', 'executor', 'executor2', 'reviewer', 'reviewer2']);
   for (const name of ['lane', 'title', 'task']) assert.equal(inputs[name].required, true, name);
   assert.deepEqual([inputs.sync.type, inputs.sync.default], ['boolean', 'false']);
   assert.deepEqual([inputs.executor.type, inputs.executor.defaultFrom], ['agent', 'session.agent']);
-  for (const name of ['executor2', 'reviewer', 'reviewer2', 'reviewerOnce']) assert.deepEqual([inputs[name].type, inputs[name].default, inputs[name].required], ['agent', undefined, undefined], name);
+  for (const name of ['executor2', 'reviewer', 'reviewer2']) assert.deepEqual([inputs[name].type, inputs[name].default, inputs[name].required], ['agent', undefined, undefined], name);
   assert.deepEqual(Object.fromEntries(Object.entries(params('execute')).filter(([k]) => k !== 'EXECUTOR')), { LANE: '=inputs.lane', TITLE: '=inputs.title', TASK: '=inputs.task', SYNC: '=inputs.sync' });
   const session = { agent: 'codex', model: 'gpt-6' };
   assert.deepEqual(evaluate(params('execute').EXECUTOR.slice(1), { inputs: { executor: null }, github: { event: { coda: { session } } } }).value, session);
@@ -352,16 +350,16 @@ test('泳道 PR 流程定义：输入、回路、审查卡答复、结束输出�
     assert.ok(evaluate(expression, { inputs: { sync } }).value.includes(text));
   }
 
-  // 评审照现有写法：三个位置各一份，首次评审者只评每个执行会话的第一次交付。
+  // 评审：两个位置各一份，填了的评每一次交付；没有只评第一次交付的位置。
   assert.equal(sub.optional, true);
   assert.equal(nodes['review-call'].calledElement, 'review-commit');
   assert.deepEqual(params('review-call'), { base: '=gate-passed.base', head: '=gate.head', task: '=gate-passed.task', reviewer: '=slot.who', evidence: '=gate-passed.checks' });
-  const once = { agent: 'a3' };
-  for (const [first, reviewers, target] of [[true, { reviewerOnce: once }, 'reviews'], [false, { reviewerOnce: once }, 'report'], [false, { reviewer: { agent: 'a1' } }, 'reviews'], [true, {}, 'report']]) {
-    assert.equal(route('reviews-choice', { inputs: { reviewer: null, reviewer2: null, reviewerOnce: null, ...reviewers }, 'gate-passed': { first } }), target);
+  for (const [reviewers, target] of [[{ reviewer: { agent: 'a1' } }, 'reviews'], [{ reviewer2: { agent: 'a2' } }, 'reviews'], [{}, 'report']]) {
+    assert.equal(route('reviews-choice', { inputs: { reviewer: null, reviewer2: null, ...reviewers } }), target);
   }
-  const slots = evaluate(sub.loopCharacteristics.inputCollection.slice(1), { inputs: { reviewer: { agent: 'a1' }, reviewer2: null, reviewerOnce: once }, 'gate-passed': { first: false } }).value;
-  assert.deepEqual(slots.map(s => [s.slot, s.who]), [['reviewer', { agent: 'a1' }], ['reviewer2', null], ['reviewerOnce', null]]);
+  const slots = evaluate(sub.loopCharacteristics.inputCollection.slice(1), { inputs: { reviewer: { agent: 'a1' }, reviewer2: null } }).value;
+  assert.deepEqual(slots.map(s => [s.slot, s.who]), [['reviewer', { agent: 'a1' }], ['reviewer2', null]]);
+  assert.doesNotMatch(workflow, /reviewerOnce|首次评审|\.first\b/);
   for (const [title, expected] of [['补齐状态', '泳道 PR：补齐状态']]) assert.equal(evaluate(process.title.slice(1), { inputs: { title } }).value, expected);
   // 流程只定位置，不写 Ultra 或模型的知识。
   assert.doesNotMatch(workflow, /ultra|codex|claude|kimi|grok|opencode|cursor|gpt|sonnet|opus|haiku|gemini/i);

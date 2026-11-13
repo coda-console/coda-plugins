@@ -12,7 +12,7 @@ test('Ultra 名单给 spawn、泳道 PR 与整体评审者按任务选 Agent，�
   assert.match(full, /- agent=codex model=gpt-6\.1-sol effort=ultra mode=agent options=\{"service-tier":"priority"\}: 任何工作/);
   for (const text of [full, reminder(list)]) {
     assert.match(text, /Pick the Agent from this list by task \(pass agent\/model\/effort\/mode\/options\)/);
-    assert.match(text, /Coda spawn, lane-pr executor, executor2, reviewer, reviewer2, reviewerOnce, and the overall reviewer, reviewer2 of kickoff and develop/);
+    assert.match(text, /Coda spawn, lane-pr executor, executor2, reviewer, reviewer2, and the overall reviewer, reviewer2, reviewer3 of kickoff and develop/);
     assert.match(text, /Your own agent only if no entry fits/);
   }
   for (const text of [on([]), reminder([])]) {
@@ -98,7 +98,7 @@ test('短提醒含名单行和泳道 PR 范围；名单为空时写用自己的 
   assert.match(reminder([]), /Use your own agent and model for Coda spawn, lane-pr/);
   const text = reminder(list);
   assert.match(text, /- agent=codex model=gpt-6\.1-sol effort=ultra mode=agent options=\{"service-tier":"priority"\}: 任何工作/);
-  assert.match(text, /lane-pr executor, executor2, reviewer, reviewer2, reviewerOnce/);
+  assert.match(text, /lane-pr executor, executor2, reviewer, reviewer2, and the overall reviewer, reviewer2, reviewer3/);
 });
 
 test('压缩（sent 由大于 0 变 0）：这一轮结束给完整说明，再下一轮回到短；用户随后发消息不再返回第二份', async () => {

@@ -320,11 +320,11 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   const { process, elements, nodes, values, params, route, next } = await definition();
   assert.equal(process.name, '监督开发'); assert.equal(process.kind, 'develop'); assert.equal(process.concurrency, undefined);
   const inputs = Object.fromEntries(values(process).map(v => [v.name, v]));
-  assert.deepEqual(Object.keys(inputs), ['title', 'goal', 'devices', 'device', 'hold', 'delivery', 'reviewer', 'reviewer2', 'base']);
+  assert.deepEqual(Object.keys(inputs), ['title', 'goal', 'devices', 'device', 'hold', 'delivery', 'reviewer', 'reviewer2', 'reviewer3', 'base']);
   assert.deepEqual(Object.values(inputs).filter(v => v.required), [], '用户在会话里开启时什么都不必填');
   for (const name of ['title', 'goal', 'device', 'delivery', 'base']) assert.equal(inputs[name].default, '', name);
   assert.deepEqual([inputs.devices.type, inputs.devices.default], ['boolean', 'false']);
-  for (const name of ['reviewer', 'reviewer2']) assert.deepEqual([inputs[name].type, inputs[name].default, inputs[name].defaultFrom], ['agent', undefined, undefined], name);
+  for (const name of ['reviewer', 'reviewer2', 'reviewer3']) assert.deepEqual([inputs[name].type, inputs[name].default, inputs[name].defaultFrom], ['agent', undefined, undefined], name);
   assert.equal(nodes.start.eventDefinitions, undefined, '不订阅 PR 事件');
   assert.ok(manifest.files.includes('.coda/workflows')); assert.ok(manifest.files.includes('scripts'));
   for (const [title, expected] of [['', '监督开发'], ['输入框', '需求：输入框']]) assert.equal(evaluate(process.title.slice(2, -2), { inputs: { title } }).value, expected);
@@ -348,8 +348,16 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   assert.deepEqual(values(nodes.progress).map(v => [v.id, v.name, v.note]), [['submit', '提交验收', 'required'], ['pause', '暂停', 'required'], ['abandon', '放弃', undefined]]);
   for (const [value, target] of [['progress', 'progress'], ['pause', 'paused'], ['abandon', 'abandoned'], ['submit', 'pr']]) assert.equal(route('after-progress', { 'progress-result': { route: value } }), target);
   const doc = nodes.progress.documentation[0].text;
-  for (const text of ['workflow_run 发起一个泳道 PR（lane-pr）', 'lane="{{run.id}}"', 'title', 'task', 'executor、executor2、reviewer、reviewer2、reviewerOnce', '由你按这一块的性质逐个定',
+  for (const text of ['workflow_run 发起一个泳道 PR（lane-pr）', 'lane="{{run.id}}"', 'title', 'task', 'executor、executor2、reviewer、reviewer2（', '由你按这一块的性质逐个定',
     '可以同时发起', 'sync=true', '快进进泳道', 'mac-preview-install', 'kind=premerge', '{{lane.lane}}', '{{lane.goal}}']) assert.ok(doc.includes(text), text);
+  assert.ok(!doc.includes('reviewerOnce'), '泳道 PR 没有只评第一次交付的位置');
+  // 只填了第三整体评审者也算要整体评审：进行中的说明与批准卡都这样写。
+  const reviewed = (text, needle) => [...text.matchAll(/{{(.*?)}}/gs)].find(m => m[1].includes('inputs.reviewer3') && m[1].includes(needle))[1];
+  const nobody = { reviewer: null, reviewer2: null, reviewer3: null };
+  for (const [text, needle, said] of [[doc, '整体评审一次', '整体评审一次，'], [nodes.approve.documentation[0].text, '整条泳道已整体评审', '，整条泳道已整体评审']]) {
+    assert.equal(evaluate(reviewed(text, needle), { inputs: nobody }).value, '');
+    assert.equal(evaluate(reviewed(text, needle), { inputs: { ...nobody, reviewer3: { agent: 'c' } } }).value, said);
+  }
   const reasonLine = [...doc.matchAll(/{{(.*?)}}/gs)].find(m => m[1].includes('resume.reason'))[1];
   assert.equal(evaluate(reasonLine, { resume: { reason: '' } }).value, '');
   assert.equal(evaluate(reasonLine, { resume: { reason: '合并前检查未通过' } }).value, '回到进行中的原因：\n合并前检查未通过\n');
@@ -387,14 +395,14 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
     assert.equal(next(task), 'resume', `${step}失败回到进行中`);
   }
   // 整体评审：填了才评，对整条泳道评一次；发现交主 Agent。
-  for (const [reviewer, reviewer2, target] of [[null, null, 'acceptance-choice'], [{ agent: 'a' }, null, 'reviews'], [null, { agent: 'b' }, 'reviews']]) {
-    assert.equal(route('reviews-choice', { inputs: { reviewer, reviewer2 } }), target);
+  for (const [reviewer, reviewer2, reviewer3, target] of [[null, null, null, 'acceptance-choice'], [{ agent: 'a' }, null, null, 'reviews'], [null, { agent: 'b' }, null, 'reviews'], [null, null, { agent: 'c' }, 'reviews']]) {
+    assert.equal(route('reviews-choice', { inputs: { reviewer, reviewer2, reviewer3 } }), target);
   }
   assert.equal(nodes.reviews.optional, true);
   assert.equal(nodes['review-call'].calledElement, 'review-commit');
   assert.deepEqual(params('review-call'), { base: '=pr.base', head: '=pr.head', task: '=pr.task', reviewer: '=slot.who', evidence: '=github-checks.evidence' });
-  const slots = evaluate(nodes.reviews.loopCharacteristics.inputCollection.slice(1), { inputs: { reviewer: { agent: 'a' }, reviewer2: null } }).value;
-  assert.deepEqual(slots, [{ slot: 'reviewer', who: { agent: 'a' } }, { slot: 'reviewer2', who: null }]);
+  const slots = evaluate(nodes.reviews.loopCharacteristics.inputCollection.slice(1), { inputs: { reviewer: { agent: 'a' }, reviewer2: null, reviewer3: { agent: 'c' } } }).value;
+  assert.deepEqual(slots, [{ slot: 'reviewer', who: { agent: 'a' } }, { slot: 'reviewer2', who: null }, { slot: 'reviewer3', who: { agent: 'c' } }]);
   assert.equal(nodes['review-failed'].attachedToRef.id, 'review-call');
   assert.equal(next('reviews'), 'reviewed');
   assert.equal(params('reviewed').REVIEWS, '=reviews');

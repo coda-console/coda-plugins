@@ -14,7 +14,6 @@
       <coda:input name="executor2" label="备用执行者" type="agent" description="主 Agent 在审查卡上选「换备用执行者重做」时接手；不填不能换" />
       <coda:input name="reviewer" label="评审者" type="agent" description="项目检查通过后评每一次交付；不填不评" />
       <coda:input name="reviewer2" label="第二评审者" type="agent" description="与评审者同时评每一次交付；不填不评" />
-      <coda:input name="reviewerOnce" label="首次评审者" type="agent" description="只评每个执行会话第一次通过项目检查的那次交付；不填不评" />
     </extensionElements>
     <startEvent id="start" />
     <sequenceFlow id="start-execute" sourceRef="start" targetRef="execute" />
@@ -49,18 +48,18 @@
     <sequenceFlow id="gate-revise" sourceRef="gate-route" targetRef="revise" />
     <sequenceFlow id="checks-passed" sourceRef="checks" targetRef="gate-passed" />
     <scriptTask id="gate-passed" name="记录通过的检查" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
-      <extensionElements><coda:env name="RUNS" value="=checks.runs" /><coda:output name="base" /><coda:output name="task" /><coda:output name="first" /><coda:output name="checks" /></extensionElements>
+      <extensionElements><coda:env name="RUNS" value="=checks.runs" /><coda:output name="base" /><coda:output name="task" /><coda:output name="checks" /></extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/lane-pr.mjs" gate-passed</script>
     </scriptTask>
     <sequenceFlow id="gate-passed-review" sourceRef="gate-passed" targetRef="reviews-choice" />
-    <!-- 检查通过后、整理审查材料前，填了的评审者各评一次这次交付（首次评审者只评每个执行会话的第一次）；一个都不评时直接整理。
-         三个位置各一份、同时进行，每份都走到自己的结束事件：没轮到的跳过；评审没完成时 review-commit 照常结束（decision 为 INCOMPLETE），
+    <!-- 检查通过后、整理审查材料前，填了的评审者各评一次这次交付；一个都不评时直接整理。
+         两个位置各一份、同时进行，每份都走到自己的结束事件：没填的跳过；评审没完成时 review-commit 照常结束（decision 为 INCOMPLETE），
          不算这一步失败；出错边界只接调用本身没成，记下来照常结束。各份都结束才往下走，结果由「整理审查材料」带进审查卡，评审不挡流程。 -->
     <exclusiveGateway id="reviews-choice" name="是否有人评审" default="reviews-skip" />
-    <sequenceFlow id="reviews-needed" sourceRef="reviews-choice" targetRef="reviews"><conditionExpression xsi:type="tFormalExpression">=inputs.reviewer != null or inputs.reviewer2 != null or (inputs.reviewerOnce != null and gate-passed.first)</conditionExpression></sequenceFlow>
+    <sequenceFlow id="reviews-needed" sourceRef="reviews-choice" targetRef="reviews"><conditionExpression xsi:type="tFormalExpression">=inputs.reviewer != null or inputs.reviewer2 != null</conditionExpression></sequenceFlow>
     <sequenceFlow id="reviews-skip" sourceRef="reviews-choice" targetRef="report" />
     <subProcess id="reviews" name="评审" coda:optional="true">
-      <multiInstanceLoopCharacteristics coda:inputCollection='=[{slot: "reviewer", who: inputs.reviewer}, {slot: "reviewer2", who: inputs.reviewer2}, {slot: "reviewerOnce", who: if gate-passed.first then inputs.reviewerOnce else null}]' coda:inputElement="slot" />
+      <multiInstanceLoopCharacteristics coda:inputCollection='=[{slot: "reviewer", who: inputs.reviewer}, {slot: "reviewer2", who: inputs.reviewer2}]' coda:inputElement="slot" />
       <startEvent id="reviews-start" />
       <sequenceFlow id="reviews-enter" sourceRef="reviews-start" targetRef="review-choice" />
       <exclusiveGateway id="review-choice" name="这一位评不评" default="review-skip" />

@@ -14,6 +14,7 @@
       <coda:input name="hold" label="验收时占用" type="string" default="" description="监督开发的安装与设备验收期间另外占着的组，如项目的泳道专用后端；留空不占" />
       <coda:input name="reviewer" label="整体评审者" type="agent" description="监督开发里提交验收、检查通过后评一次整条泳道；不填不评" />
       <coda:input name="reviewer2" label="第二整体评审者" type="agent" description="监督开发里与整体评审者同时评整条泳道；不填不评" />
+      <coda:input name="reviewer3" label="第三整体评审者" type="agent" description="监督开发里与前两位同时评整条泳道；不填不评" />
       <coda:input name="branch" label="分支" type="branch" defaultFrom="session.branch" description="简易开发提交改动的分支，默认是会话所在的分支；开在别的目录时自己给，不给由简易开发从目标分支开一条" />
       <coda:input name="base" label="目标分支" type="string" default="" description="留空用仓库默认分支" />
     </extensionElements>
@@ -29,6 +30,7 @@ Agent 建议的做法：{{if inputs.way = "simple" then "简易开发" else "监
 监督开发的整体评审者（卡上不能改，要换人选「先别」并在附言里说明）：
 - 整体评审者：{{if inputs.reviewer = null then "未指定" else string join([inputs.reviewer.agent, inputs.reviewer.model, inputs.reviewer.effort][item != null], " · ")}}
 - 第二整体评审者：{{if inputs.reviewer2 = null then "未指定" else string join([inputs.reviewer2.agent, inputs.reviewer2.model, inputs.reviewer2.effort][item != null], " · ")}}
+- 第三整体评审者：{{if inputs.reviewer3 = null then "未指定" else string join([inputs.reviewer3.agent, inputs.reviewer3.model, inputs.reviewer3.effort][item != null], " · ")}}
 选「开工：简易开发」由发起会话的 Agent 自己把改动做完，流程推送、检查、评审一次后由你验收、批准合并；选「开工：监督开发」这个需求开一条泳道，主 Agent 把它分成几个泳道 PR 交给执行者、审查后合进泳道，做完后泳道开 PR、检查、整体评审、验收，再由你批准合并一次。每个泳道 PR 的执行者和评审者由主 Agent 定。选「先别」不开工，附言会随结束结果带上。</documentation>
       <extensionElements>
         <coda:choice id="simple" name="开工：简易开发"><coda:option id="devices" name="设备验收" default="=inputs.devices" /></coda:choice>
@@ -65,6 +67,7 @@ Agent 建议的做法：{{if inputs.way = "simple" then "简易开发" else "监
         <coda:param name="hold" value="=inputs.hold" />
         <coda:param name="reviewer" value="=inputs.reviewer" />
         <coda:param name="reviewer2" value="=inputs.reviewer2" />
+        <coda:param name="reviewer3" value="=inputs.reviewer3" />
         <coda:param name="base" value="=inputs.base" />
       </extensionElements>
     </callActivity>
