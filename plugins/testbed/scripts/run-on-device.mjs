@@ -26,7 +26,10 @@ if (device.platform === 'android') {
 }
 const child = spawn(spec.argv[0], spec.argv.slice(1), { cwd: spec.cwd, env, stdio: 'inherit' });
 child.on('error', error => { process.stderr.write(`执行不了：${error.message}\n`); done(127); });
-child.on('close', (code, signal) => done(code ?? 128 + (constants.signals[signal] ?? 0)));
+// A cancel stops the step's whole process group at once: the command can end, and its close be handled, before this
+// process has run its own handler for the same signal, and the cancel would end as a success. Deciding a moment later
+// lets that handler run first.
+child.on('close', (code, signal) => setTimeout(done, 100, code ?? 128 + (constants.signals[signal] ?? 0)));
 
 // Its status to host-sim, and the end of this step.
 function done(status) {
