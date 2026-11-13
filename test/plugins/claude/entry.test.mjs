@@ -4,9 +4,9 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { chmod, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -90,7 +90,8 @@ test('session/new lists the concrete models the SDK resolves its rows to, and se
   assert.deepEqual([option('mode').category, option('mode').currentValue], ['mode', 'default']);
   assert.equal(c.query.options.permissionMode, 'default');
   assert.equal(c.query.options.allowDangerouslySkipPermissions, true);
-  assert.deepEqual(c.query.options.mcpServers, { coda: { command: 'node', args: ['shim.mjs'] } });
+  assert.equal(c.query.options.mcpServers, undefined, 'the servers are not in the SDK\'s options, which would put them in the command line');
+  assert.deepEqual(JSON.parse(readFileSync(c.query.options.extraArgs['mcp-config'], 'utf8')), { mcpServers: { coda: { command: 'node', args: ['shim.mjs'] } } });
   assert.equal(c.query.options.sessionId, c.sessionId);
   assert.deepEqual(c.query.options.systemPrompt, { type: 'preset', preset: 'claude_code' });
   assert.deepEqual(c.query.options.settings, { crossSessionInbound: 'refuse' });
@@ -1498,6 +1499,67 @@ test('a client that has not said it takes them is told nothing of what is not re
   await pending;
   assert.deepEqual(reports(c), []);
   assert.deepEqual(c.said(), ['新的提示', '又一条', '说话', '新块里的话']);
+});
+
+// What the MCP servers' environment holds (Coda's token) stays out of the command line (plugins/claude/README.md「MCP 配置不进命令行」).
+const SERVERS = [{ name: 'coda', command: 'node', args: ['shim.mjs'], env: [{ name: 'CODA_TOKEN', value: 'placeholder-not-a-token' }] }];
+const mcpFile = query => query.options.extraArgs['mcp-config'];
+
+test('MCP servers go to Claude in a file only this user reads, by path: the same file in every query, deleted with the session', async t => {
+  const service = await modelService(t);
+  const c = await setup(t, { env: service.env });
+  await c.open({ mcpServers: SERVERS });
+  const first = c.query, file = mcpFile(first), dir = dirname(file);
+  assert.equal(first.options.mcpServers, undefined);
+  assert.deepEqual(Object.keys(first.options.extraArgs), ['mcp-config']);
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { mcpServers: { coda: { command: 'node', args: ['shim.mjs'], env: { CODA_TOKEN: 'placeholder-not-a-token' } } } });
+  assert.equal(statSync(file).mode & 0o777, 0o600);
+  assert.equal(statSync(dir).mode & 0o777, 0o700);
+  // A query of another model service (reroute) reads the same file.
+  await c.request('session/set_config_option', { sessionId: c.sessionId, configId: 'model', value: 'magpie/anthropic/fake/alpha' });
+  await c.prompt('hello');
+  const second = queries.get(c.sessionId);
+  assert.notEqual(second, first);
+  assert.equal(mcpFile(second), file);
+  assert.equal(second.options.mcpServers, undefined);
+  assert.equal(existsSync(file), true);
+  await c.session.close();
+  assert.equal(existsSync(dir), false);
+});
+
+test('the MCP servers\' file is deleted when the session ends of itself, and when it fails to start', async t => {
+  const service = await modelService(t);
+  const sdk = fixtureSdk(), make = sdk.query;
+  let started = 0, ended = 0;
+  sdk.query = options => { if (++started === 1) return make(options); throw new TypeError('cannot start'); };
+  const c = await setup(t, { env: service.env, sdk, onEnded: () => { ended++; } });
+  await c.open({ mcpServers: SERVERS });
+  const dir = dirname(mcpFile(c.query));
+  await c.request('session/set_config_option', { sessionId: c.sessionId, configId: 'model', value: 'magpie/anthropic/fake/alpha' });
+  await c.prompt('hello');
+  assert.equal(ended, 1);
+  assert.equal(existsSync(dir), false);
+  // The first query never says it is ready: the session is closed by the failed start.
+  const hung = fixtureSdk(); let kept;
+  hung.query = ({ options }) => { kept = options; return { closed: false, initializationResult: () => new Promise(() => {}), close() { this.closed = true; this.wake?.(); },
+    async *[Symbol.asyncIterator]() { await new Promise(resolve => { this.wake = resolve; }); } }; };
+  const d = await setup(t, { sdk: hung, initializationTimeoutMs: 50 });
+  await d.request('initialize', { protocolVersion: 1, clientCapabilities: {} });
+  const failed = await d.request('session/new', { cwd: d.cwd, mcpServers: SERVERS });
+  assert.equal(failed.error?.code, -32001);
+  assert.equal(existsSync(dirname(kept.extraArgs['mcp-config'])), false);
+});
+
+test('a session without MCP servers makes no directory and passes no argument', async t => {
+  const before = readdirSync(tmpdir()).filter(name => name.startsWith('coda-claude-mcp-')).length;
+  const c = await setup(t);
+  await c.open({ mcpServers: [{ name: 'remote', type: 'http', url: 'https://example.invalid', headers: [] }] });
+  assert.equal(c.query.options.extraArgs, undefined);
+  assert.equal(c.query.options.mcpServers, undefined);
+  const e = await setup(t);
+  await e.open();
+  assert.equal(e.query.options.extraArgs, undefined);
+  assert.equal(readdirSync(tmpdir()).filter(name => name.startsWith('coda-claude-mcp-')).length, before);
 });
 
 test('ACP 2 stable v1 preserves Coda request fields through the registered parsers', async t => {
