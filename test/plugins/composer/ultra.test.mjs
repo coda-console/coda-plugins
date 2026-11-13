@@ -12,11 +12,11 @@ test('Ultra 名单给 spawn、泳道 PR 与整体评审者按任务选 Agent，�
   assert.match(full, /- agent=codex model=gpt-6\.1-sol effort=ultra mode=agent options=\{"service-tier":"priority"\}: 任何工作/);
   for (const text of [full, reminder(list)]) {
     assert.match(text, /Pick the Agent from this list by task \(pass agent\/model\/effort\/mode\/options\)/);
-    assert.match(text, /Coda spawn, lane-pr executor, executor2, reviewer, reviewer2, and the overall reviewer, reviewer2, reviewer3 of kickoff and develop/);
+    assert.match(text, /Coda spawn, lane-pr executor, executor2, reviewer, reviewer2, and the overall reviewer, reviewer2, reviewer3 of develop/);
     assert.match(text, /Your own agent only if no entry fits/);
   }
   for (const text of [on([]), reminder([])]) {
-    assert.ok(text.endsWith('Use your own agent and model for Coda spawn, lane-pr and the overall reviewers of kickoff and develop.'));
+    assert.ok(text.endsWith('Use your own agent and model for Coda spawn, lane-pr and the overall reviewers of develop.'));
   }
 });
 
