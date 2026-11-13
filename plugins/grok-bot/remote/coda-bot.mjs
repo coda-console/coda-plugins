@@ -28,7 +28,7 @@ export const TOOLS = [
   proxy('read_tool_call', '读取会话的一次工具调用及完整结果。', { reference: string('工具条目引用或 ID'), offset: { type: 'integer' }, maxBytes: { type: 'integer' } }, ['reference']),
   proxy('workflow_status', '查看工作流运行的状态和失败证据。', { runId: string('工作流运行 ID 或 coda://workflow-runs/ 地址'), project: string('项目名称或 ID') }),
   proxy('workflow_list', '列出项目的工作流程。', { project: string('项目名称或 ID') }),
-  { name: 'coda_file_ticket', description: '为发现的问题提工单；同一问题始终使用相同 key，未结束的工单会复用。',
+  { name: 'coda_file_ticket', description: '为发现的问题提工单；同一问题始终使用相同 key，未结束的工单会复用，不要因没进展换 key 重提。提交后工单停在待处理，等主人决定，这不是失败。',
     inputSchema: schema({ workflow: { ...string('工单流程'), default: 'bot-ticket' }, project: string('目录 ID'),
       title: string('问题标题'), detail: string('现象、影响和处理要求'), evidence: string('证据'), key: string('同一问题的稳定指纹') },
     ['title', 'detail', 'key']), method: 'file_ticket' },
