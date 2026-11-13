@@ -33,6 +33,7 @@ else if (name === 'gh') {
   else if (args[0] === 'api') { if (process.env.ANSWER === 'fail') fail('HTTP 401: Bad credentials'); console.log(process.env.ANSWER); }
 } else {
   copyFileSync(args[args.indexOf('--prompt-file') + 1], process.env.FIXTURE + '/prompt.md');
+  if (process.env.AGENT_NOBASE) { console.log('没有启动 Agent：无法确定 Agent 步骤要检出的提交'); process.exit(1); }
   if (process.env.VERDICT === 'changes') console.log('看过了。\n` + '```' + String.raw`review\n{"findings":[{"severity":"P1","title":"阻塞","location":"a:1","detail":"d"}]}\n` + '```' + String.raw`');
   else console.log('看过了。\n` + '```' + String.raw`review\n{"findings":[]}\n` + '```' + String.raw`');
 }
@@ -137,6 +138,15 @@ test('a comment that cannot be made fails the review of someone else\'s pull req
   assert.deepEqual([own.code, own.out.count], [0, '3']);
 });
 
+test('a base commit the local repository lacks fails the review at once, saying so; Coda does not fetch it', t => {
+  const f = fixture(t);
+  const done = f.review({ PR: URL_7, VIEW: JSON.stringify({ number: 7, url: URL_7, title: 'T', body: 'B', headRefOid: f.head, headRefName: 'f', baseRefOid: f.base, baseRefName: 'main' }), AGENT_NOBASE: '1' });
+  assert.deepEqual([done.code, done.said], [1, `本机仓库还没有 base 提交 ${f.base}，稍后重试`]);
+  assert.equal(done.calls.filter(c => c.name === 'coda-agent').length, 1, 'not tried again');
+  assert.ok(done.calls.every(c => !(c.name === 'gh' && c.args[1] === 'comment')), 'no comment');
+  assert.match(done.summary, /本机仓库还没有 base 提交/);
+});
+
 test('the guidelines come from the base commit through the API; none there is none, any other failure fails', t => {
   const f = fixture(t);
   const event = JSON.stringify(f.event);
@@ -236,7 +246,7 @@ test('the review-only flow starts on the foreign events and by hand, reviews eac
   const limit = 3, at = count => ({ review: { count: count === null ? null : String(count) }, vars: { review: { maxReviews: limit } }, github: { event: { coda: { heard: true } } } });
   // A version arrives: it is reviewed, then the run waits for the next one; closed ends it.
   for (const start of ['new', 'pushed']) assert.deepEqual(g.walk(start, at(null)), ['whether', 'review'], start);
-  assert.deepEqual(g.walk('review', at(1)), ['waiting']);
+  assert.deepEqual(g.walk('review', at(1)), ['after-review', 'waiting']);
   assert.deepEqual(g.walk('waiting', at(1)), ['whether', 'review']);
   assert.deepEqual(g.walk('waiting', at(limit - 1)), ['whether', 'review']);
   assert.deepEqual(g.walk('closed-while-waiting', at(1)), ['closed-elsewhere']);
@@ -251,11 +261,12 @@ test('the review-only flow starts on the foreign events and by hand, reviews eac
   assert.deepEqual(g.walk('capped-close', at(limit)), ['closed-elsewhere']);
   assert.deepEqual([...g.reach('capped')].sort(), ['capped', 'capped-close', 'closed-elsewhere', 'skipped']);
   assert.ok(!g.reach('capped').has('review') && !g.reach('capped').has('whether'));
-  // By hand: one review, by its own step, then the run ends with its verdict; it does not wait.
-  assert.deepEqual(g.walk('asked'), ['review-by-hand']);
-  assert.deepEqual(g.walk('review-by-hand'), ['reviewed-by-hand']);
-  assert.equal(g.nodes['reviewed-by-hand'].status, '=review-by-hand.line');
-  assert.ok(!g.reach('asked').has('waiting') && !g.reach('asked').has('whether'));
+  // By hand: the same review step, then the run ends with its verdict; it does not wait.
+  const byHand = { github: { event: { coda: { heard: null } } } };
+  assert.deepEqual(g.walk('asked'), ['review']);
+  assert.deepEqual(g.walk('review', byHand), ['after-review', 'reviewed-by-hand']);
+  assert.equal(g.nodes['reviewed-by-hand'].status, '=review.line');
+  assert.deepEqual(g.walk('review', at(1)), ['after-review', 'waiting'], 'an event\'s run waits');
 });
 
 test('the review-only flow has no node that checks, asks, merges, deletes, deploys, publishes or calls another flow', async () => {
@@ -265,18 +276,13 @@ test('the review-only flow has no node that checks, asks, merges, deletes, deplo
   assert.deepEqual(Object.values(g.nodes).filter(n => !allowed.includes(n.$type)).map(n => `${n.$type} ${n.id}`), []);
   const scripts = Object.values(g.nodes).filter(n => n.$type === 'bpmn:ScriptTask');
   const run = 'node "${CODA_PLUGIN_PATH}/scripts/review.mjs" foreign';
-  assert.deepEqual(scripts.map(n => [n.id, n.script]), [['review', run], ['review-by-hand', run]]);
-  // The two steps are one: the same environment, the same outputs.
-  const parts = id => g.nodes[id].extensionElements.values.map(v => [v.$type, v.name, v.value]);
-  assert.deepEqual(parts('review-by-hand'), parts('review'));
+  assert.deepEqual(scripts.map(n => [n.id, n.script]), [['review', run]], 'by hand or by event, the one step');
   const source = workflow('pull-request-review');
-  // The engine follows an event-started run to the pull request's head and checks it out for a step unless told not to: that
-  // step is told, and runs in an empty directory; the script, run there, needs no repository (the tests above). A manual run's
-  // commit is our own default branch, which the engine fetches before it checks it out: its step is left to, and the base
-  // commit is in the local repository for coda-agent, which does not fetch.
-  const step = id => new RegExp(`<scriptTask id="${id}"[^>]*>`).exec(source)[0];
-  assert.match(step('review'), /coda:checkout="false"/);
-  assert.doesNotMatch(step('review-by-hand'), /coda:checkout/);
+  // Nothing is checked out, whichever way the run started: an event moves its commit to the pull request's head, and a manual
+  // run may be given any commit. Every script step is told so, and runs in an empty directory (the script needs no repository).
+  const steps = source.match(/<scriptTask [^>]*>/g);
+  assert.equal(steps.length, 1);
+  for (const step of steps) assert.match(step, /coda:checkout="false"/, step);
   assert.equal(/<process id="pull-request-review"[^>]*coda:autoRun="=([^"]+)"/.exec(source)?.[1], 'vars.review.autoRun');
   assert.doesNotMatch(source, /coda:action=|callActivity|userTask|run-workflows|workflow-kinds|merge\.mjs|delete-branch|publish-event|coda:notify|coda:wake/);
   // What it passes to the reviewer is the event's pull request, the explicit one and the settings: nothing it was not given.

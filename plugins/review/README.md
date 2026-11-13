@@ -130,9 +130,10 @@ GitHub 插件的 PR 观察看到这样的 PR，发 `foreign_pull_request.opened`
 
 每个新版本评一次、在这个 PR 上发一条评论，然后等下一个版本或 `foreign_pull_request.closed`（结束）。`review.maxReviews` 按整个 PR 算：这条运行已评审那么多次，之后的新版本都不评（照收、不出任何卡片），运行一直等到 `foreign_pull_request.closed` 才结束。自动评审同 PR 生命流程受 `review.autoRun` 约束。
 流程里只有评审一步（`scripts/review.mjs foreign`）和等待：没有 `run-workflows`、人工任务、合并、删分支、部署、发布，也不调用别的流程；评审结论不交给任何会话、不起任何任务。
-事件起的运行跟着 PR 的头走，默认检出会把别人的提交检出到步骤工作区，所以事件那一步 `review` 写 `coda:checkout="false"`（空目录），脚本不跑 git。
-手动发起的是另一个步骤 `review-by-hand`，跑同一个脚本、同一组环境变量，但开着检出：手动运行的提交是我们自己的默认分支，不是别人的提交，引擎检出前先 fetch，base 提交就在本机了；
-评审方的工作树由 `coda-agent --commit <base>` 建，它只在本机仓库里认提交、不会去取，事件起的运行靠引擎起运行前的 fetch 有 base，手动的靠这一步的检出。
+这条流程**不检出任何提交**，是硬规矩：评审步骤写 `coda:checkout="false"`（空目录），脚本不跑 git。事件会把运行的提交改成别人的 PR 头，手动发起也可以显式传 `commit`，
+默认检出就会把别人的提交检出到步骤工作区，所以事件起的和手动发起的走同一个步骤，一律不检出。
+评审方的工作树由 `coda-agent --commit <base>` 建，它只在本机仓库里认提交、不会去取：事件起的运行靠引擎起运行前的 fetch 有 base；
+**手动发起的要本机仓库已经有这个 base 提交**，没有就失败，写明「本机仓库还没有 base 提交 <sha>，稍后重试」（先在项目里 `git fetch`，或等下一次别的运行取到）。让 `coda-agent` 缺提交时自己去取是 Coda 那边的事。
 
 和 PR 生命流程的评审的差别（规则、提示词、发评论的代码共用）：
 

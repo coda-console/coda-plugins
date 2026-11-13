@@ -2,8 +2,8 @@
 <!-- PR 只评审（docs/plugins.md「内置插件：PR 生命流程」）：别人写的 PR（作者不是本机用于这个仓库的账号，GitHub 插件发 foreign_pull_request.*）不进 PR 生命流程，
      只在这里评审：每个新版本评一次，在这个 PR 上发一条评论，然后等下一个版本或 PR 关闭。
      这条流程里没有项目检查、合并前检查、修复任务、批准卡、合并、删分支、部署、发布，也不调用任何别的流程，评审结论不交给任何会话、不起任何任务。
-     不检出别人的提交：事件起的运行的评审步骤 coda:checkout="false"（它跟着 PR 的头走，默认检出会把别人的提交检出到步骤工作区），脚本不跑 git；
-     手动发起的那一步（review-by-hand，同一个脚本）开着检出：手动运行的提交是我们自己的默认分支，引擎先 fetch，base 提交在本机；
+     不检出任何提交，手动发起也一样：评审步骤 coda:checkout="false"（事件会把运行的提交改成别人的 PR 头，手动发起也可以显式传 commit，
+     默认检出会把别人的提交检出到步骤工作区），脚本不跑 git；
      评审方的工作树是 base 提交（我们自己的代码，由 coda-agent --commit 建）；改动取 GitHub 对事件里 base...head 两个提交的 diff 当数据；评审方至多自动档（scripts/review.mjs foreign）。
      评审次数受设置 review.maxReviews 约束，按整个 PR 数：到了上限，之后的新版本都不评，一直等到 PR 关闭才结束；手动发起的不数。
      自动评审受设置 review.autoRun 约束，和 PR 生命流程一样；也可以手动发起（传 GitHub 返回的 PR 地址），只评审一次。
@@ -27,7 +27,7 @@
     <startEvent id="asked" name="手动发起"><messageEventDefinition messageRef="dispatch" /></startEvent>
     <sequenceFlow id="new-open" sourceRef="new" targetRef="whether" />
     <sequenceFlow id="pushed-open" sourceRef="pushed" targetRef="whether" />
-    <sequenceFlow id="asked-review" sourceRef="asked" targetRef="review-by-hand" />
+    <sequenceFlow id="asked-review" sourceRef="asked" targetRef="review" />
 
     <exclusiveGateway id="whether" name="评审吗" default="go" />
     <sequenceFlow id="at-limit" sourceRef="whether" targetRef="capped">
@@ -63,31 +63,13 @@
       </extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/review.mjs" foreign</script>
     </scriptTask>
-    <sequenceFlow id="reviewed" sourceRef="review" targetRef="waiting" />
-
-    <!-- 手动发起：同一个脚本、同一组环境变量，只是开着检出。手动运行的提交是我们自己的默认分支，引擎检出前先 fetch，base 提交就在本机了
-         （coda-agent --commit 只在本机仓库里认提交，不会去取）；事件起的运行跟着别人的 PR 头走，所以上面那一步不检出。 -->
-    <scriptTask id="review-by-hand" name="交叉评审（手动）" coda:audience="user" coda:timeout="120" coda:status="评审中" scriptFormat="bash">
-      <extensionElements>
-        <coda:env name="REVIEWERS" value="=vars.review.reviewers" />
-        <coda:env name="BLOCKING" value="=vars.review.blockingSeverity" />
-        <coda:env name="PRINCIPLES" value="=vars.review.principles" />
-        <coda:env name="SESSION" value="=github.event.coda.session" />
-        <coda:env name="PULL_REQUEST" value="=github.event.pull_request" />
-        <coda:env name="PR" value="=inputs.pr" />
-        <coda:env name="FOCUS" value="=inputs.focus" />
-        <coda:env name="LAST" value="=review" />
-        <coda:output name="decision" />
-        <coda:output name="line" />
-        <coda:output name="report" />
-        <coda:output name="pr" />
-        <coda:output name="head" />
-        <coda:output name="count" />
-      </extensionElements>
-      <script>node "${CODA_PLUGIN_PATH}/scripts/review.mjs" foreign</script>
-    </scriptTask>
-    <sequenceFlow id="reviewed-by-hand-done" sourceRef="review-by-hand" targetRef="reviewed-by-hand" />
-    <endEvent id="reviewed-by-hand" coda:status="=review-by-hand.line" />
+    <sequenceFlow id="reviewed" sourceRef="review" targetRef="after-review" />
+    <exclusiveGateway id="after-review" name="手动发起的吗" default="to-waiting" />
+    <sequenceFlow id="by-hand" sourceRef="after-review" targetRef="reviewed-by-hand">
+      <conditionExpression xsi:type="tFormalExpression">=github.event.coda.heard = null</conditionExpression>
+    </sequenceFlow>
+    <sequenceFlow id="to-waiting" sourceRef="after-review" targetRef="waiting" />
+    <endEvent id="reviewed-by-hand" coda:status="=review.line" />
 
     <receiveTask id="waiting" name="等新提交" messageRef="synchronize" coda:status="等新提交" />
     <sequenceFlow id="waited" sourceRef="waiting" targetRef="whether" />

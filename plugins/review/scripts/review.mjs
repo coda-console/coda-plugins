@@ -129,12 +129,16 @@ const launch = foreign ? { agent: reviewer.agent, model: reviewer.model, effort:
 const args = ['--agent', launch.agent, ...['model', 'effort', 'mode'].flatMap(k => launch[k] ? [`--${k}`, launch[k]] : []),
   ...Object.entries(launch.options ?? {}).flatMap(([id, value]) => ['--option', `${id}=${value}`]), '--commit', foreign ? base : head, '--title', `交叉评审 ${named}`, '--prompt-file', promptFile];
 let result;
+// Somebody else's pull request is reviewed on its base commit, which Coda finds in the project's local repository and does not
+// fetch (its refusal: 无法确定 Agent 步骤要检出的提交); a run an event started has it fetched before it starts, one started by hand may not.
+const noBase = () => foreign && result.status !== 0 && (result.stdout ?? '').includes('无法确定 Agent 步骤要检出的提交');
 for (let attempt = 0; attempt <= 3; attempt++) {
   result = spawnSync('coda-agent', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
-  if (result.status !== 1 || attempt === 3) break;
+  if (result.status !== 1 || attempt === 3 || noBase()) break;
   summary(`评审模型调用失败，20 秒后进行第 ${attempt + 1}/3 次重试。`);
   await delay(20_000);
 }
+if (noBase()) fail(`本机仓库还没有 base 提交 ${base}，稍后重试`);
 const reply = (result.stdout ?? '').trim();
 
 // The findings the reviewer gave in its closing block. Every finding as asked, or none counts: one dropped for its form
