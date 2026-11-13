@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { chmod, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -1551,15 +1551,15 @@ test('the MCP servers\' file is deleted when the session ends of itself, and whe
 });
 
 test('a session without MCP servers makes no directory and passes no argument', async t => {
-  const before = readdirSync(tmpdir()).filter(name => name.startsWith('coda-claude-mcp-')).length;
   const c = await setup(t);
   await c.open({ mcpServers: [{ name: 'remote', type: 'http', url: 'https://example.invalid', headers: [] }] });
   assert.equal(c.query.options.extraArgs, undefined);
   assert.equal(c.query.options.mcpServers, undefined);
+  assert.equal(c.session.mcpDir, undefined);
   const e = await setup(t);
   await e.open();
   assert.equal(e.query.options.extraArgs, undefined);
-  assert.equal(readdirSync(tmpdir()).filter(name => name.startsWith('coda-claude-mcp-')).length, before);
+  assert.equal(e.session.mcpDir, undefined);
 });
 
 test('ACP 2 stable v1 preserves Coda request fields through the registered parsers', async t => {
