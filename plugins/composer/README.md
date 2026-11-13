@@ -24,7 +24,7 @@
 | --- | --- |
 | 交接 | `divert: true`，追加 `thread` 去向，带 `handoffSource`、可选 `agent`、`open: true` |
 | 子会话 | `divert: true`，追加 `thread` 去向，带 `handoffSource`、`parentThreadId`、`replyTo`、可选 `agent`、`open: true` |
-| Ultra | 首条、参数变化后的首条，以及创建新会话时返回完整开启说明；此后 `sent > 0 && sent % 10 === 0` 时返回仍在说明，其余返回 `null` |
+| Ultra | 创建新会话（交接、子会话、默认去向为新会话）时返回完整开启说明；已有会话里，仅当状态标记要给完整说明（首次、改名单、压缩后）时返回，其余返回 `null`；每轮提醒由 watch 给（见「Ultra 用法」） |
 | 循环 | `divert: true`，追加 `loop` 去向，带 `thread`、`every` |
 | `!` | `divert: true`，会话中追加 `message` 去向，带 `thread`、`run: true`；新任务中追加 `thread` 去向，带 `run: true`、`open: true` |
 
@@ -53,14 +53,26 @@ Ultra 只管派活：主 Agent 定任务、处理困难决策、审查别人交�
 Ultra 参数仍保存为 `subagents`，预设引用 `{ "from": "composer.templates", "by": "template" }`，选择预设只填入名单一次，之后可修改。
 派活时任务书要自成一体：目标与它服务的决定、已知或已排除的、范围与不要碰的、去哪里找、交回什么（先结论，再来源和实际证据）。
 结果不好时按原因处理：任务书漏了的，补写后发回同一会话；只有说法没有证据的，向同一会话要证据；任务书清楚但结果不对的，换名单里的另一项；会话中断或工具失败的，重试；不要自己悄悄重做。
-`spawn` 按任务从名单选执行者，传 `agent`、`model`、`effort`、`mode`、`options`；只有名单为空或没有条目覆盖这项工作时，才用当前会话的 Agent 和模型。
+名单管的范围：Coda `spawn`，泳道 PR（`lane-pr`）的 `executor`、`executor2`、`reviewer`、`reviewer2`、`reviewerOnce`，以及开工（`kickoff`）与监督开发（`develop`）的整体评审者 `reviewer`、`reviewer2`，都按任务从名单选，传 `agent`、`model`、`effort`、`mode`、`options`；只有名单为空或没有条目覆盖这项工作时，才用当前会话的 Agent 和模型。提示只讲从名单选谁，不讲开发流程怎么走。
 
-`ultra.mjs` 在首条、改参数后的首条、创建新会话时给完整说明，之后每收下 10 条再提醒一次。
+会话输入框开着 Ultra 时，这个会话的每一轮开头都带 Ultra 提醒，不论这一轮由用户消息、流程结果还是卡片叫醒。
+默认是短提醒：一两句要点（主 Agent 定任务、做决定、审查；不改代码的调研与核实交给 `spawn`；不用原生子 Agent；并发满了就等），加上名单和名单的范围；名单为空时写用自己的 Agent。
+下列情况改给完整说明，之后回到短提醒：Ultra 首次生效、名单改过、压缩（Ultra 的 `sent` 由大于 0 变 0）。
+输入框的变化只更新插件内存里的状态（名单、`sent`、是否要给完整说明），不 `tell`；提醒只在两个时点给：
+
+- 一轮结束（`coda.watch('threads')` 里 `turn` 由非空变 `null`）：要给完整说明的给完整说明，否则给短提醒，用 `coda.tell` 追加成下一轮开头读到的消息。
+- 用户在已有会话里发消息（`coda/submission@1` 参与者）：要给完整说明的随这条消息带出并清掉标记，否则返回 `null`。创建新会话时照旧返回完整说明（新会话还没有上一轮）。
+
+所以改名单在下一次发消息或下一轮结束时生效：空闲时连着改几次只给一份最新名单的完整说明；改了名单没发消息、下一轮又由流程叫醒时，这一轮读到的仍是上一轮结束时排好的短提醒，这一轮结束后才给新名单的完整说明。偶尔一轮里同时有短提醒和完整说明属正常。
+怎么认新会话：带着 Ultra 新建的会话，输入框与第一条在同一个事务里写成 `sent=1`，第一条已带完整说明，第一轮结束给短提醒；刚进入 Ultra 时 `sent=0`，给完整说明；插件重启后重放的输入框当作首次，给完整说明（重启后会多给一次）。
+新任务输入框（`new:…`）本身不提醒，它创建的会话照上面处理；未开 Ultra 的会话不提醒。状态只放内存。
+
+6.2.0 起 Ultra 每轮提醒（原来按用户发出的消息每 10 条一次，长程任务里会话多半被流程结果叫醒，计数不动，压缩后名单也丢了），提醒带名单，名单也管泳道 PR 的执行者与评审者、开工与监督开发的整体评审者。
 并发已满就等名额；spawn 不可用就报告阻塞，不改用原生子 Agent。用户的明确指令优先。
 5.0.0 起 Ultra 不再要求「所有代码修改都通过 develop」，也不再讲 develop、deliver 的用法；两个流程改为由你在会话里开启，或由 Agent 发起「开工」后你在开工卡上确认，develop 的执行者从 `agent`、`model`、`effort`、`mode` 四个参数换成一个 `executor`（Coda #2303）。需要支持流程参数 `agent` 类型（协议 3.5.0，Coda #2332）、`coda:wake` 与 `note="required"` 的 Coda，不能用于旧版。
 
-插件声明 `activationEvents: ["onStartupFinished"]`，重启后通过 `coda.watch('coda/composer@1', …)` 恢复观察。
-Ultra 消失且此前 `sent > 0` 时用 `coda.tell` 告知关闭一次，恢复通常的执行与委派规则；一条都没发过就不说。
+插件声明 `activationEvents: ["onStartupFinished"]`，重启后通过 `coda.watch('threads', …)` 与 `coda.watch('coda/composer@1', …)` 恢复观察。
+Ultra 消失时，若这个会话收到过说明（submission 投递过或 watch 告诉过；重启后不知道时按 `sent > 0` 判断）就用 `coda.tell` 告知关闭一次，恢复通常的执行与委派规则，此后不再提醒；没收到过就不说。
 名单连同说明超过 Coda 单次告诉 Agent 的 4000 字上限时，缩短名单再发。这些分工是提示词约束，不在运行时禁用工具。
 
 ## 开工

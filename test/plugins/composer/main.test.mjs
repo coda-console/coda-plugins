@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { activate } from '../../../plugins/composer/main.mjs';
-import { STILL_ON, on } from '../../../plugins/composer/ultra.mjs';
+import { on } from '../../../plugins/composer/ultra.mjs';
 
 const manifest = JSON.parse(readFileSync(new URL('../../../plugins/composer/package.json', import.meta.url), 'utf8'));
 function plugin() {
@@ -12,7 +12,7 @@ function plugin() {
     assert.equal(kind, 'coda/submission@1');
     assert.ok(!handlers.has(id), `模式 ${id} 不应重复注册`);
     handlers.set(id, handler);
-  } }, watch: async () => ({ dispose() {} }) });
+  } }, watch: async () => ({ dispose() {} }), tell: async () => {} });
   return handlers;
 }
 const chosen = { agent: 'codex', model: 'gpt-6.1-sol', effort: 'ultra', options: { 'service-tier': 'priority' } };
@@ -41,12 +41,10 @@ const cases = [
   ['新任务执行命令', 'shell', { thread: null }, { divert: true, targets: [{ kind: 'thread', run: true, open: true }] }],
   ...['PT5M', 'PT10M', 'PT15M', 'PT30M', 'PT1H', 'PT2H', 'PT3H', 'PT6H', 'PT12H', 'P1D']
     .map(every => [`循环 ${every}`, 'loop', { values: { every } }, { divert: true, targets: [{ kind: 'loop', thread: 'child', every }] }]),
-  ['Ultra 首条名单', 'ultra', { values: { subagents } }, { tell: [on(subagents)] }],
+  // 已有会话的提醒全部由 watch 给（见 ultra.test.mjs），这里的参与者只处理创建新会话。
+  ...[0, 1, 10, 11].map(sent => [`Ultra 已有会话 sent=${sent} 不补充`, 'ultra', { values: { subagents }, sent, changedSinceSent: sent === 0 }, null]),
   ['Ultra 新任务空名单', 'ultra', { thread: null }, { tell: [on([])] }],
-  ['Ultra 改参数', 'ultra', { values: { subagents }, sent: 11, changedSinceSent: true }, { tell: [on(subagents)] }],
-  ['Ultra 改参数优先于周期提醒', 'ultra', { values: { subagents }, sent: 10, changedSinceSent: true }, { tell: [on(subagents)] }],
-  ...[1, 2, 9, 11, 19, 21].map(sent => [`Ultra 已收下 ${sent} 条不提醒`, 'ultra', { sent }, null]),
-  ...[10, 20, 30].map(sent => [`Ultra 已收下 ${sent} 条提醒`, 'ultra', { sent }, { tell: [STILL_ON] }]),
+  ['Ultra 新任务带名单', 'ultra', { thread: null, values: { subagents } }, { tell: [on(subagents)] }],
 ];
 for (const [name, id, input, expected] of cases) test(name, async () => {
   const object = submission(id, input), before = structuredClone(object);
