@@ -2,8 +2,10 @@
 <!-- PR 只评审（docs/plugins.md「内置插件：PR 生命流程」）：别人写的 PR（作者不是本机用于这个仓库的账号，GitHub 插件发 foreign_pull_request.*）不进 PR 生命流程，
      只在这里评审：每个新版本评一次，在这个 PR 上发一条评论，然后等下一个版本或 PR 关闭。
      这条流程里没有项目检查、合并前检查、修复任务、批准卡、合并、删分支、部署、发布，也不调用任何别的流程，评审结论不交给任何会话、不起任何任务。
-     评审方的工作树是 base 提交（我们自己的代码），不检出别人的提交；改动取 gh pr diff 的文字当数据；评审方至多自动档（scripts/review.mjs foreign）。
-     评审次数受设置 review.maxReviews 约束：到了上限就不再评、运行结束；手动发起的不数。也可以手动发起（传 GitHub 返回的 PR 地址），只评审一次。
+     不检出别人的提交：评审步骤 coda:checkout="false"（事件起的运行跟着 PR 的头走，默认检出会把别人的提交检出到步骤工作区），脚本不跑 git；
+     评审方的工作树是 base 提交（我们自己的代码，由 coda-agent --commit 建）；改动取 GitHub 对事件里 base...head 两个提交的 diff 当数据；评审方至多自动档（scripts/review.mjs foreign）。
+     评审次数受设置 review.maxReviews 约束，按整个 PR 数：到了上限，之后的新版本都不评，一直等到 PR 关闭才结束；手动发起的不数。
+     自动评审受设置 review.autoRun 约束，和 PR 生命流程一样；也可以手动发起（传 GitHub 返回的 PR 地址），只评审一次。
      BPMN 2.0，由 Coda 执行（docs/workflows.md）。 -->
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="pull-request-review-definitions" targetNamespace="https://coda.pub/plugins/review">
@@ -11,7 +13,7 @@
   <message id="opened" name="foreign_pull_request.opened" />
   <message id="synchronize" name="foreign_pull_request.synchronize" />
   <message id="closed" name="foreign_pull_request.closed" />
-  <process id="pull-request-review" name="PR 只评审" isExecutable="true"
+  <process id="pull-request-review" name="PR 只评审" isExecutable="true" coda:autoRun="=vars.review.autoRun"
     coda:key='=lower case(if github.event.pull_request.html_url != null then github.event.pull_request.html_url
       else if matches(inputs.pr, "^https://github[.]com/[a-z0-9_.-]+/[a-z0-9_.-]+/pull/[1-9][0-9]*$", "i") then inputs.pr else null)'
     coda:title='PR {{if github.event.coda.heard = null then (if review.pr = null then inputs.pr else review.pr) else "#" + string(github.event.number) + " " + github.event.pull_request.title}}'>
@@ -27,13 +29,21 @@
     <sequenceFlow id="asked-review" sourceRef="asked" targetRef="review" />
 
     <exclusiveGateway id="whether" name="评审吗" default="go" />
-    <sequenceFlow id="at-limit" sourceRef="whether" targetRef="limit-reached">
+    <sequenceFlow id="at-limit" sourceRef="whether" targetRef="capped">
       <conditionExpression xsi:type="tFormalExpression">=number(review.count) >= vars.review.maxReviews</conditionExpression>
     </sequenceFlow>
     <sequenceFlow id="go" sourceRef="whether" targetRef="review" />
-    <endEvent id="limit-reached" coda:status="已评审 {{review.count}} 次，到了上限（{{vars.review.maxReviews}} 次），不再评审" />
 
-    <scriptTask id="review" name="交叉评审" coda:audience="user" coda:timeout="120" coda:status="评审中" scriptFormat="bash">
+    <!-- 到了上限：新版本照收（不评），一直等到 PR 关闭。 -->
+    <eventBasedGateway id="capped" name="等 PR 关闭" coda:status="已评审 {{review.count}} 次，到了上限（{{vars.review.maxReviews}} 次），不再评审：等 PR 关闭" />
+    <sequenceFlow id="capped-pushed" sourceRef="capped" targetRef="skipped" />
+    <intermediateCatchEvent id="skipped" name="新提交，不评"><messageEventDefinition messageRef="synchronize" /></intermediateCatchEvent>
+    <sequenceFlow id="skipped-back" sourceRef="skipped" targetRef="capped" />
+    <sequenceFlow id="capped-closed" sourceRef="capped" targetRef="capped-close" />
+    <intermediateCatchEvent id="capped-close" name="PR 关闭"><messageEventDefinition messageRef="closed" /></intermediateCatchEvent>
+    <sequenceFlow id="capped-ended" sourceRef="capped-close" targetRef="closed-elsewhere" />
+
+    <scriptTask id="review" name="交叉评审" coda:audience="user" coda:timeout="120" coda:checkout="false" coda:status="评审中" scriptFormat="bash">
       <extensionElements>
         <coda:env name="REVIEWERS" value="=vars.review.reviewers" />
         <coda:env name="BLOCKING" value="=vars.review.blockingSeverity" />
