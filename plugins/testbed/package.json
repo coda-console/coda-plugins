@@ -4,7 +4,7 @@
   "displayName": "测试机",
   "description": "排队使用 iPhone、iPad 与安卓测试机",
   "icon": { "symbol": "iphone", "color": "gray" },
-  "version": "1.9.0",
+  "version": "1.9.1",
   "categories": [
     "机器与资源"
   ],
