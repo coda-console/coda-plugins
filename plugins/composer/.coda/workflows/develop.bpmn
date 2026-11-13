@@ -220,7 +220,7 @@
 PR：{{pr.url}}
 泳道 head：{{pr.head}}
 整体评审者对整条泳道（{{lane.base}}…泳道 head）的发现：
-{{reviews.reviews}}
+{{reviewed.reviews}}
 发现是否成立由你判断。要先修的选「回到进行中」，提泳道 PR 修好后再提交验收；不必修的选「继续验收」。</documentation>
       <extensionElements>
         <coda:choice id="continue" name="继续验收" primary="true" />

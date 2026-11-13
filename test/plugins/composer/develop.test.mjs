@@ -400,6 +400,12 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   assert.equal(params('reviewed').REVIEWS, '=reviews');
   assert.equal(nodes.review.assignee, undefined);
   assert.deepEqual(values(nodes.review).map(v => [v.id, v.name]), [['continue', '继续验收'], ['progress', '回到进行中']]);
+  // 卡上展开的是「整理整体评审」的输出，不是多实例子流程 reviews 的结果列表。
+  const card = nodes.review.documentation[0].text, found = '评审者（a）：评审要求修改\n- [P1] 标题';
+  const shown = card.replace(/\{\{([\s\S]*?)\}\}/g, (_, expression) => evaluate(expression, {
+    lane: { title: '需求', base: 'main' }, pr: { url: 'https://github.com/o/r/pull/1', head: 'h1' }, reviews: [null, null], reviewed: { reviews: found },
+  }).value ?? '');
+  assert.ok(shown.includes(`的发现：\n${found}\n`), shown);
   assert.equal(route('after-review', { 'review-result': { route: 'progress' } }), 'resume');
   assert.equal(route('after-review', { 'review-result': { route: 'continue' } }), 'acceptance-choice');
   for (const [devices, delivery, target] of [[true, '', 'acceptance'], [false, '', 'delivery-choice'], [true, 'deliver-1', 'delivery-choice']]) {
