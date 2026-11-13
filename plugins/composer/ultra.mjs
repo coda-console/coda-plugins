@@ -1,7 +1,7 @@
 // Ultra 的开启、持续与关闭提示（见 README.md）：只管派活。开发流程由用户在会话里开启，或经「开工」发起后由用户在开工卡上确认；规则写在流程的任务里，不在这里。
 // 委派规则改编自 oh-my-claudecode 的 docs/CLAUDE.md，见 THIRD_PARTY_NOTICES.md。
 
-// 名单供只读调研的 spawn 选执行者。
+// 名单供 spawn、泳道 PR 的执行者与评审者、开工与监督开发的整体评审者选 Agent。
 function line({ who, when }) {
   const options = who.options && Object.keys(who.options).length ? `options=${JSON.stringify(who.options)}` : null;
   const fields = [`agent=${who.agent}`, who.model && `model=${who.model}`, who.effort && `effort=${who.effort}`, who.mode && `mode=${who.mode}`, options];
@@ -22,13 +22,19 @@ export function on(subagents) {
       'A session that died or a tool that failed: retry. Do not quietly redo the work yourself.',
     'Do not use native subagents unless explicitly requested. If concurrency is full, wait; if spawn is unavailable, report the blocker ' +
       'instead of switching to another delegation channel.',
-    subagents.length
-      ? `Choose executors from this list by task, passing agent/model/effort/mode/options to spawn. Use your own agent and model only when no entry covers the work:\n${subagents.map(line).join('\n')}`
-      : 'Use your own agent and model for Coda spawn.',
+    roster(subagents),
   ].join('\n\n');
 }
-export const STILL_ON = 'Ultra is still on. Keep framing, difficult decisions, dispatch and review in this session. ' +
-  'Dispatch research, investigation and verification without code changes to Coda spawn, choosing the executor from the list by task and passing agent/model/effort/mode/options. ' +
-  'Wait when concurrency is full; report an unavailable spawn. No native subagents unless explicitly requested.';
+// 每轮开头的短提醒：要点加名单；完整说明只在首次生效、改名单和压缩后给。
+export function reminder(subagents) {
+  return 'Ultra is on: you frame tasks, decide and review; research and verification without code changes go to Coda `spawn`. ' +
+    `No native subagents; if concurrency is full, wait.\n\n${roster(subagents)}`;
+}
+function roster(subagents) {
+  return subagents.length
+    ? 'Pick the Agent from this list by task (pass agent/model/effort/mode/options) for Coda spawn, lane-pr executor, executor2, reviewer, reviewer2, reviewerOnce, ' +
+      `and the overall reviewer, reviewer2 of kickoff and develop. Your own agent only if no entry fits:\n${subagents.map(line).join('\n')}`
+    : 'Use your own agent and model for Coda spawn, lane-pr and the overall reviewers of kickoff and develop.';
+}
 export const OFF = 'The user turned off Ultra: its delegation-first role no longer applies; follow the usual execution and delegation instructions. ' +
   'Start Coda sessions only when the user, AGENTS.md or a skill asks for it.';
