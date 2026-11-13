@@ -2,14 +2,14 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { checkPlugin } from '../../../check/index.mjs';
-import { OFF } from '../../../plugins/composer/ultra.mjs';
+import { OFF, on } from '../../../plugins/composer/ultra.mjs';
 
 test('composer 清单通过 plugin-check（依赖 Coda 第 2 步经 sync-plugin-check 同步）', async () => {
   const { report } = await checkPlugin(fileURLToPath(new URL('../../../plugins/composer', import.meta.url)), { manifestOnly: true });
   assert.deepEqual(report.failures, []);
 });
 
-test('真实清单被识别为启动激活：恢复已有 Ultra 后直接退出，不需新发送', async () => {
+test('真实清单被识别为启动激活：恢复已有 Ultra 后补一次完整说明，退出时告知关闭', async () => {
   const dir = new URL('../../../plugins/composer/', import.meta.url);
   const { report, plugin: checked } = await checkPlugin(fileURLToPath(dir), { manifestOnly: true });
   assert.deepEqual(report.failures, []);
@@ -25,6 +25,7 @@ test('真实清单被识别为启动激活：恢复已有 Ultra 后直接退出�
   if (plugin.startup) await (await import(new URL(plugin.main, dir))).activate({
     protocols: { register() {} },
     watch: async (kind, handler) => {
+      if (kind === 'threads') return { dispose() {} };
       assert.equal(kind, 'coda/composer@1');
       changed = handler;
       await handler({ type: 'ADDED', id: restored.id, object: restored });
@@ -32,7 +33,7 @@ test('真实清单被识别为启动激活：恢复已有 Ultra 后直接退出�
     },
     tell: async (thread, text) => { told.push([thread, text]); },
   });
-  assert.deepEqual(told, [], '恢复仍开启的输入框不能误发关闭');
+  assert.deepEqual(told.splice(0), [['restored', on([])]], '恢复仍开启的输入框补一次完整说明，不误发关闭');
   await changed({ type: 'MODIFIED', id: restored.id, object: { ...restored, revision: 6,
     spec: { thread: restored.id, modes: [] }, status: { modes: [] } } });
   assert.deepEqual(told, [['restored', OFF]]);
