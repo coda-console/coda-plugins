@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { requireCondition as check, ContractError } from '../../domain/errors.mjs';
 import { isDuration } from '../../domain/duration.mjs';
 import { AGENT_ID } from '../../domain/values.mjs';
+import { THREAD_ENV, TOKEN_ENV } from '../../domain/session-env.mjs';
 import { iconFiles } from './plugin-icons.mjs';
 import { checkCatalog, extensionsFor } from './plugin-extensions.mjs';
 import { contributionProblem, manifestProblem, TYPES } from '@coda-console/protocol/validate';
@@ -283,7 +284,9 @@ export function pluginEnv({ catalog, installed, id, stateDir = () => null, setti
     ...(arbiter ? { CODA_ARBITER: '1' } : {}) };
 }
 // What such a process inherits, cleared of what Coda gives it as a plugin's: it never takes another plugin's for its own.
-export const cleared = base => Object.fromEntries(Object.entries(base).filter(([name]) => !PLUGIN_VARIABLES.includes(name)));
+// Nor the session it was started from (THREAD_ENV) or that session's or the step's token (TOKEN_ENV), which are only ever the
+// process's own.
+export const cleared = base => Object.fromEntries(Object.entries(base).filter(([name]) => !PLUGIN_VARIABLES.includes(name) && name !== THREAD_ENV && name !== TOKEN_ENV));
 
 // ---- Values ----
 // `coda-agent-match`: `*` for every session, else agent, model and effort from the left, joined by `|`; each level is
