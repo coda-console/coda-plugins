@@ -175,13 +175,15 @@ const list = items => items.map(f => `- **[${f.severity}]** ${f.title}${f.locati
 const report = [severe.length ? `### 要求修改（${SEVERITIES[blocking]} 及以上）\n\n${list(severe)}` : '', light.length ? `### 低优问题\n\n${list(light)}` : '']
   .filter(Boolean).join('\n\n') || '没有发现问题。';
 
-// On the pull request, a comment; its failing is noted, never failing the review.
+// On the pull request, a comment; its failing is noted, and fails only the review of somebody else's (below).
 const commented = pr && spawnSync('gh', ['pr', 'comment', pr.html_url, '--body', [`### Coda 交叉评审：${verdict}`,
   `评审方 ${who}，提交 ${head.slice(0, 12)}，阻塞级别 ${SEVERITIES[blocking]} 及以上。`, report].join('\n\n')], { encoding: 'utf8' });
 const note = !commented || commented.status === 0 ? '' : `没能在 PR 上留评论：${(commented.stderr || '').trim().split('\n').at(-1) || '未知原因'}`;
 summary([`## 交叉评审 ${named}：${verdict}`,
   `评审方：${who}（${picked ? '发起时选的' : `评审组合「${row === '*' ? '其他作者' : row.split('|').join(' · ')}」`}）；提交 ${head.slice(0, 12)}；阻塞级别 ${SEVERITIES[blocking]} 及以上。`,
   report, note, prose].filter(Boolean).join('\n\n'));
+// Somebody else's pull request has the comment as its only product: not made, the step fails and counts nothing.
+if (foreign && note) { console.error(note); process.exit(1); }
 
 // For the process: the verdict, what blocks, the rules it was judged by, the change by top-level directory for the
 // approval card, the commit and the base branch reviewed (another base is another change); the reviews this run

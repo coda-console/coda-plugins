@@ -28,6 +28,7 @@ if (name === 'git') { const done = require('node:child_process').spawnSync('/usr
 else if (name === 'gh') {
   if (path?.includes('/compare/')) { if (process.env.DIFF_FAIL) fail('HTTP 404: Not Found'); process.stdout.write(path === process.env.COMPARE ? process.env.DIFF : 'DIFF OF ANOTHER VERSION'); }
   else if (path?.includes('/contents/')) { if (process.env.GUIDE_FAIL) fail(process.env.GUIDE_FAIL); process.stdout.write(process.env.GUIDELINES ?? ''); }
+  else if (args[0] === 'pr' && args[1] === 'comment' && process.env.COMMENT_FAIL) fail(process.env.COMMENT_FAIL);
   else if (args[0] === 'pr' && args[1] === 'view') console.log(process.env.VIEW);
   else if (args[0] === 'api') { if (process.env.ANSWER === 'fail') fail('HTTP 401: Bad credentials'); console.log(process.env.ANSWER); }
 } else {
@@ -107,6 +108,18 @@ test('the change reviewed is the one of the event\'s two commits, whatever the a
   // A compare of other commits would not do: it is another version's diff.
   const other = f.review({ PULL_REQUEST: JSON.stringify(f.event), DIFF, COMPARE: `repos/acme/app/compare/${f.base}...${newer}` });
   assert.ok(other.code === 0 && f.prompt().includes('ANOTHER VERSION'), 'the fake tells the versions apart');
+});
+
+test('a comment that cannot be made fails the review of someone else\'s pull request and counts nothing; the lifecycle\'s review goes on', t => {
+  const f = fixture(t);
+  const env = { PULL_REQUEST: JSON.stringify(f.event), LAST: JSON.stringify({ count: 2 }), COMMENT_FAIL: 'HTTP 403: Resource not accessible by integration' };
+  const done = f.review(env);
+  assert.deepEqual([done.code, done.said, done.out], [1, '没能在 PR 上留评论：HTTP 403: Resource not accessible by integration', {}]);
+  assert.match(done.summary, /没能在 PR 上留评论/);
+  assert.deepEqual(done.calls.map(c => c.name), ['gh', 'gh', 'coda-agent', 'gh'], 'it was reviewed, then the comment was tried');
+  assert.equal(f.review({ ...env, COMMENT_FAIL: '' }).out.count, '3', 'made, it counts');
+  const own = f.run([scripts('review')], { ...env, REVIEWERS: JSON.stringify({ '*': f.row }), SESSION: 'null' });
+  assert.deepEqual([own.code, own.out.count], [0, '3']);
 });
 
 test('the guidelines come from the base commit through the API; none there is none, any other failure fails', t => {
