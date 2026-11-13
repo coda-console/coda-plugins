@@ -3,7 +3,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { waitForGitHubChecks } from './github-checks.mjs';
-import { checksText, gh, git, mergedCommit, mergePr, openPr, output, reviewsText } from './shared.mjs';
+import { checksText, gh, git, mergedCommit, mergePr, openPr, output, outputFilled, outputPicked, reviewsText } from './shared.mjs';
 
 const env = process.env, action = process.argv[2];
 const statePath = join(env.CODA_ARTIFACTS, 'develop.json');
@@ -157,26 +157,22 @@ switch (action) {
     output('route', missing ? 'delivery' : choice === 'revise' ? 'progress' : 'merge');
     break;
   }
+  // 批准卡：「暂不合并」带着原因回到进行中；「合并」记下勾了哪些合并后的流程（shared.mjs outputPicked）。
   case 'approval': {
-    const { choice, note = '', options = {} } = JSON.parse(env.APPROVAL);
-    if (choice === 'stop') back(`用户选了暂不合并：\n${note}`);
-    const missing = choice === 'merge' && (options.preview || options.release) && !note.trim();
-    output('route', missing ? 'notes' : choice === 'stop' ? 'stop' : 'merge');
+    const answer = JSON.parse(env.APPROVAL);
+    if (answer.choice === 'stop') back(`用户选了暂不合并：\n${answer.note ?? ''}`);
+    output('route', answer.choice === 'stop' ? 'stop' : 'merge');
+    outputPicked(answer, env.JOINERS);
     break;
   }
-  case 'notes': {
-    const { note = '' } = JSON.parse(env.NOTES);
-    const missing = !note.trim();
-    output('route', missing ? 'notes' : 'ready');
-    output('feedback', missing ? '请在备注填写面向用户的发布说明。' : '');
-    output('notes', note);
+  case 'inputs':
+    outputFilled();
     break;
-  }
   // 用合并提交进目标分支：目标分支的 first-parent 历史里一个需求一个提交，泳道里每个泳道 PR 一个提交。
   case 'merge': {
     const commit = mergedCommit(state.pr, state.head) ?? mergePr(state.pr, state.head, 'merge');
     if (!commit) {
-      back(`PR ${state.pr} 与目标分支 ${state.base} 存在合并冲突，泳道 head ${state.head}。\n请发起 sync=true 的泳道 PR，让执行者把最新目标分支合进来、解冲突、顺延撞号的迁移版本；合进泳道后再提交验收，重新跑检查、批准合并及部署、发布选项。`);
+      back(`PR ${state.pr} 与目标分支 ${state.base} 存在合并冲突，泳道 head ${state.head}。\n请发起 sync=true 的泳道 PR，让执行者把最新目标分支合进来、解冲突、顺延撞号的迁移版本；合进泳道后再提交验收，重新跑检查、批准合并及合并后的流程。`);
       output('route', 'conflict');
       break;
     }

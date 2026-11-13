@@ -1,11 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- 把内置插件的新版本同步进 Coda。属于部署类：合并时勾选「部署」就在合并提交上运行，也可单独发起（默认分支的最新提交）；只运行已合并的提交。
+<!-- 把内置插件的新版本同步进 Coda。加入挂点 merged（合并卡上的「部署」）：合并时勾选就在合并提交上运行，也可单独发起（默认分支的最新提交）；只运行已合并的提交。
      先等这个提交的包都在 npm 上（发布由 GitHub 的 publish.yml 做，这里只等它跑完、registry 读得到），再把 Coda 用到的包升到这些版本，
      推到分支 sync/coda-plugins，没有开着的 PR 就开一个。Coda 或开着的同步 PR 已是这些版本或更新时什么都不推。
      PR 登记在负责这次运行的会话上，由 Coda 那边的 PR 流程跟进。做法见 scripts/sync-coda.mjs。 -->
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="sync-coda-definitions" targetNamespace="https://coda.pub/workflows/coda-plugins">
   <process id="sync-coda" name="同步内置插件到 Coda" isExecutable="true" coda:concurrency="sync-coda" coda:deploy="true" coda:kind="deploy">
+    <extensionElements>
+      <coda:join hook="merged" name="部署" detail="等 npm 发布后，把内置插件的新版本升进 Coda，开同步 PR" order="10" />
+    </extensionElements>
     <startEvent id="start" />
     <sequenceFlow id="to-published" sourceRef="start" targetRef="published" />
     <scriptTask id="published" name="等 npm 发布" coda:timeout="50" scriptFormat="bash">
