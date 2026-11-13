@@ -325,7 +325,7 @@ export function contributions(plugin, catalog = new Map()) {
     // directories it puts on their PATH.
     ...(plugin.environment?.length ? { environment: plugin.environment.map(({ name, value }) => ({ name, value })) } : {}),
     ...(plugin.path?.length ? { path: plugin.path } : {}),
-    ...(plugin.endpoints?.length ? { endpoints: plugin.endpoints.map(e => ({ id: e.id, command: e.command, ...(e.checks ? { checks: e.checks } : {}) })) } : {}),
+    ...(plugin.endpoints?.length ? { endpoints: plugin.endpoints.map(e => ({ id: e.id, command: e.command })) } : {}),
     // Its module the plugin host runs (docs/plugins.md「插件宿主」): code of its own in Coda's Node on this machine.
     ...(plugin.main ? { main: plugin.main } : {}),
     // The pages it opens in the clients, by name, with where they stay and their icon there: they run in the client's
