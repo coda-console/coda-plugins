@@ -1,9 +1,9 @@
 {
-  "commit": "53af4bd374eb9e899b29dde8311adbb0543743fe",
+  "commit": "12ac88ab814c4a9ca75f019e4269516fcc8f8a27",
   "packages": {
     "@0dep/piso": "5.2.0",
     "@agentclientprotocol/sdk": "2.6.0",
-    "@coda-console/protocol": "5.16.0",
+    "@coda-console/protocol": "5.17.0",
     "ajv": "8.20.0",
     "yaml": "2.9.1"
   },
