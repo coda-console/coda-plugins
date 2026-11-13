@@ -204,7 +204,8 @@ test('需求流程回路、人工任务、结果通知和部署发布顺序契�
   assert.deepEqual([nodes.brief.wake, nodes.brief.assignee], ['false', undefined]);
   assert.deepEqual(values(nodes.brief).map(v => [v.id, v.note]), [['start', 'required']]);
   // 成员怎样发起写在任务里：Ultra 不再讲开发流程。
-  for (const text of ['workflow_run 发起 develop', 'delivery="{{run.id}}"', 'devices=false', 'project', '确认达标', '待交付']) assert.ok(nodes.brief.documentation[0].text.includes(text), text);
+  for (const text of ['workflow_run 发起 develop', '传 title、goal', 'delivery="{{run.id}}"', 'devices=false', 'project', '需求进行中', '泳道 PR', '确认达标', '待交付']) assert.ok(nodes.brief.documentation[0].text.includes(text), text);
+  assert.doesNotMatch(workflow, /task（|executor/, '成员是需求运行，执行者由各泳道 PR 定');
   for (const [field, written] of [['TITLE', 'title'], ['GOAL', 'goal']]) {
     const expression = params('init')[field].slice(1);
     assert.equal(evaluate(expression, { inputs: { goal: '', title: '' }, 'brief-result': { [written]: '写的' } }).value, '写的');

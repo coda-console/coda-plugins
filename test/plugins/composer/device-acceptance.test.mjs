@@ -51,10 +51,10 @@ for (const name of ['develop', 'deliver']) {
     assert.equal(route('preview-result'), 'after-preview');
     assert.equal(route('device'), 'device-result');
     assert.equal(route('device-result'), 'after-device');
-    const back = name === 'develop' ? 'review' : 'confirm';
+    const back = name === 'develop' ? 'progress' : 'confirm';
     for (const [gateway, result, outcomes] of [
       ['after-preview', 'preview-result', { preview: 'preview', [back]: 'acceptance-return', device: 'device' }],
-      ['after-device', 'device-result', { device: 'device', [back]: 'acceptance-return', [name === 'develop' ? 'pr' : 'report']: 'acceptance-passed' }],
+      ['after-device', 'device-result', { device: 'device', [back]: 'acceptance-return', [name === 'develop' ? 'passed' : 'report']: 'acceptance-passed' }],
     ]) for (const [value, expected] of Object.entries(outcomes)) {
       assert.equal(route(gateway, { [result]: { route: value } }), expected);
     }
@@ -63,10 +63,10 @@ for (const name of ['develop', 'deliver']) {
       assert.equal(end.$type, 'bpmn:EndEvent');
       assert.deepEqual(values(end).map(v => [v.name, v.value]), [['route', outcome]]);
       assert.equal(route('acceptance-route', { acceptance: { route: outcome } }),
-        outcome === 'return' ? (name === 'develop' ? 'report' : 'context') : (name === 'develop' ? 'tell-device' : 'report'));
+        outcome === 'return' ? (name === 'develop' ? 'resume' : 'context') : (name === 'develop' ? 'tell-device' : 'report'));
     }
     assert.equal(route('acceptance'), 'acceptance-route');
-    const entry = name === 'develop' ? 'accept-preview' : 'integrate-preview';
+    const entry = name === 'develop' ? 'acceptance-needed' : 'integrate-preview';
     assert.equal(nodes[entry].targetRef, segment, '每轮重新进入段并走占用网关');
     for (const device of ['', 'duo-testbed']) {
       const context = { inputs: { device } };
