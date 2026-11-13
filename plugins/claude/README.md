@@ -2,6 +2,12 @@
 
 Claude SDK Agent：Coda 基于 Claude Agent SDK 写的 ACP 入口，一个进程一个 SDK 会话；资源页的「Claude」显示会话报告的额度，可从 Coda 登录。
 
+## MCP 配置不进命令行
+
+Coda 交来的 MCP 服务（含 `coda` 服务 `env` 里的令牌 `CODA_TOKEN`）若交给 SDK 的 `mcpServers`，会被写成 `--mcp-config '<JSON>'` 放进 Claude 进程的命令行参数，同一台机器上别的用户看得见。
+入口改为：会话打开时在系统临时目录下 `mkdtemp` 建目录（0700），把 `{ mcpServers }` 写进里面的 `mcp.json`（0600），用 `extraArgs` 交 `--mcp-config <路径>`。
+入口这一侧，令牌不再进命令行，只写进这个文件；会话结束（进程被关、查询自己结束）时连目录一起删。进程崩溃留下的目录不另外清理：令牌随托管记录作废，系统临时目录也会自己回收。没有 MCP 服务的会话不建目录。
+
 ## 认不出的东西
 
 Claude Code 会自己长出新东西：SDK 升级带来新的消息类型，服务端让模型返回新的内容块，模型多了新的原生工具。

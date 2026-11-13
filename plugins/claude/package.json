@@ -3,7 +3,7 @@
   "id": "claude",
   "displayName": "Claude",
   "description": "用 Claude Agent SDK 跑会话",
-  "version": "1.12.2",
+  "version": "1.12.3",
   "categories": [
     "Agent"
   ],

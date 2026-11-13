@@ -7,8 +7,9 @@
 // that is to go on later is compacted before its cache expires, as the plugin's lifecycle process asks (compaction.mjs).
 // What the SDK sends that is not registered, and native tools not known, are told to Coda (registry.mjs).
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { realpath, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { agent, PROTOCOL_VERSION, RequestError } from '@agentclientprotocol/sdk';
 import { ClaudeSessionLimits, accountHash } from './limits.mjs';
@@ -163,7 +164,7 @@ export class ClaudeSession {
         // message would start a turn Coda cannot attribute. Continuing a native subagent is in-process and unaffected.
         settings: { crossSessionInbound: 'refuse' },
         includePartialMessages: true, forwardSubagentText: true, cwd: dir,
-        ...(Object.keys(servers).length ? { mcpServers: servers } : {}), ...(additionalDirectories.length ? { additionalDirectories } : {}),
+        ...(Object.keys(servers).length ? { extraArgs: { 'mcp-config': this.mcpConfig({ mcpServers: servers }) } } : {}), ...(additionalDirectories.length ? { additionalDirectories } : {}),
         // Identify Coda even when a parent supplied an SDK label (anthropics/claude-code#97074).
         // Claude Code reports running and idle only when asked: idle is what ends a task's wait.
         env: { ...environment, CLAUDE_CODE_ENTRYPOINT: 'coda', CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1' },
@@ -195,6 +196,18 @@ export class ClaudeSession {
       await this.close();
       throw error instanceof RequestError ? error : failure(error?.message || 'Claude 会话启动失败');
     }
+  }
+  // The SDK would put `mcpServers` in Claude's command line, where the servers' environment (Coda's token) shows to every user of
+  // the machine. They go in a file only this user reads, by path, which stays until the session ends (`dropMcpConfig`).
+  mcpConfig(config) {
+    this.mcpDir = mkdtempSync(join(tmpdir(), 'coda-claude-mcp-'));
+    const file = join(this.mcpDir, 'mcp.json');
+    writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
+    return file;
+  }
+  dropMcpConfig() {
+    if (this.mcpDir) rmSync(this.mcpDir, { recursive: true, force: true });
+    this.mcpDir = null;
   }
   // A query of the session, reading a prompt stream of its own: on Claude's own models, or on `model` of a chosen
   // service, which it runs with that service as its API and that model for every role. One started after the session
@@ -436,6 +449,7 @@ export class ClaudeSession {
     for (const { reject } of this.prompts.values()) reject(failure(error?.message ?? 'Claude 会话已结束'));
     this.prompts.clear();
     try { query?.close(); } catch {}
+    this.dropMcpConfig();
     if (!intended) this.onEnded(error);
   }
   receive(m) {
@@ -683,5 +697,6 @@ export class ClaudeSession {
     for (const withdrawn of this.withdrawals) withdrawn.abort();
     try { this.query?.close(); } catch {}
     if (this.pump) await this.pump; else this.phase = 'ended';
+    this.dropMcpConfig();
   }
 }
