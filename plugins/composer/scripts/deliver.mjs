@@ -2,7 +2,7 @@
 import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { gh, git, output } from './shared.mjs';
+import { gh, git, output, outputFilled, outputPicked } from './shared.mjs';
 
 const env = process.env, action = process.argv[2];
 const statePath = join(env.CODA_ARTIFACTS, 'deliver.json');
@@ -102,14 +102,14 @@ switch (action) {
   case 'report':
     if (answer('approve', true)) output('body', JSON.parse(env.RESPONSE).note);
     break;
+  // 批准卡：「暂不合并」带着原因回到确认；「批准合并」记下勾了哪些合并后的流程（shared.mjs outputPicked）。
   case 'approval': {
-    const { choice, note = '', options = {} } = JSON.parse(env.RESPONSE);
-    const missing = (options.preview || options.release) && !note.trim();
-    answer(choice === 'stop' ? 'confirm' : missing ? 'notes' : 'release', choice === 'stop');
+    const response = JSON.parse(env.RESPONSE);
+    if (answer(response.choice === 'stop' ? 'confirm' : 'release', response.choice === 'stop')) outputPicked(response, env.JOINERS);
     break;
   }
-  case 'notes':
-    if (answer('ready', true)) output('notes', JSON.parse(env.RESPONSE).note);
+  case 'inputs':
+    outputFilled();
     break;
   case 'merged':
     if (answer('deploy', true)) output('commit', JSON.parse(env.RESPONSE).note.trim());

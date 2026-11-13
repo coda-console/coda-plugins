@@ -4,7 +4,7 @@
   "displayName": "PR 生命流程",
   "description": "PR 从检查、评审到批准合并；简易开发",
   "icon": { "symbol": "checkmark.bubble.fill", "color": "purple" },
-  "version": "2.18.0",
+  "version": "3.1.0",
   "categories": [
     "工作流程"
   ],
@@ -148,32 +148,14 @@
                 "description": "删除这个 PR 的远程源分支，本地分支和工作树保留"
               },
               {
-                "const": "deploy",
-                "title": "部署",
-                "description": "调用项目里的部署流程",
-                "workflowKind": "deploy"
-              },
-              {
-                "const": "preview",
-                "title": "发布预览版",
-                "description": "调用项目里的预览发布流程",
-                "workflowKind": "preview"
-              },
-              {
-                "const": "release",
-                "title": "发布正式版",
-                "description": "调用项目里的正式发布流程",
-                "workflowKind": "release"
-              },
-              {
                 "const": "notify",
                 "title": "全部完成后通知 Agent",
-                "description": "合并及所选删除分支、部署、发布结束后通知"
+                "description": "合并及所选删除分支、合并后的流程结束后通知"
               }
             ]
           },
           "default": [],
-          "description": "合并卡片初始勾选这些选项，直接点「合并」也按此执行。每次合并前可以调整；目录可以覆盖，且只显示该目录可用的选项。"
+          "description": "合并卡片初始勾选这些选项，直接点「合并」也按此执行。每次合并前可以调整；目录可以覆盖。合并后的流程勾不勾由项目里的流程自己声明。"
         }
       }
     },

@@ -157,7 +157,7 @@ test('简易开发的流程定义：开启时什么都不必选，第一张任�
     ['device', [['yes', undefined], ['no', 'required']]], ['approve', [['merge', undefined], ['stop', 'required']]], ['preview', [['installed', undefined], ['changed', 'required']]]])
     assert.deepEqual(values(nodes[id]).map(v => [v.id, v.note]), choices, id);
   for (const id of ['device', 'approve']) assert.equal(nodes[id].assignee, 'user');
-  for (const id of ['report', 'answer', 'fix', 'preview', 'notes']) assert.equal(nodes[id].assignee, undefined, id);
+  for (const id of ['report', 'answer', 'fix', 'preview', 'fill']) assert.equal(nodes[id].assignee, undefined, id);
   // 先准备分支，之后所有步骤与任务都用它定下的分支。
   assert.equal(nodes['start-lane'].targetRef.id, 'lane');
   assert.equal(nodes['lane-report'].targetRef.id, 'report');
@@ -179,8 +179,27 @@ test('简易开发的流程定义：开启时什么都不必选，第一张任�
   assert.equal(nodes['kept-pr'].targetRef.id, 'pr', '不改也只更新 PR，不再评审');
   for (const [value, target] of [['push', 'push'], ['fix', 'problem'], ['premerge', 'premerge']]) assert.equal(route('after-acceptance', { accepted: { route: value } }), target);
   for (const [chose, target] of [[{ changed: true }, 'acceptance-changed'], [{ changed: false }, 'device']]) assert.equal(route('after-preview', { preview: { chose } }), target);
-  for (const [passed, target] of [[false, 'github-feedback'], [true, 'kinds']]) assert.equal(route('github-how', { 'github-checks': { passed }, github: { event: {} } }), target);
-  for (const [value, target] of [['conflict', 'problem'], ['merged', 'deploying']]) assert.equal(route('merged', { merge: { route: value } }), target);
+  for (const [passed, target] of [[false, 'github-feedback'], [true, 'joiners']]) assert.equal(route('github-how', { 'github-checks': { passed }, github: { event: {} } }), target);
+  for (const [value, target] of [['conflict', 'problem'], ['merged', 'after-merged']]) assert.equal(route('merged', { merge: { route: value } }), target);
+  // 批准卡：勾选项是项目在这个提交上加入挂点 merged 的流程，卡上只有数据。
+  assert.deepEqual(params('joiners'), { hook: 'merged', commit: '=pr.head' });
+  assert.equal(nodes['joiners-approve'].targetRef.id, 'approve');
+  assert.deepEqual(values(nodes.approve)[0].options.map(o => [o.id ?? o.value, o.default]), [['=joiners.list', undefined], ['notify', 'true']]);
+  assert.doesNotMatch(nodes.approve.documentation[0].text, /「合并」以|部署|发布|暂不合并/);
+  assert.deepEqual([params('approval').APPROVED, params('approval').JOINERS], ['=approve', '=joiners.list']);
+  // 合并后：没勾就结束；勾了的先补没写的文字，再在合并提交上运行。
+  for (const only of ['[]', '["deploy"]']) for (const missing of ['', 'notes']) {
+    const visited = [], context = { approval: { only, missing } };
+    for (let step = 'after-merged'; step !== 'done';) {
+      if (!nodes[step].$type.endsWith('Gateway')) visited.push(step);
+      step = nodes[step].$type === 'bpmn:ExclusiveGateway' ? route(step, context) : elements.find(e => e.sourceRef === nodes[step]).targetRef.id;
+    }
+    assert.deepEqual(visited, only === '[]' ? [] : [...(missing ? ['fill'] : []), 'merged-inputs', 'run-merged'], `${only}|${missing}`);
+  }
+  assert.deepEqual([nodes.fill.loopCharacteristics.isSequential, nodes.fill.loopCharacteristics.inputCollection], [true, '=split(approval.missing, ",")']);
+  assert.deepEqual(values(nodes.fill).filter(v => v.$type === 'coda:Choice').map(v => [v.id, v.note]), [['done', 'required']]);
+  assert.deepEqual([params('merged-inputs').FILLS, params('merged-inputs').MISSING], ['=fill', '=approval.missing']);
+  for (const id of ['kinds', 'notes', 'publishing', 'deploy', 'publish']) assert.equal(nodes[id], undefined, id);
   assert.equal(route('approved', { approve: { chose: { stop: true } } }), 'stopped');
   assert.equal(route('approved', { approve: { chose: { stop: false } } }), 'approval');
   // 所有要主 Agent 修改的都先读出要改的地方，再进「修改后答复」，从推送重走。
@@ -190,7 +209,7 @@ test('简易开发的流程定义：开启时什么都不必选，第一张任�
   assert.deepEqual(params('review').REVIEWER, '=inputs.reviewer');
   assert.deepEqual(params('checks'), { kind: 'check', commit: '=push.head' });
   assert.deepEqual(params('premerge'), { kind: 'premerge', commit: '=pr.head' });
-  assert.deepEqual(params('deploy'), { kind: 'deploy', commit: '=merge.commit' });
+  assert.deepEqual(params('run-merged'), { hook: 'merged', only: '=approval.only', commit: '=merge.commit', inputs: '=merged-inputs.inputs' });
   for (const [failed, target] of [['checks-failed', 'checks'], ['premerge-failed', 'premerge']]) assert.equal(nodes[failed].attachedToRef.id, target);
   assert.equal(evaluate(nodes.done.notify.slice(1), { approval: { notify: false } }).value, false);
 });
