@@ -59,8 +59,8 @@ switch (action) {
     }
     state.executor = JSON.parse(command('coda-agent', [...args, '--json', '--prompt-file', prompt]));
     state.feedback = '';
-    // 新会话的第一次交付算这项的第一次，连续检查失败重新计数。
-    if (action !== 'revise') { state.failures = []; state.reviewed = false; }
+    // 新会话的连续检查失败重新计数。
+    if (action !== 'revise') state.failures = [];
     save();
     break;
   }
@@ -86,9 +86,7 @@ switch (action) {
     state.feedback = '';
     output('base', state.base);
     output('task', state.task);
-    output('first', String(!state.reviewed));
     output('checks', checksText(state.checks, state.executor.head));
-    state.reviewed = true;
     save();
     break;
   case 'gate-failed': {

@@ -32,8 +32,8 @@ export function reminder(subagents) {
 }
 function roster(subagents) {
   return subagents.length
-    ? 'Pick the Agent from this list by task (pass agent/model/effort/mode/options) for Coda spawn, lane-pr executor, executor2, reviewer, reviewer2, reviewerOnce, ' +
-      `and the overall reviewer, reviewer2 of kickoff and develop. Your own agent only if no entry fits:\n${subagents.map(line).join('\n')}`
+    ? 'Pick the Agent from this list by task (pass agent/model/effort/mode/options) for Coda spawn, lane-pr executor, executor2, reviewer, reviewer2, ' +
+      `and the overall reviewer, reviewer2, reviewer3 of kickoff and develop. Your own agent only if no entry fits:\n${subagents.map(line).join('\n')}`
     : 'Use your own agent and model for Coda spawn, lane-pr and the overall reviewers of kickoff and develop.';
 }
 export const OFF = 'The user turned off Ultra: its delegation-first role no longer applies; follow the usual execution and delegation instructions. ' +

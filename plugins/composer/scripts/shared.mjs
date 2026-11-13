@@ -32,7 +32,7 @@ export const checksText = (record, head) => record?.head === head
 // 评审这一段也按这个数收着：放不下时每条只留严重程度、标题和位置，说明和评审原文写在产物里。
 // 评审没完成（INCOMPLETE）的写「没评成」与 review-commit 给的原因；调用本身没成（lost）的指向本运行那一步。
 // 标题、位置各占一行里的一段，其中的换行压成空格，说明原样。
-export const SLOTS = { reviewer: '评审者', reviewer2: '第二评审者', reviewerOnce: '首次评审者' };
+export const SLOTS = { reviewer: '评审者', reviewer2: '第二评审者', reviewer3: '第三评审者' };
 export function reviewsText(raw, head, step) {
   const results = (raw ? JSON.parse(raw) : []).filter(r => r.head === head);
   if (!results.length) return '';
