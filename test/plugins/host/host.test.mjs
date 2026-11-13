@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { test } from 'node:test';
 import { serveSimulatorStatus, runFinished } from '../../../plugins/host/lib/simulator-status.mjs';
@@ -136,7 +136,17 @@ test('持锁执行 runs the command in its own working directory, with the proje
   assert.equal(err, '失败：命令非零退出（退出码 4）\n');
   assert.equal(sims.log(), 'shutdown FAKE-1\ndelete FAKE-1\n');
   const simulator = await held(t, { command: 'echo "$HOST_SIM_LEASE"', what: '模拟器' }).ended;
-  assert.deepEqual([simulator.code, simulator.out, simulator.outputs], [0, 'coda-run:simulator\n', 'exit_code=0\n']);
+  assert.deepEqual([simulator.code, simulator.out, simulator.outputs], [0, `在 ${hostname()} 上执行\ncoda-run:simulator\n`, 'exit_code=0\n']);
+});
+
+test('持锁执行 says which machine it runs on before the command prints anything, and that line does not count as output', { timeout: 10000 }, async t => {
+  const line = `在 ${hostname()} 上执行\n`;
+  const ran = await held(t, { command: 'echo first' }).ended;
+  assert.deepEqual([ran.code, ran.out], [0, `${line}first\n`]);
+  // A command that prints nothing is still stopped as silent, with the line as its only output.
+  const silent = await held(t, { command: 'exec sleep 60' }, { HELD_IDLE_MINUTES: '0.005' }).ended;
+  assert.deepEqual([silent.code, silent.out], [1, line]);
+  assert.equal(silent.outputs, 'exit_code=143\nfailure_reason=0.005 分钟无输出\n');
 });
 
 test('持锁执行 cancelled still deletes the simulators its command bound before it ends', async t => {

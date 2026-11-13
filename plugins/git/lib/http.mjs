@@ -52,27 +52,40 @@ export function reply(res, status, value) {
   res.end(JSON.stringify(typeof value?.error === 'string' ? { ...value, error: { message: value.error } } : value));
 }
 
+const ROUTE = /^\/repos\/([a-zA-Z0-9_-]{1,100})\/(info\/refs\?service=git-upload-pack|git-upload-pack)$/;
+
 export function smartHTTP({ lookup, environment }) {
   const children = new Set();
+  // A request ending in 4xx or 5xx is logged once: status, reason, method, source (the raw path if it is not one), and the three headers
+  // that decide it. Never the authorization header, cookies or the body.
+  const send = (req, res, status, value) => {
+    if (status >= 400) {
+      const path = ROUTE.exec(req.url);
+      const header = name => req.headers[name] === undefined ? '无' : JSON.stringify(req.headers[name]);
+      console.error('[git http]', status, value.error, req.method, path ? `source=${path[1]}` : `path=${JSON.stringify(req.url)}`,
+        `content-type=${header('content-type')}`, `content-encoding=${header('content-encoding')}`, `git-protocol=${header('git-protocol')}`);
+    }
+    reply(res, status, value);
+  };
   const handler = async (req, res, caller) => {
     let dir;
     try {
-      if (!caller?.local && !['client', 'backend'].includes(caller?.role)) return reply(res, 403, { error: '需要 Coda 鉴权身份' });
+      if (!caller?.local && !['client', 'backend'].includes(caller?.role)) return send(req, res, 403, { error: '需要 Coda 鉴权身份' });
       // Match the raw URL. Do not normalize encoded slashes, dot segments, extra queries or absolute paths.
-      const match = /^\/repos\/([a-zA-Z0-9_-]{1,100})\/(info\/refs\?service=git-upload-pack|git-upload-pack)$/.exec(req.url);
-      if (!match) return reply(res, req.url.includes('receive-pack') ? 403 : 404, { error: '不允许的 Git 路径' });
+      const match = ROUTE.exec(req.url);
+      if (!match) return send(req, res, req.url.includes('receive-pack') ? 403 : 404, { error: '不允许的 Git 路径' });
       const discovery = match[2].startsWith('info/');
-      if (req.method !== (discovery ? 'GET' : 'POST')) return reply(res, 405, { error: '不允许的方法' });
-      if (req.headers['git-protocol'] !== 'version=2') return reply(res, 400, { error: '需要 Git protocol v2' });
+      if (req.method !== (discovery ? 'GET' : 'POST')) return send(req, res, 405, { error: '不允许的方法' });
+      if (req.headers['git-protocol'] !== 'version=2') return send(req, res, 400, { error: '需要 Git protocol v2' });
       if (!discovery && req.headers['content-type'] !== 'application/x-git-upload-pack-request')
-        return reply(res, 415, { error: '需要 upload-pack 请求' });
+        return send(req, res, 415, { error: '需要 upload-pack 请求' });
       if (req.headers['content-encoding'] && req.headers['content-encoding'] !== 'identity')
-        return reply(res, 415, { error: '不接受压缩请求体' });
+        return send(req, res, 415, { error: '不接受压缩请求体' });
       const source = await lookup(match[1]);
-      if (!source) return reply(res, 404, { error: '源未登记或不可用' });
+      if (!source) return send(req, res, 404, { error: '源未登记或不可用' });
       const env = await environment();
       const body = await readBody(req);
-      if (discovery && body.length) return reply(res, 400, { error: 'GET 不接受请求体' });
+      if (discovery && body.length) return send(req, res, 400, { error: 'GET 不接受请求体' });
       const requested = wants(body);
       const refs = (await git(source.path, ['for-each-ref', '--format=%(objectname) %(refname)', 'refs/heads/', 'refs/coda/snapshots/'], { env }))
         .split('\n').filter(Boolean).map(line => line.split(' '))
@@ -82,13 +95,13 @@ export function smartHTTP({ lookup, environment }) {
         if (tips.includes(oid)) continue;
         // Normal fetch wants commits; a reachable ancestor is allowed, an unrelated hidden commit/blob is not.
         if (await git(source.path, ['cat-file', '-t', oid], { env, accept: [0, 128] }) !== 'commit')
-          return reply(res, 403, { error: '不允许的对象' });
+          return send(req, res, 403, { error: '不允许的对象' });
         let reachable = false;
         for (const tip of tips) {
           const base = await git(source.path, ['merge-base', oid, tip], { env, accept: [0, 1] });
           if (base === oid) { reachable = true; break; }
         }
-        if (!reachable) return reply(res, 403, { error: '不允许的对象' });
+        if (!reachable) return send(req, res, 403, { error: '不允许的对象' });
       }
       // A disposable bare view exports only approved refs, and cannot inherit repository http/uploadpack config,
       // replace refs, HEAD pointing at a hidden ref, hooks, or a repository's custom upload-pack command.
@@ -107,7 +120,7 @@ export function smartHTTP({ lookup, environment }) {
       await git(dir, ['symbolic-ref', 'HEAD', refs.some(([, ref]) => ref === head) ? head : 'refs/heads/coda-unborn'], { env });
       await bridge(req, res, { dir, env, body, discovery, children });
     } catch (error) {
-      if (!res.destroyed) reply(res, error.status ?? 500, { error: error.message });
+      if (!res.destroyed) send(req, res, error.status ?? 500, { error: error.message });
     } finally { if (dir) await rm(dir, { recursive: true, force: true }); }
   };
   handler.dispose = () => { for (const child of children) child.kill('SIGKILL'); };
