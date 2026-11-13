@@ -67,7 +67,7 @@ describe('this repository', () => {
   // no plugin declares is of no type.
   test('contributes takes what Coda takes, and refuses what nothing takes', async () => {
     const read = async contributes => (await checkPlugin(plugin({ manifest: { contributes } }), { manifestOnly: true })).report;
-    const known = await read({ panels: [], executors: [] }), other = await read({ menus: [] });
+    const known = await read({ panels: [], skills: [] }), other = await read({ menus: [] });
     assert.deepEqual(failed(known), []);
     assert.deepEqual(failed(other), ['manifest.offers']);
     assert.match(other.failures[0].message, /menus/);
