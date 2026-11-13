@@ -11,6 +11,7 @@
       <coda:input name="way" label="建议的做法" type="string" default="develop" description="Agent 建议的做法：simple（简易开发）或 develop（监督开发）" />
       <coda:input name="devices" label="设备验收" type="boolean" default="false" description="改了客户端、要在 Mac 或 iPhone 上验收时打开" />
       <coda:input name="device" label="验收设备" type="string" default="" description="测试机设备名，如 duo-testbed；验收期间独占它；留空不占设备" />
+      <coda:input name="hold" label="验收时占用" type="string" default="" description="监督开发的安装与设备验收期间另外占着的组，如项目的泳道专用后端；留空不占" />
       <coda:input name="reviewer" label="整体评审者" type="agent" description="监督开发里提交验收、检查通过后评一次整条泳道；不填不评" />
       <coda:input name="reviewer2" label="第二整体评审者" type="agent" description="监督开发里与整体评审者同时评整条泳道；不填不评" />
       <coda:input name="branch" label="分支" type="branch" defaultFrom="session.branch" description="简易开发提交改动的分支，默认是会话所在的分支；开在别的目录时自己给，不给由简易开发从目标分支开一条" />
@@ -24,7 +25,7 @@
 目标与完成标准：
 {{inputs.goal}}
 Agent 建议的做法：{{if inputs.way = "simple" then "简易开发" else "监督开发"}}。
-设备验收：{{if inputs.devices then "建议开启" else "未建议开启"}}{{if inputs.device = "" then "" else "，验收设备 " + inputs.device}}。
+设备验收：{{if inputs.devices then "建议开启" else "未建议开启"}}{{if inputs.device = "" then "" else "，验收设备 " + inputs.device}}{{if inputs.hold = "" then "" else "，监督开发验收期间占用 " + inputs.hold}}。
 监督开发的整体评审者（卡上不能改，要换人选「先别」并在附言里说明）：
 - 整体评审者：{{if inputs.reviewer = null then "未指定" else string join([inputs.reviewer.agent, inputs.reviewer.model, inputs.reviewer.effort][item != null], " · ")}}
 - 第二整体评审者：{{if inputs.reviewer2 = null then "未指定" else string join([inputs.reviewer2.agent, inputs.reviewer2.model, inputs.reviewer2.effort][item != null], " · ")}}
@@ -61,6 +62,7 @@ Agent 建议的做法：{{if inputs.way = "simple" then "简易开发" else "监
         <coda:param name="goal" value='=if card.note = null or card.note = "" then inputs.goal else inputs.goal + "\n\n用户开工时补充：\n" + card.note' />
         <coda:param name="devices" value="=card.options.devices" />
         <coda:param name="device" value="=inputs.device" />
+        <coda:param name="hold" value="=inputs.hold" />
         <coda:param name="reviewer" value="=inputs.reviewer" />
         <coda:param name="reviewer2" value="=inputs.reviewer2" />
         <coda:param name="base" value="=inputs.base" />

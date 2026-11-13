@@ -31,7 +31,8 @@ test('开工卡的三条答复：调用简易开发、调用监督开发、先�
   assert.equal(process.name, '开工');
   assert.equal(process.kind, undefined, '入口不是一种开发实现');
   const inputs = Object.fromEntries(values(process).map(v => [v.name, v]));
-  assert.deepEqual(Object.keys(inputs), ['title', 'goal', 'way', 'devices', 'device', 'reviewer', 'reviewer2', 'branch', 'base']);
+  assert.deepEqual(Object.keys(inputs), ['title', 'goal', 'way', 'devices', 'device', 'hold', 'reviewer', 'reviewer2', 'branch', 'base']);
+  assert.deepEqual([inputs.hold.type, inputs.hold.default], ['string', '']);
   for (const name of ['title', 'goal']) assert.equal(inputs[name].required, true);
   assert.equal(inputs.way.default, 'develop');
   assert.deepEqual([inputs.devices.type, inputs.devices.default], ['boolean', 'false']);
@@ -60,6 +61,7 @@ test('开工卡的三条答复：调用简易开发、调用监督开发、先�
     goal: '=if card.note = null or card.note = "" then inputs.goal else inputs.goal + "\\n\\n用户开工时补充：\\n" + card.note',
     devices: '=card.options.devices',
     device: '=inputs.device',
+    hold: '=inputs.hold',
     reviewer: '=inputs.reviewer',
     reviewer2: '=inputs.reviewer2',
     base: '=inputs.base',
@@ -135,11 +137,13 @@ test('开工卡批的是需求：整体评审者不设默认、可不填，只�
   for (const name of ['executor', 'executor2', 'reviewerOnce']) assert.equal(inputs[name], undefined, `${name} 由主 Agent 在每个泳道 PR 上定`);
   const card = nodes.card.documentation[0].text;
   const expand = context => card.replace(/\{\{([\s\S]*?)\}\}/g, (_, expression) => evaluate(expression, context).value ?? '');
-  const base = { title: '输入框', goal: '能输入\n分两块：状态、界面', way: 'develop', devices: true, device: 'duo-testbed' };
+  const base = { title: '输入框', goal: '能输入\n分两块：状态、界面', way: 'develop', devices: true, device: 'duo-testbed', hold: '' };
   const none = expand({ inputs: { ...base, reviewer: null, reviewer2: null } });
   for (const line of ['需求：输入框', '目标与完成标准：\n能输入\n分两块：状态、界面', 'Agent 建议的做法：监督开发。', '设备验收：建议开启，验收设备 duo-testbed。', '- 整体评审者：未指定', '- 第二整体评审者：未指定']) assert.ok(none.includes(line), line);
   const filled = expand({ inputs: { ...base, reviewer: { agent: 'a2', model: 'm2', effort: 'high' }, reviewer2: { agent: 'a3' } } });
   for (const line of ['- 整体评审者：a2 · m2 · high', '- 第二整体评审者：a3']) assert.ok(filled.includes(line), line);
+  const held = expand({ inputs: { ...base, hold: 'lane-backend', reviewer: null, reviewer2: null } });
+  assert.ok(held.includes('设备验收：建议开启，验收设备 duo-testbed，监督开发验收期间占用 lane-backend。'));
   assert.match(card, /卡上不能改，要换人选「先别」并在附言里说明/);
   assert.match(card, /每个泳道 PR 的执行者和评审者由主 Agent 定/);
   // 流程只定位置：谁来评由发起的 Agent 填，流程里不写任何 Agent 或模型。
