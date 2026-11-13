@@ -4,7 +4,7 @@
   "displayName": "PR 生命流程",
   "description": "PR 从检查、评审到批准合并；简易开发",
   "icon": { "symbol": "checkmark.bubble.fill", "color": "purple" },
-  "version": "2.17.1",
+  "version": "2.18.0",
   "categories": [
     "工作流程"
   ],
@@ -23,7 +23,7 @@
           "type": "boolean",
           "order": 0,
           "default": true,
-          "description": "会话开的 PR 新建或有新提交时自动开始 PR 生命流程。关掉后只能手动发起；会话或目录在「工作流」里单独设过的，按它们的。不影响简易开发。"
+          "description": "会话开的 PR 新建或有新提交时自动开始 PR 生命流程，别人写的 PR 自动开始只评审。关掉后只能手动发起；会话或目录在「工作流」里单独设过的，按它们的。不影响简易开发。"
         },
         "review.reviewers": {
           "title": "评审组合",
@@ -57,6 +57,10 @@
             "opencode": {
               "agent": "claude-sdk",
               "mode": "auto"
+            },
+            "*": {
+              "agent": "codex",
+              "mode": "agent"
             }
           }
         },
