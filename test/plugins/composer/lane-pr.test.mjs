@@ -72,6 +72,7 @@ const body = args.includes('--body-file') ? readFileSync(args[args.indexOf('--bo
 calls.push({ args, body, thread: process.env.CODA_THREAD_ID ?? null }); writeFileSync(join(root, 'gh-calls'), JSON.stringify(calls));
 const state = () => JSON.parse(readFileSync(join(process.env.CODA_ARTIFACTS, 'lane-pr.json'), 'utf8'));
 if (args[1] === 'create') console.log('${PR}');
+else if (args[1] === 'list') { if (process.env.OPEN_PR) console.log(process.env.OPEN_PR); }
 else if (args[1] === 'merge') { if (process.env.MERGE_EXIT) process.exit(Number(process.env.MERGE_EXIT)); }
 else if (args[1] === 'view' && args.includes('state,headRefOid,mergeCommit')) console.log(JSON.stringify({ state: process.env.PR_STATE || 'OPEN', headRefOid: state().executor.head, mergeCommit: { oid: 'f'.repeat(40) } }));
 else if (args[1] === 'view' && args.includes('state,mergeable')) console.log(JSON.stringify({ state: 'OPEN', mergeable: process.env.PR_MERGEABLE || 'MERGEABLE' }));
@@ -144,6 +145,34 @@ test('执行者从泳道当前 head 开工；第一次交付开进泳道的 PR�
   assert.notEqual(updated, head);
   assert.equal(f.remote('lane-pr/pr-run-1'), updated, '推同一个分支就是更新同一个 PR');
   assert.equal(f.calls('gh').filter(c => c.args[1] === 'create').length, 1);
+});
+
+test('从头重跑时 gate 先从 GitHub 找已开的进泳道 PR，找到就沿用，不再开', t => {
+  const f = fixture(t);
+  f.task('one', 'change'); f.run('execute');
+  f.run('gate', { OPEN_PR: PR });
+  assert.deepEqual(f.calls('gh').find(c => c.args[1] === 'list').args,
+    ['pr', 'list', '--head', 'lane-pr/pr-run-1', '--base', 'lane/req-1', '--state', 'open', '--limit', '1', '--json', 'url', '--jq', '.[].url']);
+  assert.equal(f.calls('gh').filter(c => c.args[1] === 'create').length, 0);
+  assert.equal(f.state().pr, PR);
+  f.run('gate');
+  assert.equal(f.calls('gh').filter(c => c.args[1] === 'list').length, 1, '记下之后不再找');
+});
+
+test('合进泳道后泳道又前进了，从失败处重跑 land 仍交出原结果，不再改 PR 或泳道；PR 已关闭未合并时报错', t => {
+  for (const sync of [false, true]) {
+    const f = fixture(t, { sync });
+    f.task('one', 'change'); f.run('execute'); f.delivered();
+    const first = f.run('land').outputs;
+    assert.equal(first.route, 'landed');
+    // 后来合进泳道的改了同一个文件：重新试合并会冲突，只有先认终态才不走错。
+    const moved = f.advanceLane('one', 'later lane PR');
+    // squash 的 GitHub 已标为合并；快进的可能还没标，按这次交付已是泳道的祖先认。
+    assert.deepEqual(f.run('land', { PR_STATE: sync ? 'OPEN' : 'MERGED' }).outputs, first, `sync=${sync}`);
+    assert.equal(f.remote('lane/req-1'), moved, '泳道不动');
+    assert.equal(f.calls('gh').filter(c => c.args[1] === 'merge').length, sync ? 0 : 1);
+    assert.match(f.run('land', { PR_STATE: 'CLOSED' }, 1).stderr, /PR 已关闭但未合并/);
+  }
 });
 
 test('普通泳道 PR：合进泳道前试合并泳道当前 head，干净时 squash 合进泳道并删除分支，输出 PR 与合并提交', t => {
@@ -334,5 +363,6 @@ test('泳道 PR 流程定义：输入、回路、审查卡答复、结束输出�
   const slots = evaluate(sub.loopCharacteristics.inputCollection.slice(1), { inputs: { reviewer: { agent: 'a1' }, reviewer2: null, reviewerOnce: once }, 'gate-passed': { first: false } }).value;
   assert.deepEqual(slots.map(s => [s.slot, s.who]), [['reviewer', { agent: 'a1' }], ['reviewer2', null], ['reviewerOnce', null]]);
   for (const [title, expected] of [['补齐状态', '泳道 PR：补齐状态']]) assert.equal(evaluate(process.title.slice(1), { inputs: { title } }).value, expected);
-  assert.doesNotMatch(workflow, /codex|claude|kimi|grok|opencode|cursor|gpt|sonnet|opus|haiku|gemini/i);
+  // 流程只定位置，不写 Ultra 或模型的知识。
+  assert.doesNotMatch(workflow, /ultra|codex|claude|kimi|grok|opencode|cursor|gpt|sonnet|opus|haiku|gemini/i);
 });

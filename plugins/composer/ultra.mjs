@@ -1,8 +1,7 @@
 // Ultra 的开启、持续与关闭提示（见 README.md）：只管派活。开发流程由用户在会话里开启，或经「开工」发起后由用户在开工卡上确认；规则写在流程的任务里，不在这里。
-// 名单也用来给每个泳道 PR（lane-pr）定执行者、备用执行者和评审者。
 // 委派规则改编自 oh-my-claudecode 的 docs/CLAUDE.md，见 THIRD_PARTY_NOTICES.md。
 
-// 名单供只读调研的 spawn 和泳道 PR 选执行者。
+// 名单供只读调研的 spawn 选执行者。
 function line({ who, when }) {
   const options = who.options && Object.keys(who.options).length ? `options=${JSON.stringify(who.options)}` : null;
   const fields = [`agent=${who.agent}`, who.model && `model=${who.model}`, who.effort && `effort=${who.effort}`, who.mode && `mode=${who.mode}`, options];
@@ -24,8 +23,7 @@ export function on(subagents) {
     'Do not use native subagents unless explicitly requested. If concurrency is full, wait; if spawn is unavailable, report the blocker ' +
       'instead of switching to another delegation channel.',
     subagents.length
-      ? 'Choose executors from this list by task, passing agent/model/effort/mode/options to spawn. Use your own agent and model only when no entry covers the work. ' +
-        `When you start a lane PR (lane-pr), pick its executor, backup executor and reviewers from this list the same way:\n${subagents.map(line).join('\n')}`
+      ? `Choose executors from this list by task, passing agent/model/effort/mode/options to spawn. Use your own agent and model only when no entry covers the work:\n${subagents.map(line).join('\n')}`
       : 'Use your own agent and model for Coda spawn.',
   ].join('\n\n');
 }

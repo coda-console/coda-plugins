@@ -3,7 +3,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { waitForGitHubChecks } from './github-checks.mjs';
-import { checksText, gh, git, mergePr, openPr, output, reviewsText } from './shared.mjs';
+import { checksText, gh, git, mergedCommit, mergePr, openPr, output, reviewsText } from './shared.mjs';
 
 const env = process.env, action = process.argv[2];
 const statePath = join(env.CODA_ARTIFACTS, 'develop.json');
@@ -174,7 +174,7 @@ switch (action) {
   }
   // 用合并提交进目标分支：目标分支的 first-parent 历史里一个需求一个提交，泳道里每个泳道 PR 一个提交。
   case 'merge': {
-    const commit = mergePr(state.pr, state.head, 'merge');
+    const commit = mergedCommit(state.pr, state.head) ?? mergePr(state.pr, state.head, 'merge');
     if (!commit) {
       back(`PR ${state.pr} 与目标分支 ${state.base} 存在合并冲突，泳道 head ${state.head}。\n请发起 sync=true 的泳道 PR，让执行者把最新目标分支合进来、解冲突、顺延撞号的迁移版本；合进泳道后再提交验收，重新跑检查、批准合并及部署、发布选项。`);
       output('route', 'conflict');

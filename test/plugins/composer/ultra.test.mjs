@@ -9,8 +9,6 @@ test('Ultra 名单给只读 spawn 按任务选执行者，带上选项', () => {
   assert.match(full, /- agent=codex model=gpt-6\.1-sol effort=ultra mode=agent options=\{"service-tier":"priority"\}: 任何工作/);
   assert.match(full, /Choose executors from this list by task, passing agent\/model\/effort\/mode\/options to spawn/);
   assert.match(full, /Use your own agent and model only when no entry covers the work/);
-  assert.match(full, /When you start a lane PR \(lane-pr\), pick its executor, backup executor and reviewers from this list the same way:\n- agent=codex/);
-  assert.doesNotMatch(on([]), /lane-pr/, '名单为空时不提');
   assert.match(STILL_ON, /choosing the executor from the list by task and passing agent\/model\/effort\/mode\/options/);
   assert.ok(on([]).endsWith('Use your own agent and model for Coda spawn.'));
 });
@@ -23,7 +21,7 @@ test('Ultra 只留派活规则：主 Agent 定任务、做决定、审查，spaw
     'Do not repeat their routine work', 'When a result falls short, act on the cause', 'send it to the same session', 'ask that session for the evidence',
     'give the task to another entry of the list', 'retry', 'Do not quietly redo the work yourself', 'native subagents', 'concurrency is full']) assert.ok(full.includes(text), text);
   for (const text of ['framing', 'review', 'without code changes', 'concurrency is full', 'native subagents']) assert.ok(STILL_ON.includes(text), text);
-  for (const text of [full, STILL_ON, OFF]) assert.doesNotMatch(text, /develop|deliver|ALL code changes|确认达标|放行合并|待交付|preview-install/);
+  for (const text of [full, STILL_ON, OFF]) assert.doesNotMatch(text, /develop|deliver|lane-pr|ALL code changes|确认达标|放行合并|待交付|preview-install/);
   assert.ok(full.length < 2000, '默认说明给执行者名单留下空间');
 });
 

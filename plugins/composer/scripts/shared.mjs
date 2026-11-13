@@ -54,16 +54,20 @@ export function reviewsText(raw, head, step) {
 // PR 地址里的 host/owner/repo：给 gh 显式 --repo，它就只删除远端分支，不碰本地分支，分离 HEAD 也能用。
 export const repoOf = url => { const { host, pathname } = new URL(url); return `${host}/${pathname.split('/').slice(1, 3).join('/')}`; };
 
-// 合并 PR，返回合并提交。已合并且 head 一致时直接给原合并提交（重跑）；已合并但 head 不一致、已关闭未合并时报错。
-// 合并命令失败后查一次 PR：仍开着且与 base 冲突时返回 null，交给调用方带反馈回去；其余失败保留原退出码，不按错误文案判断。
-// head 由 --match-head-commit 校验。
-export function mergePr(url, head, method) {
+// PR 的终态，合并前先认它，从失败处继续时不重新改一个已经合并的 PR：已合并且 head 一致时返回原合并提交；
+// 已合并但 head 不一致、已关闭未合并时报错；还开着返回 undefined。
+export function mergedCommit(url, head) {
   const pr = JSON.parse(gh('pr', 'view', url, '--json', 'state,headRefOid,mergeCommit'));
   if (pr.state === 'MERGED') {
     if (pr.headRefOid !== head) throw new Error(`PR 已合并，但 head 不一致：预期 ${head}，实际 ${pr.headRefOid}`);
     return pr.mergeCommit.oid;
   }
   if (pr.state === 'CLOSED') throw new Error(`PR 已关闭但未合并：${url}`);
+}
+
+// 合并开着的 PR，返回合并提交。合并命令失败后查一次 PR：仍开着且与 base 冲突时返回 null，交给调用方带反馈回去；
+// 其余失败保留原退出码，不按错误文案判断。head 由 --match-head-commit 校验。
+export function mergePr(url, head, method) {
   const result = spawnSync('gh', ['pr', 'merge', url, '--repo', repoOf(url), `--${method}`, '--match-head-commit', head, '--delete-branch'], { encoding: 'utf8' });
   if (result.error) throw result.error;
   process.stdout.write(result.stdout);

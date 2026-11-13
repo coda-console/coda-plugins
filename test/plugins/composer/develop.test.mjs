@@ -348,11 +348,17 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   assert.deepEqual(values(nodes.progress).map(v => [v.id, v.name, v.note]), [['submit', '提交验收', 'required'], ['pause', '暂停', 'required'], ['abandon', '放弃', undefined]]);
   for (const [value, target] of [['progress', 'progress'], ['pause', 'paused'], ['abandon', 'abandoned'], ['submit', 'pr']]) assert.equal(route('after-progress', { 'progress-result': { route: value } }), target);
   const doc = nodes.progress.documentation[0].text;
-  for (const text of ['workflow_run 发起一个泳道 PR（lane-pr）', 'lane="{{run.id}}"', 'title', 'task', 'executor、executor2、reviewer、reviewer2、reviewerOnce', '按 Ultra 名单',
+  for (const text of ['workflow_run 发起一个泳道 PR（lane-pr）', 'lane="{{run.id}}"', 'title', 'task', 'executor、executor2、reviewer、reviewer2、reviewerOnce', '由你按这一块的性质逐个定',
     '可以同时发起', 'sync=true', '快进进泳道', 'mac-preview-install', 'kind=premerge', '{{lane.lane}}', '{{lane.goal}}']) assert.ok(doc.includes(text), text);
   const reasonLine = [...doc.matchAll(/{{(.*?)}}/gs)].find(m => m[1].includes('resume.reason'))[1];
   assert.equal(evaluate(reasonLine, { resume: { reason: '' } }).value, '');
   assert.equal(evaluate(reasonLine, { resume: { reason: '合并前检查未通过' } }).value, '回到进行中的原因：\n合并前检查未通过\n');
+  // 收尾按是否归属需求交付分段写：成员运行没有用户的批准卡和「暂不合并」。
+  const ending = [...doc.matchAll(/{{(.*?)}}/gs)].find(m => m[1].includes('inputs.delivery'))[1];
+  const own = evaluate(ending, { inputs: { delivery: '', devices: true } }).value, member = evaluate(ending, { inputs: { delivery: 'deliver-1', devices: true } }).value;
+  assert.equal(own, '再交用户设备验收，最后由用户批准合并（合并提交）。任何失败和用户的「暂不合并」都带着原因回到这里。');
+  assert.equal(evaluate(ending, { inputs: { delivery: '', devices: false } }).value, '最后由用户批准合并（合并提交）。任何失败和用户的「暂不合并」都带着原因回到这里。');
+  assert.equal(member, '之后进入「待交付」，由需求交付运行 deliver-1 统一验收、批准，没有用户的「暂不合并」。任何失败和待交付的「退回修改」都带着原因回到这里。');
   assert.equal(nodes.paused.assignee, 'user');
   assert.deepEqual(values(nodes.paused).map(v => [v.id, v.name]), [['continue', '继续'], ['abandon', '放弃']]);
   assert.match(nodes.paused.documentation[0].text, /\{\{progress\.note\}\}/);
@@ -438,6 +444,7 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
     assert.equal(evaluate(nodes.done.notify.slice(1), context).value, context.inputs.delivery ? true : false);
   }
   assert.deepEqual(values(nodes.done).map(v => v.name), ['pr', 'commit', 'notify']);
-  assert.doesNotMatch(workflow, /codex|claude|kimi|grok|opencode|cursor|gpt|sonnet|opus|haiku|gemini/i);
+  // 流程只定位置，不写 Ultra 或模型的知识。
+  assert.doesNotMatch(workflow, /ultra|codex|claude|kimi|grok|opencode|cursor|gpt|sonnet|opus|haiku|gemini/i);
   assert.doesNotMatch(workflow, /squash 合并/, '进目标分支用合并提交');
 });

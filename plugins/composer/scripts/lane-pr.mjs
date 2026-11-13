@@ -3,7 +3,7 @@
 import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { checksText, command, gh, git, mergePr, openPr, output, repoOf, reviewsText } from './shared.mjs';
+import { checksText, command, gh, git, mergedCommit, mergePr, openPr, output, repoOf, reviewsText } from './shared.mjs';
 
 const env = process.env, action = process.argv[2];
 const statePath = join(env.CODA_ARTIFACTS, 'lane-pr.json');
@@ -69,6 +69,8 @@ switch (action) {
     console.error(`推送执行者提交 ${state.executor.head} 到 ${state.branch}`);
     git('push', '--no-follow-tags', '--force', 'origin', `${state.executor.head}:refs/heads/${state.branch}`);
     state.base = laneHead();
+    // 从头重跑时 PR 可能已经开着：先从 GitHub 找，找不到才开。
+    if (!state.pr) state.pr = gh('pr', 'list', '--head', state.branch, '--base', state.lane, '--state', 'open', '--limit', '1', '--json', 'url', '--jq', '.[].url');
     if (!state.pr) {
       const body = join(env.RUNNER_TEMP, 'pr.md');
       writeFileSync(body, `泳道 PR，由流程 lane-pr 开、合进泳道 ${state.lane}；运行 coda://workflow-runs/${env.GITHUB_RUN_ID}。\n\n## 任务\n\n${state.task}\n`);
@@ -118,15 +120,20 @@ switch (action) {
     output('route', blocked ? 'review' : choice === 'sync' ? 'revise' : choice);
     break;
   }
-  // 合进泳道前先试合并泳道当前 head（并行的泳道 PR 可能刚合进去），有冲突交回同一执行会话。
+  // 先认 PR 终态：已合并（从失败处继续）直接交出原合入提交，已关闭未合并报错。跟上目标分支的快进后 GitHub 可能还没标为已合并，
+  // 这次交付已是泳道的祖先就算合进去了。还开着才试合并泳道当前 head（并行的泳道 PR 可能刚合进去），有冲突交回同一执行会话；
   // 普通的 squash 合进泳道；跟上目标分支的只能快进，泳道 head 不是它的祖先时同样交回执行者先合并泳道。
   case 'land': {
-    const lane = laneHead(), head = state.executor.head;
-    const behind = state.sync && spawnSync('git', ['merge-base', '--is-ancestor', lane, head]).status !== 0;
-    const files = behind ? conflicts(lane) ?? [] : state.sync ? undefined : conflicts(lane);
-    let commit = files ? null : head;
-    if (!files && state.sync) git('push', 'origin', `${head}:refs/heads/${state.lane}`);
-    else if (!files) commit = mergePr(state.pr, head, 'squash');
+    const head = state.executor.head;
+    const ancestor = (older, newer) => spawnSync('git', ['merge-base', '--is-ancestor', older, newer]).status === 0;
+    let commit = mergedCommit(state.pr, head), files;
+    if (!commit) {
+      const lane = laneHead();
+      if (state.sync && ancestor(head, lane)) commit = head;
+      else if (state.sync && ancestor(lane, head)) { git('push', 'origin', `${head}:refs/heads/${state.lane}`); commit = head; }
+      else if (state.sync) files = conflicts(lane) ?? [];
+      else if (!(files = conflicts(lane))) commit = mergePr(state.pr, head, 'squash');
+    }
     if (!commit) {
       state.feedback = syncText(state.lane, files);
       save();
