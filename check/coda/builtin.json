@@ -1351,7 +1351,7 @@
     "id": "composer",
     "displayName": "输入框模式",
     "description": "交接、子会话、! 命令、Ultra 与循环",
-    "version": "7.0.0",
+    "version": "8.0.0",
     "category": "工作流程",
     "icon": {
       "symbol": "character.cursor.ibeam",
@@ -1362,8 +1362,8 @@
       "kind": "builtin",
       "package": "@coda-console/composer",
       "tag": "latest",
-      "version": "7.0.0",
-      "integrity": "sha512-8z9L4EUKYJW8765d+PuQxR7ijgI2av0xWoJzKjffYvTBd+k57i9E5SPc1Y3RWFejKgmKq47uxXLPmrzQ8qAEkw==",
+      "version": "8.0.0",
+      "integrity": "sha512-SBThmyzC1SkOrYPP0Lr3f/qAoN0QyjzAfsD+k3FS7k6Ltnt8S8eoIxubr01AA01nKUSOuwCPe0/5AHVq+nmUjw==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/composer"
     },
@@ -1407,12 +1407,11 @@
     "workflows": [
       "deliver",
       "develop",
-      "kickoff",
       "lane-pr"
     ],
     "services": [],
     "agents": [],
-    "instructions": "要把改动合进默认分支时，一个需求开一次 kickoff（给 title、goal、建议的 way、要不要设备验收；开在别的目录或要指定分支时给 branch），用户在开工卡上选定后流程把下一步交给你，不要先改完再补开。需求是用户想一起验收、一起上线的一件事，只有必须先上线才能往下做时才拆成几个；小修走简易开发；需求里的每一块用 lane-pr 提。",
+    "instructions": "要把改动合进默认分支时，一个需求用 workflow_run 带 confirm: true 把开发流程（develop 或 simple）填好交用户确认，需求写在 message，develop 另给 title；用户开工后第一张任务随需求消息交给你，不要先改完再补开。需求是用户想一起验收、一起上线的一件事，只有必须先上线才能往下做时才拆成几个；小修走简易开发；每一块用 lane-pr 提。",
     "commands": [],
     "capabilities": [],
     "groups": [],
@@ -1942,7 +1941,7 @@
     "id": "review",
     "displayName": "PR 生命流程",
     "description": "PR 从检查、评审到批准合并；简易开发",
-    "version": "2.17.0",
+    "version": "2.17.1",
     "category": "工作流程",
     "icon": {
       "symbol": "checkmark.bubble.fill",
@@ -1953,8 +1952,8 @@
       "kind": "builtin",
       "package": "@coda-console/review",
       "tag": "latest",
-      "version": "2.17.0",
-      "integrity": "sha512-IM+a04CzSJQoU06VNGYnXDOxpIUVLwjgZeSkDmSwqKPSLSTcU6x9FjTL2NK2O5VTBnAPJuiwxzD2aagWVbmJdQ==",
+      "version": "2.17.1",
+      "integrity": "sha512-xHMDaJrG2nFaXiwB+L8ans+x2DQYS6oLVuiCgeZRmc0pprHZNRu9xcWjHE1nLNVMjL+S0HIQ9fMcNKC99BXN2A==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/review"
     },
