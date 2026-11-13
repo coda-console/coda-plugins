@@ -10,6 +10,7 @@
       <coda:input name="goal" label="目标与完成标准" default="" description="留空时由主 Agent 把和你聊定的需求写成目标与完成标准" />
       <coda:input name="devices" label="设备验收" type="boolean" default="false" description="改了客户端、要在 Mac 或 iPhone 上验收时打开" />
       <coda:input name="device" label="验收设备" type="string" default="" description="测试机设备名，如 duo-testbed；验收期间独占它；留空不占设备" />
+      <coda:input name="hold" label="验收时占用" type="string" default="" description="安装与设备验收期间另外占着的组（容量 1），如项目的泳道专用后端；留空不占" />
       <coda:input name="delivery" label="所属需求交付" type="string" default="" description="需求交付（deliver）运行的 ID；留空为独立交付" />
       <coda:input name="reviewer" label="整体评审者" type="agent" description="提交验收、检查通过后评一次整条泳道；不填不评" />
       <coda:input name="reviewer2" label="第二整体评审者" type="agent" description="与整体评审者同时评整条泳道；不填不评" />
@@ -244,7 +245,7 @@ PR：{{pr.url}}
       <sequenceFlow id="acceptance-enter" sourceRef="acceptance-start" targetRef="device-lock-choice" />
       <exclusiveGateway id="device-lock-choice" name="是否占用验收设备" default="device-lock-skip" />
       <sequenceFlow id="device-lock-needed" sourceRef="device-lock-choice" targetRef="device-resolve"><conditionExpression xsi:type="tFormalExpression">=inputs.devices and inputs.device != ""</conditionExpression></sequenceFlow>
-      <sequenceFlow id="device-lock-skip" sourceRef="device-lock-choice" targetRef="preview" />
+      <sequenceFlow id="device-lock-skip" sourceRef="device-lock-choice" targetRef="hold-choice" />
       <callActivity id="device-resolve" name="解析验收设备" calledElement="resolve-testbed">
         <extensionElements><coda:param name="device" value="=inputs.device" /></extensionElements>
       </callActivity>
@@ -255,14 +256,26 @@ PR：{{pr.url}}
           <coda:param name="capacity" value="1" />
         </extensionElements>
       </serviceTask>
-      <sequenceFlow id="device-lock-acquired" sourceRef="device-lock" targetRef="preview" />
+      <sequenceFlow id="device-lock-acquired" sourceRef="device-lock" targetRef="hold-choice" />
+      <!-- 验收时占用（inputs.hold）：先设备后这个组，各处同一顺序，不会互相等住；离开本段就放开。 -->
+      <exclusiveGateway id="hold-choice" name="是否另占一个组" default="hold-skip" />
+      <sequenceFlow id="hold-needed" sourceRef="hold-choice" targetRef="hold-lock"><conditionExpression xsi:type="tFormalExpression">=inputs.hold != ""</conditionExpression></sequenceFlow>
+      <sequenceFlow id="hold-skip" sourceRef="hold-choice" targetRef="preview" />
+      <serviceTask id="hold-lock" name="等验收时占用的组" coda:action="hold-group" coda:status="等 {{inputs.hold}}">
+        <extensionElements>
+          <coda:param name="group" value="=inputs.hold" />
+          <coda:param name="capacity" value="1" />
+        </extensionElements>
+      </serviceTask>
+      <sequenceFlow id="hold-acquired" sourceRef="hold-lock" targetRef="preview" />
       <userTask id="preview" name="安装预览版" coda:noteLabel="安装结果或回到进行中的原因">
         <documentation>主 Agent：泳道 {{pr.lane}} 的最新提交是 {{pr.head}}。
 {{if preview-result.feedback = null then "" else preview-result.feedback}}
-只装改到的那一端：改了 Mac 用 workflow_run 发起 mac-preview-install，改了 iPhone 发起 ios-preview-install，都传 commit="{{pr.head}}"。等发起的安装都成功后答复；有失败先处理，不能把发起当作装好。
+只装改到的那一端：改了 Mac 用 workflow_run 发起 mac-preview-install，改了 iPhone 发起 ios-preview-install，改了后端且项目允许从泳道部署后端时按项目的说明发起它的后端部署，都传 commit="{{pr.head}}"。等发起的安装都成功后答复；有失败先处理，不能把发起当作装好。
 
 {{if inputs.device = "" then "" else "发起 ios-preview-install 时还要传 device=\"" + inputs.device + "\"。安装运行会借本段占着的设备，不另排队。"}}
-需要先修改时选「回到进行中」，备注必填，说明待处理问题；回到「需求进行中」后提泳道 PR 修好再提交验收。预览只装客户端，不从泳道部署后端。</documentation>
+{{if inputs.hold = "" then "" else "本段还占着组 " + inputs.hold + "：你在这张任务里发起、要用这个组的运行借用它，不另排队；别的运行排在本段之后。"}}
+需要先修改时选「回到进行中」，备注必填，说明待处理问题；回到「需求进行中」后提泳道 PR 修好再提交验收。</documentation>
         <extensionElements>
           <coda:choice id="installed" name="已装好" primary="true" />
           <coda:choice id="progress" name="回到进行中" />
@@ -284,6 +297,7 @@ PR：{{pr.url}}
 主 Agent 的安装结果：{{preview.note}}
 {{if device-result.feedback = null then "" else device-result.feedback}}
 {{if inputs.device = "" then "" else "验收期间设备 " + inputs.device + " 一直被本段占着。"}}
+{{if inputs.hold = "" then "" else "验收期间组 " + inputs.hold + " 也一直被本段占着。"}}
 请在设备上验收。选「不行」必须写具体意见或附上截图，交回主 Agent，回到需求进行中。</documentation>
         <extensionElements><coda:choice id="yes" name="通过" primary="true" /><coda:choice id="no" name="不行" note="required" /></extensionElements>
       </userTask>

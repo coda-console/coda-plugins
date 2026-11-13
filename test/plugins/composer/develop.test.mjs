@@ -320,7 +320,7 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   const { process, elements, nodes, values, params, route, next } = await definition();
   assert.equal(process.name, '监督开发'); assert.equal(process.kind, 'develop'); assert.equal(process.concurrency, undefined);
   const inputs = Object.fromEntries(values(process).map(v => [v.name, v]));
-  assert.deepEqual(Object.keys(inputs), ['title', 'goal', 'devices', 'device', 'delivery', 'reviewer', 'reviewer2', 'base']);
+  assert.deepEqual(Object.keys(inputs), ['title', 'goal', 'devices', 'device', 'hold', 'delivery', 'reviewer', 'reviewer2', 'base']);
   assert.deepEqual(Object.values(inputs).filter(v => v.required), [], '用户在会话里开启时什么都不必填');
   for (const name of ['title', 'goal', 'device', 'delivery', 'base']) assert.equal(inputs[name].default, '', name);
   assert.deepEqual([inputs.devices.type, inputs.devices.default], ['boolean', 'false']);

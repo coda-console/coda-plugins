@@ -30,13 +30,15 @@ for (const name of ['develop', 'deliver']) {
     assert.equal(nodes['device-lock'].status, '等验收设备 {{inputs.device}}');
     assert.equal(process.concurrency, undefined);
     assert.equal(route('acceptance-start'), 'device-lock-choice');
+    // 只有监督开发能另占一个组（hold）：占完设备再占它，没有就直接去安装。
+    const afterDevice = name === 'develop' ? 'hold-choice' : 'preview';
     for (const devices of [false, true]) for (const device of ['', 'duo-testbed']) {
       assert.equal(route('device-lock-choice', { inputs: { devices, device } }),
-        devices && device ? 'device-resolve' : 'preview');
+        devices && device ? 'device-resolve' : afterDevice);
     }
     assert.equal(nodes['device-resolve'].calledElement, 'resolve-testbed');
     assert.equal(route('device-resolve'), 'device-lock');
-    assert.equal(route('device-lock'), 'preview');
+    assert.equal(route('device-lock'), afterDevice);
     for (const id of ['preview', 'preview-result', 'device', 'device-result', 'device-lock']) {
       assert.ok(segment.flowElements.includes(nodes[id]));
       assert.equal(elements.filter(e => e.id === id).length, 1);
@@ -80,3 +82,37 @@ for (const name of ['develop', 'deliver']) {
     }
   });
 }
+
+test('develop：填了「验收时占用」时，安装与验收段在设备之后再占这个组，不填不占', async () => {
+  const xml = readFileSync(new URL('../../../plugins/composer/.coda/workflows/develop.bpmn', import.meta.url), 'utf8');
+  const { root, problem } = await readWorkflow(xml, 'develop');
+  assert.ok(!problem, problem);
+  const process = root.rootElements.find(e => e.$type === 'bpmn:Process');
+  const segment = process.flowElements.find(e => e.id === 'acceptance');
+  const elements = [...process.flowElements, ...segment.flowElements];
+  const nodes = Object.fromEntries(elements.map(e => [e.id, e]));
+  const values = node => node.extensionElements?.values ?? [];
+  const route = (id, context = {}) => {
+    const flows = elements.filter(e => e.sourceRef === nodes[id]);
+    return (flows.find(e => e.conditionExpression && evaluate(e.conditionExpression.body.slice(1), context).value)
+      ?? nodes[id].default ?? flows[0]).targetRef.id;
+  };
+  const hold = values(process).find(v => v.name === 'hold');
+  assert.deepEqual([hold.type, hold.label, hold.default, hold.required], ['string', '验收时占用', '', undefined]);
+  for (const id of ['hold-choice', 'hold-lock']) assert.ok(segment.flowElements.includes(nodes[id]), `${id} 在段内，离开段就放开`);
+  assert.equal(route('hold-choice', { inputs: { hold: '' } }), 'preview');
+  assert.equal(route('hold-choice', { inputs: { hold: 'preview-backend' } }), 'hold-lock');
+  assert.equal(nodes['hold-lock'].action, 'hold-group');
+  assert.deepEqual(Object.fromEntries(values(nodes['hold-lock']).map(v => [v.name, v.value])), { group: '=inputs.hold', capacity: '1' });
+  assert.equal(nodes['hold-lock'].status, '等 {{inputs.hold}}');
+  assert.equal(route('hold-lock'), 'preview');
+  for (const [id, text] of [['preview', '本段还占着组 preview-backend：你在这张任务里发起、要用这个组的运行借用它，不另排队；别的运行排在本段之后。'],
+    ['device', '验收期间组 preview-backend 也一直被本段占着。']]) {
+    const doc = nodes[id].documentation[0].text;
+    const expression = [...doc.matchAll(/{{(.*?)}}/g)].find(m => m[1].includes('inputs.hold'))[1];
+    assert.equal(evaluate(expression, { inputs: { hold: 'preview-backend' } }).value, text, id);
+    assert.equal(evaluate(expression, { inputs: { hold: '' } }).value, '', id);
+  }
+  // composer 不知道项目的组名和流程名。
+  assert.doesNotMatch(xml, /preview-backend|backend-preview-deploy/);
+});
