@@ -22,7 +22,9 @@ description: 用 Coda 只读工具调查问题、提交工单并跟进进度。
 
 每次巡检先读取自己保存的问题记录，对未结束的工单用 `coda_workflow_status` 查询进度，再调查新证据。发现需要处理的问题，用 `coda_file_ticket` 提交标题、现象、影响、时间范围和证据；证据尽量含版本、日志、调用栈或相关代码位置。
 
-key 是同一问题的稳定指纹，例如 `desktop:update:stuck-download` 或 `backend:sync:duplicate-record`。用组件、故障类型和必要的影响范围组成；不要包含巡检时间、随机数或每次变化的事件 ID。同一问题始终使用同一个 key，未结束的同 key 工单会复用，不能换 key 重复提。
+key 是同一问题的稳定指纹，例如 `desktop:update:stuck-download` 或 `backend:sync:duplicate-record`。用组件、故障类型和必要的影响范围组成；不要包含巡检时间、随机数或每次变化的事件 ID。同一问题始终使用同一个 key，未结束的同 key 工单会复用；不要因为工单没进展就换 key 重提。
+
+工单提交后停在「待处理」，等主人在运行页选择交给 Agent 处理或关闭；主人没决定前没有进展，这不是失败。继续用 `coda_workflow_status` 跟进，不要当成失败重提。
 
 记下返回的 `run.id`、key、证据范围和最后状态。之后的 Routine 先查这些工单；查询 runId 可以用 run.id 或 `coda://workflow-runs/<run.id>`。未结束时继续跟进，不重复提交。失败时先看原因；已结束且再次出现的问题，先确认新证据和主人的要求，再决定是否提交。
 

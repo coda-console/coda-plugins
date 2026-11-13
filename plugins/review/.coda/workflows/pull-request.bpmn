@@ -8,7 +8,7 @@
      它推了新提交、评审通过后按你的批准合并，不再问。
      删除分支：你勾选后，等 GitHub 确认合并，再删除仍指向该提交的远程源分支；本地分支与工作树保留。
      合并后的流程：合并后在合并提交上运行你在批准卡上勾的流程（项目里加入挂点 merged 的）。
-     PR 在 GitHub 上合并或关闭，运行随之结束。也可以手动发起（传 GitHub 返回的 PR 地址），只评审一次。BPMN 2.0，由 Coda 执行（docs/workflows.md）。 -->
+     PR 在 GitHub 上合并或关闭，运行随之结束。也可以手动发起（传 GitHub 返回的 PR 地址），只评审一次；先问 GitHub 是不是自己的 PR，别人的不进这条流程，改用 pull-request-review。BPMN 2.0，由 Coda 执行（docs/workflows.md）。 -->
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="pull-request-definitions" targetNamespace="https://coda.pub/plugins/review">
   <message id="dispatch" name="workflow.dispatch" />
@@ -30,7 +30,24 @@
     <startEvent id="asked" name="手动发起"><messageEventDefinition messageRef="dispatch" /></startEvent>
     <sequenceFlow id="new-open" sourceRef="new" targetRef="opening" />
     <sequenceFlow id="pushed-open" sourceRef="pushed" targetRef="opening" />
-    <sequenceFlow id="asked-review" sourceRef="asked" targetRef="reviewing" />
+    <sequenceFlow id="asked-whose" sourceRef="asked" targetRef="whose" />
+
+    <!-- 手动发起先问一次 GitHub：PR 的作者是不是本机用于这个仓库的账号。别人写的代码不进这条处理链（检查、合并前检查、修复任务、批准、合并、部署），
+         手动发起也一样，这样的 PR 改用「只评审」的流程 pull-request-review；问不到就失败，不猜。自动入口收到的本来只有自己的 PR（别人的发 foreign_pull_request.*）。 -->
+    <scriptTask id="whose" name="看 PR 是谁的" coda:timeout="2" coda:checkout="false" coda:status="看 PR 是谁的" scriptFormat="bash">
+      <extensionElements>
+        <coda:env name="URL" value="=inputs.pr" />
+        <coda:output name="mine" />
+      </extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/mine.mjs"</script>
+    </scriptTask>
+    <sequenceFlow id="whose-known" sourceRef="whose" targetRef="owned" />
+    <exclusiveGateway id="owned" name="自己的 PR 吗" default="asked-review" />
+    <sequenceFlow id="asked-review" sourceRef="owned" targetRef="reviewing" />
+    <sequenceFlow id="asked-foreign" sourceRef="owned" targetRef="foreign-pr">
+      <conditionExpression xsi:type="tFormalExpression">=not(whose.mine)</conditionExpression>
+    </sequenceFlow>
+    <endEvent id="foreign-pr" coda:status="别人的 PR，不进这条流程：评审它请用「只评审」的流程 pull-request-review（参数 pr 同这个地址）" />
 
     <!-- 每次有了新版本都从这里重新看：草稿等作者，不是草稿就先等检查、再评审。 -->
     <exclusiveGateway id="opening" name="草稿吗" default="to-checking" />
