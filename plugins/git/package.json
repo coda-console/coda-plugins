@@ -1,10 +1,11 @@
 {
   "name": "@coda-console/git",
   "id": "git",
-  "displayName": "Git 源与快照",
-  "description": "登记本机 Git 源，提供只读快照",
+  "displayName": "Git 源",
+  "description": "登记本机 Git 源，提供只读 smart HTTP",
   "icon": { "symbol": "arrow.triangle.branch", "color": "orange" },
-  "version": "0.4.1",
+  "version": "0.5.0",
+  "coda": { "channels": ["preview"] },
   "categories": ["机器与资源"],
   "type": "module",
   "main": "main.mjs",
@@ -32,87 +33,9 @@
           "additionalProperties": false
         },
         "operations": {}
-      },
-      {
-        "name": "git/snapshot@1",
-        "title": "Git 快照",
-        "description": "按运行从 Git 源制作提交或工作树快照，供只读 smart HTTP 取用。",
-        "spec": {
-          "type": "object",
-          "properties": {
-            "source": { "type": "string", "minLength": 1 },
-            "mode": { "enum": ["commit", "worktree"] },
-            "commit": { "type": "string", "minLength": 1 },
-            "run": { "type": "string", "minLength": 1 }
-          },
-          "required": ["source", "mode", "run"],
-          "additionalProperties": false,
-          "oneOf": [
-            { "properties": { "mode": { "const": "commit" } }, "required": ["commit"] },
-            { "properties": { "mode": { "const": "worktree" } }, "not": { "required": ["commit"] } }
-          ]
-        },
-        "status": {
-          "type": "object",
-          "properties": {
-            "ready": { "type": "boolean" },
-            "commit": { "type": "string", "minLength": 1 },
-            "ref": { "type": "string", "minLength": 1 },
-            "url": { "type": "string", "minLength": 1 },
-            "reason": { "type": "string", "minLength": 1 },
-            "released": { "type": "boolean" }
-          },
-          "required": [],
-          "additionalProperties": false
-        },
-        "operations": {}
-      },
-      {
-        "name": "git/service@1",
-        "title": "Git 服务",
-        "description": "本机 Git 快照调用：从一个工作副本目录拍工作树快照并发布。",
-        "spec": {
-          "type": "object",
-          "properties": {},
-          "additionalProperties": false
-        },
-        "status": {
-          "type": "object",
-          "properties": {},
-          "additionalProperties": false
-        },
-        "operations": {
-          "snapshot": {
-            "description": "从本机工作副本的一个目录拍工作树快照，发布源与快照，立即返回快照引用、提交与目录。",
-            "input": {
-              "type": "object",
-              "properties": { "path": { "type": "string", "minLength": 1 } },
-              "required": ["path"],
-              "additionalProperties": false
-            },
-            "result": {
-              "type": "object",
-              "properties": {
-                "snapshot": {
-                  "type": "object",
-                  "properties": {
-                    "kind": { "const": "git/snapshot@1" },
-                    "id": { "type": "string", "minLength": 1 }
-                  },
-                  "required": ["kind", "id"],
-                  "additionalProperties": false
-                },
-                "commit": { "type": "string", "minLength": 1 },
-                "workingDirectory": { "type": "string", "minLength": 1 }
-              },
-              "required": ["snapshot", "commit", "workingDirectory"],
-              "additionalProperties": false
-            }
-          }
-        }
       }
     ],
-    "protocolImplementations": ["git/source@1", "git/snapshot@1", "git/service@1"],
+    "protocolImplementations": ["git/source@1"],
     "skills": ["skills/git-source"]
   },
   "engines": { "node": ">=24" },

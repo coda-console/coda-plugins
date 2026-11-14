@@ -29,16 +29,15 @@ export const packet = line => Buffer.from((Buffer.byteLength(line) + 4).toString
 // The plugin's reconciliation runs against the synchronized host API and real Git. Storage/transport belong
 // to Coda's tests; this fixture supplies events and rejects stale revisions, without starting a backend.
 export function host(state) {
-  const types = new ProtocolTypes(), objects = new Map(), listeners = new Map(), runs = new Map();
+  const types = new ProtocolTypes(), objects = new Map(), listeners = new Map();
   const published = new Set(), operations = new Map();
   for (const definition of manifest.contributes.protocols)
     types.register({ kind: definition.name, spec: definition.spec, status: definition.status, participants: () => [] });
   const failures = []; let revision = 0;
   const emit = (collection, event) => { for (const fn of listeners.get(collection) ?? []) fn(structuredClone(event)); };
-  const watch = async (collection, fn, filter) => {
+  const watch = async (collection, fn) => {
     const set = listeners.get(collection) ?? new Set(); listeners.set(collection, set); set.add(fn);
-    const entries = collection === 'workflow-runs' ? [...runs.values()] : [...objects.values()].filter(o => o.kind === collection);
-    for (const object of entries) if (!filter?.run || object.id === filter.run) fn({ type: 'ADDED', id: object.id, object: structuredClone(object) });
+    for (const object of objects.values()) if (object.kind === collection) fn({ type: 'ADDED', id: object.id, object: structuredClone(object) });
     return { dispose: () => set.delete(fn) };
   };
   const call = async (method, args) => {
@@ -59,13 +58,10 @@ export function host(state) {
   };
   const plugin = { id: 'git', protocolImplementations: manifest.contributes.protocolImplementations };
   const coda = { plugin: { state }, environment: async () => env, watch,
-    api: async path => { const run = runs.get(path.split('/').at(-1)); if (!run) throw new Error('run not found'); return run; },
     services: { register: async (_id, handler) => { coda.handler = handler; return { dispose() {} }; } },
     protocols: providerAPI({ call, watch, plugin, operations, report: (...error) => failures.push(error) }),
   };
-  return { coda, objects, failures, published, operations, run(id, state = 'running') {
-    const object = { id, runId: id, state }; runs.set(id, object); emit('workflow-runs', { type: 'MODIFIED', id, object });
-  } };
+  return { coda, objects, failures, published, operations };
 }
 export async function idle(provider) {
   for (let i = 0; i < 100; i++) {
