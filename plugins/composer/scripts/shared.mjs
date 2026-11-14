@@ -82,31 +82,36 @@ export function mergePr(url, head, method) {
 
 // 合并后的挂点 merged（README「合并后的流程」）。批准卡用 hook-joiners 的列表（JOINERS）展开勾选项；从卡的答复读出勾了哪些加入者、
 // 卡上写了的文字，以及勾上的加入者要、卡上没写的输入（每个输入一项：标签和要它的加入者）。`missing` 是这些输入的 ID（逗号分隔，
-// 给多实例的 split）；`asks` 每个一行，与 `missing` 同序，任务按 loopCounter 取自己那一行。
+// 给多实例的 split）；`asks` 每个一行，与 `missing` 同序，任务按 loopCounter 取自己那一行；
+// `needs` 是每个输入对应的加入者 ID（JSON）。
 export function outputPicked(answer, joiners) {
   const list = joiners ? JSON.parse(joiners) : [], options = answer.options ?? {}, written = answer.inputs ?? {};
   const ticked = list.filter(joiner => options[joiner.id] === true), inputs = {}, missing = new Map();
   for (const joiner of ticked) for (const { id, label } of joiner.inputs ?? []) {
     const text = String(written[id] ?? '').trim();
     if (text) inputs[id] = text;
-    else (missing.get(id) ?? missing.set(id, { label, for: [] }).get(id)).for.push(joiner.name);
+    else (missing.get(id) ?? missing.set(id, { label, for: [] }).get(id)).for.push(joiner);
   }
   output('only', JSON.stringify(ticked.map(joiner => joiner.id)));
   output('picked', ticked.map(joiner => joiner.name).join('、'));
   output('inputs', JSON.stringify(inputs));
   output('missing', [...missing.keys()].join(','));
-  output('asks', [...missing.values()].map(m => `「${m.label}」：${m.for.join('、')}要`).join('\n'));
+  output('asks', [...missing.values()].map(m => `「${m.label}」：${m.for.map(joiner => joiner.name).join('、')}要`).join('\n'));
+  output('needs', JSON.stringify(Object.fromEntries([...missing].map(([id, m]) => [id, m.for.map(joiner => joiner.id)]))));
 }
 
 // 交给 run-workflows 的 inputs：卡上写了的，加主 Agent 在「填写合并后流程要的文字」里写的（FILLS，多实例按 MISSING 的顺序各一份）。
-// 任务要求必须附言，只附文件、没写字的这里失败并写明是哪一项。
+// 任务要求必须附言，只附文件、没写字的这里失败并写明是哪一项。选了「这一项这次不跑」（skip）的输入不写，要它的加入者
+// 全部从 only 里去掉（ONLY、NEEDS）；输出的 only 是接着要运行的，空就是 `[]`。
 export function outputFilled() {
   const inputs = JSON.parse(process.env.INPUTS || '{}'), ids = (process.env.MISSING || '').split(',').filter(Boolean);
-  const fills = ids.length ? JSON.parse(process.env.FILLS || '[]') : [], asks = (process.env.ASKS || '').split('\n');
+  const fills = ids.length ? JSON.parse(process.env.FILLS || '[]') : [], asks = (process.env.ASKS || '').split('\n'), dropped = new Set();
   ids.forEach((id, i) => {
+    if (fills[i]?.choice === 'skip') { JSON.parse(process.env.NEEDS)[id].forEach(joiner => dropped.add(joiner)); return; }
     const text = String(fills[i]?.note ?? '').trim();
     if (!text) { console.error(`${asks[i] || id}：没有填写，不运行合并后的流程`); process.exit(1); }
     inputs[id] = text;
   });
   output('inputs', JSON.stringify(inputs));
+  output('only', JSON.stringify(JSON.parse(process.env.ONLY || '[]').filter(id => !dropped.has(id))));
 }

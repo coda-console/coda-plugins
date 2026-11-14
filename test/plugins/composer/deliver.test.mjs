@@ -269,9 +269,10 @@ test('需求流程回路、人工任务、结果通知和合并后的流程契�
   assert.deepEqual([loop.isSequential, loop.inputElement], [true, 'input']);
   assert.deepEqual(evaluate(loop.inputCollection.slice(1), { 'approval-result': { missing: 'notes' } }).value, ['notes']);
   assert.equal(nodes.fill.assignee, undefined, '交主 Agent');
-  assert.deepEqual(values(nodes.fill).map(v => [v.id, v.note]), [['done', 'required']]);
-  assert.deepEqual(envs('merged-inputs'), { INPUTS: '=approval-result.inputs', MISSING: '=approval-result.missing', ASKS: '=approval-result.asks', FILLS: '=fill' });
-  assert.deepEqual(params('run-merged'), { hook: 'merged', only: '=approval-result.only', commit: '=merged.commit', inputs: '=merged-inputs.inputs' });
+  assert.deepEqual(values(nodes.fill).map(v => [v.id, v.note]), [['done', 'required'], ['skip', undefined]]);
+  assert.deepEqual(envs('merged-inputs'), { INPUTS: '=approval-result.inputs', MISSING: '=approval-result.missing', ASKS: '=approval-result.asks', FILLS: '=fill', NEEDS: '=approval-result.needs', ONLY: '=approval-result.only' });
+  assert.equal(route('left', { 'merged-inputs': { only: '["deploy"]' } }), 'run-merged');
+  assert.deepEqual(params('run-merged'), { hook: 'merged', only: '=merged-inputs.only', commit: '=merged.commit', inputs: '=merged-inputs.inputs' });
   assert.deepEqual(process.flowElements.filter(e => e.action === 'run-workflows').map(e => e.id), ['run-merged']);
   assert.deepEqual(process.flowElements.filter(e => e.action === 'tell-session').map(e => e.id), ['tell-result']);
   assert.equal(params('tell-result').session, undefined);
@@ -298,9 +299,45 @@ test('批准交付记下勾了哪些合并后的流程与没写的文字；主 A
     { id: 'publish-release', name: '发布正式版', default: false, inputs: [{ id: 'notes', label: '发布说明' }] },
   ]);
   const approve = (options, inputs = {}) => f.run('approval', { RESPONSE: JSON.stringify({ choice: 'merge', options, inputs }), JOINERS: joiners }).outputs;
-  assert.deepEqual(approve({ deploy: false, 'publish-release': false }), { feedback: '', route: 'release', only: '[]', picked: '', inputs: '{}', missing: '', asks: '' });
-  assert.deepEqual(approve({ deploy: true, 'publish-release': true }), { feedback: '', route: 'release', only: '["deploy","publish-release"]', picked: '部署、发布正式版', inputs: '{}', missing: 'notes', asks: '「发布说明」：发布正式版要' });
+  assert.deepEqual(approve({ deploy: false, 'publish-release': false }), { feedback: '', route: 'release', only: '[]', picked: '', inputs: '{}', missing: '', asks: '', needs: '{}' });
+  assert.deepEqual(approve({ deploy: true, 'publish-release': true }), { feedback: '', route: 'release', only: '["deploy","publish-release"]', picked: '部署、发布正式版', inputs: '{}', missing: 'notes', asks: '「发布说明」：发布正式版要', needs: '{"notes":["publish-release"]}' });
   assert.deepEqual(approve({ deploy: false, 'publish-release': true }, { notes: '新版说明' }).inputs, '{"notes":"新版说明"}');
-  assert.deepEqual(f.run('inputs', { INPUTS: '{}', MISSING: 'notes', ASKS: '「发布说明」：发布正式版要', FILLS: JSON.stringify([{ result: 'completed', note: '主 Agent 的说明' }]) }).outputs, { inputs: '{"notes":"主 Agent 的说明"}' });
+  assert.deepEqual(f.run('inputs', { INPUTS: '{}', MISSING: 'notes', ASKS: '「发布说明」：发布正式版要', FILLS: JSON.stringify([{ result: 'completed', note: '主 Agent 的说明' }]),
+    NEEDS: '{"notes":["publish-release"]}', ONLY: '["deploy","publish-release"]' }).outputs, { inputs: '{"notes":"主 Agent 的说明"}', only: '["deploy","publish-release"]' });
   assert.match(f.run('inputs', { INPUTS: '{}', MISSING: 'notes', ASKS: '「发布说明」：发布正式版要', FILLS: JSON.stringify([{ result: 'completed', note: ' ' }]) }, 1).stderr, /「发布说明」：发布正式版要：没有填写/);
+});
+
+// 主 Agent 选「这一项这次不跑」：要这段文字的加入者全部从 only 里去掉，其余照跑；一个不剩就不进 run-merged，直接进真实环境验证。
+async function afterSkip(t, ticked, fills) {
+  const f = fixture(t, false);
+  const joiners = JSON.stringify([
+    { id: 'deploy', name: '部署', default: false },
+    { id: 'publish-preview', name: '发布预览版', default: false, inputs: [{ id: 'notes', label: '发布说明' }] },
+    { id: 'publish-release', name: '发布正式版', default: false, inputs: [{ id: 'notes', label: '发布说明' }] },
+  ]);
+  const options = Object.fromEntries(ticked.map(id => [id, true]));
+  const approval = f.run('approval', { RESPONSE: JSON.stringify({ choice: 'merge', options, inputs: {} }), JOINERS: joiners }).outputs;
+  const merged = f.run('inputs', { INPUTS: approval.inputs, MISSING: approval.missing, ASKS: approval.asks, NEEDS: approval.needs, ONLY: approval.only, FILLS: JSON.stringify(fills) }).outputs;
+  const { root, problem } = await readWorkflow(workflow, 'deliver'); assert.ok(!problem, problem);
+  const flow = root.rootElements.find(e => e.$type === 'bpmn:Process');
+  const elements = [...flow.flowElements, ...flow.flowElements.find(e => e.id === 'acceptance').flowElements];
+  const nodes = Object.fromEntries(elements.map(e => [e.id, e])), context = { merged: { route: 'deploy' }, 'approval-result': approval, 'merged-inputs': merged }, visited = [];
+  for (let step = 'merged-choice'; step !== 'verify';) {
+    const node = nodes[step], flows = elements.filter(e => e.sourceRef === node);
+    if (!node.$type.endsWith('Gateway')) visited.push(step);
+    step = (node.$type === 'bpmn:ExclusiveGateway'
+      ? flows.find(e => e.conditionExpression && evaluate(e.conditionExpression.body.trim().slice(1), context).value)?.targetRef ?? node.default.targetRef
+      : flows[0].targetRef).id;
+  }
+  return { visited, merged };
+}
+
+test('批准交付后：主 Agent 选「这一项这次不跑」，要这段文字的加入者都不跑，其余照跑，接着真实环境验证', async t => {
+  const skipped = await afterSkip(t, ['deploy', 'publish-preview', 'publish-release'], [{ result: 'completed', choice: 'skip', note: '' }]);
+  assert.deepEqual([skipped.merged.only, skipped.merged.inputs, skipped.visited], ['["deploy"]', '{}', ['fill', 'merged-inputs', 'run-merged']]);
+});
+
+test('批准交付后：勾了的都被「这一项这次不跑」去掉，不进 run-merged，直接真实环境验证', async t => {
+  const skipped = await afterSkip(t, ['publish-preview', 'publish-release'], [{ result: 'completed', choice: 'skip', note: '' }]);
+  assert.deepEqual([skipped.merged.only, skipped.visited], ['[]', ['fill', 'merged-inputs']]);
 });

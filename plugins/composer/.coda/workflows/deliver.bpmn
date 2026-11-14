@@ -189,7 +189,7 @@ PR：链接
       <extensionElements>
         <coda:env name="RESPONSE" value="=approve" /><coda:env name="JOINERS" value="=joiners.list" />
         <coda:output name="route" /><coda:output name="feedback" />
-        <coda:output name="only" /><coda:output name="picked" /><coda:output name="inputs" /><coda:output name="missing" /><coda:output name="asks" />
+        <coda:output name="only" /><coda:output name="picked" /><coda:output name="inputs" /><coda:output name="missing" /><coda:output name="asks" /><coda:output name="needs" />
       </extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/deliver.mjs" approval</script>
     </scriptTask>
@@ -233,23 +233,27 @@ PR：链接
 需求：{{init.title}}
 成员 PR：
 {{confirm-result.members}}
-主 Agent：按这次交付合并进来的改动写这段面向用户的文字，不用审查意见；备注只放文字本身。</documentation>
-      <extensionElements><coda:choice id="done" name="已写好" primary="true" note="required" /></extensionElements>
+主 Agent：按这次交付合并进来的改动写这段面向用户的文字，不用审查意见；备注只放文字本身。
+选「这一项这次不跑」（备注可不写）：这段文字不写，要它的流程这次都不跑，其余勾了的照常运行；都不跑了就直接结束。不想发出这段文字、写不出时选它，不要答复 rejected。</documentation>
+      <extensionElements><coda:choice id="done" name="已写好" primary="true" note="required" /><coda:choice id="skip" name="这一项这次不跑" /></extensionElements>
       <multiInstanceLoopCharacteristics isSequential="true" coda:inputCollection='=split(approval-result.missing, ",")' coda:inputElement="input" />
     </userTask>
     <sequenceFlow id="fill-inputs" sourceRef="fill" targetRef="merged-inputs" />
     <scriptTask id="merged-inputs" name="整理合并后流程的参数" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
       <extensionElements>
         <coda:env name="INPUTS" value="=approval-result.inputs" /><coda:env name="MISSING" value="=approval-result.missing" />
-        <coda:env name="ASKS" value="=approval-result.asks" /><coda:env name="FILLS" value="=fill" />
-        <coda:output name="inputs" />
+        <coda:env name="ASKS" value="=approval-result.asks" /><coda:env name="FILLS" value="=fill" /><coda:env name="NEEDS" value="=approval-result.needs" /><coda:env name="ONLY" value="=approval-result.only" />
+        <coda:output name="inputs" /><coda:output name="only" />
       </extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/deliver.mjs" inputs</script>
     </scriptTask>
-    <sequenceFlow id="merged-inputs-run" sourceRef="merged-inputs" targetRef="run-merged" />
+    <sequenceFlow id="merged-inputs-run" sourceRef="merged-inputs" targetRef="left" />
+    <exclusiveGateway id="left" name="还有要跑的合并后流程吗" default="left-run" />
+    <sequenceFlow id="left-none" sourceRef="left" targetRef="verify"><conditionExpression xsi:type="tFormalExpression">=merged-inputs.only = "[]"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="left-run" sourceRef="left" targetRef="run-merged" />
     <serviceTask id="run-merged" name="合并后的流程" coda:action="run-workflows">
       <extensionElements>
-        <coda:param name="hook" value="merged" /><coda:param name="only" value="=approval-result.only" />
+        <coda:param name="hook" value="merged" /><coda:param name="only" value="=merged-inputs.only" />
         <coda:param name="commit" value="=merged.commit" /><coda:param name="inputs" value="=merged-inputs.inputs" />
       </extensionElements>
     </serviceTask>

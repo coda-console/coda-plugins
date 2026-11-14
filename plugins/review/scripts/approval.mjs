@@ -2,23 +2,28 @@
 // asking for changes later voids it), and what they chose to follow the merge: `deleteBranch`, `notify`, and the workflows
 // joining the hook `merged` they ticked (JOINERS is the list hook-joiners gave the card): `only`, their names as JSON for
 // run-workflows; `inputs`, the text the card took for them; `missing`, the ids (comma separated) of the inputs they ask
-// for that the card left empty, and `asks`, a line for each, in the same order, saying which of them asks. `what` is the
+// for that the card left empty, `asks`, a line for each, in the same order, saying which of them asks, and `needs`, for
+// each of those ids the ticked workflows that ask for it (JSON). `what` is the
 // choice as the merge step says it. Put out here, not by the merge step, so that the process follows the choice however it
 // hears of the merge: after the merge step, or from GitHub while that step still runs.
 //
 // With `inputs`, after the merge: what run-workflows gives them, the card's text and what the session wrote for each of
-// `missing` (FILLS, one task each, in order); one written with no text fails the step, naming it.
+// `missing` (FILLS, one task each, in order); one written with no text fails the step, naming it. A text the session
+// answered `skip` for is not written, and every ticked workflow asking for it drops out of `only` (ONLY, NEEDS): the
+// `only` to run, `[]` when none is left.
 import { json, output } from './step.mjs';
 
 if (process.argv[2] === 'inputs') {
-  const inputs = json('INPUTS', {}), ids = (process.env.MISSING || '').split(',').filter(Boolean);
-  const fills = json('FILLS', []), asks = (process.env.ASKS || '').split('\n');
+  const inputs = json('INPUTS', {}), ids = (process.env.MISSING || '').split(',').filter(Boolean), needs = json('NEEDS', {});
+  const fills = json('FILLS', []), asks = (process.env.ASKS || '').split('\n'), dropped = new Set();
   ids.forEach((id, i) => {
+    if (fills[i]?.choice === 'skip') { needs[id].forEach(joiner => dropped.add(joiner)); return; }
     const text = String(fills[i]?.note ?? '').trim();
     if (!text) { console.error(`${asks[i] || id}：没有填写，不运行合并后的流程`); process.exit(1); }
     inputs[id] = text;
   });
   output('inputs', JSON.stringify(inputs));
+  output('only', JSON.stringify(json('ONLY', []).filter(id => !dropped.has(id))));
   process.exit(0);
 }
 
@@ -28,7 +33,7 @@ const ticked = json('JOINERS', []).filter(joiner => chosen(joiner.id)), inputs =
 for (const joiner of ticked) for (const { id, label } of joiner.inputs ?? []) {
   const text = String(written[id] ?? '').trim();
   if (text) inputs[id] = text;
-  else (missing.get(id) ?? missing.set(id, { label, for: [] }).get(id)).for.push(joiner.name);
+  else (missing.get(id) ?? missing.set(id, { label, for: [] }).get(id)).for.push(joiner);
 }
 output('at', Date.now());
 output('deleteBranch', chosen('deleteBranch'));
@@ -36,6 +41,7 @@ output('notify', chosen('notify'));
 output('only', JSON.stringify(ticked.map(joiner => joiner.id)));
 output('inputs', JSON.stringify(inputs));
 output('missing', [...missing.keys()].join(','));
-output('asks', [...missing.values()].map(m => `「${m.label}」：${m.for.join('、')}要`).join('\n'));
+output('asks', [...missing.values()].map(m => `「${m.label}」：${m.for.map(joiner => joiner.name).join('、')}要`).join('\n'));
+output('needs', JSON.stringify(Object.fromEntries([...missing].map(([id, m]) => [id, m.for.map(joiner => joiner.id)]))));
 output('what', ['合并', ...(chosen('deleteBranch') ? ['合并后删除远程分支'] : []), ...ticked.map(joiner => joiner.name),
   ...(chosen('notify') ? ['全部完成后通知 Agent'] : [])].join(' · '));
