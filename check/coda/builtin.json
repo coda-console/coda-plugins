@@ -255,7 +255,7 @@
     "id": "github",
     "displayName": "GitHub",
     "description": "登录账号，推送时自动选对账号",
-    "version": "1.10.1",
+    "version": "1.11.0",
     "category": "模型与账号",
     "icon": {
       "symbol": "arrow.triangle.pull",
@@ -328,6 +328,19 @@
       },
       {
         "name": "pull_request.closed",
+        "starts": false,
+        "ends": true
+      },
+      {
+        "name": "foreign_pull_request.opened",
+        "starts": true
+      },
+      {
+        "name": "foreign_pull_request.synchronize",
+        "starts": true
+      },
+      {
+        "name": "foreign_pull_request.closed",
         "starts": false,
         "ends": true
       }
@@ -1088,7 +1101,7 @@
     "id": "claude",
     "displayName": "Claude",
     "description": "用 Claude Agent SDK 跑会话",
-    "version": "1.12.2",
+    "version": "1.12.3",
     "category": "Agent",
     "icon": {
       "light": "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",
@@ -1099,8 +1112,8 @@
       "kind": "builtin",
       "package": "@coda-console/claude",
       "tag": "latest",
-      "version": "1.12.2",
-      "integrity": "sha512-DXOH6S84kBHb83P+YgAWEe1CX/eaQcar3YOrNZBDqJwG+oOfwrtp7zdHBKMxL0c2+wV/x5DojQ79TUFKNeU4cw==",
+      "version": "1.12.3",
+      "integrity": "sha512-IeLAR+Fx1DuAdE7CawFvb7SaY9bSpIZ15Z7VVMJXRFprwG2N8i7P9QfsOnpVeCFNGWuY0+8k2cwxi+4rE18tfw==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/claude"
     },
@@ -1351,7 +1364,7 @@
     "id": "composer",
     "displayName": "输入框模式",
     "description": "交接、子会话、! 命令、Ultra 与循环",
-    "version": "8.0.0",
+    "version": "9.2.0",
     "category": "工作流程",
     "icon": {
       "symbol": "character.cursor.ibeam",
@@ -1362,8 +1375,8 @@
       "kind": "builtin",
       "package": "@coda-console/composer",
       "tag": "latest",
-      "version": "8.0.0",
-      "integrity": "sha512-SBThmyzC1SkOrYPP0Lr3f/qAoN0QyjzAfsD+k3FS7k6Ltnt8S8eoIxubr01AA01nKUSOuwCPe0/5AHVq+nmUjw==",
+      "version": "9.2.0",
+      "integrity": "sha512-upykW4ctCyaLNw4LTvBxR/L77hQBIw7wix93sB7LurVDZNWlgvCQn3tNFxgcRBnPlyhWv+bYiTOts25MEbBHLw==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/composer"
     },
@@ -1941,7 +1954,7 @@
     "id": "review",
     "displayName": "PR 生命流程",
     "description": "PR 从检查、评审到批准合并；简易开发",
-    "version": "2.17.1",
+    "version": "3.3.0",
     "category": "工作流程",
     "icon": {
       "symbol": "checkmark.bubble.fill",
@@ -1952,8 +1965,8 @@
       "kind": "builtin",
       "package": "@coda-console/review",
       "tag": "latest",
-      "version": "2.17.1",
-      "integrity": "sha512-xHMDaJrG2nFaXiwB+L8ans+x2DQYS6oLVuiCgeZRmc0pprHZNRu9xcWjHE1nLNVMjL+S0HIQ9fMcNKC99BXN2A==",
+      "version": "3.3.0",
+      "integrity": "sha512-gRoC1I+MZmlx+hBI2seQVSIYG0flcxYQcgc5CuTPC0BTPpOOxz1UnAo6ftn/TvAO0dZeF+KQdMsZGrQCKkfgkQ==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/review"
     },
@@ -1962,7 +1975,7 @@
     "properties": {
       "review.autoRun": {
         "type": "boolean",
-        "description": "会话开的 PR 新建或有新提交时自动开始 PR 生命流程。关掉后只能手动发起；会话或目录在「工作流」里单独设过的，按它们的。不影响简易开发。",
+        "description": "会话开的 PR 新建或有新提交时自动开始 PR 生命流程，别人写的 PR 自动开始只评审。关掉后只能手动发起；会话或目录在「工作流」里单独设过的，按它们的。不影响简易开发。",
         "title": "PR 自动运行",
         "order": 0,
         "default": true
@@ -1997,6 +2010,10 @@
           "opencode": {
             "agent": "claude-sdk",
             "mode": "auto"
+          },
+          "*": {
+            "agent": "codex",
+            "mode": "agent"
           }
         }
       },
@@ -2070,7 +2087,7 @@
       },
       "review.mergeOptions": {
         "type": "array",
-        "description": "合并卡片初始勾选这些选项，直接点「合并」也按此执行。每次合并前可以调整；目录可以覆盖，且只显示该目录可用的选项。",
+        "description": "合并卡片初始勾选这些选项，直接点「合并」也按此执行。每次合并前可以调整；目录可以覆盖。合并后的流程勾不勾由项目里的流程自己声明。",
         "title": "合并时默认勾选",
         "order": 6,
         "options": [
@@ -2080,27 +2097,9 @@
             "description": "删除这个 PR 的远程源分支，本地分支和工作树保留"
           },
           {
-            "value": "deploy",
-            "title": "部署",
-            "description": "调用项目里的部署流程",
-            "workflowKind": "deploy"
-          },
-          {
-            "value": "preview",
-            "title": "发布预览版",
-            "description": "调用项目里的预览发布流程",
-            "workflowKind": "preview"
-          },
-          {
-            "value": "release",
-            "title": "发布正式版",
-            "description": "调用项目里的正式发布流程",
-            "workflowKind": "release"
-          },
-          {
             "value": "notify",
             "title": "全部完成后通知 Agent",
-            "description": "合并及所选删除分支、部署、发布结束后通知"
+            "description": "合并及所选删除分支、合并后的流程结束后通知"
           }
         ],
         "default": []
@@ -2108,6 +2107,7 @@
     },
     "workflows": [
       "pull-request",
+      "pull-request-review",
       "simple"
     ],
     "services": [],

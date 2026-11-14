@@ -61,8 +61,7 @@ export function setting(value, where) {
     if (value.items.modelApis) out.modelApis = [...new Set(value.items.modelApis)];
   } else if (value.type === 'array' && value.items.type === 'object') out.rows = setting(value.items, `${where}.items`);
   else if (value.type === 'array') out.options = value.items.anyOf.map(option => ({ value: option.const,
-    ...(option.title ? { title: option.title } : {}), ...(option.description ? { description: option.description } : {}),
-    ...(option.workflowKind ? { workflowKind: option.workflowKind } : {}) }));
+    ...(option.title ? { title: option.title } : {}), ...(option.description ? { description: option.description } : {}) }));
   else if (value.type === 'object' && value.properties) {
     out.columns = Object.fromEntries(Object.entries(value.properties).map(([name, column]) => [name, setting(column, `${where}.properties.${name}`)]));
     if (value.required?.length) out.required = [...value.required];
