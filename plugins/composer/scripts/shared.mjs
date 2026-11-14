@@ -102,7 +102,7 @@ export function outputPicked(answer, joiners) {
 
 // 交给 run-workflows 的 inputs：卡上写了的，加主 Agent 在「填写合并后流程要的文字」里写的（FILLS，多实例按 MISSING 的顺序各一份）。
 // 任务要求必须附言，只附文件、没写字的这里失败并写明是哪一项。选了「这一项这次不跑」（skip）的输入不写，要它的加入者
-// 全部从 only 里去掉（ONLY、NEEDS）；输出的 only 是接着要运行的，空就是 `[]`。
+// 全部从 only 里去掉（ONLY、NEEDS）；输出的 only 是接着要运行的，空就是 `[]`，也作为返回值。
 export function outputFilled() {
   const inputs = JSON.parse(process.env.INPUTS || '{}'), ids = (process.env.MISSING || '').split(',').filter(Boolean);
   const fills = ids.length ? JSON.parse(process.env.FILLS || '[]') : [], asks = (process.env.ASKS || '').split('\n'), dropped = new Set();
@@ -113,5 +113,7 @@ export function outputFilled() {
     inputs[id] = text;
   });
   output('inputs', JSON.stringify(inputs));
-  output('only', JSON.stringify(JSON.parse(process.env.ONLY || '[]').filter(id => !dropped.has(id))));
+  const only = JSON.parse(process.env.ONLY || '[]').filter(id => !dropped.has(id));
+  output('only', JSON.stringify(only));
+  return only;
 }

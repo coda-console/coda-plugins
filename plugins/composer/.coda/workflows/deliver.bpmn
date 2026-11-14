@@ -222,7 +222,6 @@ PR：链接
     <!-- 合并后：运行批准卡上勾的流程（挂点 merged 的 only），它们要的文字卡上没写的先交主 Agent 逐项写。 -->
     <exclusiveGateway id="merged-choice" name="是否运行合并后的流程" default="merged-fill-choice" />
     <sequenceFlow id="merged-note" sourceRef="merged-choice" targetRef="release"><conditionExpression xsi:type="tFormalExpression">=merged.route = "merged"</conditionExpression></sequenceFlow>
-    <sequenceFlow id="merged-only" sourceRef="merged-choice" targetRef="verify"><conditionExpression xsi:type="tFormalExpression">=approval-result.only = "[]"</conditionExpression></sequenceFlow>
     <sequenceFlow id="merged-fill-choice" sourceRef="merged-choice" targetRef="fill-choice" />
     <exclusiveGateway id="fill-choice" name="是否有没写的文字" default="fill-skip" />
     <sequenceFlow id="fill-needed" sourceRef="fill-choice" targetRef="fill"><conditionExpression xsi:type="tFormalExpression">=approval-result.missing != ""</conditionExpression></sequenceFlow>
@@ -242,8 +241,8 @@ PR：链接
     <scriptTask id="merged-inputs" name="整理合并后流程的参数" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
       <extensionElements>
         <coda:env name="INPUTS" value="=approval-result.inputs" /><coda:env name="MISSING" value="=approval-result.missing" />
-        <coda:env name="ASKS" value="=approval-result.asks" /><coda:env name="FILLS" value="=fill" /><coda:env name="NEEDS" value="=approval-result.needs" /><coda:env name="ONLY" value="=approval-result.only" />
-        <coda:output name="inputs" /><coda:output name="only" />
+        <coda:env name="ASKS" value="=approval-result.asks" /><coda:env name="FILLS" value="=fill" /><coda:env name="NEEDS" value="=approval-result.needs" /><coda:env name="ONLY" value="=approval-result.only" /><coda:env name="JOINERS" value="=joiners.list" />
+        <coda:output name="inputs" /><coda:output name="only" /><coda:output name="picked" />
       </extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/deliver.mjs" inputs</script>
     </scriptTask>
@@ -262,7 +261,7 @@ PR：链接
       <documentation>需求：{{init.title}}
 目标与完成标准：{{init.goal}}
 本项目合并提交：{{merged.commit}}
-{{if approval-result.only = "[]" then "用户没有勾合并后的流程，请主 Agent 在当前真实环境按目标验证，并在备注说明没有部署造成的未验证部分。" else "已运行合并后的流程：" + approval-result.picked + "。请主 Agent 按目标在真实环境走一遍。"}}
+{{if merged-inputs.only = "[]" then "没有运行合并后的流程（用户没有勾，或勾了的都选了不跑），请主 Agent 在当前真实环境按目标验证，并在备注说明没有部署造成的未验证部分。" else "已运行合并后的流程：" + merged-inputs.picked + "。请主 Agent 按目标在真实环境走一遍。"}}
 选「通过」或「有问题」；有问题时备注必填，写实际问题和未达标之处，结论会通知发起会话。
 {{if verify-result.feedback = null then "" else verify-result.feedback}}</documentation>
       <extensionElements><coda:choice id="yes" name="通过" primary="true" /><coda:choice id="no" name="有问题" /></extensionElements>
@@ -279,7 +278,7 @@ PR：链接
     <serviceTask id="tell-result" name="告诉发起会话验证结论" coda:action="tell-session">
       <extensionElements>
         <coda:param name="key" value='=run.id + ":verified:" + merged.commit' />
-        <coda:param name="text" value='="需求「" + init.title + "」：" + (if approval-result.only = "[]" then "没有运行合并后的流程，" else "已运行" + approval-result.picked + "，") + "真实环境验证" + (if verify.chose.yes then "通过。" else "有问题。") + "\n" + verify.note + "\n提交：" + merged.commit' />
+        <coda:param name="text" value='="需求「" + init.title + "」：" + (if merged-inputs.only = "[]" then "没有运行合并后的流程，" else "已运行" + merged-inputs.picked + "，") + "真实环境验证" + (if verify.chose.yes then "通过。" else "有问题。") + "\n" + verify.note + "\n提交：" + merged.commit' />
       </extensionElements>
     </serviceTask>
     <sequenceFlow id="result-done" sourceRef="tell-result" targetRef="done" />
