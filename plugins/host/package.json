@@ -4,7 +4,12 @@
   "displayName": "宿主资源",
   "description": "本机运行器与 Xcode、模拟器的排队名额",
   "icon": { "symbol": "hammer.fill", "color": "gray" },
-  "version": "2.3.1",
+  "version": "2.4.0",
+  "coda": {
+    "channels": [
+      "preview"
+    ]
+  },
   "categories": [
     "机器与资源"
   ],
@@ -36,7 +41,7 @@
         "description": "host-sim 的其他 --kind（如测试机的设备名）：host-sim 把整条命令交给接在这里的第一个命令，参数原样附在后面"
       }
     },
-    "instructions": "Xcode 构建、模拟器及 host-sim 脚本用 workflow_run 调 run-held：inputs 给 command、cwd，模拟器加 what=模拟器；要产物加 local=true，否则满了可能去别的 Mac 跑。模拟器60、其他30分钟，timeoutMinutes 调高；idleMinutes 10分钟无输出即失败，0关闭。原生子 Agent 交主会话；其他命令直接执行。",
+    "instructions": "Xcode 构建、模拟器及 host-sim 脚本用 workflow_run 调 run-held：inputs 给 command、cwd，模拟器加 what=模拟器；只在本机排队。模拟器60、其他30分钟，timeoutMinutes 调高；idleMinutes 10分钟无输出即失败，0关闭。原生子 Agent 交主会话；其他命令直接执行。",
     "configuration": {
       "title": "宿主资源",
       "properties": {
@@ -55,18 +60,6 @@
           "order": 2,
           "default": "R/P1D",
           "description": "多久清点一次：不占名额，只删本实例登记且归属运行与收尾已结束的模拟器；使用中或归属未知的跳过。ISO 8601 重复间隔，R/P1D 是每天一次，从 Coda 第一次登记这个周期起算；最短 5 分钟。"
-        },
-        "host.enabled": {
-          "title": "接收执行请求",
-          "type": "boolean",
-          "default": true,
-          "description": "公布本机执行环境并接受 execute 调用；关闭后不再接新任务，已接收的任务照常结束。"
-        },
-        "host.labels": {
-          "title": "运行器标签",
-          "type": "string",
-          "default": "",
-          "description": "逗号分隔的自定义能力标签；系统、CPU、Xcode、模拟器与 Node 标签由本机探测。"
         },
         "host.fseventsdGuard": {
           "title": "守护文件事件服务",
@@ -96,8 +89,7 @@
       "skills/host-slots"
     ],
     "protocolImplementations": [
-      "coda/executor@1",
-      "coda/run@1"
+      "coda/executor@1"
     ]
   },
   "license": "MIT",
@@ -119,8 +111,5 @@
   "main": "main.mjs",
   "activationEvents": [
     "onStartupFinished"
-  ],
-  "extensionDependencies": [
-    "git"
   ]
 }

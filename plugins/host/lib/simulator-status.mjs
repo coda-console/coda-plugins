@@ -24,7 +24,7 @@ export async function serveSimulatorStatus(coda) {
     }
   });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
-  // Same loopback + per-process token pattern as the execution worker; no Unix socket path-length limit.
+  // Loopback + per-process token; no Unix socket path-length limit.
   try {
     writeFileSync(`${path}.tmp`, JSON.stringify({ port: server.address().port, token }), { mode: 0o600 });
     renameSync(`${path}.tmp`, path);
