@@ -58,7 +58,8 @@ export function codexFailureData(error, input) {
   const message = typeof data.message === 'string' ? data.message : typeof data.details === 'string' ? data.details : typeof error.data === 'string' ? error.data : error.message;
   let provider; try { provider = JSON.parse(message); } catch {}
   const status = provider?.status ?? (info && typeof info === 'object' ? Object.values(info)[0]?.httpStatusCode : null);
-  if (loginLost.test(message?.trim())) return reported({ kind: 'auth_required', login: 'ChatGPT 账号' });
+  if (loginLost.test(message?.trim()))
+    return { ...reported({ kind: 'auth_required', login: 'ChatGPT 账号' }), ...(data.message || data.details ? {} : { details: message }) };
   const accepted = data._meta?.coda?.failure?.input === 'accepted' ? 'accepted' : input;
   if (status === 429 && info && typeof info === 'object' && 'httpConnectionFailed' in info) {
     const text = [data.additionalDetails, message].filter(value => typeof value === 'string').join('\n');

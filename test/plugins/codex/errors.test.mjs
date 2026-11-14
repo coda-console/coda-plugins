@@ -41,8 +41,12 @@ test('a ChatGPT login whose token cannot be refreshed is auth_required; a bad ke
       assert.equal(data[where], message);
     }
   }
-  const opaque = codexFailureData({ code: -32603, message: 'Internal error', data: 'Your access token could not be refreshed. Please log out and sign in again.' }, 'accepted');
+  // A string payload is the whole reason: it stays in the error's message, not replaced by the generic `Internal error`.
+  const said = 'Your access token could not be refreshed. Please log out and sign in again.';
+  const opaque = codexFailureData({ code: -32603, message: 'Internal error', data: said }, 'accepted');
   assert.equal(opaque._meta.coda.failure.kind, 'auth_required');
+  const explained = explainCodexError({ id: 1, error: { code: -32603, message: 'Internal error', data: opaque } });
+  assert.match(explained.error.message, /Your access token could not be refreshed\. Please log out and sign in again\./);
   for (const [message, info] of [['Incorrect API key provided: sk-xxxx', 'unauthorized'], ['unexpected status 401 Unauthorized: Missing bearer or basic authentication in header', 'unauthorized'],
     ['unexpected status 403 Forbidden: You do not have access to this model', 'unauthorized'], ['Unauthorized', 'unauthorized'],
     ['unexpected status 403 Forbidden: <html><title>Just a moment...</title>cf-ray: 8f1a2b3c4d5e6f7a-SIN</html>', { httpConnectionFailed: { httpStatusCode: 403 } }],
