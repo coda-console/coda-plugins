@@ -376,7 +376,9 @@ Codex 的原生失败统一以 ACP 错误结束，包括只有 `turn/completed.f
 插件将服务端内部错误、5xx、响应流中断、模型容量不足，以及已知的 `model '…' is not enabled in rustponsesapi` 报成
 `error.data._meta.coda.failure: {kind: "service_unavailable", input: "accepted"}`。新轮请求明确被拒绝、只给
 `Internal error` 时按临时故障报告 `input: "not_accepted"`；这表示允许有限重试，不表示已确定历史故障根因。
-额度耗尽 `usageLimitExceeded` 单独报 `failure.kind: "quota_exhausted"`；认证、上下文限制、参数、配置或沙箱错误不带此标记。
+额度耗尽 `usageLimitExceeded` 单独报 `failure.kind: "quota_exhausted"`；上下文限制、参数、配置或沙箱错误不带此标记。
+ChatGPT 登录的令牌刷新彻底失败（正文以 `Your access token could not be refreshed` 开头并含 `sign in again`：刷新令牌过期、已被使用、被撤销，或已登出、换了账号；这是 Codex 二进制里 `RefreshTokenFailedReason` 的文案）
+报 `failure: {kind: "auth_required", login: "ChatGPT 账号"}`，仍是 -32603 的执行错误。`unauthorized` 类别和单独的 401、403 也可能是 API key 错或权限不足，重新登录解决不了，不带此标记。
 带 HTTP 429 的 `httpConnectionFailed`（消息形如 `unexpected status 429 Too Many Requests: <响应体>, url: …`）按响应体区分：
 含 `insufficient_quota`、`quota_exceeded`、`usage_limit_reached` 或「exceeded your current quota」「hit your usage limit」这些提供方自己的额度用词才报 `quota_exhausted`，
 其余按限流报 `service_unavailable`，正文里的「try again in 1m30.5s」写进 `retryAfterMs`（没有就不带）。401、403 与其他状态码照旧。
