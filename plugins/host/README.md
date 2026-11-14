@@ -2,25 +2,15 @@
 
 ## 运行器与执行环境
 
-从 2.0.0 起，host 在清单里声明实现 `coda/executor@1` 与 `coda/run@1`，把自己这台机器的执行环境发布为一条 `coda/executor@1` 记录（ID `host`）。别的机器或 Coda 对这条记录调用 `execute`，输入照协议包 executor@1；host 在本机执行任务，并只写这次调用开出的 `coda/run@1` 运行：进行中是 `working` 带进展，结束写 `completed`、`failed`（带退出码、输出末尾、摘要与步骤输出）或 `canceled`。终态之后不再改。取消是对运行调用 `cancel`，交给 host 停下原 worker。
+2.4.0：删掉外派执行（Coda 已不再把步骤交给别台执行）：`execute` 的处理函数、源码获取与工作副本、独立 worker 与 hook，以及设置 `host.enabled`、`host.labels`；`run-held` 只在本机排队，不再收 `local`，也不再去空间里别的 Mac 跑。只给预览渠道。
 
-2.0.1：启动时先读上次运行留下的 `coda/executor@1` 记录，按它的 revision 接管；此前插件宿主重启后写这条记录会被 Coda 以 conflict 拒绝，host 模块载入失败。
+host 在清单里声明实现 `coda/executor@1`，把自己这台机器的执行环境发布为一条 `coda/executor@1` 记录（ID `host`），Coda 的执行环境页读它；不接 `execute`，也不再开 `coda/run@1` 运行。
 
-2.1.0：`run-held` 的构建在这台名额满时，可以带着会话的工作副本去空间里别的 Mac 跑，日志与退出码回到原会话，产物留在那台；模拟器和要用产物的构建仍在这台，见下文「去空间里别的 Mac」。
+启动时先读上次运行留下的 `coda/executor@1` 记录，按它的 revision 接管，否则 Coda 会以 conflict 拒绝写这条记录。
 
-配置意图、能力和名额在本机持有。`host.enabled` 控制是否接活，默认 true；`host.capacity` 配置名额数；`host.labels` 是逗号分隔的自定义标签。系统／CPU、Node、Xcode、可用模拟器 runtime 与图形会话由本机探测，每分钟刷新，不启动模拟器。容量和占用订阅 `concurrency-groups`，包括旧流程与 run-held，公布值不构成预留。停止接活不终止已接收的任务。
+配置意图、能力和名额在本机持有。`host.capacity` 配置名额数；系统／CPU、Node、Xcode、可用模拟器 runtime 与图形会话由本机探测，每分钟刷新，不启动模拟器。容量和占用订阅 `concurrency-groups`，包括流程里写 `coda:group="host"` 的步骤与 run-held，公布值不构成预留；没有组 `host` 或容量为 0 时记录写 `accepting: false`。协议的执行器配置仍要求 `enabled` 与 `labels`，记录里固定写 `true` 与空数组。
 
-资源只接受 `{slots:1}` 或空对象；`exclusiveResources: ['slots']` 表示独占。host 将 slots 映射到本机组 host，开跑前通过同一名额账本最终准入，账本返回稳定名额序号。其他资源量不能模拟为多次申请。
-
-**执行**：`execute` 的输入照协议包 executor@1：`source`（`git/snapshot@1`，或 `git/source@1` 加完整 commit）、`requirements.labels`、`resources`、`context`、`task`、`env`、`timeoutMs`、`cancelGraceMs`。源码经 Coda 的引用解析取得鉴权到达，不拼机器 ID 或 `/forward`；快照的 source ID 在其持有者范围内解释。代理鉴权头只传给本次 Git 子进程，不进入对象、日志、持久记录或 `.git/config`。
-
-固定目录为 `<插件状态>/workspaces/<来源工作副本身份及 instance 的散列>/<账本名额序号>`，不同来源工作副本、不同名额隔离；快照或提交改变不会丢掉同源缓存。fetch 后校验 commit，执行 `reset --hard` 和 `clean -fd`，保留被忽略缓存。cwd 必须在该工作根内，拒绝路径穿越和符号链接逃逸。没有源码的任务使用每次尝试的隔离目录。源码获取不改变发布／部署的准入政策。
-
-**三段 hook 与恢复**：`prepare_job / run_script_step / cleanup_job` 使用原 JSON envelope，prepare 的 state 即使伴随失败也会收尾；命令退出码原样返回，cleanup 失败记日志。声明变量与执行器变量分开，取消先停止当前进程组、在收尾期限内 cleanup，确认完成后才释放名额。每次尝试在启动前持久记账；独立 worker 继续运行，不随插件宿主重启而重复启动。重启后跟随已有 worker；worker 不可达且无最终记录时在运行进展里写 `result_unknown`，保留名额，绝不把丢失响应当作安全重试。取消通过带随机 token 的 loopback 控制通道交给原 worker，不对可能已被复用的 PID 盲发信号。
-
-运行本身是这次执行的持久结果引用，日志与结果留在插件状态的 `attempts/<运行键>/` 下；结果保留有界 outputs、summary 和日志末尾。产物字节传输留给 artifacts 插件。
-
-**验证**：纯规则、Git 目录、hook、取消竞态与重启记录在 `test/plugins/host/`；公共形状直接用 host 安装的协议包和同步的 provider 校验器测试。真实 Coda 存储／节点镜像／资源账本装配留 Coda 仓库验证。包含 host-sim 的完整插件测试经会话的 `workflow_run` → `run-held` 运行，不启动真实模拟器。
+**验证**：纯规则、模拟器登记与清点、run-held 脚本、超时、取消与流程形状在 `test/plugins/host/`；执行器记录用 host 安装的协议包校验器测试。真实 Coda 存储／资源账本装配留 Coda 仓库验证。包含 host-sim 的完整插件测试经会话的 `workflow_run` → `run-held` 运行，不启动真实模拟器。
 
 ## 现有持锁执行与模拟器工具
 
@@ -35,7 +25,7 @@
 或让脚本经 `host-sim` 自己排队（见下文）。流程步骤占不占名额由流程自己用 `coda:group="host"` 声明。
 
 **入口**：会话的 Agent 用 `workflow_run` 调用能力 `run-held`（持锁执行），`inputs` 给 `command`（要执行的命令，由 `$SHELL -c` 执行）、
-`cwd`（在哪个目录执行，绝对路径），用模拟器时 `what` 为 `模拟器`（默认 `构建`），要用到构建产物时 `local` 为 true（默认 false）。
+`cwd`（在哪个目录执行，绝对路径），用模拟器时 `what` 为 `模拟器`（默认 `构建`）。命令一律在这台排队、在这台跑。
 能力写了 `coda:inline` 与 `coda:subagents="false"`：
 结束得快就随这次调用返回结果，否则结果之后送回会话（见 [Agent 工具](https://github.com/coda-console/coda/blob/main/docs/workflows.md#agent-工具)）；原生子 Agent 发起时拒绝，
 提示把这一步交回主 Agent 或用 `spawn` 派 Coda 子会话（见[流程属性](https://github.com/coda-console/coda/blob/main/docs/workflows.md#流程属性)）。从命令行（`coda-run`）发起同样拒绝：命令行说不出是会话里谁在要。
@@ -51,26 +41,17 @@
 
 **无输出上限**：`idleMinutes` 默认 10 分钟，从命令启动起，stdout 或 stderr 每次有新输出就重新计时；连续到限无输出即失败，先向整组进程发送 TERM（连同命令另起进程组的子进程，如 `swift build` 的编译器），最多留 5 分钟收尾。可在 `inputs` 设 `idleMinutes: 30` 调高，或 `idleMinutes: 0` 关闭（总时限仍生效）。失败结果与会话通知区分「执行超过总时限」「N 分钟无输出」「命令非零退出（退出码 N）」；输出 `failure_reason` 记录原因。run-held 因无输出或总时限失败、执行器超时时，若 macOS 上检测到 `SecurityAgent` 进程，失败原因会追加钥匙串授权框提示，见 [host-slots](skills/host-slots/SKILL.md#无人值守构建)。
 
-**过程**（`.coda/capabilities/run-held.bpmn`）分两条路：
+**过程**（`.coda/capabilities/run-held.bpmn`）：「占用名额」这一段，三步：
 
-- **在这台**（`what=模拟器`，或 `local=true`）：走「占用名额」这一段。
-  1. 「等名额」：`hold-group` 为「占用名额」这一段排进 `host`，容量读设置 `host.capacity`；状态行写「排队等构建名额 · 排第 N 位」或「排队等模拟器名额 · 排第 N 位」，
-     队伍一动就改，会话底部显示这项等待。
-  2. 「执行」：在 `coda:source`（即 `cwd`）里、带项目的环境（同流程步骤，不含插件与执行器自己的变量）执行命令（`scripts/run-held.mjs`），附上 `HOST_SIM_LEASE=coda-run:<种类>`：
-     命令里的项目脚本再调用 `host-sim run` 时直接执行，`host-sim check` 通过，`host-sim bind <udid>` 把它启动的模拟器登记给这一步。
-     `cwd` 由 Coda 作为 `coda:source` 求值，须是本机存在的绝对目录，否则这一步失败并说明。
-     命令结束（含被取消）时关机并删除登记的模拟器，命令的退出码记为输出 `exit_code`；命令失败这一步也失败，Agent 收到的结果带着输出的末尾。
-     被取消时整组进程收到 TERM，这一步的脚本以 `exec` 运行，执行器等它删完模拟器才结束；收尾超过取消时限被强杀而留下的模拟器，由下面的定时清点删除。
-     命令启动前，日志第一行写「在 <主机名> 上执行」，本机和别台都一样，用来分辨这次在哪台机器上跑；主机名取系统主机名（步骤环境里没有 Coda 给的机器名），这一行不算命令的输出，不影响无输出计时、退出码和 `failure_reason`。
-  3. 离开「占用名额」这一段才放开名额，排在后面的随即进入。
-- **可以去别台**（其余）：一个自己占着名额的脚本步骤，写了 `coda:group="host"`、`coda:runsOn="darwin"`、`coda:checkout="false"`、`coda:source="=inputs.cwd"`；
-  时限、取消收尾、状态、环境与输出都和上一条相同；总时限同样由 `run-held.mjs` 从命令启动时计，不在步骤上挂计时器（那一步从排队起就算进入了）。这台有空位时它就地跑，满了才按下面送走。
-
-**去空间里别的 Mac**：`what` 不是 `模拟器`、`local` 不为 true 时，这台名额满、空间里别台有空位、且 `cwd` 在一个有 origin 的 Git 工作副本里，
-Coda 就把那份工作副本拍成快照（含未提交、未跟踪的改动，不含被忽略的文件）推过去。别台在按「仓库 + 名额」固定的目录里检出，
-在对应这次工作副本的子目录里跑；被忽略的构建缓存（如 `node_modules`）留在那台，下次还在，所以第一次可能要装依赖。
-日志、退出码与步骤输出回到这次运行；构建产物留在那台，不回来。那台用自己的项目环境，只带这一步 `coda:env` 声明的变量。
-构建结果要装到设备、归档、上传，或后面的命令要读产物时，`inputs` 写 `"local": true`，只在这台跑；`what=模拟器` 一律在这台。
+1. 「等名额」：`hold-group` 为「占用名额」这一段排进 `host`，容量读设置 `host.capacity`；状态行写「排队等构建名额 · 排第 N 位」或「排队等模拟器名额 · 排第 N 位」，
+   队伍一动就改，会话底部显示这项等待。
+2. 「执行」：在 `coda:source`（即 `cwd`）里、带项目的环境（同流程步骤，不含插件与执行器自己的变量）执行命令（`scripts/run-held.mjs`），附上 `HOST_SIM_LEASE=coda-run:<种类>`：
+   命令里的项目脚本再调用 `host-sim run` 时直接执行，`host-sim check` 通过，`host-sim bind <udid>` 把它启动的模拟器登记给这一步。
+   `cwd` 由 Coda 作为 `coda:source` 求值，须是本机存在的绝对目录，否则这一步失败并说明。
+   命令结束（含被取消）时关机并删除登记的模拟器，命令的退出码记为输出 `exit_code`；命令失败这一步也失败，Agent 收到的结果带着输出的末尾。
+   被取消时整组进程收到 TERM，这一步的脚本以 `exec` 运行，执行器等它删完模拟器才结束；收尾超过取消时限被强杀而留下的模拟器，由下面的定时清点删除。
+   命令启动前，日志第一行写「在 <主机名> 上执行」，用来分辨这次在哪台机器上跑；主机名取系统主机名（步骤环境里没有 Coda 给的机器名），这一行不算命令的输出，不影响无输出计时、退出码和 `failure_reason`。
+3. 离开「占用名额」这一段才放开名额，排在后面的随即进入。
 
 **执行与中断**：命令由 Coda 的步骤执行器运行，不随 Agent 的调用结束：调用先返回了，命令照常执行，结果送回会话；
 要停下它用 `workflow_cancel`。命令不经过会话 Agent 自带的沙箱。

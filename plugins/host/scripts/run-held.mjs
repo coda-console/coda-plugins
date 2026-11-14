@@ -1,7 +1,6 @@
 // The step of 持锁执行 that runs the command a session's agent handed over with workflow_run, once the slot is held: in
-// the step's own working directory (the `coda:source` it names: the calling work copy here, or the one checked out on
-// another Mac), with the project's environment, through the user's shell. Its commands see the slot as theirs
-// (`HOST_SIM_LEASE`), so a project script calling host-sim inside runs at once instead of waiting behind itself; a
+// the step's own working directory (the `coda:source` it names: the calling work copy), with the project's environment,
+// through the user's shell. Its commands see the slot as theirs (`HOST_SIM_LEASE`), so a project script calling host-sim inside runs at once instead of waiting behind itself; a
 // simulator one of them registers (`host-sim bind`) is written to `HOST_SIM_DEVICES` and deleted here once the command is
 // over, cancelled or not. The total limit is counted from the command's start (queueing does not count): at the limit the
 // whole tree is stopped like a silent one, and the step fails with 执行超过总时限. The command's exit status is the
