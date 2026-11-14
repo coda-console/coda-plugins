@@ -398,7 +398,8 @@ Kimi 2.1.1 的 ACP 把失败的一轮（包括现在以 429 报的五小时额�
 插件在交出 `session/prompt` 的回执前读到这一轮以 `failed` 结束，就改答 -32603，`error.message` 是这一轮的错误原文；
 Kimi 自己归为 `APIProviderQuotaExhaustedError`（如 `429 You've reached your weekly (7-day) usage limit.`）的另报 `quota_exhausted`（原文没有确切恢复时间，不带 `resetAt`）；
 `APIProviderOverloadedError`、状态码 500–599、状态码 429 的非额度限流（`APIProviderRateLimitError`），以及连接失败与超时（`APIConnectionError`、`APITimeoutError`，错误码 `provider.connection_error`）
-另报 `service_unavailable`、`input: accepted`（Kimi 自己已重试过才结束这一轮；错误里没有等待时间，不带 `retryAfterMs`）；Kimi 自己的错误码 `auth.login_required`（它的 OAuth 提供方令牌刷新失败，`OAuthUnauthorizedError`，这是 Kimi 二进制里的定义）报 `auth_required`、`login: "Kimi Code OAuth"`，是 -32603 的执行错误；
+另报 `service_unavailable`、`input: accepted`（Kimi 自己已重试过才结束这一轮；错误里没有等待时间，不带 `retryAfterMs`）；Kimi 自己的错误码 `auth.login_required`（它的 OAuth 提供方令牌刷新失败，`OAuthUnauthorizedError`，这是 Kimi 二进制里的定义）报 `auth_required`、`login: "Kimi Code OAuth"`，是 -32603 的执行错误。Kimi 的 ACP 对这样结束的一轮回的是 -32000（`Authentication required: …`，不带错误码，与握手阶段的「未登录」同形），
+插件按这一轮 wire 里记的 `auth.login_required` 改回 -32603 并保留这一轮的原文；没有这一轮记录的 -32000（如发出前就被拒）原样转出；
 `provider.auth_error`、401、403 等可能是 key 错或权限不足，重新登录解决不了，仍不带类别；其他失败（上下文、请求无效）不带类别。被过滤的回复 Kimi 已答 `refusal`，不改。
 Kimi 在一轮失败后暂停 goal，goal 的定时随之以 `failed` 结束，说明是那一轮的原因，额度耗尽时标题为「额度不足」。
 `CODA_DISABLE_RUNTIME_PATCHES=kimi` 关闭这层适配。

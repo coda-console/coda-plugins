@@ -128,8 +128,6 @@ test('an OAuth login that is gone is auth_required; a bad key, missing permissio
   for (const [message, facts] of [
     ['Failed to authenticate: OAuth session expired and could not be refreshed', { error: 'authentication_failed' }],
     ['Failed to authenticate: OAuth session expired and could not be refreshed', {}],
-    ['API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"OAuth token has expired. Please obtain a new token or refresh your existing token."}}', { error: 'authentication_failed' }],
-    ['API Error: 401 OAuth token has been revoked · Please run /login', { error: 'authentication_failed' }],
   ]) {
     const error = claudeFailure(message, facts);
     assert.equal(error.code, -32603);
@@ -145,6 +143,7 @@ test('an OAuth login that is gone is auth_required; a bad key, missing permissio
     ['Failed to authenticate. API Error: 403 Attention Required! | Cloudflare', { error: 'authentication_failed' }],
     ['API Error: 403 <html><title>Just a moment...</title>cf-ray: 8f1a2b3c4d5e6f7a-SIN</html>', {}],
     ['OAuth session expired and could not be refreshed', { error: 'billing_error' }],
+    ['API Error: 401 OAuth token has expired. Please obtain a new token or refresh your existing token.', { error: 'authentication_failed' }],
   ]) assert.notEqual(claudeFailure(message, facts).data?._meta.coda.failure.kind, 'auth_required', message);
   // The Cloudflare page stays service_unavailable.
   assert.equal(claudeFailure('Failed to authenticate. API Error: 403 Attention Required! | Cloudflare', { error: 'authentication_failed' }).data._meta.coda.failure.kind, 'service_unavailable');

@@ -22,9 +22,9 @@ const upstream = /\b(?:API Error:|HTTP|status(?: code)?)\s*:?\s*(?:408|5\d\d)\b|
 // A page of Cloudflare's in place of the API's answer, whatever the status: its 403 is no authentication failure.
 const cloudflare = message => /\b[45]\d\d\b/.test(message) && /cloudflare|cf-ray|Just a moment|Attention Required/i.test(message);
 // The login itself gone (docs/agent-protocol.md「需要重新登录」): Claude Code's own "Failed to authenticate: OAuth session expired and
-// could not be refreshed", and the API's words for an expired or revoked OAuth token. A bad or missing API key, a missing permission
-// and a bare 401 or 403 are configuration, which logging in again does not mend.
-const loginLost = /\bOAuth (?:session expired and could not be refreshed|token (?:has (?:expired|been revoked)|expired|revoked))/i;
+// could not be refreshed". A bad or missing API key, a missing permission and a bare 401 or 403 are configuration, which logging in
+// again does not mend.
+const loginLost = /\bOAuth session expired and could not be refreshed\b/;
 // The wait the service asked for, in ms: `Retry-After: 30` is seconds, `retry-after-ms: 1500` or `retry after 1500 ms` milliseconds.
 const waited = message => {
   const [, ms, number, unit] = message.match(/\bretry[-_ ]after(-ms)?\b[":=\s]*(\d+(?:\.\d+)?)\s*(ms|milliseconds?)?/i) ?? [];
