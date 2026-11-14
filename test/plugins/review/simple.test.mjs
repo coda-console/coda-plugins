@@ -147,8 +147,9 @@ test('简易开发的流程定义：开启时什么都不必选，第一张任�
     return (flows.find(e => e.conditionExpression && evaluate(e.conditionExpression.body.trim().slice(1), context).value) ?? node.default).targetRef.id;
   };
   assert.equal(process.name, '简易开发');
-  assert.equal(process.kind, 'develop');
-  const inputs = Object.fromEntries(values(process).map(v => [v.name, v]));
+  assert.equal(process.kind, undefined);
+  assert.deepEqual(values(process).filter(v => v.$type === 'coda:Join').map(j => j.hook), ['develop'], '开发流程：加入挂点 develop');
+  const inputs = Object.fromEntries(values(process).filter(v => v.$type === 'coda:Input').map(v => [v.name, v]));
   assert.deepEqual([inputs.branch.type, inputs.branch.defaultFrom, inputs.branch.required], ['branch', 'session.branch', undefined], '没给、会话也没有时由准备分支开一条');
   assert.deepEqual([inputs.reviewer.type, inputs.reviewer.defaultFrom, inputs.reviewer.required], ['agent', undefined, undefined], '不选按评审组合');
   assert.deepEqual([inputs.devices.type, inputs.devices.default], ['boolean', 'false']);
@@ -207,8 +208,8 @@ test('简易开发的流程定义：开启时什么都不必选，第一张任�
   assert.deepEqual(elements.filter(e => e.targetRef?.id === 'problem').map(e => e.sourceRef.id).sort(), ['after-acceptance', 'checks-feedback', 'github-feedback', 'merged', 'premerge-feedback', 'pushed']);
   assert.equal(nodes['fix-push'].targetRef.id, 'push');
   assert.deepEqual(params('review').REVIEWER, '=inputs.reviewer');
-  assert.deepEqual(params('checks'), { kind: 'check', commit: '=push.head' });
-  assert.deepEqual(params('premerge'), { kind: 'premerge', commit: '=pr.head' });
+  assert.deepEqual(params('checks'), { hook: 'check', commit: '=push.head' });
+  assert.deepEqual(params('premerge'), { hook: 'premerge', commit: '=pr.head' });
   assert.deepEqual(params('run-merged'), { hook: 'merged', only: '=merged-inputs.only', commit: '=merge.commit', inputs: '=merged-inputs.inputs' });
   for (const [failed, target] of [['checks-failed', 'checks'], ['premerge-failed', 'premerge']]) assert.equal(nodes[failed].attachedToRef.id, target);
   assert.equal(evaluate(nodes.done.notify.slice(1), { approval: { notify: false } }).value, false);

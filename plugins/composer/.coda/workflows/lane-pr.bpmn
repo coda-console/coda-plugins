@@ -34,7 +34,7 @@
     </scriptTask>
     <sequenceFlow id="gate-checks" sourceRef="gate" targetRef="checks" />
     <serviceTask id="checks" name="项目检查" coda:action="run-workflows">
-      <extensionElements><coda:param name="kind" value="check" /><coda:param name="commit" value="=gate.head" /></extensionElements>
+      <extensionElements><coda:param name="hook" value="check" /><coda:param name="commit" value="=gate.head" /></extensionElements>
     </serviceTask>
     <boundaryEvent id="checks-failed" attachedToRef="checks"><errorEventDefinition /></boundaryEvent>
     <sequenceFlow id="checks-feedback" sourceRef="checks-failed" targetRef="check-feedback" />

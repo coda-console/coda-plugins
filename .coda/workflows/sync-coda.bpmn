@@ -5,7 +5,7 @@
      PR 登记在负责这次运行的会话上，由 Coda 那边的 PR 流程跟进。做法见 scripts/sync-coda.mjs。 -->
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="sync-coda-definitions" targetNamespace="https://coda.pub/workflows/coda-plugins">
-  <process id="sync-coda" name="同步内置插件到 Coda" isExecutable="true" coda:concurrency="sync-coda" coda:deploy="true" coda:kind="deploy">
+  <process id="sync-coda" name="同步内置插件到 Coda" isExecutable="true" coda:concurrency="sync-coda" coda:mergedOnly="true">
     <extensionElements>
       <coda:join hook="merged" name="部署" detail="等 npm 发布后，把内置插件的新版本升进 Coda，开同步 PR" order="10" />
     </extensionElements>

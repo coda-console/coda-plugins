@@ -366,8 +366,9 @@ test('合并后的流程：勾了的都被「这一项这次不跑」去掉，�
 
 test('需求运行的定义：输入、进行中的三种答复、暂停卡、收尾各处失败回到进行中、整体评审、合并方式与合并后的流程', async () => {
   const { process, elements, nodes, values, params, route, next } = await definition();
-  assert.equal(process.name, '监督开发'); assert.equal(process.kind, 'develop'); assert.equal(process.concurrency, undefined);
-  const inputs = Object.fromEntries(values(process).map(v => [v.name, v]));
+  assert.equal(process.name, '监督开发'); assert.equal(process.kind, undefined); assert.equal(process.concurrency, undefined);
+  assert.deepEqual(values(process).filter(v => v.$type === 'coda:Join').map(j => j.hook), ['develop'], '开发流程：加入挂点 develop');
+  const inputs = Object.fromEntries(values(process).filter(v => v.$type === 'coda:Input').map(v => [v.name, v]));
   assert.deepEqual(Object.keys(inputs), ['title', 'devices', 'device', 'hold', 'delivery', 'reviewer', 'reviewer2', 'reviewer3', 'base']);
   assert.deepEqual(Object.values(inputs).filter(v => v.required), [], '用户在会话里开启时什么都不必填');
   for (const name of ['title', 'device', 'delivery', 'base']) assert.equal(inputs[name].default, '', name);
@@ -403,7 +404,7 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   for (const [value, target] of [['progress', 'progress'], ['pause', 'paused'], ['abandon', 'abandoned'], ['submit', 'pr']]) assert.equal(route('after-progress', { 'progress-result': { route: value } }), target);
   const doc = nodes.progress.documentation[0].text;
   for (const text of ['workflow_run 发起一个泳道 PR（lane-pr）', 'lane="{{run.id}}"', 'title', 'task', 'executor、executor2、reviewer、reviewer2（', '由你按这一块的性质逐个定',
-    '可以同时发起', 'sync=true', '快进进泳道', 'mac-preview-install', 'kind=premerge', '{{lane.lane}}', '{{lane.goal}}']) assert.ok(doc.includes(text), text);
+    '可以同时发起', 'sync=true', '快进进泳道', 'mac-preview-install', '加入挂点 premerge 的流程', '{{lane.lane}}', '{{lane.goal}}']) assert.ok(doc.includes(text), text);
   assert.ok(!doc.includes('reviewerOnce'), '泳道 PR 没有只评第一次交付的位置');
   // 只填了第三整体评审者也算要整体评审：进行中的说明与批准卡都这样写。
   const reviewed = (text, needle) => [...text.matchAll(/{{(.*?)}}/gs)].find(m => m[1].includes('inputs.reviewer3') && m[1].includes(needle))[1];
@@ -434,12 +435,13 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   assert.deepEqual(elements.filter(e => e.sourceRef === nodes['pr-fork']).map(e => e.targetRef.id), ['reuse-checks', 'prebuild-choice']);
   for (const [devices, delivery, target] of [[true, '', 'prebuild'], [false, '', 'prebuilt'], [true, 'deliver-1', 'prebuilt']]) assert.equal(route('prebuild-choice', { inputs: { devices, delivery } }), target);
   assert.equal(params('prebuild').commit, '=pr.head');
+  assert.equal(params('prebuild').hook, 'prebuild');
   for (const device of ['', 'duo-testbed']) assert.deepEqual(evaluate(params('prebuild').inputs.slice(1), { inputs: { device } }).value, device ? { device } : {});
   for (const id of ['prebuild-done', 'prebuild-failed-done', 'prebuild-skip']) assert.equal(nodes[id].targetRef.id, 'prebuilt');
-  assert.deepEqual(params('checks'), { kind: 'check', commit: '=pr.head' });
+  assert.deepEqual(params('checks'), { hook: 'check', commit: '=pr.head' });
   assert.equal(next('checks'), 'checks-passed');
   assert.equal(next('checks-passed'), 'premerge');
-  assert.deepEqual(params('premerge'), { kind: 'premerge', commit: '=pr.head' });
+  assert.deepEqual(params('premerge'), { hook: 'premerge', commit: '=pr.head' });
   assert.equal(next('premerge'), 'github-checks');
   assert.equal(next('github-checks'), 'reviews-choice');
   for (const [boundary, task, step] of [['checks-failed', 'checks-feedback', '项目检查'], ['premerge-failed', 'premerge-feedback', '合并前检查'], ['github-checks-failed', 'github-feedback', 'GitHub 检查']]) {

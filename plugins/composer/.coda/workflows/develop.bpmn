@@ -4,8 +4,9 @@
      收尾的任何失败和「暂不合并」都带着原因回到「需求进行中」。BPMN 2.0，由 Coda 执行（docs/workflows.md）。 -->
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="develop-definitions" targetNamespace="https://coda.pub/plugins/composer">
-  <process id="develop" name="监督开发" isExecutable="true" coda:kind="develop" coda:title='{{if inputs.title = "" then "监督开发" else "需求：" + inputs.title}}'>
+  <process id="develop" name="监督开发" isExecutable="true" coda:title='{{if inputs.title = "" then "监督开发" else "需求：" + inputs.title}}'>
     <extensionElements>
+      <coda:join hook="develop" />
       <coda:input name="title" label="需求名" default="" description="也是泳道进目标分支的 PR 标题；留空时由主 Agent 在第一张任务里写" />
       <coda:input name="devices" label="设备验收" type="boolean" default="false" description="改了客户端、要在 Mac 或 iPhone 上验收时打开" />
       <coda:input name="device" label="验收设备" type="string" default="" description="测试机设备名，如 duo-testbed；验收期间独占它；留空不占设备" />
@@ -65,7 +66,7 @@
 - 把需求分成几块，每块用 workflow_run 发起一个泳道 PR（lane-pr）：传 lane="{{run.id}}"、title、task（自足的任务书：背景、范围、验收要求），以及这一块的 executor、executor2、reviewer、reviewer2（由你按这一块的性质逐个定，不传 executor 用你的 Agent）。执行者从泳道 head 开工，项目检查、评审后由你审查，合进泳道后结果回到你的会话。
 - 互不依赖的块可以同时发起；有依赖的等前一个合进泳道再发起。并行的泳道 PR 合进泳道前会试合并泳道最新 head，冲突交回执行者。
 - 跟上目标分支：发起 sync=true 的泳道 PR，任务写把 origin/{{lane.base}} 合并进来、解冲突、顺延撞号的迁移版本；它快进进泳道，不 squash。
-- 中途想先看效果：可以用泳道的提交发起 mac-preview-install、ios-preview-install（传 commit），或对泳道 head 跑一次合并前检查（kind=premerge）。
+- 中途想先看效果：可以用泳道的提交发起 mac-preview-install、ios-preview-install（传 commit），或对泳道 head 跑一次合并前检查（加入挂点 premerge 的流程）。
 需求做完、要合的泳道 PR 都合进泳道后选「提交验收」：流程开或更新泳道进 {{lane.base}} 的 PR，跑项目检查（同一 head 复用）、合并前检查与 GitHub 检查，{{if inputs.reviewer = null and inputs.reviewer2 = null and inputs.reviewer3 = null then "" else "整体评审一次，"}}{{if inputs.delivery = "" then (if inputs.devices then "再交用户设备验收，" else "") + "最后由用户批准合并（合并提交）。任何失败和用户的「暂不合并」都带着原因回到这里。" else "之后进入「待交付」，由需求交付运行 " + inputs.delivery + " 统一验收、批准，没有用户的「暂不合并」。任何失败和待交付的「退回修改」都带着原因回到这里。"}}
 「提交验收」备注必填，写给用户的改动汇报，会原样放在批准卡和 PR 描述最上面。约 8 行以内，只写用户能感知的变化和动到的端，不放实现细节、测试数量、文件清单，不贴代码：
 做了什么
@@ -119,7 +120,7 @@
       <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" pr</script>
     </scriptTask>
     <sequenceFlow id="pr-fork-flow" sourceRef="pr" targetRef="pr-fork" />
-    <!-- 泳道 head 也是随后验收要装的：独立交付开了设备验收时，在检查的同时调用项目的预编流程（coda:kind="prebuild"），不等它，也不管它成败。 -->
+    <!-- 泳道 head 也是随后验收要装的：独立交付开了设备验收时，在检查的同时调用项目加入挂点 prebuild 的预编流程，不等它，也不管它成败。 -->
     <parallelGateway id="pr-fork" />
     <sequenceFlow id="pr-check" sourceRef="pr-fork" targetRef="reuse-checks" />
     <sequenceFlow id="pr-fork-prebuild" sourceRef="pr-fork" targetRef="prebuild-choice" />
@@ -127,7 +128,7 @@
     <sequenceFlow id="prebuild-needed" sourceRef="prebuild-choice" targetRef="prebuild"><conditionExpression xsi:type="tFormalExpression">=inputs.devices and inputs.delivery = ""</conditionExpression></sequenceFlow>
     <sequenceFlow id="prebuild-skip" sourceRef="prebuild-choice" targetRef="prebuilt" />
     <serviceTask id="prebuild" name="预编验收要装的" coda:action="run-workflows">
-      <extensionElements><coda:param name="kind" value="prebuild" /><coda:param name="commit" value="=pr.head" /><coda:param name="inputs" value='=if inputs.device = "" then {} else { device: inputs.device }' /></extensionElements>
+      <extensionElements><coda:param name="hook" value="prebuild" /><coda:param name="commit" value="=pr.head" /><coda:param name="inputs" value='=if inputs.device = "" then {} else { device: inputs.device }' /></extensionElements>
     </serviceTask>
     <boundaryEvent id="prebuild-failed" attachedToRef="prebuild"><errorEventDefinition /></boundaryEvent>
     <sequenceFlow id="prebuild-failed-done" sourceRef="prebuild-failed" targetRef="prebuilt" />
@@ -138,7 +139,7 @@
     <sequenceFlow id="reuse-passed" sourceRef="reuse-checks" targetRef="premerge"><conditionExpression xsi:type="tFormalExpression">=pr.checked = true</conditionExpression></sequenceFlow>
     <sequenceFlow id="reuse-missing" sourceRef="reuse-checks" targetRef="checks" />
     <serviceTask id="checks" name="项目检查" coda:action="run-workflows">
-      <extensionElements><coda:param name="kind" value="check" /><coda:param name="commit" value="=pr.head" /></extensionElements>
+      <extensionElements><coda:param name="hook" value="check" /><coda:param name="commit" value="=pr.head" /></extensionElements>
     </serviceTask>
     <boundaryEvent id="checks-failed" attachedToRef="checks"><errorEventDefinition /></boundaryEvent>
     <sequenceFlow id="checks-feedback-flow" sourceRef="checks-failed" targetRef="checks-feedback" />
@@ -154,7 +155,7 @@
     </scriptTask>
     <sequenceFlow id="checks-premerge" sourceRef="checks-passed" targetRef="premerge" />
     <serviceTask id="premerge" name="合并前检查" coda:action="run-workflows">
-      <extensionElements><coda:param name="kind" value="premerge" /><coda:param name="commit" value="=pr.head" /></extensionElements>
+      <extensionElements><coda:param name="hook" value="premerge" /><coda:param name="commit" value="=pr.head" /></extensionElements>
     </serviceTask>
     <boundaryEvent id="premerge-failed" attachedToRef="premerge"><errorEventDefinition /></boundaryEvent>
     <sequenceFlow id="premerge-feedback-flow" sourceRef="premerge-failed" targetRef="premerge-feedback" />
