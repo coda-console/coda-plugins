@@ -1,9 +1,9 @@
 {
-  "commit": "05b0db49e2151e4c0bbde3e71c669c8561fe6396",
+  "commit": "d2a80c2b95b211c6f2962e11a229b956e12a94a2",
   "packages": {
     "@0dep/piso": "5.2.0",
     "@agentclientprotocol/sdk": "2.6.0",
-    "@coda-console/protocol": "6.0.0",
+    "@coda-console/protocol": "6.1.0",
     "ajv": "8.20.0",
     "yaml": "2.9.1"
   },
@@ -39,6 +39,6 @@
     "check/coda/resources/plugins/resources/panels/panels.mjs": "452860c6b1b39dd9a67a8dadf4dac8f7773741b3608274494a8ac518a01f5b33",
     "check/coda/resources/plugins/resources/panels/rules.mjs": "80da2709985c3866fff1698ea4d1c1afdf59cac2cc955605d3ec6c35f181eec6",
     "check/coda/resources/plugins/resources/panels/sign-in.mjs": "1271a24e33b1b882a1fb9bee03b8e240db8b9bee1b5208f0e1c84499cfb1be7e",
-    "check/coda/builtin.json": "23a1a252f2037a5420fb23e4ea88fd5e71ec4b4ad53414625e3bb7a606861dee"
+    "check/coda/builtin.json": "dbf3e68934c12cac79c19351977a0096bccfb1d15b0071ea1c88c4bd4514c999"
   }
 }

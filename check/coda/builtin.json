@@ -85,7 +85,7 @@
     "workflows": [],
     "services": [],
     "agents": [],
-    "instructions": "要改插件设置（如 composer.templates）时调用 workflow_run，workflow 为 change-setting，inputs 给 plugin、setting、value（新值的 JSON 文本，null 为清除）、reason（必写，一行），写目录覆盖时加 project；先不给 value 调一次读当前值。用户点「应用」后由 Coda 写入；密文不经这里。",
+    "instructions": "改插件设置（如 composer.templates）时调用 workflow_run，workflow 为 change-setting，inputs 给 plugin、setting、value（新值的 JSON，null 清除）、reason（一行，必写），可加 project、machines（写到哪几台，默认装了它的各台）；先不给 value 读现值。用户点「应用」才写入，密文不经这里。",
     "commands": [],
     "capabilities": [
       "change-setting"
