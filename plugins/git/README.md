@@ -1,78 +1,48 @@
-# Git 源与快照
+# Git 源
 
-`@coda-console/git` 提供本机仓库、运行关联快照和只读 Git smart HTTP。插件启动时还写一条不发布的本机 `git/service@1` 记录，流程运行可以调用它直接从会话工作树拍快照。需要系统 Git（支持 protocol v2、`--path-format=absolute`）及包含 provider／流式服务接口、协议定义写在清单里的 Coda（coda#2080、#2079、#2176）。不接收机器 ID、机器列表或空间配置，不依赖 host，不改变执行／部署准入。
+`@coda-console/git` 提供本机 Git 源登记和只读 Git smart HTTP。需要系统 Git（支持 protocol v2、`--path-format=absolute`）及包含 provider／流式服务接口、协议定义写在清单里的 Coda（coda#2080、#2079、#2176）。不接收机器 ID、机器列表或空间配置，不依赖 host，不改变执行／部署准入。
+
+0.5.0 删掉工作副本快照：`git/snapshot@1`、`git/service@1` 及其 `snapshot` 操作、`snapshots.json` 账本和 `refs/coda/snapshots/` 引用的创建、回收与 HTTP 暴露，管理入口里的 `/snapshots` 路由一并去掉，这个插件只剩源登记和只读读取。只给预览渠道，正式版实例拿不到这一版。升级前已存在的 `refs/coda/snapshots/` 引用和状态目录里的 `snapshots.json` 不再被读取或清理，需要时自行删除。
 
 ## 对象与本机管理入口
 
-协议名为 `git/source@1`、`git/snapshot@1`，按 Coda 的协议格式写在插件清单的 `contributes.protocols` 里，并在 `contributes.protocolImplementations` 里声明实现。由插件保存本机正本，`control` 办事员写 status 时带执行时观察到的 revision。代码里的协议名见 `lib/definitions.mjs`。另有本机固定记录 `git/service@1`，见「拍快照调用」。
+协议名为 `git/source@1`，按 Coda 的协议格式写在插件清单的 `contributes.protocols` 里，并在 `contributes.protocolImplementations` 里声明实现。由插件保存本机正本，`control` 办事员写 status 时带执行时观察到的 revision。代码里的协议名见 `lib/definitions.mjs`。
 
 | 协议 | spec | status |
 | --- | --- | --- |
 | `git/source@1` | `path`：工作副本根目录或裸仓库的本机绝对路径 | `ready`、`url`，失败时 `reason` |
-| `git/snapshot@1` | `source`：本机源 ID；`mode`：`commit` 或 `worktree`；`commit`：仅提交模式必填；`run`：已有本机运行 ID | `ready`、`commit`、`ref`、`url`；失败时 `reason`；回收后 `released: true` |
 
-源和快照 ID 使用 1–100 个字母、数字、`_`、`-`。源实例首次可用时会持久固定解析后的工作副本、Git 目录及公共目录。符号链接改指另一仓库时，源变为不可用，重启也不会自动接管新仓库；须删除源后重新登记。未创建 HEAD 的仓库无法制作快照；裸仓库仅支持提交模式。工作树快照记录 Git 自身的文件语义：含未提交和未跟踪文件，不含忽略文件；子模块记录 gitlink，不递归打包子模块工作树。
+源 ID 使用 1–100 个字母、数字、`_`、`-`。源实例首次可用时会持久固定解析后的工作副本、Git 目录及公共目录。符号链接改指另一仓库时，源变为不可用，重启也不会自动接管新仓库；须删除源后重新登记。
 
-只有 provider 可创建这些对象。其他本机插件用 `coda.api` 调管理入口（JSON，64 KiB 上限）；入口只接受可信 `caller.local === true`，设备和后端身份只能读取 Git 数据，不能提交路径。不要直接用另一个插件的 `protocols.put` 创建本插件对象。
+只有 provider 可创建源。其他本机插件用 `coda.api` 调管理入口（JSON，64 KiB 上限）；入口只接受可信 `caller.local === true`，设备和后端身份只能读取 Git 数据，不能提交路径。不要直接用另一个插件的 `protocols.put` 创建本插件对象。
 
 ```js
 const base = 'plugins/git/services/repository';
 await coda.api(`${base}/sources/project`, { spec: { path: '/absolute/repository' } });
-await coda.api(`${base}/snapshots/job-input`, {
-  spec: { source: 'project', mode: 'worktree', run: runId },
-});
-// 提交模式：spec: { source: 'project', mode: 'commit', commit: sha, run: runId }
-const subscription = await coda.protocols.observe('git/snapshot@1', event => {
-  if (event.id === 'job-input' && event.object.status.ready) {
-    // status.url 是本机服务相对路径；status.ref 是 fetch 的完整引用。
+const subscription = await coda.protocols.observe('git/source@1', event => {
+  if (event.id === 'project' && event.object.status.ready) {
+    // status.url 是本机服务相对路径。
   }
 }, 'local');
 ```
 
-创建成功表示对象已接收；等 status.ready 再 fetch。GET `…/sources/<id>`／`…/snapshots/<id>` 读信封。修改用同一路径 POST `{ spec, revision }`（完整 spec），revision 原样取观察结果；过期版本由 Coda 拒绝。状态失败后先修正原因，再更新对象或创建新快照，不把旧结果换上新 revision 重交。
+创建成功表示对象已接收；等 status.ready 再 fetch。GET `…/sources/<id>` 读信封。修改用同一路径 POST `{ spec, revision }`（完整 spec），revision 原样取观察结果；过期版本由 Coda 拒绝。状态失败后先修正原因再更新，不把旧结果换上新 revision 重交。
 
-POST `…/snapshots/<id>/delete` 删除快照；POST `…/sources/<id>/delete` 撤下源并回收其快照 ref。POST `…/<sources|snapshots>/<id>/publish` `{ enabled: true|false }` 显式发布／撤下协议镜像；默认仅本机，不自动广播本地路径。跨机引用与入口由空间 Provider 映射，调用方不往本插件传机器参数。
-
-## 拍快照调用
-
-插件启动时在本机写一条固定记录 `git/service@1`／`git`，不发布，只接受本机调用。调用信封的 `parent` 须是本机流程运行 `{ kind: 'workflow-runs', id }`，它就是快照的 `run`；不是就拒绝并说明原因。流程运行调用 `snapshot`：
-
-```js
-const result = await call({
-  record: { kind: 'git/service@1', id: 'git' },
-  operation: 'snapshot',
-  input: { path: '/absolute/worktree/subdir' },
-  requestId: 'request-1',
-  parent: { kind: 'workflow-runs', id: runId },
-  awaited: true,
-});
-// { snapshot: { kind: 'git/snapshot@1', id }, commit, workingDirectory }
-```
-
-`path` 是任一工作副本里的本机绝对路径，主工作副本或 `git worktree` 建的工作树都行。插件用 `--show-toplevel` 找到根目录，为根目录准备源：已有同路径的源就复用，没有就按路径哈希新建 `worktree-<sha256 前 40 位>`。快照 id 由发起运行的引用和 `requestId` 派生，同一个请求重发得到同一条快照。插件等快照 `ready` 后发布快照，再返回；`workingDirectory` 是 `path` 相对根目录的路径（根目录为 `.`，不含 `..`）。快照失败时调用失败，并带上那条快照的 `reason`。
-
-源本身不发布：它的 spec 是本机路径，对方只用快照 status 里的 `url`（`repos/<source>`）和 `ref`，经调用方的转发入口取。这样按需建的源跟着快照走：不再有未结束运行引用它时，插件删除它，快照 ref 按运行回收。调用建的快照在运行结束后标为 `released`，随后撤下发布并删除；经管理入口手动登记的源和快照不受影响。
-
-## 快照与回收
-
-工作树路径依次执行临时 `GIT_INDEX_FILE` → `read-tree HEAD` → `add -A` → `write-tree` → `commit-tree -p HEAD` → `update-ref`。保留执行位、符号链接，真实 index 与工作区均不修改；提交身份沿用父提交，不设置 Git 用户配置。制作过程中用户仍可编辑文件，因此它是 Git 逐文件读取的结果，不保证跨文件事务一致性。
-
-临时引用为 `refs/coda/snapshots/<sha256>`，标识包含快照实例、spec 与源实例，避免删除重建或修改请求复用旧结果。相同请求只生成一次；后续工作树变化需新快照 ID。源暂时不可用时撤下读取并报告失败，但保留活跃请求的账本与 ref；源恢复并再次对账时复用原提交，宿主重启也不重新捕获工作树。插件状态目录 `snapshots.json` 在写 ref 前记账，宿主重启保留活跃运行快照；对象删除、源删除或关联运行结束后回收 ref。按运行 ID 订阅 `workflow-runs`，不会把掉出最近运行列表当作完成；旧运行可单独读取，读取失败报告失败，并在后续对账时重新查询，无需等待新的运行订阅事件；查询期间若订阅收到新事件，丢弃该查询的旧响应（含错误），保留订阅状态。启动时对账并回收停机期间产生的孤立 ref；清理失败保留账本并报日志，下次对象变化或宿主重启再次尝试。Git 的不可达对象由正常 Git GC 回收。
+POST `…/sources/<id>/delete` 撤下源。POST `…/sources/<id>/publish` `{ enabled: true|false }` 显式发布／撤下协议镜像；默认仅本机，不自动广播本地路径。跨机引用与入口由空间 Provider 映射，调用方不往本插件传机器参数。
 
 ## 只读 smart HTTP
 
 服务 `repository` 的 Git URL 为 `/v1/plugins/git/services/repository/repos/<source>`。由 Coda 先鉴权，再经流式通道交给插件；Coda 经 `/v1/services/space/machines/<owner>/v1/plugins/git/services/repository/` 到持有端（空间 Provider 的镜像入口），本插件只处理本机相对路径。使用已有 Coda 鉴权连接／代理入口，插件不另发 token、不开放匿名端口。
 
 ```sh
-git -c protocol.version=2 fetch "$AUTHENTICATED_GIT_URL" \
-  refs/coda/snapshots/<snapshot-token>:refs/coda/input
+git -c protocol.version=2 fetch "$AUTHENTICATED_GIT_URL" refs/heads/main:refs/heads/main
 ```
 
 仅允许 GET `info/refs?service=git-upload-pack` 和 POST `git-upload-pack`，必须带 `Git-Protocol: version=2`；映射为 CGI `HTTP_GIT_PROTOCOL`。完整读入请求（最多 32 MiB、不接受压缩请求体），再送 `git http-backend`；输入写完才转发 CGI 响应头，响应 pack 按背压流式发送。客户端断开、服务注销或宿主结束时停止子进程。
 
 以 4xx、5xx 结束时，插件日志记一行 `[git http]`：状态码、拒绝原因（即回给对方的那句）、请求方法、路径里的源 id（路径不合规则时记原始路径），以及请求头 `content-type`、`content-encoding`、`git-protocol` 的实际值（没有写「无」）。不记鉴权头、Cookie 和请求体；成功的请求不记；检查本身不变。
 
-每次请求创建临时裸仓库视图，只挂原仓库对象库和 `refs/heads/*`、本插件仍存活快照的 ref；不暴露 tags、remote refs、其他内部 ref、配置和磁盘文件。请求的 want 还须是允许 ref 的提交或祖先；不允许凭已知 OID 读取不相关隐藏对象。允许分支的历史本来就是可读内容，删除快照 ref 不会撤回已有分支可达的提交。receive-pack 始终拒绝，仓库自身的 receive-pack 配置无效。浅仓库会保留 shallow 边界；客户端需用 `fetch --update-shallow` 接受该边界，无法取得源本身没有的历史。
+每次请求创建临时裸仓库视图，只挂原仓库对象库和 `refs/heads/*`；不暴露 tags、remote refs、`refs/coda/` 等其他内部 ref、配置和磁盘文件。请求的 want 还须是分支的提交或祖先；不允许凭已知 OID 读取不相关隐藏对象。receive-pack 始终拒绝，仓库自身的 receive-pack 配置无效。浅仓库会保留 shallow 边界；客户端需用 `fetch --update-shallow` 接受该边界，无法取得源本身没有的历史。
 
 ## 检查与发布
 
