@@ -8,6 +8,21 @@ Coda 交来的 MCP 服务（含 `coda` 服务 `env` 里的令牌 `CODA_TOKEN`）
 入口改为：会话打开时在系统临时目录下 `mkdtemp` 建目录（0700），把 `{ mcpServers }` 写进里面的 `mcp.json`（0600），用 `extraArgs` 交 `--mcp-config <路径>`。
 入口这一侧，令牌不再进命令行，只写进这个文件；会话结束（进程被关、查询自己结束）时连目录一起删。进程崩溃留下的目录不另外清理：令牌随托管记录作废，系统临时目录也会自己回收。没有 MCP 服务的会话不建目录。
 
+## 失败怎样分类
+
+一轮失败时，入口（`agent/errors.mjs` 的 `claudeFailure`，纯函数）只按最终错误标失败类别（协议 `failure.json`），重试策略归 Coda，插件里没有重试或等待。
+Claude Code 自己的重试（`system/api_retry`，登记为隐藏）发生在轮次结果之前；重试用尽后才有带 `error` 类别的合成助手消息和失败的 `result`，只有它们到分类函数，所以重试中的轮次不会提前失败。
+
+| 最终错误 | 标记 |
+| --- | --- |
+| 明确的用量或余额用尽（`You've hit your … limit`、`Credit balance is too low` 等） | `quota_exhausted`，上游给出窗口重置时间时带 `resetAt` |
+| 网络：`ECONNRESET`、`ECONNREFUSED`、`ETIMEDOUT`、`ENOTFOUND`、`EAI_AGAIN`、`socket hang up`、`fetch failed`、`Unable to connect to API`、`Request timed out`、TLS 握手失败、传输中断 | `service_unavailable` |
+| 上游：5xx、408、`overloaded_error`、529、`api_error`；Claude Code 的 `overloaded`、`server_error` 类别 | `service_unavailable` |
+| Cloudflare 的拦截或挑战页（状态码加 `cloudflare`、`cf-ray`、`Just a moment`、`Attention Required`），先于「认证失败」判断：Claude Code 把它的 403 页报成 `authentication_failed`，这里不再当认证失败 | `service_unavailable` |
+| API key 错、权限不足、上下文超长、账单、请求参数错误、证书错误（`SSL certificate has expired` 等）、普通 429、被中止、OAuth 过期 | 不标（OAuth 过期要等协议的 `auth_required`） |
+
+`service_unavailable` 的 `input` 一律是 `accepted`：失败来自轮次的结果，原生会话已经收下并开始处理这一轮；入口没有「发出前就失败」的路径会走到这里。文字里有 `Retry-After` 或 `retry after` 时带 `retryAfterMs`（毫秒）。
+
 ## 认不出的东西
 
 Claude Code 会自己长出新东西：SDK 升级带来新的消息类型，服务端让模型返回新的内容块，模型多了新的原生工具。
