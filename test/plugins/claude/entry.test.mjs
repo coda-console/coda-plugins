@@ -324,6 +324,24 @@ test('Claude quota failures reach ACP as quota_exhausted, retaining the reset ti
   });
 });
 
+test('the service failing reaches ACP as service_unavailable only with the final error, after Claude Code\'s own retries', async t => {
+  for (const [variant, error, reason] of [['overloaded', 'overloaded', 'API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}'],
+    ['cloudflare', 'authentication_failed', 'Failed to authenticate. API Error: 403 Attention Required! | Cloudflare'],
+    ['network', 'server_error', 'API Error: Connection dropped (ECONNRESET). A VPN, firewall, or security software can cause this. Check those or switch networks, then try again.']])
+    await t.test(variant, async t => {
+      const c = await setup(t); await c.open();
+      let settled = false;
+      const pending = c.prompt('manual').then(r => { settled = true; return r; }); await until(() => c.query.inputId);
+      // Each retry of Claude Code's own is no failure of the prompt: Coda hears of one only once they are over.
+      await c.emit(system('api_retry', { attempt: 1, max_retries: 2, retry_delay_ms: 500, error_status: 529, error }),
+        system('api_retry', { attempt: 2, max_retries: 2, retry_delay_ms: 1000, error_status: 529, error }));
+      assert.equal(settled, false);
+      await c.emit(apiError(error, reason), { type: 'result', subtype: 'success', is_error: true, result: reason, user_message_uuid: c.query.inputId });
+      assert.deepEqual((await pending).error, { code: -32603, message: reason, data: { _meta: { coda: { failure: { kind: 'service_unavailable', input: 'accepted' } } } } });
+      assert.deepEqual(c.said(), []);
+    });
+});
+
 test('a quota failure says its reset as a time mark from the window last reported, also in a later turn and an autonomous one', async t => {
   const c = await setup(t); await c.open();
   const local = "You've hit your session limit · resets 5:10am (Australia/Sydney)", said = "You've hit your session limit · resets <t:2026-10-24T18:10:00.000Z>";
