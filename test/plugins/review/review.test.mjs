@@ -106,39 +106,42 @@ test('merge options default to the configured selection, including an explicit e
 
 // The approval records which workflows joining the hook merged were ticked, and the text they ask for that the card
 // left empty; after the merge, what the session wrote for each is added, and an answer with no text fails.
-test('the approval names the ticked workflows of the hook merged, what the card wrote for them and what it left empty', t => {
+const JOINERS = JSON.stringify([
+  { id: 'deploy', name: '部署', default: false },
+  { id: 'publish-preview', name: '发布预览版', default: false, inputs: [{ id: 'notes', label: '发布说明' }] },
+  { id: 'publish-release', name: '发布正式版', default: false, inputs: [{ id: 'notes', label: '发布说明' }] },
+]);
+const approvalRunner = t => {
   const root = mkdtempSync(join(tmpdir(), 'review-approval-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const approval = fileURLToPath(new URL('../../../plugins/review/scripts/approval.mjs', import.meta.url)), out = join(root, 'out');
-  const run = (args, env, code = 0) => {
+  return (args, env, code = 0) => {
     writeFileSync(out, '');
     const done = spawnSync(process.execPath, [approval, ...args], { cwd: root, encoding: 'utf8', env: { PATH: process.env.PATH, GITHUB_OUTPUT: out, ...env } });
     assert.equal(done.status, code, done.stderr);
     return { ...done, outputs: Object.fromEntries([...readFileSync(out, 'utf8').matchAll(/(\w+)<<EOF_\1\n([\s\S]*?)\nEOF_\1\n/g)].map(([, k, v]) => [k, v])) };
   };
-  const JOINERS = JSON.stringify([
-    { id: 'deploy', name: '部署', default: false },
-    { id: 'publish-preview', name: '发布预览版', default: false, inputs: [{ id: 'notes', label: '发布说明' }] },
-    { id: 'publish-release', name: '发布正式版', default: false, inputs: [{ id: 'notes', label: '发布说明' }] },
-  ]);
+};
+test('the approval names the ticked workflows of the hook merged, what the card wrote for them and what it left empty', t => {
+  const run = approvalRunner(t);
   const approve = (options, inputs = {}) => { const { at, ...rest } = run([], { APPROVED: JSON.stringify({ choice: 'merge', options, inputs }), JOINERS }).outputs; assert.match(at, /^\d+$/); return rest; };
   assert.deepEqual(approve({ deleteBranch: false, deploy: false, 'publish-preview': false, 'publish-release': false, notify: false }),
-    { deleteBranch: 'false', notify: 'false', only: '[]', inputs: '{}', missing: '', asks: '', what: '合并' });
+    { deleteBranch: 'false', notify: 'false', only: '[]', inputs: '{}', missing: '', asks: '', needs: '{}', what: '合并' });
   assert.deepEqual(approve({ deleteBranch: true, deploy: true, 'publish-preview': true, 'publish-release': true, notify: true }, { notes: '' }),
     { deleteBranch: 'true', notify: 'true', only: '["deploy","publish-preview","publish-release"]', inputs: '{}', missing: 'notes',
-      asks: '「发布说明」：发布预览版、发布正式版要', what: '合并 · 合并后删除远程分支 · 部署 · 发布预览版 · 发布正式版 · 全部完成后通知 Agent' });
+      asks: '「发布说明」：发布预览版、发布正式版要', needs: '{"notes":["publish-preview","publish-release"]}', what: '合并 · 合并后删除远程分支 · 部署 · 发布预览版 · 发布正式版 · 全部完成后通知 Agent' });
   assert.deepEqual(approve({ 'publish-release': true }, { notes: ' 新版说明 ' }),
-    { deleteBranch: 'false', notify: 'false', only: '["publish-release"]', inputs: '{"notes":"新版说明"}', missing: '', asks: '', what: '合并 · 发布正式版' });
+    { deleteBranch: 'false', notify: 'false', only: '["publish-release"]', inputs: '{"notes":"新版说明"}', missing: '', asks: '', needs: '{}', what: '合并 · 发布正式版' });
 
-  assert.deepEqual(run(['inputs'], { INPUTS: '{"notes":"卡上的"}', MISSING: '', ASKS: '', FILLS: 'null' }).outputs, { inputs: '{"notes":"卡上的"}' });
-  assert.deepEqual(run(['inputs'], { INPUTS: '{}', MISSING: 'notes', ASKS: '「发布说明」：发布正式版要', FILLS: JSON.stringify([{ result: 'completed', choice: 'done', note: '会话写的' }]) }).outputs,
-    { inputs: '{"notes":"会话写的"}' });
+  assert.deepEqual(run(['inputs'], { INPUTS: '{"notes":"卡上的"}', MISSING: '', ASKS: '', FILLS: 'null', ONLY: '["deploy"]' }).outputs, { inputs: '{"notes":"卡上的"}', only: '["deploy"]' });
+  assert.deepEqual(run(['inputs'], { INPUTS: '{}', MISSING: 'notes', ASKS: '「发布说明」：发布正式版要', FILLS: JSON.stringify([{ result: 'completed', choice: 'done', note: '会话写的' }]),
+    NEEDS: '{"notes":["publish-release"]}', ONLY: '["publish-release"]' }).outputs, { inputs: '{"notes":"会话写的"}', only: '["publish-release"]' });
   const empty = run(['inputs'], { INPUTS: '{}', MISSING: 'notes', ASKS: '「发布说明」：发布正式版要', FILLS: JSON.stringify([{ result: 'completed', note: '', attachments: ['/a.png'] }]) }, 1);
   assert.match(empty.stderr, /「发布说明」：发布正式版要：没有填写，不运行合并后的流程/);
   assert.deepEqual(empty.outputs, {});
 });
 
-test('the merge card offers the workflows joining the hook merged, and after the merge only the ticked ones run', async () => {
+async function pullRequestGraph() {
   const source = readFileSync(new URL('../../../plugins/review/.coda/workflows/pull-request.bpmn', import.meta.url), 'utf8');
   const { root, problem } = await readWorkflow(source, 'pull-request'); assert.ok(!problem, problem);
   const nodes = {}, flows = [];
@@ -151,6 +154,11 @@ test('the merge card offers the workflows joining the hook merged, and after the
     const out = flows.filter(f => f.sourceRef.id === id);
     return (out.find(f => f.conditionExpression && evaluate(f.conditionExpression.body.trim().slice(1), context).value) ?? nodes[id].default ?? out[0]).targetRef.id;
   };
+  return { nodes, values, params, envs, route };
+}
+
+test('the merge card offers the workflows joining the hook merged, and after the merge only the ticked ones run', async () => {
+  const { nodes, values, params, envs, route } = await pullRequestGraph();
   assert.equal(nodes.kinds, undefined);
   assert.equal(nodes.joiners.action, 'hook-joiners');
   assert.deepEqual(params('joiners'), { hook: 'merged', commit: '=reviewing.head' });
@@ -167,14 +175,39 @@ test('the merge card offers the workflows joining the hook merged, and after the
   const loop = nodes.fill.loopCharacteristics;
   assert.deepEqual([loop.isSequential, loop.inputElement], [true, 'input']);
   assert.deepEqual(evaluate(loop.inputCollection.slice(1), { approval: { missing: 'notes,extra' } }).value, ['notes', 'extra']);
-  assert.deepEqual(values('fill').map(v => [v.id, v.note]), [['done', 'required']]);
+  assert.deepEqual(values('fill').map(v => [v.id, v.note]), [['done', 'required'], ['skip', undefined]]);
   assert.equal(nodes.fill.assignee, undefined);
   assert.equal(route('fill', {}), 'merged-inputs');
-  assert.deepEqual(envs('merged-inputs'), { INPUTS: '=approval.inputs', MISSING: '=approval.missing', ASKS: '=approval.asks', FILLS: '=fill' });
-  assert.equal(route('merged-inputs', {}), 'run-merged');
-  assert.deepEqual(params('run-merged'), { hook: 'merged', only: '=approval.only', commit: '=github.event.pull_request.merge_commit_sha', inputs: '=merged-inputs.inputs' });
+  assert.deepEqual(envs('merged-inputs'), { INPUTS: '=approval.inputs', MISSING: '=approval.missing', ASKS: '=approval.asks', FILLS: '=fill', NEEDS: '=approval.needs', ONLY: '=approval.only' });
+  assert.equal(route('merged-inputs', {}), 'left');
+  assert.equal(route('left', { 'merged-inputs': { only: '["deploy"]' } }), 'run-merged');
+  assert.deepEqual(params('run-merged'), { hook: 'merged', only: '=merged-inputs.only', commit: '=github.event.pull_request.merge_commit_sha', inputs: '=merged-inputs.inputs' });
   assert.deepEqual(Object.values(nodes).filter(n => n.action === 'run-workflows').map(n => params(n.id).kind ?? params(n.id).hook), ['check', 'premerge', 'merged']);
   for (const id of ['notes', 'notes-user', 'publishing', 'deploy', 'publish']) assert.equal(nodes[id], undefined, id);
+});
+
+// What "这一项这次不跑" does: the session writes no text for an input, so every ticked workflow asking for it drops out of
+// `only` and the rest run; with none left the run goes on to its end without run-workflows.
+async function afterSkip(t, ticked, fills) {
+  const run = approvalRunner(t), { nodes, params, route } = await pullRequestGraph();
+  const approval = run([], { APPROVED: JSON.stringify({ choice: 'merge', options: Object.fromEntries(ticked.map(id => [id, true])), inputs: {} }), JOINERS }).outputs;
+  const merged = run(['inputs'], { INPUTS: approval.inputs, MISSING: approval.missing, ASKS: approval.asks, NEEDS: approval.needs, ONLY: approval.only, FILLS: JSON.stringify(fills) }).outputs;
+  return { approval, merged, next: route('left', { 'merged-inputs': merged }), nodes, params };
+}
+
+test('skipping a text drops every ticked workflow that asks for it and runs the others', async t => {
+  const skipped = await afterSkip(t, ['deploy', 'publish-preview', 'publish-release'], [{ result: 'completed', choice: 'skip', note: '' }]);
+  assert.equal(skipped.approval.only, '["deploy","publish-preview","publish-release"]');
+  assert.deepEqual([skipped.merged.only, skipped.merged.inputs, skipped.next], ['["deploy"]', '{}', 'run-merged']);
+  const written = await afterSkip(t, ['deploy', 'publish-preview', 'publish-release'], [{ result: 'completed', choice: 'done', note: '新版说明' }]);
+  assert.deepEqual([written.merged.only, written.merged.inputs, written.next], ['["deploy","publish-preview","publish-release"]', '{"notes":"新版说明"}', 'run-merged']);
+});
+
+test('skipping the only texts asked for leaves nothing to run: no run-workflows, the run ends as merged', async t => {
+  const skipped = await afterSkip(t, ['publish-preview', 'publish-release'], [{ result: 'completed', choice: 'skip', note: '' }]);
+  assert.deepEqual([skipped.merged.only, skipped.next], ['[]', 'delivered-none']);
+  assert.equal(skipped.nodes['delivered-none'].$type, 'bpmn:EndEvent');
+  assert.equal(skipped.nodes['delivered-none'].status, '已合并，没有要跑的合并后流程');
 });
 
 // Each answer of a task that fixes a failed version, followed through the flow: pushed waits quietly for the new version.
