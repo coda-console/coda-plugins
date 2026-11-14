@@ -110,7 +110,7 @@ OpenCode 遇到模型服务的 429，会照 `Retry-After` 等（OpenCode 2 每�
 子会话事件没有发起工具的 ID，同时有多个可能的调用时，仅在它们全部仍是同一轮的前台调用时才处理，无法确定的长等待仍由 OpenCode 自己管理。
 Coda 自己对服务故障只等一分钟以内，所以主请求或它仍在等待的前台子会话要等超过一分钟才重试时，入口先 `session/cancel` 停下这一轮（前台子 Agent 随之停下），
 再把这一轮答成失败，原因是服务给的原文加上 OpenCode 要等多久；停下后 OpenCode 回的是什么都不转出。一分钟以内的等待照旧由 OpenCode 自己处理。
-明确的 `[ttft_admission_refused]` 或 `[prefill_cap_refused]` 加 `the cell is at capacity` 容量拒绝，以及状态码 500–599 的等待，在停下原生轮次后报告为 `service_unavailable`，
+明确的 `[ttft_admission_refused]` 或 `[prefill_cap_refused]` 加 `the cell is at capacity` 容量拒绝、状态码 500–599 的等待，以及没有额度原文的 429，在停下原生轮次后报告为 `service_unavailable`，
 带 `input: accepted` 与 OpenCode 实际安排的剩余等待 `retryAfterMs`；Coda 按该等待决定是否重试，长等待以已知失败结束。
 保留服务原文（其中建议的短等待也原样保留），不把它当成 OpenCode 的实际重试时间，不把普通 429 或认证失败归为容量拒绝。
 等待的错误是 429 且服务自己说明额度用尽（`Free usage limit reached`、`Credits exhausted`、`额度已用尽`、`用量已超出限制`，
@@ -120,9 +120,11 @@ Coda 自己对服务故障只等一分钟以内，所以主请求或它仍在等
 OpenCode 把失败的 `session/prompt` 答成 -32603 `Internal error: <原因>`，`data.errorName` 是它对模型服务响应的分类。
 入口在转出时据此补 `error.data._meta.coda.failure`，不改原因与其他字段：`provider.quota`、`provider.free-limit` 报 `quota_exhausted`；
 网关（WorkBuddy、OpenCode Zen 经 Magpie 等）把额度用尽答成 429，OpenCode 归为 `provider.rate-limit`，此时按上面的原文判断；
-`provider.internal`（5xx 等上游故障，OpenCode 已重试过）报 `service_unavailable`、`input: accepted`。
-认证（`provider.auth`，OpenCode 答 `auth_required`）、内容过滤、请求无效（含上下文超长与参数错误）、连接（`provider.transport`、`provider.timeout`）、
-未知服务与路由等失败不带类别；OAuth 过期待协议的 `auth_required` 类别发布后再做。WorkBuddy 经 OpenCode 使用，没有单独的插件。
+不带额度原文的 `provider.rate-limit`、`provider.internal`（5xx 等上游故障）、`provider.transport`（连接失败）与 `provider.timeout`（超时）
+都是会自己好的故障，OpenCode 已重试过，报 `service_unavailable`、`input: accepted`；这条回执不带 `retryAfterMs`（OpenCode 没有说等多久）。
+长等待路径里的 429 同理：没有额度原文就报 `service_unavailable`，带 OpenCode 实际安排的 `retryAfterMs`。
+认证（`provider.auth`，OpenCode 答 `auth_required`）、内容过滤、请求无效（含上下文超长与参数错误）、
+未知服务与路由、不支持的操作、输出无效等失败不带类别；OAuth 过期待协议的 `auth_required` 类别发布后再做。WorkBuddy 经 OpenCode 使用，没有单独的插件。
 
 OpenCode 的原生子会话经 ACP 的 `opencode/child-session-updates` 能力接入（入口 `agent/children.mjs`，核对 OpenCode 2.1.4）：
 `opencode/session/child_update` 的创建与运行状态登记成 `_coda/wait`，带原生 `childSessionId`；子会话的回复、思考与工具调用各归自己的过程，
@@ -393,7 +395,8 @@ Coda 按这个通用类别显示「额度不足」，不触发服务故障重试
 Kimi 2.1.1 的 ACP 把失败的一轮（包括现在以 429 报的五小时额度耗尽）答成 `end_turn`，错误只记在它主 wire 的 `turn.ended` 里。
 插件在交出 `session/prompt` 的回执前读到这一轮以 `failed` 结束，就改答 -32603，`error.message` 是这一轮的错误原文；
 Kimi 自己归为 `APIProviderQuotaExhaustedError`（如 `429 You've reached your weekly (7-day) usage limit.`）的另报 `quota_exhausted`（原文没有确切恢复时间，不带 `resetAt`）；
-`APIProviderOverloadedError` 或状态码 500–599 的另报 `service_unavailable`、`input: accepted`（Kimi 自己已重试过才结束这一轮）；其他失败（认证、上下文、限流、连接）不带类别。被过滤的回复 Kimi 已答 `refusal`，不改。
+`APIProviderOverloadedError`、状态码 500–599、状态码 429 的非额度限流（`APIProviderRateLimitError`），以及连接失败与超时（`APIConnectionError`、`APITimeoutError`，错误码 `provider.connection_error`）
+另报 `service_unavailable`、`input: accepted`（Kimi 自己已重试过才结束这一轮；错误里没有等待时间，不带 `retryAfterMs`）；其他失败（认证、上下文、请求无效）不带类别。被过滤的回复 Kimi 已答 `refusal`，不改。
 Kimi 在一轮失败后暂停 goal，goal 的定时随之以 `failed` 结束，说明是那一轮的原因，额度耗尽时标题为「额度不足」。
 `CODA_DISABLE_RUNTIME_PATCHES=kimi` 关闭这层适配。
 

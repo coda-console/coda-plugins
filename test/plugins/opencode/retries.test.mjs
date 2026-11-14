@@ -66,14 +66,13 @@ for (const child of [false, true]) test(`capacity refusal in a ${child ? 'foregr
   assert.deepEqual(waits.fromAgent(answer(3)), answer(3), 'classification belongs only to the failed prompt');
 });
 
-test('short capacity waits stay with OpenCode; generic rate limits and authentication are not capacity failures', () => {
+test('short capacity waits stay with OpenCode; authentication and invalid requests are not capacity failures', () => {
   const { cancelled, waits } = retries();
   waits.toAgent(prompt(1));
   waits.fromAgent(retry('ses_a', LONG_WAIT, CAPACITY));
   assert.deepEqual(cancelled, []);
   assert.deepEqual(waits.fromAgent(answer(1)), answer(1));
-  for (const [message, status] of [['Too Many Requests', 429], ['the cell is at capacity', 429], ['[ttft_admission_refused] another reason', 429],
-    [CAPACITY, 401], [CAPACITY, 403], ['Free usage limit reached', 403], ['Credits exhausted', 401], ['Invalid request', 400]]) {
+  for (const [message, status] of [[CAPACITY, 401], [CAPACITY, 403], ['Free usage limit reached', 403], ['Credits exhausted', 401], ['Invalid request', 400]]) {
     waits.toAgent(prompt(2));
     const event = retry('ses_a', 420_000, message);
     event.params.update._meta['opencode/retry'].error.status = status;
@@ -97,7 +96,16 @@ test('a long wait on a 429 that says the quota is used up ends the turn as quota
     'WorkBuddy AI: Credits exhausted. Please visit the link below to purchase add-on packs and get more credits: https://www.codebuddy.ai/profile/usage',
     'macmini2 Zen: OpenCode Zen: Free usage limit reached. Free models work in OpenCode (https://opencode.ai); subscribe to OpenCode Go to keep going: https://opencode.ai/go'])
     assert.deepEqual(failureOfWait(message, 429), { kind: 'quota_exhausted' });
-  assert.equal(failureOfWait('Too Many Requests', 429), undefined);
+});
+
+test('a long wait on a 429 without quota wording is a service failure with the wait OpenCode scheduled, but not a capacity one', () => {
+  const failure = { kind: 'service_unavailable', input: 'accepted', retryAfterMs: 420_000 };
+  for (const message of ['Too Many Requests', 'the cell is at capacity', '[ttft_admission_refused] another reason']) assert.deepEqual(failureOfWait(message, 429), failure);
+  const { waits } = retries();
+  waits.toAgent(prompt(1));
+  waits.fromAgent(retry('ses_a', 420_000, 'Too Many Requests'));
+  assert.equal(waits.fromAgent(answer(1)).error.message, 'Too Many Requests\n\nOpenCode 要等约 7 分钟才会重试，这一轮先结束。');
+  for (const status of [401, 403, 400, 404, 408]) assert.equal(failureOfWait('Too Many Requests', status), undefined, String(status));
 });
 
 test('a long wait on a capacity refusal or a 5xx is a service failure with the wait OpenCode scheduled, whichever the refusal\'s name', () => {
@@ -106,7 +114,6 @@ test('a long wait on a capacity refusal or a 5xx is a service failure with the w
   assert.deepEqual(failureOfWait('macmini2 Zen: OpenCode Go 2: Upstream request failed: [prefill_cap_refused] the cell is at capacity; retry shortly (after 30 s)', 503), failure);
   assert.deepEqual(failureOfWait('Upstream request failed', 503), failure);
   assert.deepEqual(failureOfWait('Bad gateway', 502, 900_000), { ...failure, retryAfterMs: 900_000 });
-  assert.equal(failureOfWait('Service exhausted', 408), undefined);
 });
 
 test('a subagent\'s wait, said in the session of the turn that waits on it, stops that turn', () => {

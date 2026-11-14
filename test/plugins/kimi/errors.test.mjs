@@ -48,9 +48,14 @@ test('a failed turn is a failure with its reason, categorised only as Kimi\'s ow
   assert.deepEqual(failed('APIProviderQuotaExhaustedError', 429), { message: quota, kind: 'quota_exhausted' });
   assert.deepEqual(failed('APIProviderOverloadedError', 529, 'provider.overloaded'), { message: quota, kind: 'service_unavailable' });
   for (const status of [500, 502, 503, 599]) assert.deepEqual(failed('APIStatusError', status), { message: quota, kind: 'service_unavailable' });
-  for (const [name, status, code] of [['APIStatusError', 429], ['APIProviderRateLimitError', 429, 'provider.rate_limit'], ['APIStatusError', 403, 'provider.auth_error'],
-    ['APIStatusError', 400], ['APIContextOverflowError', 413], ['APIStatusError', 600], ['APIStatusError', '503'], ['APIConnectionError', undefined, 'provider.connection_error']])
-    assert.deepEqual(failed(name, status, code), { message: quota });
+  // A connection failure or timeout (both code provider.connection_error), and a 429 that is not quota: faults that clear by themselves.
+  for (const [name, status, code] of [['APIConnectionError', undefined, 'provider.connection_error'], ['APITimeoutError', undefined, 'provider.connection_error'],
+    ['APIProviderRateLimitError', 429, 'provider.rate_limit'], ['APIStatusError', 429, 'provider.rate_limit']])
+    assert.deepEqual(failed(name, status, code), { message: quota, kind: 'service_unavailable' }, name);
+  for (const [name, status, code] of [['APIStatusError', 403, 'provider.auth_error'], ['APIStatusError', 401, 'provider.auth_error'],
+    ['APIStatusError', 400], ['APIContextOverflowError', 413, 'context.overflow'], ['APIStatusError', 600], ['APIStatusError', '503'], ['APIStatusError', '429'],
+    ['APIEmptyResponseError', undefined]])
+    assert.deepEqual(failed(name, status, code), { message: quota }, name);
   assert.deepEqual(turnFailure('failed', { name: 'APIStatusError', message: 'overloaded' }), { message: 'overloaded' });
   assert.deepEqual(turnFailure('failed', undefined), { message: 'Kimi 这一轮执行失败' });
   assert.equal(turnFailure('failed', { code: 'provider.filtered', message: 'filtered', details: { statusCode: 500 } }), null);

@@ -19,10 +19,11 @@ const span = ms => Math.ceil(ms / 60_000) >= 60 ? `约 ${Math.round(ms / 3_600_0
 // short suggestion in the message does not override the retry time OpenCode actually scheduled.
 const capacityRefused = error => ![401, 403].includes(error?.status) && typeof error?.message === 'string' &&
   /\[(?:ttft_admission|prefill_cap)_refused\] the cell is at capacity(?:[;.]|$)/.test(error.message);
-// What the service's error says beyond a wait: its quota is used up (said so in its own words, not just a 429), or it failed upstream (5xx).
+// What the service's error says beyond a wait: its quota is used up (said so in its own words, not just a 429), or it is a
+// fault that clears by itself: a capacity refusal, a 5xx, or any other 429.
 const failureOf = (error, capacity, retryAfterMs) => {
-  if (capacity || (error?.status >= 500 && error.status <= 599)) return { kind: 'service_unavailable', input: 'accepted', retryAfterMs };
   if (error?.status === 429 && quotaText(error.message)) return { kind: 'quota_exhausted' };
+  if (capacity || error?.status === 429 || (error?.status >= 500 && error.status <= 599)) return { kind: 'service_unavailable', input: 'accepted', retryAfterMs };
 };
 
 export class LongRetries {

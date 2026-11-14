@@ -21,13 +21,15 @@ test('a failed prompt whose quota is used up is quota exhaustion, by OpenCode\'s
   assert.equal(classified.error.message, `Internal error: ${ZEN}`);
 });
 
-test('an upstream fault OpenCode already retried is a service failure; other failures carry no category', () => {
-  assert.deepEqual(failureOf(reply('provider.internal', 'Upstream request failed: Bad Gateway')), { kind: 'service_unavailable', input: 'accepted' });
-  for (const [type, text] of [['provider.rate-limit', 'Too Many Requests'], ['provider.rate-limit', 'Rate limit reached'],
-    ['provider.auth', ZEN], ['provider.content-filter', WORKBUDDY], ['provider.invalid-request', 'context_length_exceeded'],
-    ['provider.invalid-request', WORKBUDDY], ['provider.transport', 'dial tcp 100.124.1.28:3425: connect: connection refused'],
-    ['provider.timeout', 'Timeout'], ['provider.unknown', 'unknown provider for model gemini-pro-agent'], ['provider.no-route', ZEN], ['ServerUnavailable', ZEN],
-    ['provider.invalid-output', 'Invalid coda-models.s-magpie-openai-4795cd5415/openai-compatible stream event']]) {
+test('faults that clear by themselves (upstream, connection, timeout, a 429 without quota wording) are service failures; other failures carry no category', () => {
+  const unavailable = { kind: 'service_unavailable', input: 'accepted' };
+  for (const [type, text] of [['provider.internal', 'Upstream request failed: Bad Gateway'], ['provider.rate-limit', 'Too Many Requests'],
+    ['provider.rate-limit', 'Rate limit reached'], ['provider.transport', 'Post "http://100.124.1.28:3425/v1/chat/completions": dial tcp 100.124.1.28:3425: connect: connection refused'],
+    ['provider.timeout', 'Timeout']]) assert.deepEqual(failureOf(reply(type, text)), unavailable, `${type}: ${text}`);
+  for (const [type, text] of [['provider.auth', ZEN], ['provider.auth', 'Too Many Requests'], ['provider.content-filter', WORKBUDDY],
+    ['provider.invalid-request', 'context_length_exceeded'], ['provider.invalid-request', WORKBUDDY], ['provider.invalid-request', 'Too Many Requests'],
+    ['provider.unsupported-operation', 'Unsupported'], ['provider.unknown', 'unknown provider for model gemini-pro-agent'], ['provider.no-route', ZEN],
+    ['ServerUnavailable', ZEN], ['provider.invalid-output', 'Invalid coda-models.s-magpie-openai-4795cd5415/openai-compatible stream event']]) {
     const message = reply(type, text);
     assert.equal(classifyOpenCodeError(message), message, `${type}: ${text}`);
   }
