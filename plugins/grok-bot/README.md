@@ -1,5 +1,7 @@
 # Grok Bot
 
+0.6.0 删掉远端入口、绑定和工单回传（`remote/`、绑定页与资源页「绑定」按钮、`remoteCode` 调用）；会话收发照旧。Coda 已删除对应的外部会话绑定与 `coda:reportTo`，旧绑定不再可用。
+
 0.5.0 把每个 Bot 的原生主会话提供为 `coda/session@1` 记录，不再声明 ACP Agent。只供预览版安装。协议依照 5.7.0。
 
 ## 登录与记录
@@ -37,29 +39,3 @@ Provider 每 30 秒重新读取登录及 Bot 名单；每个 Bot 自动建立一
 这些代码证明旧实现允许正文再次变化，不能证明线上总以完整消息到达，也不能证明每次变化都是人工修订。当前 1 秒稳定窗口只是对订阅条目的静默等待，不是上游完结信号；停顿后再次修改仍会以新修订交付。真实历史及稳定窗口是否合适留到预览空间真实环境验证。
 
 测试使用假原生服务端，覆盖登录后记录、增量/向前翻页、修订、稳定 head、启动前已完成的流式消息、断线/游标重置重建、无额外历史读取、post 的请求派生 ID、流回显与未知结果、widget 回复以及 Routine 不镜像；记录及 read 输出按仓库协议契约校验。
-
-## 绑定远端入口
-
-需要支持协议 5.7.0 记录远端入口的 Coda。资源页每个 Bot 有一个「绑定」按钮；只有点击后才申请绑定码并发送指令，不在启动或同步时自动发送。
-
-资源按钮打开 bind 视图，将记录 ID 作为 args 交给模块注册的 open 回调；每次打开只发送一次。页面显示「正在发绑定指令…」，收到模块结果后显示「已发给 Bot」或错误原因。模块确认记录仍属于当前账号的 Bot，调用 `coda.protocols.remoteCode(recordId)`，取返回的第一个 tailnet 入口，以账号本人的身份向该 Bot 发送一句话和一行 `node coda-bot.mjs bind <address> <code>`。未连接 tailnet 时直接报错，不发送；发送未确认时报告失败，不自动重发。插件须已激活。
-
-在 Bot 云电脑保存 `remote/coda-bot.mjs`，让 Bot 阅读 `remote/SKILL.md`。先运行 `node coda-bot.mjs net`，然后执行收到的绑定命令。码有效期为 10 分钟；重新绑定会替换旧令牌。客户端经 `/v1/remote-caller/bind` 保存 token、record，经 `/v1/remote-caller` 调用工具；MCP 启动命令为 `node coda-bot.mjs mcp [recordId]`，多个 Bot 共用云电脑时必须指定各自记录 ID。旧版绑定需重新操作。
-
-工具为 `coda_machines`、`coda_machine_diagnostics`、`coda_read_thread`、`coda_read_tool_call`、`coda_workflow_list`、`coda_workflow_status`，以及 `coda_file_ticket`。前六个走 tool；工单走 file_ticket，默认 workflow 为 bot-ticket，每次调用生成 requestId。遥测由 Bot 直接访问用户自己的看板，不再通过插件代理。
-
-## Routine 指令模板
-
-先在 Coda 的「工作流」插件设置 `workflows.remoteCallerWorkflows` 中加入目标目录的 `bot-ticket` 白名单项（project 为目录 ID，workflow 为 bot-ticket）。同名流程在多个目录获准时，提工单需明确填写 project。
-
-将下面的模板填好后放进自己的 Routine；真实看板地址只留在用户指令里，不提交到仓库：
-
-> 阅读 coda-bot 的 Skill。每次巡检先读取已记录的问题，用 coda_workflow_status 查看已提工单的进度并更新记录。
->
-> 从云电脑直接请求我的遥测看板：〈填写看板地址及需要读取的路径〉。结合机器状态和诊断调查性能、稳定性和逻辑问题，记录现象、影响、时间范围、版本及证据。
->
-> 发现需要处理的新问题时，用 coda_file_ticket 提交到 bot-ticket，project 填〈目标目录 ID；白名单唯一时可省〉。为同一问题使用相同的稳定 key，记录返回的 run.id。已有未结束工单的同一问题不重复提，不用巡检时间或随机数生成 key。工单提交后停在待处理，等我决定，这不是失败；没进展也不要换 key 重提。
->
-> 后续 Routine 先看已提工单的进度，再调查新问题。收到聊天里的工单结论后更新记录；失败先查原因，修复后再核实新证据。
-
-测试用假 HTTP 服务端验证远端请求，用假原生服务端验证打开绑定视图后以本人身份发送，并向页面报告成功或错误。未连接真实 Coda 5.7.0 或真实 Bot，未修改线上 Routine，未部署。停止第一版不做。
