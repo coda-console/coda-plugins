@@ -16,7 +16,7 @@
     <userTask id="brief" name="写需求" coda:wake="false" coda:noteLabel="第一行需求名，空一行后是目标与完成标准">
       <documentation>用户在这个会话里开启了需求交付：一个需求跨几个仓库，要一起验收、一起批准合并。你是主 Agent，每个仓库开一个需求运行（监督开发），达标后统一交付。
 现在把和用户聊定的需求写下来：备注第一行是需求名，空一行后是目标与完成标准。
-答复后，为每个要改的仓库在那里用 workflow_run 发起 develop（需求运行）：传 title、message（这个仓库要做的部分与完成标准）、delivery="{{run.id}}"、devices=false，跨仓库用 project。在各需求运行的「需求进行中」里用泳道 PR 把改动合进它的泳道，做完提交验收；成员可以同时进行，各自检查通过后停在「待交付」；全部达标后在本运行的「确认达标」按合并顺序列出成员 PR（各泳道进目标分支的 PR）。
+答复后，为每个要改的仓库在那里用 workflow_run 发起 develop（需求运行）：传 title、message（这个仓库要做的部分与完成标准）、delivery="{{run.id}}"、devices=false，跨仓库用 project；为每个成员选好执行者 executor 和备用执行者 executor2（按各自仓库的工作性质，有执行者名单就从名单选）一并传上。在各需求运行的「需求进行中」里用泳道 PR 把改动合进它的泳道，做完提交验收；成员可以同时进行，各自检查通过后停在「待交付」；全部达标后在本运行的「确认达标」按合并顺序列出成员 PR（各泳道进目标分支的 PR）。
 {{if run.message = "" then "" else "发起时带的需求：\n" + run.message + "\n"}}设备验收：{{if inputs.devices then "开启，全部成员集成后统一验收一次" else "未开启"}}{{if inputs.device = "" then "" else "，验收设备 " + inputs.device}}。
 {{if brief-result.feedback = null then "" else brief-result.feedback}}</documentation>
       <extensionElements><coda:choice id="start" name="开始拆分" primary="true" note="required" /></extensionElements>

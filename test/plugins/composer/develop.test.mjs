@@ -369,11 +369,11 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   assert.equal(process.name, '监督开发'); assert.equal(process.kind, undefined); assert.equal(process.concurrency, undefined);
   assert.deepEqual(values(process).filter(v => v.$type === 'coda:Join').map(j => j.hook), ['develop'], '开发流程：加入挂点 develop');
   const inputs = Object.fromEntries(values(process).filter(v => v.$type === 'coda:Input').map(v => [v.name, v]));
-  assert.deepEqual(Object.keys(inputs), ['title', 'devices', 'device', 'hold', 'delivery', 'reviewer', 'reviewer2', 'reviewer3', 'base']);
+  assert.deepEqual(Object.keys(inputs), ['title', 'devices', 'device', 'hold', 'delivery', 'executor', 'executor2', 'reviewer', 'reviewer2', 'reviewer3', 'base']);
   assert.deepEqual(Object.values(inputs).filter(v => v.required), [], '用户在会话里开启时什么都不必填');
   for (const name of ['title', 'device', 'delivery', 'base']) assert.equal(inputs[name].default, '', name);
   assert.deepEqual([inputs.devices.type, inputs.devices.default], ['boolean', 'false']);
-  for (const name of ['reviewer', 'reviewer2', 'reviewer3']) assert.deepEqual([inputs[name].type, inputs[name].default, inputs[name].defaultFrom], ['agent', undefined, undefined], name);
+  for (const name of ['executor', 'executor2', 'reviewer', 'reviewer2', 'reviewer3']) assert.deepEqual([inputs[name].type, inputs[name].default, inputs[name].defaultFrom], ['agent', undefined, undefined], name);
   assert.equal(nodes.start.eventDefinitions, undefined, '不订阅 PR 事件');
   assert.ok(manifest.files.includes('.coda/workflows')); assert.ok(manifest.files.includes('scripts'));
   for (const [title, expected] of [['', '监督开发'], ['输入框', '需求：输入框']]) assert.equal(evaluate(process.title.slice(2, -2), { inputs: { title } }).value, expected);
@@ -403,9 +403,22 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   assert.deepEqual(values(nodes.progress).map(v => [v.id, v.name, v.note]), [['submit', '提交验收', 'required'], ['pause', '暂停', 'required'], ['abandon', '放弃', undefined]]);
   for (const [value, target] of [['progress', 'progress'], ['pause', 'paused'], ['abandon', 'abandoned'], ['submit', 'pr']]) assert.equal(route('after-progress', { 'progress-result': { route: value } }), target);
   const doc = nodes.progress.documentation[0].text;
-  for (const text of ['workflow_run 发起一个泳道 PR（lane-pr）', 'lane="{{run.id}}"', 'title', 'task', 'executor、executor2、reviewer、reviewer2（', '由你按这一块的性质逐个定',
+  for (const text of ['workflow_run 发起一个泳道 PR（lane-pr）', 'lane="{{run.id}}"', 'title', 'task', 'executor、executor2、reviewer、reviewer2。executor 必传', '没理由另定的块传下面的开工执行者', '按你手上的执行者名单（有的话）另定', '开工值有就默认传它', '开工没填的，每块自己定', 'reviewer、reviewer2 仍由你按这一块的性质逐个定',
     '可以同时发起', 'sync=true', '快进进泳道', 'mac-preview-install', '加入挂点 premerge 的流程', '{{lane.lane}}', '{{lane.goal}}']) assert.ok(doc.includes(text), text);
   assert.ok(!doc.includes('reviewerOnce'), '泳道 PR 没有只评第一次交付的位置');
+  assert.ok(!doc.includes('不传 executor 用你的 Agent'), '不再悄悄落到主会话');
+  // 开工值照引擎渲染：模板里 {{…}} 的值是对象就转成 JSON 文本，null 是空文本。
+  const asText = v => v === null || v === undefined ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v);
+  const render = (text, context) => text.replace(/{{([\s\S]*?)}}/g, (_, e) => asText(evaluate(e, context).value));
+  const line = (text, head) => text.split('\n').find(l => l.startsWith(head));
+  const chosen = { agent: 'codex', model: 'gpt-6.1-sol', effort: 'ultra', options: { 'service-tier': 'priority' } }, backup = { agent: 'claude-sdk', model: 'claude-opus-5-5' };
+  const filled = render(doc, { inputs: { reviewer: null, reviewer2: null, reviewer3: null, delivery: '', devices: false, executor: chosen, executor2: backup }, run: { id: 'run-1' }, lane: {}, resume: { reason: '' } });
+  assert.equal(line(filled, '开工执行者，'), `开工执行者，值是 JSON，原样作 workflow_run 的 executor 输入：${JSON.stringify(chosen)}`);
+  assert.equal(line(filled, '开工备用执行者，'), `开工备用执行者，原样作 executor2 输入：${JSON.stringify(backup)}`);
+  assert.deepEqual(JSON.parse(line(filled, '开工执行者，').split('：').slice(1).join('：')), chosen, '渲染出的文字能直接解析成 agent 对象');
+  const empty = render(doc, { inputs: { reviewer: null, reviewer2: null, reviewer3: null, delivery: '', devices: false, executor: null, executor2: null }, run: { id: 'run-1' }, lane: {}, resume: { reason: '' } });
+  assert.match(line(empty, '开工执行者，'), /：没填，每块自己定$/);
+  assert.match(line(empty, '开工备用执行者，'), /：没填，每块自己定$/);
   // 只填了第三整体评审者也算要整体评审：进行中的说明与批准卡都这样写。
   const reviewed = (text, needle) => [...text.matchAll(/{{(.*?)}}/gs)].find(m => m[1].includes('inputs.reviewer3') && m[1].includes(needle))[1];
   const nobody = { reviewer: null, reviewer2: null, reviewer3: null };

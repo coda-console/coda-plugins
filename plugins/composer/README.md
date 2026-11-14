@@ -28,6 +28,8 @@
 
 9.2.0 不再用流程类别（[Coda #2521](https://github.com/coda-console/coda/issues/2521) 第 5 步）：检查、合并前检查、预编改为调用加入挂点 `check`、`premerge`、`prebuild` 的流程（`run-workflows hook=…`），`develop` 改为加入挂点 `develop`（Coda「＋」与开工卡列开发流程用它），不再写 `coda:kind`。项目里这三类流程要显式写 `<coda:join hook="…"/>`。
 
+10.0.0 监督开发（`develop`）加输入 `executor`、`executor2`：开工时就能看到、能改本泳道的默认执行者与备用执行者，「需求进行中」任务里把它们写成可原样传给 `workflow_run` 的 JSON；需求交付为各成员开工时也为每个成员选执行者。泳道 PR（`lane-pr`）的 `executor` 由可省略改为必填，不再默认取发起会话的 Agent（原来漏填时悄悄落到最贵的主会话模型），不传的旧调用启动时即报「需要参数 executor」，与旧版不兼容；主 Agent 仍可按块另定。Ultra 名单的范围加上 `develop` 的 `executor`、`executor2`。
+
 插件只返回补充，不改正文、附件、引用或输入框的执行者。多个模式的补充由 Coda 合并，`tell` 是字符串数组，按列表追加后随这条发送到每个收到它的会话；只要有一项 `divert: true` 就不发给默认去向，各模式追加的去向仍分别执行。
 
 | 模式 | 发出的一条的补充 |
@@ -63,7 +65,7 @@ Ultra 只管派活：主 Agent 定任务、处理困难决策、审查别人交�
 Ultra 参数仍保存为 `subagents`，预设引用 `{ "from": "composer.templates", "by": "template" }`，选择预设只填入名单一次，之后可修改。
 派活时任务书要自成一体：目标与它服务的决定、已知或已排除的、范围与不要碰的、去哪里找、交回什么（先结论，再来源和实际证据）。
 结果不好时按原因处理：任务书漏了的，补写后发回同一会话；只有说法没有证据的，向同一会话要证据；任务书清楚但结果不对的，换名单里的另一项；会话中断或工具失败的，重试；不要自己悄悄重做。
-名单管的范围：Coda `spawn`，泳道 PR（`lane-pr`）的 `executor`、`executor2`、`reviewer`、`reviewer2`，以及监督开发（`develop`）的整体评审者 `reviewer`、`reviewer2`、`reviewer3`，都按任务从名单选，传 `agent`、`model`、`effort`、`mode`、`options`；只有名单为空或没有条目覆盖这项工作时，才用当前会话的 Agent 和模型。提示只讲从名单选谁，不讲开发流程怎么走。
+名单管的范围：Coda `spawn`，泳道 PR（`lane-pr`）的 `executor`、`executor2`、`reviewer`、`reviewer2`，以及监督开发（`develop`）的执行者 `executor`、`executor2` 与整体评审者 `reviewer`、`reviewer2`、`reviewer3`，都按任务从名单选，传 `agent`、`model`、`effort`、`mode`、`options`；只有名单为空或没有条目覆盖这项工作时，才用当前会话的 Agent 和模型。提示只讲从名单选谁，不讲开发流程怎么走。
 
 会话输入框开着 Ultra 时，这个会话的每一轮开头都带 Ultra 提醒，不论这一轮由用户消息、流程结果还是卡片叫醒。
 默认是短提醒：一两句要点（主 Agent 定任务、做决定、审查；不改代码的调研与核实交给 `spawn`；不用原生子 Agent；并发满了就等），加上名单和名单的范围；名单为空时写用自己的 Agent。
@@ -99,13 +101,14 @@ Ultra 消失时，若这个会话收到过说明（submission 投递过或 watch
 | `device` | 可选文本「验收设备」，如 `duo-testbed`，默认空；开启设备验收且非空时，从安装前到验收结束独占这台设备；留空不占设备 |
 | `hold` | 可选文本「验收时占用」，一个组名，默认空；开启设备验收且非空时，安装与验收期间另外占着这个组（容量 1），如项目的泳道专用后端；留空不占 |
 | `delivery` | 字符串「所属需求交付」，填需求交付（`deliver`）运行的 ID；默认空，为独立交付 |
+| `executor`、`executor2` | 「执行者」「备用执行者」，各是一组 Agent 选择（流程参数的 `agent` 类型），没有默认值，不填就是空（`null`）；是本泳道里泳道 PR 的默认人选：主 Agent 派每个泳道 PR 时把它们原样传给 `lane-pr` 的 `executor`、`executor2`，没理由另定的块用它们，难的或性质不同的块可按块另定；不填则每块自己定。「需求进行中」任务里把开工值以 JSON 写出来，主 Agent 可直接复制 |
 | `reviewer`、`reviewer2`、`reviewer3` | 「整体评审者」「第二整体评审者」「第三整体评审者」，各是一组 Agent 选择（流程参数的 `agent` 类型），没有默认值，不填就是空（`null`）、不评；见下文「整体评审」 |
 | `base` | 「目标分支」，留空从 GitHub 读取仓库默认分支 |
 
 0. 需求名（`title`）和需求文字（`run.message`）缺一样时（如你直接在会话里开启的），先交主 Agent「写需求」：这张任务不叫醒它（`coda:wake="false"`），随你在会话里的下一条消息告诉它，说明你开启了监督开发、它要做什么；发起时带了需求文字就一并写在任务里。两样都有时（如开工卡确认的、需求交付发起的）不经过这张任务。主 Agent 答复时备注必填：第一行是需求名，空一行后是目标与完成标准；缺一样回到这张任务。
 1. **建泳道**：从远端目标分支的最新提交建 `lane/<运行 ID>` 并推送，分支名只用 ASCII。远端已有同名泳道时沿用它，不重建：运行从头重跑时不会因为分支已存在而失败，也不会丢掉已合进泳道的改动。
 2. **需求进行中**：交主 Agent 一张「需求进行中」任务，可以挂好几天。任务里写着需求、目标、泳道，以及怎么推进：
-   - 每一块用 `workflow_run` 发起一个泳道 PR：传 `lane`（本运行的 ID）、`title`、`task`，以及这一块的 `executor`、`executor2`、`reviewer`、`reviewer2`（主 Agent 按这一块的性质逐个定）；
+   - 每一块用 `workflow_run` 发起一个泳道 PR：传 `lane`（本运行的 ID）、`title`、`task`，以及这一块的 `executor`、`executor2`、`reviewer`、`reviewer2`。`executor` 必传（`lane-pr` 不再落到发起会话）：没理由另定的块传开工执行者，难的或性质不同的块按执行者名单（有的话）另定；`executor2` 同理，开工值有就默认传它；开工没填时每块自己定；`reviewer`、`reviewer2` 仍由主 Agent 按这一块的性质逐个定；
    - 互不依赖的块可以同时发起，有依赖的等前一个合进泳道再发起；
    - 跟上目标分支用 `sync=true` 的泳道 PR；
    - 中途想先看效果，可以用泳道的提交发起 `mac-preview-install`、`ios-preview-install`，或对泳道 head 跑一次合并前检查（加入挂点 `premerge` 的流程）。
@@ -195,7 +198,7 @@ PR 汇总的改动块统计目标分支最新提交与泳道 head 的三点 diff
 | `title` | 必填，泳道 PR 的标题 |
 | `task` | 必填，自足的任务书：背景、范围与验收要求 |
 | `sync` | 布尔值「跟上目标分支」，默认关；见下文「跟上目标分支」 |
-| `executor` | 「执行者」，一组 Agent 选择（Agent、模型、强度、模式与其他选项，流程参数的 `agent` 类型）；默认取发起会话的，跨目录发起取不到时也用发起会话的。没选的模型、强度、模式用执行者的默认值，其他选项逐个传给 `coda-agent --option` |
+| `executor` | 必填「执行者」，一组 Agent 选择（Agent、模型、强度、模式与其他选项，流程参数的 `agent` 类型），通常是所属监督开发的开工执行者；没有默认值，不传时启动就报「需要参数 executor」，不再落到发起会话。没选的模型、强度、模式用执行者的默认值，其他选项逐个传给 `coda-agent --option` |
 | `executor2` | 「备用执行者」，没有默认值，不填就是空（`null`）；见下文「备用执行者与退回次数」 |
 | `reviewer`、`reviewer2` | 「评审者」「第二评审者」，没有默认值，不填就不评；填了的评每一次交付，见下文「评审」 |
 

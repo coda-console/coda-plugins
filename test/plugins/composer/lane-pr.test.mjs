@@ -322,11 +322,14 @@ test('泳道 PR 流程定义：输入、回路、审查卡答复、结束输出�
   assert.deepEqual(Object.keys(inputs), ['lane', 'title', 'task', 'sync', 'executor', 'executor2', 'reviewer', 'reviewer2']);
   for (const name of ['lane', 'title', 'task']) assert.equal(inputs[name].required, true, name);
   assert.deepEqual([inputs.sync.type, inputs.sync.default], ['boolean', 'false']);
-  assert.deepEqual([inputs.executor.type, inputs.executor.defaultFrom], ['agent', 'session.agent']);
+  // 必填且没有默认值：引擎 resolveInputs 对没给、又无默认的 required 输入在启动时报「需要参数 executor」，不再落到发起会话。
+  assert.deepEqual([inputs.executor.type, inputs.executor.required, inputs.executor.default, inputs.executor.defaultFrom], ['agent', true, undefined, undefined]);
   for (const name of ['executor2', 'reviewer', 'reviewer2']) assert.deepEqual([inputs[name].type, inputs[name].default, inputs[name].required], ['agent', undefined, undefined], name);
   assert.deepEqual(Object.fromEntries(Object.entries(params('execute')).filter(([k]) => k !== 'EXECUTOR')), { LANE: '=inputs.lane', TITLE: '=inputs.title', TASK: '=inputs.task', SYNC: '=inputs.sync' });
-  const session = { agent: 'codex', model: 'gpt-6' };
-  assert.deepEqual(evaluate(params('execute').EXECUTOR.slice(1), { inputs: { executor: null }, github: { event: { coda: { session } } } }).value, session);
+  // 执行者只来自 inputs.executor，没有取发起会话的回退；引擎把 env 里的对象转成 JSON 文本，脚本再解析。
+  assert.equal(params('execute').EXECUTOR, '=inputs.executor');
+  const executor = { agent: 'codex', model: 'gpt-6' };
+  assert.deepEqual(JSON.parse(JSON.stringify(evaluate(params('execute').EXECUTOR.slice(1), { inputs: { executor } }).value)), executor);
   assert.equal(params('swap').EXECUTOR, '=inputs.executor2');
 
   assert.deepEqual(elements.filter(e => e.$type === 'bpmn:UserTask').map(e => [e.id, e.assignee]), [['review', undefined]], '只有交给主 Agent 的审查卡');
