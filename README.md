@@ -383,7 +383,8 @@ Coda 按这个通用类别显示「额度不足」，不触发服务故障重试
 插件不推算额度重置时间；其他认证失败、403、短时限流与普通错误原样保留。
 Kimi 2.1.1 的 ACP 把失败的一轮（包括现在以 429 报的五小时额度耗尽）答成 `end_turn`，错误只记在它主 wire 的 `turn.ended` 里。
 插件在交出 `session/prompt` 的回执前读到这一轮以 `failed` 结束，就改答 -32603，`error.message` 是这一轮的错误原文；
-Kimi 自己归为 `APIProviderQuotaExhaustedError` 的另报 `quota_exhausted`，其他失败不带类别。被过滤的回复 Kimi 已答 `refusal`，不改。
+Kimi 自己归为 `APIProviderQuotaExhaustedError`（如 `429 You've reached your weekly (7-day) usage limit.`）的另报 `quota_exhausted`（原文没有确切恢复时间，不带 `resetAt`）；
+`APIProviderOverloadedError` 或状态码 500–599 的另报 `service_unavailable`、`input: accepted`（Kimi 自己已重试过才结束这一轮）；其他失败（认证、上下文、限流、连接）不带类别。被过滤的回复 Kimi 已答 `refusal`，不改。
 Kimi 在一轮失败后暂停 goal，goal 的定时随之以 `failed` 结束，说明是那一轮的原因，额度耗尽时标题为「额度不足」。
 `CODA_DISABLE_RUNTIME_PATCHES=kimi` 关闭这层适配。
 
