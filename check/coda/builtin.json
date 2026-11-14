@@ -85,7 +85,7 @@
     "workflows": [],
     "services": [],
     "agents": [],
-    "instructions": "要改插件设置（如 composer.templates）时调用 workflow_run，workflow 为 change-setting，inputs 给 plugin、setting、value（新值的 JSON 文本，null 为清除）、reason（必写，一行），写目录覆盖时加 project；先不给 value 调一次读当前值。用户点「应用」后由 Coda 写入；密文不经这里。",
+    "instructions": "改插件设置（如 composer.templates）时调用 workflow_run，workflow 为 change-setting，inputs 给 plugin、setting、value（新值的 JSON，null 清除）、reason（一行，必写），可加 project、machines（写到哪几台，默认装了它的各台）；先不给 value 读现值。用户点「应用」才写入，密文不经这里。",
     "commands": [],
     "capabilities": [
       "change-setting"
@@ -855,7 +855,7 @@
     "id": "session",
     "displayName": "会话生命周期",
     "description": "空闲进程、归档收尾与工作树回收",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "category": "工作流程",
     "icon": {
       "symbol": "hourglass",
@@ -890,15 +890,6 @@
         "title": "会话静止多久停掉进程",
         "order": 5,
         "default": "PT1H"
-      },
-      "session.subagents": {
-        "type": "integer",
-        "minimum": 1,
-        "maximum": 64,
-        "description": "Agent 开的子会话为父会话干活时各占一个名额；满了再开会当场失败，Agent 等其中一个做完再开，或者自己做。按这台机器算。",
-        "title": "同时执行的子会话",
-        "order": 10,
-        "default": 5
       }
     },
     "workflows": [
@@ -909,12 +900,7 @@
     "agents": [],
     "commands": [],
     "capabilities": [],
-    "groups": [
-      {
-        "name": "subagents",
-        "capacity": "session.subagents"
-      }
-    ],
+    "groups": [],
     "gitCredentials": [],
     "endpoints": [],
     "views": [],
@@ -1017,7 +1003,7 @@
     "id": "workflows",
     "displayName": "工作流",
     "description": "流程模板、运行进度与流程图",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "category": "工作流程",
     "icon": {
       "symbol": "flowchart.fill",
@@ -1029,29 +1015,7 @@
     },
     "dir": "src/resources/plugins/workflows",
     "title": "工作流",
-    "properties": {
-      "workflows.remoteCallerWorkflows": {
-        "type": "array",
-        "description": "本机所有绑定的会话记录共用；project 填本机目录 ID，workflow 填流程名。",
-        "title": "远端调用方可发起的流程",
-        "rows": {
-          "type": "object",
-          "columns": {
-            "project": {
-              "type": "string"
-            },
-            "workflow": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "project",
-            "workflow"
-          ]
-        },
-        "default": []
-      }
-    },
+    "properties": {},
     "main": "main.mjs",
     "workflows": [],
     "services": [],
