@@ -16,8 +16,9 @@ const CHILD_META = 'opencode/child-session';
 const record = value => value && typeof value === 'object' && !Array.isArray(value);
 const span = ms => Math.ceil(ms / 60_000) >= 60 ? `约 ${Math.round(ms / 3_600_000)} 小时` : `约 ${Math.ceil(ms / 60_000)} 分钟`;
 // What the service's error says beyond a wait, judged as for OpenCode's own answer (errors.mjs), plus the wait scheduled.
+// The retry's `error` is the failed step's own: its `type` is the errorName of a failed prompt (`provider.transport`, ...).
 const failureOf = (error, retryAfterMs) => {
-  const kind = classifyProviderFault({ status: error?.status, message: error?.message });
+  const kind = classifyProviderFault({ status: error?.status, message: error?.message, name: error?.type });
   if (kind === 'quota_exhausted') return { kind };
   if (kind) return { kind, input: 'accepted', retryAfterMs };
 };
