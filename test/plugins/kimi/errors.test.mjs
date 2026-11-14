@@ -43,23 +43,41 @@ test('quota classification preserves a non-object error payload as details', () 
 // Kimi's own turn.ended errors (agents/main/wire.jsonl of the quota-exhausted sessions); the 5xx and overload ones are built from the
 // error classes of Kimi 2.1.1's binary (APIProviderOverloadedError, APIStatusError with a statusCode), which Kimi retries before failing the turn.
 test('a failed turn is a failure with its reason, categorised only as Kimi\'s own error says; other ends are none', () => {
-  const quota = "429 You've reached your weekly (7-day) usage limit. Your quota will reset when the current 7-day window ends.";
-  const failed = (name, statusCode, code = 'provider.api_error', message = quota) => turnFailure('failed', { code, name, message, details: { statusCode } });
-  assert.deepEqual(failed('APIProviderQuotaExhaustedError', 429), { message: quota, kind: 'quota_exhausted' });
-  assert.deepEqual(failed('APIProviderOverloadedError', 529, 'provider.overloaded'), { message: quota, kind: 'service_unavailable' });
-  for (const status of [500, 502, 503, 599]) assert.deepEqual(failed('APIStatusError', status), { message: quota, kind: 'service_unavailable' });
+  const other = '529 something went wrong upstream';
+  const failed = (name, statusCode, code = 'provider.api_error', message = other) => turnFailure('failed', { code, name, message, details: { statusCode } });
+  assert.deepEqual(failed('APIProviderQuotaExhaustedError', 429), { message: other, kind: 'quota_exhausted' });
+  assert.deepEqual(failed('APIProviderOverloadedError', 529, 'provider.overloaded'), { message: other, kind: 'service_unavailable' });
+  for (const status of [500, 502, 503, 599]) assert.deepEqual(failed('APIStatusError', status), { message: other, kind: 'service_unavailable' });
   // A connection failure or timeout (both code provider.connection_error), and a 429 that is not quota: faults that clear by themselves.
   for (const [name, status, code] of [['APIConnectionError', undefined, 'provider.connection_error'], ['APITimeoutError', undefined, 'provider.connection_error'],
     ['APIProviderRateLimitError', 429, 'provider.rate_limit'], ['APIStatusError', 429, 'provider.rate_limit']])
-    assert.deepEqual(failed(name, status, code), { message: quota, kind: 'service_unavailable' }, name);
+    assert.deepEqual(failed(name, status, code), { message: other, kind: 'service_unavailable' }, name);
   for (const [name, status, code] of [['APIStatusError', 403, 'provider.auth_error'], ['APIStatusError', 401, 'provider.auth_error'],
     ['APIStatusError', 400], ['APIContextOverflowError', 413, 'context.overflow'], ['APIStatusError', 600], ['APIStatusError', '503'], ['APIStatusError', '429'],
     ['APIEmptyResponseError', undefined]])
-    assert.deepEqual(failed(name, status, code), { message: quota }, name);
+    assert.deepEqual(failed(name, status, code), { message: other }, name);
   assert.deepEqual(turnFailure('failed', { name: 'APIStatusError', message: 'overloaded' }), { message: 'overloaded' });
   assert.deepEqual(turnFailure('failed', undefined), { message: 'Kimi 这一轮执行失败' });
   assert.equal(turnFailure('failed', { code: 'provider.filtered', message: 'filtered', details: { statusCode: 500 } }), null);
-  for (const reason of ['completed', 'cancelled', 'blocked']) assert.equal(turnFailure(reason, { name: 'APIProviderOverloadedError', message: quota }), null);
+  for (const reason of ['completed', 'cancelled', 'blocked']) assert.equal(turnFailure(reason, { name: 'APIProviderOverloadedError', message: other }), null);
+});
+
+// The real turn.ended error of the five-hour quota (a wire.jsonl sample): a 403 provider.auth_error, not the quota error name.
+test('Kimi\'s own quota words are quota whatever name, status or code carry them, and the -32000 path agrees with the turn path', () => {
+  const real = { code: 'provider.auth_error', name: 'APIStatusError', details: { statusCode: 403 }, message: reason };
+  assert.deepEqual(turnFailure('failed', real), { message: reason, kind: 'quota_exhausted' });
+  const weekly = "You've reached your weekly (7-day) usage limit. Your quota will reset when the current 7-day window ends.";
+  assert.deepEqual(turnFailure('failed', { code: 'provider.rate_limit', name: 'APIStatusError', details: { statusCode: 429 }, message: weekly }),
+    { message: weekly, kind: 'quota_exhausted' });
+  for (const text of [reason, weekly]) {
+    const kind = turnFailure('failed', { message: text }).kind;
+    const reply = classifyKimiError({ id: 1, error: { code: -32000, message: `Authentication required: ${text}` } });
+    assert.equal(reply.error.data._meta.coda.failure.kind, kind);
+  }
+  // A login gone stays auth_required; only the words, not a 403 or provider.auth_error, make quota.
+  assert.equal(turnFailure('failed', { code: 'auth.login_required', message: reason }).kind, 'auth_required');
+  assert.equal(turnFailure('failed', { ...real, message: '403 permission denied' }).kind, undefined);
+  assert.equal(turnFailure('failed', { ...real, message: `quoted: ${reason}` }).kind, undefined);
 });
 
 test('the answer to a failed prompt reports its category: quota only by kind, an upstream failure with the input accepted, any other none', () => {
