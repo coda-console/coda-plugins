@@ -1,9 +1,9 @@
 // 泳道 PR（README.md「泳道 PR」）：执行者从泳道 head 开工，交付推到 lane-pr/<运行 ID>、开进泳道的 PR，主 Agent 审查后合进泳道。
 // 每步的工作区都会回收；执行会话、PR 与反馈留在本次运行的产物里。
 import { spawnSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { checksText, command, gh, git, mergedCommit, mergePr, openPr, output, repoOf, reviewsText } from './shared.mjs';
+import { checksText, gh, git, mergedCommit, mergePr, openPr, output, repoOf, reviewsText } from './shared.mjs';
 
 const env = process.env, action = process.argv[2];
 const statePath = join(env.CODA_ARTIFACTS, 'lane-pr.json');
@@ -17,6 +17,9 @@ const instructions = `你是这次开发流程的执行者，自己完成这一�
 const syncTask = `这个泳道 PR 用来跟上目标分支：把目标分支合并（merge）进当前分支，不要变基、不要压成一个提交；它会快进进泳道，保住泳道与目标分支的祖先关系。
 解决冲突；数据库迁移等版本号和目标分支撞号时，顺延泳道这边的。`;
 
+// 执行步骤失败后重跑，接回已开的执行会话时的开头：现场可能已经做了一部分，先看清再接着做。
+const resumeText = `这一项之前已经交给你，上一次没有正常结束（流程恢复或重试）。先核对现场：工作区状态（git status）、git log 里已有的提交、上次做到哪；再接着完成原任务，不要从头重做，已经做好的不要丢。`;
+
 // 让执行者把泳道合进自己的分支：试合并发现冲突和主 Agent 选「让执行者合并泳道」用同一段说明。
 const syncText = (lane, files = []) => `泳道是 ${lane}，别的泳道 PR 可能已经合进去了。${files.length ? `\n试合并发现这次提交与它冲突的文件：\n${files.map(file => `- ${file}`).join('\n')}` : ''}
 先 git fetch origin ${lane}，再把 origin/${lane} 合并（merge）进当前分支，不要变基：变基会改写已经审查过的提交。
@@ -24,8 +27,10 @@ const syncText = (lane, files = []) => `泳道是 ${lane}，别的泳道 PR 可�
 跑和冲突相关的测试后提交，只做这件事。回报冲突了哪些文件、各自怎么解决的、跑了什么。
 泳道没有新提交时，直接回报不需要合并。`;
 
+// 执行（execute）重跑时，上一次尝试开了却没做完的执行会话（opening）要留下来接着用。
 const state = action === 'execute'
-  ? { lane: `lane/${env.LANE}`, branch: `lane-pr/${env.GITHUB_RUN_ID}`, title: env.TITLE, task: env.TASK, sync: env.SYNC === 'true', pr: '', feedback: '', returns: 0 }
+  ? { lane: `lane/${env.LANE}`, branch: `lane-pr/${env.GITHUB_RUN_ID}`, title: env.TITLE, task: env.TASK, sync: env.SYNC === 'true', pr: '', feedback: '', returns: 0,
+    opening: existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')).opening : undefined }
   : JSON.parse(readFileSync(statePath, 'utf8'));
 const save = () => writeFileSync(statePath, JSON.stringify(state));
 const laneHead = () => { git('fetch', 'origin', state.lane); return git('rev-parse', 'FETCH_HEAD'); };
@@ -41,22 +46,35 @@ const conflicts = lane => {
 
 switch (action) {
   // 执行一项（execute）与换备用执行者（swap）都新开会话、从泳道当前 head 开工；swap 接手的是同一项：上一位没被接受的提交不带过来，只告诉它在哪。
+  // 这一步失败后恢复或重试再跑时，这一次开的会话（opening）接着用，不另开：它的上下文和提交都在。
   case 'execute':
   case 'swap':
   case 'revise': {
     const prompt = join(env.RUNNER_TEMP, 'task.md');
     const task = state.sync ? `${state.task}\n\n${syncTask}` : state.task;
-    const text = action === 'revise' ? state.feedback : action === 'execute' ? task
+    let text = action === 'revise' ? state.feedback : action === 'execute' ? task
       : `${task}\n\n主 Agent 把这一项换给你重做：\n${state.feedback}\n\n上一位执行者的分支 ${state.executor.branch}、提交 ${state.executor.head} 在本机仓库可读，可以参考，也可以不用。`;
+    const resumed = action !== 'revise' && state.opening?.action === action ? state.opening.session : undefined;
+    if (resumed) text = `${resumeText}\n\n原任务：\n${text}`;
     writeFileSync(prompt, `${instructions}\n\n${text}\n`);
-    const args = action === 'revise' ? ['--continue', state.executor.session] : ['--commit', laneHead(), '--title', state.title];
+    const args = action === 'revise' ? ['--continue', state.executor.session] : resumed ? ['--continue', resumed] : ['--commit', laneHead(), '--title', state.title];
     // 执行者是一组 Agent 选择（流程参数的 agent 类型）：没选的模型、强度、模式用 Agent 的默认值。
-    if (action !== 'revise') {
+    if (action !== 'revise' && !resumed) {
       const { options = {}, ...chosen } = JSON.parse(env.EXECUTOR);
       for (const key of ['agent', 'model', 'effort', 'mode']) if (chosen[key]) args.push(`--${key}`, chosen[key]);
       for (const [id, value] of Object.entries(options)) args.push('--option', `${id}=${value}`);
     }
-    state.executor = JSON.parse(command('coda-agent', [...args, '--json', '--prompt-file', prompt]));
+    // 会话失败时 coda-agent 仍在标准输出给出会话 ID；记下它，这一步再跑才接得回。
+    const result = spawnSync('coda-agent', [...args, '--json', '--prompt-file', prompt], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
+    if (result.error) throw result.error;
+    let reply;
+    try { reply = JSON.parse(result.stdout); } catch { /* 没有会话信息 */ }
+    if (result.status !== 0) {
+      if (action !== 'revise' && reply?.session) { state.opening = { action, session: reply.session }; save(); }
+      process.exit(result.status ?? 1);
+    }
+    state.executor = reply;
+    delete state.opening;
     state.feedback = '';
     // 新会话的连续检查失败重新计数。
     if (action !== 'revise') state.failures = [];
