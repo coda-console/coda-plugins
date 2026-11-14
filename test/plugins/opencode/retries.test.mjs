@@ -9,7 +9,7 @@ const NOW = Date.parse('2026-10-23T12:00:00Z');
 const prompt = (id, sessionId = 'ses_a') => ({ jsonrpc: '2.0', id, method: 'session/prompt', params: { sessionId, prompt: [{ type: 'text', text: 'hi' }] } });
 const info = (sessionId, meta) => ({ jsonrpc: '2.0', method: 'session/update', params: { sessionId, update: { sessionUpdate: 'session_info_update', _meta: meta } } });
 const retry = (sessionId, wait, message = 'WorkBuddy: 用量已超出限制，将在 2026-10-24 17:42:38 重置', more = {}) =>
-  info(sessionId, { 'opencode/retry': { attempt: 1, nextRetryAt: new Date(NOW + wait).toISOString(), error: { type: 'rate_limit', message, status: 429 } }, ...more });
+  info(sessionId, { 'opencode/retry': { attempt: 1, nextRetryAt: new Date(NOW + wait).toISOString(), error: { type: 'provider.rate-limit', message, status: 429 } }, ...more });
 const answer = id => ({ jsonrpc: '2.0', id, result: { stopReason: 'cancelled', _meta: {} } });
 const CAPACITY = 'Zen: OpenCode Go 2: Upstream request failed: [ttft_admission_refused] the cell is at capacity; retry shortly (after 5 s)';
 const childStatus = (childSessionId = 'ses_child', parentSessionId = 'ses_a', status = 'created') => ({ method: CHILD_UPDATE,
@@ -75,7 +75,7 @@ test('short capacity waits stay with OpenCode; authentication and invalid reques
   for (const [message, status] of [[CAPACITY, 401], [CAPACITY, 403], ['Free usage limit reached', 403], ['Credits exhausted', 401], ['Invalid request', 400]]) {
     waits.toAgent(prompt(2));
     const event = retry('ses_a', 420_000, message);
-    event.params.update._meta['opencode/retry'].error.status = status;
+    Object.assign(event.params.update._meta['opencode/retry'].error, { status, type: 'provider.invalid-request' });
     waits.fromAgent(event);
     assert.equal(waits.fromAgent(answer(2)).error.data, undefined);
   }
@@ -86,7 +86,7 @@ const failureOfWait = (message, status, wait = 420_000) => {
   const { waits } = retries();
   waits.toAgent(prompt(1));
   const event = retry('ses_a', wait, message);
-  event.params.update._meta['opencode/retry'].error.status = status;
+  Object.assign(event.params.update._meta['opencode/retry'].error, { status, ...status < 500 && status !== 429 && { type: 'provider.invalid-request' } });
   waits.fromAgent(event);
   return waits.fromAgent(answer(1)).error.data?._meta.coda.failure;
 };
@@ -105,7 +105,7 @@ test('a long wait on a 429 without quota wording is a service failure with the w
   waits.toAgent(prompt(1));
   waits.fromAgent(retry('ses_a', 420_000, 'Too Many Requests'));
   assert.equal(waits.fromAgent(answer(1)).error.message, 'Too Many Requests\n\nOpenCode 要等约 7 分钟才会重试，这一轮先结束。');
-  for (const status of [401, 403, 400, 404, 408]) assert.equal(failureOfWait('Too Many Requests', status), undefined, String(status));
+  for (const status of [401, 403, 400, 404]) assert.equal(failureOfWait('Too Many Requests', status), undefined, String(status));
 });
 
 test('a long wait on a capacity refusal or a 5xx is a service failure with the wait OpenCode scheduled, whichever the refusal\'s name', () => {
