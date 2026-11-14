@@ -108,9 +108,12 @@ switch (action) {
     if (answer(response.choice === 'stop' ? 'confirm' : 'release', response.choice === 'stop')) outputPicked(response, env.JOINERS);
     break;
   }
-  case 'inputs':
-    outputFilled();
+  // 验证说明和结果通知说的合并后流程按这里实际要运行的（only）算，不按批准时勾的。
+  case 'inputs': {
+    const only = outputFilled();
+    output('picked', JSON.parse(env.JOINERS).filter(joiner => only.includes(joiner.id)).map(joiner => joiner.name).join('、'));
     break;
+  }
   case 'merged':
     if (answer('deploy', true)) output('commit', JSON.parse(env.RESPONSE).note.trim());
     break;
