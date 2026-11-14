@@ -1,7 +1,7 @@
 // Ultra 的开启、持续与关闭提示（见 README.md）：只管派活。开发流程由用户在会话里开启，或由 Agent 填好交用户在开工卡上确认；规则写在流程的任务里，不在这里。
 // 委派规则改编自 oh-my-claudecode 的 docs/CLAUDE.md，见 THIRD_PARTY_NOTICES.md。
 
-// 名单供 spawn、泳道 PR 的执行者与评审者、监督开发的整体评审者选 Agent。
+// 名单供 spawn、泳道 PR 的执行者与评审者、监督开发的执行者与整体评审者选 Agent。
 function line({ who, when }) {
   const options = who.options && Object.keys(who.options).length ? `options=${JSON.stringify(who.options)}` : null;
   const fields = [`agent=${who.agent}`, who.model && `model=${who.model}`, who.effort && `effort=${who.effort}`, who.mode && `mode=${who.mode}`, options];
@@ -33,8 +33,8 @@ export function reminder(subagents) {
 function roster(subagents) {
   return subagents.length
     ? 'Pick the Agent from this list by task (pass agent/model/effort/mode/options) for Coda spawn, lane-pr executor, executor2, reviewer, reviewer2, ' +
-      `and the overall reviewer, reviewer2, reviewer3 of develop. Your own agent only if no entry fits:\n${subagents.map(line).join('\n')}`
-    : 'Use your own agent and model for Coda spawn, lane-pr and the overall reviewers of develop.';
+      `and the executor, executor2 and the overall reviewer, reviewer2, reviewer3 of develop. Your own agent only if no entry fits:\n${subagents.map(line).join('\n')}`
+    : 'Use your own agent and model for Coda spawn, lane-pr and the executors and overall reviewers of develop.';
 }
 export const OFF = 'The user turned off Ultra: its delegation-first role no longer applies; follow the usual execution and delegation instructions. ' +
   'Start Coda sessions only when the user, AGENTS.md or a skill asks for it.';

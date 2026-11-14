@@ -10,7 +10,7 @@
       <coda:input name="title" label="标题" type="string" required="true" description="也是泳道 PR 的标题" />
       <coda:input name="task" label="任务" type="string" required="true" description="自足的任务书：背景、范围与验收要求" />
       <coda:input name="sync" label="跟上目标分支" type="boolean" default="false" description="把目标分支合进泳道的泳道 PR：合进泳道时快进，不 squash" />
-      <coda:input name="executor" label="执行者" type="agent" defaultFrom="session.agent" description="做这一项的 Agent；不填用发起会话的" />
+      <coda:input name="executor" label="执行者" type="agent" required="true" description="必填，做这一项的 Agent；通常是所属监督开发的开工执行者" />
       <coda:input name="executor2" label="备用执行者" type="agent" description="主 Agent 在审查卡上选「换备用执行者重做」时接手；不填不能换" />
       <coda:input name="reviewer" label="评审者" type="agent" description="项目检查通过后评每一次交付；不填不评" />
       <coda:input name="reviewer2" label="第二评审者" type="agent" description="与评审者同时评每一次交付；不填不评" />
@@ -23,7 +23,7 @@
         <coda:env name="TITLE" value="=inputs.title" />
         <coda:env name="TASK" value="=inputs.task" />
         <coda:env name="SYNC" value="=inputs.sync" />
-        <coda:env name="EXECUTOR" value="=if inputs.executor = null then github.event.coda.session else inputs.executor" />
+        <coda:env name="EXECUTOR" value="=inputs.executor" />
       </extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/lane-pr.mjs" execute</script>
     </scriptTask>
