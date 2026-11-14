@@ -198,8 +198,8 @@ test('简易开发的流程定义：开启时什么都不必选，第一张任�
     assert.deepEqual(visited, only === '[]' ? [] : [...(missing ? ['fill'] : []), 'merged-inputs', 'run-merged'], `${only}|${missing}`);
   }
   assert.deepEqual([nodes.fill.loopCharacteristics.isSequential, nodes.fill.loopCharacteristics.inputCollection], [true, '=split(approval.missing, ",")']);
-  assert.deepEqual(values(nodes.fill).filter(v => v.$type === 'coda:Choice').map(v => [v.id, v.note]), [['done', 'required']]);
-  assert.deepEqual([params('merged-inputs').FILLS, params('merged-inputs').MISSING], ['=fill', '=approval.missing']);
+  assert.deepEqual(values(nodes.fill).filter(v => v.$type === 'coda:Choice').map(v => [v.id, v.note]), [['done', 'required'], ['skip', undefined]]);
+  assert.deepEqual([params('merged-inputs').FILLS, params('merged-inputs').MISSING, params('merged-inputs').NEEDS, params('merged-inputs').ONLY], ['=fill', '=approval.missing', '=approval.needs', '=approval.only']);
   for (const id of ['kinds', 'notes', 'publishing', 'deploy', 'publish']) assert.equal(nodes[id], undefined, id);
   assert.equal(route('approved', { approve: { chose: { stop: true } } }), 'stopped');
   assert.equal(route('approved', { approve: { chose: { stop: false } } }), 'approval');
@@ -210,7 +210,53 @@ test('简易开发的流程定义：开启时什么都不必选，第一张任�
   assert.deepEqual(params('review').REVIEWER, '=inputs.reviewer');
   assert.deepEqual(params('checks'), { hook: 'check', commit: '=push.head' });
   assert.deepEqual(params('premerge'), { hook: 'premerge', commit: '=pr.head' });
-  assert.deepEqual(params('run-merged'), { hook: 'merged', only: '=approval.only', commit: '=merge.commit', inputs: '=merged-inputs.inputs' });
+  assert.deepEqual(params('run-merged'), { hook: 'merged', only: '=merged-inputs.only', commit: '=merge.commit', inputs: '=merged-inputs.inputs' });
   for (const [failed, target] of [['checks-failed', 'checks'], ['premerge-failed', 'premerge']]) assert.equal(nodes[failed].attachedToRef.id, target);
   assert.equal(evaluate(nodes.done.notify.slice(1), { approval: { notify: false } }).value, false);
+});
+
+// What "这一项这次不跑" does after the merge: the session writes no text for an input, so every ticked workflow asking for it
+// drops out of `only` and the rest run; with none left the run ends as merged without run-workflows.
+async function afterSkip(t, ticked, fills) {
+  const root = mkdtempSync(join(tmpdir(), 'review-simple-skip-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const scripts = fileURLToPath(new URL('../../../plugins/review/scripts/approval.mjs', import.meta.url)), out = join(root, 'out');
+  const run = (args, env) => {
+    writeFileSync(out, '');
+    const done = spawnSync(process.execPath, [scripts, ...args], { cwd: root, encoding: 'utf8', env: { PATH: process.env.PATH, GITHUB_OUTPUT: out, ...env } });
+    assert.equal(done.status, 0, done.stderr);
+    return Object.fromEntries([...readFileSync(out, 'utf8').matchAll(/(\w+)<<EOF_\1\n([\s\S]*?)\nEOF_\1\n/g)].map(([, k, v]) => [k, v]));
+  };
+  const JOINERS = JSON.stringify([
+    { id: 'deploy', name: '部署' },
+    { id: 'publish-preview', name: '发布预览版', inputs: [{ id: 'notes', label: '发布说明' }] },
+    { id: 'publish-release', name: '发布正式版', inputs: [{ id: 'notes', label: '发布说明' }] },
+  ]);
+  const approval = run([], { APPROVED: JSON.stringify({ choice: 'merge', options: Object.fromEntries(ticked.map(id => [id, true])), inputs: {} }), JOINERS });
+  const merged = run(['inputs'], { INPUTS: approval.inputs, MISSING: approval.missing, ASKS: approval.asks, NEEDS: approval.needs, ONLY: approval.only, FILLS: JSON.stringify(fills) });
+  const { root: definition, problem } = await readWorkflow(workflow, 'simple'); assert.ok(!problem, problem);
+  const flow = definition.rootElements.find(e => e.$type === 'bpmn:Process');
+  const elements = [...flow.flowElements, ...flow.flowElements.find(e => e.id === 'acceptance').flowElements];
+  const nodes = Object.fromEntries(elements.map(e => [e.id, e])), context = { approval, 'merged-inputs': merged }, visited = [];
+  let step = 'after-merged';
+  while (nodes[step].$type !== 'bpmn:EndEvent') {
+    const flows = elements.filter(e => e.sourceRef === nodes[step]);
+    if (nodes[step].$type !== 'bpmn:ExclusiveGateway') visited.push(step);
+    step = (nodes[step].$type === 'bpmn:ExclusiveGateway'
+      ? flows.find(e => e.conditionExpression && evaluate(e.conditionExpression.body.trim().slice(1), context).value) ?? { targetRef: nodes[step].default.targetRef }
+      : flows[0]).targetRef.id;
+  }
+  return { visited, end: nodes[step], merged };
+}
+
+test('skipping a text drops every ticked workflow that asks for it and runs the others', async t => {
+  const skipped = await afterSkip(t, ['deploy', 'publish-preview', 'publish-release'], [{ result: 'completed', choice: 'skip', note: '' }]);
+  assert.deepEqual([skipped.merged.only, skipped.merged.inputs], ['["deploy"]', '{}']);
+  assert.deepEqual([skipped.visited, skipped.end.id], [['fill', 'merged-inputs', 'run-merged'], 'done']);
+});
+
+test('skipping the only texts asked for leaves nothing to run: no run-workflows, the run ends as merged', async t => {
+  const skipped = await afterSkip(t, ['publish-preview', 'publish-release'], [{ result: 'completed', choice: 'skip', note: '' }]);
+  assert.equal(skipped.merged.only, '[]');
+  assert.deepEqual([skipped.visited, skipped.end.id, skipped.end.status], [['fill', 'merged-inputs'], 'done-none', '已合并，没有要跑的合并后流程']);
 });

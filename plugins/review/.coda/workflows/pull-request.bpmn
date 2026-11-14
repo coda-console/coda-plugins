@@ -377,6 +377,7 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
             <coda:output name="inputs" />
             <coda:output name="missing" />
             <coda:output name="asks" />
+            <coda:output name="needs" />
           </extensionElements>
           <script>node "${CODA_PLUGIN_PATH}/scripts/approval.mjs"</script>
         </scriptTask>
@@ -614,8 +615,9 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
         <documentation>用户批准合并时勾的流程要一段文字，批准卡上没有写：
 {{split(approval.asks, "\n")[loopCounter]}}
 PR #{{github.event.number}}（{{github.event.pull_request.html_url}}）已合并。
-按这次合并进来的改动写这段面向用户的文字（Markdown，不写内部实现，不用审查意见），备注只放文字本身。</documentation>
-        <extensionElements><coda:choice id="done" name="已写好" primary="true" note="required" /></extensionElements>
+按这次合并进来的改动写这段面向用户的文字（Markdown，不写内部实现，不用审查意见），备注只放文字本身。
+选「这一项这次不跑」（备注可不写）：这段文字不写，要它的流程这次都不跑，其余勾了的照常运行；都不跑了就直接结束。不想发出这段文字、写不出时选它，不要答复 rejected。</documentation>
+        <extensionElements><coda:choice id="done" name="已写好" primary="true" note="required" /><coda:choice id="skip" name="这一项这次不跑" /></extensionElements>
         <multiInstanceLoopCharacteristics isSequential="true" coda:inputCollection='=split(approval.missing, ",")' coda:inputElement="input" />
       </userTask>
       <sequenceFlow id="filled" sourceRef="fill" targetRef="merged-inputs" />
@@ -624,22 +626,26 @@ PR #{{github.event.number}}（{{github.event.pull_request.html_url}}）已合并
           <coda:env name="INPUTS" value="=approval.inputs" />
           <coda:env name="MISSING" value="=approval.missing" />
           <coda:env name="ASKS" value="=approval.asks" />
-          <coda:env name="FILLS" value="=fill" />
-          <coda:output name="inputs" />
+          <coda:env name="FILLS" value="=fill" /><coda:env name="NEEDS" value="=approval.needs" /><coda:env name="ONLY" value="=approval.only" />
+          <coda:output name="inputs" /><coda:output name="only" />
         </extensionElements>
         <script>node "${CODA_PLUGIN_PATH}/scripts/approval.mjs" inputs</script>
       </scriptTask>
-      <sequenceFlow id="to-run-merged" sourceRef="merged-inputs" targetRef="run-merged" />
+      <sequenceFlow id="to-run-merged" sourceRef="merged-inputs" targetRef="left" />
+      <exclusiveGateway id="left" name="还有要跑的合并后流程吗" default="left-run" />
+      <sequenceFlow id="left-none" sourceRef="left" targetRef="delivered-none"><conditionExpression xsi:type="tFormalExpression">=merged-inputs.only = "[]"</conditionExpression></sequenceFlow>
+      <sequenceFlow id="left-run" sourceRef="left" targetRef="run-merged" />
       <serviceTask id="run-merged" name="合并后的流程" coda:action="run-workflows" coda:status="运行合并后的流程">
         <extensionElements>
           <coda:param name="hook" value="merged" />
-          <coda:param name="only" value="=approval.only" />
+          <coda:param name="only" value="=merged-inputs.only" />
           <coda:param name="commit" value="=github.event.pull_request.merge_commit_sha" />
           <coda:param name="inputs" value="=merged-inputs.inputs" />
         </extensionElements>
       </serviceTask>
       <sequenceFlow id="ran-merged" sourceRef="run-merged" targetRef="delivered" />
       <endEvent id="delivered" coda:status="已合并，合并后的流程已结束" />
+      <endEvent id="delivered-none" coda:status="已合并，没有要跑的合并后流程" />
     </subProcess>
     <sequenceFlow id="to-delivered" sourceRef="delivering" targetRef="delivering-done" />
     <endEvent id="delivering-done" coda:notify="=approval.notify" />

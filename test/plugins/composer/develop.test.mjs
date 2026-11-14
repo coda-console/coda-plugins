@@ -317,22 +317,51 @@ test('合并后的流程：从批准卡读出勾了哪些加入者、卡上写�
   const f = fixture(t); f.run('lane');
   const approve = (options, inputs = {}) => f.run('approval', { APPROVAL: JSON.stringify({ choice: 'merge', options, inputs, note: '' }), JOINERS }).outputs;
   const none = { deploy: false, 'publish-preview': false, 'publish-release': false, notify: true };
-  assert.deepEqual(approve(none, { notes: '' }), { route: 'merge', only: '[]', picked: '', inputs: '{}', missing: '', asks: '' });
-  assert.deepEqual(approve({ ...none, deploy: true }), { route: 'merge', only: '["deploy"]', picked: '部署', inputs: '{}', missing: '', asks: '' });
+  assert.deepEqual(approve(none, { notes: '' }), { route: 'merge', only: '[]', picked: '', inputs: '{}', missing: '', asks: '', needs: '{}' });
+  assert.deepEqual(approve({ ...none, deploy: true }), { route: 'merge', only: '["deploy"]', picked: '部署', inputs: '{}', missing: '', asks: '', needs: '{}' });
   assert.deepEqual(approve({ ...none, deploy: true, 'publish-preview': true, 'publish-release': true }, { notes: '  ' }),
-    { route: 'merge', only: '["deploy","publish-preview","publish-release"]', picked: '部署、发布预览版、发布正式版', inputs: '{}', missing: 'notes', asks: '「发布说明」：发布预览版、发布正式版要' });
+    { route: 'merge', only: '["deploy","publish-preview","publish-release"]', picked: '部署、发布预览版、发布正式版', inputs: '{}', missing: 'notes', asks: '「发布说明」：发布预览版、发布正式版要', needs: '{"notes":["publish-preview","publish-release"]}' });
   assert.deepEqual(approve({ ...none, 'publish-preview': true }, { notes: ' 修复输入问题 ' }),
-    { route: 'merge', only: '["publish-preview"]', picked: '发布预览版', inputs: '{"notes":"修复输入问题"}', missing: '', asks: '' });
+    { route: 'merge', only: '["publish-preview"]', picked: '发布预览版', inputs: '{"notes":"修复输入问题"}', missing: '', asks: '', needs: '{}' });
   assert.equal(f.reason(), '', '合并不回到进行中');
 
   const fill = (extra, code = 0) => f.run('inputs', extra, code);
-  assert.deepEqual(fill({ INPUTS: '{"notes":"卡上写的"}', MISSING: '', ASKS: '', FILLS: '' }).outputs, { inputs: '{"notes":"卡上写的"}' });
+  assert.deepEqual(fill({ INPUTS: '{"notes":"卡上写的"}', MISSING: '', ASKS: '', FILLS: '', ONLY: '["deploy"]' }).outputs, { inputs: '{"notes":"卡上写的"}', only: '["deploy"]' });
   const fills = JSON.stringify([{ result: 'completed', choice: 'done', note: ' 主 Agent 写的 ' }, { result: 'completed', choice: 'done', note: '另一段' }]);
-  assert.deepEqual(fill({ INPUTS: '{"keep":"卡上的"}', MISSING: 'notes,extra', ASKS: '「发布说明」：发布预览版要\n「别的」：部署要', FILLS: fills }).outputs,
-    { inputs: '{"keep":"卡上的","notes":"主 Agent 写的","extra":"另一段"}' });
+  assert.deepEqual(fill({ INPUTS: '{"keep":"卡上的"}', MISSING: 'notes,extra', ASKS: '「发布说明」：发布预览版要\n「别的」：部署要', FILLS: fills,
+    NEEDS: '{"notes":["publish-preview"],"extra":["deploy"]}', ONLY: '["deploy","publish-preview"]' }).outputs,
+    { inputs: '{"keep":"卡上的","notes":"主 Agent 写的","extra":"另一段"}', only: '["deploy","publish-preview"]' });
   const empty = fill({ INPUTS: '{}', MISSING: 'notes', ASKS: '「发布说明」：发布预览版要', FILLS: JSON.stringify([{ result: 'completed', note: '', attachments: ['/a.png'] }]) }, 1);
   assert.match(empty.stderr, /「发布说明」：发布预览版要：没有填写，不运行合并后的流程/);
   assert.deepEqual(empty.outputs, {});
+});
+
+// 主 Agent 选「这一项这次不跑」：要这段文字的加入者全部从 only 里去掉，其余照跑；一个不剩就不进 run-merged、照常结束。
+async function afterSkip(t, ticked, fills) {
+  const f = fixture(t); f.run('lane');
+  const { nodes, route, next } = await definition();
+  const options = Object.fromEntries(ticked.map(id => [id, true]));
+  const approval = f.run('approval', { APPROVAL: JSON.stringify({ choice: 'merge', options, inputs: {}, note: '' }), JOINERS }).outputs;
+  const merged = f.run('inputs', { INPUTS: approval.inputs, MISSING: approval.missing, ASKS: approval.asks, NEEDS: approval.needs, ONLY: approval.only, FILLS: JSON.stringify(fills) }).outputs;
+  const context = { inputs: { delivery: '' }, 'approval-result': approval, 'merged-inputs': merged }, visited = [];
+  let step = 'merged-choice';
+  while (nodes[step].$type !== 'bpmn:EndEvent') {
+    if (!nodes[step].$type.endsWith('Gateway')) visited.push(step);
+    step = nodes[step].$type === 'bpmn:ExclusiveGateway' ? route(step, context) : next(step);
+  }
+  return { visited, end: nodes[step], merged };
+}
+
+test('合并后的流程：主 Agent 选「这一项这次不跑」，要这段文字的加入者都不跑，其余照跑，运行成功结束', async t => {
+  const skipped = await afterSkip(t, ['deploy', 'publish-preview', 'publish-release'], [{ result: 'completed', choice: 'skip', note: '' }]);
+  assert.deepEqual([skipped.merged.only, skipped.merged.inputs], ['["deploy"]', '{}']);
+  assert.deepEqual([skipped.visited, skipped.end.id], [['fill', 'merged-inputs', 'run-merged'], 'done']);
+});
+
+test('合并后的流程：勾了的都被「这一项这次不跑」去掉，不进 run-merged，运行成功结束', async t => {
+  const skipped = await afterSkip(t, ['publish-preview', 'publish-release'], [{ result: 'completed', choice: 'skip', note: '' }]);
+  assert.equal(skipped.merged.only, '[]');
+  assert.deepEqual([skipped.visited, skipped.end.id, skipped.end.status], [['fill', 'merged-inputs'], 'done-none', '已完成，没有要跑的合并后流程']);
 });
 
 test('需求运行的定义：输入、进行中的三种答复、暂停卡、收尾各处失败回到进行中、整体评审、合并方式与合并后的流程', async () => {
@@ -469,7 +498,7 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   const envs = id => Object.fromEntries(values(nodes[id]).filter(v => v.$type === 'coda:Env').map(v => [v.name, v.value]));
   const outputs = id => values(nodes[id]).filter(v => v.$type === 'coda:Output').map(v => v.name);
   assert.deepEqual(envs('approval-result'), { APPROVAL: '=approve', JOINERS: '=joiners.list' });
-  assert.deepEqual(outputs('approval-result'), ['route', 'only', 'picked', 'inputs', 'missing', 'asks']);
+  assert.deepEqual(outputs('approval-result'), ['route', 'only', 'picked', 'inputs', 'missing', 'asks', 'needs']);
   for (const [value, target] of [['stop', 'resume'], ['merge', 'merge']]) assert.equal(route('after-approval', { 'approval-result': { route: value } }), target);
   assert.equal(route('after-merge', { merge: { route: 'conflict' } }), 'resume');
   assert.equal(route('after-merge', { merge: { route: 'merged' } }), 'merged-choice');
@@ -490,11 +519,12 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   assert.deepEqual([loop.isSequential, loop.inputElement], [true, 'input']);
   assert.deepEqual(evaluate(loop.inputCollection.slice(1), { 'approval-result': { missing: 'notes,extra' } }).value, ['notes', 'extra']);
   assert.equal(nodes.fill.assignee, undefined, '交主 Agent');
-  assert.deepEqual(values(nodes.fill).map(v => [v.id, v.note]), [['done', 'required']]);
+  assert.deepEqual(values(nodes.fill).map(v => [v.id, v.note]), [['done', 'required'], ['skip', undefined]]);
   const asked = [...nodes.fill.documentation[0].text.matchAll(/{{(.*?)}}/gs)].find(m => m[1].includes('loopCounter'))[1];
   assert.equal(evaluate(asked, { 'approval-result': { asks: '「发布说明」：发布预览版要\n「别的」：部署要' }, loopCounter: 2 }).value, '「别的」：部署要');
-  assert.deepEqual(envs('merged-inputs'), { INPUTS: '=approval-result.inputs', MISSING: '=approval-result.missing', ASKS: '=approval-result.asks', FILLS: '=fill' });
-  assert.deepEqual(params('run-merged'), { hook: 'merged', only: '=approval-result.only', commit: '=merge.commit', inputs: '=merged-inputs.inputs' });
+  assert.deepEqual(envs('merged-inputs'), { INPUTS: '=approval-result.inputs', MISSING: '=approval-result.missing', ASKS: '=approval-result.asks', FILLS: '=fill', NEEDS: '=approval-result.needs', ONLY: '=approval-result.only' });
+  assert.equal(route('left', { 'merged-inputs': { only: '["deploy"]' } }), 'run-merged');
+  assert.deepEqual(params('run-merged'), { hook: 'merged', only: '=merged-inputs.only', commit: '=merge.commit', inputs: '=merged-inputs.inputs' });
   assert.deepEqual(elements.filter(e => e.action === 'run-workflows').map(e => e.id), ['prebuild', 'checks', 'premerge', 'run-merged']);
   for (const context of [{ inputs: { delivery: '' }, approve: { options: { notify: false } } }, { inputs: { delivery: 'deliver-1' } }]) {
     assert.equal(evaluate(nodes.done.notify.slice(1), context).value, context.inputs.delivery ? true : false);
