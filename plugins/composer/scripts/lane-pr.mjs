@@ -68,10 +68,16 @@ switch (action) {
     const result = spawnSync('coda-agent', [...args, '--json', '--prompt-file', prompt], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
     if (result.error) throw result.error;
     let reply;
-    try { reply = JSON.parse(result.stdout); } catch { /* 没有会话信息 */ }
+    try { reply = JSON.parse(result.stdout); } catch { /* 失败时可以没有会话信息 */ }
     if (result.status !== 0) {
       if (action !== 'revise' && reply?.session) { state.opening = { action, session: reply.session }; save(); }
       process.exit(result.status ?? 1);
+    }
+    // 退出 0 必须给出完整回复：否则 gate 读执行者时才崩，恢复也一直重复同一个错。
+    if (!reply?.session || !reply.branch || !reply.head) {
+      if (action !== 'revise' && reply?.session) { state.opening = { action, session: reply.session }; save(); }
+      console.error(`coda-agent 退出 0，但输出不是含 session、branch、head 的 JSON：${result.stdout.slice(0, 300)}`);
+      process.exit(1);
     }
     state.executor = reply;
     delete state.opening;

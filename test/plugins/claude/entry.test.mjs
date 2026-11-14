@@ -342,6 +342,17 @@ test('the service failing reaches ACP as service_unavailable only with the final
     });
 });
 
+test('a service failure of the session itself rejects the queued prompts as not_accepted, a quota one is unchanged', async t => {
+  for (const [variant, reason, failure] of [['service', 'API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}', { kind: 'service_unavailable', input: 'not_accepted' }],
+    ['quota', quotaReason, { kind: 'quota_exhausted' }]])
+    await t.test(variant, async t => {
+      const c = await setup(t); await c.open();
+      const pending = c.prompt('manual'); await until(() => c.query.inputId);
+      await c.emit({ type: 'result', subtype: 'success', is_error: true, result: reason });
+      assert.deepEqual((await pending).error, { code: -32603, message: reason, data: { _meta: { coda: { failure } } } });
+    });
+});
+
 test('a quota failure says its reset as a time mark from the window last reported, also in a later turn and an autonomous one', async t => {
   const c = await setup(t); await c.open();
   const local = "You've hit your session limit · resets 5:10am (Australia/Sydney)", said = "You've hit your session limit · resets <t:2026-10-24T18:10:00.000Z>";
