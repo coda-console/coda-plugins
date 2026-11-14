@@ -685,8 +685,12 @@ export class ClaudeSession {
       else { this.held = id; if (cancelled || failed) this.dropRest(outcome); }
     } else if (!own && failed && this.prompts.size && !(m.queued_turn_count > 0)) {
       // A failure of the session itself names no input: none of those given can be said to have run. Those still queued
-      // (queued_turn_count) run after it, each to a result of its own.
-      for (const prompt of this.prompts.values()) prompt.reject(error);
+      // (queued_turn_count) run after it, each to a result of its own. For the service failing that is `not_accepted`: Coda
+      // sends the input again rather than asking to carry on.
+      const failure = error.data?._meta?.coda?.failure;
+      const unsent = failure?.kind === 'service_unavailable' ? new RequestError(error.code, error.message,
+        { _meta: { coda: { failure: { ...failure, input: 'not_accepted' } } } }) : error;
+      for (const prompt of this.prompts.values()) prompt.reject(unsent);
       this.prompts.clear();
     }
     void this.title?.refresh(!failed && !cancelled);

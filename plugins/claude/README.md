@@ -24,7 +24,7 @@ Claude Code 自己的重试（`system/api_retry`，登记为隐藏）发生在�
 
 `auth_required` 以普通执行错误（-32603）报，不带 `input`、`retryAfterMs`、`resetAt`。
 
-`service_unavailable` 的 `input` 一律是 `accepted`：失败来自轮次的结果，原生会话已经收下并开始处理这一轮；入口没有「发出前就失败」的路径会走到这里。文字里有 `Retry-After` 或 `retry after` 时带 `retryAfterMs`（毫秒）。
+`service_unavailable` 的 `input` 是 `accepted`：失败来自轮次的结果，原生会话已经收下并开始处理这一轮；会话自身失败时仍在排队、从未运行的 prompt 是 `not_accepted`，Coda 重投原输入。文字里有 `Retry-After` 或 `retry after` 时带 `retryAfterMs`（毫秒）。
 
 ## 认不出的东西
 

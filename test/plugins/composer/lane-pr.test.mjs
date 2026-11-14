@@ -55,6 +55,8 @@ const session = continued ? value('--continue') : 'worker-' + calls.length;
 const branch = 'agent/' + session, cwd = join(root, session);
 const git = (...params) => execFileSync('git', params, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 if (!continued) execFileSync('git', ['worktree', 'add', '-b', branch, cwd, value('--commit')], { stdio: 'pipe' });
+// garbage：会话开成了，但标准输出不是完整回复。
+if (task.garbage) { console.log(task.garbage); process.exit(0); }
 if (task.merge) {
   git('fetch', 'origin', task.merge);
   spawnSync('git', ['merge', '--no-commit', 'FETCH_HEAD'], { cwd, encoding: 'utf8' });
@@ -333,6 +335,20 @@ test('执行步骤失败后再跑：接回失败时已开的会话并发续跑�
   assert.deepEqual(f.state().failures, []);
   f.delivered();
   assert.equal(f.remote('lane-pr/pr-run-1'), f.state().executor.head, '接回会话做完的提交照常推送');
+});
+
+test('coda-agent 退出 0 但输出不是完整回复：这一步失败、错误带输出摘要，不记执行者；会话能取到就记下接回', t => {
+  const f = fixture(t);
+  f.task('one', 'work', undefined, { garbage: 'not json' });
+  assert.match(f.run('execute', {}, 1).stderr, /session、branch、head[\s\S]*not json/);
+  f.task('one', 'work', undefined, { garbage: JSON.stringify({ session: 'worker-1' }) });
+  assert.match(f.run('execute', {}, 1).stderr, /worker-1/);
+  assert.deepEqual(f.state().opening, { action: 'execute', session: 'worker-1' });
+  assert.equal(f.state().executor, undefined);
+  f.task('one', 'done'); f.run('execute');
+  assert.deepEqual(f.calls('agent').at(-1).args.slice(0, 2), ['--continue', 'worker-1']);
+  assert.equal(f.state().executor.session, 'worker-1');
+  assert.equal(f.state().opening, undefined);
 });
 
 test('换备用执行者失败后再跑：接回这次新开的备用会话，不另开、不接原执行者；成功后再选换人仍新开', t => {
