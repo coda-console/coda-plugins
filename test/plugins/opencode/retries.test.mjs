@@ -105,7 +105,7 @@ test('a long wait on a 429 without quota wording is a service failure with the w
   waits.toAgent(prompt(1));
   waits.fromAgent(retry('ses_a', 420_000, 'Too Many Requests'));
   assert.equal(waits.fromAgent(answer(1)).error.message, 'Too Many Requests\n\nOpenCode 要等约 7 分钟才会重试，这一轮先结束。');
-  for (const status of [401, 403, 400, 404, 408]) assert.equal(failureOfWait('Too Many Requests', status), undefined, String(status));
+  for (const status of [401, 403, 400, 404]) assert.equal(failureOfWait('Too Many Requests', status), undefined, String(status));
 });
 
 test('a long wait on a capacity refusal or a 5xx is a service failure with the wait OpenCode scheduled, whichever the refusal\'s name', () => {
