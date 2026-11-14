@@ -111,8 +111,5 @@
   "main": "main.mjs",
   "activationEvents": [
     "onStartupFinished"
-  ],
-  "extensionDependencies": [
-    "git"
   ]
 }
