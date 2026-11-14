@@ -8,16 +8,23 @@
 // foreground subagents too) and answers Coda's prompt with the service's reason, whatever OpenCode answers it with once
 // stopped. A shorter wait is OpenCode's to sit out.
 import { CHILD_UPDATE } from './children.mjs';
+import { quotaText } from './errors.mjs';
 export const LONG_WAIT = 60_000;
 const RETRY = 'opencode/retry';
 const CHILD_META = 'opencode/child-session';
 
 const record = value => value && typeof value === 'object' && !Array.isArray(value);
 const span = ms => Math.ceil(ms / 60_000) >= 60 ? `约 ${Math.round(ms / 3_600_000)} 小时` : `约 ${Math.ceil(ms / 60_000)} 分钟`;
-// This admission refusal establishes capacity exhaustion, unlike a generic 429 or retryable error. Its
+// These admission refusals establish capacity exhaustion, unlike a generic 429 or retryable error. Their
 // short suggestion in the message does not override the retry time OpenCode actually scheduled.
 const capacityRefused = error => ![401, 403].includes(error?.status) && typeof error?.message === 'string' &&
-  /\[ttft_admission_refused\] the cell is at capacity(?:[;.]|$)/.test(error.message);
+  /\[(?:ttft_admission|prefill_cap)_refused\] the cell is at capacity(?:[;.]|$)/.test(error.message);
+// What the service's error says beyond a wait: its quota is used up (said so in its own words, not just a 429), or it is a
+// fault that clears by itself: a capacity refusal, a 5xx, or any other 429.
+const failureOf = (error, capacity, retryAfterMs) => {
+  if (error?.status === 429 && quotaText(error.message)) return { kind: 'quota_exhausted' };
+  if (capacity || error?.status === 429 || (error?.status >= 500 && error.status <= 599)) return { kind: 'service_unavailable', input: 'accepted', retryAfterMs };
+};
 
 export class LongRetries {
   // `cancel(sessionId)`: stops OpenCode's turn in an ACP session.
@@ -110,12 +117,10 @@ export class LongRetries {
     const wait = Date.parse(retry.nextRetryAt) - this.now(), id = turn.id;
     if (!(wait > LONG_WAIT) || this.ending.has(id)) return;
     const said = typeof retry.error?.message === 'string' ? retry.error.message.trim() : '';
-    const capacity = capacityRefused(retry.error);
+    const capacity = capacityRefused(retry.error), failure = failureOf(retry.error, capacity, wait);
     this.ending.set(id, { code: -32603,
       message: `${capacity ? '服务容量暂满\n\n' : ''}${said || '模型服务要求稍后再试'}\n\nOpenCode 要等${span(wait)}才会重试，这一轮先结束。`,
-      ...(capacity ? { data: { _meta: { coda: { failure: {
-        kind: 'service_unavailable', input: 'accepted', retryAfterMs: wait,
-      } } } } } : {}),
+      ...(failure ? { data: { _meta: { coda: { failure } } } } : {}),
     });
     this.cancel(sessionId);
   }

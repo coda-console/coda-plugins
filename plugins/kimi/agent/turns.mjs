@@ -103,7 +103,7 @@ export class KimiTurns {
   finish(told) {
     const failure = this.goal.failure;
     if (!failure) { this.say(told, 'done'); return; }
-    this.say(told, 'failed', { ...(failure.quota ? { title: '额度不足' } : {}), detail: failure.message.slice(0, 4000) });
+    this.say(told, 'failed', { ...(failure.kind === 'quota_exhausted' ? { title: '额度不足' } : {}), detail: failure.message.slice(0, 4000) });
   }
   say(told, state, more = {}) {
     this.goal.state = state;

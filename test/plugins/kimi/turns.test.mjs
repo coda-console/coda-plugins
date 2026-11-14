@@ -161,6 +161,8 @@ test('a prompt whose turn failed is answered with that failure, quota exhaustion
     error: { code: -32603, message: QUOTA.message, data: { _meta: { coda: { failure: { kind: 'quota_exhausted' } } } } } });
   assert.deepEqual(await answer(3, (id, time) => failed(id, time, { code: 'provider.api_error', message: '500 internal error' })),
     { jsonrpc: '2.0', id: 3, error: { code: -32603, message: '500 internal error' } });
+  assert.deepEqual(await answer(6, (id, time) => failed(id, time, { code: 'provider.overloaded', name: 'APIProviderOverloadedError', message: '529 overloaded', details: { statusCode: 529 } })),
+    { jsonrpc: '2.0', id: 6, error: { code: -32603, message: '529 overloaded', data: { _meta: { coda: { failure: { kind: 'service_unavailable', input: 'accepted' } } } } } });
   assert.deepEqual(await answer(4, (id, time) => ended(id, time)), { jsonrpc: '2.0', id: 4, result: { stopReason: 'end_turn' } });
   // Kimi answers a filtered response as `refusal` itself.
   assert.deepEqual(await answer(5, (id, time) => failed(id, time, { code: 'provider.filtered', message: 'filtered' })),
