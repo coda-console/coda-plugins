@@ -124,3 +124,31 @@ test('Codex quota reset comes only from the failed request, with no machine-time
     assert.deepEqual(result._meta.coda.failure, { kind: 'quota_exhausted' });
   }
 });
+
+// Codex's HTTP failure message is `unexpected status <status>: <response body>, url: …` (its binary's format string); the bodies are
+// OpenAI API's documented 429 responses: `insufficient_quota` ("You exceeded your current quota…") and `rate_limit_exceeded`.
+test('a 429 Codex reports as an HTTP failure is quota only on the provider\'s own quota wording, otherwise a rate limit with its suggested wait', () => {
+  const http = (status, body, extra = {}) => ({ code: -32603, message: 'Internal error', data: { codexErrorInfo: { httpConnectionFailed: { httpStatusCode: status } },
+    message: `unexpected status ${status}: ${JSON.stringify(body)}, url: https://api.openai.com/v1/responses, request id: req_1`, ...extra } });
+  const failure = (error, input = 'accepted') => codexFailureData(error, input)._meta?.coda?.failure;
+  const quota = { error: { message: 'You exceeded your current quota, please check your plan and billing details.', type: 'insufficient_quota', code: 'insufficient_quota' } };
+  assert.deepEqual(failure(http(429, quota)), { kind: 'quota_exhausted' });
+  assert.deepEqual(failure(http(429, { error: { type: 'usage_limit_reached', message: 'The usage limit has been reached', resets_at: Date.parse('2026-11-11T19:00:00Z') / 1000 } })),
+    { kind: 'quota_exhausted', resetAt: '2026-11-11T19:00:00.000Z' });
+  const limited = message => ({ error: { message, type: 'tokens', code: 'rate_limit_exceeded' } });
+  assert.deepEqual(failure(http(429, limited('Rate limit reached for gpt-5 in organization org-x on tokens per min (TPM): Limit 30000. Please try again in 1m30.5s.'))),
+    { kind: 'service_unavailable', input: 'accepted', retryAfterMs: 90_500 });
+  assert.deepEqual(failure(http(429, limited('Rate limit reached. Please try again in 20ms.')), 'not_accepted'),
+    { kind: 'service_unavailable', input: 'not_accepted', retryAfterMs: 20 });
+  assert.deepEqual(failure(http(429, limited('Rate limit reached.'))), { kind: 'service_unavailable', input: 'accepted' });
+  // The failure is also found in the other places the adapter puts its text, and the original error stays readable.
+  const details = http(429, quota); details.data = { codexErrorInfo: details.data.codexErrorInfo, details: details.data.message };
+  assert.deepEqual(failure(details), { kind: 'quota_exhausted' });
+  const bare = http(429, limited('Rate limit reached.')); delete bare.data.message;
+  assert.equal(codexFailureData(bare, 'accepted').details, 'Internal error');
+  // Not a 429, not an HTTP failure, or an authentication error: unchanged.
+  assert.equal(failure(http(400, quota)), undefined);
+  assert.equal(failure(http(401, limited('Rate limit reached.'))), undefined);
+  assert.equal(failure(http(403, quota)), undefined);
+  assert.equal(failure(http(429, quota, { codexErrorInfo: 'badRequest' })), undefined);
+});

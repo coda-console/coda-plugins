@@ -366,7 +366,10 @@ Codex 的原生失败统一以 ACP 错误结束，包括只有 `turn/completed.f
 `error.data._meta.coda.failure: {kind: "service_unavailable", input: "accepted"}`。新轮请求明确被拒绝、只给
 `Internal error` 时按临时故障报告 `input: "not_accepted"`；这表示允许有限重试，不表示已确定历史故障根因。
 额度耗尽 `usageLimitExceeded` 单独报 `failure.kind: "quota_exhausted"`；认证、上下文限制、参数、配置或沙箱错误不带此标记。
-Codex 仅从本次错误的 `additionalDetails`、`message` 或外层错误正文提取重置时间：JSON 的 `error.resets_at`（有效 Unix 秒），
+带 HTTP 429 的 `httpConnectionFailed`（消息形如 `unexpected status 429 Too Many Requests: <响应体>, url: …`）按响应体区分：
+含 `insufficient_quota`、`quota_exceeded`、`usage_limit_reached` 或「exceeded your current quota」「hit your usage limit」这些提供方自己的额度用词才报 `quota_exhausted`，
+其余按限流报 `service_unavailable`，正文里的「try again in 1m30.5s」写进 `retryAfterMs`（没有就不带）。401、403 与其他状态码照旧。
+Codex 仅从本次错误的 `additionalDetails`、`message`、`details` 或外层错误正文提取重置时间：JSON（也认嵌在 HTTP 失败消息里的响应体）的 `error.resets_at`（有效 Unix 秒），
 或 `try again at` / `resets at` / `resets` 后明确带 `Z` 的 ISO 8601 时间；取到就写 UTC `failure.resetAt`，可读正文中的这些 ISO 时间改写为 `<t:…>`。
 未给时间、只有相对时间或没有时区时不写。`account/rateLimits/read` 是账号级快照，可能含多个模型额度池，
 失败未指出阻断本轮的额度池，因此不从该快照推断重置时间，也不另开连接查询。
