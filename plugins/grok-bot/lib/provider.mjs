@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { NativeAuth, pause, writePrivate } from './auth.mjs';
@@ -46,31 +46,7 @@ export class Provider {
       }),
     ];
     await this.schedule(() => this.sync());
-    this.coda.views.register('bind', {
-      open: async view => {
-        try {
-          await this.schedule(() => this.bind(view.context.args?.record));
-          view.postMessage({ type: 'result', text: '已发给 Bot' });
-        } catch (error) {
-          view.postMessage({ type: 'result', text: error.message });
-        }
-      },
-    });
     this.polling = this.poll();
-  }
-  async bind(id) {
-    if (!await this.sync()) throw new Error('无法刷新 Bot，请确认登录和网络后重试');
-    const target = this.bots.get(id);
-    if (!target || !this.records.has(id)) throw new Error('Bot 已不存在，请刷新资源页');
-    const { code, addresses } = await this.coda.protocols.remoteCode(id);
-    if (!addresses.length) throw new Error('Coda 尚未连接 tailnet，无法提供远端入口');
-    const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
-    const text = '请运行下面的命令绑定 Coda：\nnode coda-bot.mjs bind ' + quote(addresses[0]) + ' ' + quote(code);
-    const answer = await this.auth.client.request('SendGrokBotUserMessage', {
-      agentId: target.bot, sessionId: '', messageId: randomUUID(), text,
-      sentAtMs: String(Date.now()), source: 1, initiator: 1, sendSource: 1,
-    });
-    if (!answer.dispatched) throw new Error('Grok 未确认发送绑定指令');
   }
   async poll() {
     while (!this.controller.signal.aborted) {

@@ -9,7 +9,6 @@ try {
     const { agents = [] } = await auth.client.request('ListGrokBotAgents', {});
     console.log(JSON.stringify({ resources: agents.map(bot => ({
       name: bot.name || bot.agentId, identity: recordId(who.id, bot.agentId), values: [],
-      actions: [{ label: '绑定', view: 'bind', args: { record: recordId(who.id, bot.agentId) } }],
     })) }));
   }
 } catch (error) {

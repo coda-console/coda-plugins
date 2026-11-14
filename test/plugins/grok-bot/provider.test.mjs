@@ -30,7 +30,7 @@ sessionProtocol.status.properties.activity = {
 for (const d of [sessionProtocol, RUN_PROTOCOL]) types.register({ ...d, kind: d.name, participants: () => [] });
 const until = async fn => { for (let i=0; i<200; i++) { if (fn()) return; await delay(5); } assert.fail('condition timed out'); };
 function host(root) {
-  const records = new Map(), watchers = [], handlers = new Map(), views = new Map(); let revision = 0;
+  const records = new Map(), watchers = [], handlers = new Map(); let revision = 0;
   const key = (kind, id) => `${kind}/${id}`;
   const save = object => {
     validate(types.get(object.kind).spec, object.spec, object.kind);
@@ -39,7 +39,7 @@ function host(root) {
     for (const w of watchers) if (w.kind === object.kind) w.fn({ type: 'MODIFIED', id: object.id, object });
     return object;
   };
-  const coda = { plugin: { id: 'grok-bot', state: root }, views: { register: (id, handler) => views.set(id, handler) }, protocols: {
+  const coda = { plugin: { id: 'grok-bot', state: root }, protocols: {
     observe: async (kind, fn) => { const w = { kind, fn }; watchers.push(w); for (const o of records.values()) if (o.kind === kind) fn({ type: 'ADDED', id: o.id, object: o }); return { dispose() { watchers.splice(watchers.indexOf(w), 1); } }; },
     handle: (kind, op, fn) => { handlers.set(`${kind}/${op}`, fn); return { dispose() {} }; },
     put: async o => save(o), publish: async () => {},
@@ -47,7 +47,7 @@ function host(root) {
     setStatus: async (kind,id,status,rev) => { const o=records.get(key(kind,id)); assert.equal(rev,o.revision); return save({...o,status}); },
     delete: async (kind,id) => records.delete(key(kind,id)),
   } };
-  return { coda, records, save, handlers, views };
+  return { coda, records, save, handlers };
 }
 async function fixture(t, loggedIn = true, setup = () => {}) {
   const root = temporary(t), native = new FakeNative(), h = host(root);
@@ -289,13 +289,16 @@ test('rebuilding the transcript mirror also rebuilds live state', async t => {
   assert.equal(status().activity, undefined);
   assert.equal(status().head, undefined);
 });
-test('opening bind view sends once as the account and posts success or error to the page', async t => {
-  const f = await fixture(t), issued = [];
-  f.coda.protocols.remoteCode = async id => {
-    issued.push(id);
-    return { code: 'one-time-code', expiresAt: new Date(Date.now() + 600000).toISOString(), addresses: ['http://100.64.0.1:8080'] };
-  };
-  assert.equal(f.native.requests.filter(r => r.method === 'SendGrokBotUserMessage').length, 0);
+test('session read, draft and post answer through the registered handlers and the resource list has no actions', async t => {
+  const f = await fixture(t), call = (op, input, context) => f.handlers.get(`${SESSION}/${op}`)(input, context);
+  assert.deepEqual(await call('draft', { text: 'unsent' }), {});
+  const context = run(f, 'handler-request', { text: 'via handler' });
+  assert.equal(await call('post', { text: 'via handler' }, context), undefined);
+  await until(() => f.provider.runs.get(context.run.id).status.state === 'completed');
+  assert.equal(f.native.requests.filter(r => r.method === 'SendGrokBotUserMessage').length, 1);
+  const read = await call('read', {}, { record: context.record });
+  assert.equal(read.messages.at(-1).text, 'via handler');
+  assert.equal(read.messages.at(-1).id, f.provider.runs.get(context.run.id).status.result.message.id);
   const manifest = JSON.parse(readFileSync(new URL('../../../plugins/grok-bot/package.json', import.meta.url)));
   const preload = join(f.root, 'native-preload.mjs');
   writeFileSync(preload, `import { FakeNative } from ${JSON.stringify(new URL('./native-fixture.mjs', import.meta.url).href)};
@@ -303,29 +306,9 @@ test('opening bind view sends once as the account and posts success or error to 
     native.handler = async method => method === 'GetMe' ? Response.json({ authId: 'stable-account', name: '本人' }) : undefined;
     globalThis.fetch = native.fetch;`);
   const resource = await promisify(execFile)(process.execPath, ['--import', preload, new URL('../../../plugins/grok-bot/scripts/resources.mjs', import.meta.url).pathname], { env: { ...process.env, CODA_PLUGIN_STATE: f.root } });
-  const rows = readResources(resource.stdout, manifest.contributes.resources[0], manifest.contributes.views.map(view => view.id));
+  const rows = readResources(resource.stdout, manifest.contributes.resources[0], []);
   assert.equal(rows[0].identity, f.id());
-  assert.deepEqual(rows[0].actions, [{ label: '绑定', view: 'bind', args: { record: f.id() } }]);
-
-  const results = [];
-  const open = record => f.views.get('bind').open({ context: { args: { record } }, postMessage: message => results.push(message) });
-  await open(rows[0].actions[0].args.record);
-  assert.deepEqual(results, [{ type: 'result', text: '已发给 Bot' }]);
-  assert.deepEqual(issued, [f.id()]);
-  const sent = f.native.requests.find(r => r.method === 'SendGrokBotUserMessage').params;
-  assert.equal(sent.agentId, 'inspector');
-  assert.equal(sent.sessionId, '');
-  assert.deepEqual([sent.source, sent.initiator, sent.sendSource], [1, 1, 1]);
-  assert.equal(sent.text, "请运行下面的命令绑定 Coda：\nnode coda-bot.mjs bind 'http://100.64.0.1:8080' 'one-time-code'");
-  await until(() => f.provider.visible(f.id()).some(m => m.text === sent.text));
-  assert.equal(f.provider.visible(f.id()).find(m => m.text === sent.text).sender, f.provider.bots.get(f.id()).self);
-  assert.equal(f.native.requests.filter(r => r.method === 'SendGrokBotUserMessage').length, 1);
-  await open('other-record');
-  assert.match(results.at(-1).text, /Bot 已不存在/);
-  assert.equal(results.at(-1).type, 'result');
-  assert.equal(issued.length, 1);
-  f.coda.protocols.remoteCode = async () => ({ code: 'unused', addresses: [] });
-  await open(f.id());
-  assert.match(results.at(-1).text, /tailnet/);
-  assert.equal(f.native.requests.filter(r => r.method === 'SendGrokBotUserMessage').length, 1);
+  assert.deepEqual(rows[0].actions, []);
+  assert.deepEqual(manifest.coda, { channels: ['preview'] });
+  assert.equal(manifest.contributes.views, undefined);
 });
