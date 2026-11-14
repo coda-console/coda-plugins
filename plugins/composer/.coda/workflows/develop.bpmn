@@ -42,7 +42,7 @@
     <exclusiveGateway id="after-brief" name="需求是否写全" default="brief-lane" />
     <sequenceFlow id="brief-again" sourceRef="after-brief" targetRef="brief"><conditionExpression xsi:type="tFormalExpression">=brief-result.route = "brief"</conditionExpression></sequenceFlow>
     <sequenceFlow id="brief-lane" sourceRef="after-brief" targetRef="lane" />
-    <scriptTask id="lane" name="建泳道" scriptFormat="bash" coda:timeout="5">
+    <scriptTask id="lane" name="建泳道" scriptFormat="bash" coda:timeout="5" coda:retry="3">
       <extensionElements>
         <coda:env name="TITLE" value='=if inputs.title != "" and run.message != "" then inputs.title else brief-result.title' />
         <coda:env name="GOAL" value='=if inputs.title != "" and run.message != "" then run.message else brief-result.goal' />
@@ -117,7 +117,7 @@
     <sequenceFlow id="paused-continue" sourceRef="after-paused" targetRef="resume" />
     <endEvent id="abandoned" name="已放弃" coda:notify="true" />
 
-    <scriptTask id="pr" name="开 PR 或更新汇总" scriptFormat="bash" coda:timeout="5">
+    <scriptTask id="pr" name="开 PR 或更新汇总" scriptFormat="bash" coda:timeout="5" coda:retry="3">
       <extensionElements>
         <coda:output name="checked" /><coda:output name="url" /><coda:output name="head" /><coda:output name="base" /><coda:output name="lane" /><coda:output name="summary" /><coda:output name="task" />
       </extensionElements>
@@ -169,7 +169,7 @@
     </scriptTask>
     <sequenceFlow id="premerge-progress" sourceRef="premerge-feedback" targetRef="resume" />
     <sequenceFlow id="premerge-github" sourceRef="premerge" targetRef="github-checks" />
-    <scriptTask id="github-checks" name="GitHub 检查" scriptFormat="bash" coda:timeout="60">
+    <scriptTask id="github-checks" name="GitHub 检查" scriptFormat="bash" coda:timeout="60" coda:retry="3">
       <extensionElements><coda:output name="evidence" /></extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" github-checks</script>
     </scriptTask>
@@ -391,7 +391,7 @@ PR：{{pr.url}}</documentation>
     <exclusiveGateway id="after-approval" name="是否合并" default="approval-merge" />
     <sequenceFlow id="approval-stop" sourceRef="after-approval" targetRef="resume"><conditionExpression xsi:type="tFormalExpression">=approval-result.route = "stop"</conditionExpression></sequenceFlow>
     <sequenceFlow id="approval-merge" sourceRef="after-approval" targetRef="merge" />
-    <scriptTask id="merge" name="合并" scriptFormat="bash" coda:checkout="false" coda:timeout="10">
+    <scriptTask id="merge" name="合并" scriptFormat="bash" coda:checkout="false" coda:timeout="10" coda:retry="3">
       <extensionElements><coda:output name="commit" /><coda:output name="route" /></extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" merge</script>
     </scriptTask>

@@ -1,7 +1,8 @@
 // The OpenCode agent as Coda starts it (the plugin's `contributes.agents`): `opencode acp` as a child in this process's group,
 // its ACP passed on a message at a time both ways, but for its models, which it groups by provider (groups.mjs), and a
-// model service's long wait, which ends the turn instead (retries.mjs), native child sessions (children.mjs), and native
-// background shell lifecycle facts supplied by the per-process observer (shells.mjs, runtime/server.mjs).
+// model service's long wait, which ends the turn instead (retries.mjs), the category of its failures (errors.mjs), native
+// child sessions (children.mjs), and native background shell lifecycle facts supplied by the per-process observer
+// (shells.mjs, runtime/server.mjs).
 // It ends as OpenCode ends, once what it said has reached Coda.
 import { spawn } from 'node:child_process';
 import { readLines } from './lines.mjs';
@@ -9,6 +10,7 @@ import { opencodeBinary } from './binary.mjs';
 import { groupedModels } from './groups.mjs';
 import { chosenServices, providerEnvironment, serviceNames } from './providers.mjs';
 import { LongRetries } from './retries.mjs';
+import { classifyOpenCodeError } from './errors.mjs';
 import { OpenCodeChildren } from './children.mjs';
 import { OpenCodeShells } from './shells.mjs';
 import { shellChannel, shellEnvironment } from './shell-channel.mjs';
@@ -53,7 +55,7 @@ readLines(process.stdin).on('line', line => {
 }).on('close', () => cli.stdin.end());
 readLines(cli.stdout).on('line', line => {
   const message = parse(line);
-  if (message) for (const next of children.fromAgent(retries.fromAgent(message))) {
+  if (message) for (const next of children.fromAgent(classifyOpenCodeError(retries.fromAgent(message)))) {
     shells.fromAgent(next);
     say(groupedModels(next, names));
   }

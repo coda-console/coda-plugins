@@ -49,19 +49,23 @@ const task = JSON.parse(readFileSync(join(root, 'agent-task'), 'utf8'));
 const calls = JSON.parse(readFileSync(join(root, 'agent-calls'), 'utf8'));
 const prompt = readFileSync(value('--prompt-file'), 'utf8');
 calls.push({ args, prompt }); writeFileSync(join(root, 'agent-calls'), JSON.stringify(calls));
-if (task.exit) process.exit(task.exit);
+if (task.exit && task.silent) process.exit(task.exit);
 const continued = args.includes('--continue');
 const session = continued ? value('--continue') : 'worker-' + calls.length;
 const branch = 'agent/' + session, cwd = join(root, session);
 const git = (...params) => execFileSync('git', params, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 if (!continued) execFileSync('git', ['worktree', 'add', '-b', branch, cwd, value('--commit')], { stdio: 'pipe' });
+// garbage：会话开成了，但标准输出不是完整回复。
+if (task.garbage) { console.log(task.garbage); process.exit(0); }
 if (task.merge) {
   git('fetch', 'origin', task.merge);
   spawnSync('git', ['merge', '--no-commit', 'FETCH_HEAD'], { cwd, encoding: 'utf8' });
 }
 writeFileSync(join(cwd, task.file), task.answer);
 git('add', '-A'); git('commit', '-qm', task.answer);
+// 会话失败时 coda-agent 照样在标准输出给出会话（工作已提交）、以非零退出；silent 是连会话都没开成。
 console.log(JSON.stringify({ session, branch, head: git('rev-parse', 'HEAD'), answer: task.answer }));
+process.exit(task.exit ?? 0);
 `);
   install('gh', String.raw`
 const { readFileSync, writeFileSync } = require('node:fs');
@@ -81,7 +85,7 @@ else if (args[1] === 'view') console.log('f'.repeat(40));
   writeFileSync(join(root, 'agent-calls'), '[]'); writeFileSync(join(root, 'gh-calls'), '[]');
   const state = () => JSON.parse(readFileSync(join(artifacts, 'lane-pr.json'), 'utf8'));
   const calls = name => JSON.parse(readFileSync(join(root, `${name}-calls`), 'utf8'));
-  const task = (file, answer, merge) => writeFileSync(join(root, 'agent-task'), JSON.stringify({ file, answer, merge }));
+  const task = (file, answer, merge, fail = {}) => writeFileSync(join(root, 'agent-task'), JSON.stringify({ file, answer, merge, ...fail }));
   const run = (action, extra = {}, expected = 0) => {
     writeFileSync(env.GITHUB_OUTPUT, '');
     const result = spawnSync(process.execPath, [script, action], { cwd: work, env: { ...env, ...extra }, encoding: 'utf8' });
@@ -313,6 +317,59 @@ test('审查材料带上评审者的结果，只取评这次交付的', t => {
   ].join('\n\n') + `\n评审原文：${path}`);
   f.task('code', 'second'); f.run('revise');
   assert.equal(f.run('review', { REVIEWS: JSON.stringify(reviews) }).outputs.reviews, '', '评的不是这次交付时不带');
+});
+
+test('执行步骤失败后再跑：接回失败时已开的会话并发续跑说明，不另开；连会话都没开成时才新开', t => {
+  const f = fixture(t);
+  f.task('one', 'work', undefined, { exit: 1, silent: true }); f.run('execute', {}, 1);
+  f.task('one', 'work', undefined, { exit: 1 }); f.run('execute', {}, 1);
+  assert.deepEqual(f.calls('agent').map(c => c.args.includes('--commit')), [true, true], '没开成会话的失败，再跑新开');
+  assert.deepEqual(f.state().opening, { action: 'execute', session: 'worker-2' });
+  f.task('one', 'finished'); f.run('execute');
+  const calls = f.calls('agent');
+  assert.equal(calls.length, 3);
+  assert.deepEqual(calls[2].args.slice(0, -2), ['--continue', 'worker-2', '--json']);
+  for (const text of ['git status', 'git log', '不要从头重做', '输入框没反应', '执行者']) assert.ok(calls[2].prompt.includes(text), text);
+  assert.equal(f.state().executor.session, 'worker-2');
+  assert.equal(f.state().opening, undefined, '成功后不再接');
+  assert.deepEqual(f.state().failures, []);
+  f.delivered();
+  assert.equal(f.remote('lane-pr/pr-run-1'), f.state().executor.head, '接回会话做完的提交照常推送');
+});
+
+test('coda-agent 退出 0 但输出不是完整回复：这一步失败、错误带输出摘要，不记执行者；会话能取到就记下接回', t => {
+  const f = fixture(t);
+  f.task('one', 'work', undefined, { garbage: 'not json' });
+  assert.match(f.run('execute', {}, 1).stderr, /session、branch、head[\s\S]*not json/);
+  f.task('one', 'work', undefined, { garbage: JSON.stringify({ session: 'worker-1' }) });
+  assert.match(f.run('execute', {}, 1).stderr, /worker-1/);
+  assert.deepEqual(f.state().opening, { action: 'execute', session: 'worker-1' });
+  assert.equal(f.state().executor, undefined);
+  f.task('one', 'done'); f.run('execute');
+  assert.deepEqual(f.calls('agent').at(-1).args.slice(0, 2), ['--continue', 'worker-1']);
+  assert.equal(f.state().executor.session, 'worker-1');
+  assert.equal(f.state().opening, undefined);
+});
+
+test('换备用执行者失败后再跑：接回这次新开的备用会话，不另开、不接原执行者；成功后再选换人仍新开', t => {
+  const f = fixture(t);
+  f.task('code', 'first'); f.run('execute'); f.delivered();
+  const first = f.state().executor, backup = { EXECUTOR: JSON.stringify({ agent: 'backup' }) };
+  assert.equal(f.decide('swap', '换人', 'true'), 'swap');
+  f.task('redo', 'half', undefined, { exit: 1 }); f.run('swap', backup, 1);
+  assert.deepEqual(f.state().opening, { action: 'swap', session: 'worker-2' });
+  assert.equal(f.state().executor.session, first.session, '没成功前执行者不变');
+  f.task('redo', 'done'); f.run('swap', backup);
+  const resumed = f.calls('agent').at(-1);
+  assert.deepEqual(resumed.args.slice(0, -2), ['--continue', 'worker-2', '--json']);
+  assert.ok(resumed.prompt.includes('git log') && resumed.prompt.includes('换给你重做') && resumed.prompt.includes('换人'));
+  assert.equal(f.state().executor.session, 'worker-2');
+  assert.equal(f.calls('agent').length, 3);
+  f.delivered();
+  assert.equal(f.decide('swap', '再换一次', 'true'), 'swap');
+  f.task('redo', 'again'); f.run('swap', backup);
+  assert.deepEqual(f.calls('agent').at(-1).args.slice(0, 4), ['--commit', f.remote('lane/req-1'), '--title', '输入框可以输入']);
+  assert.equal(f.state().executor.session, 'worker-4');
 });
 
 test('泳道 PR 流程定义：输入、回路、审查卡答复、结束输出；不出用户卡、不装机、不部署、不跑合并前检查', async () => {
