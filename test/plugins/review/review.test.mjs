@@ -173,7 +173,7 @@ test('the merge card offers the workflows joining the hook merged, and after the
   assert.deepEqual(envs('merged-inputs'), { INPUTS: '=approval.inputs', MISSING: '=approval.missing', ASKS: '=approval.asks', FILLS: '=fill' });
   assert.equal(route('merged-inputs', {}), 'run-merged');
   assert.deepEqual(params('run-merged'), { hook: 'merged', only: '=approval.only', commit: '=github.event.pull_request.merge_commit_sha', inputs: '=merged-inputs.inputs' });
-  assert.deepEqual(Object.values(nodes).filter(n => n.action === 'run-workflows').map(n => params(n.id).kind ?? params(n.id).hook), ['check', 'premerge', 'merged']);
+  assert.deepEqual(Object.values(nodes).filter(n => n.action === 'run-workflows').map(n => params(n.id).hook), ['check', 'premerge', 'merged']);
   for (const id of ['notes', 'notes-user', 'publishing', 'deploy', 'publish']) assert.equal(nodes[id], undefined, id);
 });
 

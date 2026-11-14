@@ -1,5 +1,5 @@
 // Waits for the pull request's checks on GitHub (../.coda/workflows/pull-request.bpmn「等 GitHub 检查」): what GitHub has on
-// its head commit, commit statuses and check runs alike, whoever ran them. The project's own checks (coda:kind="check")
+// its head commit, commit statuses and check runs alike, whoever ran them. The project's own checks (workflows joining hook check)
 // have ended by now, and wrote what they found as statuses if they do; others (GitHub Actions) are waited for until each
 // has a result. Then it says whether all passed (`passed`) and each check in a line (`lines`, for the reviewer and the
 // approval card). Asked every `EVERY` seconds; it gives up when the step times out.

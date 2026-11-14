@@ -3,14 +3,15 @@
      准备分支：改动交在哪条分支上由发起的 Agent 定，给了（或会话所在的）就用它；都没有时从目标分支的最新提交替它开一条。
      交上改动：第一张任务交给主 Agent，不叫醒它，随会话的下一条输入告诉它；它把改动提交到那条分支，答复改动汇报。
      推送：流程把那个分支的最新提交推到自己的分支 simple/<运行>，开 PR 到目标分支；之后每次修改都推同一个分支、更新同一个 PR。
-     检查：在这个提交上调用项目声明为检查的流程（coda:kind="check"），没通过交回主 Agent。
+     检查：在这个提交上调用项目加入挂点 check 的流程（检查），没通过交回主 Agent。
      评审：评审方（发起时选的，没选按设置「评审组合」）在只读会话里评审一次；要求修改交回主 Agent，它改，或写明不改的理由。之后只重跑检查，不评第二轮。
      设备验收（可选）：主 Agent 装预览版，你在设备上验收，「不行」交回主 Agent。
      合并前检查、GitHub 检查都通过后请你批准；合并后运行你勾选的合并后流程（挂点 merged）。BPMN 2.0，由 Coda 执行（docs/workflows.md）。 -->
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="simple-definitions" targetNamespace="https://coda.pub/plugins/review">
-  <process id="simple" name="简易开发" isExecutable="true" coda:kind="develop" coda:title="简易开发">
+  <process id="simple" name="简易开发" isExecutable="true" coda:title="简易开发">
     <extensionElements>
+      <coda:join hook="develop" />
       <coda:input name="branch" label="分支" type="branch" defaultFrom="session.branch" description="主 Agent 提交改动的分支，默认是会话所在的分支；都没有时流程从目标分支替它开 agent/simple-&lt;运行 ID&gt;" />
       <coda:input name="reviewer" label="评审方" type="agent" description="不选按插件设置「评审组合」：Claude 写的由 Codex 评，反之亦然" />
       <coda:input name="devices" label="设备验收" type="boolean" default="false" description="改了客户端、要在 Mac 或 iPhone 上验收时打开" />
@@ -60,7 +61,7 @@
     <sequenceFlow id="push-checks" sourceRef="pushed" targetRef="checks" />
 
     <serviceTask id="checks" name="项目检查" coda:action="run-workflows" coda:status="跑项目的检查">
-      <extensionElements><coda:param name="kind" value="check" /><coda:param name="commit" value="=push.head" /></extensionElements>
+      <extensionElements><coda:param name="hook" value="check" /><coda:param name="commit" value="=push.head" /></extensionElements>
     </serviceTask>
     <boundaryEvent id="checks-failed" name="没通过" attachedToRef="checks"><errorEventDefinition /></boundaryEvent>
     <sequenceFlow id="checks-problem" sourceRef="checks-failed" targetRef="checks-feedback" />
@@ -201,7 +202,7 @@
     <sequenceFlow id="acceptance-premerge" sourceRef="after-acceptance" targetRef="premerge" />
 
     <serviceTask id="premerge" name="合并前检查" coda:action="run-workflows" coda:status="合并前检查">
-      <extensionElements><coda:param name="kind" value="premerge" /><coda:param name="commit" value="=pr.head" /></extensionElements>
+      <extensionElements><coda:param name="hook" value="premerge" /><coda:param name="commit" value="=pr.head" /></extensionElements>
     </serviceTask>
     <boundaryEvent id="premerge-failed" name="没通过" attachedToRef="premerge"><errorEventDefinition /></boundaryEvent>
     <sequenceFlow id="premerge-problem" sourceRef="premerge-failed" targetRef="premerge-feedback" />

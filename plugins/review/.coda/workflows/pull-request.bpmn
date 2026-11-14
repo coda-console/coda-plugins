@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- PR 生命流程（docs/plugins.md「内置插件：PR 生命流程」）：会话开的 PR 从开出来起一条运行，走到合并或关闭才结束。
      草稿：等作者标记为可评审。
-     检查：在这个提交上调用项目声明为检查的流程（coda:kind="check"），再等它在 GitHub 上的检查都有结果；有没通过的交给开 PR 的会话。
+     检查：在这个提交上调用项目加入挂点 check 的流程（检查），再等它在 GitHub 上的检查都有结果；有没通过的交给开 PR 的会话。
      评审：另一家 Agent 评审这个版本；要求修改交给开 PR 的会话，它不同意交给你仲裁。有新提交就从头再来。
      叠放：base 不是默认分支的不合并，等 base 改过去再接着走。
-     合并：请你批准，再在这个提交上调用项目声明为合并前检查的流程（coda:kind="premerge"），都通过才合并；没通过或 GitHub 没合并就交给开 PR 的会话，
+     合并：请你批准，再在这个提交上调用项目加入挂点 premerge 的流程（合并前检查），都通过才合并；没通过或 GitHub 没合并就交给开 PR 的会话，
      它推了新提交、评审通过后按你的批准合并，不再问。
      删除分支：你勾选后，等 GitHub 确认合并，再删除仍指向该提交的远程源分支；本地分支与工作树保留。
      合并后的流程：合并后在合并提交上运行你在批准卡上勾的流程（项目里加入挂点 merged 的）。
@@ -69,7 +69,7 @@
     <boundaryEvent id="closed-while-drafted" name="PR 关闭" attachedToRef="drafting"><messageEventDefinition messageRef="closed" /></boundaryEvent>
     <sequenceFlow id="drafted-closed" sourceRef="closed-while-drafted" targetRef="ended" />
 
-    <!-- 检查：机器检查便宜，先过了它们再请 Agent 评审。项目在自己的仓库里声明哪些流程是检查（coda:kind="check"）：这里在这个提交上调用它们，
+    <!-- 检查：机器检查便宜，先过了它们再请 Agent 评审。项目在自己的仓库里让检查流程加入挂点 check：这里在这个提交上调用它们，
          一个没通过（运行失败）就交给开 PR 的会话；都通过了，再等这个提交在 GitHub 上的全部检查（项目检查写的状态、GitHub Actions 等）有结果，
          它们的一句话结论交给评审方、写在批准卡上。会话推了新提交就答复「已推送新版本」，等新提交从头再来；重跑外部检查或处理好别的后答复，再跑一遍。 -->
     <subProcess id="checking" name="检查">
@@ -77,7 +77,7 @@
       <sequenceFlow id="c-in" sourceRef="checking-in" targetRef="run-checks" />
       <serviceTask id="run-checks" name="跑项目的检查" coda:action="run-workflows" coda:status="跑项目的检查">
         <extensionElements>
-          <coda:param name="kind" value="check" />
+          <coda:param name="hook" value="check" />
           <coda:param name="commit" value="=github.event.pull_request.head.sha" />
         </extensionElements>
       </serviceTask>
@@ -382,11 +382,11 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
         </scriptTask>
         <sequenceFlow id="to-premerge" sourceRef="approval" targetRef="premerge" />
 
-        <!-- 合并前检查：每个版本都跑嫌贵的验证（如后端全套），项目声明为 coda:kind="premerge"，批准后在要合并的提交上只跑一次。
+        <!-- 合并前检查：每个版本都跑嫌贵的验证（如后端全套），项目让它加入挂点 premerge，批准后在要合并的提交上只跑一次。
              没通过交给开 PR 的会话：推了新提交答复「已推送新版本」，等新提交从头再来，评审通过后按原批准合并；检查本身出了问题，处理好后答复，再跑一遍。 -->
         <serviceTask id="premerge" name="合并前检查" coda:action="run-workflows" coda:status="合并前检查">
           <extensionElements>
-            <coda:param name="kind" value="premerge" />
+            <coda:param name="hook" value="premerge" />
             <coda:param name="commit" value="=reviewing.head" />
           </extensionElements>
         </serviceTask>
