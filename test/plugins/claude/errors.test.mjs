@@ -95,10 +95,8 @@ test('the wait the service asked for is retryAfterMs, in ms', () => {
   unavailable('API Error: 503 Service Unavailable', {});
 });
 
-test('what is not the service failing stays unmarked: keys, permission, context, billing, parameters, OAuth, certificates, quota', () => {
+test('what is not the service failing stays unmarked: keys, permission, context, billing, parameters, certificates, quota', () => {
   for (const [message, facts] of [
-    // Real: OAuth expired (a kind of its own, with the protocol's next version), not marked yet.
-    ['Failed to authenticate: OAuth session expired and could not be refreshed', { error: 'authentication_failed' }],
     ['API Error: 401 Invalid API key · Please run /login', { error: 'authentication_failed' }],
     ['API Error: 403 {"type":"error","error":{"type":"permission_error","message":"Your API key does not have permission to use the specified resource."}}', {}],
     ['API Error: 403 Forbidden', { error: 'authentication_failed' }],
@@ -121,4 +119,32 @@ test('what is not the service failing stays unmarked: keys, permission, context,
   for (const [message, facts] of [["You've hit your session limit · resets 1am (Asia/Singapore)", { error: 'rate_limit' }],
     ['Your credit balance is too low to access the Anthropic API', { error: 'billing_error' }]])
     assert.deepEqual(claudeFailure(message, facts).data._meta.coda.failure, { kind: 'quota_exhausted' }, message);
+});
+
+test('an OAuth login that is gone is auth_required; a bad key, missing permission or a bare 401 or 403 is not', () => {
+  // Protocol 6.2.0 is not published, so the installed validation rejects auth_required: the shape is asserted here. After 6.2.0 is
+  // published and check/coda/contract.json synced, check it with agentValueProblem('failure.json', failure) as the other kinds are.
+  // Real: the final error of a Claude Code turn whose OAuth session ended (11-13).
+  for (const [message, facts] of [
+    ['Failed to authenticate: OAuth session expired and could not be refreshed', { error: 'authentication_failed' }],
+    ['Failed to authenticate: OAuth session expired and could not be refreshed', {}],
+  ]) {
+    const error = claudeFailure(message, facts);
+    assert.equal(error.code, -32603);
+    assert.equal(error.message, message);
+    assert.deepEqual(error.data._meta.coda.failure, { kind: 'auth_required', login: 'Anthropic OAuth' }, message);
+  }
+  for (const [message, facts] of [
+    ['API Error: 401 Invalid API key · Please run /login', { error: 'authentication_failed' }],
+    ['Invalid API key', { error: 'authentication_failed' }],
+    ['API Error: 403 {"type":"error","error":{"type":"permission_error","message":"Your API key does not have permission to use the specified resource."}}', { error: 'authentication_failed' }],
+    ['API Error: 401 Unauthorized', { error: 'authentication_failed' }],
+    ['API Error: 403 Forbidden', { error: 'authentication_failed' }],
+    ['Failed to authenticate. API Error: 403 Attention Required! | Cloudflare', { error: 'authentication_failed' }],
+    ['API Error: 403 <html><title>Just a moment...</title>cf-ray: 8f1a2b3c4d5e6f7a-SIN</html>', {}],
+    ['OAuth session expired and could not be refreshed', { error: 'billing_error' }],
+    ['API Error: 401 OAuth token has expired. Please obtain a new token or refresh your existing token.', { error: 'authentication_failed' }],
+  ]) assert.notEqual(claudeFailure(message, facts).data?._meta.coda.failure.kind, 'auth_required', message);
+  // The Cloudflare page stays service_unavailable.
+  assert.equal(claudeFailure('Failed to authenticate. API Error: 403 Attention Required! | Cloudflare', { error: 'authentication_failed' }).data._meta.coda.failure.kind, 'service_unavailable');
 });

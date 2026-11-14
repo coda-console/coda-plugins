@@ -70,3 +70,22 @@ test('the answer to a failed prompt reports its category: quota only by kind, an
     { jsonrpc: '2.0', id: 4, error: { code: -32603, message: 'm', data: { _meta: { coda: { failure: { kind: 'service_unavailable', input: 'accepted' } } } } } });
   assert.deepEqual(failedAnswer(answer, { message: 'm' }), { jsonrpc: '2.0', id: 4, error: { code: -32603, message: 'm' } });
 });
+
+// Kimi's own error code for an OAuth provider whose token cannot be refreshed (OAuthUnauthorizedError -> `auth.login_required`, from its
+// binary). Protocol 6.2.0 is not published, so the installed validation rejects auth_required: the shape is asserted here. After 6.2.0 is
+// published and check/coda/contract.json synced, check it with agentValueProblem('failure.json', failure) as the other kinds are.
+test('a Kimi OAuth login that is gone is auth_required; a provider auth error, a 401 or 403 and a quota are not', () => {
+  const message = 'OAuth provider "kimi-code" requires login before it can be used.';
+  const lost = turnFailure('failed', { code: 'auth.login_required', name: 'KimiError', message });
+  assert.deepEqual(lost, { message, kind: 'auth_required' });
+  const answer = { jsonrpc: '2.0', id: 5, result: { stopReason: 'end_turn' } };
+  assert.deepEqual(failedAnswer(answer, lost), { jsonrpc: '2.0', id: 5, error: { code: -32603, message,
+    data: { _meta: { coda: { failure: { kind: 'auth_required', login: 'Kimi Code OAuth' } } } } } });
+  for (const error of [{ code: 'provider.auth_error', name: 'APIStatusError', message: 'Invalid API key', details: { statusCode: 401 } },
+    { code: 'provider.auth_error', name: 'APIStatusError', message: '403 permission denied', details: { statusCode: 403 } },
+    { code: 'auth.token_missing', message: 'Provider credential missing' },
+    { code: 'provider.api_error', name: 'APIStatusError', message: '401 Unauthorized', details: { statusCode: 401 } }])
+    assert.deepEqual(turnFailure('failed', error), { message: error.message }, error.message);
+  // A login code on a turn that did not fail says nothing.
+  assert.equal(turnFailure('cancelled', { code: 'auth.login_required', message }), null);
+});

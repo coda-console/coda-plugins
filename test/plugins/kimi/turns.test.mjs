@@ -169,6 +169,28 @@ test('a prompt whose turn failed is answered with that failure, quota exhaustion
     { jsonrpc: '2.0', id: 5, result: { stopReason: 'end_turn' } });
 });
 
+// Kimi's ACP rejects a prompt whose turn ended on `auth.login_required` with -32000 (the handshake's "not signed in"). Protocol 6.2.0 is
+// not published, so the shape is asserted here (see errors.test.mjs).
+test('a -32000 to a prompt whose turn ended on a lost login is an execution failure, auth_required; any other -32000 is left alone', async t => {
+  const f = await layout(t);
+  const { r, out, prompt } = await relay(t, f);
+  const reject = async (id, end, message = 'Authentication required: whatever Kimi said') => {
+    prompt(id);
+    const ran = Date.now();
+    await f.write(...begin(id, ran, { kind: 'user' }), ...(end ? [end(id, ran)] : []));
+    r.fromAgent({ jsonrpc: '2.0', id, error: { code: -32000, message } });
+    await r.drained();
+    return out.at(-1);
+  };
+  const login = 'OAuth provider "kimi-code" requires login before it can be used.';
+  assert.deepEqual(await reject(2, (id, time) => failed(id, time, { code: 'auth.login_required', name: 'KimiError', message: login })),
+    { jsonrpc: '2.0', id: 2, error: { code: -32603, message: login, data: { _meta: { coda: { failure: { kind: 'auth_required', login: 'Kimi Code OAuth' } } } } } });
+  // A provider's own auth error, a turn that did not fail, and a prompt rejected before any turn began stay as Kimi said.
+  for (const [id, end] of [[3, (id, time) => failed(id, time, { code: 'provider.auth_error', name: 'APIStatusError', message: '401 Invalid API key' })],
+    [4, (id, time) => ended(id, time)], [5, null]])
+    assert.deepEqual(await reject(id, end), { jsonrpc: '2.0', id, error: { code: -32000, message: 'Authentication required: whatever Kimi said' } });
+});
+
 test('a prompt held behind a goal turn is answered with the failure of the turn that ran it', async t => {
   const f = await layout(t);
   const { r, out, looked, prompt } = await relay(t, f);

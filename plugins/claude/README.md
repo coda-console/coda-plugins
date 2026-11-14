@@ -19,7 +19,10 @@ Claude Code 自己的重试（`system/api_retry`，登记为隐藏）发生在�
 | 网络：`ECONNRESET`、`ECONNREFUSED`、`ETIMEDOUT`、`ENOTFOUND`、`EAI_AGAIN`、`socket hang up`、`fetch failed`、`Unable to connect to API`、`Request timed out`、TLS 握手失败、传输中断 | `service_unavailable` |
 | 上游：5xx、408、`overloaded_error`、529、`api_error`；Claude Code 的 `overloaded`、`server_error` 类别 | `service_unavailable` |
 | Cloudflare 的拦截或挑战页（状态码加 `cloudflare`、`cf-ray`、`Just a moment`、`Attention Required`），先于「认证失败」判断：Claude Code 把它的 403 页报成 `authentication_failed`，这里不再当认证失败 | `service_unavailable` |
-| API key 错、权限不足、上下文超长、账单、请求参数错误、证书错误（`SSL certificate has expired` 等）、普通 429、被中止、OAuth 过期 | 不标（OAuth 过期要等协议的 `auth_required`） |
+| 登录凭据明确失效：`Failed to authenticate: OAuth session expired and could not be refreshed`（Claude Code 自己的文案，真实样本）；类别须是 `authentication_failed` 或没有类别，且不是用量、服务故障 | `auth_required`，`login: "Anthropic OAuth"` |
+| API key 错或缺失（`Invalid API key`）、权限不足、仅有 401 或 403、上下文超长、账单、请求参数错误、证书错误（`SSL certificate has expired` 等）、普通 429、被中止 | 不标 |
+
+`auth_required` 以普通执行错误（-32603）报，不带 `input`、`retryAfterMs`、`resetAt`。
 
 `service_unavailable` 的 `input` 一律是 `accepted`：失败来自轮次的结果，原生会话已经收下并开始处理这一轮；入口没有「发出前就失败」的路径会走到这里。文字里有 `Retry-After` 或 `retry after` 时带 `retryAfterMs`（毫秒）。
 

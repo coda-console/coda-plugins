@@ -42,6 +42,11 @@ function suggestedWait(text) {
   return Math.round([...spoken.matchAll(/(\d+(?:\.\d+)?)(ms|h|m|s)/g)].reduce((sum, [, n, u]) => sum + n * unit[u], 0));
 }
 
+// The ChatGPT login gone (docs/agent-protocol.md「需要重新登录」): Codex's own words when refreshing the access token fails for good
+// (its refresh token expired, was already used or revoked, or the account was logged out or switched). Its `unauthorized` kind and a
+// bare 401 or 403 also cover a wrong API key or a missing permission, which logging in again does not mend, so they stay unmarked.
+const loginLost = /^Your access token could not be refreshed\b[^\n]*\bsign in again\b/;
+
 // Native service facts, not a retry policy: Coda decides when/how often to try again. Explicit permanent kinds win over
 // generic messages (in particular, quota failures also arrive as JSON-RPC Internal error).
 export function codexFailureData(error, input) {
@@ -53,6 +58,8 @@ export function codexFailureData(error, input) {
   const message = typeof data.message === 'string' ? data.message : typeof data.details === 'string' ? data.details : typeof error.data === 'string' ? error.data : error.message;
   let provider; try { provider = JSON.parse(message); } catch {}
   const status = provider?.status ?? (info && typeof info === 'object' ? Object.values(info)[0]?.httpStatusCode : null);
+  if (loginLost.test(message?.trim()))
+    return { ...reported({ kind: 'auth_required', login: 'ChatGPT 账号' }), ...(data.message || data.details ? {} : { details: message }) };
   const accepted = data._meta?.coda?.failure?.input === 'accepted' ? 'accepted' : input;
   if (status === 429 && info && typeof info === 'object' && 'httpConnectionFailed' in info) {
     const text = [data.additionalDetails, message].filter(value => typeof value === 'string').join('\n');

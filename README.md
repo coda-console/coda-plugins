@@ -376,7 +376,9 @@ Codex 的原生失败统一以 ACP 错误结束，包括只有 `turn/completed.f
 插件将服务端内部错误、5xx、响应流中断、模型容量不足，以及已知的 `model '…' is not enabled in rustponsesapi` 报成
 `error.data._meta.coda.failure: {kind: "service_unavailable", input: "accepted"}`。新轮请求明确被拒绝、只给
 `Internal error` 时按临时故障报告 `input: "not_accepted"`；这表示允许有限重试，不表示已确定历史故障根因。
-额度耗尽 `usageLimitExceeded` 单独报 `failure.kind: "quota_exhausted"`；认证、上下文限制、参数、配置或沙箱错误不带此标记。
+额度耗尽 `usageLimitExceeded` 单独报 `failure.kind: "quota_exhausted"`；上下文限制、参数、配置或沙箱错误不带此标记。
+ChatGPT 登录的令牌刷新彻底失败（正文以 `Your access token could not be refreshed` 开头并含 `sign in again`：刷新令牌过期、已被使用、被撤销，或已登出、换了账号；这是 Codex 二进制里 `RefreshTokenFailedReason` 的文案）
+报 `failure: {kind: "auth_required", login: "ChatGPT 账号"}`，仍是 -32603 的执行错误。`unauthorized` 类别和单独的 401、403 也可能是 API key 错或权限不足，重新登录解决不了，不带此标记。
 带 HTTP 429 的 `httpConnectionFailed`（消息形如 `unexpected status 429 Too Many Requests: <响应体>, url: …`）按响应体区分：
 含 `insufficient_quota`、`quota_exceeded`、`usage_limit_reached` 或「exceeded your current quota」「hit your usage limit」这些提供方自己的额度用词才报 `quota_exhausted`，
 其余按限流报 `service_unavailable`，正文里的「try again in 1m30.5s」写进 `retryAfterMs`（没有就不带）。401、403 与其他状态码照旧。
@@ -396,7 +398,9 @@ Kimi 2.1.1 的 ACP 把失败的一轮（包括现在以 429 报的五小时额�
 插件在交出 `session/prompt` 的回执前读到这一轮以 `failed` 结束，就改答 -32603，`error.message` 是这一轮的错误原文；
 Kimi 自己归为 `APIProviderQuotaExhaustedError`（如 `429 You've reached your weekly (7-day) usage limit.`）的另报 `quota_exhausted`（原文没有确切恢复时间，不带 `resetAt`）；
 `APIProviderOverloadedError`、状态码 500–599、状态码 429 的非额度限流（`APIProviderRateLimitError`），以及连接失败与超时（`APIConnectionError`、`APITimeoutError`，错误码 `provider.connection_error`）
-另报 `service_unavailable`、`input: accepted`（Kimi 自己已重试过才结束这一轮；错误里没有等待时间，不带 `retryAfterMs`）；其他失败（认证、上下文、请求无效）不带类别。被过滤的回复 Kimi 已答 `refusal`，不改。
+另报 `service_unavailable`、`input: accepted`（Kimi 自己已重试过才结束这一轮；错误里没有等待时间，不带 `retryAfterMs`）；Kimi 自己的错误码 `auth.login_required`（它的 OAuth 提供方令牌刷新失败，`OAuthUnauthorizedError`，这是 Kimi 二进制里的定义）报 `auth_required`、`login: "Kimi Code OAuth"`，是 -32603 的执行错误。Kimi 的 ACP 对这样结束的一轮回的是 -32000（`Authentication required: …`，不带错误码，与握手阶段的「未登录」同形），
+插件按这一轮 wire 里记的 `auth.login_required` 改回 -32603 并保留这一轮的原文；没有这一轮记录的 -32000（如发出前就被拒）原样转出；
+`provider.auth_error`、401、403 等可能是 key 错或权限不足，重新登录解决不了，仍不带类别；其他失败（上下文、请求无效）不带类别。被过滤的回复 Kimi 已答 `refusal`，不改。
 Kimi 在一轮失败后暂停 goal，goal 的定时随之以 `failed` 结束，说明是那一轮的原因，额度耗尽时标题为「额度不足」。
 `CODA_DISABLE_RUNTIME_PATCHES=kimi` 关闭这层适配。
 

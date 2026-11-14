@@ -9,7 +9,8 @@ import { kimiDisplayNames } from './display.mjs';
 // has not run the prompt yet.
 // Nothing waits on a look longer than `hold`. CODA_DISABLE_RUNTIME_PATCHES=kimi leaves a plain relay. A known quota error in
 // a prompt's answer is classified at this boundary (errors.mjs), without retrying or changing other errors; an `end_turn`
-// Kimi gave to a prompt whose turn its files say failed is passed on as that failure. A Kimi whose files are not as understood
+// Kimi gave to a prompt whose turn its files say failed is passed on as that failure, and so is a -32000 to a prompt whose turn its files
+// say ended on a lost login (`auth.login_required`). A Kimi whose files are not as understood
 // (another version, another layout) is relayed as it would be anyway, but said so once a session and way, to a Coda that takes
 // it (`_coda/unrecognized`, docs/agent-protocol.md「没适配的东西」): the user is told what goes unseen.
 import { classifyKimiError, failedAnswer } from './errors.mjs';
@@ -76,8 +77,11 @@ export class KimiRelay {
     this.queue = this.queue.then(async () => {
       if (waiting) await this.look({ fresh: !!asked?.prompt });
       if (sent?.quiet && message.result?.stopReason === 'end_turn' && this.turns?.hold(sent.at, message)) { this.prompts.add(message.id); return; }
-      const failure = sent && message.result?.stopReason === 'end_turn' ? this.turns?.failure(sent.at) : null;
-      if (failure) message = failedAnswer(message, failure);
+      // Kimi's ACP also rejects a prompt whose turn ended on a lost login with -32000 (the handshake's "not signed in"), no code in it; the
+      // turn's own end says which it was, and mid-run it is an execution failure (-32603).
+      const failure = sent ? this.turns?.failure(sent.at) : null;
+      if (failure && (message.result?.stopReason === 'end_turn' || failure.kind === 'auth_required' && message.error?.code === -32000))
+        message = failedAnswer(message, failure);
       this.say(message);
       const sessionId = asked && !('error' in message) ? message.result?.sessionId ?? asked.sessionId : undefined;
       if (typeof sessionId === 'string') this.begin(sessionId, asked.cwd);
