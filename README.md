@@ -110,10 +110,19 @@ OpenCode 遇到模型服务的 429，会照 `Retry-After` 等（OpenCode 2 每�
 子会话事件没有发起工具的 ID，同时有多个可能的调用时，仅在它们全部仍是同一轮的前台调用时才处理，无法确定的长等待仍由 OpenCode 自己管理。
 Coda 自己对服务故障只等一分钟以内，所以主请求或它仍在等待的前台子会话要等超过一分钟才重试时，入口先 `session/cancel` 停下这一轮（前台子 Agent 随之停下），
 再把这一轮答成失败，原因是服务给的原文加上 OpenCode 要等多久；停下后 OpenCode 回的是什么都不转出。一分钟以内的等待照旧由 OpenCode 自己处理。
-不在入口里按厂商的错误文字判断额度耗尽。
-明确的 `[ttft_admission_refused] the cell is at capacity` 容量拒绝在停下原生轮次后报告为 `service_unavailable`，
+明确的 `[ttft_admission_refused]` 或 `[prefill_cap_refused]` 加 `the cell is at capacity` 容量拒绝，以及状态码 500–599 的等待，在停下原生轮次后报告为 `service_unavailable`，
 带 `input: accepted` 与 OpenCode 实际安排的剩余等待 `retryAfterMs`；Coda 按该等待决定是否重试，长等待以已知失败结束。
 保留服务原文（其中建议的短等待也原样保留），不把它当成 OpenCode 的实际重试时间，不把普通 429 或认证失败归为容量拒绝。
+等待的错误是 429 且服务自己说明额度用尽（`Free usage limit reached`、`Credits exhausted`、`额度已用尽`、`用量已超出限制`，
+前两句来自 OpenCode Zen 与 WorkBuddy 的英文提示，后两句是 WorkBuddy 的中文提示）时报 `quota_exhausted`。
+这些原文没有带时区的恢复时刻（WorkBuddy 只给本地时间「将在 … 重置」），不推算 `resetAt`；OpenCode 自己的重试时间受 15 分钟上限，也不当作重置时间。
+
+OpenCode 把失败的 `session/prompt` 答成 -32603 `Internal error: <原因>`，`data.errorName` 是它对模型服务响应的分类。
+入口在转出时据此补 `error.data._meta.coda.failure`，不改原因与其他字段：`provider.quota`、`provider.free-limit` 报 `quota_exhausted`；
+网关（WorkBuddy、OpenCode Zen 经 Magpie 等）把额度用尽答成 429，OpenCode 归为 `provider.rate-limit`，此时按上面的原文判断；
+`provider.internal`（5xx 等上游故障，OpenCode 已重试过）报 `service_unavailable`、`input: accepted`。
+认证（`provider.auth`，OpenCode 答 `auth_required`）、内容过滤、请求无效（含上下文超长与参数错误）、连接（`provider.transport`、`provider.timeout`）、
+未知服务与路由等失败不带类别；OAuth 过期待协议的 `auth_required` 类别发布后再做。WorkBuddy 经 OpenCode 使用，没有单独的插件。
 
 OpenCode 的原生子会话经 ACP 的 `opencode/child-session-updates` 能力接入（入口 `agent/children.mjs`，核对 OpenCode 2.1.4）：
 `opencode/session/child_update` 的创建与运行状态登记成 `_coda/wait`，带原生 `childSessionId`；子会话的回复、思考与工具调用各归自己的过程，
