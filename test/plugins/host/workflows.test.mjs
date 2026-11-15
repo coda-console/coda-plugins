@@ -19,65 +19,43 @@ async function runHeld() {
   return { process, inputs, element, held };
 }
 
-test('run-held keeps simulator and local builds on this Mac, and lets other builds go where a slot is free', async () => {
-  const { inputs, element, held } = await runHeld();
-  assert.equal(inputs.local, false);
-  // 模拟器与要用产物的构建走 hold-group；其余由写着自己名额的一步去别台。
-  const route = element('route');
-  assert.equal(route.default.id, 'elsewhere');
-  const here = element('here');
-  assert.equal(here.targetRef, held);
-  const expression = here.conditionExpression.body.trim().slice(1);
-  const local = extra => evaluate(expression, { inputs: { ...inputs, ...extra } }).value;
-  assert.equal(local({ what: '模拟器' }), true);
-  assert.equal(local({ local: true }), true);
-  assert.equal(local({ what: '构建', local: true }), true);
-  assert.equal(local({}), false);
-  assert.equal(local({ what: '其他命令' }), false);
-  const command = held.flowElements.find(element => element.id === 'command');
-  const elsewhere = element('elsewhere-run');
-  assert.equal(element('elsewhere').targetRef, elsewhere);
-  // 两条路都就地跑 coda:source：本机是调用方的 cwd，别台是快照检出后对应的子目录。
-  for (const step of [command, elsewhere]) {
-    assert.equal(step.source, '=inputs.cwd');
-    assert.equal(step.checkout, 'false');
-    assert.equal(step.timeout, 1440);
-    assert.equal(step.cancelTimeout, 5);
-    assert.equal(step.extensionElements.values.find(value => value.name === 'HELD_COMMAND').value, '=inputs.command');
-    assert.equal(step.extensionElements.values.some(value => value.name === 'HELD_CWD'), false);
-    assert.deepEqual(step.extensionElements.values.filter(value => value.$type === 'coda:Output').map(value => value.name), ['exit_code', 'failure_reason']);
-    assert.equal(step.script, 'exec node "$CODA_PLUGIN_PATH/scripts/run-held.mjs"');
-  }
-  // 只有别台那条自己占名额、写推送条件；本机那条在 hold-group 段里。
-  assert.equal(elsewhere.group, 'host');
-  assert.equal(elsewhere.runsOn, 'darwin');
-  assert.ok(!command.group && !command.runsOn);
+test('run-held always queues on this Mac: a single hold-group, no local input and no step that may go elsewhere', async () => {
+  const { process, inputs, element, held } = await runHeld();
+  assert.deepEqual(Object.keys(inputs), ['command', 'cwd', 'what', 'timeoutMinutes', 'idleMinutes']);
+  assert.equal(process.flowElements.some(element => element.$type === 'bpmn:ExclusiveGateway'), false);
+  assert.equal(element('to-held').targetRef, held);
   assert.ok(held.flowElements.some(element => element.id === 'hold' && element.action === 'hold-group'));
+  const command = held.flowElements.find(element => element.id === 'command');
+  // The command runs where the caller's work copy is, inside the held slot, with nothing that asks Coda to push it elsewhere.
+  assert.equal(command.source, '=inputs.cwd');
+  assert.equal(command.checkout, 'false');
+  assert.equal(command.timeout, 1440);
+  assert.equal(command.cancelTimeout, 5);
+  assert.equal(command.extensionElements.values.find(value => value.name === 'HELD_COMMAND').value, '=inputs.command');
+  assert.deepEqual(command.extensionElements.values.filter(value => value.$type === 'coda:Output').map(value => value.name), ['exit_code', 'failure_reason']);
+  assert.equal(command.script, 'exec node "$CODA_PLUGIN_PATH/scripts/run-held.mjs"');
+  assert.ok(!command.group && !command.runsOn);
+  assert.equal(process.flowElements.filter(element => element.$type === 'bpmn:ScriptTask').length, 0);
   assert.equal(element('held-done').targetRef, element('end'));
-  assert.equal(element('elsewhere-ran').targetRef, element('end'));
 });
 
-test('both run-held paths hand the total limit to run-held, counted from the command', async () => {
-  const { process, inputs, element, held } = await runHeld();
+test('run-held hands the total limit to run-held, counted from the command', async () => {
+  const { process, inputs, held } = await runHeld();
   const command = held.flowElements.find(element => element.id === 'command');
-  const elsewhere = element('elsewhere-run');
-  for (const step of [command, elsewhere]) {
-    const value = step.extensionElements.values.find(value => value.name === 'HELD_TIMEOUT_MINUTES').value;
-    const minutes = extra => evaluate(value.trim().slice(1), { inputs: { ...inputs, ...extra } }).value;
-    assert.equal(minutes({}), 30);
-    assert.equal(minutes({ what: '模拟器' }), 60);
-    assert.equal(minutes({ what: '其他命令' }), 30);
-    assert.equal(minutes({ timeoutMinutes: 120 }), 120);
-    assert.equal(minutes({ timeoutMinutes: 1440 }), 1440);
-    assert.equal(minutes({ timeoutMinutes: -1 }), -1);
-    assert.equal(minutes({ timeoutMinutes: 1441 }), 1441);
-    assert.equal(step.timeout, 1440);
-    assert.equal(step.extensionElements.values.find(value => value.name === 'HELD_IDLE_MINUTES').value, '=inputs.idleMinutes');
-  }
-  // 没有挂在步骤上的计时边界事件：排队也算进入这一步，会把排队时间算进总时限。
+  const value = command.extensionElements.values.find(value => value.name === 'HELD_TIMEOUT_MINUTES').value;
+  const minutes = extra => evaluate(value.trim().slice(1), { inputs: { ...inputs, ...extra } }).value;
+  assert.equal(minutes({}), 30);
+  assert.equal(minutes({ what: '模拟器' }), 60);
+  assert.equal(minutes({ what: '其他命令' }), 30);
+  assert.equal(minutes({ timeoutMinutes: 120 }), 120);
+  assert.equal(minutes({ timeoutMinutes: 1440 }), 1440);
+  assert.equal(minutes({ timeoutMinutes: -1 }), -1);
+  assert.equal(minutes({ timeoutMinutes: 1441 }), 1441);
+  assert.equal(command.timeout, 1440);
+  assert.equal(command.extensionElements.values.find(value => value.name === 'HELD_IDLE_MINUTES').value, '=inputs.idleMinutes');
+  // No timer boundary event on the step: queueing would count into the limit.
   assert.equal(process.flowElements.filter(element => element.$type === 'bpmn:BoundaryEvent').length, 0);
   assert.equal(held.flowElements.filter(element => element.$type === 'bpmn:ScriptTask').length, 1);
-  assert.equal(process.flowElements.filter(element => element.$type === 'bpmn:ScriptTask').length, 1);
 });
 
 test('periodic simulator cleanup never enters the host queue', async () => {

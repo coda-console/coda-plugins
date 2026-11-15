@@ -1,7 +1,6 @@
 import { spawn } from 'node:child_process';
-import { mkdtemp, realpath, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join, isAbsolute } from 'node:path';
+import { realpath } from 'node:fs/promises';
+import { isAbsolute } from 'node:path';
 
 // Never inherit a caller's alternate index, repository, namespace or injected Git config.
 export function gitEnvironment(environment = process.env, extra = {}) {
@@ -35,37 +34,4 @@ export async function repository(path, env) {
   const gitDir = await realpath(await git(root, ['rev-parse', '--absolute-git-dir'], { env }));
   const commonDir = await realpath(await git(root, ['rev-parse', '--path-format=absolute', '--git-common-dir'], { env }));
   return { path: root, gitDir, commonDir, bare };
-}
-
-export function snapshotRef(token) {
-  if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('无效快照标识');
-  return `refs/coda/snapshots/${token}`;
-}
-
-export async function createSnapshot(repo, spec, ref, env) {
-  if (!/^refs\/coda\/snapshots\/[a-f0-9]{64}$/.test(ref)) throw new Error('无效快照引用');
-  const parent = await git(repo.path, ['rev-parse', '--verify', '--end-of-options', `${spec.mode === 'commit' ? spec.commit : 'HEAD'}^{commit}`], { env });
-  let commit = parent;
-  if (spec.mode === 'worktree') {
-    if (repo.bare) throw new Error('裸仓库没有工作树');
-    const dir = await mkdtemp(join(tmpdir(), 'coda-git-index-'));
-    try {
-      const extra = { GIT_INDEX_FILE: join(dir, 'index') };
-      await git(repo.path, ['read-tree', parent], { env, extra });
-      await git(repo.path, ['-c', 'core.splitIndex=false', '-c', 'core.fileMode=true', '-c', 'core.symlinks=true', 'add', '-A', '--', '.'], { env, extra });
-      const tree = await git(repo.path, ['write-tree'], { env, extra });
-      // Use the parent identity, without changing repository/global user configuration.
-      const [name, email] = (await git(repo.path, ['show', '-s', '--format=%an%n%ae', parent], { env })).split('\n');
-      commit = await git(repo.path, ['commit-tree', tree, '-p', parent], { env,
-        extra: { GIT_AUTHOR_NAME: name, GIT_AUTHOR_EMAIL: email, GIT_COMMITTER_NAME: name, GIT_COMMITTER_EMAIL: email },
-        input: 'Coda worktree snapshot\n' });
-    } finally { await rm(dir, { recursive: true, force: true }); }
-  }
-  await git(repo.path, ['update-ref', ref, commit], { env });
-  return commit;
-}
-
-export async function removeSnapshot(repo, ref, env) {
-  if (!/^refs\/coda\/snapshots\/[a-f0-9]{64}$/.test(ref)) throw new Error('无效快照引用');
-  await git(repo.path, ['update-ref', '-d', ref], { env });
 }
