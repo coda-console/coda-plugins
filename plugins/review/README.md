@@ -206,19 +206,33 @@ PR 生命流程与简易开发声明挂点 `merged`：合并后要做的事由�
 | `reviewer` | 必填，评审方（`agent` 类型） |
 | `focus` | 可空，关注点，同 PR 评审的 `focus` |
 | `evidence` | 可空（标签「已有验证」），调用方已有的验证证据，一段文字（例如项目检查的结果）；带了就在提示词里用一小段转给评审方，说明这是调用方提供的已有验证证据，按评审规则复用；不放进任务书或关注点，没带时没有这一段 |
+| `previous` | 可空（标签「上一轮的发现与回应」），增量复评时给：JSON 数组，这个评审位置上一轮带编号的发现（`id`、`severity`、`kind`、`title`、`location`、`detail`）和执行者的回应 `response`（`disposition` 为 `fixed` 附 `commit`，或 `disputed` 附 `reason`、`evidence`）。见下文「增量复评」 |
 
 | 输出（`=<调用步骤>.<名字>`） | 内容 |
 | --- | --- |
 | `decision` | `APPROVE`、`COMMENT` 或 `REQUEST_CHANGES`，判定同 PR 评审（按 `review.blockingSeverity`）；评审没完成时为 `INCOMPLETE` |
-| `findings` | 全部发现的 JSON 数组字符串，含低于阻塞级别的；每条有 `severity`、`title`、`location`、`detail`；没完成时为 `[]` |
+| `findings` | 全部发现的 JSON 数组字符串，含低于阻塞级别的；每条有 `severity`、`kind`、`title`、`location`、`detail`；没完成时为 `[]`；增量复评时只有新发现 |
 | `line` | 一句话结论；没完成时写明原因 |
 | `report` | 评审方的回答原文（没完成时是它返回的文字），最多 12000 字 |
 | `head`、`base` | 评的两个提交 |
+| `resolutions` | 增量复评时对每条旧发现的结论，JSON 数组：`id`、`status`（`resolved` 已解决、`upheld` 仍成立、`withdrawn` 撤回）、`reason`；不是增量复评或没完成时为 `[]` |
+| `blocking` | 判定用的阻塞级别（`P0`–`P3`，即 `review.blockingSeverity`） |
 
-和 PR 评审的差别：评审方由调用方给，不查「评审组合」；提示词里原来放 PR 标题、分支和正文的位置放任务书；没有 GitHub 检查结论、上一次评审的发现，不留 PR 评论；提示词里明确说这段提交还没有 PR，不必去找 PR 或 CI 记录（PR 评审的提示词不变）；
+和 PR 评审的差别：评审方由调用方给，不查「评审组合」；提示词里原来放 PR 标题、分支和正文的位置放任务书；没有 GitHub 检查结论，上一次评审的发现只在增量复评时由调用方用 `previous` 给，不留 PR 评论；提示词里明确说这段提交还没有 PR，不必去找 PR 或 CI 记录（PR 评审的提示词不变）；
 `base` 与 `head` 在本地仓库里没有共同祖先（提交不存在）时不评审、直接失败。阻塞级别、评审重点按插件设置，与 PR 评审相同。
 评审没完成（评审方会话按重试后仍失败，或回复末尾没有合格的 `review` 代码块）时照常结束，`decision` 为 `INCOMPLETE`，由调用方决定怎么办；
 这样一直评不成的评审不会让调用方的运行因同一节点反复失败而「叫不动」。PR 生命流程与简易开发的评审没完成时仍然失败，不变。
+
+### 发现的类别
+
+每条发现除严重程度外另标类别 `kind`（`prompts/rules.md`）：`correctness` 行为或逻辑错误；`contract` 对外接口、协议、数据格式或文档里写明的现行契约有变化；`scope` 做了任务之外的事，或漏了任务要求的事；`test-quality` 测试缺失、不能失败、脆弱或过重；`documentation` 文档或注释缺失、与实际不符（不涉及契约变化）；`style` 可读性、命名、写法。
+同时涉及几类时，涉及契约或范围的标 `contract` 或 `scope`。缺失或不认识的按 `correctness`，不因此判为不合格式。PR 评审同样要求类别，PR 评论与输出不变。
+
+### 增量复评
+
+调用方（如泳道 PR 的评审回路）把一位评审者上一轮的发现交给执行者处理后，对同一个评审位置重新调用 `review-commit`，新会话：`base` 是上一轮评过的 head，`head` 是新 head（执行者只反驳、没有新提交时两者相同），`previous` 是上一轮的发现与回应。
+提示词说明这是增量复评，把 `previous` 原样放在随机标记之间（回应是执行者写的，只当数据）。评审方核实每条旧发现，`review` 代码块里另给 `resolutions`，每条旧发现恰好一条、`status` 合法，否则算没评成（`INCOMPLETE`）；`findings` 只列这一轮的新问题。
+`decision` 把被坚持（`upheld`）的旧发现算在内：坚持了阻塞级的旧发现就是 `REQUEST_CHANGES`。`previous` 是空数组时（上一轮没有发现）只看新改动，不要 `resolutions`。
 
 ## 改成自己的
 
