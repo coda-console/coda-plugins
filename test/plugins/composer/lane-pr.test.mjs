@@ -326,7 +326,7 @@ test('执行步骤失败后再跑：接回失败时已开的会话并发续跑�
   f.task('one', 'work', undefined, { exit: 1, silent: true }); f.run('execute', {}, 1);
   f.task('one', 'work', undefined, { exit: 1 }); f.run('execute', {}, 1);
   assert.deepEqual(f.calls('agent').map(c => c.args.includes('--commit')), [true, true], '没开成会话的失败，再跑新开');
-  assert.deepEqual(f.state().opening, { action: 'execute', session: 'worker-2', text: f.env.TASK });
+  assert.deepEqual(f.state().opening, { action: 'execute', session: 'worker-2', text: f.env.TASK, agent: { agent: 'codex' } });
   f.task('one', 'finished'); f.run('execute');
   const calls = f.calls('agent');
   assert.equal(calls.length, 3);
@@ -362,7 +362,7 @@ test('退回修改失败后再跑：接回同一会话并发续跑说明；第�
   f.task('one', 'first'); f.run('execute'); f.delivered();
   assert.equal(f.decide('revise', '删除多余封装'), 'revise');
   f.task('one', 'half', undefined, { exit: 1 }); f.run('revise', {}, 1);
-  assert.deepEqual(f.state().opening, { action: 'revise', session: 'worker-1', text: '删除多余封装' });
+  assert.deepEqual(f.state().opening, { action: 'revise', session: 'worker-1', text: '删除多余封装', agent: { agent: 'codex' } });
   f.task('one', 'done'); f.run('revise');
   const [, firstTry, rerun] = f.calls('agent');
   assert.deepEqual(firstTry.args.slice(0, -2), ['--continue', 'worker-1', '--json']);
@@ -379,7 +379,7 @@ test('coda-agent 退出 0 但输出不是完整回复：这一步失败、错误
   assert.match(f.run('execute', {}, 1).stderr, /session、branch、head[\s\S]*not json/);
   f.task('one', 'work', undefined, { garbage: JSON.stringify({ session: 'worker-1' }) });
   assert.match(f.run('execute', {}, 1).stderr, /worker-1/);
-  assert.deepEqual(f.state().opening, { action: 'execute', session: 'worker-1', text: f.env.TASK });
+  assert.deepEqual(f.state().opening, { action: 'execute', session: 'worker-1', text: f.env.TASK, agent: { agent: 'codex' } });
   assert.equal(f.state().executor, undefined);
   f.task('one', 'done'); f.run('execute');
   assert.deepEqual(f.calls('agent').at(-1).args.slice(0, 2), ['--continue', 'worker-1']);
@@ -393,7 +393,7 @@ test('换备用执行者失败后再跑：接回这次新开的备用会话，�
   const first = f.state().executor, backup = { EXECUTOR: JSON.stringify({ agent: 'backup' }) };
   assert.equal(f.decide('swap', '换人', 'true'), 'swap');
   f.task('redo', 'half', undefined, { exit: 1 }); f.run('swap', backup, 1);
-  assert.deepEqual({ ...f.state().opening, text: undefined }, { action: 'swap', session: 'worker-2', text: undefined });
+  assert.deepEqual({ ...f.state().opening, text: undefined }, { action: 'swap', session: 'worker-2', text: undefined, agent: { agent: 'backup' } });
   assert.ok(f.state().opening.text.includes('换人'));
   assert.equal(f.state().executor.session, first.session, '没成功前执行者不变');
   f.task('redo', 'done'); f.run('swap', backup);
@@ -478,8 +478,8 @@ test('接回会话失败：清掉记录，同一次里从泳道当前 head 新�
   f.run('execute', {}, 1);
   calls = f.calls('agent');
   assert.deepEqual(calls.slice(3).map(c => c.args.includes('--commit')), [false, true], '接回一次、新开一次，不再回退');
-  assert.deepEqual(f.state().opening, { action: 'execute', session: 'worker-5', text: f.env.TASK });
-  assert.equal(f.state().executor, undefined);
+  assert.deepEqual(f.state().opening, { action: 'execute', session: 'worker-5', text: f.env.TASK, agent: { agent: 'codex' } });
+  assert.equal(f.state().executor.session, 'worker-3', '动作没成功，执行者记录不动');
   f.task('one', 'done'); f.run('execute');
   assert.deepEqual(f.calls('agent').slice(5).map(c => c.args.slice(0, 2)), [['--continue', 'worker-5']]);
   assert.equal(f.state().executor.session, 'worker-5');
@@ -492,7 +492,7 @@ test('接回的会话输出不是完整回复，也按接不回新开', t => {
   f.task('one', 'again', undefined, { garbage: 'not json' });
   f.run('execute', {}, 1);
   assert.deepEqual(f.calls('agent').map(c => c.args.includes('--commit')), [true, false, true], '接回一次、新开一次，新开的也不完整就失败');
-  assert.equal(f.state().executor, undefined, '接不回的执行者记录已清');
+  assert.deepEqual(f.state().opening, { action: 'execute', text: f.env.TASK, agent: { agent: 'codex' } }, '接不回的会话已去掉，动作还在');
   f.task('one', 'again'); f.run('execute');
   assert.equal(f.calls('agent').length, 4);
   assert.ok(f.calls('agent')[3].args.includes('--commit'));
@@ -537,4 +537,27 @@ test('退回修改失败后运行从头重跑：按 opening 接回执行会话�
   for (const text of ['git status', '这次要你做的', '删除多余封装']) assert.ok(resumed.prompt.includes(text), text);
   assert.ok(!resumed.prompt.includes('输入框没反应'));
   assert.equal(f.state().opening, undefined);
+});
+
+test('换人接回失败、新开也失败后运行从头重跑：仍做换人，用 opening 记的备用执行者配置，不用 execute 的配置', t => {
+  const f = fixture(t);
+  f.task('code', 'first'); f.run('execute'); f.delivered();
+  const backup = { EXECUTOR: JSON.stringify({ agent: 'backup', model: 'm2' }) };
+  assert.equal(f.decide('swap', '换人', 'true'), 'swap');
+  f.task('redo', 'half', undefined, { exit: 1 }); f.run('swap', backup, 1);
+  // 从 execute 恢复：接回的备用会话接不回，回退新开用的是备用执行者配置；新开也没开成。
+  f.task('redo', 'half', undefined, { lost: true, exit: 1, silent: true }); f.run('execute', {}, 1);
+  const [continued, opened] = f.calls('agent').slice(-2);
+  assert.deepEqual(continued.args.slice(0, 2), ['--continue', 'worker-2']);
+  assert.ok(opened.args.includes('--commit') && opened.args.join(' ').includes('--agent backup --model m2') && !opened.args.includes('codex'), '回退新开用备用执行者配置');
+  assert.ok(opened.prompt.includes('换给你重做') && !opened.prompt.includes('git status'));
+  assert.deepEqual({ ...f.state().opening, text: undefined }, { action: 'swap', text: undefined, agent: { agent: 'backup', model: 'm2' } }, '会话去掉，动作和配置还在');
+  // 再从头重跑：仍做换人，没有会话就用 opening 的配置新开。
+  f.task('redo', 'done'); f.run('execute');
+  const redo = f.calls('agent').at(-1);
+  assert.ok(redo.args.includes('--commit') && redo.args.join(' ').includes('--agent backup --model m2') && !redo.args.includes('codex'));
+  assert.ok(redo.prompt.includes('换给你重做') && redo.prompt.includes('换人') && !redo.prompt.includes('git status'));
+  assert.equal(f.state().executor.session, 'worker-5');
+  assert.equal(f.state().opening, undefined);
+  assert.deepEqual(f.state().agent, { agent: 'backup', model: 'm2' }, '之后的退回修改用当前执行者');
 });

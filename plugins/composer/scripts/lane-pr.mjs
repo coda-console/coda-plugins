@@ -31,7 +31,7 @@ const syncText = (lane, files = []) => `泳道是 ${lane}，别的泳道 PR 可�
 const previous = action === 'execute' && existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : {};
 const state = action === 'execute'
   ? { lane: `lane/${env.LANE}`, branch: `lane-pr/${env.GITHUB_RUN_ID}`, title: env.TITLE, task: env.TASK, sync: env.SYNC === 'true', pr: '', feedback: '', returns: 0,
-    opening: previous.opening, executor: previous.executor }
+    opening: previous.opening, executor: previous.executor, agent: previous.agent }
   : JSON.parse(readFileSync(statePath, 'utf8'));
 const save = () => writeFileSync(statePath, JSON.stringify(state));
 const laneHead = () => { git('fetch', 'origin', state.lane); return git('rev-parse', 'FETCH_HEAD'); };
@@ -52,24 +52,26 @@ switch (action) {
   case 'swap':
   case 'revise': {
     const prompt = join(env.RUNNER_TEMP, 'task.md');
-    const task = state.sync ? `${state.task}\n\n${syncTask}` : state.task;
-    const own = action === 'revise' ? state.feedback : action === 'execute' ? task
-      : `${task}\n\n主 Agent 把这一项换给你重做：\n${state.feedback}\n\n上一位执行者的分支 ${state.executor.branch}、提交 ${state.executor.head} 在本机仓库可读，可以参考，也可以不用。`;
-    // 上一次没做完的执行会话（opening）按它自己的动作接回、配它自己的任务文字：从头重跑从 execute 开始，也不能把 swap、revise 的决定丢掉。
-    // 没有 opening 时，execute 接回已成功的执行会话，退回修改接回执行会话；换备用执行者一律新开。
-    const opening = state.opening && (action === 'execute' || state.opening.action === action) ? state.opening : undefined;
-    const kind = opening?.action ?? action;
-    const base = opening?.text ?? own;
-    // 退回修改本来就接回执行会话；它失败后再跑（opening 记着）才是续跑，要先核对现场。
-    const first = action === 'revise' && !opening;
-    const resumed = opening ? opening.session : action === 'swap' ? undefined : state.executor?.session;
-    if (first) { state.opening = { action, session: resumed, text: base }; save(); }
+    // opening 完整描述待完成的动作：{ action, text（任务文字）, agent（执行者配置）, session?（已有的会话）}。动作开始前写入，只有动作成功才清；
+    // 中途怎么失败都留着，从头重跑从 execute 开始也做它记的那个动作，不靠哪个字段有值来推断先后。
+    // 没有 opening 才新建：execute 接回已成功的执行会话，退回修改接回执行会话，换备用执行者新开。
+    let opening = state.opening && (action === 'execute' || state.opening.action === action) ? state.opening : undefined;
+    const created = !opening;
+    if (created) {
+      const task = state.sync ? `${state.task}\n\n${syncTask}` : state.task;
+      opening = state.opening = { action,
+        text: action === 'revise' ? state.feedback : action === 'execute' ? task
+          : `${task}\n\n主 Agent 把这一项换给你重做：\n${state.feedback}\n\n上一位执行者的分支 ${state.executor.branch}、提交 ${state.executor.head} 在本机仓库可读，可以参考，也可以不用。`,
+        agent: action === 'revise' ? state.agent : JSON.parse(env.EXECUTOR), session: action === 'swap' ? undefined : state.executor?.session };
+      save();
+    }
+    const kind = opening.action, resumed = opening.session;
     const talk = (session, text) => {
       writeFileSync(prompt, `${instructions}\n\n${text}\n`);
       const args = session ? ['--continue', session] : ['--commit', laneHead(), '--title', state.title];
       // 执行者是一组 Agent 选择（流程参数的 agent 类型）：没选的模型、强度、模式用 Agent 的默认值。
       if (!session) {
-        const { options = {}, ...chosen } = JSON.parse(env.EXECUTOR);
+        const { options = {}, ...chosen } = opening.agent;
         for (const key of ['agent', 'model', 'effort', 'mode']) if (chosen[key]) args.push(`--${key}`, chosen[key]);
         for (const [id, value] of Object.entries(options)) args.push('--option', `${id}=${value}`);
       }
@@ -81,27 +83,30 @@ switch (action) {
       // 退出 0 必须给出完整回复：否则 gate 读执行者时才崩，恢复也一直重复同一个错。
       return { result, reply, failed: result.status !== 0 || !reply?.session || !reply.branch || !reply.head };
     };
-    let attempt = talk(resumed, resumed && !first ? `${resumeText}\n\n${kind === 'revise' ? '这次要你做的' : '原任务'}：\n${base}` : base);
-    // Coda 侧的流程 Agent 步骤已在同一会话里续跑可恢复的失败，coda-agent 失败就是终局：接不回的记录清掉，新开一次（只一次）。
+    // 退回修改本来就接回执行会话；它失败后再跑（opening 记着）才是续跑，要先核对现场。
+    let attempt = talk(resumed, resumed && !(created && action === 'revise') ? `${resumeText}\n\n${kind === 'revise' ? '这次要你做的' : '原任务'}：\n${opening.text}` : opening.text);
+    // Coda 侧的流程 Agent 步骤已在同一会话里续跑可恢复的失败，coda-agent 失败就是终局：接不回的会话从 opening 去掉，
+    // 同一次里用 opening 记的执行者新开一次（只一次），动作和任务文字不变。
     // 退回修改必须在原会话里改（新开的会话没有已交付的提交和审查意见），接不回就按失败处理。
     if (attempt.failed && resumed && kind !== 'revise') {
       console.error(`接回会话 ${resumed} 失败（${attempt.result.status !== 0 ? `coda-agent 退出码 ${attempt.result.status}` : '输出不是完整回复'}），改为从泳道当前 head 新开会话。`);
-      if (opening) delete state.opening; else delete state.executor;
+      delete opening.session;
       save();
-      attempt = talk(undefined, base);
+      attempt = talk(undefined, opening.text);
     }
     const { result, reply } = attempt;
     if (attempt.failed) {
       if (kind === 'revise') console.error(`退回修改接不回会话 ${resumed}：必须在原会话里改，不新开会话，这一步按失败处理。`);
-      else if (reply?.session) { state.opening = { action: kind, session: reply.session, text: base }; save(); }
+      if (reply?.session) { opening.session = reply.session; save(); }
       if (result.status === 0) console.error(`coda-agent 退出 0，但输出不是含 session、branch、head 的 JSON：${result.stdout.slice(0, 300)}`);
       process.exit(result.status || 1);
     }
     state.executor = reply;
+    state.agent = opening.agent;
     delete state.opening;
     state.feedback = '';
     // 新会话的连续检查失败重新计数。
-    if (action !== 'revise') state.failures = [];
+    if (kind !== 'revise') state.failures = [];
     save();
     break;
   }
