@@ -118,8 +118,8 @@ console.log(JSON.stringify({ session, branch: null, head: git('rev-parse', 'HEAD
   return { root, work, origin, env, git, run, state, calls, remote, land, answer, progress, reason, advanceMain, task, agentCalls };
 }
 
-async function definition() {
-  const { root, problem } = await readWorkflow(workflow, 'develop'); assert.ok(!problem, problem);
+async function definition(source = workflow) {
+  const { root, problem } = await readWorkflow(source, 'develop'); assert.ok(!problem, problem);
   const process = root.rootElements.find(e => e.$type === 'bpmn:Process');
   const subs = process.flowElements.filter(e => e.$type === 'bpmn:SubProcess');
   const elements = [...process.flowElements, ...subs.flatMap(s => s.flowElements)];
