@@ -12,8 +12,9 @@ import { evaluate } from 'feelin';
 
 const script = fileURLToPath(new URL('../../../plugins/composer/scripts/develop.mjs', import.meta.url));
 const workflow = readFileSync(new URL('../../../plugins/composer/.coda/workflows/develop.bpmn', import.meta.url), 'utf8');
-// main 上 10.0.0 的定义：正在跑的需求运行按它的快照走，脚本取当前装着的版本。
-const old = readFileSync(new URL('./fixtures/develop-10.0.0.bpmn', import.meta.url), 'utf8');
+// 已发布的定义（10.0.0、10.1.4）：正在跑的需求运行按它的快照走，脚本取当前装着的版本。
+const olds = ['10.0.0', '10.1.4'].map(version => ({ version, source: readFileSync(new URL(`./fixtures/develop-${version}.bpmn`, import.meta.url), 'utf8') }));
+const old = olds[0].source;
 const manifest = JSON.parse(readFileSync(new URL('../../../plugins/composer/package.json', import.meta.url), 'utf8'));
 const PR = 'https://github.com/example/fixture/pull/1';
 
@@ -805,7 +806,7 @@ test('新流程定义：提交验收先跟上目标分支，再开 PR；整体�
 const steps = source => [...source.matchAll(/<scriptTask id="([^"]+)"[\s\S]*?<\/scriptTask>/g)].map(([text, id]) => ({ id,
   action: /develop\.mjs" ([\w-]+)</.exec(text)[1], env: [...text.matchAll(/<coda:env name="(\w+)"/g)].map(m => m[1]), outputs: [...text.matchAll(/<coda:output name="(\w+)"/g)].map(m => m[1]) }));
 
-test('10.0.0 的流程定义：它引用的每个动作新脚本都还有，env 与输出不变，照它的顺序走得通', t => {
+for (const { version, source: old } of olds) test(`${version} 的流程定义：它引用的每个动作新脚本都还有，env 与输出不变，照它的顺序走得通`, t => {
   const before = steps(old), now = steps(workflow), source = readFileSync(script, 'utf8');
   assert.deepEqual([...new Set(before.map(s => s.action))], ['brief', 'lane', 'resume', 'progress', 'paused', 'pr', 'check-failed', 'checks-passed', 'github-checks', 'reviewed', 'review',
     'preview', 'device', 'delivery', 'approval', 'merge', 'inputs']);

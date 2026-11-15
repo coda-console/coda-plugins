@@ -12,8 +12,9 @@ import { evaluate } from 'feelin';
 
 const script = fileURLToPath(new URL('../../../plugins/composer/scripts/lane-pr.mjs', import.meta.url));
 const workflow = readFileSync(new URL('../../../plugins/composer/.coda/workflows/lane-pr.bpmn', import.meta.url), 'utf8');
-// 10.0.0 的流程定义：在途运行按开工时的快照走，脚本却按当前装着的版本取，它引用的动作和输入输出都得留着。
-const old = readFileSync(new URL('./fixtures/lane-pr-10.0.0.bpmn', import.meta.url), 'utf8');
+// 已发布的流程定义（10.0.0、10.1.4）：在途运行按开工时的快照走，脚本却按当前装着的版本取，它引用的动作和输入输出都得留着。
+const olds = ['10.0.0', '10.1.4'].map(version => ({ version, source: readFileSync(new URL(`./fixtures/lane-pr-${version}.bpmn`, import.meta.url), 'utf8') }));
+const old = olds[0].source;
 const PR = 'https://github.com/example/fixture/pull/7';
 
 function fixture(t, { sync = false } = {}) {
@@ -635,7 +636,7 @@ function oldSource() { return old; }
 const steps = source => [...source.matchAll(/<scriptTask id="([^"]+)"[\s\S]*?<\/scriptTask>/g)].map(([text, id]) => ({ id,
   action: /lane-pr\.mjs" ([\w-]+)</.exec(text)[1], env: [...text.matchAll(/<coda:env name="(\w+)"/g)].map(m => m[1]), outputs: [...text.matchAll(/<coda:output name="(\w+)"/g)].map(m => m[1]) }));
 
-test('10.0.0 的流程定义：它引用的每个动作新脚本都还有，env 与输出不变，照它的顺序走得通', t => {
+for (const { version, source: old } of olds) test(`${version} 的流程定义：它引用的每个动作新脚本都还有，env 与输出不变，照它的顺序走得通`, t => {
   const before = steps(old), now = steps(workflow), source = readFileSync(script, 'utf8');
   assert.deepEqual(before.map(s => s.action), ['execute', 'gate', 'gate-failed', 'gate-passed', 'review', 'decide', 'revise', 'swap', 'land', 'abandon']);
   for (const step of before) {
