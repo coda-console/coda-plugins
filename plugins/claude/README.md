@@ -20,7 +20,9 @@ Claude Code 自己的重试（`system/api_retry`，登记为隐藏）发生在�
 | 上游：5xx、408、`overloaded_error`、529、`api_error`；Claude Code 的 `overloaded`、`server_error` 类别 | `service_unavailable` |
 | Cloudflare 的拦截或挑战页（状态码加 `cloudflare`、`cf-ray`、`Just a moment`、`Attention Required`），先于「认证失败」判断：Claude Code 把它的 403 页报成 `authentication_failed`，这里不再当认证失败 | `service_unavailable` |
 | 登录凭据明确失效：`Failed to authenticate: OAuth session expired and could not be refreshed`（Claude Code 自己的文案，真实样本）；类别须是 `authentication_failed` 或没有类别，且不是用量、服务故障 | `auth_required`，`login: "Anthropic OAuth"` |
-| API key 错或缺失（`Invalid API key`）、权限不足、仅有 401 或 403、上下文超长、账单、请求参数错误、证书错误（`SSL certificate has expired` 等）、普通 429、被中止 | 不标 |
+| API key 错或缺失（`Invalid API key`）、权限不足、仅有 401 或 403、上下文超长、账单、请求参数错误、证书错误、普通 429、被中止 | 不标 |
+
+证书与 TLS 配置错误（`SSL certificate`、`SSL error (`、`self-signed certificate`、`certificate verification`、`unable to verify the first certificate`，以及 `CERT_HAS_EXPIRED`、`DEPTH_ZERO_SELF_SIGNED_CERT` 这类 Node 证书错误码）先按文字排除，**即使 Claude Code 把它们归在 `server_error`**：它把连接错误合成为 `Unable to connect to API: <原因>` 并标 `server_error`，代理拦截 TLS、没配 `NODE_EXTRA_CA_CERTS` 这类永久性配置错误重试也不会好，照普通错误报，完整原因留给用户。
 
 `auth_required` 以普通执行错误（-32603）报，不带 `input`、`retryAfterMs`、`resetAt`。
 

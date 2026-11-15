@@ -27,10 +27,11 @@ const syncText = (lane, files = []) => `泳道是 ${lane}，别的泳道 PR 可�
 跑和冲突相关的测试后提交，只做这件事。回报冲突了哪些文件、各自怎么解决的、跑了什么。
 泳道没有新提交时，直接回报不需要合并。`;
 
-// 执行（execute）重跑时，上一次尝试开了却没做完的执行会话（opening）要留下来接着用。
+// 执行（execute）重跑时，上一次尝试开了却没做完的执行会话（opening）要留下来接着用；上一次已经成功的（executor），运行从头重跑时也接回它，不另开。
+const previous = action === 'execute' && existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : {};
 const state = action === 'execute'
   ? { lane: `lane/${env.LANE}`, branch: `lane-pr/${env.GITHUB_RUN_ID}`, title: env.TITLE, task: env.TASK, sync: env.SYNC === 'true', pr: '', feedback: '', returns: 0,
-    opening: existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')).opening : undefined }
+    opening: previous.opening, executor: previous.executor }
   : JSON.parse(readFileSync(statePath, 'utf8'));
 const save = () => writeFileSync(statePath, JSON.stringify(state));
 const laneHead = () => { git('fetch', 'origin', state.lane); return git('rev-parse', 'FETCH_HEAD'); };
@@ -54,12 +55,15 @@ switch (action) {
     const task = state.sync ? `${state.task}\n\n${syncTask}` : state.task;
     let text = action === 'revise' ? state.feedback : action === 'execute' ? task
       : `${task}\n\n主 Agent 把这一项换给你重做：\n${state.feedback}\n\n上一位执行者的分支 ${state.executor.branch}、提交 ${state.executor.head} 在本机仓库可读，可以参考，也可以不用。`;
-    const resumed = action !== 'revise' && state.opening?.action === action ? state.opening.session : undefined;
-    if (resumed) text = `${resumeText}\n\n原任务：\n${text}`;
+    // 退回修改本来就接回执行会话；它失败后再跑（opening 记着）才是续跑，要先核对现场。
+    const interrupted = state.opening?.action === action;
+    const resumed = action === 'revise' ? state.executor.session : interrupted ? state.opening.session : action === 'execute' ? state.executor?.session : undefined;
+    if (resumed && (action !== 'revise' || interrupted)) text = `${resumeText}\n\n${action === 'revise' ? '这次要你做的' : '原任务'}：\n${text}`;
+    if (action === 'revise' && !interrupted) { state.opening = { action, session: resumed }; save(); }
     writeFileSync(prompt, `${instructions}\n\n${text}\n`);
-    const args = action === 'revise' ? ['--continue', state.executor.session] : resumed ? ['--continue', resumed] : ['--commit', laneHead(), '--title', state.title];
+    const args = resumed ? ['--continue', resumed] : ['--commit', laneHead(), '--title', state.title];
     // 执行者是一组 Agent 选择（流程参数的 agent 类型）：没选的模型、强度、模式用 Agent 的默认值。
-    if (action !== 'revise' && !resumed) {
+    if (!resumed) {
       const { options = {}, ...chosen } = JSON.parse(env.EXECUTOR);
       for (const key of ['agent', 'model', 'effort', 'mode']) if (chosen[key]) args.push(`--${key}`, chosen[key]);
       for (const [id, value] of Object.entries(options)) args.push('--option', `${id}=${value}`);

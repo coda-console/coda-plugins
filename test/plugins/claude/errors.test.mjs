@@ -112,6 +112,13 @@ test('what is not the service failing stays unmarked: keys, permission, context,
     ['Unable to connect to API: SSL certificate has expired', {}],
     ['Unable to connect to API: SSL certificate hostname mismatch', {}],
     ['MCP error -32000: Connection closed', {}],
+    // Claude Code files its connection errors, certificates included, under server_error: the words rule the certificate out first.
+    ['Unable to connect to API: SSL certificate has expired', { error: 'server_error' }],
+    ['Unable to connect to API: self-signed certificate in certificate chain', { error: 'server_error' }],
+    ['Unable to connect to API: unable to verify the first certificate', { error: 'server_error' }],
+    ['Unable to connect to API: SSL error (SELF_SIGNED_CERT_IN_CHAIN)', { error: 'server_error' }],
+    ['Unable to connect to API: certificate verification failed', { error: 'overloaded' }],
+    ['Unable to connect to API: DEPTH_ZERO_SELF_SIGNED_CERT', { error: 'server_error' }],
     // A failure the category says is not the service's, even with network words in its text.
     ['Invalid API key (fetch failed to reach the key helper)', { error: 'authentication_failed' }],
   ]) assert.equal(claudeFailure(message, facts).data, undefined, message);
@@ -119,6 +126,13 @@ test('what is not the service failing stays unmarked: keys, permission, context,
   for (const [message, facts] of [["You've hit your session limit · resets 1am (Asia/Singapore)", { error: 'rate_limit' }],
     ['Your credit balance is too low to access the Anthropic API', { error: 'billing_error' }]])
     assert.deepEqual(claudeFailure(message, facts).data._meta.coda.failure, { kind: 'quota_exhausted' }, message);
+});
+
+test('a server_error that is no certificate problem is still service_unavailable, with the whole reason kept', () => {
+  for (const message of ['Unable to connect to API: ECONNRESET', 'Unable to connect to API: socket hang up', 'API Error: 500 Internal Server Error'])
+    assert.equal(claudeFailure(message, { error: 'server_error' }).data._meta.coda.failure.kind, 'service_unavailable', message);
+  const message = 'Unable to connect to API: self-signed certificate in certificate chain';
+  assert.equal(claudeFailure(message, { error: 'server_error' }).message, message);
 });
 
 test('an OAuth login that is gone is auth_required; a bad key, missing permission or a bare 401 or 403 is not', () => {
