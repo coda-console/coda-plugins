@@ -62,7 +62,8 @@ switch (action) {
       opening = state.opening = { action,
         text: action === 'revise' ? state.feedback : action === 'execute' ? task
           : `${task}\n\n主 Agent 把这一项换给你重做：\n${state.feedback}\n\n上一位执行者的分支 ${state.executor.branch}、提交 ${state.executor.head} 在本机仓库可读，可以参考，也可以不用。`,
-        agent: action === 'revise' ? state.agent : JSON.parse(env.EXECUTOR), session: action === 'swap' ? undefined : state.executor?.session };
+        // 从头重跑沿用当前执行者（换过备用执行者后 state.agent 是备用的）；只有首次执行还没有 executor，才读流程参数。
+        agent: action === 'revise' || (action === 'execute' && state.executor) ? state.agent : JSON.parse(env.EXECUTOR), session: action === 'swap' ? undefined : state.executor?.session };
       save();
     }
     const kind = opening.action, resumed = opening.session;
@@ -102,12 +103,12 @@ switch (action) {
       if (result.status === 0) console.error(`coda-agent 退出 0，但输出不是含 session、branch、head 的 JSON：${result.stdout.slice(0, 300)}`);
       process.exit(result.status || 1);
     }
+    // 连续检查失败只在这次成功的会话是新开的时重新计数；接回已审查过的执行会话（退回修改、从头重跑）的计数照旧。
+    if (!opening.session || opening.session !== state.executor?.session) state.failures = [];
     state.executor = reply;
     state.agent = opening.agent;
     delete state.opening;
     state.feedback = '';
-    // 新会话的连续检查失败重新计数。
-    if (kind !== 'revise') state.failures = [];
     save();
     break;
   }
@@ -190,11 +191,15 @@ switch (action) {
     output('commit', commit);
     break;
   }
-  case 'abandon':
-    // 关 PR 与删分支分开：gh 在 PR 已关闭时不再删分支，第一次删分支失败后重跑要能补上。
-    gh('pr', 'close', state.pr, '--repo', repoOf(state.pr));
-    if (git('ls-remote', '--heads', 'origin', state.branch)) git('push', 'origin', '--delete', state.branch);
+  case 'abandon': {
+    // 这一步在没有检出的空目录里跑（没有 .git、没有 origin），只用 gh。
+    // 关 PR 与删分支分开：gh 在 PR 已关闭时不再删分支，第一次删分支失败后重跑要能补上；分支已不在就跳过。
+    const repo = repoOf(state.pr), [host, owner, name] = repo.split('/'), ref = `heads/${state.branch}`;
+    gh('pr', 'close', state.pr, '--repo', repo);
+    const exists = gh('api', '--hostname', host, `repos/${owner}/${name}/git/matching-refs/${ref}`, '--jq', `.[] | select(.ref == "refs/${ref}") | .ref`);
+    if (exists) gh('api', '--hostname', host, '--method', 'DELETE', `repos/${owner}/${name}/git/refs/${ref}`);
     output('pr', state.pr);
     break;
+  }
   default: throw new Error(`未知泳道 PR 步骤：${action}`);
 }
