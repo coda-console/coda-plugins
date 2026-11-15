@@ -124,7 +124,7 @@ OpenCode 把失败的 `session/prompt` 答成 -32603 `Internal error: <原因>`�
 都是会自己好的故障，OpenCode 已重试过，报 `service_unavailable`、`input: accepted`；这条回执不带 `retryAfterMs`（OpenCode 没有说等多久）。
 长等待路径里的 429 同理：没有额度原文就报 `service_unavailable`，带 OpenCode 实际安排的 `retryAfterMs`。
 认证（`provider.auth`，OpenCode 答 `auth_required`）、内容过滤、请求无效（含上下文超长与参数错误）、
-未知服务与路由、不支持的操作、输出无效等失败不带类别；OAuth 过期待协议的 `auth_required` 类别发布后再做。WorkBuddy 经 OpenCode 使用，没有单独的插件。
+未知服务与路由、不支持的操作、输出无效等失败不带类别。登录凭据过期（OAuth 刷新失败）由 Claude、Codex、Kimi 报 `auth_required`（协议 6.2.0 的类别），Coda 提醒用户重新登录，登录后续上。WorkBuddy 经 OpenCode 使用，没有单独的插件。
 
 OpenCode 的原生子会话经 ACP 的 `opencode/child-session-updates` 能力接入（入口 `agent/children.mjs`，核对 OpenCode 2.1.4）：
 `opencode/session/child_update` 的创建与运行状态登记成 `_coda/wait`，带原生 `childSessionId`；子会话的回复、思考与工具调用各归自己的过程，
