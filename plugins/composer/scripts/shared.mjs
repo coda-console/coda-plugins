@@ -27,9 +27,9 @@ export const instructions = `你是这次开发流程的执行者，自己完成
 run-held 和流程运行的结果会自己送回，不要另起 Monitor 或后台任务去盯日志。
 回报改了什么、为什么、实际跑了哪些验证及未验证部分。`;
 
-// 一组 Agent 选择（流程参数的 agent 类型，JSON）转成 coda-agent 开新会话的参数：没选的模型、强度、模式用 Agent 的默认值。
-export const agentArgs = json => {
-  const { options = {}, ...chosen } = JSON.parse(json), args = [];
+// 一组 Agent 选择（流程参数的 agent 类型）转成 coda-agent 开新会话的参数：没选的模型、强度、模式用 Agent 的默认值。
+export const agentArgs = ({ options = {}, ...chosen }) => {
+  const args = [];
   for (const key of ['agent', 'model', 'effort', 'mode']) if (chosen[key]) args.push(`--${key}`, chosen[key]);
   for (const [id, value] of Object.entries(options)) args.push('--option', `${id}=${value}`);
   return args;

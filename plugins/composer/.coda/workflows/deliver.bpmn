@@ -58,7 +58,7 @@
       <extensionElements><coda:choice id="start" name="开始交付" primary="true" /><coda:choice id="stop" name="放弃" /></extensionElements>
     </userTask>
     <sequenceFlow id="confirm-result-flow" sourceRef="confirm" targetRef="confirm-result" />
-    <scriptTask id="confirm-result" name="记录成员 PR" scriptFormat="bash" coda:timeout="5">
+    <scriptTask id="confirm-result" name="记录成员 PR" scriptFormat="bash" coda:timeout="5" coda:retry="3">
       <extensionElements>
         <coda:env name="RESPONSE" value="=confirm" /><coda:env name="DEVICES" value="=inputs.devices" />
         <coda:output name="route" /><coda:output name="members" /><coda:output name="round" /><coda:output name="commit" />

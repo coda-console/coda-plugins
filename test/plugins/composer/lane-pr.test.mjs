@@ -51,18 +51,24 @@ const task = JSON.parse(readFileSync(join(root, 'agent-task'), 'utf8'));
 const calls = JSON.parse(readFileSync(join(root, 'agent-calls'), 'utf8'));
 const prompt = readFileSync(value('--prompt-file'), 'utf8');
 calls.push({ args, prompt }); writeFileSync(join(root, 'agent-calls'), JSON.stringify(calls));
-if (task.exit) process.exit(task.exit);
+if (task.exit && task.silent) process.exit(task.exit);
 const continued = args.includes('--continue');
+// lost：记下的会话接不回（被删了），--continue 一律非零退出、没有输出。
+if (task.lost && continued) process.exit(1);
 const session = continued ? value('--continue') : 'worker-' + calls.length;
 const branch = 'agent/' + session, cwd = join(root, session);
 const git = (...params) => execFileSync('git', params, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 if (!continued) execFileSync('git', ['worktree', 'add', '-b', branch, cwd, value('--commit')], { stdio: 'pipe' });
+// garbage：会话开成了，但标准输出不是完整回复。
+if (task.garbage) { console.log(task.garbage); process.exit(0); }
 if (task.merge) {
   git('fetch', 'origin', task.merge);
   spawnSync('git', ['merge', '--no-commit', 'FETCH_HEAD'], { cwd, encoding: 'utf8' });
 }
 if (!task.noCommit) { writeFileSync(join(cwd, task.file), task.answer); git('add', '-A'); git('commit', '-qm', task.answer); }
+// 会话失败时 coda-agent 照样在标准输出给出会话（工作已提交）、以非零退出；silent 是连会话都没开成。
 console.log(JSON.stringify({ session, branch, head: git('rev-parse', 'HEAD'), answer: task.answer }));
+process.exit(task.exit ?? 0);
 `);
   install('gh', String.raw`
 const { readFileSync, writeFileSync } = require('node:fs');
@@ -72,7 +78,17 @@ const calls = JSON.parse(readFileSync(join(root, 'gh-calls'), 'utf8'));
 const body = args.includes('--body-file') ? readFileSync(args[args.indexOf('--body-file') + 1], 'utf8') : null;
 calls.push({ args, body, thread: process.env.CODA_THREAD_ID ?? null }); writeFileSync(join(root, 'gh-calls'), JSON.stringify(calls));
 const state = () => JSON.parse(readFileSync(join(process.env.CODA_ARTIFACTS, 'lane-pr.json'), 'utf8'));
-if (args[1] === 'create') console.log('${PR}');
+// gh api 只认放弃用到的两种：按分支名查 matching-refs（--jq 精确比对后只输出存在的 ref）、DELETE 引用；分支在不在以假的 origin 为准。
+if (args[0] === 'api') {
+  const path = args.find(arg => arg.startsWith('repos/')), method = args.includes('--method') ? args[args.indexOf('--method') + 1] : 'GET';
+  if (args[args.indexOf('--hostname') + 1] !== 'github.com') process.exit(2);
+  const origin = join(root, 'origin.git'), ref = 'refs/' + path.replace(/^repos\/[^/]+\/[^/]+\/git\/(?:matching-refs|refs)\//, '');
+  const git = (...params) => require('node:child_process').spawnSync('git', ['--git-dir', origin, ...params], { encoding: 'utf8' });
+  const exists = git('rev-parse', '--verify', '-q', ref).status === 0;
+  if (method === 'DELETE') process.exit(exists ? git('update-ref', '-d', ref).status : 1);
+  if (exists) console.log(ref);
+}
+else if (args[1] === 'create') console.log('${PR}');
 else if (args[1] === 'list') { if (process.env.OPEN_PR) console.log(process.env.OPEN_PR); }
 else if (args[1] === 'merge') { if (process.env.MERGE_EXIT) process.exit(Number(process.env.MERGE_EXIT)); }
 else if (args[1] === 'view' && args.includes('state,headRefOid,mergeCommit')) console.log(JSON.stringify({ state: process.env.PR_STATE || 'OPEN', headRefOid: state().executor.head, mergeCommit: { oid: 'f'.repeat(40) } }));
@@ -82,10 +98,16 @@ else if (args[1] === 'view') console.log('f'.repeat(40));
   writeFileSync(join(root, 'agent-calls'), '[]'); writeFileSync(join(root, 'gh-calls'), '[]');
   const state = () => JSON.parse(readFileSync(join(artifacts, 'lane-pr.json'), 'utf8'));
   const calls = name => JSON.parse(readFileSync(join(root, `${name}-calls`), 'utf8'));
-  const task = (file, answer, merge) => writeFileSync(join(root, 'agent-task'), JSON.stringify({ file, answer, merge }));
+  const task = (file, answer, merge, fail = {}) => writeFileSync(join(root, 'agent-task'), JSON.stringify({ file, answer, merge, ...fail }));
+  // 步骤的检出方式照流程定义：coda:checkout="false" 的步骤在没有 .git、没有 origin 的空目录里跑，一用 git 就失败。
+  const empty = join(root, 'empty'); mkdirSync(empty);
+  const noCheckout = new Set([...workflow.matchAll(/<scriptTask\b[^>]*>[\s\S]*?<\/scriptTask>/g)]
+    .filter(([task]) => /coda:checkout="false"/.test(task.slice(0, task.indexOf('>'))))
+    .map(([task]) => task.match(/lane-pr\.mjs" ([\w-]+)</)[1]));
   const run = (action, extra = {}, expected = 0) => {
     writeFileSync(env.GITHUB_OUTPUT, '');
-    const result = spawnSync(process.execPath, [script, action], { cwd: work, env: { ...env, ...extra }, encoding: 'utf8' });
+    const cwd = noCheckout.has(action) ? empty : work;
+    const result = spawnSync(process.execPath, [script, action], { cwd, env: { ...env, ...(cwd === empty && { GIT_CEILING_DIRECTORIES: root }), ...extra }, encoding: 'utf8' });
     assert.equal(result.status, expected, result.stderr);
     const outputs = Object.fromEntries([...readFileSync(env.GITHUB_OUTPUT, 'utf8').matchAll(/(\w+)<<([^\n]+)\n([\s\S]*?)\n\2\n/g)].map(([, key, , value]) => [key, value]));
     return { ...result, outputs };
@@ -291,12 +313,57 @@ test('审查前检查失败自动续作同一会话，连续三次交回主 Agen
   assert.equal(f.run('review').outputs.checks, passed.checks);
 });
 
-test('放弃：关闭 PR 并删除分支，泳道不动', t => {
+test('放弃（在没有检出的空目录里只用 gh）：关闭 PR，分支在就用 gh api 删除，泳道不动', t => {
   const f = fixture(t); f.task('code', 'first'); f.run('execute'); f.delivered();
   const laneHead = f.remote('lane/req-1');
+  assert.ok(f.remote('lane-pr/pr-run-1'));
   assert.deepEqual(f.run('abandon').outputs, { pr: PR });
-  assert.deepEqual(f.calls('gh').at(-1).args, ['pr', 'close', PR, '--repo', 'github.com/example/fixture', '--delete-branch']);
+  const [close, find, remove] = f.calls('gh').slice(-3).map(c => c.args);
+  assert.deepEqual(close, ['pr', 'close', PR, '--repo', 'github.com/example/fixture']);
+  assert.deepEqual(find, ['api', '--hostname', 'github.com', 'repos/example/fixture/git/matching-refs/heads/lane-pr/pr-run-1',
+    '--jq', '.[] | select(.ref == "refs/heads/lane-pr/pr-run-1") | .ref']);
+  assert.deepEqual(remove, ['api', '--hostname', 'github.com', '--method', 'DELETE', 'repos/example/fixture/git/refs/heads/lane-pr/pr-run-1']);
+  assert.equal(f.remote('lane-pr/pr-run-1'), '', '分支已删');
   assert.equal(f.remote('lane/req-1'), laneHead);
+});
+
+test('放弃重跑：PR 已关闭、分支还在时补删分支；分支已不在时跳过删除、照样成功', t => {
+  const f = fixture(t); f.task('code', 'first'); f.run('execute'); f.delivered();
+  f.run('abandon');
+  f.git('push', '-q', 'origin', `${f.state().executor.head}:refs/heads/lane-pr/pr-run-1`);
+  assert.ok(f.remote('lane-pr/pr-run-1'));
+  assert.deepEqual(f.run('abandon').outputs, { pr: PR });
+  assert.equal(f.remote('lane-pr/pr-run-1'), '');
+  const deletes = () => f.calls('gh').filter(c => c.args.includes('DELETE')).length;
+  assert.equal(deletes(), 2);
+  assert.deepEqual(f.run('abandon').outputs, { pr: PR });
+  assert.equal(deletes(), 2, '分支已不在就不再删');
+});
+
+test('换备用执行者成功后运行从头重跑 execute：接回备用会话，当前执行者仍是备用；接不回时回退新开也用备用；检查失败计数只在新开会话时清零', t => {
+  const f = fixture(t);
+  f.task('code', 'first'); f.run('execute'); f.run('gate'); f.run('gate-failed');
+  assert.equal(f.state().failures.length, 1);
+  const backup = { agent: 'backup', model: 'm2' };
+  assert.equal(f.decide('swap', '换人', 'true'), 'swap');
+  f.task('redo', 'redo'); f.run('swap', { EXECUTOR: JSON.stringify(backup) });
+  const session = f.state().executor.session;
+  assert.deepEqual(f.state().failures, [], '新开的备用会话重新计数');
+  f.run('gate'); f.run('gate-failed');
+  // 从头重跑 execute，流程参数仍是原执行者；有备用会话就接回它。
+  f.task('redo', 'more'); f.run('execute');
+  assert.deepEqual(f.calls('agent').at(-1).args.slice(0, 2), ['--continue', session]);
+  assert.equal(f.state().executor.session, session);
+  assert.deepEqual(f.state().agent, backup, '换人的决定不被撤回');
+  assert.equal(f.state().failures.length, 1, '接回同一会话，检查失败计数保留');
+  // 备用会话接不回（回复里没有 session）：回退新开用的是备用执行者，新会话重新计数。
+  f.task('redo', 'fresh', undefined, { lost: true }); f.run('execute');
+  const [continued, opened] = f.calls('agent').slice(-2);
+  assert.deepEqual(continued.args.slice(0, 2), ['--continue', session]);
+  assert.ok(opened.args.includes('--commit') && opened.args.join(' ').includes('--agent backup --model m2') && !opened.args.includes('codex'));
+  assert.notEqual(f.state().executor.session, session);
+  assert.deepEqual(f.state().agent, backup);
+  assert.deepEqual(f.state().failures, []);
 });
 
 test('审查材料带上评审者的结果，只取评这次交付的', t => {
@@ -314,6 +381,94 @@ test('审查材料带上评审者的结果，只取评这次交付的', t => {
   ].join('\n\n') + `\n评审原文：${path}`);
   f.task('code', 'second'); f.run('revise');
   assert.equal(f.run('review', { REVIEWS: JSON.stringify(reviews) }).outputs.reviews, '', '评的不是这次交付时不带');
+});
+
+test('执行步骤失败后再跑：接回失败时已开的会话并发续跑说明，不另开；连会话都没开成时才新开', t => {
+  const f = fixture(t);
+  f.task('one', 'work', undefined, { exit: 1, silent: true }); f.run('execute', {}, 1);
+  f.task('one', 'work', undefined, { exit: 1 }); f.run('execute', {}, 1);
+  assert.deepEqual(f.calls('agent').map(c => c.args.includes('--commit')), [true, true], '没开成会话的失败，再跑新开');
+  assert.deepEqual(f.state().opening, { action: 'execute', session: 'worker-2', text: f.env.TASK, agent: { agent: 'codex' } });
+  f.task('one', 'finished'); f.run('execute');
+  const calls = f.calls('agent');
+  assert.equal(calls.length, 3);
+  assert.deepEqual(calls[2].args.slice(0, -2), ['--continue', 'worker-2', '--json']);
+  for (const text of ['git status', 'git log', '不要从头重做', '输入框没反应', '执行者']) assert.ok(calls[2].prompt.includes(text), text);
+  assert.equal(f.state().executor.session, 'worker-2');
+  assert.equal(f.state().opening, undefined, '成功后不再接');
+  assert.deepEqual(f.state().failures, []);
+  f.delivered();
+  assert.equal(f.remote('lane-pr/pr-run-1'), f.state().executor.head, '接回会话做完的提交照常推送');
+});
+
+test('运行从头重跑（上次执行已成功）：接回同一执行会话并发续跑说明，不新开；换备用执行者仍新开', t => {
+  const f = fixture(t);
+  f.task('one', 'first'); f.run('execute');
+  const first = f.state().executor;
+  f.task('one', 'again'); f.run('execute');
+  const calls = f.calls('agent');
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[1].args.slice(0, -2), ['--continue', first.session, '--json']);
+  for (const text of ['git status', 'git log', '不要从头重做', '输入框没反应']) assert.ok(calls[1].prompt.includes(text), text);
+  assert.equal(f.state().executor.session, first.session);
+  assert.equal(f.state().opening, undefined);
+  assert.equal(f.state().pr, '', '其余状态照旧重建');
+  f.delivered();
+  assert.equal(f.decide('swap', '换人', 'true'), 'swap');
+  f.task('redo', 'redo'); f.run('swap', { EXECUTOR: JSON.stringify({ agent: 'backup' }) });
+  assert.ok(f.calls('agent')[2].args.includes('--commit'), '换备用执行者是有意新开');
+});
+
+test('退回修改失败后再跑：接回同一会话并发续跑说明；第一次退回修改不带', t => {
+  const f = fixture(t);
+  f.task('one', 'first'); f.run('execute'); f.delivered();
+  assert.equal(f.decide('revise', '删除多余封装'), 'revise');
+  f.task('one', 'half', undefined, { exit: 1 }); f.run('revise', {}, 1);
+  assert.deepEqual(f.state().opening, { action: 'revise', session: 'worker-1', text: '删除多余封装', agent: { agent: 'codex' } });
+  f.task('one', 'done'); f.run('revise');
+  const [, firstTry, rerun] = f.calls('agent');
+  assert.deepEqual(firstTry.args.slice(0, -2), ['--continue', 'worker-1', '--json']);
+  assert.ok(!firstTry.prompt.includes('git status') && firstTry.prompt.includes('删除多余封装'));
+  assert.deepEqual(rerun.args.slice(0, -2), ['--continue', 'worker-1', '--json']);
+  for (const text of ['git status', 'git log', '不要从头重做', '删除多余封装']) assert.ok(rerun.prompt.includes(text), text);
+  assert.equal(f.state().opening, undefined, '成功后不再接');
+  assert.equal(f.state().feedback, '');
+});
+
+test('coda-agent 退出 0 但输出不是完整回复：这一步失败、错误带输出摘要，不记执行者；会话能取到就记下接回', t => {
+  const f = fixture(t);
+  f.task('one', 'work', undefined, { garbage: 'not json' });
+  assert.match(f.run('execute', {}, 1).stderr, /session、branch、head[\s\S]*not json/);
+  f.task('one', 'work', undefined, { garbage: JSON.stringify({ session: 'worker-1' }) });
+  assert.match(f.run('execute', {}, 1).stderr, /worker-1/);
+  assert.deepEqual(f.state().opening, { action: 'execute', session: 'worker-1', text: f.env.TASK, agent: { agent: 'codex' } });
+  assert.equal(f.state().executor, undefined);
+  f.task('one', 'done'); f.run('execute');
+  assert.deepEqual(f.calls('agent').at(-1).args.slice(0, 2), ['--continue', 'worker-1']);
+  assert.equal(f.state().executor.session, 'worker-1');
+  assert.equal(f.state().opening, undefined);
+});
+
+test('换备用执行者失败后再跑：接回这次新开的备用会话，不另开、不接原执行者；成功后再选换人仍新开', t => {
+  const f = fixture(t);
+  f.task('code', 'first'); f.run('execute'); f.delivered();
+  const first = f.state().executor, backup = { EXECUTOR: JSON.stringify({ agent: 'backup' }) };
+  assert.equal(f.decide('swap', '换人', 'true'), 'swap');
+  f.task('redo', 'half', undefined, { exit: 1 }); f.run('swap', backup, 1);
+  assert.deepEqual({ ...f.state().opening, text: undefined }, { action: 'swap', session: 'worker-2', text: undefined, agent: { agent: 'backup' } });
+  assert.ok(f.state().opening.text.includes('换人'));
+  assert.equal(f.state().executor.session, first.session, '没成功前执行者不变');
+  f.task('redo', 'done'); f.run('swap', backup);
+  const resumed = f.calls('agent').at(-1);
+  assert.deepEqual(resumed.args.slice(0, -2), ['--continue', 'worker-2', '--json']);
+  assert.ok(resumed.prompt.includes('git log') && resumed.prompt.includes('换给你重做') && resumed.prompt.includes('换人'));
+  assert.equal(f.state().executor.session, 'worker-2');
+  assert.equal(f.calls('agent').length, 3);
+  f.delivered();
+  assert.equal(f.decide('swap', '再换一次', 'true'), 'swap');
+  f.task('redo', 'again'); f.run('swap', backup);
+  assert.deepEqual(f.calls('agent').at(-1).args.slice(0, 4), ['--commit', f.remote('lane/req-1'), '--title', '输入框可以输入']);
+  assert.equal(f.state().executor.session, 'worker-4');
 });
 
 test('泳道 PR 流程定义：输入、回路、审查卡答复、结束输出；不出用户卡、不装机、不部署、不跑合并前检查', async () => {
@@ -507,4 +662,147 @@ test('10.0.0 的流程定义：它引用的每个动作新脚本都还有，env 
   check('decide', { REVIEW: JSON.stringify({ choice: 'land', note: '' }), BACKUP: 'false' });
   f.task('two', 'redo'); check('swap'); f.run('gate'); f.run('gate-passed', { RUNS: '[]' });
   check('land'); check('abandon');
+});
+
+test('接回会话失败：清掉记录，同一次里从泳道当前 head 新开会话给原任务，只回退一次', t => {
+  const f = fixture(t);
+  f.task('one', 'first'); f.run('execute');
+  f.task('one', 'again', undefined, { lost: true });
+  const rerun = f.run('execute');
+  assert.match(rerun.stderr, /接回会话 worker-1 失败[\s\S]*新开/);
+  let calls = f.calls('agent');
+  assert.deepEqual(calls.map(c => c.args.includes('--commit')), [true, false, true]);
+  assert.ok(!calls[2].prompt.includes('git status') && calls[2].prompt.includes('输入框没反应'), '新开的会话给原任务，不带续跑说明');
+  assert.equal(f.state().executor.session, 'worker-3');
+  assert.equal(f.state().opening, undefined);
+  // 新开的会话再失败就照常失败：不再回退，状态里是它自己的会话，旧的执行者记录已清。
+  f.task('one', 'half', undefined, { lost: true, exit: 1 });
+  f.run('execute', {}, 1);
+  calls = f.calls('agent');
+  assert.deepEqual(calls.slice(3).map(c => c.args.includes('--commit')), [false, true], '接回一次、新开一次，不再回退');
+  assert.deepEqual(f.state().opening, { action: 'execute', session: 'worker-5', text: f.env.TASK, agent: { agent: 'codex' } });
+  assert.equal(f.state().executor.session, 'worker-3', '动作没成功，执行者记录不动');
+  f.task('one', 'done'); f.run('execute');
+  assert.deepEqual(f.calls('agent').slice(5).map(c => c.args.slice(0, 2)), [['--continue', 'worker-5']]);
+  assert.equal(f.state().executor.session, 'worker-5');
+  assert.equal(f.state().opening, undefined);
+});
+
+test('接回的会话输出不是完整回复，也按接不回新开', t => {
+  const f = fixture(t);
+  f.task('one', 'first'); f.run('execute');
+  f.task('one', 'again', undefined, { garbage: 'not json' });
+  f.run('execute', {}, 1);
+  assert.deepEqual(f.calls('agent').map(c => c.args.includes('--commit')), [true, false, true], '接回一次、新开一次，新开的也不完整就失败');
+  assert.deepEqual(f.state().opening, { action: 'execute', text: f.env.TASK, agent: { agent: 'codex' } }, '接不回的会话已去掉，动作还在');
+  f.task('one', 'again'); f.run('execute');
+  assert.equal(f.calls('agent').length, 4);
+  assert.ok(f.calls('agent')[3].args.includes('--commit'));
+});
+
+test('接回的会话非零退出但回复完整：不新开，会话留在 opening，按失败退出；下次恢复仍接回同一会话', t => {
+  const f = fixture(t);
+  f.task('one', 'first'); f.run('execute');
+  f.task('one', 'half', undefined, { exit: 1 });
+  f.run('execute', {}, 1);
+  assert.deepEqual(f.calls('agent').map(c => c.args.includes('--commit')), [true, false], '只接回一次，不新开');
+  assert.deepEqual(f.state().opening, { action: 'execute', session: 'worker-1', text: f.env.TASK, agent: { agent: 'codex' } });
+  f.task('one', 'done'); f.run('execute');
+  assert.deepEqual(f.calls('agent').slice(2).map(c => c.args.slice(0, 2)), [['--continue', 'worker-1']]);
+  assert.equal(f.state().executor.session, 'worker-1');
+  assert.equal(f.state().opening, undefined);
+});
+
+test('退回修改接不回会话：不新开，按失败处理并说明；记录留着', t => {
+  const f = fixture(t);
+  f.task('one', 'first'); f.run('execute'); f.delivered();
+  assert.equal(f.decide('revise', '删除多余封装'), 'revise');
+  f.task('one', 'second', undefined, { lost: true });
+  assert.match(f.run('revise', {}, 1).stderr, /退回修改接不回会话 worker-1[\s\S]*原会话/);
+  assert.equal(f.calls('agent').length, 2);
+  assert.ok(!f.calls('agent').some((c, i) => i > 0 && c.args.includes('--commit')));
+  assert.equal(f.state().executor.session, 'worker-1');
+  assert.equal(f.state().opening.action, 'revise');
+});
+
+test('换人失败后运行从头重跑：按 opening 接回备用会话、配换人的任务，不接原执行者', t => {
+  const f = fixture(t);
+  f.task('code', 'first'); f.run('execute'); f.delivered();
+  const first = f.state().executor, backup = { EXECUTOR: JSON.stringify({ agent: 'backup' }) };
+  assert.equal(f.decide('swap', '换人', 'true'), 'swap');
+  f.task('redo', 'half', undefined, { exit: 1 }); f.run('swap', backup, 1);
+  assert.equal(f.state().opening.session, 'worker-2');
+  f.task('redo', 'done'); f.run('execute');
+  const resumed = f.calls('agent').at(-1);
+  assert.deepEqual(resumed.args.slice(0, -2), ['--continue', 'worker-2', '--json']);
+  for (const text of ['git status', 'git log', '不要从头重做', '换给你重做', '换人', first.branch]) assert.ok(resumed.prompt.includes(text), text);
+  assert.equal(f.state().executor.session, 'worker-2');
+  assert.equal(f.state().opening, undefined);
+  assert.equal(f.calls('agent').length, 3);
+});
+
+test('退回修改失败后运行从头重跑：按 opening 接回执行会话、配退回意见', t => {
+  const f = fixture(t);
+  f.task('one', 'first'); f.run('execute'); f.delivered();
+  assert.equal(f.decide('revise', '删除多余封装'), 'revise');
+  f.task('one', 'half', undefined, { exit: 1 }); f.run('revise', {}, 1);
+  f.task('one', 'done'); f.run('execute');
+  const resumed = f.calls('agent').at(-1);
+  assert.deepEqual(resumed.args.slice(0, -2), ['--continue', 'worker-1', '--json']);
+  for (const text of ['git status', '这次要你做的', '删除多余封装']) assert.ok(resumed.prompt.includes(text), text);
+  assert.ok(!resumed.prompt.includes('输入框没反应'));
+  assert.equal(f.state().opening, undefined);
+});
+
+test('换人接回失败、新开也失败后运行从头重跑：仍做换人，用 opening 记的备用执行者配置，不用 execute 的配置', t => {
+  const f = fixture(t);
+  f.task('code', 'first'); f.run('execute'); f.delivered();
+  const backup = { EXECUTOR: JSON.stringify({ agent: 'backup', model: 'm2' }) };
+  assert.equal(f.decide('swap', '换人', 'true'), 'swap');
+  f.task('redo', 'half', undefined, { exit: 1 }); f.run('swap', backup, 1);
+  // 从 execute 恢复：接回的备用会话接不回，回退新开用的是备用执行者配置；新开也没开成。
+  f.task('redo', 'half', undefined, { lost: true, exit: 1, silent: true }); f.run('execute', {}, 1);
+  const [continued, opened] = f.calls('agent').slice(-2);
+  assert.deepEqual(continued.args.slice(0, 2), ['--continue', 'worker-2']);
+  assert.ok(opened.args.includes('--commit') && opened.args.join(' ').includes('--agent backup --model m2') && !opened.args.includes('codex'), '回退新开用备用执行者配置');
+  assert.ok(opened.prompt.includes('换给你重做') && !opened.prompt.includes('git status'));
+  assert.deepEqual({ ...f.state().opening, text: undefined }, { action: 'swap', text: undefined, agent: { agent: 'backup', model: 'm2' } }, '会话去掉，动作和配置还在');
+  // 再从头重跑：仍做换人，没有会话就用 opening 的配置新开。
+  f.task('redo', 'done'); f.run('execute');
+  const redo = f.calls('agent').at(-1);
+  assert.ok(redo.args.includes('--commit') && redo.args.join(' ').includes('--agent backup --model m2') && !redo.args.includes('codex'));
+  assert.ok(redo.prompt.includes('换给你重做') && redo.prompt.includes('换人') && !redo.prompt.includes('git status'));
+  assert.equal(f.state().executor.session, 'worker-5');
+  assert.equal(f.state().opening, undefined);
+  assert.deepEqual(f.state().agent, { agent: 'backup', model: 'm2' }, '之后的退回修改用当前执行者');
+});
+
+test('首次开工新建状态：只有输入、空的 pr、feedback、returns，成功后记下执行者与检查失败计数', t => {
+  const f = fixture(t);
+  f.task('one', 'first'); f.run('execute');
+  const { executor, ...rest } = f.state();
+  assert.deepEqual(rest, { lane: 'lane/req-1', branch: 'lane-pr/pr-run-1', title: '输入框可以输入', task: f.env.TASK, sync: false, pr: '', feedback: '', returns: 0,
+    agent: { agent: 'codex' }, failures: [] });
+  assert.equal(executor.session, 'worker-1');
+});
+
+test('退回修改中断后运行从头重跑：execute 以上一次的完整状态为底，检查失败计数、退回次数照旧，紧接着检查失败正常累加', t => {
+  const f = fixture(t);
+  f.task('one', 'first'); f.run('execute');
+  for (let i = 1; i <= 3; i++) {
+    f.run('gate'); f.run('gate-failed');
+    if (i < 3) { f.task('one', `fix ${i}`); f.run('revise'); }
+  }
+  assert.equal(f.state().failures.length, 3);
+  assert.equal(f.decide('revise', '删除多余封装'), 'revise');
+  f.task('one', 'half', undefined, { exit: 1 }); f.run('revise', {}, 1);
+  const before = f.state();
+  f.task('one', 'done'); f.run('execute');
+  const after = f.state();
+  assert.equal(after.returns, 1, '退回次数不归零');
+  assert.equal(after.failures.length, 3, '接回同一会话，检查失败计数保留');
+  assert.equal(after.executor.session, 'worker-1');
+  assert.deepEqual({ ...after, executor: undefined, feedback: undefined, opening: undefined }, { ...before, executor: undefined, feedback: undefined, opening: undefined });
+  f.run('gate'); assert.equal(f.run('gate-failed').outputs.route, 'review');
+  assert.equal(f.state().failures.length, 4);
 });

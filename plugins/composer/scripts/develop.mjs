@@ -240,7 +240,7 @@ switch (action) {
   case 'sync-resolve': {
     const { base, lane } = state.sync, prompt = join(env.RUNNER_TEMP, 'task.md');
     writeFileSync(prompt, `${instructions}\n\n${mergeText(state.sync)}\n`);
-    const executor = JSON.parse(command('coda-agent', ['--commit', lane, '--title', `${state.title}：跟上 ${state.base}`, ...agentArgs(env.EXECUTOR), '--json', '--prompt-file', prompt]));
+    const executor = JSON.parse(command('coda-agent', ['--commit', lane, '--title', `${state.title}：跟上 ${state.base}`, ...agentArgs(JSON.parse(env.EXECUTOR)), '--json', '--prompt-file', prompt]));
     let route = 'pr';
     if (!ancestor(base, executor.head) || !ancestor(lane, executor.head)) {
       back(`跟上目标分支：执行者没有把 ${state.base} ${base} 合并进泳道 ${lane}（执行会话 ${executor.session}，head ${executor.head}）。执行者的回答：\n${executor.answer}\n请发起 sync=true 的泳道 PR 处理冲突，合进泳道后再提交验收。`);
@@ -287,7 +287,7 @@ switch (action) {
     const c = state.converge, from = state.head, open = c.findings.filter(f => f.status === 'open' && f.severity === 'P2');
     const prompt = join(env.RUNNER_TEMP, 'task.md');
     writeFileSync(prompt, `${instructions}\n\n${fixText(from, open)}\n`);
-    const args = c.session ? ['--continue', c.session] : ['--commit', from, '--title', `${state.title}：整体评审修复`, ...agentArgs(env.EXECUTOR)];
+    const args = c.session ? ['--continue', c.session] : ['--commit', from, '--title', `${state.title}：整体评审修复`, ...agentArgs(JSON.parse(env.EXECUTOR))];
     const executor = JSON.parse(command('coda-agent', [...args, '--json', '--prompt-file', prompt]));
     c.session = executor.session;
     const responses = readResponses(executor.answer, open.map(f => f.id));
