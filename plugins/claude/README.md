@@ -8,6 +8,18 @@ Coda 交来的 MCP 服务（含 `coda` 服务 `env` 里的令牌 `CODA_TOKEN`）
 入口改为：会话打开时在系统临时目录下 `mkdtemp` 建目录（0700），把 `{ mcpServers }` 写进里面的 `mcp.json`（0600），用 `extraArgs` 交 `--mcp-config <路径>`。
 入口这一侧，令牌不再进命令行，只写进这个文件；会话结束（进程被关、查询自己结束）时连目录一起删。进程崩溃留下的目录不另外清理：令牌随托管记录作废，系统临时目录也会自己回收。没有 MCP 服务的会话不建目录。
 
+## 临时目录
+
+Claude Code 自己会在系统临时目录下建 `claude-<uid>/<cwd 编码>/<原生会话号>/`（里面是 `scratchpad`、`tasks`），它没有回收，会话多了会写满磁盘。
+Coda 给会话一个临时目录时（环境变量 `CODA_SESSION_TMP`，绝对路径），入口把它交给 Claude Code 的环境变量 `CLAUDE_CODE_TMPDIR`，上面的目录就建在
+`<CODA_SESSION_TMP>/claude-<uid>/…` 下，系统提示里告诉模型的 scratchpad 路径也跟着变；`resume` 恢复的原生会话照样生效，选了模型服务而另起的查询也一样。
+实地核对过（SDK 0.3.322）：新会话与 `resume` 的 scratchpad 都在给定目录下。
+
+- **什么时候没有：** `CODA_SESSION_TMP` 没有值时不设 `CLAUDE_CODE_TMPDIR`，和以前一样放在系统临时目录。旧的后端（含已发布的正式版）和没有状态根的后端不给这个变量。
+- **谁回收：** Coda。它在启动 Agent 之前建好这个目录，会话归档、宽限期到了、进程关掉之后连同里面的东西一起删；插件不删，也不监听归档。
+- 已经留在 `/private/tmp/claude-*` 下的存量目录不在这里处理。
+- 上一节的 `coda-claude-mcp-*` 会话结束时由入口自己删，不在这个目录里。
+
 ## 失败怎样分类
 
 一轮失败时，入口（`agent/errors.mjs` 的 `claudeFailure`，纯函数）只按最终错误标失败类别（协议 `failure.json`），重试策略归 Coda，插件里没有重试或等待。
