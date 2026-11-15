@@ -119,6 +119,9 @@ test('what is not the service failing stays unmarked: keys, permission, context,
     ['Unable to connect to API: SSL error (SELF_SIGNED_CERT_IN_CHAIN)', { error: 'server_error' }],
     ['Unable to connect to API: certificate verification failed', { error: 'overloaded' }],
     ['Unable to connect to API: DEPTH_ZERO_SELF_SIGNED_CERT', { error: 'server_error' }],
+    // Real texts: undici without NODE_EXTRA_CA_CERTS, an expired certificate, a proxy's certificate for another host.
+    ...['Unable to connect to API: unable to get local issuer certificate', 'Unable to connect to API: certificate has expired',
+      "Unable to connect to API: Hostname/IP does not match certificate's altnames"].flatMap(message => [[message, {}], [message, { error: 'server_error' }]]),
     // A failure the category says is not the service's, even with network words in its text.
     ['Invalid API key (fetch failed to reach the key helper)', { error: 'authentication_failed' }],
   ]) assert.equal(claudeFailure(message, facts).data, undefined, message);

@@ -19,10 +19,11 @@ const resetTime = window => window?.status === 'rejected' && Number.isSafeIntege
 // "Connection closed", which an MCP server says as well.
 const network = /\b(?:ECONN(?:RESET|REFUSED|ABORTED)|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE|EHOSTUNREACH|ENETUNREACH|EPROTO)\b|\bUND_ERR_[A-Z_]+|\bERR_SSL_[A-Z_]+|socket hang up|fetch failed|other side closed|premature close|unexpected EOF|Request timed out|Unable to connect to API|\b(?:TLS|SSL)\b[^\n]{0,40}\bhandshake|\bhandshake (?:failed|timed out)|\bnetwork (?:error|connection (?:lost|error))/i;
 const upstream = /\b(?:API Error:|HTTP|status(?: code)?)\s*:?\s*(?:408|5\d\d)\b|\boverloaded_error\b|\bapi_error\b|Repeated 529|\b(?:Bad Gateway|Service Unavailable|Gateway Time-?out|Internal Server Error)\b/i;
-// A certificate or TLS configuration that is wrong ("Unable to connect to API: SSL certificate has expired", a proxy's self-signed
-// certificate with no NODE_EXTRA_CA_CERTS) stays wrong when retried. Claude Code files these connection errors under `server_error`,
-// so the words rule them out before the category counts.
-const certificate = /SSL certificate|SSL error \(|self[- ]signed certificate|certificate verification|unable to verify the first certificate|\bCERT_[A-Z_]+|\b[A-Z_]+_CERT(?:_[A-Z_]+)?\b|\bUNABLE_TO_VERIFY_LEAF_SIGNATURE\b/i;
+// A certificate or TLS configuration that is wrong ("Unable to connect to API: unable to get local issuer certificate", an expired
+// certificate, a proxy's certificate whose altnames do not match) stays wrong when retried. Claude Code files these connection errors
+// under `server_error`, so the words rule them out before the category counts: any "certificate" or "altnames", and Node's error codes
+// that carry CERT without saying it.
+const certificate = /certificate|altnames|\bCERT_[A-Z_]+|\b[A-Z_]+_CERT(?:_[A-Z_]+)?\b|\bUNABLE_TO_VERIFY_LEAF_SIGNATURE\b/i;
 // A page of Cloudflare's in place of the API's answer, whatever the status: its 403 is no authentication failure.
 const cloudflare = message => /\b[45]\d\d\b/.test(message) && /cloudflare|cf-ray|Just a moment|Attention Required/i.test(message);
 // The login itself gone (docs/agent-protocol.md「需要重新登录」): Claude Code's own "Failed to authenticate: OAuth session expired and
