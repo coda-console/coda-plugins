@@ -77,6 +77,10 @@ export const findingLine = (f, detailed) => {
   return `- ${f.id} [${f.severity}·${f.kind}${f.blocking ? '·阻塞' : ''}] ${flat(f.title)}${f.location ? `（${flat(f.location)}）` : ''}${detailed && f.detail ? `\n  ${f.detail.replace(/\n/g, '\n  ')}` : ''}`;
 };
 
+// 增量复评交给一个评审位置的 previous：它还没关的发现与执行者的回应（JSON 文本）。
+export const previousFor = (findings, slot) => JSON.stringify(findings.filter(f => f.slot === slot && f.status === 'open')
+  .map(({ id, severity, kind, title, location, detail, response }) => ({ id, severity, kind, title, location, detail, response })));
+
 // 交给执行者的发现（泳道 PR 与整体评审共用）：编号固定，逐条修复（fixed）或反驳（disputed），结构化交回。
 export const fixText = (head, findings) => `评审者对这次交付（提交 ${head}）提了下面这些发现，编号固定，之后几轮沿用。逐条处理：
 - 成立的：修好并提交，回 fixed，附修复它的提交号；

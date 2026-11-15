@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { agentArgs, checksText, command, gh, git, instructions, mergedCommit, mergePr, openPr, output, repoOf, reviewsText } from './shared.mjs';
-import { fixText, historyText, readResponses, triage } from './triage.mjs';
+import { fixText, historyText, previousFor, readResponses, triage } from './triage.mjs';
 
 const env = process.env, action = process.argv[2];
 const statePath = join(env.CODA_ARTIFACTS, 'lane-pr.json');
@@ -144,8 +144,7 @@ switch (action) {
   case 'review-round': {
     const c = state.converge ??= { findings: [], rounds: 0, history: [], waiting: false };
     c.full = !c.waiting;
-    const previous = slot => c.full ? '' : JSON.stringify(c.findings.filter(f => f.slot === slot && f.status === 'open')
-      .map(({ id, severity, kind, title, location, detail, response }) => ({ id, severity, kind, title, location, detail, response })));
+    const previous = slot => c.full ? '' : previousFor(c.findings, slot);
     output('base', c.full ? state.base : c.reviewedHead);
     output('head', state.executor.head);
     output('task', state.task);
