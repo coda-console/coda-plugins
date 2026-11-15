@@ -87,9 +87,8 @@ export function smartHTTP({ lookup, environment }) {
       const body = await readBody(req);
       if (discovery && body.length) return send(req, res, 400, { error: 'GET 不接受请求体' });
       const requested = wants(body);
-      const refs = (await git(source.path, ['for-each-ref', '--format=%(objectname) %(refname)', 'refs/heads/', 'refs/coda/snapshots/'], { env }))
-        .split('\n').filter(Boolean).map(line => line.split(' '))
-        .filter(([, ref]) => ref.startsWith('refs/heads/') || source.refs.has(ref));
+      const refs = (await git(source.path, ['for-each-ref', '--format=%(objectname) %(refname)', 'refs/heads/'], { env }))
+        .split('\n').filter(Boolean).map(line => line.split(' '));
       const tips = [...new Set(refs.map(([oid]) => oid))];
       for (const oid of requested) {
         if (tips.includes(oid)) continue;

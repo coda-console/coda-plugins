@@ -1,26 +1,10 @@
-import { createServer } from 'node:http';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { once } from 'node:events';
 
 export function mailbox() {
   const values = [], readers = [];
   return { push: value => readers.length ? readers.shift()(value) : values.push(value), next: () => values.length ? Promise.resolve(values.shift()) : new Promise(resolve => readers.push(resolve)) };
-}
-export async function http(t, handler) {
-  const server = createServer(async (request, response) => {
-    try {
-      const chunks = [];
-      for await (const chunk of request) chunks.push(chunk);
-      const text = Buffer.concat(chunks).toString();
-      await handler(request, response, text ? JSON.parse(text) : undefined);
-    } catch (error) { response.writeHead(500); response.end(JSON.stringify({ error: { message: error.message } })); }
-  });
-  server.listen(0, '127.0.0.1');
-  await once(server, 'listening');
-  t.after(() => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)); });
-  return `http://127.0.0.1:${server.address().port}`;
 }
 export function temporary(t) {
   const root = mkdtempSync(join(tmpdir(), 'grok-bot-test-'));

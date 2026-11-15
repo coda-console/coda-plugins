@@ -7,12 +7,12 @@ import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { fixture, command, env, packet } from './helpers.mjs';
 import { smartHTTP } from '../../../plugins/git/lib/http.mjs';
-import { repository, createSnapshot, snapshotRef, git } from '../../../plugins/git/lib/git.mjs';
+import { repository, git } from '../../../plugins/git/lib/git.mjs';
 
-async function server(t, dir, refs = new Set()) {
-  const handler = smartHTTP({ lookup: async id => id === 'source' ? { ...await repository(dir, env), refs } : null, environment: async () => env });
+async function server(t, dir, caller = { local: true }) {
+  const handler = smartHTTP({ lookup: async id => id === 'source' ? await repository(dir, env) : null, environment: async () => env });
   const seen = [];
-  const http = createServer((req, res) => { seen.push({ url: req.url, protocol: req.headers['git-protocol'] }); void handler(req, res, { local: true }); });
+  const http = createServer((req, res) => { seen.push({ url: req.url, protocol: req.headers['git-protocol'] }); void handler(req, res, caller); });
   t.after(async () => { handler.dispose(); http.closeAllConnections(); await new Promise(resolve => http.close(resolve)); });
   http.listen(0, '127.0.0.1'); await once(http, 'listening');
   return { base: `http://127.0.0.1:${http.address().port}`, seen };
@@ -39,20 +39,21 @@ function raw(base, path, { method = 'GET', body, chunked = false } = {}) {
   });
 }
 
-test('真实 v2 全量与增量 fetch、快照 tree 与 fsck 一致，只导出分支和登记快照', async t => {
-  const dir = await fixture(t), repo = await repository(dir, env);
+test('真实 v2 全量与增量 fetch 与 fsck 一致，只导出分支，快照 ref 与其他内部 ref 取不到', async t => {
+  const dir = await fixture(t);
   await writeFile(join(dir, 'blob'), randomBytes(1024 * 1024));
   await command(dir, ['add', '.']); await command(dir, ['commit', '-m', 'payload']);
-  await writeFile(join(dir, 'local'), 'snapshot');
-  const ref = snapshotRef('d'.repeat(64)), commit = await createSnapshot(repo, { mode: 'worktree' }, ref, env);
-  await command(dir, ['update-ref', 'refs/private/secret', commit]);
-  const { base, seen } = await server(t, dir, new Set([ref]));
+  const hidden = await command(dir, ['commit-tree', 'HEAD^{tree}', '-p', 'HEAD', '-m', 'hidden']);
+  const ref = `refs/coda/snapshots/${'d'.repeat(64)}`;
+  await command(dir, ['update-ref', ref, hidden]);
+  await command(dir, ['update-ref', 'refs/private/secret', hidden]);
+  const { base, seen } = await server(t, dir);
   const discovery = await raw(base, '/repos/source/info/refs?service=git-upload-pack');
   assert.equal(discovery.status, 200, discovery.body.toString());
   const target = join(dir, 'client'); await mkdir(target); await command(target, ['init']);
   const trace = join(dir, 'trace');
-  await command(target, ['-c', 'protocol.version=2', 'fetch', `${base}/repos/source`, `${ref}:refs/heads/snapshot`], { GIT_TRACE_PACKET: trace });
-  assert.equal(await command(target, ['rev-parse', 'refs/heads/snapshot^{tree}']), await command(dir, ['rev-parse', `${commit}^{tree}`]));
+  await command(target, ['-c', 'protocol.version=2', 'fetch', `${base}/repos/source`, 'refs/heads/main:refs/heads/main'], { GIT_TRACE_PACKET: trace });
+  assert.equal(await command(target, ['rev-parse', 'main']), await command(dir, ['rev-parse', 'main']));
   assert.match(await readFile(trace, 'utf8'), /version 2/);
   await writeFile(join(dir, 'tracked'), 'incremental'); await command(dir, ['add', 'tracked']); await command(dir, ['commit', '-m', 'next']);
   await command(target, ['-c', 'protocol.version=2', 'fetch', `${base}/repos/source`, 'refs/heads/main:refs/heads/main'], { GIT_TRACE_PACKET: trace });
@@ -61,7 +62,17 @@ test('真实 v2 全量与增量 fetch、快照 tree 与 fsck 一致，只导出�
   await command(target, ['fsck', '--full']);
   assert.ok(seen.every(item => item.protocol === 'version=2'));
   const listed = await command(target, ['-c', 'protocol.version=2', 'ls-remote', `${base}/repos/source`]);
-  assert.ok(listed.includes(ref)); assert.ok(!listed.includes('refs/private/'));
+  assert.ok(listed.includes('refs/heads/main')); assert.ok(!listed.includes('refs/coda/') && !listed.includes('refs/private/'));
+  await assert.rejects(command(target, ['-c', 'protocol.version=2', 'fetch', `${base}/repos/source`, `${ref}:refs/heads/hidden`]));
+  const body = Buffer.concat([packet('command=fetch\n'), Buffer.from('0001'), packet(`want ${hidden}\n`), packet('done\n'), Buffer.from('0000')]);
+  assert.equal((await raw(base, '/repos/source/git-upload-pack', { method: 'POST', body })).status, 403);
+});
+
+test('鉴权：既不是本机也不是 client／backend 身份的调用被拒，client 身份可读', async t => {
+  const dir = await fixture(t);
+  const anonymous = await server(t, dir, {}), device = await server(t, dir, { role: 'client', device: 'phone' });
+  assert.equal((await raw(anonymous.base, '/repos/source/info/refs?service=git-upload-pack')).status, 403);
+  assert.equal((await raw(device.base, '/repos/source/info/refs?service=git-upload-pack')).status, 200);
 });
 
 test('超过 5 MiB 分块 POST 的末尾 want 被处理，响应不截断', async t => {

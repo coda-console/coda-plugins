@@ -1,32 +1,33 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import { once } from 'node:events';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
-import { writeFile, readFile, symlink, unlink } from 'node:fs/promises';
+import { mkdir, symlink, unlink } from 'node:fs/promises';
+import { Readable } from 'node:stream';
 import { fixture, command, env, host, idle } from './helpers.mjs';
 import { GitProvider } from '../../../plugins/git/lib/provider.mjs';
-import { SOURCE, SNAPSHOT, SERVICE } from '../../../plugins/git/lib/definitions.mjs';
+import { SOURCE } from '../../../plugins/git/lib/definitions.mjs';
+import { repository } from '../../../plugins/git/lib/git.mjs';
 import { ProtocolTypes } from '../../../check/coda/components/protocols/types.mjs';
 import { definitionProblem, ownedProtocolsProblem } from '@coda-console/protocol/protocol';
 import '../../../check/coda/application/contributions.mjs';
 import { readPlugin } from '../../../check/coda/components/plugins/plugin-rules.mjs';
 
 const manifest = JSON.parse(readFileSync(new URL('../../../plugins/git/package.json', import.meta.url), 'utf8'));
-const put = (h, kind, id, spec, revision) => h.coda.protocols.put({ kind, id, spec, ...(revision ? { revision } : {}) });
-const get = (h, kind, id) => h.objects.get(`${kind}/${id}`);
+const put = (h, id, spec) => h.coda.protocols.put({ kind: SOURCE, id, spec });
+const get = (h, id) => h.objects.get(`${SOURCE}/${id}`);
 
 async function setup(t) {
   const dir = await fixture(t), h = host(join(dir, '.git', 'coda-state'));
   const provider = new GitProvider(h.coda); t.after(() => provider.stop()); await provider.start();
-  h.run('run'); await put(h, SOURCE, 'source', { path: dir });
-  await writeFile(join(dir, 'new'), 'captured');
-  await put(h, SNAPSHOT, 'snapshot', { source: 'source', mode: 'worktree', run: 'run' });
-  await idle(provider);
+  await put(h, 'source', { path: dir }); await idle(provider);
   return { dir, h, provider };
 }
 
-test('清单里的协议定义合乎格式与命名空间，拒绝多余字段及不完整 spec', () => {
+test('清单只有 git/source@1，定义合乎格式与命名空间，拒绝多余字段，只给预览渠道', () => {
   const dir = fileURLToPath(new URL('../../../plugins/git/', import.meta.url));
   assert.equal(ownedProtocolsProblem(manifest), null);
   const types = new ProtocolTypes();
@@ -34,208 +35,94 @@ test('清单里的协议定义合乎格式与命名空间，拒绝多余字段�
     assert.equal(definitionProblem(definition, { namespace: 'git', where: definition.name }), null);
     types.register({ kind: definition.name, spec: definition.spec, status: definition.status, participants: () => [] });
   }
-  assert.equal(readPlugin(dir, { kind: 'git' }).protocolImplementations.join(), [SOURCE, SNAPSHOT, SERVICE].join());
+  assert.deepEqual(manifest.contributes.protocols.map(definition => definition.name), [SOURCE]);
+  assert.deepEqual(readPlugin(dir, { kind: 'git' }).protocolImplementations, [SOURCE]);
+  assert.deepEqual(manifest.coda, { channels: ['preview'] });
+  assert.equal(types.get(SOURCE).spec({ path: '/tmp/repo' }), true);
   assert.equal(types.get(SOURCE).spec({ path: '/tmp/repo', machine: 'remote' }), false);
-  assert.equal(types.get(SNAPSHOT).spec({ source: 'source', mode: 'commit', run: 'run' }), false);
 });
 
-test('办事员生成并稳定复用快照，运行结束回收 ref', async t => {
+test('登记的源就绪并发布读取地址；删除后不再可读', async t => {
   const { dir, h, provider } = await setup(t);
-  const ready = get(h, SNAPSHOT, 'snapshot'); assert.equal(ready.status.ready, true);
-  assert.equal(await command(dir, ['show', `${ready.status.commit}:new`]), 'captured');
-  await writeFile(join(dir, 'new'), 'changed after snapshot'); await provider.schedule(); await idle(provider);
-  assert.equal(get(h, SNAPSHOT, 'snapshot').status.commit, ready.status.commit);
-  h.run('run', 'succeeded'); await idle(provider);
-  assert.equal(get(h, SNAPSHOT, 'snapshot').status.released, true);
-  assert.equal(await command(dir, ['for-each-ref', ready.status.ref]), '');
-  assert.deepEqual(h.failures, []);
-});
-
-test('删除与同 id 重建使用新实例；宿主停止期间删除的 ref 重启回收', async t => {
-  const { dir, h, provider } = await setup(t);
-  const first = get(h, SNAPSHOT, 'snapshot');
-  await h.coda.protocols.delete(SNAPSHOT, 'snapshot');
-  await put(h, SNAPSHOT, 'snapshot', { source: 'source', mode: 'worktree', run: 'run' });
-  await idle(provider);
-  const second = get(h, SNAPSHOT, 'snapshot');
-  assert.notEqual(first.status.ref, second.status.ref);
-  assert.equal(await command(dir, ['for-each-ref', first.status.ref]), '');
-  await provider.stop();
-  await h.coda.protocols.delete(SNAPSHOT, 'snapshot');
-  const restarted = new GitProvider(h.coda); t.after(() => restarted.stop()); await restarted.start(); await idle(restarted);
-  assert.equal(await command(dir, ['for-each-ref', second.status.ref]), '');
-  assert.deepEqual(JSON.parse(await readFile(join(h.coda.plugin.state, 'snapshots.json'), 'utf8')), {});
-});
-
-test('删除源撤下读取和快照；运行读取失败不能伪造完成', async t => {
-  const { dir, h, provider } = await setup(t);
-  const ref = get(h, SNAPSHOT, 'snapshot').status.ref;
+  assert.deepEqual(get(h, 'source').status, { ready: true, url: '/v1/plugins/git/services/repository/repos/source' });
+  const repo = await provider.lookup('source'), expected = await repository(dir, env);
+  assert.deepEqual([repo.path, repo.gitDir, repo.commonDir], [expected.path, expected.gitDir, expected.commonDir]);
   await h.coda.protocols.delete(SOURCE, 'source'); await idle(provider);
   assert.equal(await provider.lookup('source'), null);
-  assert.equal(await command(dir, ['for-each-ref', ref]), '');
-  await put(h, SOURCE, 'source', { path: dir });
-  await put(h, SNAPSHOT, 'missing-run', { source: 'source', mode: 'worktree', run: 'unknown' }); await idle(provider);
-  assert.equal(get(h, SNAPSHOT, 'missing-run').status.ready, false);
-  assert.match(get(h, SNAPSHOT, 'missing-run').status.reason, /无法确认关联运行/);
-  assert.equal(get(h, SNAPSHOT, 'missing-run').status.released, undefined);
-});
-
-test('旧 revision 的结果不能覆盖修改后的请求，旧 ref 随对账回收', async t => {
-  const dir = await fixture(t), h = host(join(dir, '.git', 'state'));
-  const provider = new GitProvider(h.coda); t.after(() => provider.stop()); await provider.start();
-  h.run('run'); await put(h, SOURCE, 'source', { path: dir });
-  const head = await command(dir, ['rev-parse', 'HEAD']);
-  let intercepted = false, oldRef;
-  const setStatus = h.coda.protocols.setStatus;
-  h.coda.protocols.setStatus = async (kind, id, status, revision) => {
-    if (kind === SNAPSHOT && status.ready && !intercepted) {
-      intercepted = true; oldRef = status.ref;
-      await put(h, SNAPSHOT, id, { source: 'source', mode: 'commit', commit: head, run: 'run' }, revision);
-    }
-    return setStatus(kind, id, status, revision);
-  };
-  await writeFile(join(dir, 'new'), 'dirty');
-  await put(h, SNAPSHOT, 'snapshot', { source: 'source', mode: 'worktree', run: 'run' }); await idle(provider);
-  const current = get(h, SNAPSHOT, 'snapshot');
-  assert.equal(current.spec.mode, 'commit'); assert.equal(current.status.commit, head);
-  assert.notEqual(current.status.ref, oldRef); assert.equal(await command(dir, ['for-each-ref', oldRef]), '');
   assert.deepEqual(h.failures, []);
 });
 
-test('管理接口仅接受本机身份，更新须携带版本，错误符合 coda.api 信封', async t => {
-  const { Readable } = await import('node:stream');
+test('登记的源经只读 smart HTTP 可 fetch 分支，快照 ref 不可取', async t => {
   const { dir, h, provider } = await setup(t);
-  const request = async (caller, url, body) => {
-    const req = Readable.from([Buffer.from(JSON.stringify(body))]); req.url = url; req.method = 'POST';
+  const hidden = await command(dir, ['commit-tree', 'HEAD^{tree}', '-p', 'HEAD', '-m', 'hidden']);
+  const ref = `refs/coda/snapshots/${'e'.repeat(64)}`;
+  await command(dir, ['update-ref', ref, hidden]);
+  const server = createServer((req, res) => { void provider.http(req, res, { local: true }); });
+  t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const url = `http://127.0.0.1:${server.address().port}/repos/source`;
+  const target = join(dir, 'client'); await mkdir(target); await command(target, ['init']);
+  await command(target, ['-c', 'protocol.version=2', 'fetch', url, 'refs/heads/main:refs/heads/main']);
+  assert.equal(await command(target, ['rev-parse', 'main']), await command(dir, ['rev-parse', 'main']));
+  assert.ok(!(await command(target, ['-c', 'protocol.version=2', 'ls-remote', url])).includes('refs/coda/'));
+  await assert.rejects(command(target, ['-c', 'protocol.version=2', 'fetch', url, `${ref}:refs/heads/hidden`]));
+  assert.deepEqual(h.failures, []);
+});
+
+test('管理接口仅接受本机身份，更新须携带版本，错误符合 coda.api 信封，不再有 /snapshots', async t => {
+  const { dir, h, provider } = await setup(t);
+  const request = async (caller, url, body, method = 'POST') => {
+    const req = Readable.from([Buffer.from(JSON.stringify(body))]); req.url = url; req.method = method;
     let code, value;
     await provider.manage(req, { writeHead(status) { code = status; }, end(text) { value = JSON.parse(text); } }, caller);
     return { code, value };
   };
   assert.equal((await request({ role: 'backend', device: 'backend:test' }, '/sources/foreign', { spec: { path: dir } })).code, 403);
   assert.equal((await request({ role: 'client', device: 'phone' }, '/sources/foreign', { spec: { path: dir } })).code, 403);
-  assert.equal(get(h, SOURCE, 'foreign'), undefined);
-  const old = get(h, SOURCE, 'source');
+  assert.equal(get(h, 'foreign'), undefined);
+  const old = get(h, 'source');
   const result = await request({ local: true }, '/sources/source', { spec: { path: dir }, revision: 'outdated' });
   assert.equal(result.code, 400); assert.match(result.value.error.message, /revision conflict/);
-  assert.equal(get(h, SOURCE, 'source').revision, old.revision);
+  assert.equal(get(h, 'source').revision, old.revision);
+  assert.equal((await request({ local: true }, '/sources/second', { spec: { path: dir } })).code, 200);
+  assert.equal(get(h, 'second').spec.path, dir);
+  assert.equal((await request({ local: true }, '/snapshots/job', { spec: {} })).code, 404);
 });
 
-test('源暂时不可用保留活跃快照，重启恢复复用原提交，运行结束仍回收', async t => {
+test('源路径暂时失效时不可读，恢复后复用原身份重新就绪', async t => {
   const dir = await fixture(t), path = join(dir, '.git', 'source-link');
   await symlink(dir, path);
   const h = host(join(dir, '.git', 'state'));
   const provider = new GitProvider(h.coda); t.after(() => provider.stop()); await provider.start();
-  h.run('run'); await put(h, SOURCE, 'source', { path });
-  await writeFile(join(dir, 'new'), 'captured');
-  await put(h, SNAPSHOT, 'snapshot', { source: 'source', mode: 'worktree', run: 'run' }); await idle(provider);
-  const first = get(h, SNAPSHOT, 'snapshot').status;
-  assert.equal(first.ready, true);
-  const ledger = await readFile(join(h.coda.plugin.state, 'snapshots.json'), 'utf8');
+  await put(h, 'source', { path }); await idle(provider);
+  assert.equal(get(h, 'source').status.ready, true);
   await unlink(path); await provider.schedule(); await idle(provider);
-  assert.equal(get(h, SOURCE, 'source').status.ready, false);
-  assert.equal(get(h, SNAPSHOT, 'snapshot').status.ready, false);
+  assert.equal(get(h, 'source').status.ready, false);
   assert.equal(await provider.lookup('source'), null);
-  assert.equal(await command(dir, ['rev-parse', '--verify', first.ref]), first.commit);
-  assert.equal(await readFile(join(h.coda.plugin.state, 'snapshots.json'), 'utf8'), ledger);
-  await writeFile(join(dir, 'new'), 'changed while unavailable');
-  await provider.stop();
-  const restarted = new GitProvider(h.coda); t.after(() => restarted.stop()); await restarted.start(); await idle(restarted);
-  assert.equal(await restarted.lookup('source'), null);
-  assert.equal(await command(dir, ['rev-parse', '--verify', first.ref]), first.commit);
-  await symlink(dir, path); await restarted.schedule(); await idle(restarted);
-  assert.deepEqual(get(h, SNAPSHOT, 'snapshot').status, first);
-  assert.equal(await command(dir, ['show', `${first.ref}:new`]), 'captured');
-  assert.equal((await restarted.lookup('source')).refs.has(first.ref), true);
-  await unlink(path); await restarted.schedule(); await idle(restarted);
-  h.run('run', 'succeeded'); await idle(restarted);
-  assert.equal(get(h, SNAPSHOT, 'snapshot').status.released, true);
-  assert.equal(await command(dir, ['for-each-ref', first.ref]), '');
-  assert.deepEqual(JSON.parse(await readFile(join(h.coda.plugin.state, 'snapshots.json'), 'utf8')), {});
-  assert.deepEqual(h.failures, []);
+  await symlink(dir, path); await provider.schedule(); await idle(provider);
+  assert.equal(get(h, 'source').status.ready, true);
+  assert.ok(await provider.lookup('source'));
 });
 
-test('源符号链接换仓库后拒绝访问和快照，重启仍须重新登记，两个仓库均无遗留 ref', async t => {
+test('源符号链接换仓库后拒绝读取，重启仍须重新登记', async t => {
   const a = await fixture(t), b = await fixture(t), path = join(a, '.git', 'source-link');
   await symlink(a, path);
   const h = host(join(a, '.git', 'state'));
   const provider = new GitProvider(h.coda); t.after(() => provider.stop()); await provider.start();
-  h.run('run'); await put(h, SOURCE, 'source', { path });
-  await put(h, SNAPSHOT, 'snapshot', { source: 'source', mode: 'worktree', run: 'run' }); await idle(provider);
-  assert.equal(get(h, SNAPSHOT, 'snapshot').status.ready, true);
+  await put(h, 'source', { path }); await idle(provider);
+  assert.equal(get(h, 'source').status.ready, true);
   await unlink(path); await symlink(b, path);
   assert.equal(await provider.lookup('source'), null);
   await provider.schedule(); await idle(provider);
-  assert.equal(get(h, SOURCE, 'source').status.ready, false);
-  assert.match(get(h, SOURCE, 'source').status.reason, /重新登记/);
+  assert.equal(get(h, 'source').status.ready, false);
+  assert.match(get(h, 'source').status.reason, /重新登记/);
   assert.equal(await provider.lookup('source'), null);
-  assert.equal(await command(b, ['for-each-ref', 'refs/coda/snapshots/']), '');
-  await h.coda.protocols.delete(SNAPSHOT, 'snapshot'); await idle(provider);
-  assert.equal(await command(a, ['for-each-ref', 'refs/coda/snapshots/']), '');
-  assert.equal(await command(b, ['for-each-ref', 'refs/coda/snapshots/']), '');
-  assert.deepEqual(JSON.parse(await readFile(join(h.coda.plugin.state, 'snapshots.json'), 'utf8')), {});
   await provider.stop();
   const restarted = new GitProvider(h.coda); t.after(() => restarted.stop()); await restarted.start(); await idle(restarted);
-  assert.equal(get(h, SOURCE, 'source').status.ready, false);
+  assert.equal(get(h, 'source').status.ready, false);
   assert.equal(await restarted.lookup('source'), null);
-  await h.coda.protocols.delete(SOURCE, 'source'); await put(h, SOURCE, 'source', { path });
-  await put(h, SNAPSHOT, 'snapshot', { source: 'source', mode: 'worktree', run: 'run' }); await idle(restarted);
-  assert.equal(get(h, SNAPSHOT, 'snapshot').status.ready, true);
-  await h.coda.protocols.delete(SNAPSHOT, 'snapshot'); await idle(restarted);
-  assert.equal(await command(b, ['for-each-ref', 'refs/coda/snapshots/']), '');
-});
-
-test('旧运行查询暂时失败后，新增关联快照触发重查并恢复，无需订阅事件', async t => {
-  const dir = await fixture(t), h = host(join(dir, '.git', 'state'));
-  h.coda.api = async () => { throw new Error('temporarily unavailable'); };
-  const provider = new GitProvider(h.coda); t.after(() => provider.stop()); await provider.start();
-  await put(h, SOURCE, 'source', { path: dir });
-  await writeFile(join(dir, 'new'), 'captured');
-  await put(h, SNAPSHOT, 'first', { source: 'source', mode: 'worktree', run: 'old-run' }); await idle(provider);
-  assert.equal(get(h, SNAPSHOT, 'first').status.ready, false);
-  assert.match(get(h, SNAPSHOT, 'first').status.reason, /temporarily unavailable/);
-  assert.equal(await command(dir, ['for-each-ref', 'refs/coda/snapshots/']), '');
-  h.coda.api = async () => ({ id: 'old-run', state: 'running' });
-  await put(h, SNAPSHOT, 'second', { source: 'source', mode: 'worktree', run: 'old-run' }); await idle(provider);
-  for (const id of ['first', 'second']) {
-    const { status } = get(h, SNAPSHOT, id);
-    assert.equal(status.ready, true);
-    assert.equal(await command(dir, ['show', `${status.ref}:new`]), 'captured');
-  }
+  await h.coda.protocols.delete(SOURCE, 'source'); await put(h, 'source', { path }); await idle(restarted);
+  assert.equal(get(h, 'source').status.ready, true);
+  assert.equal((await restarted.lookup('source')).path, (await repository(b, env)).path);
   assert.deepEqual(h.failures, []);
-});
-
-for (const result of ['running', 'error']) test(`运行查询失败后的重查 ${result} 不覆盖等待期间的订阅终态`, async t => {
-  // Exercise the query/event interleaving in memory; reconciliation and Git are covered above.
-  const h = host('unused'), provider = new GitProvider(h.coda); t.after(() => provider.stop());
-  provider.snapshots.set('snapshot', { spec: { run: 'run' } });
-  h.coda.api = async () => { throw new Error('temporarily unavailable'); };
-  await provider.followRuns();
-  assert.match(provider.runs.get('run').error, /temporarily unavailable/);
-  const response = Promise.withResolvers();
-  let retried = false;
-  h.coda.api = () => { retried = true; return response.promise; };
-  const pending = provider.followRuns();
-  assert.equal(retried, true);
-  h.run('run', 'succeeded');
-  if (result === 'error') response.reject(new Error('old lookup failed'));
-  else response.resolve({ id: 'run', state: 'running' });
-  await pending;
-  assert.equal(provider.runs.get('run').state, 'succeeded');
-});
-
-for (const result of ['running', 'error']) test(`运行订阅终态先于旧查询 ${result} 返回时不回退、不创建快照`, async t => {
-  const dir = await fixture(t), h = host(join(dir, '.git', 'state'));
-  const entered = Promise.withResolvers(), response = Promise.withResolvers();
-  h.coda.api = async () => { entered.resolve(); return response.promise; };
-  const provider = new GitProvider(h.coda); t.after(() => provider.stop()); await provider.start();
-  await put(h, SOURCE, 'source', { path: dir });
-  await put(h, SNAPSHOT, 'snapshot', { source: 'source', mode: 'worktree', run: 'run' });
-  await entered.promise;
-  h.run('run', 'succeeded');
-  if (result === 'error') response.reject(new Error('old lookup failed'));
-  else response.resolve({ id: 'run', state: 'running' });
-  await idle(provider);
-  assert.equal(provider.runs.get('run').state, 'succeeded');
-  assert.equal(get(h, SNAPSHOT, 'snapshot').status.released, true);
-  assert.equal(await command(dir, ['for-each-ref', 'refs/coda/snapshots/']), '');
 });
