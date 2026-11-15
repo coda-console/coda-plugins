@@ -561,3 +561,28 @@ test('换人接回失败、新开也失败后运行从头重跑：仍做换人�
   assert.equal(f.state().opening, undefined);
   assert.deepEqual(f.state().agent, { agent: 'backup', model: 'm2' }, '之后的退回修改用当前执行者');
 });
+
+test('首次开工新建状态：只有输入、空的 pr、feedback、returns，成功后记下执行者与检查失败计数', t => {
+  const f = fixture(t);
+  f.task('one', 'first'); f.run('execute');
+  const { executor, ...rest } = f.state();
+  assert.deepEqual(rest, { lane: 'lane/req-1', branch: 'lane-pr/pr-run-1', title: '输入框可以输入', task: f.env.TASK, sync: false, pr: '', feedback: '', returns: 0,
+    agent: { agent: 'codex' }, failures: [] });
+  assert.equal(executor.session, 'worker-1');
+});
+
+test('退回修改中断后运行从头重跑：execute 以上一次的完整状态为底，检查失败计数、退回次数照旧，紧接着检查失败正常累加', t => {
+  const f = fixture(t);
+  f.task('one', 'first'); f.run('execute'); f.delivered();
+  assert.equal(f.decide('revise', '删除多余封装'), 'revise');
+  f.task('one', 'half', undefined, { exit: 1 }); f.run('revise', {}, 1);
+  const before = f.state();
+  f.task('one', 'done'); f.run('execute');
+  const after = f.state();
+  assert.equal(after.returns, 1, '退回次数不归零');
+  assert.deepEqual(after.failures, [], '检查失败计数在，不是 undefined');
+  assert.equal(after.executor.session, 'worker-1');
+  assert.deepEqual({ ...after, executor: undefined, feedback: undefined, opening: undefined }, { ...before, executor: undefined, feedback: undefined, opening: undefined });
+  f.run('gate'); assert.equal(f.run('gate-failed').outputs.route, 'revise');
+  assert.equal(f.state().failures.length, 1);
+});

@@ -27,11 +27,11 @@ const syncText = (lane, files = []) => `泳道是 ${lane}，别的泳道 PR 可�
 跑和冲突相关的测试后提交，只做这件事。回报冲突了哪些文件、各自怎么解决的、跑了什么。
 泳道没有新提交时，直接回报不需要合并。`;
 
-// 执行（execute）重跑时，上一次尝试开了却没做完的执行会话（opening）要留下来接着用；上一次已经成功的（executor），运行从头重跑时也接回它，不另开。
-const previous = action === 'execute' && existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : {};
+// execute 是运行的第一步：状态文件已在就是同一运行的重跑（恢复、重试或从头重走），以上一次的完整状态为底，只重写这一步自己的输入
+// （泳道、分支、标题、任务、是否跟上目标分支）；其余原样保留，包括 opening、executor、agent、failures、returns、pr、feedback。首次开工才新建。
+const inputs = { lane: `lane/${env.LANE}`, branch: `lane-pr/${env.GITHUB_RUN_ID}`, title: env.TITLE, task: env.TASK, sync: env.SYNC === 'true' };
 const state = action === 'execute'
-  ? { lane: `lane/${env.LANE}`, branch: `lane-pr/${env.GITHUB_RUN_ID}`, title: env.TITLE, task: env.TASK, sync: env.SYNC === 'true', pr: '', feedback: '', returns: 0,
-    opening: previous.opening, executor: previous.executor, agent: previous.agent }
+  ? { ...(existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : { pr: '', feedback: '', returns: 0 }), ...inputs }
   : JSON.parse(readFileSync(statePath, 'utf8'));
 const save = () => writeFileSync(statePath, JSON.stringify(state));
 const laneHead = () => { git('fetch', 'origin', state.lane); return git('rev-parse', 'FETCH_HEAD'); };
