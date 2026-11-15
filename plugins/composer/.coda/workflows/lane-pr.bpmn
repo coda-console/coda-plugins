@@ -28,7 +28,7 @@
       <script>node "${CODA_PLUGIN_PATH}/scripts/lane-pr.mjs" execute</script>
     </scriptTask>
     <sequenceFlow id="execute-report" sourceRef="execute" targetRef="gate" />
-    <scriptTask id="gate" name="推送并开 PR" scriptFormat="bash" coda:timeout="5">
+    <scriptTask id="gate" name="推送并开 PR" scriptFormat="bash" coda:timeout="5" coda:retry="3">
       <extensionElements><coda:output name="head" /></extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/lane-pr.mjs" gate</script>
     </scriptTask>
@@ -155,7 +155,7 @@ head：{{report.head}}
       <script>node "${CODA_PLUGIN_PATH}/scripts/lane-pr.mjs" swap</script>
     </scriptTask>
     <sequenceFlow id="swap-report" sourceRef="swap" targetRef="gate" />
-    <scriptTask id="land" name="试合并并合进泳道" scriptFormat="bash" coda:timeout="10">
+    <scriptTask id="land" name="试合并并合进泳道" scriptFormat="bash" coda:timeout="10" coda:retry="3">
       <extensionElements><coda:output name="route" /><coda:output name="pr" /><coda:output name="commit" /></extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/lane-pr.mjs" land</script>
     </scriptTask>
@@ -166,7 +166,7 @@ head：{{report.head}}
     <endEvent id="landed" name="已合进泳道" coda:notify="true">
       <extensionElements><coda:output name="pr" value="=land.pr" /><coda:output name="commit" value="=land.commit" /></extensionElements>
     </endEvent>
-    <scriptTask id="abandon" name="关闭 PR" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+    <scriptTask id="abandon" name="关闭 PR" scriptFormat="bash" coda:checkout="false" coda:timeout="5" coda:retry="3">
       <extensionElements><coda:output name="pr" /></extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/lane-pr.mjs" abandon</script>
     </scriptTask>

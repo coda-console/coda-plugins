@@ -3,7 +3,7 @@
   "id": "opencode",
   "displayName": "OpenCode",
   "description": "用 OpenCode 跑会话",
-  "version": "2.3.2",
+  "version": "2.3.3",
   "categories": ["Agent"],
   "contributes": {
     "agents": [
