@@ -3,20 +3,11 @@
 import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { checksText, command, gh, git, mergedCommit, mergePr, openPr, output, repoOf, reviewsText } from './shared.mjs';
-import { findingLine, historyText, readResponses, triage } from './triage.mjs';
+import { agentArgs, checksText, command, gh, git, instructions, mergedCommit, mergePr, openPr, output, repoOf, reviewsText } from './shared.mjs';
+import { fixText, historyText, readResponses, triage } from './triage.mjs';
 
 const env = process.env, action = process.argv[2];
 const statePath = join(env.CODA_ARTIFACTS, 'lane-pr.json');
-const instructions = `你是这次开发流程的执行者，自己完成这一项任务，不继承主 Agent 的协调职责，不再委派。
-只做这一项，在当前分支提交，不推送、不开 PR、不合并、不部署。
-遵守仓库的 AGENTS.md。只改必需的地方，不写防御性、冗余的代码，不顺手重构。
-只跑与改动直接相关的快检查；流程会在审查前自己跑项目检查，构建、全套和界面检查不在这里重复，不必再用 run-held 跑整套编译。
-只跑改动直接涉及的测试文件；不跑无文件参数的 \`check.sh backend\`、\`--all\`、完整 workflows 套件、客户端编译，任务明确要求的除外。
-验证命令必须把原始检查的退出码传出去：默认直接执行检查命令；要看日志尾部就用 \`rc=0; <检查> > "$log" 2>&1 || rc=$?; tail -n 80 "$log"; exit "$rc"\`；不能只 echo 退出码，不能让最后一条 tail / grep / cmp 决定成败。
-改坏验证（故意改错看测试红）只跑命中的那个用例，沿用默认时限；挂住了先定位原因，不要调大时限重跑。
-run-held 和流程运行的结果会自己送回，不要另起 Monitor 或后台任务去盯日志。
-回报改了什么、为什么、实际跑了哪些验证及未验证部分。`;
 
 // 跟上目标分支的泳道 PR 快进进泳道，执行者要知道为什么只能合并、不能变基。
 const syncTask = `这个泳道 PR 用来跟上目标分支：把目标分支合并（merge）进当前分支，不要变基、不要压成一个提交；它会快进进泳道，保住泳道与目标分支的祖先关系。
@@ -28,16 +19,6 @@ const syncText = (lane, files = []) => `泳道是 ${lane}，别的泳道 PR 可�
 解决冲突；数据库迁移等版本号和泳道撞号时，顺延自己这边的。
 跑和冲突相关的测试后提交，只做这件事。回报冲突了哪些文件、各自怎么解决的、跑了什么。
 泳道没有新提交时，直接回报不需要合并。`;
-
-// 评审回路（README.md「评审回路」）交给执行者的发现：编号固定，逐条修复（fixed）或反驳（disputed），结构化交回。
-const fixText = (head, findings) => `评审者对这次交付（提交 ${head}）提了下面这些发现，编号固定，之后几轮沿用。逐条处理：
-- 成立的：修好并提交，回 fixed，附修复它的提交号；
-- 不成立的：不要改，回 disputed，写明理由和证据（代码位置、命令与输出、文档出处）。原评审者会复评核实，你说不成立不等于关闭。
-标了「阻塞」的必须处理，其余能修的一并修。只处理这些发现，不做清单之外的事；流程会在新提交上重跑项目检查。
-
-${findings.map(f => findingLine(f, true)).join('\n')}
-
-回复的最后，单独给出一个代码块：开头一行是三个反引号加 responses，结尾一行是三个反引号，中间是一个 JSON 对象，只有 responses 一个字段，是数组，每个编号一条：id（编号）、disposition（fixed 或 disputed）、commit（fixed 时修复它的提交号）、reason（怎么修的，或为什么不成立）、evidence（证据：跑了什么、结果，或代码与文档出处）。`;
 
 const state = action === 'execute'
   ? { lane: `lane/${env.LANE}`, branch: `lane-pr/${env.GITHUB_RUN_ID}`, title: env.TITLE, task: env.TASK, sync: env.SYNC === 'true', pr: '', feedback: '', returns: 0 }
@@ -66,11 +47,7 @@ switch (action) {
     writeFileSync(prompt, `${instructions}\n\n${text}\n`);
     const args = action === 'revise' ? ['--continue', state.executor.session] : ['--commit', laneHead(), '--title', state.title];
     // 执行者是一组 Agent 选择（流程参数的 agent 类型）：没选的模型、强度、模式用 Agent 的默认值。
-    if (action !== 'revise') {
-      const { options = {}, ...chosen } = JSON.parse(env.EXECUTOR);
-      for (const key of ['agent', 'model', 'effort', 'mode']) if (chosen[key]) args.push(`--${key}`, chosen[key]);
-      for (const [id, value] of Object.entries(options)) args.push('--option', `${id}=${value}`);
-    }
+    if (action !== 'revise') args.push(...agentArgs(env.EXECUTOR));
     state.executor = JSON.parse(command('coda-agent', [...args, '--json', '--prompt-file', prompt]));
     state.feedback = '';
     // 新会话的连续检查失败重新计数。

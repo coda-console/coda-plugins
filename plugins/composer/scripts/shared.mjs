@@ -16,6 +16,25 @@ export const command = (bin, args, env = process.env) => {
 export const git = (...args) => command('git', args);
 export const gh = (...args) => command('gh', args);
 
+// 执行者的固定说明，放在每个交给执行者的任务前面：泳道 PR 的执行与修改、监督开发的同步与整体评审修复都用它。
+export const instructions = `你是这次开发流程的执行者，自己完成这一项任务，不继承主 Agent 的协调职责，不再委派。
+只做这一项，在当前分支提交，不推送、不开 PR、不合并、不部署。
+遵守仓库的 AGENTS.md。只改必需的地方，不写防御性、冗余的代码，不顺手重构。
+只跑与改动直接相关的快检查；流程会在审查前自己跑项目检查，构建、全套和界面检查不在这里重复，不必再用 run-held 跑整套编译。
+只跑改动直接涉及的测试文件；不跑无文件参数的 \`check.sh backend\`、\`--all\`、完整 workflows 套件、客户端编译，任务明确要求的除外。
+验证命令必须把原始检查的退出码传出去：默认直接执行检查命令；要看日志尾部就用 \`rc=0; <检查> > "$log" 2>&1 || rc=$?; tail -n 80 "$log"; exit "$rc"\`；不能只 echo 退出码，不能让最后一条 tail / grep / cmp 决定成败。
+改坏验证（故意改错看测试红）只跑命中的那个用例，沿用默认时限；挂住了先定位原因，不要调大时限重跑。
+run-held 和流程运行的结果会自己送回，不要另起 Monitor 或后台任务去盯日志。
+回报改了什么、为什么、实际跑了哪些验证及未验证部分。`;
+
+// 一组 Agent 选择（流程参数的 agent 类型，JSON）转成 coda-agent 开新会话的参数：没选的模型、强度、模式用 Agent 的默认值。
+export const agentArgs = json => {
+  const { options = {}, ...chosen } = JSON.parse(json), args = [];
+  for (const key of ['agent', 'model', 'effort', 'mode']) if (chosen[key]) args.push(`--${key}`, chosen[key]);
+  for (const [id, value] of Object.entries(options)) args.push('--option', `${id}=${value}`);
+  return args;
+};
+
 // 流程步骤替运行所属的会话说话（CODA_THREAD_ID），GitHub 插件的 gh 会把它开的 PR 报给「PR 观察」，
 // 进而启动 review 插件的 PR 生命流程。流程开的 PR 由流程自己检查、评审、合并，开的时候不带会话，不上报。
 export const openPr = (...args) => {
