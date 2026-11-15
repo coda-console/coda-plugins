@@ -300,8 +300,19 @@ test('放弃：关闭 PR 并删除分支，泳道不动', t => {
   const f = fixture(t); f.task('code', 'first'); f.run('execute'); f.delivered();
   const laneHead = f.remote('lane/req-1');
   assert.deepEqual(f.run('abandon').outputs, { pr: PR });
-  assert.deepEqual(f.calls('gh').at(-1).args, ['pr', 'close', PR, '--repo', 'github.com/example/fixture', '--delete-branch']);
+  assert.deepEqual(f.calls('gh').at(-1).args, ['pr', 'close', PR, '--repo', 'github.com/example/fixture']);
+  assert.equal(f.remote('lane-pr/pr-run-1'), '', '分支已删');
   assert.equal(f.remote('lane/req-1'), laneHead);
+});
+
+test('放弃重跑：PR 已关闭、分支还在时补删分支；分支也已不在时照样成功', t => {
+  const f = fixture(t); f.task('code', 'first'); f.run('execute'); f.delivered();
+  f.run('abandon');
+  f.git('push', '-q', 'origin', `${f.state().executor.head}:refs/heads/lane-pr/pr-run-1`);
+  assert.ok(f.remote('lane-pr/pr-run-1'));
+  assert.deepEqual(f.run('abandon').outputs, { pr: PR });
+  assert.equal(f.remote('lane-pr/pr-run-1'), '');
+  assert.deepEqual(f.run('abandon').outputs, { pr: PR });
 });
 
 test('审查材料带上评审者的结果，只取评这次交付的', t => {
@@ -496,6 +507,19 @@ test('接回的会话输出不是完整回复，也按接不回新开', t => {
   f.task('one', 'again'); f.run('execute');
   assert.equal(f.calls('agent').length, 4);
   assert.ok(f.calls('agent')[3].args.includes('--commit'));
+});
+
+test('接回的会话非零退出但回复完整：不新开，会话留在 opening，按失败退出；下次恢复仍接回同一会话', t => {
+  const f = fixture(t);
+  f.task('one', 'first'); f.run('execute');
+  f.task('one', 'half', undefined, { exit: 1 });
+  f.run('execute', {}, 1);
+  assert.deepEqual(f.calls('agent').map(c => c.args.includes('--commit')), [true, false], '只接回一次，不新开');
+  assert.deepEqual(f.state().opening, { action: 'execute', session: 'worker-1', text: f.env.TASK, agent: { agent: 'codex' } });
+  f.task('one', 'done'); f.run('execute');
+  assert.deepEqual(f.calls('agent').slice(2).map(c => c.args.slice(0, 2)), [['--continue', 'worker-1']]);
+  assert.equal(f.state().executor.session, 'worker-1');
+  assert.equal(f.state().opening, undefined);
 });
 
 test('退回修改接不回会话：不新开，按失败处理并说明；记录留着', t => {
