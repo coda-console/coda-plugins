@@ -85,11 +85,12 @@ switch (action) {
     };
     // 退回修改本来就接回执行会话；它失败后再跑（opening 记着）才是续跑，要先核对现场。
     let attempt = talk(resumed, resumed && !(created && action === 'revise') ? `${resumeText}\n\n${kind === 'revise' ? '这次要你做的' : '原任务'}：\n${opening.text}` : opening.text);
-    // Coda 侧的流程 Agent 步骤已在同一会话里续跑可恢复的失败，coda-agent 失败就是终局：接不回的会话从 opening 去掉，
-    // 同一次里用 opening 记的执行者新开一次（只一次），动作和任务文字不变。
+    // Coda 侧的流程 Agent 步骤已在同一会话里续跑可恢复的失败，coda-agent 失败就是终局：回复里没有会话 ID 才算会话接不回，
+    // 从 opening 去掉它，同一次里用 opening 记的执行者新开一次（只一次），动作和任务文字不变。
+    // 回复里有会话但失败（非零退出、缺 branch 或 head）的不新开：会话和它做出的提交还在，下面记下后按失败退出，下次恢复继续接回。
     // 退回修改必须在原会话里改（新开的会话没有已交付的提交和审查意见），接不回就按失败处理。
-    if (attempt.failed && resumed && kind !== 'revise') {
-      console.error(`接回会话 ${resumed} 失败（${attempt.result.status !== 0 ? `coda-agent 退出码 ${attempt.result.status}` : '输出不是完整回复'}），改为从泳道当前 head 新开会话。`);
+    if (!attempt.reply?.session && resumed && kind !== 'revise') {
+      console.error(`接回会话 ${resumed} 失败（${attempt.result.status !== 0 ? `coda-agent 退出码 ${attempt.result.status}` : '输出不是完整回复'}，没有会话 ID），改为从泳道当前 head 新开会话。`);
       delete opening.session;
       save();
       attempt = talk(undefined, opening.text);
@@ -190,7 +191,9 @@ switch (action) {
     break;
   }
   case 'abandon':
-    gh('pr', 'close', state.pr, '--repo', repoOf(state.pr), '--delete-branch');
+    // 关 PR 与删分支分开：gh 在 PR 已关闭时不再删分支，第一次删分支失败后重跑要能补上。
+    gh('pr', 'close', state.pr, '--repo', repoOf(state.pr));
+    if (git('ls-remote', '--heads', 'origin', state.branch)) git('push', 'origin', '--delete', state.branch);
     output('pr', state.pr);
     break;
   default: throw new Error(`未知泳道 PR 步骤：${action}`);
