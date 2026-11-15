@@ -337,6 +337,40 @@ test('执行步骤失败后再跑：接回失败时已开的会话并发续跑�
   assert.equal(f.remote('lane-pr/pr-run-1'), f.state().executor.head, '接回会话做完的提交照常推送');
 });
 
+test('运行从头重跑（上次执行已成功）：接回同一执行会话并发续跑说明，不新开；换备用执行者仍新开', t => {
+  const f = fixture(t);
+  f.task('one', 'first'); f.run('execute');
+  const first = f.state().executor;
+  f.task('one', 'again'); f.run('execute');
+  const calls = f.calls('agent');
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[1].args.slice(0, -2), ['--continue', first.session, '--json']);
+  for (const text of ['git status', 'git log', '不要从头重做', '输入框没反应']) assert.ok(calls[1].prompt.includes(text), text);
+  assert.equal(f.state().executor.session, first.session);
+  assert.equal(f.state().opening, undefined);
+  assert.equal(f.state().pr, '', '其余状态照旧重建');
+  f.delivered();
+  assert.equal(f.decide('swap', '换人', 'true'), 'swap');
+  f.task('redo', 'redo'); f.run('swap', { EXECUTOR: JSON.stringify({ agent: 'backup' }) });
+  assert.ok(f.calls('agent')[2].args.includes('--commit'), '换备用执行者是有意新开');
+});
+
+test('退回修改失败后再跑：接回同一会话并发续跑说明；第一次退回修改不带', t => {
+  const f = fixture(t);
+  f.task('one', 'first'); f.run('execute'); f.delivered();
+  assert.equal(f.decide('revise', '删除多余封装'), 'revise');
+  f.task('one', 'half', undefined, { exit: 1 }); f.run('revise', {}, 1);
+  assert.deepEqual(f.state().opening, { action: 'revise', session: 'worker-1' });
+  f.task('one', 'done'); f.run('revise');
+  const [, firstTry, rerun] = f.calls('agent');
+  assert.deepEqual(firstTry.args.slice(0, -2), ['--continue', 'worker-1', '--json']);
+  assert.ok(!firstTry.prompt.includes('git status') && firstTry.prompt.includes('删除多余封装'));
+  assert.deepEqual(rerun.args.slice(0, -2), ['--continue', 'worker-1', '--json']);
+  for (const text of ['git status', 'git log', '不要从头重做', '删除多余封装']) assert.ok(rerun.prompt.includes(text), text);
+  assert.equal(f.state().opening, undefined, '成功后不再接');
+  assert.equal(f.state().feedback, '');
+});
+
 test('coda-agent 退出 0 但输出不是完整回复：这一步失败、错误带输出摘要，不记执行者；会话能取到就记下接回', t => {
   const f = fixture(t);
   f.task('one', 'work', undefined, { garbage: 'not json' });

@@ -15,10 +15,14 @@ const resetTime = window => window?.status === 'rejected' && Number.isSafeIntege
 
 // The service or the way to it failing, which can pass (docs/agent-protocol.md「服务暂不可用」): the network (a connection reset,
 // refused or timed out, DNS, a TLS handshake, a transfer cut off) and the service itself (5xx, overloaded, 529, a request that
-// timed out). The retry policy is Coda's. A certificate that is wrong ("Unable to connect to API: SSL certificate has expired") is
-// not one, and neither is a bare "Connection closed", which an MCP server says as well.
-const network = /\b(?:ECONN(?:RESET|REFUSED|ABORTED)|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE|EHOSTUNREACH|ENETUNREACH|EPROTO)\b|\bUND_ERR_[A-Z_]+|\bERR_SSL_[A-Z_]+|socket hang up|fetch failed|other side closed|premature close|unexpected EOF|Request timed out|Unable to connect to API(?!: SSL certificate)|\b(?:TLS|SSL)\b[^\n]{0,40}\bhandshake|\bhandshake (?:failed|timed out)|\bnetwork (?:error|connection (?:lost|error))/i;
+// timed out). The retry policy is Coda's. A certificate that is wrong (`certificate`) is not one, and neither is a bare
+// "Connection closed", which an MCP server says as well.
+const network = /\b(?:ECONN(?:RESET|REFUSED|ABORTED)|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE|EHOSTUNREACH|ENETUNREACH|EPROTO)\b|\bUND_ERR_[A-Z_]+|\bERR_SSL_[A-Z_]+|socket hang up|fetch failed|other side closed|premature close|unexpected EOF|Request timed out|Unable to connect to API|\b(?:TLS|SSL)\b[^\n]{0,40}\bhandshake|\bhandshake (?:failed|timed out)|\bnetwork (?:error|connection (?:lost|error))/i;
 const upstream = /\b(?:API Error:|HTTP|status(?: code)?)\s*:?\s*(?:408|5\d\d)\b|\boverloaded_error\b|\bapi_error\b|Repeated 529|\b(?:Bad Gateway|Service Unavailable|Gateway Time-?out|Internal Server Error)\b/i;
+// A certificate or TLS configuration that is wrong ("Unable to connect to API: SSL certificate has expired", a proxy's self-signed
+// certificate with no NODE_EXTRA_CA_CERTS) stays wrong when retried. Claude Code files these connection errors under `server_error`,
+// so the words rule them out before the category counts.
+const certificate = /SSL certificate|SSL error \(|self[- ]signed certificate|certificate verification|unable to verify the first certificate|\bCERT_[A-Z_]+|\b[A-Z_]+_CERT(?:_[A-Z_]+)?\b|\bUNABLE_TO_VERIFY_LEAF_SIGNATURE\b/i;
 // A page of Cloudflare's in place of the API's answer, whatever the status: its 403 is no authentication failure.
 const cloudflare = message => /\b[45]\d\d\b/.test(message) && /cloudflare|cf-ray|Just a moment|Attention Required/i.test(message);
 // The login itself gone (docs/agent-protocol.md「需要重新登录」): Claude Code's own "Failed to authenticate: OAuth session expired and
@@ -39,7 +43,7 @@ export function claudeFailure(message, { error, limits, window } = {}) {
   // session has the input by then, so it is always `accepted`. Of the categories Claude Code names, overloaded and server_error
   // are the service's; the words tell for the unnamed (rate_limit, unknown). The rest (authentication, billing, invalid
   // request, ...) are never this, except a Cloudflare page, which Claude Code takes for an authentication failure.
-  const unavailable = !quota && (cloudflare(message) || ['overloaded', 'server_error'].includes(error) ||
+  const unavailable = !quota && !certificate.test(message) && (cloudflare(message) || ['overloaded', 'server_error'].includes(error) ||
     (!error || ['rate_limit', 'unknown'].includes(error)) && (network.test(message) || upstream.test(message)));
   const retryAfterMs = unavailable ? waited(message) : undefined;
   const reauth = !quota && !unavailable && (!error || error === 'authentication_failed') && loginLost.test(message);
