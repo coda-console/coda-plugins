@@ -68,6 +68,28 @@ test('SDK sessions identify as Coda even when their parent supplies another entr
   }
 });
 
+test('Claude Code\'s temp root follows CODA_SESSION_TMP, and is left alone when the backend gives none', async t => {
+  await t.test('given', async t => {
+    const c = await setup(t, { env: { CODA_SESSION_TMP: '/coda/session-tmp' } });
+    await c.open();
+    assert.equal(c.query.options.env.CLAUDE_CODE_TMPDIR, '/coda/session-tmp');
+  });
+  await t.test('not given', async t => {
+    const c = await setup(t, { env: { CODA_SESSION_TMP: undefined, CLAUDE_CODE_TMPDIR: undefined } });
+    await c.open();
+    assert.equal(c.query.options.env.CLAUDE_CODE_TMPDIR, undefined);
+  });
+  await t.test('the query of a chosen service\'s model has it too', async t => {
+    const service = await modelService(t);
+    const c = await setup(t, { env: { ...service.env, CODA_SESSION_TMP: '/coda/session-tmp' } });
+    await c.open();
+    await c.request('session/set_config_option', { sessionId: c.sessionId, configId: 'model', value: 'magpie/anthropic/fake/alpha' });
+    await c.prompt('hello');
+    assert.equal(queries.get(c.sessionId).options.model, 'fake/alpha');
+    assert.equal(queries.get(c.sessionId).options.env.CLAUDE_CODE_TMPDIR, '/coda/session-tmp');
+  });
+});
+
 test('session/new lists the concrete models the SDK resolves its rows to, and settings go to the SDK as chosen', async t => {
   const c = await setup(t);
   const init = (await c.request('initialize', { protocolVersion: 1, clientCapabilities: {} })).result;

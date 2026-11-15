@@ -167,7 +167,9 @@ export class ClaudeSession {
         ...(Object.keys(servers).length ? { extraArgs: { 'mcp-config': this.mcpConfig({ mcpServers: servers }) } } : {}), ...(additionalDirectories.length ? { additionalDirectories } : {}),
         // Identify Coda even when a parent supplied an SDK label (anthropics/claude-code#97074).
         // Claude Code reports running and idle only when asked: idle is what ends a task's wait.
-        env: { ...environment, CLAUDE_CODE_ENTRYPOINT: 'coda', CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1' },
+        // Claude Code's own temp root (scratchpad, tasks) goes under the directory Coda reclaims with the session; older backends give none.
+        env: { ...environment, CLAUDE_CODE_ENTRYPOINT: 'coda', CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1',
+          ...(this.env.CODA_SESSION_TMP ? { CLAUDE_CODE_TMPDIR: this.env.CODA_SESSION_TMP } : {}) },
         // Stop supplies the complete list of scheduled wakeups. A CronCreate result alone cannot tell whether one was later
         // deleted or fired.
         hooks: { Stop: [{ hooks: [async input => {
