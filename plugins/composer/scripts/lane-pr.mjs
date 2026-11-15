@@ -53,35 +53,49 @@ switch (action) {
   case 'revise': {
     const prompt = join(env.RUNNER_TEMP, 'task.md');
     const task = state.sync ? `${state.task}\n\n${syncTask}` : state.task;
-    let text = action === 'revise' ? state.feedback : action === 'execute' ? task
+    const own = action === 'revise' ? state.feedback : action === 'execute' ? task
       : `${task}\n\n主 Agent 把这一项换给你重做：\n${state.feedback}\n\n上一位执行者的分支 ${state.executor.branch}、提交 ${state.executor.head} 在本机仓库可读，可以参考，也可以不用。`;
+    // 上一次没做完的执行会话（opening）按它自己的动作接回、配它自己的任务文字：从头重跑从 execute 开始，也不能把 swap、revise 的决定丢掉。
+    // 没有 opening 时，execute 接回已成功的执行会话，退回修改接回执行会话；换备用执行者一律新开。
+    const opening = state.opening && (action === 'execute' || state.opening.action === action) ? state.opening : undefined;
+    const kind = opening?.action ?? action;
+    const base = opening?.text ?? own;
     // 退回修改本来就接回执行会话；它失败后再跑（opening 记着）才是续跑，要先核对现场。
-    const interrupted = state.opening?.action === action;
-    const resumed = action === 'revise' ? state.executor.session : interrupted ? state.opening.session : action === 'execute' ? state.executor?.session : undefined;
-    if (resumed && (action !== 'revise' || interrupted)) text = `${resumeText}\n\n${action === 'revise' ? '这次要你做的' : '原任务'}：\n${text}`;
-    if (action === 'revise' && !interrupted) { state.opening = { action, session: resumed }; save(); }
-    writeFileSync(prompt, `${instructions}\n\n${text}\n`);
-    const args = resumed ? ['--continue', resumed] : ['--commit', laneHead(), '--title', state.title];
-    // 执行者是一组 Agent 选择（流程参数的 agent 类型）：没选的模型、强度、模式用 Agent 的默认值。
-    if (!resumed) {
-      const { options = {}, ...chosen } = JSON.parse(env.EXECUTOR);
-      for (const key of ['agent', 'model', 'effort', 'mode']) if (chosen[key]) args.push(`--${key}`, chosen[key]);
-      for (const [id, value] of Object.entries(options)) args.push('--option', `${id}=${value}`);
+    const first = action === 'revise' && !opening;
+    const resumed = opening ? opening.session : action === 'swap' ? undefined : state.executor?.session;
+    if (first) { state.opening = { action, session: resumed, text: base }; save(); }
+    const talk = (session, text) => {
+      writeFileSync(prompt, `${instructions}\n\n${text}\n`);
+      const args = session ? ['--continue', session] : ['--commit', laneHead(), '--title', state.title];
+      // 执行者是一组 Agent 选择（流程参数的 agent 类型）：没选的模型、强度、模式用 Agent 的默认值。
+      if (!session) {
+        const { options = {}, ...chosen } = JSON.parse(env.EXECUTOR);
+        for (const key of ['agent', 'model', 'effort', 'mode']) if (chosen[key]) args.push(`--${key}`, chosen[key]);
+        for (const [id, value] of Object.entries(options)) args.push('--option', `${id}=${value}`);
+      }
+      // 会话失败时 coda-agent 仍在标准输出给出会话 ID；记下它，这一步再跑才接得回。
+      const result = spawnSync('coda-agent', [...args, '--json', '--prompt-file', prompt], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
+      if (result.error) throw result.error;
+      let reply;
+      try { reply = JSON.parse(result.stdout); } catch { /* 失败时可以没有会话信息 */ }
+      // 退出 0 必须给出完整回复：否则 gate 读执行者时才崩，恢复也一直重复同一个错。
+      return { result, reply, failed: result.status !== 0 || !reply?.session || !reply.branch || !reply.head };
+    };
+    let attempt = talk(resumed, resumed && !first ? `${resumeText}\n\n${kind === 'revise' ? '这次要你做的' : '原任务'}：\n${base}` : base);
+    // Coda 侧的流程 Agent 步骤已在同一会话里续跑可恢复的失败，coda-agent 失败就是终局：接不回的记录清掉，新开一次（只一次）。
+    // 退回修改必须在原会话里改（新开的会话没有已交付的提交和审查意见），接不回就按失败处理。
+    if (attempt.failed && resumed && kind !== 'revise') {
+      console.error(`接回会话 ${resumed} 失败（${attempt.result.status !== 0 ? `coda-agent 退出码 ${attempt.result.status}` : '输出不是完整回复'}），改为从泳道当前 head 新开会话。`);
+      if (opening) delete state.opening; else delete state.executor;
+      save();
+      attempt = talk(undefined, base);
     }
-    // 会话失败时 coda-agent 仍在标准输出给出会话 ID；记下它，这一步再跑才接得回。
-    const result = spawnSync('coda-agent', [...args, '--json', '--prompt-file', prompt], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
-    if (result.error) throw result.error;
-    let reply;
-    try { reply = JSON.parse(result.stdout); } catch { /* 失败时可以没有会话信息 */ }
-    if (result.status !== 0) {
-      if (action !== 'revise' && reply?.session) { state.opening = { action, session: reply.session }; save(); }
-      process.exit(result.status ?? 1);
-    }
-    // 退出 0 必须给出完整回复：否则 gate 读执行者时才崩，恢复也一直重复同一个错。
-    if (!reply?.session || !reply.branch || !reply.head) {
-      if (action !== 'revise' && reply?.session) { state.opening = { action, session: reply.session }; save(); }
-      console.error(`coda-agent 退出 0，但输出不是含 session、branch、head 的 JSON：${result.stdout.slice(0, 300)}`);
-      process.exit(1);
+    const { result, reply } = attempt;
+    if (attempt.failed) {
+      if (kind === 'revise') console.error(`退回修改接不回会话 ${resumed}：必须在原会话里改，不新开会话，这一步按失败处理。`);
+      else if (reply?.session) { state.opening = { action: kind, session: reply.session, text: base }; save(); }
+      if (result.status === 0) console.error(`coda-agent 退出 0，但输出不是含 session、branch、head 的 JSON：${result.stdout.slice(0, 300)}`);
+      process.exit(result.status || 1);
     }
     state.executor = reply;
     delete state.opening;
