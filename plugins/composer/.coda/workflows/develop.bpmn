@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- 监督开发（README.md「监督开发」）：一个需求一次运行、一条泳道 lane/<运行 ID>。主 Agent 在「需求进行中」用泳道 PR（lane-pr）往泳道里提改动，
-     不找用户；提交验收后泳道开 PR 进目标分支，检查、整体评审、设备验收后由用户批准一次，用合并提交合并，再运行勾选的合并后流程（挂点 merged）。
+     不找用户；提交验收后泳道先跟上目标分支，再开 PR 进目标分支，检查、整体评审（小问题先交开工执行者就地修）、设备验收后由用户批准一次，
+     用合并提交合并，再运行勾选的合并后流程（挂点 merged）。
      收尾的任何失败和「暂不合并」都带着原因回到「需求进行中」。BPMN 2.0，由 Coda 执行（docs/workflows.md）。 -->
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="develop-definitions" targetNamespace="https://coda.pub/plugins/composer">
@@ -71,7 +72,7 @@
 - 互不依赖的块可以同时发起；有依赖的等前一个合进泳道再发起。并行的泳道 PR 合进泳道前会试合并泳道最新 head，冲突交回执行者。
 - 跟上目标分支：发起 sync=true 的泳道 PR，任务写把 origin/{{lane.base}} 合并进来、解冲突、顺延撞号的迁移版本；它快进进泳道，不 squash。
 - 中途想先看效果：可以用泳道的提交发起 mac-preview-install、ios-preview-install（传 commit），或对泳道 head 跑一次合并前检查（加入挂点 premerge 的流程）。
-需求做完、要合的泳道 PR 都合进泳道后选「提交验收」：流程开或更新泳道进 {{lane.base}} 的 PR，跑项目检查（同一 head 复用）、合并前检查与 GitHub 检查，{{if inputs.reviewer = null and inputs.reviewer2 = null and inputs.reviewer3 = null then "" else "整体评审一次，"}}{{if inputs.delivery = "" then (if inputs.devices then "再交用户设备验收，" else "") + "最后由用户批准合并（合并提交）。任何失败和用户的「暂不合并」都带着原因回到这里。" else "之后进入「待交付」，由需求交付运行 " + inputs.delivery + " 统一验收、批准，没有用户的「暂不合并」。任何失败和待交付的「退回修改」都带着原因回到这里。"}}
+需求做完、要合的泳道 PR 都合进泳道后选「提交验收」：流程先让泳道跟上 {{lane.base}}（能快进就快进，能干净合并就做合并提交，有冲突交开工执行者合并），再开或更新泳道进 {{lane.base}} 的 PR，跑项目检查（同一 head 复用）、合并前检查与 GitHub 检查，{{if inputs.reviewer = null and inputs.reviewer2 = null and inputs.reviewer3 = null then "" else "整体评审一次（只有测试、文档、风格类的小问题时先交开工执行者就地修、原评审者复评），"}}{{if inputs.delivery = "" then (if inputs.devices then "再交用户设备验收，" else "") + "最后由用户批准合并（合并提交）。任何失败和用户的「暂不合并」都带着原因回到这里。" else "之后进入「待交付」，由需求交付运行 " + inputs.delivery + " 统一验收、批准，没有用户的「暂不合并」。任何失败和待交付的「退回修改」都带着原因回到这里。"}}
 「提交验收」备注必填，写给用户的改动汇报，会原样放在批准卡和 PR 描述最上面。约 8 行以内，只写用户能感知的变化和动到的端，不放实现细节、测试数量、文件清单，不贴代码：
 做了什么
 - …（3～5 条）
@@ -94,7 +95,7 @@
     <sequenceFlow id="progress-note" sourceRef="after-progress" targetRef="progress"><conditionExpression xsi:type="tFormalExpression">=progress-result.route = "progress"</conditionExpression></sequenceFlow>
     <sequenceFlow id="progress-pause" sourceRef="after-progress" targetRef="paused"><conditionExpression xsi:type="tFormalExpression">=progress-result.route = "pause"</conditionExpression></sequenceFlow>
     <sequenceFlow id="progress-abandon" sourceRef="after-progress" targetRef="abandoned"><conditionExpression xsi:type="tFormalExpression">=progress-result.route = "abandon"</conditionExpression></sequenceFlow>
-    <sequenceFlow id="progress-submit" sourceRef="after-progress" targetRef="pr" />
+    <sequenceFlow id="progress-submit" sourceRef="after-progress" targetRef="sync" />
     <userTask id="paused" name="需求已暂停" coda:assignee="user" coda:noteLabel="附言（可选）">
       <documentation>需求：{{lane.title}}
 泳道：{{lane.lane}}
@@ -116,6 +117,27 @@
     <sequenceFlow id="paused-abandon" sourceRef="after-paused" targetRef="abandoned"><conditionExpression xsi:type="tFormalExpression">=paused-result.route = "abandon"</conditionExpression></sequenceFlow>
     <sequenceFlow id="paused-continue" sourceRef="after-paused" targetRef="resume" />
     <endEvent id="abandoned" name="已放弃" coda:notify="true" />
+
+    <!-- 提交验收先跟上目标分支：泳道已包含它不动，是它的祖先就快进，分叉能干净合并就做保留双亲的合并提交，都是普通推送（不 force）；
+         有冲突交开工执行者从泳道 head 合并、解冲突（只合并不变基），没填执行者、推送被拒（泳道被别人推进了）都带着原因回到进行中。
+         之后新 head 照常跑全部检查。 -->
+    <scriptTask id="sync" name="跟上目标分支" scriptFormat="bash" coda:timeout="5">
+      <extensionElements><coda:env name="FIXER" value="=inputs.executor != null" /><coda:output name="route" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" sync-base</script>
+    </scriptTask>
+    <sequenceFlow id="sync-route" sourceRef="sync" targetRef="after-sync" />
+    <exclusiveGateway id="after-sync" name="跟上目标分支之后" default="sync-pr" />
+    <sequenceFlow id="sync-conflict" sourceRef="after-sync" targetRef="sync-resolve"><conditionExpression xsi:type="tFormalExpression">=sync.route = "resolve"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="sync-progress" sourceRef="after-sync" targetRef="resume"><conditionExpression xsi:type="tFormalExpression">=sync.route = "progress"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="sync-pr" sourceRef="after-sync" targetRef="pr" />
+    <scriptTask id="sync-resolve" name="执行者合并目标分支" scriptFormat="bash">
+      <extensionElements><coda:env name="EXECUTOR" value="=inputs.executor" /><coda:output name="route" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" sync-resolve</script>
+    </scriptTask>
+    <sequenceFlow id="sync-resolve-route" sourceRef="sync-resolve" targetRef="after-sync-resolve" />
+    <exclusiveGateway id="after-sync-resolve" name="执行者合并之后" default="sync-resolve-pr" />
+    <sequenceFlow id="sync-resolve-progress" sourceRef="after-sync-resolve" targetRef="resume"><conditionExpression xsi:type="tFormalExpression">=sync-resolve.route = "progress"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="sync-resolve-pr" sourceRef="after-sync-resolve" targetRef="pr" />
 
     <scriptTask id="pr" name="开 PR 或更新汇总" scriptFormat="bash" coda:timeout="5" coda:retry="3">
       <extensionElements>
@@ -182,13 +204,23 @@
     <sequenceFlow id="github-progress" sourceRef="github-feedback" targetRef="resume" />
     <sequenceFlow id="github-reviews" sourceRef="github-checks" targetRef="reviews-choice" />
 
-    <!-- 整体评审：填了的整体评审者各评一次整条泳道（目标分支…泳道 head 的三点 diff），同时进行；评审没完成或调用没成都照常结束，
-         结果交主 Agent 选「继续验收」或「回到进行中」。都不填时跳过。 -->
+    <!-- 整体评审：填了的整体评审者各评一次整条泳道（目标分支…泳道 head 的三点 diff），同时进行；评审没完成或调用没成都照常结束。
+         之后分流（scripts/triage.mjs 的 triageOverall）：只有 P3 或没有发现直接进验收，P3 写进汇报；只有测试、文档、风格类的 P2 交开工执行者在泳道上修，
+         推送后重跑全部检查、原评审位置增量复评，最多两轮；其余交主 Agent 选「继续验收」或「回到进行中」，卡上附收敛经过。都不填时跳过。 -->
     <exclusiveGateway id="reviews-choice" name="是否整体评审" default="reviews-skip" />
-    <sequenceFlow id="reviews-needed" sourceRef="reviews-choice" targetRef="reviews"><conditionExpression xsi:type="tFormalExpression">=inputs.reviewer != null or inputs.reviewer2 != null or inputs.reviewer3 != null</conditionExpression></sequenceFlow>
+    <sequenceFlow id="reviews-needed" sourceRef="reviews-choice" targetRef="overall-round"><conditionExpression xsi:type="tFormalExpression">=inputs.reviewer != null or inputs.reviewer2 != null or inputs.reviewer3 != null</conditionExpression></sequenceFlow>
     <sequenceFlow id="reviews-skip" sourceRef="reviews-choice" targetRef="acceptance-choice" />
+    <!-- 定这一次怎么评：交执行者修过、等复评时增量复评（base 是上次评过的 head，带上次的发现与执行者的回应）；否则对整条泳道完整评审。 -->
+    <scriptTask id="overall-round" name="确定整体评审范围" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements>
+        <coda:env name="BASE" value="=pr.base" />
+        <coda:output name="base" /><coda:output name="previous" /><coda:output name="previous2" /><coda:output name="previous3" />
+      </extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" overall-round</script>
+    </scriptTask>
+    <sequenceFlow id="overall-round-reviews" sourceRef="overall-round" targetRef="reviews" />
     <subProcess id="reviews" name="整体评审" coda:optional="true">
-      <multiInstanceLoopCharacteristics coda:inputCollection='=[{slot: "reviewer", who: inputs.reviewer}, {slot: "reviewer2", who: inputs.reviewer2}, {slot: "reviewer3", who: inputs.reviewer3}]' coda:inputElement="slot" />
+      <multiInstanceLoopCharacteristics coda:inputCollection='=[{slot: "reviewer", who: inputs.reviewer, previous: overall-round.previous}, {slot: "reviewer2", who: inputs.reviewer2, previous: overall-round.previous2}, {slot: "reviewer3", who: inputs.reviewer3, previous: overall-round.previous3}]' coda:inputElement="slot" />
       <startEvent id="reviews-start" />
       <sequenceFlow id="reviews-enter" sourceRef="reviews-start" targetRef="review-choice" />
       <exclusiveGateway id="review-choice" name="这一位评不评" default="review-skip" />
@@ -196,11 +228,12 @@
       <sequenceFlow id="review-skip" sourceRef="review-choice" targetRef="review-skipped" />
       <callActivity id="review-call" name="评审整条泳道" calledElement="review-commit">
         <extensionElements>
-          <coda:param name="base" value="=pr.base" />
+          <coda:param name="base" value="=overall-round.base" />
           <coda:param name="head" value="=pr.head" />
           <coda:param name="task" value="=pr.task" />
           <coda:param name="reviewer" value="=slot.who" />
           <coda:param name="evidence" value="=github-checks.evidence" />
+          <coda:param name="previous" value="=slot.previous" />
         </extensionElements>
       </callActivity>
       <boundaryEvent id="review-failed" attachedToRef="review-call"><errorEventDefinition /></boundaryEvent>
@@ -213,9 +246,39 @@
       <endEvent id="review-done"><extensionElements>
         <coda:output name="state" value="done" /><coda:output name="slot" value="=slot.slot" /><coda:output name="who" value="=slot.who" /><coda:output name="head" value="=pr.head" />
         <coda:output name="decision" value="=review-call.decision" /><coda:output name="line" value="=review-call.line" /><coda:output name="findings" value="=review-call.findings" /><coda:output name="report" value="=review-call.report" />
+        <coda:output name="reviewed" value="=review-call.head" /><coda:output name="resolutions" value="=review-call.resolutions" /><coda:output name="blocking" value="=review-call.blocking" />
       </extensionElements></endEvent>
     </subProcess>
-    <sequenceFlow id="reviews-reviewed" sourceRef="reviews" targetRef="reviewed" />
+    <sequenceFlow id="reviews-triage" sourceRef="reviews" targetRef="overall-triage" />
+    <scriptTask id="overall-triage" name="分流整体评审意见" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements>
+        <coda:env name="REVIEWS" value="=reviews" /><coda:env name="SUMMARY" value="=pr.summary" /><coda:env name="FIXER" value="=inputs.executor != null" />
+        <coda:output name="route" /><coda:output name="summary" />
+      </extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" overall-triage</script>
+    </scriptTask>
+    <sequenceFlow id="overall-triage-how" sourceRef="overall-triage" targetRef="overall-triage-route" />
+    <exclusiveGateway id="overall-triage-route" name="直接验收、就地修还是交主 Agent" default="overall-triage-review" />
+    <sequenceFlow id="overall-triage-accept" sourceRef="overall-triage-route" targetRef="acceptance-choice"><conditionExpression xsi:type="tFormalExpression">=overall-triage.route = "accept"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="overall-triage-fix" sourceRef="overall-triage-route" targetRef="overall-fix"><conditionExpression xsi:type="tFormalExpression">=overall-triage.route = "fix"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="overall-triage-review" sourceRef="overall-triage-route" targetRef="overall-rounds" />
+    <!-- 开工执行者在泳道上逐条修复或反驳：第一轮从泳道 head 开会话，之后续同一会话；有新提交就普通推送到泳道、回到开 PR 重跑全部检查后复评；
+         只反驳就直接复评；都没有交主 Agent；推送被拒回到进行中。 -->
+    <scriptTask id="overall-fix" name="执行者修整体评审的小问题" scriptFormat="bash">
+      <extensionElements><coda:env name="EXECUTOR" value="=inputs.executor" /><coda:output name="route" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" overall-fix</script>
+    </scriptTask>
+    <sequenceFlow id="overall-fix-how" sourceRef="overall-fix" targetRef="overall-fix-route" />
+    <exclusiveGateway id="overall-fix-route" name="有没有新提交" default="overall-fix-review" />
+    <sequenceFlow id="overall-fix-pr" sourceRef="overall-fix-route" targetRef="pr"><conditionExpression xsi:type="tFormalExpression">=overall-fix.route = "pr"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="overall-fix-again" sourceRef="overall-fix-route" targetRef="overall-round"><conditionExpression xsi:type="tFormalExpression">=overall-fix.route = "again"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="overall-fix-progress" sourceRef="overall-fix-route" targetRef="resume"><conditionExpression xsi:type="tFormalExpression">=overall-fix.route = "progress"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="overall-fix-review" sourceRef="overall-fix-route" targetRef="overall-rounds" />
+    <scriptTask id="overall-rounds" name="整理整体评审的收敛经过" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements><coda:output name="text" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" overall-rounds</script>
+    </scriptTask>
+    <sequenceFlow id="overall-rounds-reviewed" sourceRef="overall-rounds" targetRef="reviewed" />
     <scriptTask id="reviewed" name="整理整体评审" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
       <extensionElements><coda:env name="REVIEWS" value="=reviews" /><coda:output name="reviews" /></extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" reviewed</script>
@@ -227,6 +290,7 @@ PR：{{pr.url}}
 泳道 head：{{pr.head}}
 整体评审者对整条泳道（{{lane.base}}…泳道 head）的发现：
 {{reviewed.reviews}}
+{{if overall-rounds.text = "" then "" else "\n收敛经过（小问题先交开工执行者逐条修复或反驳、原评审者复评，编号固定）：\n" + overall-rounds.text + "\n"}}
 发现是否成立由你判断。要先修的选「回到进行中」，提泳道 PR 修好后再提交验收；不必修的选「继续验收」。</documentation>
       <extensionElements>
         <coda:choice id="continue" name="继续验收" primary="true" />
@@ -345,7 +409,7 @@ head：{{pr.head}}
 主 Agent：请按需求交付运行的安排处理。交付验收不过时选「退回修改」，备注必填，意见带回「需求进行中」；提泳道 PR 修好后重新提交验收、跑检查并回到待交付。
 按需求交付运行的顺序选择「放行合并」，随后以合并提交合并，输出合并提交并结束，不部署。
 
-{{pr.summary}}</documentation>
+{{if overall-triage.summary = null then pr.summary else overall-triage.summary}}</documentation>
       <extensionElements>
         <coda:choice id="revise" name="退回修改" />
         <coda:choice id="merge" name="放行合并" primary="true" />
@@ -367,7 +431,7 @@ head：{{pr.head}}
     </serviceTask>
     <sequenceFlow id="joiners-approve" sourceRef="joiners" targetRef="approve" />
     <userTask id="approve" name="批准合并" coda:noteLabel="备注（可选）" coda:assignee="user">
-      <documentation>{{pr.summary}}
+      <documentation>{{if overall-triage.summary = null then pr.summary else overall-triage.summary}}
 
 {{if inputs.devices then "设备验收、" else ""}}项目检查、合并前检查、GitHub 检查已通过{{if inputs.reviewer = null and inputs.reviewer2 = null and inputs.reviewer3 = null then "" else "，整条泳道已整体评审"}}。
 PR：{{pr.url}}</documentation>

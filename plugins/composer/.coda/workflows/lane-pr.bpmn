@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- 泳道 PR（README.md「泳道 PR」）：需求运行（develop）的主 Agent 用 workflow_run 发起，一项改动一个。执行者从泳道 head 开工，
      交付推到 lane-pr/<运行 ID>、开进泳道的 PR，项目检查、评审后由主 Agent 审查，合进泳道后把结果交回发起的会话。
+     评审有阻塞级发现时先交执行者逐条修复或反驳、原评审者增量复评，收敛了或判断不了才给主 Agent（README.md「评审回路」）。
      不出用户卡、不装机、不部署、不跑合并前检查。BPMN 2.0，由 Coda 执行（docs/workflows.md）。 -->
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="lane-pr-definitions" targetNamespace="https://coda.pub/plugins/composer">
@@ -44,22 +45,30 @@
     </scriptTask>
     <sequenceFlow id="checks-review" sourceRef="check-feedback" targetRef="gate-route" />
     <exclusiveGateway id="gate-route" name="连续失败是否达到三次" default="gate-revise" />
-    <sequenceFlow id="gate-escalate" sourceRef="gate-route" targetRef="report"><conditionExpression xsi:type="tFormalExpression">=check-feedback.route = "review"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="gate-escalate" sourceRef="gate-route" targetRef="rounds"><conditionExpression xsi:type="tFormalExpression">=check-feedback.route = "review"</conditionExpression></sequenceFlow>
     <sequenceFlow id="gate-revise" sourceRef="gate-route" targetRef="revise" />
     <sequenceFlow id="checks-passed" sourceRef="checks" targetRef="gate-passed" />
     <scriptTask id="gate-passed" name="记录通过的检查" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
       <extensionElements><coda:env name="RUNS" value="=checks.runs" /><coda:output name="base" /><coda:output name="task" /><coda:output name="checks" /></extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/lane-pr.mjs" gate-passed</script>
     </scriptTask>
-    <sequenceFlow id="gate-passed-review" sourceRef="gate-passed" targetRef="reviews-choice" />
+    <sequenceFlow id="gate-passed-review" sourceRef="gate-passed" targetRef="review-round" />
+    <!-- 定这一次怎么评：交执行者修过、等复评时，对原来每个评审位置增量复评（base 是上次评过的 head，带上次的发现与执行者的回应）；否则完整评审。 -->
+    <scriptTask id="review-round" name="确定评审范围" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements>
+        <coda:output name="base" /><coda:output name="head" /><coda:output name="task" /><coda:output name="checks" /><coda:output name="previous" /><coda:output name="previous2" />
+      </extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/lane-pr.mjs" review-round</script>
+    </scriptTask>
+    <sequenceFlow id="review-round-reviews" sourceRef="review-round" targetRef="reviews-choice" />
     <!-- 检查通过后、整理审查材料前，填了的评审者各评一次这次交付；一个都不评时直接整理。
          两个位置各一份、同时进行，每份都走到自己的结束事件：没填的跳过；评审没完成时 review-commit 照常结束（decision 为 INCOMPLETE），
-         不算这一步失败；出错边界只接调用本身没成，记下来照常结束。各份都结束才往下走，结果由「整理审查材料」带进审查卡，评审不挡流程。 -->
+         不算这一步失败；出错边界只接调用本身没成，记下来照常结束。各份都结束才往下走，交「分流评审意见」。 -->
     <exclusiveGateway id="reviews-choice" name="是否有人评审" default="reviews-skip" />
     <sequenceFlow id="reviews-needed" sourceRef="reviews-choice" targetRef="reviews"><conditionExpression xsi:type="tFormalExpression">=inputs.reviewer != null or inputs.reviewer2 != null</conditionExpression></sequenceFlow>
-    <sequenceFlow id="reviews-skip" sourceRef="reviews-choice" targetRef="report" />
+    <sequenceFlow id="reviews-skip" sourceRef="reviews-choice" targetRef="rounds" />
     <subProcess id="reviews" name="评审" coda:optional="true">
-      <multiInstanceLoopCharacteristics coda:inputCollection='=[{slot: "reviewer", who: inputs.reviewer}, {slot: "reviewer2", who: inputs.reviewer2}]' coda:inputElement="slot" />
+      <multiInstanceLoopCharacteristics coda:inputCollection='=[{slot: "reviewer", who: inputs.reviewer, previous: review-round.previous}, {slot: "reviewer2", who: inputs.reviewer2, previous: review-round.previous2}]' coda:inputElement="slot" />
       <startEvent id="reviews-start" />
       <sequenceFlow id="reviews-enter" sourceRef="reviews-start" targetRef="review-choice" />
       <exclusiveGateway id="review-choice" name="这一位评不评" default="review-skip" />
@@ -67,11 +76,12 @@
       <sequenceFlow id="review-skip" sourceRef="review-choice" targetRef="review-skipped" />
       <callActivity id="review-call" name="评审这次交付" calledElement="review-commit">
         <extensionElements>
-          <coda:param name="base" value="=gate-passed.base" />
-          <coda:param name="head" value="=gate.head" />
-          <coda:param name="task" value="=gate-passed.task" />
+          <coda:param name="base" value="=review-round.base" />
+          <coda:param name="head" value="=review-round.head" />
+          <coda:param name="task" value="=review-round.task" />
           <coda:param name="reviewer" value="=slot.who" />
-          <coda:param name="evidence" value="=gate-passed.checks" />
+          <coda:param name="evidence" value="=review-round.checks" />
+          <coda:param name="previous" value="=slot.previous" />
         </extensionElements>
       </callActivity>
       <boundaryEvent id="review-failed" attachedToRef="review-call"><errorEventDefinition /></boundaryEvent>
@@ -79,14 +89,40 @@
       <sequenceFlow id="review-call-done" sourceRef="review-call" targetRef="review-done" />
       <endEvent id="review-skipped"><extensionElements><coda:output name="state" value="skipped" /></extensionElements></endEvent>
       <endEvent id="review-lost"><extensionElements>
-        <coda:output name="state" value="lost" /><coda:output name="slot" value="=slot.slot" /><coda:output name="who" value="=slot.who" /><coda:output name="head" value="=gate.head" />
+        <coda:output name="state" value="lost" /><coda:output name="slot" value="=slot.slot" /><coda:output name="who" value="=slot.who" /><coda:output name="head" value="=review-round.head" />
       </extensionElements></endEvent>
       <endEvent id="review-done"><extensionElements>
-        <coda:output name="state" value="done" /><coda:output name="slot" value="=slot.slot" /><coda:output name="who" value="=slot.who" /><coda:output name="head" value="=gate.head" />
+        <coda:output name="state" value="done" /><coda:output name="slot" value="=slot.slot" /><coda:output name="who" value="=slot.who" /><coda:output name="head" value="=review-round.head" />
         <coda:output name="decision" value="=review-call.decision" /><coda:output name="line" value="=review-call.line" /><coda:output name="findings" value="=review-call.findings" /><coda:output name="report" value="=review-call.report" />
+        <coda:output name="reviewed" value="=review-call.head" /><coda:output name="resolutions" value="=review-call.resolutions" /><coda:output name="blocking" value="=review-call.blocking" />
       </extensionElements></endEvent>
     </subProcess>
-    <sequenceFlow id="reviews-report" sourceRef="reviews" targetRef="report" />
+    <sequenceFlow id="reviews-triage" sourceRef="reviews" targetRef="triage" />
+    <!-- 分流（scripts/triage.mjs）：都评完、没有没评成的、评的都是当前 head、没有阻塞级发现时照常交主 Agent；有阻塞级发现、没有契约或范围类、
+         自动修不到两轮时交执行者；其余（没评成、评的不是当前 head、执行者的反驳被坚持、契约或范围类、两轮用完）升级给主 Agent。 -->
+    <scriptTask id="triage" name="分流评审意见" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements><coda:env name="REVIEWS" value="=reviews" /><coda:output name="route" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/lane-pr.mjs" triage</script>
+    </scriptTask>
+    <sequenceFlow id="triage-how" sourceRef="triage" targetRef="triage-route" />
+    <exclusiveGateway id="triage-route" name="交执行者还是主 Agent" default="triage-review" />
+    <sequenceFlow id="triage-fix" sourceRef="triage-route" targetRef="address"><conditionExpression xsi:type="tFormalExpression">=triage.route = "fix"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="triage-review" sourceRef="triage-route" targetRef="rounds" />
+    <!-- 同一执行会话逐条处理：有新提交就推送、检查后复评；只反驳、没有新提交就不重跑检查，直接复评；都没有就交主 Agent。 -->
+    <scriptTask id="address" name="执行者处理评审意见" scriptFormat="bash">
+      <extensionElements><coda:output name="route" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/lane-pr.mjs" address</script>
+    </scriptTask>
+    <sequenceFlow id="address-how" sourceRef="address" targetRef="address-route" />
+    <exclusiveGateway id="address-route" name="有没有新提交" default="address-review" />
+    <sequenceFlow id="address-gate" sourceRef="address-route" targetRef="gate"><conditionExpression xsi:type="tFormalExpression">=address.route = "gate"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="address-again" sourceRef="address-route" targetRef="review-round"><conditionExpression xsi:type="tFormalExpression">=address.route = "again"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="address-review" sourceRef="address-route" targetRef="rounds" />
+    <scriptTask id="rounds" name="整理收敛经过" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements><coda:output name="text" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/lane-pr.mjs" rounds</script>
+    </scriptTask>
+    <sequenceFlow id="rounds-report" sourceRef="rounds" targetRef="report" />
     <scriptTask id="report" name="整理审查材料" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
       <extensionElements>
         <coda:env name="REVIEWS" value="=reviews" />
@@ -113,6 +149,7 @@ head：{{report.head}}
 执行者回答：
 {{report.answer}}
 {{if report.reviews = "" then "" else "\n评审者的发现：\n" + report.reviews}}
+{{if rounds.text = "" then "" else "\n收敛经过（评审意见先交执行者逐条修复或反驳、原评审者复评，编号固定）：\n" + rounds.text}}
 
 待处理反馈：
 {{report.feedback}}
@@ -140,7 +177,7 @@ head：{{report.head}}
     </scriptTask>
     <sequenceFlow id="decide-how" sourceRef="decide" targetRef="how" />
     <exclusiveGateway id="how" name="审查结论" default="how-land" />
-    <sequenceFlow id="how-note" sourceRef="how" targetRef="report"><conditionExpression xsi:type="tFormalExpression">=decide.route = "review"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="how-note" sourceRef="how" targetRef="rounds"><conditionExpression xsi:type="tFormalExpression">=decide.route = "review"</conditionExpression></sequenceFlow>
     <sequenceFlow id="how-revise" sourceRef="how" targetRef="revise"><conditionExpression xsi:type="tFormalExpression">=decide.route = "revise"</conditionExpression></sequenceFlow>
     <sequenceFlow id="how-swap" sourceRef="how" targetRef="swap"><conditionExpression xsi:type="tFormalExpression">=decide.route = "swap"</conditionExpression></sequenceFlow>
     <sequenceFlow id="how-abandon" sourceRef="how" targetRef="abandon"><conditionExpression xsi:type="tFormalExpression">=decide.route = "abandon"</conditionExpression></sequenceFlow>

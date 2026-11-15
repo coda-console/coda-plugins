@@ -2,7 +2,8 @@
 <!-- 评审一段提交（README.md「评审一段提交」）：调用方给的评审方在 head 的工作树里，按 PR 评审的同一套规则与提示词（scripts/review.mjs commit）
      评 head 相对它与 base 的共同祖先的改动（同 git diff base...head）；PR 标题与正文的位置放调用方的任务书，没有 PR，不查 GitHub 检查，不留评论；调用方带了已有验证就转给评审方。阻塞级别、评审重点按插件设置。
      评审没完成（会话重试后仍失败，或回复末尾没有合格的 review 代码块）时照常结束：decision 为 INCOMPLETE，findings 为空数组，line 写明原因，
-     report 是评审方返回的文字；只有参数不对（提交号无效、找不到共同祖先）时这一步失败。能力：只被调用，输出 findings 是全部发现的 JSON 数组。 -->
+     report 是评审方返回的文字；只有参数不对（提交号无效、找不到共同祖先）时这一步失败。能力：只被调用，输出 findings 是全部发现的 JSON 数组，每条带类别 kind。
+     带了 previous（这个评审位置上一轮带编号的发现与执行者的回应）就是增量复评：base 是上一轮评过的提交，评审方对每条旧发现给出 resolutions，findings 只列新发现。 -->
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0"
   id="review-commit-definitions" targetNamespace="https://coda.pub/plugins/review">
   <process id="review-commit" name="评审一段提交" isExecutable="true" coda:title="评审 {{substring(inputs.head, 1, 12)}}">
@@ -13,6 +14,7 @@
       <coda:input name="reviewer" label="评审方" type="agent" required="true" />
       <coda:input name="focus" label="关注点" description="请评审方特别关注的地方，可空" />
       <coda:input name="evidence" label="已有验证" description="调用方已有的验证证据，一段文字（如项目检查的结果）；带了就转给评审方按评审规则复用，可空" />
+      <coda:input name="previous" label="上一轮的发现与回应" description="增量复评时给：JSON 数组，这个评审位置上一轮的发现（每条有 id、severity、kind、title、location、detail）与执行者的回应 response；可空，空就是完整评审" />
     </extensionElements>
     <startEvent id="start" />
     <sequenceFlow id="to-review" sourceRef="start" targetRef="review" />
@@ -26,8 +28,9 @@
         <coda:env name="TASK" value="=inputs.task" />
         <coda:env name="FOCUS" value="=inputs.focus" />
         <coda:env name="EVIDENCE" value="=inputs.evidence" />
+        <coda:env name="PREVIOUS" value="=inputs.previous" />
         <coda:output name="decision" /><coda:output name="findings" /><coda:output name="line" /><coda:output name="report" />
-        <coda:output name="head" /><coda:output name="base" />
+        <coda:output name="head" /><coda:output name="base" /><coda:output name="resolutions" /><coda:output name="blocking" />
       </extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/review.mjs" commit</script>
     </scriptTask>
@@ -39,6 +42,8 @@
       <coda:output name="report" value="=review.report" />
       <coda:output name="head" value="=review.head" />
       <coda:output name="base" value="=review.base" />
+      <coda:output name="resolutions" value="=review.resolutions" />
+      <coda:output name="blocking" value="=review.blocking" />
     </extensionElements></endEvent>
   </process>
 </definitions>
