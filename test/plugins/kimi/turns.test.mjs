@@ -174,8 +174,7 @@ test('a prompt whose turn failed is answered with that failure, quota exhaustion
     { jsonrpc: '2.0', id: 5, result: { stopReason: 'end_turn' } });
 });
 
-// Kimi's ACP rejects a prompt whose turn ended on `auth.login_required` with -32000 (the handshake's "not signed in"). Protocol 6.2.0 is
-// not published, so the shape is asserted here (see errors.test.mjs).
+// Kimi's ACP rejects a prompt whose turn ended on `auth.login_required` with -32000 (the handshake's "not signed in").
 test('a -32000 to a prompt whose turn ended on a lost login is an execution failure, auth_required; any other -32000 is left alone', async t => {
   const f = await layout(t);
   const { r, out, prompt } = await relay(t, f);

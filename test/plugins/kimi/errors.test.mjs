@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { agentValueProblem } from '@coda-console/protocol/agent';
 import { classifyKimiError, failedAnswer, turnFailure } from '../../../plugins/kimi/agent/errors.mjs';
 
 const reason = "403 You've reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends. To continue now, purchase extra usage or upgrade your plan: https://www.kimi.com/membership/subscription?tab=quota";
@@ -90,14 +91,15 @@ test('the answer to a failed prompt reports its category: quota only by kind, an
 });
 
 // Kimi's own error code for an OAuth provider whose token cannot be refreshed (OAuthUnauthorizedError -> `auth.login_required`, from its
-// binary). Protocol 6.2.0 is not published, so the installed validation rejects auth_required: the shape is asserted here. After 6.2.0 is
-// published and check/coda/contract.json synced, check it with agentValueProblem('failure.json', failure) as the other kinds are.
+// binary).
 test('a Kimi OAuth login that is gone is auth_required; a provider auth error, a 401 or 403 and a quota are not', () => {
   const message = 'OAuth provider "kimi-code" requires login before it can be used.';
   const lost = turnFailure('failed', { code: 'auth.login_required', name: 'KimiError', message });
   assert.deepEqual(lost, { message, kind: 'auth_required' });
   const answer = { jsonrpc: '2.0', id: 5, result: { stopReason: 'end_turn' } };
-  assert.deepEqual(failedAnswer(answer, lost), { jsonrpc: '2.0', id: 5, error: { code: -32603, message,
+  const reported = failedAnswer(answer, lost);
+  assert.equal(agentValueProblem('failure.json', reported.error.data._meta.coda.failure), null);
+  assert.deepEqual(reported, { jsonrpc: '2.0', id: 5, error: { code: -32603, message,
     data: { _meta: { coda: { failure: { kind: 'auth_required', login: 'Kimi Code OAuth' } } } } } });
   for (const error of [{ code: 'provider.auth_error', name: 'APIStatusError', message: 'Invalid API key', details: { statusCode: 401 } },
     { code: 'provider.auth_error', name: 'APIStatusError', message: '403 permission denied', details: { statusCode: 403 } },

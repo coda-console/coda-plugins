@@ -336,9 +336,13 @@ describe('Agent extensions use the shared protocol diagnostics', () => {
         { sessionUpdate: 'config_option_update', configOptions },
       ] });
     assertPasses(report, ['live.turn', 'live.updates']);
-    const quota = await run({ promptError: error({ kind: 'quota_exhausted', input: 'future', retryAfterMs: -1 }) });
+    const quota = await run({ promptError: error({ kind: 'quota_exhausted', login: 1, retryAfterMs: -1 }) });
     assert.deepEqual(failed(quota), ['live.turn']);
     assert.match(quota.failures[0].message, /额度不足/);
+    // Since protocol 6.2.0 a quota failure's optional `input` is checked.
+    const badInput = { kind: 'quota_exhausted', input: 'future' };
+    assert.equal((await run({ promptError: error(badInput) })).failures[0].message,
+      agentValueProblem('failure.json', badInput, 'error.data._meta.coda.failure'));
   });
 });
 

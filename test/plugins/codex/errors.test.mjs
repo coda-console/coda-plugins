@@ -4,6 +4,7 @@ import { chmod, mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { agentValueProblem } from '@coda-console/protocol/agent';
 import { AgentProcess } from '../../../check/process.mjs';
 import { pluginDir, resolveFrom } from '../plugin.mjs';
 import { explainCodexError, codexFailureData, reportedCodexFailures } from '../../../plugins/codex/agent/errors.mjs';
@@ -24,9 +25,7 @@ test('native service failures expose facts; quota, authentication and bad reques
     { kind: 'service_unavailable', input: 'not_accepted' });
 });
 
-// Codex's refresh failures, from the strings of its binary (RefreshTokenFailedReason). Protocol 6.2.0 is not published, so the installed
-// validation rejects auth_required: the shape is asserted here. After 6.2.0 is published and check/coda/contract.json synced, check it
-// with agentValueProblem('failure.json', failure) as the other kinds are.
+// Codex's refresh failures, from the strings of its binary (RefreshTokenFailedReason).
 test('a ChatGPT login whose token cannot be refreshed is auth_required; a bad key, a bare 401 or 403 and Cloudflare are not', () => {
   const classify = (message, info = 'unauthorized', where = 'message') => codexFailureData({ code: -32603, message: 'Internal error',
     data: { codexErrorInfo: info, [where]: message } }, 'accepted');
@@ -37,6 +36,7 @@ test('a ChatGPT login whose token cannot be refreshed is auth_required; a bad ke
     'Your access token could not be refreshed. Please log out and sign in again.']) {
     for (const where of ['message', 'details']) {
       const data = classify(message, 'unauthorized', where);
+      assert.equal(agentValueProblem('failure.json', data._meta.coda.failure), null, message);
       assert.deepEqual(data._meta.coda.failure, { kind: 'auth_required', login: 'ChatGPT 账号' }, message);
       assert.equal(data[where], message);
     }

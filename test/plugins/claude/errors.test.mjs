@@ -122,8 +122,6 @@ test('what is not the service failing stays unmarked: keys, permission, context,
 });
 
 test('an OAuth login that is gone is auth_required; a bad key, missing permission or a bare 401 or 403 is not', () => {
-  // Protocol 6.2.0 is not published, so the installed validation rejects auth_required: the shape is asserted here. After 6.2.0 is
-  // published and check/coda/contract.json synced, check it with agentValueProblem('failure.json', failure) as the other kinds are.
   // Real: the final error of a Claude Code turn whose OAuth session ended (11-13).
   for (const [message, facts] of [
     ['Failed to authenticate: OAuth session expired and could not be refreshed', { error: 'authentication_failed' }],
@@ -132,6 +130,7 @@ test('an OAuth login that is gone is auth_required; a bad key, missing permissio
     const error = claudeFailure(message, facts);
     assert.equal(error.code, -32603);
     assert.equal(error.message, message);
+    assert.equal(agentValueProblem('failure.json', error.data._meta.coda.failure), null, message);
     assert.deepEqual(error.data._meta.coda.failure, { kind: 'auth_required', login: 'Anthropic OAuth' }, message);
   }
   for (const [message, facts] of [
