@@ -63,7 +63,7 @@
 | skills | 读工作副本的 `.agents/skills`（清单的 `skillsDir`） |
 | 上下文占用、标题 | Antigravity 报 `usage_update` 与会话标题更新 |
 | 模型列表何时重读 | `~/.gemini/antigravity-cli/settings.json` 变了时 |
-| 资源页 | 登录后显示一条「Antigravity」，读数是 CLI 版本；登录状态只查钥匙串条目在不在（macOS 用 `security find-generic-password -s gemini -a antigravity`，只查条目，不读内容），不开会话，也不读邮箱；钥匙串问不出来时读数失败，不当作登出（Linux 的细节见下） |
+| 资源页 | 登录后显示一条「Antigravity」，读数是各模型组的每周、每 5 小时剩余比例与重置时间（如「Gemini 每周」「Claude and GPT 5 小时」，组与周期按报告动态给出），最后是 CLI 版本。额度来自官方的只读报告 `agy -p /usage --output-format json`（CLI 1.1.11 起支持，插件要求 1.5.9 及以上）：由 CLI 自己回答，不开会话、不花额度、不留对话，插件不读 token；这一次运行只设 `AGY_CLI_DISABLE_AUTO_UPDATE=true`，在系统临时目录里跑。整次读取给自己 25 秒（宿主只给 30 秒）：版本和额度都只用剩下的时间并留 1 秒输出，剩下不到 3 秒就不再查额度，直接写「暂时无法获取额度：读取超时」，版本照旧显示。读数最多 8 条：额度最多 7 条，CLI 版本始终在最后。读不到额度（退出非 0、超时、报告不是成功、没有可显示的桶）时那一条带「暂时无法获取额度：原因」（原因是 CLI stderr 的首行，没有才写退出码；整句不超过 80 字，只截原因），版本照旧显示；缺比例、不在 0–1 内或标了 `disabled` 的桶不显示。登录状态只查钥匙串条目在不在（macOS 用 `security find-generic-password -s gemini -a antigravity`，只查条目，不读内容），也不读邮箱；钥匙串问不出来时读数失败，不当作登出（Linux 的细节见下） |
 
 ## 已知限制
 
@@ -73,7 +73,7 @@
 | 全部放行 | 没有：Antigravity 没有原生的「全部放行」模式（`full`、`yolo` 回 -32602），清单不写 `modes.full` |
 | 会话指令 | Antigravity 只认私有的 `_meta.antigravity.systemPrompt`，不认 ACP 标准字段；插件不处理它，由 Coda 把指令作为单独一段放在新会话第一次非斜杠命令的用户输入前面，分量不如系统提示词 |
 | 插话 | 不声明：Antigravity 的原生插话会提前结束旧一轮的回复，由 Coda 停下这一轮再发出新消息 |
-| 剩余额度 | 没有：Antigravity 没有剩余额度的接口，`session/new` 的 `_meta.antigravity.tier` 只有套餐名，资源页只显示版本 |
+| 额度的口径 | 报告按模型组给额度：同组模型共享每周与 5 小时限额，不是每个模型各算一份；报告里没有套餐名。第一次在某个目录运行 `/usage` 时，CLI 会在 `implicit/` 下留一个小文件；插件固定在系统临时目录运行，之后复用，不新增会话与项目记录 |
 | 等待项登记 `_coda/wait` | 不登记，会话底部不列它在等什么 |
 | Plan 模式 | 产出计划文件并要求审阅，审阅前不动手；plan 下只读的 shell 命令也按权限规则请求审批，这是 agy 的设计 |
 | 附加目录 | 不交给 Antigravity：读工作副本外的附件、会话临时目录、skill 真实文件可能要审批；`.agents/skills` 的链接照旧 |

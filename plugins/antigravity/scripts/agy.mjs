@@ -2,7 +2,7 @@
 // installer puts it; Coda's back end does not always have that directory on its PATH), then the PATH.
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 export function agyBinary(env = process.env) {
@@ -11,9 +11,40 @@ export function agyBinary(env = process.env) {
   return (env.PATH ?? '').split(':').filter(Boolean).map(dir => join(dir, 'agy')).find(path => existsSync(path)) ?? null;
 }
 // `agy --version` run once, and the first x.y.z it printed on either output (null for none): the one reading of the version,
-// which the setup and the resources share.
-export const asked = binary => spawnSync(binary, ['--version'], { encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] });
+// which the setup and the resources share (the resources give it what is left of their time).
+export const asked = (binary, timeout = 30_000) => spawnSync(binary, ['--version'], { encoding: 'utf8', timeout, stdio: ['ignore', 'pipe', 'pipe'] });
 export const versionOf = ran => /(\d+)\.(\d+)\.(\d+)/.exec(`${ran.stdout ?? ''}\n${ran.stderr ?? ''}`)?.slice(1).join('.') ?? null;
+// The CLI's usage report, parsed: `agy -p /usage --output-format json`, which the CLI answers itself, without a turn, the
+// quota spent or a conversation left behind. Run from the temporary directory, so that no project of the CLI's is made for
+// a directory of the user's, and with its update off for this run alone. Throws, with the reason in a line, for a CLI that
+// fails or times out (`timeout`, which the resources keep within the 30 seconds Coda gives a reading) or answers anything but
+// a successful usage report.
+export function usageReport(binary, run = spawnSync, timeout = 20_000) {
+  const ran = run(binary, ['-p', '/usage', '--output-format', 'json'], { encoding: 'utf8', cwd: tmpdir(), timeout,
+    env: { ...process.env, AGY_CLI_DISABLE_AUTO_UPDATE: 'true' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  if (ran.error?.code === 'ETIMEDOUT') throw new Error('读取超时');
+  if (ran.error) throw new Error(`无法运行 Antigravity CLI：${ran.error.code ?? ran.error.message}`);
+  // What the CLI said first is the reason; its exit code only when it said nothing.
+  if (ran.status !== 0) throw new Error(`${ran.stderr ?? ''}`.trim().split('\n')[0] || `退出码 ${ran.status ?? ran.signal}`);
+  let report;
+  try { report = JSON.parse(ran.stdout); } catch { throw new Error('Antigravity CLI 的额度报告不是 JSON'); }
+  if (report?.status !== 'SUCCESS') throw new Error(`Antigravity CLI 的额度报告状态不是 SUCCESS（${report?.status ?? '无状态'}）`);
+  if (report.command?.name !== 'usage') throw new Error('Antigravity CLI 返回的不是额度报告');
+  return report;
+}
+// What a reading learns of the CLI before `deadline` (ms, the clock's): its version, asked what is left of the time less a second
+// to print, and, for a CLI not older than `minimum`, its usage report, asked what is left then, or none, with the reason, for
+// too little left to ask (3 seconds) or a report that fails. `ask`, `report` and `now` are the CLI's, as above, and the clock.
+// { version: null } for a CLI that cannot say its version.
+export function reading(binary, deadline, minimum, { ask = asked, report = usageReport, now = Date.now } = {}) {
+  const left = () => deadline - now() - 1_000;
+  const ran = ask(binary, Math.max(left(), 1));
+  const version = ran.status === 0 ? versionOf(ran) : null;
+  if (!version) return { version: null };
+  if (older(version, minimum)) return { version, tooOld: true };
+  if (left() < 3_000) return { version, failure: '读取超时' };
+  try { return { version, report: report(binary, undefined, Math.min(left(), 20_000)) }; } catch (error) { return { version, failure: error.message }; }
+}
 // Whether one version is older than another.
 export function older(version, than) {
   const a = version.split('.').map(Number), b = than.split('.').map(Number), i = a.findIndex((n, k) => n !== b[k]);
