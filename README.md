@@ -16,7 +16,7 @@ plugins/grok-bot/        Grok Bot：每个云端 Bot 的原生主会话是一条
 plugins/opencode/        OpenCode：在运行机的 opencode acp 与 Coda 之间转发，送入所选模型服务，模型按来源分组
 plugins/codex-accounts/  Codex 多账号：管理登录、自动续期与账号选择，接管资源「Codex」
 plugins/cursor/          Cursor：直接启动运行机的 cursor-agent acp
-plugins/antigravity/     Antigravity：转发运行机的 agy acp，不把附加目录交给它，资源页登录
+plugins/antigravity/     Antigravity：转发运行机的 agy acp，不把附加目录交给它，加「全部放行」模式，资源页登录
 plugins/git/             Git 源与快照：本机仓库 provider、运行关联的工作树／提交快照、临时 ref 回收与只读 smart HTTP v2
 plugins/host/            宿主资源：发布本机 coda/executor@1 执行环境，执行 execute 并写 coda/run@1；Xcode 构建、Apple 模拟器与项目要求排队的命令共用这台机器的一组名额（组 host、持锁执行 run-held、host-sim），资源「构建名额」
 plugins/magpie/          Magpie：把本机的 Magpie 网关作为模型服务提供给 Pi 等插件，安装时装好 Magpie 并让网关常驻
