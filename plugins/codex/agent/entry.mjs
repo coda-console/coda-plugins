@@ -67,8 +67,11 @@ const pass = ({ agent, coda }) => { for (const each of agent) toCodex(each); for
 listen(line => {
   for (const message of waits.fromAgent(parse(line))) for (const told of unrecognized.fromAgent(message)) for (const each of reviews.fromAgent(told)) pass(questions.fromAgent(each));
 });
-// The Codex process ended on its own: the log and the turns waiting on it say how (process-exit.mjs).
+// The Codex process ended on its own, not as Coda's input closing stops it: the log and the turns waiting on it say how
+// (process-exit.mjs).
+let stopping = false;
 listenExit(exit => {
+  if (stopping) return;
   const message = describeExit(exit);
   process.stderr.write(`${message}\n`);
   for (const each of waits.fail(message)) say(each);
@@ -79,7 +82,7 @@ readLines(process.stdin).on('line', line => {
   if (!message || typeof message !== 'object') return;
   unrecognized.fromCoda(message);
   pass(questions.fromCoda(message));
-}).on('close', () => input.end());
+}).on('close', () => { stopping = true; input.end(); });
 
 // codex-acp as Node finds it from here (its package names dist/index.js as its main): the plugin's own dependency.
 const adapter = new URL(import.meta.resolve('@agentclientprotocol/codex-acp'));

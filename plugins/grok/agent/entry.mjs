@@ -117,12 +117,14 @@ grok.stdin.on('error', () => {});
 grok.on('error', () => process.exit(1));
 // Grok dying on its own: the log and the prompts still waiting say how (exit.mjs).
 grok.on('close', (code, signal) => {
-  if (!stopping && code !== 0) {
+  const waiting = [...pending].filter(([, request]) => request.method === 'session/prompt');
+  if (!stopping && (code !== 0 || waiting.length)) {
     const message = describeExit({ code, signal, stderr });
     process.stderr.write(`${message}\n`);
-    for (const [id, request] of pending) if (request.method === 'session/prompt') say({ id, error: { code: -32603, message } });
+    for (const [id] of waiting) say({ id, error: { code: -32603, message } });
   }
-  process.exit(stopping ? 0 : code ?? 1);
+  // What was said reaches Coda before this process ends.
+  process.stdout.write('', () => process.exit(stopping ? 0 : code ?? 1));
 });
 process.stdin.on('end', stop);
 for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.once(signal, stop);

@@ -36,7 +36,8 @@ createInterface({ input: process.stdin }).on('line', m => {
     : m.method === 'session/set_config_option' ? (effort = m.params.value, { configOptions: options() }) : null;
   if (result) { send({ id: m.id, result }); return; }
   if (m.method === 'session/prompt') {
-    // `crash` and `kill` end the whole agent mid-turn: with exit code 3 after a line on stderr, or by SIGKILL.
+    // `crash`, `quit` and `kill` end the whole agent mid-turn: with exit code 3 after a line on stderr, with exit code 0, or by SIGKILL.
+    if (m.params.prompt[0].text === 'quit') process.exit(0);
     if (m.params.prompt[0].text === 'crash') { console.error('fake grok: Operation not permitted'); process.exit(3); }
     if (m.params.prompt[0].text === 'kill') process.kill(process.pid, 'SIGKILL');
     if (m.params.prompt[0].text === 'hold') { held = m.id; say('holding'); return; }

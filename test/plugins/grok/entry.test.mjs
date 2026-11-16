@@ -35,8 +35,8 @@ function start(t) {
   return { dir, p, messages, request, prompt, said, next };
 }
 
-for (const [text, how] of [['crash', /退出码 3[\s\S]*fake grok: Operation not permitted/], ['kill', /被信号 SIGKILL 终止/]])
-  test(`the prompt error and the plugin's stderr say how Grok ended: ${text}`, async t => {
+for (const [text, how] of [['crash', /退出码 3[\s\S]*fake grok: Operation not permitted/], ['quit', /退出码 0/], ['kill', /被信号 SIGKILL 终止/]])
+  test(`the prompt error and the plugin's stderr say how Grok ended on its own: ${text}`, async t => {
     const { p, request } = start(t);
     await request('initialize', { protocolVersion: 1, clientCapabilities: {} });
     await request('session/new', { cwd: '/', mcpServers: [] });

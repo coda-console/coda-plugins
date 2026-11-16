@@ -2,8 +2,9 @@
 // its ACP passed on a message at a time both ways, but for its models, which it groups by provider (groups.mjs), and a
 // model service's long wait, which ends the turn instead (retries.mjs), the category of its failures (errors.mjs), native
 // child sessions (children.mjs), and native background shell lifecycle facts supplied by the per-process observer (shells.mjs, runtime/server.mjs).
-// It ends as OpenCode ends, once what it said has reached Coda; when OpenCode dies (a non-zero exit code or a signal), the log
-// and the prompts still waiting say how (exit.mjs).
+// It ends as OpenCode ends, once what it said has reached Coda; when OpenCode ends on its own (not as Coda's input closing or a
+// signal to this process stops it) with a non-zero exit code, a signal or a prompt unanswered, the log and the prompts still
+// waiting say how (exit.mjs).
 import { spawn } from 'node:child_process';
 import { readLines } from './lines.mjs';
 import { opencodeBinary } from './binary.mjs';
@@ -48,6 +49,12 @@ const cli = spawn(opencodeBinary() ?? 'opencode', ['acp'], {
 let stderr = '';
 cli.stderr.on('data', chunk => { process.stderr.write(chunk); stderr = (stderr + chunk).slice(-2048); });
 cli.stdin.on('error', () => {});
+let stopping = false;
+const stop = () => {
+  if (stopping) return;
+  stopping = true; cli.stdin.end(); cli.kill();
+  setTimeout(() => cli.kill('SIGKILL'), 800).unref();
+};
 const retries = new LongRetries(sessionId => tell({ jsonrpc: '2.0', method: 'session/cancel', params: { sessionId } }));
 readLines(process.stdin).on('line', line => {
   const message = parse(line);
@@ -58,7 +65,7 @@ readLines(process.stdin).on('line', line => {
   retries.toAgent(next.agent);
   if (shells.fromCoda(next.agent)) return;
   tell(next.agent);
-}).on('close', () => cli.stdin.end());
+}).on('close', () => { stopping = true; cli.stdin.end(); });
 readLines(cli.stdout).on('line', line => {
   const message = parse(line);
   if (message) for (const next of children.fromAgent(classifyOpenCodeError(retries.fromAgent(message)))) {
@@ -69,7 +76,7 @@ readLines(cli.stdout).on('line', line => {
 let ended = false;
 const end = code => { if (ended) return; ended = true; void channel.close().then(() => process.stdout.write('', () => process.exit(code))); };
 cli.on('close', (code, signal) => {
-  if (code !== 0) {
+  if (!stopping && (code !== 0 || prompts.size)) {
     const message = describeExit({ code, signal, stderr });
     process.stderr.write(`${message}\n`);
     for (const id of prompts) say({ jsonrpc: '2.0', id, error: { code: -32603, message } });
@@ -77,3 +84,4 @@ cli.on('close', (code, signal) => {
   end(code ?? 1);
 });
 cli.on('error', () => end(1));
+for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.once(signal, stop);

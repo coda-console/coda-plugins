@@ -31,7 +31,7 @@ test('turns waiting on the Codex process are answered with how it ended, and its
   assert.deepEqual(waits.fromAgent({ jsonrpc: '2.0', id: 1, result: {} }).length, 1);
 });
 
-for (const [name, exit, how] of [['a non-zero exit code', '7', /退出码 7[\s\S]*fake codex: boom/], ['a signal', 'SIGKILL', /被信号 SIGKILL 终止/]])
+for (const [name, exit, how] of [['a non-zero exit code', '7', /退出码 7[\s\S]*fake codex: boom/], ['a signal', 'SIGKILL', /被信号 SIGKILL 终止/], ['exit code 0', '0', /退出码 0/]])
   test(`the turn error and the plugin's stderr say how the Codex process ended: ${name}`, async t => {
     const root = await mkdtemp(join(tmpdir(), 'codex-exit-')), codex = join(root, 'codex');
     await writeFile(codex, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(fixture)} "$@"\n`); await chmod(codex, 0o700);
@@ -47,3 +47,16 @@ for (const [name, exit, how] of [['a non-zero exit code', '7', /退出码 7[\s\S
     await peer.exited;
     assert.match(peer.stderr, how);
   });
+
+test('the Codex process ending as Coda\'s input closes is not an unexpected end', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'codex-exit-')), codex = join(root, 'codex');
+  await writeFile(codex, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(fixture)} "$@"\n`); await chmod(codex, 0o700);
+  const peer = new AgentProcess({ command: `exec ${quote(process.execPath)} ${quote(join(pluginDir('codex'), 'agent/entry.mjs'))}`, cwd: root,
+    env: { ...process.env, FAKE_CODEX_STATE: root, CODEX_PATH: codex, CODEX_HOME: join(root, 'home') } });
+  t.after(async () => { await peer.terminate(2000); peer.kill(); await rm(root, { recursive: true, force: true }); });
+  await peer.request('initialize', { protocolVersion: 1, clientCapabilities: {} }, { timeout: 10_000 });
+  await peer.request('session/new', { cwd: root, mcpServers: [] }, { timeout: 10_000 });
+  peer.child.stdin.end();
+  await peer.exited;
+  assert.doesNotMatch(peer.stderr, /意外退出/);
+});
