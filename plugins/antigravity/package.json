@@ -14,12 +14,12 @@
           "light": "icons/antigravity.pdf",
           "template": true
         },
-        "command": "if [ -x \"$HOME/.local/bin/agy\" ]; then exec \"$HOME/.local/bin/agy\" acp; else exec agy acp; fi",
+        "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/agent/entry.mjs\"",
         "modes": {
           "title": "工作模式",
           "unset": "Agent 默认",
           "auto": "auto",
-          "note": "Auto 遇到不可逆操作仍会询问；工具权限沿用运行机的 Antigravity 配置（~/.gemini/antigravity-cli/settings.json）。"
+          "note": "Auto 对不可逆操作与 Coda 的 MCP 工具仍会询问；权限沿用运行机的 ~/.gemini/antigravity-cli/settings.json，可在那里放行。"
         },
         "skillsDir": ".agents/skills",
         "configFiles": [
@@ -57,6 +57,7 @@
     "access": "public"
   },
   "files": [
+    "agent",
     "scripts",
     "icons"
   ]

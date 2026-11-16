@@ -1,4 +1,4 @@
-// The Antigravity manifest starts `agy acp` directly; the setup's decision (scripts/setup.mjs) against a stand-in `--version`.
+// The setup's decision (scripts/setup.mjs) against a stand-in `--version`, and the entry relaying Coda's instructions (the entry's own: entry.test.mjs).
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { existsSync } from 'node:fs';
