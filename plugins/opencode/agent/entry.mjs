@@ -14,13 +14,13 @@ import { LongRetries } from './retries.mjs';
 import { classifyOpenCodeError } from './errors.mjs';
 import { OpenCodeChildren } from './children.mjs';
 import { OpenCodeShells } from './shells.mjs';
-import { describeExit } from './exit.mjs';
+import { describeExit, endedError } from './exit.mjs';
 import { shellChannel, shellEnvironment } from './shell-channel.mjs';
 
 const services = chosenServices(), names = serviceNames(services);
 const parse = line => { try { const value = JSON.parse(line); return value && typeof value === 'object' && !Array.isArray(value) ? value : null; } catch { return null; } };
-// The prompts Coda has asked and OpenCode has not answered yet, by request id.
-const prompts = new Set();
+// The prompts Coda has asked and OpenCode has not answered yet, by request id: their session, and whether OpenCode has said anything of it since.
+const prompts = new Map();
 const say = message => { if ('id' in message && !('method' in message)) prompts.delete(message.id); process.stdout.write(`${JSON.stringify(message)}\n`); }, tell = message => cli.stdin.write(`${JSON.stringify(message)}\n`);
 const children = new OpenCodeChildren();
 const shells = new OpenCodeShells({ owns: id => children.roots.has(id) || children.children.has(id), say,
@@ -59,7 +59,7 @@ const retries = new LongRetries(sessionId => tell({ jsonrpc: '2.0', method: 'ses
 readLines(process.stdin).on('line', line => {
   const message = parse(line);
   if (!message) return;
-  if (message.method === 'session/prompt' && 'id' in message) prompts.add(message.id);
+  if (message.method === 'session/prompt' && 'id' in message) prompts.set(message.id, { sessionId: message.params?.sessionId, heard: false });
   const next = children.fromCoda(message);
   if (next.coda) { say(next.coda); return; }
   retries.toAgent(next.agent);
@@ -68,6 +68,7 @@ readLines(process.stdin).on('line', line => {
 }).on('close', () => { stopping = true; cli.stdin.end(); });
 readLines(cli.stdout).on('line', line => {
   const message = parse(line);
+  if (message?.params?.sessionId) for (const prompt of prompts.values()) if (prompt.sessionId === message.params.sessionId) prompt.heard = true;
   if (message) for (const next of children.fromAgent(classifyOpenCodeError(retries.fromAgent(message)))) {
     shells.fromAgent(next);
     say(groupedModels(next, names));
@@ -79,7 +80,7 @@ cli.on('close', (code, signal) => {
   if (!stopping && (code !== 0 || prompts.size)) {
     const message = describeExit({ code, signal, stderr });
     process.stderr.write(`${message}\n`);
-    for (const id of prompts) say({ jsonrpc: '2.0', id, error: { code: -32603, message } });
+    for (const [id, { heard }] of prompts) say({ jsonrpc: '2.0', id, error: endedError(message, heard) });
   }
   end(code ?? 1);
 });
