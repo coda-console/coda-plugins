@@ -29,10 +29,12 @@ export function parseRaw(text) {
 
 // 测试文件新增的行（去掉行首 +）里跳过或独占用例的写法：test.skip、it.todo、test.only、describe.only；行首或 {、, 之后的 skip:、todo:
 // （含多行选项对象里单独一行的 `  skip: true,`）；行首或 {、, 之后的 only: true（`{ only: '[]' }` 这类测试数据不算）；
-// Swift 的 XCTSkip、XCTSkipIf、XCTSkipUnless 与 Swift Testing 的 @Test(.disabled(...))、@Suite(.disabled(...))。
-const SKIP = [/\.(skip|todo|only)\b/, /(?:^|[{,])\s*(skip|todo)\s*:/, /(?:^|[{,])\s*only\s*:\s*true\b/,
-  /\bXCTSkip(?:If|Unless)?\b/, /@(?:Test|Suite)\s*\([^)]*\.disabled\b/];
-const skips = line => SKIP.some(pattern => pattern.test(line.slice(1)));
+// Swift 的 XCTSkip、XCTSkipIf、XCTSkipUnless；.swift 测试里的 .disabled(（Swift Testing 的 @Test、@Suite 特性，单行或多行写法都认；
+// 只认 .swift，JS 测试里 DOM 的 .disabled() 不算）。
+const SKIP = [/\.(skip|todo|only)\b/, /(?:^|[{,])\s*(skip|todo)\s*:/, /(?:^|[{,])\s*only\s*:\s*true\b/, /\bXCTSkip(?:If|Unless)?\b/];
+const skips = (line, swift) => SKIP.some(pattern => pattern.test(line.slice(1))) || (swift && /\.disabled\s*\(/.test(line.slice(1)));
+// 断言：JS 的 assert.，XCTest 的 XCTAssert…，Swift Testing 的 #expect(、#require(。
+const asserts = line => line.includes('assert.') || /\bXCTAssert|#(?:expect|require)\s*\(/.test(line);
 
 // 不能免审的原因，空数组就是可以免审。reviews 是评审子流程各份的输出，findings 是收敛账本，
 // changes 是 parseRaw 的结果，patches 是每个测试文件 diff 的新增行与删除行：{ [路径]: { added: [], removed: [] } }。
@@ -64,8 +66,8 @@ export function autoLandReasons({ auto, sync, stack, head, checks, reviews, find
     else if (isRunnableTest(paths[0]) && !isRunnableTest(paths.at(-1))) reasons.push(`把测试文件 ${paths[0]} 改成了不会被执行的 ${paths.at(-1)}`);
   }
   for (const [path, { added, removed }] of Object.entries(patches)) {
-    if (added.some(skips)) reasons.push(`${path} 新增了 skip、todo 或 only`);
-    if (removed.some(line => line.includes('assert.')) && !added.some(line => line.includes('assert.'))) reasons.push(`${path} 删了断言、没有新增断言`);
+    if (added.some(line => skips(line, path.endsWith('.swift')))) reasons.push(`${path} 新增了 skip、todo 或 only`);
+    if (removed.some(asserts) && !added.some(asserts)) reasons.push(`${path} 删了断言、没有新增断言`);
   }
   return reasons;
 }

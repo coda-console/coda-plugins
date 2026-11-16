@@ -57,16 +57,26 @@ test('防删测与防跳过：删测试文件、新增 skip、todo 或 only、�
     '+  skip: true,', "+  timeout: 5, todo: 'later',", "+test.only('x', () => {});", "+describe.only('x', () => {});", "+test('x', { only: true }, () => {});", '+  only: true,']) {
     assert.match(reasons({ patches: { 'test/a.test.mjs': { added: [line, '+assert.ok(1);'], removed: [] } } }).join('\n'), /新增了 skip、todo 或 only/, line);
   }
+  // 多行 @Test(\n  .disabled("...")\n)、往已有 @Test(...) 里单独加一行 .disabled(...)：逐行看新增行，也要认出来。
   for (const line of ['+    throw XCTSkip("flaky")', '+    try XCTSkipIf(true)', '+    try XCTSkipUnless(false, "no device")', '+  @Test(.disabled("flaky")) func foo() {}',
-    '+  @Test("foo", .disabled()) func foo() {}', '+@Suite(.disabled("later")) struct FooTests {}']) {
+    '+  @Test("foo", .disabled()) func foo() {}', '+@Suite(.disabled("later")) struct FooTests {}', '+    .disabled("flaky"),', '+  .disabled ()']) {
     assert.match(reasons({ changes: [change('App/FooTests.swift', 'M')], patches: { 'App/FooTests.swift': { added: [line, '+    XCTAssertTrue(true)'], removed: [] } } }).join('\n'),
       /App\/FooTests\.swift 新增了 skip、todo 或 only/, line);
   }
+  assert.deepEqual(reasons({ patches: { 'test/a.test.mjs': { added: ['+  button.disabled(true);', '+assert.ok(1);'], removed: [] } } }), [], 'JS 测试里的 .disabled() 不算');
   for (const line of ["+{ state: 'skipped' }", "+  assert.deepEqual(outputs, { only: '[]' });"]) {
     assert.deepEqual(reasons({ patches: { 'test/a.test.mjs': { added: [line, '+assert.ok(1);'], removed: [] } } }), [], `${line} 不算`);
   }
   assert.match(reasons({ patches: { 'test/a.test.mjs': { added: ['+console.log(1);'], removed: ['-  assert.equal(1, 1);'] } } }).join('\n'), /删了断言/);
   assert.deepEqual(reasons({ patches: { 'test/a.test.mjs': { added: ['+  assert.equal(2, 2);'], removed: ['-  assert.equal(1, 1);'] } } }), [], '改写断言可以');
+  // Swift：XCTAssert…、#expect(、#require( 也是断言。
+  const swift = patch => reasons({ changes: [change('App/FooTests.swift', 'M')], patches: { 'App/FooTests.swift': patch } });
+  for (const line of ['-    XCTAssertEqual(a, 1)', '-    XCTAssertTrue(ok)', '-    #expect(a == 1)', '-    let b = try #require(a)']) {
+    assert.match(swift({ added: ['+    print(a)'], removed: [line] }).join('\n'), /App\/FooTests\.swift 删了断言/, line);
+  }
+  for (const line of ['+    XCTAssertEqual(a, 2)', '+    #expect(a == 2)', '+    let b = try #require (a)']) {
+    assert.deepEqual(swift({ added: [line], removed: ['-    XCTAssertEqual(a, 1)'] }), [], `改写成 ${line} 可以`);
+  }
 });
 
 test('parseRaw 读 git diff --raw -z -M：状态、mode 与路径，重命名带新旧两个路径', () => {
