@@ -32,6 +32,19 @@ export function usageReport(binary, run = spawnSync, timeout = 20_000) {
   if (report.command?.name !== 'usage') throw new Error('Antigravity CLI 返回的不是额度报告');
   return report;
 }
+// What a reading learns of the CLI before `deadline` (ms, the clock's): its version, asked what is left of the time less a second
+// to print, and, for a CLI not older than `minimum`, its usage report, asked what is left then, or none, with the reason, for
+// too little left to ask (3 seconds) or a report that fails. `ask`, `report` and `now` are the CLI's, as above, and the clock.
+// { version: null } for a CLI that cannot say its version.
+export function reading(binary, deadline, minimum, { ask = asked, report = usageReport, now = Date.now } = {}) {
+  const left = () => deadline - now() - 1_000;
+  const ran = ask(binary, Math.max(left(), 1));
+  const version = ran.status === 0 ? versionOf(ran) : null;
+  if (!version) return { version: null };
+  if (older(version, minimum)) return { version, tooOld: true };
+  if (left() < 3_000) return { version, failure: '读取超时' };
+  try { return { version, report: report(binary, undefined, Math.min(left(), 20_000)) }; } catch (error) { return { version, failure: error.message }; }
+}
 // Whether one version is older than another.
 export function older(version, than) {
   const a = version.split('.').map(Number), b = than.split('.').map(Number), i = a.findIndex((n, k) => n !== b[k]);

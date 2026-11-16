@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { readResources } from '../../../check/panel.mjs';
 import { authorizationLink } from '../../../check/coda/resources/plugins/resources/panels/sign-in.mjs';
-import { signedIn, usageReport } from '../../../plugins/antigravity/scripts/agy.mjs';
+import { reading, signedIn, usageReport } from '../../../plugins/antigravity/scripts/agy.mjs';
 import { windows } from '../../../plugins/antigravity/scripts/quota.mjs';
 import { declaredPanel, installed, pluginEnv, run, signIn } from '../command.mjs';
 
@@ -144,39 +144,33 @@ exit 1
   assert.deepEqual(resource.values, [{ label: 'CLI 版本', value: '1.5.9' }]);
 });
 
-// The reading has a time of its own (`CODA_ANTIGRAVITY_BUDGET_MS`, 25 seconds of the 30 Coda gives, here a few seconds): the
-// version and the quota are given what is left of it, and no quota is asked for when too little is left.
-async function slow(t, { version, usage }) {
-  const m = await machine(t);
-  await writeFile(join(m.home, '.local/bin/agy'), `#!/bin/sh
-if [ "$1" = --version ]; then sleep ${version}; echo 1.5.9; exit 0; fi
-echo started > "${m.home}/usage-started"
-if [ ${usage} -gt 0 ]; then exec sleep ${usage}; fi
-cat "${m.home}/usage.json"
-`, { mode: 0o755 });
-  return { ...m, env: { ...m.env, CODA_ANTIGRAVITY_BUDGET_MS: '6000' } };
+// The reading has 25 seconds of the 30 Coda gives: the version and the quota are asked what is left of them less a second to
+// print, and no quota is asked for when under 3 seconds are left. A clock the fake CLI moves, and nothing waited for.
+function readingAt(spent) {
+  let clock = 0; const asks = [];
+  const io = { now: () => clock,
+    ask: (binary, timeout) => { asks.push(['version', timeout]); clock += spent; return { status: 0, stdout: '1.5.9\n' }; },
+    report: (binary, run, timeout) => { asks.push(['usage', timeout]); return report; } };
+  return { got: reading('agy', 25_000, '1.5.9', io), asks };
 }
 
-test('a quota that outlasts what is left of the reading time is said, with the version, before Coda would end the reading', async t => {
-  const m = await slow(t, { version: 1, usage: 30 });
-  const began = Date.now();
-  const result = await run(declared.command, m.env);
-  assert.equal(result.code, 0, result.stderr);
-  assert.ok(Date.now() - began < 6000, 'printed within the time');
-  const [resource] = readResources(result.stdout, declared);
-  assert.equal(resource.error, '暂时无法获取额度：读取超时');
-  assert.deepEqual(resource.values, [{ label: 'CLI 版本', value: '1.5.9' }]);
-  assert.equal((await readFile(join(m.home, 'usage-started'), 'utf8')).trim(), 'started');
-});
-
-test('no quota is asked for when the version took the time', async t => {
-  const m = await slow(t, { version: 3, usage: 0 });
-  const result = await run(declared.command, m.env);
-  assert.equal(result.code, 0, result.stderr);
-  const [resource] = readResources(result.stdout, declared);
-  assert.equal(resource.error, '暂时无法获取额度：读取超时');
-  assert.deepEqual(resource.values, [{ label: 'CLI 版本', value: '1.5.9' }]);
-  await assert.rejects(readFile(join(m.home, 'usage-started'), 'utf8'), { code: 'ENOENT' });
+test('the version and the quota are given what is left of the reading time, and no quota is asked for when too little is left', () => {
+  const quick = readingAt(1_000);
+  assert.deepEqual(quick.asks, [['version', 24_000], ['usage', 20_000]]);
+  assert.deepEqual(quick.got.report, report);
+  // 20 seconds went in the version: 4 seconds are left, less the one to print.
+  const slow = readingAt(20_000);
+  assert.deepEqual(slow.asks, [['version', 24_000], ['usage', 4_000]]);
+  assert.equal(slow.got.version, '1.5.9');
+  // 22 seconds: 2 are left, which is too little to ask for a report; it is said, and the version still given.
+  const late = readingAt(22_000);
+  assert.deepEqual(late.asks, [['version', 24_000]]);
+  assert.deepEqual(late.got, { version: '1.5.9', failure: '读取超时' });
+  // A CLI too old is not asked for a quota, and one that cannot say its version has none.
+  assert.deepEqual(reading('agy', 25_000, '1.5.9', { now: () => 0, ask: () => ({ status: 0, stdout: '1.5.8' }) }), { version: '1.5.8', tooOld: true });
+  assert.deepEqual(reading('agy', 25_000, '1.5.9', { now: () => 0, ask: () => ({ status: 1 }) }), { version: null });
+  // A report that fails is the reason.
+  assert.deepEqual(reading('agy', 25_000, '1.5.9', { now: () => 0, ask: () => ({ status: 0, stdout: '1.5.9' }), report: () => { throw new Error('boom'); } }), { version: '1.5.9', failure: 'boom' });
 });
 
 test('a report of more groups than a reading lists values is cut to 7, the version still the last, and its words to the limit', async t => {
