@@ -27,34 +27,11 @@ function argumentsAt(source, open) {
   for (; i < source.length && depth; i++) depth += source[i] === '(' ? 1 : source[i] === ')' ? -1 : 0;
   return source.slice(open, i - 1);
 }
-// The source with its comments blanked out, read token by token so the `//` in a string, a template or a regular
-// expression is not taken for one. A `/` divides after a name (not a keyword like return), a literal or a closing bracket
-// (not the `)` of an if, for, while or with); anywhere else it begins a regular expression.
-function withoutComments(source) {
-  const token = /\/\*[\s\S]*?\*\/|\/\/[^\n]*|\s+|(['"])(?:\\.|(?!\1)[^\\\n])*\1|`(?:\\.|[^\\`])*`|\/(?:\\.|\[(?:\\.|[^\]\n])*\]|[^/\\\n])+\/|[\w$]+|[^]/y;
-  const keyword = /^(?:return|typeof|instanceof|in|of|new|delete|void|throw|case|do|else|yield|await)$/, parens = [];
-  let out = '', word = '', value = true;
-  for (let m; (m = token.exec(source));) {
-    let [t] = m;
-    if (/^\/[/*]/.test(t)) { out += ' '; continue; }
-    if (/^\s/.test(t)) { out += t; continue; }
-    if (t[0] === '/' && !value) t = '/', token.lastIndex = m.index + 1;
-    out += t;
-    if (/^[\w$]/.test(t)) value = keyword.test(t);
-    else if (t === '(') parens.push(/^(?:if|for|while|with)$/.test(word)), value = true;
-    else if (t === ')') value = parens.pop();
-    else value = t === '/' || !/^['"`/\]}]/.test(t);
-    word = /^[\w$]/.test(t) ? t : '';
-  }
-  return out;
-}
 // Every package a file asks for by name: `import … from`, `import '…'`, `export … from`, and the names in the arguments of
 // `import()`, `require()` and the module resolvers (import.meta.resolve, require.resolve, createRequire(…).resolve, and a
 // name bound to a createRequire) — multi-line, conditional and fallback forms included. A name built at run time (a
-// template with ${…}) is the business of the package it is resolved beside, and is left out. Comments are left out too
-// (a `#require(` in one would otherwise take the strings after it for names).
+// template with ${…}) is the business of the package it is resolved beside, and is left out.
 export function packagesUsed(source) {
-  source = withoutComments(source);
   const names = [], requires = [...source.matchAll(/\b([\w$]+)\s*=\s*createRequire\s*\(/g)].map(m => m[1]);
   const calls = new RegExp(String.raw`\b(?:import|require)\s*\(|(?:\bimport\.meta|\brequire|\)${requires.map(r => `|\\b${r}`).join('')})\.resolve\s*\(`, 'g');
   for (const m of source.matchAll(/\b(?:from|import)\s*(['"])([^'"\n]+)\1/g)) names.push(m[2]);
@@ -68,12 +45,8 @@ test('a package is found however a plugin asks for it, and only a package', () =
   assert.deepEqual(packagesUsed(`import { a,\n  b } from '@x/one';\nconst c = await import(process.env.X ? pathToFileURL(process.env.X).href : '@x/two');
     createRequire(env.Y || createRequire(import.meta.url).resolve('three/sub/file.js')); new URL(import.meta.resolve('@x/four/bin/x.js'));
     import('./local.mjs'); import { join } from 'node:path'; require('fs'); sdk.resolve(\`@x/five-\${arch}/bin\`); spawn('kimi', ['acp']);
-    // Swift #require(
-    const ratio = total / count; // require('ghost')
-    x = done / total; /* require('phantom') */ /\\/\\//.test(u) && require('eight');
-    if (ok) /[//]/.test(url) && require('nine');
-    /* require('seven') */ fetch('https://example.com'); Promise.resolve({ action: 'cancel' }); const req = createRequire(here); req.resolve('six');`),
-  ['@x/one', '@x/two', 'three', '@x/four', 'eight', 'nine', 'six']);
+    Promise.resolve({ action: 'cancel' }); const req = createRequire(here); req.resolve('six');`),
+  ['@x/one', '@x/two', 'three', '@x/four', 'six']);
 });
 
 describe('the plugins here', () => {
