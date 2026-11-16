@@ -251,7 +251,7 @@ head：{{report.head}}
     <endEvent id="landed" name="已合进泳道" coda:notify="true">
       <extensionElements>
         <coda:output name="pr" value="=land.pr" /><coda:output name="commit" value="=land.commit" />
-        <coda:output name="autoLanded" value='=land.auto = "true"' /><coda:output name="summary" value="=land.summary" />
+        <coda:output name="autoLanded" value="=land.auto = true" /><coda:output name="summary" value="=land.summary" />
       </extensionElements>
     </endEvent>
     <scriptTask id="abandon" name="关闭 PR" scriptFormat="bash" coda:checkout="false" coda:timeout="5" coda:retry="3">

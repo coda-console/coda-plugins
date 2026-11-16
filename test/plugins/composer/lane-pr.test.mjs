@@ -546,8 +546,10 @@ test('泳道 PR 流程定义：输入、回路、审查卡答复、结束输出�
   assert.equal(route('after-land', { land: { route: 'sync' } }), 'revise', '冲突交回同一个执行会话');
   assert.equal(route('after-land', { land: { route: 'landed' } }), 'landed');
   for (const id of ['landed', 'abandoned']) assert.equal(nodes[id].notify, 'true', `${id} 结果回发起会话`);
-  assert.deepEqual(values(nodes.landed).map(v => [v.name, v.value]), [['pr', '=land.pr'], ['commit', '=land.commit'], ['autoLanded', '=land.auto = "true"'], ['summary', '=land.summary']]);
-  for (const [auto, expected] of [['true', true], [undefined, false]]) assert.equal(evaluate('land.auto = "true"', { land: { pr: PR, ...(auto && { auto }) } }).value, expected);
+  assert.deepEqual(values(nodes.landed).map(v => [v.name, v.value]), [['pr', '=land.pr'], ['commit', '=land.commit'], ['autoLanded', '=land.auto = true'], ['summary', '=land.summary']]);
+  // 引擎把步骤输出的 "true" 转为真假值：免审合入时 land.auto 是 true，不免审时没有这个输出。
+  const autoLanded = values(nodes.landed).find(v => v.name === 'autoLanded').value.slice(1);
+  for (const [auto, expected] of [[true, true], [undefined, false]]) assert.equal(evaluate(autoLanded, { land: { pr: PR, ...(auto && { auto }) } }).value, expected);
   assert.deepEqual(values(nodes.abandoned).map(v => [v.name, v.value]), [['pr', '=abandon.pr']]);
   for (const [sync, text] of [[false, 'squash 合进泳道并删除分支'], [true, '把泳道快进到这次交付']]) {
     const expression = [...nodes.review.documentation[0].text.matchAll(/{{(.*?)}}/g)].find(m => m[1].includes('inputs.sync'))[1];
