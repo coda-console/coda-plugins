@@ -23,7 +23,8 @@ const asked = new Map();
 // the initialize before it, `probe-init-shapeless` the probe's own initialize, `probe-models-shapeless` (models alone) a
 // session/set_model and `probe-level-shapeless` a thinking level set back; `probe-prompt-internal` answers a prompt -32603,
 // `probe-mark-ignored` takes a mark other than true for an ordinary session, `probe-empty-id` opens one with an empty ID,
-// `probe-any-option` takes an option there is none of, `probe-default-refused` refuses the level it marks its default,
+// `probe-any-option` takes an option there is none of, `probe-default-refused` refuses the level it marks its default and
+// `probe-default-ignored` answers it as set and keeps the level it had,
 // `probe-close-error` fails a close and `probe-close-keeps` keeps the session it closed, `probe-load-code` answers a load
 // of a session gone -32603, and `probe-list-pages`, `probe-list-loop` and `probe-list-endless` page session/list (which
 // otherwise has two pages, both empty) to list the session on the second page, or give the same cursor, or always another;
@@ -32,7 +33,7 @@ const asked = new Map();
 const LEVELS = { a: ['low', 'medium', 'high'], b: ['low', 'medium', 'high', 'xhigh'], c: null }, probes = new Map();
 const DEFAULT_LEVEL = 'low';
 const select = (id, category, currentValue, values) => ({ id, name: id, category, type: 'select', currentValue, options: values.map(value => ({ value, name: value,
-  ...(mode === 'probe-default-refused' && category === 'thought_level' && value === DEFAULT_LEVEL && { _meta: { coda: { default: true } } }) })) });
+  ...(mode.startsWith('probe-default') && category === 'thought_level' && value === DEFAULT_LEVEL && { _meta: { coda: { default: true } } }) })) });
 const probeOptions = ({ model, level }) => [select('model', 'model', model, Object.keys(LEVELS)), ...(LEVELS[model] ? [select('thought_level', 'thought_level', level, LEVELS[model])] : [])];
 // Its processes for one check share a working directory: the probe session opened, and each initialize, are marked there.
 // The probe's own connection is the third (after the handshake's and the one whose input is closed).
@@ -152,6 +153,7 @@ const methods = {
     } else if (configId === 'thought_level' && LEVELS[session.model]?.includes(value)) {
       if (mode === 'probe-level-shapeless') return undefined;
       if (mode === 'probe-default-refused' && value === DEFAULT_LEVEL) throw invalid(`no thought_level ${value}`);
+      if (mode === 'probe-default-ignored' && value === DEFAULT_LEVEL) return { configOptions: probeOptions(session) };
       session.level = value;
     } else if (mode !== 'probe-any-option') throw invalid(`no ${configId} ${value}`);
     return { configOptions: probeOptions(session) };

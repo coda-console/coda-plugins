@@ -456,6 +456,8 @@ async function probeModels(ask, sessionId, opened, say) {
       if (back.error) return say.fail('probe.config', `模型 ${value} 设思考档位 ${fallback} 回了错误 ${back.error.code}：${back.error.message}：Coda 读完一个模型会把档位设回默认`);
       const set = schemas.zSetSessionConfigOptionResponse.safeParse(back.result);
       if (!set.success) return say.fail('probe.config', `模型 ${value} 设思考档位 ${fallback} 的结果不合 ACP schema：${explain(set.error)}`);
+      const now = back.result.configOptions.find(o => o?.id === level.id)?.currentValue;
+      if (now !== fallback) return say.fail('probe.config', `模型 ${value} 设思考档位 ${fallback} 后返回的档位是 ${now}：设回默认没有生效`);
     }
     seen.push(`${value}（${level ? choices(level).join('/') : '无档位'}）`);
   }

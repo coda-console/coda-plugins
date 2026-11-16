@@ -127,6 +127,7 @@ describe('a liar fails on the rule it breaks', () => {
     ['probe-empty-id', 'probe.new', {}],
     ['probe-any-option', 'probe.config', {}],
     ['probe-default-refused', 'probe.config', {}],
+    ['probe-default-ignored', 'probe.config', {}, /设思考档位 low 后返回的档位是 medium/],
     ['probe-close-error', 'probe.close', {}],
     ['probe-close-keeps', 'probe.close', {}],
     ['probe-load-code', 'probe.resume', {}],
