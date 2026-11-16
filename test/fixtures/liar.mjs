@@ -1,9 +1,12 @@
 // A fake agent that gets Coda's protocol wrong on purpose, one way per run: `node liar.mjs <mode>`. Without a mode it
 // speaks it right, so each test shows one rule failing and nothing else.
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 
+// As a CLI an entry runs, `--version` is answered (Antigravity's entry asks for it).
+if (process.argv[2] === '--version') { console.log('1.5.9'); process.exit(0); }
 const mode = process.argv[2] ?? 'honest';
 // Wire extensions supplied by a test, without duplicating the honest ACP conversation.
 const extension = process.argv[3] ? JSON.parse(readFileSync(process.argv[3], 'utf8')) : {};
@@ -13,6 +16,32 @@ const say = (sessionId, text) => notify('session/update', { sessionId, update: {
 const wait = params => notify('_coda/wait', params);
 const MODEL = { id: 'model', name: '模型', category: 'model', type: 'select', currentValue: 'liar', options: [{ value: 'liar', name: '说错话' }] };
 const asked = new Map();
+// The probe modes declare configuration probes (docs/agent-protocol.md「配置探测」) and keep the sessions of probes here,
+// their models a (low/medium/high), b (with xhigh) and c (no thinking level). Each gets one thing wrong: `probe-refuses`
+// a marked session/new, `probe-stuck` a model switch, `probe-prompt` a prompt, `probe-resume` a load once the connection is gone,
+// `probe-list-error` and `probe-list-shapeless` the session/list after it, `probe-reinit-error` and `probe-reinit-shapeless`
+// the initialize before it, `probe-init-shapeless` the probe's own initialize, `probe-models-shapeless` (models alone) a
+// session/set_model and `probe-level-shapeless` a thinking level set back; `probe-prompt-internal` answers a prompt -32603,
+// `probe-mark-ignored` takes a mark other than true for an ordinary session, `probe-empty-id` opens one with an empty ID,
+// `probe-any-option` takes an option there is none of, `probe-default-refused` refuses the level it marks its default and
+// `probe-default-ignored` answers it as set and keeps the level it had,
+// `probe-close-error` fails a close and `probe-close-keeps` keeps the session it closed, `probe-load-code` answers a load
+// of a session gone -32603, and `probe-list-pages`, `probe-list-loop` and `probe-list-endless` page session/list (which
+// otherwise has two pages, both empty) to list the session on the second page, or give the same cursor, or always another;
+// `probe-list-cursor` gives a cursor that is a number and `probe-list-entry` lists an entry with no cwd; `probe-persist-close`
+// keeps its probe sessions where another connection loads them, and lets one go only when it is closed.
+const LEVELS = { a: ['low', 'medium', 'high'], b: ['low', 'medium', 'high', 'xhigh'], c: null }, probes = new Map();
+const DEFAULT_LEVEL = 'low';
+const select = (id, category, currentValue, values) => ({ id, name: id, category, type: 'select', currentValue, options: values.map(value => ({ value, name: value,
+  ...(mode.startsWith('probe-default') && category === 'thought_level' && value === DEFAULT_LEVEL && { _meta: { coda: { default: true } } }) })) });
+const probeOptions = ({ model, level }) => [select('model', 'model', model, Object.keys(LEVELS)), ...(LEVELS[model] ? [select('thought_level', 'thought_level', level, LEVELS[model])] : [])];
+// Its processes for one check share a working directory: the probe session opened, and each initialize, are marked there.
+// The probe's own connection is the third (after the handshake's and the one whose input is closed).
+const PROBED = join(process.cwd(), 'liar-probed'), INITS = join(process.cwd(), 'liar-inits'), PERSISTED = join(process.cwd(), 'liar-persisted');
+const persisted = () => existsSync(PERSISTED) ? readFileSync(PERSISTED, 'utf8').split('\n').filter(Boolean) : [];
+const thirdInit = () => { appendFileSync(INITS, '.'); return readFileSync(INITS, 'utf8').length === 3; };
+const invalid = message => Object.assign(new Error(message), { code: -32602 });
+const notFound = message => Object.assign(new Error(message), { code: -32002 });
 let next = 0, turn = null, running = null, turns = 0, afterCancel = null, afterSteer = null, context = '';
 const textOf = blocks => (blocks ?? []).filter(block => block.type === 'text').map(block => block.text).join('\n');
 // What it was told: the session instructions, from its system prompt or in front of its first input (as a relay without a
@@ -21,6 +50,8 @@ const instructed = ({ systemPrompt }) => { if (systemPrompt) context += `${textO
 const assertInstructionBlock = prompt => {
   if (prompt.length !== 2 || !prompt[0].text.startsWith('<coda-session-instructions>')) throw new Error('expected first-prompt instructions');
 };
+// The new connection after a probe: its initialize fails, or comes back with no result.
+const reinit = () => { if (mode === 'probe-reinit-error') throw Object.assign(new Error('Internal error'), { code: -32603 }); };
 const STEERS = ['steer', 'steer-own-turn', 'steer-started'];
 // What the checker answered a request of ours.
 function ask(method, params) {
@@ -32,12 +63,32 @@ function ask(method, params) {
 // The sessions this process opened itself.
 const opened = new Set();
 const methods = {
-  initialize: () => ({ protocolVersion: mode === 'protocol-version' ? 2 : 1,
-    agentCapabilities: { loadSession: mode === 'load-fails' || mode === 'load-forgets', ...(mode.startsWith('no-system-prompt') ? {} : { sessionCapabilities: { systemPrompt: {} } }), _meta: { coda: { waits: {}, ...(mode.startsWith('remote-code') ? { remote: {} } : {}) } } },
+  initialize: () => mode.startsWith('probe-reinit') && existsSync(PROBED) ? reinit() : mode === 'probe-init-shapeless' && thirdInit() ? undefined : ({ protocolVersion: mode === 'protocol-version' ? 2 : 1,
+    agentCapabilities: { loadSession: mode === 'load-fails' || mode === 'load-forgets' || mode.startsWith('probe'), ...(mode.startsWith('no-system-prompt') ? {} : { sessionCapabilities: { systemPrompt: {}, ...(mode.startsWith('probe') ? { list: {}, close: {} } : {}) } }),
+      _meta: { coda: { waits: {}, ...(mode.startsWith('remote-code') ? { remote: {} } : {}), ...(mode.startsWith('probe') ? { probe: {} } : {}) } } },
     authMethods: [], ...(STEERS.includes(mode) ? { _meta: { steering: { supported: true } } } : {}), ...extension.initialize }),
   'session/new': params => {
     if (mode === 'signed-out') throw Object.assign(new Error('Authentication required'), { code: -32000 });
     if (mode.startsWith('no-system-prompt') && params.systemPrompt) throw new Error('unexpected systemPrompt');
+    if (mode.startsWith('probe') && mode !== 'probe-mark-ignored' && params._meta?.coda && 'probe' in params._meta.coda && params._meta.coda.probe !== true) throw invalid('probe must be true');
+    if (mode.startsWith('probe') && params._meta?.coda?.probe === true) {
+      if (mode === 'probe-refuses') throw new Error('No catalog');
+      const sessionId = mode === 'probe-empty-id' ? '' : `probe-${randomUUID()}`, session = { model: 'a', level: 'medium' };
+      probes.set(sessionId, session);
+      if ((mode.startsWith('probe-reinit') || mode === 'probe-list-pages') && !existsSync(PROBED)) writeFileSync(PROBED, sessionId);
+      if (mode === 'probe-persist-close') appendFileSync(PERSISTED, `${sessionId}\n`);
+      if (mode === 'probe-models-shapeless') return { sessionId, models: { currentModelId: 'a', availableModels: Object.keys(LEVELS).map(modelId => ({ modelId, name: modelId })) } };
+      // Before the answer: what a probe may say (commands, config), and what it may not (work, asking).
+      if (mode === 'probe-quiet-updates') {
+        notify('session/update', { sessionId, update: { sessionUpdate: 'available_commands_update', availableCommands: [{ name: 'help', description: '帮助' }] } });
+        notify('session/update', { sessionId, update: { sessionUpdate: 'config_option_update', configOptions: probeOptions(session) } });
+      }
+      if (mode === 'probe-new-work' || mode === 'probe-signed-out-work') say(sessionId, '正在干活');
+      if (mode === 'probe-signed-out-work') throw Object.assign(new Error('Authentication required'), { code: -32000 });
+      if (mode === 'probe-new-ask') void ask('session/request_permission', { sessionId, toolCall: { toolCallId: 'c1', title: '先问一下' },
+        options: [{ optionId: 'no', name: '拒绝', kind: 'reject_once' }] });
+      return { sessionId, configOptions: probeOptions(session) };
+    }
     instructed(params);
     const sessionId = randomUUID();
     opened.add(sessionId);
@@ -46,14 +97,74 @@ const methods = {
     return mode === 'no-model' ? { sessionId } : { sessionId, configOptions: [MODEL], ...extension.newResult };
   },
   // Says whether the instructions came with it; or answers the load and keeps no session for it (OpenCode before 1.0.151).
-  'session/load': ({ systemPrompt }) => {
+  'session/load': ({ systemPrompt, sessionId }) => {
+    if (sessionId?.startsWith('probe-')) {
+      if (mode === 'probe-resume' || persisted().includes(sessionId)) return { configOptions: probeOptions({ model: 'a', level: 'medium' }) };
+      if (mode === 'probe-load-code') throw new Error('Internal error');
+      throw notFound('Unknown session');
+    }
     if (extension.loadResult) return extension.loadResult;
     if (extension.loadError) throw Object.assign(new Error('Cannot load'), extension.loadError);
     if (mode === 'load-forgets') return { configOptions: [MODEL] };
     const word = /reply with exactly (\S+) and nothing else/.exec(textOf(systemPrompt?.content))?.[1];
     throw Object.assign(new Error(`会话不见了${word ? `（收到了检查词 ${word} 的会话指令）` : ''}`), { code: -32002 });
   },
+  // Lists none of the probe sessions, which are gone with their connection, on two pages of the cwd it is asked for.
+  'session/list': ({ cwd, cursor }) => {
+    if (mode === 'probe-list-error') throw Object.assign(new Error('database unavailable'), { code: -32603 });
+    if (mode === 'probe-list-shapeless') return {};
+    if (!cwd || realpathSync(cwd) !== process.cwd()) throw invalid(`list of ${cwd}`);
+    if (mode === 'probe-list-loop') return { sessions: [], nextCursor: 'same' };
+    if (mode === 'probe-list-cursor') return { sessions: [], nextCursor: 42 };
+    if (mode === 'probe-list-entry') return { sessions: [{ sessionId: 'someone' }] };
+    if (mode === 'probe-list-endless') return { sessions: [], nextCursor: `p${Number(cursor?.slice(1) ?? 1) + 1}` };
+    if (cursor === undefined) return { sessions: [], nextCursor: 'p2' };
+    if (cursor !== 'p2') throw invalid(`cursor ${cursor}`);
+    return { sessions: mode === 'probe-list-pages' ? [{ sessionId: readFileSync(PROBED, 'utf8'), cwd }] : [] };
+  },
+  // Closes a probe session: it is gone, but for the mode that keeps it.
+  'session/close': ({ sessionId }) => {
+    if (mode === 'probe-close-error') throw new Error('Cannot close');
+    if (mode !== 'probe-close-keeps') probes.delete(sessionId);
+    if (mode === 'probe-persist-close') writeFileSync(PERSISTED, persisted().filter(id => id !== sessionId).map(id => `${id}\n`).join(''));
+    return {};
+  },
+  // A model switch of a probe that reports models alone: answered with no result.
+  'session/set_model': () => mode === 'probe-models-shapeless' ? undefined : {},
+  // A probe session's own options; of the others, the one model.
+  'session/set_config_option': ({ sessionId, configId, value }) => {
+    const session = probes.get(sessionId);
+    if (!session) {
+      if (configId !== 'model' || value !== 'liar') throw invalid(`no ${configId} ${value}`);
+      return { configOptions: [MODEL] };
+    }
+    // A probe that registers activity of its own, and then works or asks as that activity, or only registers it.
+    if (mode.startsWith('probe-wait') && !session.waited) {
+      session.waited = true;
+      const waitId = 'probe-wait';
+      wait({ sessionId, waitId, kind: 'task', state: mode === 'probe-wait-only' ? 'waiting' : 'handling' });
+      if (mode === 'probe-wait-work') { say(sessionId, '正在干活'); wait({ sessionId, waitId, state: 'done' }); }
+      if (mode === 'probe-wait-ask') void ask('session/request_permission', { sessionId, toolCall: { toolCallId: 'c1', title: '先问一下' },
+        options: [{ optionId: 'no', name: '拒绝', kind: 'reject_once' }] });
+    }
+    if (configId === 'model') {
+      if (!(value in LEVELS)) throw invalid(`no model ${value}`);
+      if (mode !== 'probe-stuck') Object.assign(session, { model: value, level: LEVELS[value] ? 'medium' : undefined });
+    } else if (configId === 'thought_level' && LEVELS[session.model]?.includes(value)) {
+      if (mode === 'probe-level-shapeless') return undefined;
+      if (mode === 'probe-default-refused' && value === DEFAULT_LEVEL) throw invalid(`no thought_level ${value}`);
+      if (mode === 'probe-default-ignored' && value === DEFAULT_LEVEL) return { configOptions: probeOptions(session) };
+      session.level = value;
+    } else if (mode !== 'probe-any-option') throw invalid(`no ${configId} ${value}`);
+    return { configOptions: probeOptions(session) };
+  },
   'session/prompt': async ({ sessionId, prompt }) => {
+    if (probes.has(sessionId)) {
+      if (mode === 'probe-prompt') return { stopReason: 'end_turn' };
+      if (mode === 'probe-prompt-internal') throw new Error('Internal error');
+      throw invalid('配置探测会话不接受 prompt');
+    }
+    if (sessionId?.startsWith('probe-')) throw notFound(`Unknown session ${sessionId}`);
     if (mode === 'load-forgets' && !opened.has(sessionId)) throw Object.assign(new Error(`Session not found: ${sessionId}`), { code: -32602 });
     const text = textOf(prompt);
     if (text.includes('What is the Coda check word?')) {

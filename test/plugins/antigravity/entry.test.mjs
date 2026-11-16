@@ -25,7 +25,7 @@ function start(t) {
 test('the entry takes additionalDirectories out of the capabilities agy declares and out of session requests', async t => {
   const { request } = start(t);
   const { agentCapabilities } = await request('initialize', { protocolVersion: 1, clientCapabilities: {} });
-  assert.deepEqual(agentCapabilities, { loadSession: true, sessionCapabilities: { list: {} }, session_capabilities: { list: {} } });
+  assert.deepEqual(agentCapabilities, { loadSession: true, sessionCapabilities: { list: {} }, session_capabilities: { list: {} }, _meta: { coda: { probe: {} } } });
   const params = { cwd: '/work', mcpServers: [], additionalDirectories: ['/b-extra', '/c-extra'] };
   const { additionalDirectories, ...rest } = params;
   assert.deepEqual((await request('session/new', params)).received, rest);
@@ -78,7 +78,7 @@ test('the entry declares full beside the modes of agy, in the session answers an
     const mode = configOptions.find(option => option.id === 'mode');
     assert.deepEqual(mode.options.map(option => option.value), ['default', 'accept-edits', 'auto', 'plan', 'full']);
     assert.equal(mode.currentValue, 'default');
-    assert.equal(configOptions.find(option => option.id === 'model').options.length, 1, 'other options are not touched');
+    assert.equal(configOptions.find(option => option.id === 'model').options.length, 3, 'other options are not touched');
   }
 });
 
