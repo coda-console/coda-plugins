@@ -47,7 +47,6 @@ const body = args.includes('--body-file') ? readFileSync(args[args.indexOf('--bo
 calls.push({ args, body, thread: process.env.CODA_THREAD_ID ?? null }); writeFileSync(join(root, 'gh-calls'), JSON.stringify(calls));
 const state = () => JSON.parse(readFileSync(join(process.env.CODA_ARTIFACTS, 'develop.json'), 'utf8'));
 if (args[0] === 'repo') console.log('main');
-else if (args[1] === 'list' && args.includes('merged')) console.log(process.env.LANE_PRS || '[]');
 else if (args[1] === 'list') { if (process.env.OPEN_PR) console.log(process.env.OPEN_PR); }
 else if (args[1] === 'create') console.log('${PR}');
 else if (args[1] === 'merge') { if (process.env.MERGE_EXIT) { process.stderr.write(process.env.MERGE_STDERR || ''); process.exit(Number(process.env.MERGE_EXIT)); } }
@@ -99,10 +98,10 @@ console.log(JSON.stringify({ session, branch: null, head: git('rev-parse', 'HEAD
     return { ...result, outputs };
   };
   const remote = ref => git('ls-remote', 'origin', ref).split('\t')[0];
-  // 一个块合进了需求分支：在需求分支上另提交一个。
-  const land = (file, text) => {
+  // 一个块合进了需求分支：在需求分支上另提交一个；message 照块（piece）合入的提交写，带 Coda-Piece: <运行 ID>。
+  const land = (file, text, message = `lane ${file}`) => {
     git('fetch', '-q', 'origin', state().lane); git('switch', '-q', '--detach', 'FETCH_HEAD');
-    writeFileSync(join(work, file), text); git('add', file); git('commit', '-qm', `lane ${file}`); git('push', '-q', 'origin', `HEAD:refs/heads/${state().lane}`);
+    writeFileSync(join(work, file), text); git('add', file); git('commit', '-qm', message); git('push', '-q', 'origin', `HEAD:refs/heads/${state().lane}`);
     return git('rev-parse', 'HEAD');
   };
   const answer = (action, name, choice, note, extra = {}) => run(action, { [name]: JSON.stringify({ choice, note }), ...extra }).outputs;
@@ -188,31 +187,30 @@ test('需求已暂停：用户选继续带着原因回到进行中，选放弃�
   assert.deepEqual(f.answer('paused', 'PAUSED', 'abandon'), { route: 'abandon' });
 });
 
-test('提交验收开需求分支进目标分支的 PR：不带会话开，正文是汇报、从 GitHub 读的已合并块与改动区域；再提交更新同一个 PR', t => {
+test('提交验收开需求分支进目标分支的 PR：不带会话开，正文是汇报、从需求分支历史读的块与改动区域；再提交更新同一个 PR', t => {
   const f = fixture(t); f.run('lane');
-  const head = f.land('one', 'first');
+  const first = f.land('one', 'first', '输入框可以输入\n\nCoda-Piece: piece-9');
+  const head = f.land('two', 'second', '补齐状态\n\nCoda-Piece: piece-12');
   f.progress('submit', '汇报');
-  const prs = [{ number: 12, title: '补齐状态', url: 'https://github.com/example/fixture/pull/12' }, { number: 9, title: '输入框可以输入', url: 'https://github.com/example/fixture/pull/9' }];
-  const opened = f.run('pr', { LANE_PRS: JSON.stringify(prs) }).outputs;
-  const summary = '汇报\n\n块：\n- 输入框可以输入（https://github.com/example/fixture/pull/9）\n- 补齐状态（https://github.com/example/fixture/pull/12）\n\n改动：1 个文件 +1 -0\n- 根目录：1 个文件 +1 -0';
+  const opened = f.run('pr').outputs;
+  const summary = `汇报\n\n块：\n- ${first.slice(0, 12)} 输入框可以输入（coda://workflow-runs/piece-9）\n- ${head.slice(0, 12)} 补齐状态（coda://workflow-runs/piece-12）\n\n改动：2 个文件 +2 -0\n- 根目录：2 个文件 +2 -0`;
   assert.deepEqual(opened, { checked: 'false', url: PR, head, base: f.remote('main'), lane: 'lane/run-1', summary,
     task: '需求：输入框\n\n目标与完成标准：\n输入框可以输入\n\n主 Agent 的汇报：\n汇报' });
-  assert.deepEqual(f.calls().find(c => c.args[1] === 'list' && c.args.includes('merged')).args,
-    ['pr', 'list', '--base', 'lane/run-1', '--state', 'merged', '--limit', '200', '--json', 'number,title,url']);
+  assert.ok(!f.calls().some(c => c.args[1] === 'list' && c.args.includes('merged')), '块不开 PR，不从 GitHub 找');
   const created = f.calls().filter(c => c.args[1] === 'create');
   assert.equal(created.length, 1);
   assert.deepEqual(created[0].args.slice(0, 8), ['pr', 'create', '--base', 'main', '--head', 'lane/run-1', '--title', '输入框']);
   assert.equal(created[0].thread, null, '不带会话开 PR，PR 观察不会因此启动 PR 生命流程');
   assert.equal(created[0].body, summary);
   // 从头重跑后运行暂存没了 PR：从 GitHub 找到开着的那个，只更新。
-  f.land('two', 'second');
+  const third = f.land('three', 'third');
   f.progress('submit', '新汇报');
   const updated = f.run('pr', { OPEN_PR: PR }).outputs;
   assert.equal(updated.url, PR);
   assert.equal(f.calls().filter(c => c.args[1] === 'create').length, 1);
   const edit = f.calls().find(c => c.args[1] === 'edit');
   assert.deepEqual(edit.args.slice(0, 3), ['pr', 'edit', PR]);
-  assert.match(edit.body, /^新汇报\n\n块：\n（还没有合进需求分支的块）\n\n改动：2 个文件 \+2 -0/);
+  assert.ok(edit.body.startsWith(`新汇报\n\n块：\n- ${first.slice(0, 12)} 输入框可以输入（coda://workflow-runs/piece-9）\n- ${head.slice(0, 12)} 补齐状态（coda://workflow-runs/piece-12）\n- ${third.slice(0, 12)} lane three\n\n改动：3 个文件 +3 -0`), edit.body);
   assert.deepEqual(f.calls().find(c => c.args[1] === 'list' && c.args.includes('open')).args,
     ['pr', 'list', '--head', 'lane/run-1', '--base', 'main', '--state', 'open', '--limit', '1', '--json', 'url', '--jq', '.[].url']);
 });
@@ -616,7 +614,7 @@ test('跟上目标分支：需求分支已包含目标分支不动；需求分�
   assert.equal(f.git('ls-tree', '--name-only', merged).split('\n').sort().join(','), 'base,four,one,three');
   assert.deepEqual(f.state().pushed, [{ commit: merged, subject: '合并 main 到 lane/run-1', why: '跟上 main' }]);
   const summary = f.run('pr').outputs.summary;
-  assert.ok(summary.includes(`块：\n（还没有合进需求分支的块）\n\n流程直接推到需求分支的提交：\n- ${merged.slice(0, 12)} 合并 main 到 lane/run-1（跟上 main）\n\n改动：`), summary);
+  assert.ok(summary.includes(`块：\n- ${landed.slice(0, 12)} lane one\n- ${lane.slice(0, 12)} lane three\n\n流程直接推到需求分支的提交：\n- ${merged.slice(0, 12)} 合并 main 到 lane/run-1（跟上 main）\n\n改动：`), summary);
   assert.equal(f.state().head, merged, '之后的检查跑在新 head 上');
 });
 

@@ -61,10 +61,13 @@ const changes = base => {
   return [`改动：${line(total)}`, ...Object.entries(areas).sort(([, a], [, b]) => b.added + b.deleted - a.added - a.deleted).map(([area, group]) => `- ${area}：${line(group)}`)].join('\n');
 };
 
-// 合进需求分支的块，从 GitHub 读，按编号先后。
-const lanePrs = () => {
-  const merged = JSON.parse(gh('pr', 'list', '--base', state.lane, '--state', 'merged', '--limit', '200', '--json', 'number,title,url'));
-  return merged.sort((a, b) => a.number - b.number).map(pr => `- ${pr.title}（${pr.url}）`).join('\n') || '（还没有合进需求分支的块）';
+// 合进需求分支的块，从需求分支的历史读：目标分支最新提交到需求分支 head 的 first-parent 提交，按先后；流程直接推的另列，不算块。
+// 块（piece）合入的提交说明带 Coda-Piece: <运行 ID>，有就附上那次运行。
+const pieces = (base, head) => {
+  const direct = new Set((state.pushed ?? []).map(p => p.commit));
+  const lines = git('log', '--first-parent', '--reverse', '--format=%H%x09%s%x09%(trailers:key=Coda-Piece,valueonly,separator=%x2C)', `${base}..${head}`).split('\n').filter(Boolean);
+  return lines.map(line => line.split('\t')).filter(([commit]) => !direct.has(commit))
+    .map(([commit, subject, run]) => `- ${commit.slice(0, 12)} ${subject}${run ? `（coda://workflow-runs/${run}）` : ''}`).join('\n') || '（还没有合进需求分支的块）';
 };
 
 const ancestor = (older, newer) => spawnSync('git', ['merge-base', '--is-ancestor', older, newer]).status === 0;
@@ -79,7 +82,7 @@ const pushLane = (commit, from) => {
   back(`推送 ${commit} 到需求分支 ${state.lane} 被拒：需求分支已不是 ${from}，有别的提交推进了它，流程没有覆盖。\n运行：coda://workflow-runs/${env.GITHUB_RUN_ID}\n请看需求分支最新的提交，处理好后重新提交验收。`);
   return false;
 };
-// 不经块、由流程直接推到需求分支的提交，PR 汇总里单独列出（已合并的块列表里没有它们）：只数 first-parent，合并进来的目标分支提交不算。
+// 不经块、由流程直接推到需求分支的提交，PR 汇总里单独列出（块列表里去掉它们）：只数 first-parent，合并进来的目标分支提交不算。
 const pushed = (from, to, why) => {
   const lines = git('log', '--first-parent', '--reverse', '--format=%H%x09%s', `${from}..${to}`).split('\n').filter(Boolean);
   state.pushed = [...state.pushed ?? [], ...lines.map(line => { const [commit, subject] = line.split('\t'); return { commit, subject, why }; })];
@@ -121,7 +124,7 @@ switch (action) {
     git('fetch', 'origin', state.lane);
     state.head = git('rev-parse', 'FETCH_HEAD');
     const direct = state.pushed?.length ? `\n\n流程直接推到需求分支的提交：\n${state.pushed.map(p => `- ${p.commit.slice(0, 12)} ${p.subject}（${p.why}）`).join('\n')}` : '';
-    const summary = `${state.report}\n\n块：\n${lanePrs()}${direct}\n\n${changes(base)}`;
+    const summary = `${state.report}\n\n块：\n${pieces(base, state.head)}${direct}\n\n${changes(base)}`;
     const path = join(env.RUNNER_TEMP, 'pr.md');
     writeFileSync(path, summary);
     state.pr = gh('pr', 'list', '--head', state.lane, '--base', state.base, '--state', 'open', '--limit', '1', '--json', 'url', '--jq', '.[].url');
