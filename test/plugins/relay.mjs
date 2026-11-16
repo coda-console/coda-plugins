@@ -12,7 +12,7 @@ import { instructionsBlock } from '../../check/coda/domain/agent-protocol.mjs';
 
 const quote = s => `'${s.replaceAll("'", "'\\''")}'`;
 
-export async function relaysInstructions(t, id, binary, argv) {
+export async function relaysInstructions(t, id, binary, argv, sessionCapabilities = { list: {} }) {
   const manifest = JSON.parse(readFileSync(join(pluginDir(id), 'package.json'), 'utf8'));
   const home = mkdtempSync(join(tmpdir(), `coda-${id}-relay-`)), cli = join(home, binary);
   mkdirSync(dirname(cli), { recursive: true });
@@ -31,7 +31,7 @@ export async function relaysInstructions(t, id, binary, argv) {
 
   const p = await open();
   const init = (await request(p, 'initialize', { protocolVersion: 1, clientCapabilities: {} })).result;
-  assert.deepEqual(init.agentCapabilities.sessionCapabilities, { list: {} });
+  assert.deepEqual(init.agentCapabilities.sessionCapabilities, sessionCapabilities);
   assert.equal((await request(p, 'session/new', { cwd: home, mcpServers: [] })).result.sessionId, 'native');
   assert.deepEqual((await prompt(p, '/compact')).prompt, [{ type: 'text', text: '/compact' }]);
   const input = [instructionsBlock('# Coda client'), { type: 'text', text: '你好' }];
