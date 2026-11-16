@@ -38,18 +38,23 @@ const allow = { optionId: 'yes', kind: 'allow_once', name: 'allow' };
 const reject = { optionId: 'no', kind: 'reject_once', name: 'deny' };
 const modeOf = update => update.params.update.currentModeId;
 
-// A session of the fake agy, in Coda's place. `permission` has agy ask for a permission: it resolves to what agy got back,
-// and `asked` collects what reached Coda, which `answer` then answers.
+// A session of the fake agy, in Coda's place. `reached` has agy ask for a permission and expects it to arrive at Coda within
+// 3 seconds, answers it, and expects agy to get that answer; `allowed` expects agy to be answered without Coda being asked.
 async function session(t) {
   const h = start(t);
   await h.request('initialize', { protocolVersion: 1, clientCapabilities: {} });
   const { sessionId } = await h.request('session/new', { cwd: '/work', mcpServers: [] });
   const permission = (id = sessionId, options = [reject, allow]) => h.request('fake/permission', { sessionId: id, options });
-  const waitFor = async () => { while (!h.messages.some(message => message.method === 'session/request_permission')) await new Promise(resolve => setTimeout(resolve, 10)); };
+  const arrived = async () => {
+    for (const end = Date.now() + 3000; Date.now() < end; await new Promise(resolve => setTimeout(resolve, 10))) {
+      const at = h.messages.findIndex(message => message.method === 'session/request_permission');
+      if (at >= 0) return h.messages.splice(at, 1)[0];
+    }
+    throw new Error('the permission did not reach Coda');
+  };
   const reached = async (id, options) => {
     const answered = permission(id, options);
-    await waitFor();
-    const [ask] = h.messages.splice(h.messages.findIndex(message => message.method === 'session/request_permission'), 1);
+    const ask = await Promise.race([arrived(), answered.then(answer => { throw new Error(`agy was answered without asking Coda: ${JSON.stringify(answer)}`); })]);
     assert.deepEqual(ask.params.options, options ?? [reject, allow]);
     h.p.respond(ask.id, { outcome: { outcome: 'selected', optionId: 'no' } });
     assert.deepEqual((await answered).answered, { outcome: { outcome: 'selected', optionId: 'no' } });
@@ -90,6 +95,16 @@ test('switching to full gives agy default and shows Coda full, by set_mode and b
   const mode = viaOption.configOptions.find(option => option.id === 'mode');
   assert.equal(mode.currentValue, 'full');
   assert.ok(mode.options.some(option => option.value === 'full'));
+});
+
+test('changing another option in full keeps full, in the answer and in the permissions', async t => {
+  const { request, sessionId, allowed } = await session(t);
+  await request('session/set_mode', { sessionId, modeId: 'full' });
+  const { configOptions } = await request('session/set_config_option', { sessionId, configId: 'model', value: 'm' });
+  const mode = configOptions.find(option => option.id === 'mode');
+  assert.equal(mode.currentValue, 'full');
+  assert.ok(mode.options.some(option => option.value === 'full'));
+  await allowed();
 });
 
 test('in full the entry allows a permission itself, with allow_once, and Coda is not asked', async t => {

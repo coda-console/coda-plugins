@@ -12,7 +12,7 @@ import { agyBinary } from '../scripts/agy.mjs';
 const agy = spawn(agyBinary() ?? 'agy', ['acp'], { stdio: ['pipe', 'pipe', 'inherit'] });
 const initializing = new Set();
 const sessionRequests = new Set();
-const modeRequests = new Map(); // request id -> { sessionId, was }: a mode switch, undone if agy refuses it
+const configRequests = new Map(); // request id -> { sessionId, was }: a set_config_option, whose answer lists the options; `was` for a mode switch, undone if agy refuses it
 const full = new Set(); // sessions in `full`
 const FULL_NAME = '全部放行';
 const FULL_DESCRIPTION = 'Approve everything without asking.';
@@ -45,7 +45,7 @@ function fixConfigOptions(sessionId, configOptions) {
 // The session is in `full` from the moment the switch is sent, and back where it was if agy answers with an error.
 function switchMode(message, to) {
   const { sessionId } = message.params;
-  modeRequests.set(message.id, { sessionId, was: full.has(sessionId) });
+  configRequests.set(message.id, { sessionId, was: full.has(sessionId) });
   if (to === 'full') full.add(sessionId); else full.delete(sessionId);
 }
 
@@ -57,9 +57,12 @@ relay(process.stdin, agy.stdin, message => {
     switchMode(message, params.modeId);
     if (params.modeId === 'full') params.modeId = 'default';
   }
-  if (method === 'session/set_config_option' && params?.configId === 'mode' && typeof params.sessionId === 'string') {
-    switchMode(message, params.value);
-    if (params.value === 'full') params.value = 'default';
+  if (method === 'session/set_config_option' && typeof params?.sessionId === 'string') {
+    if (params.configId !== 'mode') configRequests.set(id, { sessionId: params.sessionId });
+    else {
+      switchMode(message, params.value);
+      if (params.value === 'full') params.value = 'default';
+    }
   }
 });
 relay(agy.stdout, process.stdout, message => {
@@ -73,11 +76,12 @@ relay(agy.stdout, process.stdout, message => {
       if (Array.isArray(modes?.availableModes)) modes.availableModes.push({ id: 'full', name: FULL_NAME, description: FULL_DESCRIPTION });
       fixConfigOptions(message.result.sessionId, message.result.configOptions);
     }
-    const mode = modeRequests.get(id);
-    if (mode) {
-      modeRequests.delete(id);
-      if (message.error) { if (mode.was) full.add(mode.sessionId); else full.delete(mode.sessionId); }
-      else fixConfigOptions(mode.sessionId, message.result?.configOptions);
+    const config = configRequests.get(id);
+    if (config) {
+      configRequests.delete(id);
+      if (!message.error) fixConfigOptions(config.sessionId, message.result?.configOptions);
+      else if (config.was) full.add(config.sessionId);
+      else if (config.was === false) full.delete(config.sessionId);
     }
     return;
   }

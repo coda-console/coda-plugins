@@ -32,7 +32,8 @@ createInterface({ input: process.stdin }).on('line', line => {
     if (refusing.delete(sessionId) || !MODES.includes(modeId)) { send({ id: m.id, error: { code: -32602, message: `invalid mode ${modeId}` } }); return; }
     announce(sessionId, modeId);
     send({ id: m.id, result: { received: m.params, ...(m.method === 'session/set_config_option' && { configOptions: configOptions(sessionId) }) } });
-  } else if (m.method === 'fake/refuse') { refusing.add(sessionId); send({ id: m.id, result: {} }); }
+  } else if (m.method === 'session/set_config_option') send({ id: m.id, result: { configOptions: configOptions(sessionId) } });
+  else if (m.method === 'fake/refuse') { refusing.add(sessionId); send({ id: m.id, result: {} }); }
   else if (m.method === 'fake/mode') { announce(sessionId, m.params.modeId); send({ id: m.id, result: {} }); }
   else if (m.method === 'fake/permission') { asking.set(`perm-${m.id}`, m.id); send({ id: `perm-${m.id}`, method: 'session/request_permission', params: { sessionId, toolCall: { toolCallId: 't' }, options: m.params.options } }); }
   else send({ id: m.id, result: { received: m.params } });
