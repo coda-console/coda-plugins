@@ -415,9 +415,18 @@ function initializeProblem({ error, result }) {
   const parsed = schemas.zInitializeResponse.safeParse(result);
   return parsed.success ? null : `initialize 的结果不合 ACP schema：${explain(parsed.error)}`;
 }
-const choices = option => (Array.isArray(option?.options) ? option.options : []).flatMap(o => Array.isArray(o?.options) ? o.options : [o]).map(o => o?.value);
+const leaves = option => (Array.isArray(option?.options) ? option.options : []).flatMap(o => Array.isArray(o?.options) ? o.options : [o]);
+const choices = option => leaves(option).map(o => o?.value);
+// What the protocol answers in a probe: a malformed mark, or a prompt to a probe session (-32602); a session ID it does not
+// know, or no longer (-32002).
+const INVALID_PARAMS = -32602, NOT_FOUND = -32002;
+// How many pages of `session/list` the session is looked for in after the probe: past that the list is taken to go on forever.
+const LIST_PAGES = 100;
 
 async function probeModels(ask, sessionId, opened, say) {
+  // An option it does not have is not taken (「配置」: what it does not support is an error, not sent on to a real session).
+  const unknown = await ask('session/set_config_option', { sessionId, configId: 'coda-check-no-such-option', value: 'coda-check' });
+  if (!unknown.error) return say.fail('probe.config', '设不存在的配置项也成功了：不支持的请求必须报错，不能转给真实会话');
   const model = opened.configOptions?.find?.(o => o?.category === 'model' && o.type === 'select');
   if (!model) {
     const models = opened.models?.availableModels;
@@ -441,10 +450,12 @@ async function probeModels(ask, sessionId, opened, say) {
     if (now?.currentValue !== value) return say.fail('probe.config', `切到模型 ${value} 后返回的配置里当前模型是 ${now?.currentValue}：要返回这个模型完整的配置`);
     if (level && !choices(level).includes(level.currentValue)) return say.fail('probe.config', `模型 ${value} 的思考档位 ${level.currentValue} 不在它自己的选项里：不能留着上一个模型的档位`);
     if (level) {
-      const back = await ask('session/set_config_option', { sessionId, configId: level.id, value: level.currentValue });
-      if (back.error) return say.fail('probe.config', `模型 ${value} 设思考档位 ${level.currentValue} 回了错误 ${back.error.code}：${back.error.message}：Coda 读完一个模型会把档位设回默认`);
+      // Back to the level the agent marks its default, as Coda sets it; with none marked, the one it has.
+      const fallback = leaves(level).find(o => o?._meta?.coda?.default === true)?.value ?? level.currentValue;
+      const back = await ask('session/set_config_option', { sessionId, configId: level.id, value: fallback });
+      if (back.error) return say.fail('probe.config', `模型 ${value} 设思考档位 ${fallback} 回了错误 ${back.error.code}：${back.error.message}：Coda 读完一个模型会把档位设回默认`);
       const set = schemas.zSetSessionConfigOptionResponse.safeParse(back.result);
-      if (!set.success) return say.fail('probe.config', `模型 ${value} 设思考档位 ${level.currentValue} 的结果不合 ACP schema：${explain(set.error)}`);
+      if (!set.success) return say.fail('probe.config', `模型 ${value} 设思考档位 ${fallback} 的结果不合 ACP schema：${explain(set.error)}`);
     }
     seen.push(`${value}（${level ? choices(level).join('/') : '无档位'}）`);
   }
@@ -463,6 +474,7 @@ async function probe({ agent, checked, base, limits, say, instructions }) {
     let reply = await ask('initialize', init);
     const initFailure = initializeProblem(reply);
     if (initFailure) return say.fail(rule, initFailure);
+    const closes = reply.result.agentCapabilities?.sessionCapabilities?.close != null;
     reply = await ask('session/new', { cwd: session.cwd, mcpServers: [], _meta: { coda: { probe: true } } });
     if (reply.error?.code === SIGNED_OUT) return say.skip('probe.signed-out', '带探测标记的 session/new 回了 -32000（未登录）：配置探测跳过');
     if (reply.error) return say.fail(rule, `带探测标记的 session/new 回了错误 ${reply.error.code}：${reply.error.message}（Coda 不改发普通 session/new，这次读不到目录）`);
@@ -471,16 +483,34 @@ async function probe({ agent, checked, base, limits, say, instructions }) {
     const problems = configProblems(reply.result.configOptions, 'session/new result.configOptions'), model = currentModel(reply.result);
     if (problems.length) return say.fail(rule, problems[0]);
     if (typeof model !== 'string') return say.fail(rule, '带探测标记的 session/new 没报当前模型：Coda 读不到目录');
+    if (!reply.result.sessionId) return say.fail(rule, '带探测标记的 session/new 给了空的 sessionId：虚拟会话要有非空的 ID');
     sessionId = reply.result.sessionId;
     session.sessionId = session.waits.sessionId = sessionId; session.loading = false;
     say.pass(rule, `带探测标记的 session/new：虚拟会话 ${sessionId}，当前模型 ${model}`);
+    // A mark that is not `true` is refused, not dropped for an ordinary session (「请求」).
+    rule = 'probe.mark';
+    const marked = await ask('session/new', { cwd: session.cwd, mcpServers: [], _meta: { coda: { probe: 'true' } } });
+    if (marked.error?.code === INVALID_PARAMS) say.pass(rule, `探测标记写成字符串 "true" 的 session/new 回 -32602：${marked.error.message}`);
+    else say.fail(rule, `探测标记写成字符串 "true" 的 session/new ${marked.error ? `回了 ${marked.error.code}（${marked.error.message}）`
+      : `开了会话 ${marked.result?.sessionId}`}：标记格式不对要回 -32602，不能去掉标记当普通会话`);
     rule = 'probe.config';
     await probeModels(ask, sessionId, reply.result, say);
     rule = 'probe.prompt';
     const turn = await ask('session/prompt', { sessionId, prompt: [{ type: 'text', text: CHECK_QUESTION }] });
-    if (!turn.error) say.fail(rule, `虚拟会话接受了 session/prompt（stopReason ${turn.result?.stopReason}）：配置探测会话不执行 prompt，要回 -32602`);
-    else if (turn.error.code !== -32602) say.warn(rule, `虚拟会话的 session/prompt 回了 ${turn.error.code}（${turn.error.message}）：约定是 -32602`);
-    else say.pass(rule, `虚拟会话的 session/prompt 回 -32602：${turn.error.message}`);
+    if (turn.error?.code === INVALID_PARAMS) say.pass(rule, `虚拟会话的 session/prompt 回 -32602：${turn.error.message}`);
+    else say.fail(rule, `虚拟会话的 session/prompt ${turn.error ? `回了 ${turn.error.code}（${turn.error.message}）` : `被接受了（stopReason ${turn.result?.stopReason}）`}：配置探测会话不执行 prompt，要回 -32602`);
+    // Closed, it is gone: what is asked of it then is of a session it no longer knows (「错误与收尾」).
+    if (closes) {
+      rule = 'probe.close';
+      const closed = await ask('session/close', { sessionId }), parsed = closed.error ? null : schemas.zCloseSessionResponse.safeParse(closed.result);
+      if (closed.error) say.fail(rule, `虚拟会话的 session/close 回了错误 ${closed.error.code}：${closed.error.message}：声明了 close 就要释放虚拟会话并回 {}`);
+      else if (!parsed.success) say.fail(rule, `虚拟会话的 session/close 的结果不合 ACP schema：${explain(parsed.error)}`);
+      else {
+        const after = await ask('session/prompt', { sessionId, prompt: [{ type: 'text', text: CHECK_QUESTION }] });
+        if (after.error?.code === NOT_FOUND) say.pass(rule, 'session/close 回 {}，之后这个虚拟会话的请求回 -32002');
+        else say.fail(rule, `session/close 之后对虚拟会话发 session/prompt ${after.error ? `回了 ${after.error.code}（${after.error.message}）` : '被接受了'}：已失效的 sessionId 要回 -32002`);
+      }
+    }
   } catch (e) { return say.fail(rule, `${rule === 'probe.new' ? '带探测标记的 session/new' : '探测'}失败：${e.message}`); }
   finally {
     await session.proc.terminate(limits.exit); session.proc.kill();
@@ -497,15 +527,27 @@ async function probe({ agent, checked, base, limits, say, instructions }) {
     const tries = [caps.loadSession === true && 'session/load', caps.sessionCapabilities?.resume != null && 'session/resume'].filter(Boolean);
     for (const method of tries) {
       asked.push(method);
-      if (!(await ask(method, { sessionId, cwd: again.cwd, mcpServers: [] }, again.proc)).error) return say.fail('probe.resume', `断线后新进程 ${method} 接上了虚拟会话 ${sessionId}：虚拟会话不能恢复`);
+      const { error } = await ask(method, { sessionId, cwd: again.cwd, mcpServers: [] }, again.proc);
+      if (!error) return say.fail('probe.resume', `断线后新进程 ${method} 接上了虚拟会话 ${sessionId}：虚拟会话不能恢复`);
+      if (error.code !== NOT_FOUND) return say.fail('probe.resume', `断线后新进程 ${method} 虚拟会话 ${sessionId} 回了 ${error.code}（${error.message}）：已失效的 sessionId 要回 -32002`);
     }
     if (caps.sessionCapabilities?.list != null) {
-      asked.push('session/list');
-      const { result, error } = await ask('session/list', {}, again.proc);
-      // A list that did not come back says nothing of whether the session was kept.
-      if (error) return say.fail('probe.resume', `断线后 session/list 回了错误 ${error.code}：${error.message}：查不了虚拟会话是否留在历史里`);
-      if (!Array.isArray(result?.sessions)) return say.fail('probe.resume', `断线后 session/list 的答复没有 sessions 数组（${JSON.stringify(result?.sessions)}）：查不了虚拟会话是否留在历史里`);
-      if (result.sessions.some(s => s?.sessionId === sessionId)) return say.fail('probe.resume', `断线后 session/list 列出了虚拟会话 ${sessionId}`);
+      // Every page of the probe's cwd, as ACP pages it (`cursor`, `nextCursor`): the session may be on any of them.
+      const cursors = new Set();
+      for (let page = 1, cursor; ; page++) {
+        const { result, error } = await ask('session/list', { cwd: session.cwd, ...(cursor !== undefined && { cursor }) }, again.proc);
+        const at = page > 1 ? `第 ${page} 页` : '';
+        // A list that did not come back says nothing of whether the session was kept.
+        if (error) return say.fail('probe.resume', `断线后 session/list ${at}回了错误 ${error.code}：${error.message}：查不了虚拟会话是否留在历史里`);
+        if (!Array.isArray(result?.sessions)) return say.fail('probe.resume', `断线后 session/list ${at}的答复没有 sessions 数组（${JSON.stringify(result?.sessions)}）：查不了虚拟会话是否留在历史里`);
+        if (result.sessions.some(s => s?.sessionId === sessionId)) return say.fail('probe.resume', `断线后 session/list ${at}列出了虚拟会话 ${sessionId}`);
+        cursor = result.nextCursor ?? undefined;
+        if (cursor === undefined) break;
+        if (cursors.has(cursor)) return say.fail('probe.resume', `断线后 session/list 第 ${page} 页又给了用过的 nextCursor ${cursor}：翻页不会结束，查不完虚拟会话是否留在历史里`);
+        if (page === LIST_PAGES) return say.fail('probe.resume', `断线后 session/list 翻了 ${LIST_PAGES} 页还有 nextCursor：查不完虚拟会话是否留在历史里`);
+        cursors.add(cursor);
+      }
+      asked.push(`session/list（${cursors.size + 1} 页）`);
     }
     if (asked.length) say.pass('probe.resume', `断线后 ${asked.join('、')} 都不接受、不列出虚拟会话`);
     else say.skip('probe.resume', '没声明 loadSession、resume、list：没有恢复的路');

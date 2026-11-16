@@ -122,6 +122,17 @@ describe('a liar fails on the rule it breaks', () => {
     ['probe-refuses', 'probe.new', {}],
     ['probe-stuck', 'probe.config', {}],
     ['probe-prompt', 'probe.prompt', {}],
+    ['probe-prompt-internal', 'probe.prompt', {}],
+    ['probe-mark-ignored', 'probe.mark', {}],
+    ['probe-empty-id', 'probe.new', {}],
+    ['probe-any-option', 'probe.config', {}],
+    ['probe-default-refused', 'probe.config', {}],
+    ['probe-close-error', 'probe.close', {}],
+    ['probe-close-keeps', 'probe.close', {}],
+    ['probe-load-code', 'probe.resume', {}],
+    ['probe-list-pages', 'probe.resume', {}, /第 2 页列出了虚拟会话/],
+    ['probe-list-loop', 'probe.resume', {}, /又给了用过的 nextCursor/],
+    ['probe-list-endless', 'probe.resume', {}, /翻了 100 页/],
     ['probe-resume', 'probe.resume', {}],
     ['probe-list-error', 'probe.resume', {}],
     ['probe-list-shapeless', 'probe.resume', {}],
@@ -136,9 +147,10 @@ describe('a liar fails on the rule it breaks', () => {
     ['probe-wait-ask', 'probe.quiet', {}],
     ['probe-wait-only', 'probe.quiet', {}],
   ];
-  for (const [mode, rule, options] of cases) test(mode, async () => {
+  for (const [mode, rule, options, message] of cases) test(mode, async () => {
     const { report } = await checkPlugin(plugin({ mode }), { ...options, limits });
     assert.deepEqual([...new Set(failed(report))], [rule], JSON.stringify(report.failures, null, 1));
+    if (message) assert.match(report.failures.map(item => item.message).join('\n'), message);
   });
   test('an honest one passes', async () => {
     const { report } = await checkPlugin(plugin(), { live: true, limits });
@@ -148,8 +160,8 @@ describe('a liar fails on the rule it breaks', () => {
   });
   test('one that declares configuration probes opens a session of its connection alone for them', async () => {
     const { report } = await checkPlugin(plugin({ mode: 'probe' }), { limits });
-    assertPasses(report, ['handshake.new', 'probe.new', 'probe.config', 'probe.prompt', 'probe.resume']);
-    assert.match(report.items.find(item => item.rule === 'probe.resume').message, /session\/list/);
+    assertPasses(report, ['handshake.new', 'probe.new', 'probe.mark', 'probe.config', 'probe.prompt', 'probe.close', 'probe.resume']);
+    assert.match(report.items.find(item => item.rule === 'probe.resume').message, /session\/list（2 页）/, 'every page of the probe\'s cwd');
     assert.match(report.items.find(item => item.rule === 'probe.config').message, /3 个.*a（low\/medium\/high），b（low\/medium\/high\/xhigh），c（无档位）/);
     assert.ok(rules(await checkPlugin(plugin(), { limits }).then(r => r.report), 'skip').includes('probe.skipped'), 'one that does not is not asked');
   });
