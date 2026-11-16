@@ -67,9 +67,9 @@ export function firstMessage(value) {
   const handoff = value.handoffSource === undefined ? {} : { handoffSource: text(value.handoffSource, '交接来源', 100) };
   const parent = value.parentThreadId === undefined ? {} : { parentThreadId: text(value.parentThreadId, '父会话', 100) };
   check(!parent.parentThreadId || handoff.handoffSource === parent.parentThreadId, 'invalid_input', '子会话必须引用父会话上下文');
-  // Whom a child the user starts answers (#1904「回复权」): its parent, as a call of the parent's would (`parent`, the
-  // default), or the user who started it (`sender`): under its parent all the same, which is where it belongs, not whom it
-  // answers. Only the one that is not the default is kept, so that a request saying the default is the same request.
+  // Whom a child the user starts answers (#1904「回复权」): said as `parent` (the default) or `sender`, and either way the
+  // user who started it — under its parent, which is where it belongs, with nothing going back to it (store
+  // acceptFirstMessage). Only the one that is not the default is kept, so that a request saying the default is the same request.
   check(value.replyTo === undefined || parent.parentThreadId && ['parent', 'sender'].includes(value.replyTo), 'invalid_input', '子会话的回报对象无效');
   const reply = value.replyTo === 'sender' ? { replyTo: 'sender' } : {};
   // Which agents may run is the store's to say (its plugin installed); here only that it names one.
