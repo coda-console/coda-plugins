@@ -34,10 +34,15 @@
     </scriptTask>
     <sequenceFlow id="execute-report" sourceRef="execute" targetRef="gate" />
     <scriptTask id="gate" name="推送并开 PR" scriptFormat="bash" coda:timeout="5" coda:retry="3">
-      <extensionElements><coda:output name="head" /></extensionElements>
+      <extensionElements><coda:output name="head" /><coda:output name="route" /></extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/lane-pr.mjs" gate</script>
     </scriptTask>
-    <sequenceFlow id="gate-checks" sourceRef="gate" targetRef="checks" />
+    <!-- 还叠放、还没开 PR 时 gate 先看前置：执行期间已合进泳道（分支已删）先重接，再回到 gate 开进泳道；关了没合并或改为合进别处，草稿开进泳道后交主 Agent。 -->
+    <sequenceFlow id="gate-how" sourceRef="gate" targetRef="gate-next" />
+    <exclusiveGateway id="gate-next" name="前置是否还能叠放" default="gate-checks" />
+    <sequenceFlow id="gate-checks" sourceRef="gate-next" targetRef="checks" />
+    <sequenceFlow id="gate-restack" sourceRef="gate-next" targetRef="restack"><conditionExpression xsi:type="tFormalExpression">=gate.route = "restack"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="gate-review" sourceRef="gate-next" targetRef="rounds"><conditionExpression xsi:type="tFormalExpression">=gate.route = "review"</conditionExpression></sequenceFlow>
     <serviceTask id="checks" name="项目检查" coda:action="run-workflows">
       <extensionElements><coda:param name="hook" value="check" /><coda:param name="commit" value="=gate.head" /></extensionElements>
     </serviceTask>

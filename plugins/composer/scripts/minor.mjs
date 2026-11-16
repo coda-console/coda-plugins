@@ -53,6 +53,8 @@ export function autoLandReasons({ auto, sync, stack, head, checks, reviews, find
     const outside = paths.filter(path => !isMinorPath(path));
     if (outside.length) reasons.push(`改了测试与说明文档以外的文件：${outside.join('、')}`);
     else if (status === 'D' && paths.some(isTest)) reasons.push(`删了测试文件 ${paths[0]}`);
+    // 重命名、移动成非测试文件（如 test/a.test.mjs → README.md），原测试同样不再被发现。
+    else if (isTest(paths[0]) && !isTest(paths.at(-1))) reasons.push(`把测试文件 ${paths[0]} 改成了非测试文件 ${paths.at(-1)}`);
   }
   for (const [path, { added, removed }] of Object.entries(patches)) {
     if (added.some(skips)) reasons.push(`${path} 新增了 skip、todo 或 only`);

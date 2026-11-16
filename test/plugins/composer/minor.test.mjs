@@ -45,6 +45,10 @@ test('路径：只放行测试与非契约说明文档；源码、package.json�
 
 test('防删测与防跳过：删测试文件、新增 skip、todo 或 only、只删断言都不免审', () => {
   assert.match(reasons({ changes: [change('test/a.test.mjs', 'D', ['100644', '000000'])], patches: {} }).join('\n'), /删了测试文件/);
+  // 原样重命名（R100、补丁里没有增删行）成说明文档：新旧路径都放行，但原测试不再被发现。
+  const renamed = to => parseRaw([`:100644 100644 ${'1'.repeat(40)} ${'1'.repeat(40)} R100`, 'test/a.test.mjs', to, ''].join('\0'));
+  assert.deepEqual(reasons({ changes: renamed('README.md'), patches: {} }), ['把测试文件 test/a.test.mjs 改成了非测试文件 README.md']);
+  assert.deepEqual(reasons({ changes: renamed('test/b.test.mjs'), patches: { 'test/b.test.mjs': { added: [], removed: [] } } }), [], '测试改名成测试可以');
   for (const line of ["+test.skip('x', () => {});", "+it.todo('x');", "+test('x', { skip: true }, () => {});", "+test('x', {todo: 'later'}, () => {});",
     '+  skip: true,', "+  timeout: 5, todo: 'later',", "+test.only('x', () => {});", "+describe.only('x', () => {});", "+test('x', { only: true }, () => {});", '+  only: true,']) {
     assert.match(reasons({ patches: { 'test/a.test.mjs': { added: [line, '+assert.ok(1);'], removed: [] } } }).join('\n'), /新增了 skip、todo 或 only/, line);
