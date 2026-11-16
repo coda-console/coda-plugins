@@ -80,10 +80,11 @@ export async function activate(coda) {
     const compacted = compactions > state.compactions;
     Object.assign(state, { list, key, sent, compactions });
     if (!compacted) return;
-    // 压缩后说明丢了：不等一轮结束或下一条消息，立即给。
+    // 压缩后说明丢了：不等一轮结束或下一条消息，立即给；tell 被拒绝（如超长）时待给标记保留，留给下一个时点补发。
+    state.needFull = true;
+    await coda.tell(thread, on(list));
     state.needFull = false;
     state.told = true;
-    await coda.tell(thread, on(list));
   });
   replayed = true;
   return { dispose() { composers.dispose(); threads.dispose(); } };

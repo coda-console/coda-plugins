@@ -37,6 +37,7 @@ const composerEvent = (id, { sent = 0, compactions, subagents = list, ultra = tr
 // replay：watch 返回前交给插件的输入框（宿主重放的 ADDED）。
 async function rig(replay = []) {
   const watchers = new Map(), told = [], submissions = new Map(), state = new Map();
+  let rejecting = false;
   await activate({
     protocols: { register: (_kind, id, handler) => submissions.set(id, handler) },
     watch: async (kind, handler) => {
@@ -44,7 +45,10 @@ async function rig(replay = []) {
       if (kind === 'coda/composer@1') for (const [id, options] of replay) await handler(composerEvent(id, { ...options, type: 'ADDED' }));
       return { dispose() {} };
     },
-    tell: async (thread, text) => { told.push([thread, text]); },
+    tell: async (thread, text) => {
+      if (rejecting) throw new Error('too long');
+      told.push([thread, text]);
+    },
   });
   // compactions 只增不减：没写就沿用这个输入框上次的值。
   const compactionsOf = new Map();
@@ -73,7 +77,7 @@ async function rig(replay = []) {
   const create = (subagents = list) => submissions.get('ultra')({ spec: { composer: 'new:p1', projectId: 'p1',
     defaultTarget: { kind: 'thread', open: true },
     modes: [{ mode: 'composer/ultra', values: { subagents }, sent: 0, changedSinceSent: true }] } });
-  return { composer, turn, round, take, send, create };
+  return { composer, turn, round, take, send, create, rejectTell: value => { rejecting = value; } };
 }
 
 test('没有用户消息的连续多轮：第一轮结束给完整，之后每轮结束都不 tell', async () => {
@@ -135,6 +139,21 @@ test('压缩时名单也变了：给的是最新名单的完整说明，之后�
   r.take();
   await r.composer('s1', { subagents: other, compactions: 1 });
   assert.deepEqual(r.take(), [['s1', on(other)]]);
+  await r.round('s1');
+  assert.deepEqual(r.take(), []);
+});
+
+test('压缩时 tell 被拒绝：待给标记保留，下一轮结束再补发，成功后不再重复', async () => {
+  const r = await rig();
+  await r.composer('s1', { type: 'ADDED', compactions: 0 });
+  await r.send('s1');
+  r.take();
+  r.rejectTell(true);
+  await assert.rejects(r.composer('s1', { sent: 0, compactions: 1 }), /too long/);
+  r.rejectTell(false);
+  assert.deepEqual(r.take(), []);
+  await r.round('s1');
+  assert.deepEqual(r.take(), [['s1', on(list)]]);
   await r.round('s1');
   assert.deepEqual(r.take(), []);
 });
