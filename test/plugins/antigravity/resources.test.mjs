@@ -22,7 +22,10 @@ test('a login is the keychain entry being there; a keychain that cannot be asked
   assert.equal(signedIn('darwin', answer(44)), false);
   assert.throws(() => signedIn('darwin', answer(36)), /读不了钥匙串：SecKeychainSearchCopyNext: boom/);
   assert.equal(signedIn('linux', answer(0)), true);
-  assert.equal(signedIn('linux', answer(1)), false);
+  // `secret-tool lookup` exits 1 for no entry, saying nothing, and also for a query that failed, saying why.
+  assert.equal(signedIn('linux', () => ({ status: 1, stderr: '' })), false);
+  assert.throws(() => signedIn('linux', () => ({ status: 1, stderr: 'secret-tool: Cannot autolaunch D-Bus without X11 $DISPLAY\n' })), /读不了 Secret Service：secret-tool: Cannot autolaunch D-Bus/);
+  assert.throws(() => signedIn('linux', () => ({ status: 2, stderr: '' })), /读不了 Secret Service：2/);
   // No `secret-tool` is not signed in; one that cannot answer (killed, timed out, failing to start) is no answer.
   assert.equal(signedIn('linux', () => ({ status: null, error: Object.assign(new Error('spawn secret-tool ENOENT'), { code: 'ENOENT' }) })), false);
   assert.throws(() => signedIn('linux', () => ({ status: null, signal: 'SIGKILL' })), /读不了 Secret Service：SIGKILL/);
@@ -32,7 +35,7 @@ test('a login is the keychain entry being there; a keychain that cannot be asked
   assert.equal(signedIn('win32', answer(0)), false);
   // The entry alone is asked for: no `-w` or `-g` (which print the secret), and the output goes nowhere.
   assert.deepEqual(asked[0], ['security', ['find-generic-password', '-s', 'gemini', '-a', 'antigravity'], ['ignore', 'ignore', 'pipe']]);
-  assert.deepEqual(asked.at(-2), ['secret-tool', ['lookup', 'service', 'gemini', 'username', 'antigravity'], 'ignore']);
+  assert.deepEqual(asked.find(a => a[0] === 'secret-tool'), ['secret-tool', ['lookup', 'service', 'gemini', 'username', 'antigravity'], ['ignore', 'ignore', 'pipe']]);
 });
 
 // A machine's home with an Antigravity CLI where its installer puts it (`version`: what `--version` prints; none for no CLI),

@@ -24,9 +24,10 @@ export function older(version, than) {
 // is in the keychain, asked for the entry alone, never its secret. macOS: `security`; Linux: the Secret Service through
 // `secret-tool` (the entry's attributes are what go-keyring writes: not tried on a real machine), where the CLI's file
 // fallback for a machine without one is not looked for. True or false for what the keychain answers: on Linux, no
-// `secret-tool` or no entry is not signed in. An error for a keychain that cannot be asked (macOS: any other answer than
-// found or not found; Linux: `secret-tool` timing out, killed or failing to start), which fails the reading rather than
-// showing a sign-out.
+// `secret-tool`, or one that exits 1 saying nothing (its answer for no entry) is not signed in. An error for a keychain that
+// cannot be asked (macOS: any other answer than found or not found; Linux: `secret-tool` timing out, killed, failing to
+// start, or failing with a message, as for a Secret Service it cannot reach, which it also exits 1 for), which fails the
+// reading rather than showing a sign-out.
 export function signedIn(platform = process.platform, run = spawnSync) {
   if (platform === 'darwin') {
     const ran = run('security', ['find-generic-password', '-s', 'gemini', '-a', 'antigravity'], { encoding: 'utf8', stdio: ['ignore', 'ignore', 'pipe'], timeout: 10_000 });
@@ -36,10 +37,12 @@ export function signedIn(platform = process.platform, run = spawnSync) {
     throw new Error(`读不了钥匙串：${`${ran.stderr ?? ''}`.trim().split('\n')[0] || ran.error?.code || ran.signal || ran.status}`);
   }
   if (platform === 'linux') {
-    const ran = run('secret-tool', ['lookup', 'service', 'gemini', 'username', 'antigravity'], { stdio: 'ignore', timeout: 10_000 });
+    const ran = run('secret-tool', ['lookup', 'service', 'gemini', 'username', 'antigravity'], { encoding: 'utf8', stdio: ['ignore', 'ignore', 'pipe'], timeout: 10_000 });
     if (ran.error?.code === 'ENOENT') return false;
-    if (ran.error || ran.signal) throw new Error(`读不了 Secret Service：${ran.error?.code ?? ran.signal}`);
-    return ran.status === 0;
+    if (ran.status === 0) return true;
+    const said = `${ran.stderr ?? ''}`.trim().split('\n')[0];
+    if (ran.status === 1 && !said && !ran.error) return false;
+    throw new Error(`读不了 Secret Service：${said || ran.error?.code || ran.signal || ran.status}`);
   }
   return false;
 }
