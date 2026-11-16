@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { autoLandReasons, isTest, parseRaw } from './minor.mjs';
-import { agentArgs, checksText, command, gh, git, instructions, mergedCommit, mergePr, openPr, output, repoOf, reviewsText, SLOTS } from './shared.mjs';
+import { agentArgs, checksText, command, fail, gh, git, instructions, mergedCommit, mergePr, openPr, output, repoOf, resumeText, reviewsText, SLOTS, talk } from './shared.mjs';
 import { fixText, historyText, previousFor, readResponses, triage } from './triage.mjs';
 
 const env = process.env, action = process.argv[2];
@@ -13,9 +13,6 @@ const statePath = join(env.CODA_ARTIFACTS, 'lane-pr.json');
 // 跟上目标分支的泳道 PR 快进进泳道，执行者要知道为什么只能合并、不能变基。
 const syncTask = `这个泳道 PR 用来跟上目标分支：把目标分支合并（merge）进当前分支，不要变基、不要压成一个提交；它会快进进泳道，保住泳道与目标分支的祖先关系。
 解决冲突；数据库迁移等版本号和目标分支撞号时，顺延泳道这边的。`;
-
-// 执行步骤失败后重跑，接回已开的执行会话时的开头：现场可能已经做了一部分，先看清再接着做。
-const resumeText = `这一项之前已经交给你，上一次没有正常结束（流程恢复或重试）。先核对现场：工作区状态（git status）、git log 里已有的提交、上次做到哪；再接着完成原任务，不要从头重做，已经做好的不要丢。`;
 
 // 让执行者把泳道合进自己的分支：试合并发现冲突和主 Agent 选「让执行者合并泳道」用同一段说明。
 const syncText = (lane, files = []) => `泳道是 ${lane}，别的泳道 PR 可能已经合进去了。${files.length ? `\n试合并发现这次提交与它冲突的文件：\n${files.map(file => `- ${file}`).join('\n')}` : ''}
@@ -37,6 +34,17 @@ const ancestor = (older, newer) => spawnSync('git', ['merge-base', '--is-ancesto
 const stacked = () => state.stack && !state.stack.restacked;
 // 流程替执行者重接了分支之后，下一次交给同一执行会话的任务前面先说一句，免得它在重接前的旧提交上接着改；那一次成功后才清。
 const restackNote = () => state.stack?.note ? `${state.stack.note}\n\n` : '';
+// 前置泳道 PR 最新的状态与合进的分支。
+const parentNow = () => JSON.parse(gh('pr', 'view', state.stack.pr, '--repo', repoOf(state.stack.pr), '--json', 'state,baseRefName'));
+// 前置关了没合并，或改为合进别的分支：合到别处再重接会把还没进泳道的前置改动剥掉，不能再叠在它上面。记下原因交主 Agent，
+// 等执行者把提交改为直接基于泳道后由 gate 解绑（recover）。不用再叠时返回 false。
+const unstack = parent => {
+  const wrong = parent.state === 'CLOSED' ? '已关闭、没有合并' : parent.baseRefName !== state.lane ? `改为合进 ${parent.baseRefName}，不再合进泳道 ${state.lane}` : '';
+  if (!wrong) return false;
+  state.feedback = `前置泳道 PR ${state.stack.pr} ${wrong}。这个泳道 PR 叠在它上面（从 ${state.stack.head} 开工），不能合进泳道：请选择放弃，或退回修改让执行者把自己的提交改为直接基于泳道 ${state.lane}（需要的前置改动一并带上）。`;
+  state.stack.recover = true;
+  return true;
+};
 
 // 只试不合：merge-tree 不产生提交，不动任何引用、索引和工作区。干净返回 undefined，有冲突返回冲突的文件。
 const conflicts = lane => {
@@ -55,26 +63,25 @@ switch (action) {
   case 'revise': {
     // 叠放（README.md「叠放」）：只在首次开工时认前置泳道 PR；从头重跑沿用已记下的 stack。前置已合进泳道就不叠放，照常从泳道开工。
     if (action === 'execute' && env.DEPENDS_ON && !state.stack) {
-      const fail = text => { console.error(`前置泳道 PR ${env.DEPENDS_ON}：${text}`); process.exit(2); };
-      if (state.sync) fail('跟上目标分支的泳道 PR（sync）不能叠放');
-      if (!/^https:\/\/[^/\s]+\/[^/\s]+\/[^/\s]+\/pull\/\d+$/.test(env.DEPENDS_ON)) fail('不是 PR 的完整地址（https://<主机>/<owner>/<repo>/pull/<编号>）');
+      const refuse = text => { console.error(`前置泳道 PR ${env.DEPENDS_ON}：${text}`); process.exit(2); };
+      if (state.sync) refuse('跟上目标分支的泳道 PR（sync）不能叠放');
+      if (!/^https:\/\/[^/\s]+\/[^/\s]+\/[^/\s]+\/pull\/\d+$/.test(env.DEPENDS_ON)) refuse('不是 PR 的完整地址（https://<主机>/<owner>/<repo>/pull/<编号>）');
       // 同仓库：异仓库（含 fork）的 PR 分支名、提交可能碰巧一样，也不会合进这条泳道。主机、owner、仓库名不分大小写。
       const here = repoOf(gh('repo', 'view', '--json', 'url', '--jq', '.url')).toLowerCase();
-      if (repoOf(env.DEPENDS_ON).toLowerCase() !== here) fail(`不在当前仓库 ${here}`);
+      if (repoOf(env.DEPENDS_ON).toLowerCase() !== here) refuse(`不在当前仓库 ${here}`);
       const parent = JSON.parse(gh('pr', 'view', env.DEPENDS_ON, '--repo', repoOf(env.DEPENDS_ON), '--json', 'url,state,headRefName,headRefOid,baseRefName'));
-      if (repoOf(parent.url).toLowerCase() !== here) fail(`不在当前仓库 ${here}`);
-      if (parent.headRefName === state.branch) fail('不能叠在自己上');
-      if (parent.state === 'CLOSED') fail('已关闭、没有合并，不能叠在它上面');
-      if (parent.baseRefName !== state.lane) fail(parent.baseRefName.startsWith('lane-pr/')
+      if (repoOf(parent.url).toLowerCase() !== here) refuse(`不在当前仓库 ${here}`);
+      if (parent.headRefName === state.branch) refuse('不能叠在自己上');
+      if (parent.state === 'CLOSED') refuse('已关闭、没有合并，不能叠在它上面');
+      if (parent.baseRefName !== state.lane) refuse(parent.baseRefName.startsWith('lane-pr/')
         ? `它叠在 ${parent.baseRefName} 上；只支持单前置线性叠放，不支持多级` : `它合进的是 ${parent.baseRefName}，不是泳道 ${state.lane}`);
       if (parent.state === 'OPEN') {
         git('fetch', 'origin', parent.headRefName);
-        if (git('rev-parse', 'FETCH_HEAD') !== parent.headRefOid) fail(`origin 上的 ${parent.headRefName} 不是 ${parent.headRefOid}：不在同一仓库，或刚有新推送`);
+        if (git('rev-parse', 'FETCH_HEAD') !== parent.headRefOid) refuse(`origin 上的 ${parent.headRefName} 不是 ${parent.headRefOid}：不在同一仓库，或刚有新推送`);
         state.stack = { pr: parent.url, branch: parent.headRefName, head: parent.headRefOid, restacked: false };
         save();
       }
     }
-    const prompt = join(env.RUNNER_TEMP, 'task.md');
     // opening 完整描述待完成的动作：{ action, text（任务文字）, agent（执行者配置）, session?（已有的会话）}。动作开始前写入，只有动作成功才清；
     // 中途怎么失败都留着，从头重跑从 execute 开始也做它记的那个动作，不靠哪个字段有值来推断先后。
     // 没有 opening 才新建：execute 接回已成功的执行会话，退回修改接回执行会话，换备用执行者新开。
@@ -92,22 +99,16 @@ switch (action) {
       save();
     }
     const kind = opening.action, resumed = opening.session;
-    const talk = (session, text) => {
-      writeFileSync(prompt, `${instructions}\n\n${text}\n`);
+    // 交执行者一次：接回会话，或新开；回复必须含 session、branch、head。
+    const talkTo = (session, text) => {
       // 叠放升级（recover）之后前置 head 已不能作为起点，新开的会话从泳道开工。
       const args = session ? ['--continue', session] : ['--commit', stacked() && !state.stack.recover ? state.stack.head : laneHead(), '--title', state.title];
       // 执行者是一组 Agent 选择（流程参数的 agent 类型）：没选的模型、强度、模式用 Agent 的默认值。
       if (!session) args.push(...agentArgs(opening.agent));
-      // 会话失败时 coda-agent 仍在标准输出给出会话 ID；记下它，这一步再跑才接得回。
-      const result = spawnSync('coda-agent', [...args, '--json', '--prompt-file', prompt], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
-      if (result.error) throw result.error;
-      let reply;
-      try { reply = JSON.parse(result.stdout); } catch { /* 失败时可以没有会话信息 */ }
-      // 退出 0 必须给出完整回复：否则 gate 读执行者时才崩，恢复也一直重复同一个错。
-      return { result, reply, failed: result.status !== 0 || !reply?.session || !reply.branch || !reply.head };
+      return talk(args, text, ['session', 'branch', 'head']);
     };
     // 退回修改本来就接回执行会话；它失败后再跑（opening 记着）才是续跑，要先核对现场。
-    let attempt = talk(resumed, resumed && !(created && action === 'revise') ? `${resumeText}\n\n${kind === 'revise' ? '这次要你做的' : '原任务'}：\n${opening.text}` : opening.text);
+    let attempt = talkTo(resumed, resumed && !(created && action === 'revise') ? `${resumeText}\n\n${kind === 'revise' ? '这次要你做的' : '原任务'}：\n${opening.text}` : opening.text);
     // Coda 侧的流程 Agent 步骤已在同一会话里续跑可恢复的失败，coda-agent 失败就是终局：回复里没有会话 ID 才算会话接不回，
     // 从 opening 去掉它，同一次里用 opening 记的执行者新开一次（只一次），动作和任务文字不变。
     // 回复里有会话但失败（非零退出、缺 branch 或 head）的不新开：会话和它做出的提交还在，下面记下后按失败退出，下次恢复继续接回。
@@ -116,14 +117,13 @@ switch (action) {
       console.error(`接回会话 ${resumed} 失败（${attempt.result.status !== 0 ? `coda-agent 退出码 ${attempt.result.status}` : '输出不是完整回复'}，没有会话 ID），改为从泳道当前 head 新开会话。`);
       delete opening.session;
       save();
-      attempt = talk(undefined, opening.text);
+      attempt = talkTo(undefined, opening.text);
     }
-    const { result, reply } = attempt;
+    const { reply } = attempt;
     if (attempt.failed) {
       if (kind === 'revise') console.error(`退回修改接不回会话 ${resumed}：必须在原会话里改，不新开会话，这一步按失败处理。`);
       if (reply?.session) { opening.session = reply.session; save(); }
-      if (result.status === 0) console.error(`coda-agent 退出 0，但输出不是含 session、branch、head 的 JSON：${result.stdout.slice(0, 300)}`);
-      process.exit(result.status || 1);
+      fail(attempt);
     }
     // 连续检查失败只在这次成功的会话是新开的时重新计数；接回已审查过的执行会话（退回修改、从头重跑）的计数照旧。
     if (!opening.session || opening.session !== state.executor?.session) state.failures = [];
@@ -162,15 +162,26 @@ switch (action) {
     state.base = stacked() ? state.stack.head : laneHead();
     // 从头重跑时 PR 可能已经开着：先从 GitHub 找，找不到才开。叠放的 PR 可能开在前置分支上，只按分支找。
     if (!state.pr) state.pr = gh('pr', 'list', '--head', state.branch, ...(state.stack ? [] : ['--base', state.lane]), '--state', 'open', '--limit', '1', '--json', 'url', '--jq', '.[].url');
+    // 往下怎么走：checks 照常检查与评审；restack 先重接到泳道，再回到这里开进泳道；review 交主 Agent。
+    let route = 'checks';
     if (!state.pr) {
-      const body = join(env.RUNNER_TEMP, 'pr.md');
-      writeFileSync(body, `泳道 PR，由流程 lane-pr 开、合进泳道 ${state.lane}；运行 coda://workflow-runs/${env.GITHUB_RUN_ID}。${stacked()
-        ? `\n\n叠在前置泳道 PR ${state.stack.pr} 上：先以草稿开进它的分支，前置合进泳道后由流程重接到泳道、转为正式 PR。` : ''}\n\n## 任务\n\n${state.task}\n`);
-      state.pr = stacked() ? openPr('--base', state.stack.branch, '--head', state.branch, '--draft', '--title', state.title, '--body-file', body)
-        : openPr('--base', state.lane, '--head', state.branch, '--title', state.title, '--body-file', body);
+      // 还叠放着就先看前置最新的状态：执行期间它可能已合进泳道（分支随合并删了，开不进去），或关了没合并、改为合进别处。
+      const parent = stacked() ? parentNow() : undefined;
+      if (parent && unstack(parent)) route = 'review';
+      else if (parent?.state === 'MERGED') route = 'restack';
+      if (route !== 'restack') {
+        // 叠在还开着的前置上，草稿开进它的分支；不能再叠的也以草稿开进泳道，审查卡上有 PR，执行者改为基于泳道后由解绑转正。
+        const draft = stacked(), onParent = draft && route === 'checks';
+        const body = join(env.RUNNER_TEMP, 'pr.md');
+        writeFileSync(body, `泳道 PR，由流程 lane-pr 开、合进泳道 ${state.lane}；运行 coda://workflow-runs/${env.GITHUB_RUN_ID}。${onParent
+          ? `\n\n叠在前置泳道 PR ${state.stack.pr} 上：先以草稿开进它的分支，前置合进泳道后由流程重接到泳道、转为正式 PR。`
+          : draft ? `\n\n原叠在前置泳道 PR ${state.stack.pr} 上，它不再合进泳道：先以草稿开进泳道，执行者把提交改为直接基于泳道后转为正式 PR。` : ''}\n\n## 任务\n\n${state.task}\n`);
+        state.pr = openPr('--base', onParent ? state.stack.branch : state.lane, '--head', state.branch, ...(draft ? ['--draft'] : []), '--title', state.title, '--body-file', body);
+      }
     }
     save();
     output('head', state.executor.head);
+    output('route', route);
     break;
   }
   case 'gate-passed':
@@ -326,14 +337,9 @@ switch (action) {
   // 已合并（restack）去重接；关了没合并（review）交主 Agent。这一步在没有检出的空目录里跑，只用 gh。
   case 'stack-status': {
     if (!stacked()) { output('route', 'ready'); break; }
-    // 等待期间前置可能被改为合进别的分支：合到别处再重接会把还没进泳道的前置改动剥掉，同样交主 Agent。
-    const parent = JSON.parse(gh('pr', 'view', state.stack.pr, '--repo', repoOf(state.stack.pr), '--json', 'state,baseRefName'));
-    const wrong = parent.state === 'CLOSED' ? '已关闭、没有合并' : parent.baseRefName !== state.lane ? `改为合进 ${parent.baseRefName}，不再合进泳道 ${state.lane}` : '';
-    if (wrong) {
-      state.feedback = `前置泳道 PR ${state.stack.pr} ${wrong}。这个泳道 PR 叠在它上面（从 ${state.stack.head} 开工），不能合进泳道：请选择放弃，或退回修改让执行者把自己的提交改为直接基于泳道 ${state.lane}（需要的前置改动一并带上）。`;
-      state.stack.recover = true;
-      save();
-    }
+    // 等待期间前置可能被改为合进别的分支，同样交主 Agent。
+    const parent = parentNow(), wrong = unstack(parent);
+    if (wrong) save();
     output('route', wrong ? 'review' : parent.state === 'OPEN' ? 'wait' : 'restack');
     break;
   }
@@ -342,7 +348,8 @@ switch (action) {
   // 重接冲突交同一执行会话（revise）自己变基重接，回来再到这一步收尾；祖先关系不对、或执行者没变基到泳道上，交主 Agent（review）。
   // 每次重试都是新检出的工作区：推送前先记下这次推送（stack.pushing：重接到的泳道 head、原 head、新 head），推成功再记下结果
   // （stack.pushed 是重接到的泳道 head）。重试时远端已是记下的新 head（推成功了、没来得及记下，或响应丢了）就直接记下结果；
-  // 否则新 head 随旧工作区没了，从头变基、推送，远端被别人改过时租约拒绝。推之后失败（改 PR），重试不再变基、推送，只改 PR 收尾。
+  // 否则新 head 随旧工作区没了，从头变基、推送，远端被别人改过时租约拒绝。执行者解冲突交回的新 head 也这样记下（resolved），重试只按它推送，不再变基。
+  // 推之后失败（改 PR），重试不再变基、推送，只改 PR 收尾。
   case 'restack': {
     const s = state.stack, lane = laneHead();
     git('fetch', 'origin', state.branch);
@@ -350,7 +357,20 @@ switch (action) {
     // 升级后等主 Agent 退回、执行者直接变基到泳道上，由 gate 解绑叠放（recover）。
     const escalate = text => { state.feedback = text; s.recover = true; delete s.pending; delete s.pushing; delete s.pushed; save(); output('route', 'review'); };
     const push = (head, from) => git('push', '--no-follow-tags', `--force-with-lease=refs/heads/${state.branch}:${from}`, 'origin', `${head}:refs/heads/${state.branch}`);
-    if (!s.pushed && !s.pending && s.pushing?.head !== remote) {
+    // 执行者解冲突交回：核对它变基到了泳道上，再按同样的推送记录推送、收尾；它本地已在新 head 上，不用提醒重置。
+    if (!s.pushed && s.pending) {
+      const head = state.executor.head;
+      if (!ancestor(s.pending.lane, head) || ancestor(s.head, head)) {
+        escalate(`前置泳道 PR ${s.pr} 已 squash 合进泳道，交给执行者重接到 ${s.pending.lane} 之后，它交回的 ${head} 没有变基到泳道上（泳道 ${s.pending.lane} 不是它的祖先，或前置的旧提交 ${s.head} 还在它的历史里）。请退回修改，让执行者把自己的提交用 rebase --onto 重接到泳道最新 head；或放弃。`);
+        break;
+      }
+      s.pushing = { lane: s.pending.lane, from: s.pending.from, head, resolved: true };
+      delete s.pending;
+      save();
+    }
+    if (!s.pushed && s.pushing?.resolved) {
+      if (s.pushing.head !== remote) push(s.pushing.head, s.pushing.from);
+    } else if (!s.pushed && s.pushing?.head !== remote) {
       const from = state.executor.head;
       // 前置合并时的最终 head 不是开工时记下的：只是在它上面追加了提交才照常重接；取不回或不是它的后代（前置历史被 force-push 改写），
       // 这一块依赖的前置改动可能已不在泳道里，交主 Agent 判断。
@@ -389,23 +409,18 @@ ${files.map(file => `- ${file}`).join('\n')}
     if (!s.pushed && s.pushing) {
       state.executor.head = s.pushing.head;
       s.pushed = s.pushing.lane;
-      s.note = `前置泳道 PR 已 squash 合进泳道，流程把你的提交用 rebase --onto 重接到了泳道 ${s.pushed} 上，远端分支 ${state.branch} 现在是 ${s.pushing.head}。先 git fetch origin ${state.branch}，把当前分支重置到它（git reset --hard FETCH_HEAD），再接着做；不要把重接前的旧提交带回来。`;
+      if (!s.pushing.resolved) s.note = `前置泳道 PR 已 squash 合进泳道，流程把你的提交用 rebase --onto 重接到了泳道 ${s.pushed} 上，远端分支 ${state.branch} 现在是 ${s.pushing.head}。先 git fetch origin ${state.branch}，把当前分支重置到它（git reset --hard FETCH_HEAD），再接着做；不要把重接前的旧提交带回来。`;
       delete s.pushing;
       save();
-    } else if (!s.pushed) {
-      const head = state.executor.head;
-      if (!ancestor(s.pending.lane, head) || ancestor(s.head, head)) {
-        escalate(`前置泳道 PR ${s.pr} 已 squash 合进泳道，交给执行者重接到 ${s.pending.lane} 之后，它交回的 ${head} 没有变基到泳道上（泳道 ${s.pending.lane} 不是它的祖先，或前置的旧提交 ${s.head} 还在它的历史里）。请退回修改，让执行者把自己的提交用 rebase --onto 重接到泳道最新 head；或放弃。`);
-        break;
-      }
-      push(head, s.pending.from);
-      s.pushed = s.pending.lane;
-      delete s.pending;
-      save();
     }
-    const repo = repoOf(state.pr);
-    gh('pr', 'edit', state.pr, '--repo', repo, '--base', state.lane);
-    gh('pr', 'ready', state.pr, '--repo', repo);
+    // 还没开 PR（gate 发现前置已合并、分支已删，直接来重接）就不改，回到 gate 开进泳道；草稿 PR 开在前置分支上、随前置合并删分支被 GitHub 关掉的，
+    // 也回到 gate 重新开进泳道。还开着的切到泳道、转正。
+    const repo = state.pr && repoOf(state.pr);
+    if (state.pr && JSON.parse(gh('pr', 'view', state.pr, '--repo', repo, '--json', 'state')).state !== 'OPEN') state.pr = '';
+    if (state.pr) {
+      gh('pr', 'edit', state.pr, '--repo', repo, '--base', state.lane);
+      gh('pr', 'ready', state.pr, '--repo', repo);
+    }
     state.base = s.pushed;
     s.restacked = true;
     delete s.pushed;

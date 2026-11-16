@@ -12,8 +12,8 @@ import { evaluate } from 'feelin';
 
 const script = fileURLToPath(new URL('../../../plugins/composer/scripts/develop.mjs', import.meta.url));
 const workflow = readFileSync(new URL('../../../plugins/composer/.coda/workflows/develop.bpmn', import.meta.url), 'utf8');
-// 已发布的定义（10.0.0、10.1.4）：正在跑的需求运行按它的快照走，脚本取当前装着的版本。
-const olds = ['10.0.0', '10.1.4'].map(version => ({ version, source: readFileSync(new URL(`./fixtures/develop-${version}.bpmn`, import.meta.url), 'utf8') }));
+// 已发布的定义（10.0.0、10.1.4、10.3.0）：正在跑的需求运行按它的快照走，脚本取当前装着的版本。
+const olds = ['10.0.0', '10.1.4', '10.3.0'].map(version => ({ version, source: readFileSync(new URL(`./fixtures/develop-${version}.bpmn`, import.meta.url), 'utf8') }));
 const old = olds[0].source;
 const manifest = JSON.parse(readFileSync(new URL('../../../plugins/composer/package.json', import.meta.url), 'utf8'));
 const PR = 'https://github.com/example/fixture/pull/1';
@@ -972,7 +972,7 @@ test('自动合并：开了 autoMerge、填了整体评审者、这次整体评�
   }
   assert.deepEqual(values(nodes.done).map(v => [v.name, v.value?.slice(0, 13)]).slice(0, 2), [['pr', '=pr.url'], ['commit', '=merge.commit']]);
 
-  // 已发布的定义（10.0.0、10.1.4）没有这个开关：照样出批准卡。
+  // 已发布的定义（10.0.0、10.1.4、10.3.0）没有这个开关：照样出批准卡。
   for (const { version, source } of olds) {
     const previous = await definition(source);
     assert.equal(previous.nodes['auto-merge-choice'], undefined, version);
@@ -987,12 +987,15 @@ const steps = source => [...source.matchAll(/<scriptTask id="([^"]+)"[\s\S]*?<\/
 
 for (const { version, source: old } of olds) test(`${version} 的流程定义：它引用的每个动作新脚本都还有，env 与输出不变，照它的顺序走得通`, t => {
   const before = steps(old), now = steps(workflow), source = readFileSync(script, 'utf8');
-  assert.deepEqual([...new Set(before.map(s => s.action))], ['brief', 'lane', 'resume', 'progress', 'paused', 'pr', 'check-failed', 'checks-passed', 'github-checks', 'reviewed', 'review',
-    'preview', 'device', 'delivery', 'approval', 'merge', 'inputs']);
+  const later = version === '10.3.0';
+  assert.deepEqual([...new Set(before.map(s => s.action))], ['brief', 'lane', 'resume', 'progress', 'paused', ...later ? ['sync-base', 'sync-resolve'] : [], 'pr', 'check-failed', 'checks-passed', 'github-checks',
+    ...later ? ['overall-round', 'overall-triage', 'overall-fix', 'overall-rounds'] : [], 'reviewed', 'review', 'preview', 'device', 'delivery', 'approval', 'merge', 'inputs']);
   for (const step of before) {
     assert.ok(source.includes(`case '${step.action}':`) || source.includes(`action === '${step.action}'`), step.action);
+    // 新定义同一步骤可以多收 env、多给输出（旧定义不传、不收），旧的一个都不能少。
     const same = now.find(s => s.id === step.id);
-    assert.deepEqual([same.action, same.env, same.outputs], [step.action, step.env, step.outputs], step.id);
+    assert.equal(same.action, step.action, step.id);
+    for (const key of ['env', 'outputs']) assert.deepEqual(same[key].filter(name => step[key].includes(name)), step[key], `${step.id} ${key}`);
   }
   // 旧定义调用 review-commit 用的参数，能力都还收，新加的都不必填。
   const capability = readFileSync(new URL('../../../plugins/review/.coda/capabilities/review-commit.bpmn', import.meta.url), 'utf8');
@@ -1001,12 +1004,21 @@ for (const { version, source: old } of olds) test(`${version} 的流程定义：
   for (const name of given) assert.ok(name in inputs, name);
   assert.deepEqual(Object.keys(inputs).filter(name => inputs[name] && !given.includes(name)), []);
 
-  // 照旧定义的路径跑一遍（提交验收直接开 PR，不经同步）：每步给出的输出正是旧定义声明的。
+  // 照旧定义的路径跑一遍（10.3.0 之前提交验收直接开 PR，不经同步）：旧定义声明的输出每步都给出；多给的只能是新定义同一步骤声明的（旧定义不收）。
   const f = fixture(t), declared = Object.fromEntries(before.map(s => [s.action, s.outputs]));
-  const check = (action, extra = {}) => assert.deepEqual(Object.keys(f.run(action, extra).outputs).sort(), [...declared[action]].sort(), action);
+  const check = (action, extra = {}) => {
+    const keys = Object.keys(f.run(action, extra).outputs);
+    assert.deepEqual(keys.filter(key => declared[action].includes(key)).sort(), [...declared[action]].sort(), action);
+    for (const key of keys.filter(key => !declared[action].includes(key))) assert.ok(now.some(s => s.action === action && s.outputs.includes(key)), `${action} ${key}`);
+  };
   check('lane'); check('resume'); f.land('one', 'first');
   check('progress', { PROGRESS: JSON.stringify({ choice: 'submit', note: '汇报' }) });
+  if (later) check('sync-base', { FIXER: 'true' });
   check('pr'); check('checks-passed', { RUNS: '[]' }); check('github-checks');
+  if (later) {
+    check('overall-round', { BASE: f.state().base });
+    check('overall-triage', { REVIEWS: JSON.stringify([overallReview('reviewer', f.state().head, [])]), SUMMARY: '汇报', FIXER: 'true' });
+  }
   check('reviewed', { REVIEWS: JSON.stringify([overallReview('reviewer', f.state().head, [DOC])]) });
   check('review', { REVIEW: JSON.stringify({ choice: 'continue' }) });
   check('approval', { APPROVAL: JSON.stringify({ choice: 'merge', options: {} }), JOINERS: '[]' });

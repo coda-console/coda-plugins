@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { waitForGitHubChecks } from './github-checks.mjs';
-import { agentArgs, checksText, gh, git, instructions, mergedCommit, mergePr, openPr, output, outputFilled, outputPicked, reviewsText } from './shared.mjs';
+import { agentArgs, checksText, fail, gh, git, mergedCommit, mergePr, openPr, output, outputFilled, outputPicked, resumeText, reviewsText, talk } from './shared.mjs';
 import { findingLine, fixText, historyText, previousFor, readResponses, triageOverall } from './triage.mjs';
 
 const env = process.env, action = process.argv[2];
@@ -91,23 +91,6 @@ ${files.map(file => `- ${file}`).join('\n')}
 先 git fetch origin ${state.base}，再 git merge ${base} 合并（merge）进当前分支，不要变基、不要压成一个提交：变基会改写已经审查过的泳道提交，合并才保住泳道与目标分支的祖先关系。
 解决冲突；数据库迁移等版本号和目标分支撞号时，顺延泳道这边的。
 跑和冲突相关的测试后提交合并提交。回报冲突了哪些文件、各自怎么解决的、跑了什么。`;
-// 执行步骤失败后重跑、接回已开的执行会话时的开头（同 lane-pr.mjs 的 resumeText）：现场可能已经做了一部分，先看清再接着做。
-const resumeText = `这一项之前已经交给你，上一次没有正常结束（流程恢复或重试）。先核对现场：工作区状态（git status）、git log 里已有的提交、上次做到哪；再接着完成原任务，不要从头重做，已经做好的不要丢。`;
-// 交执行者一次（同 lane-pr.mjs 的 talk）：失败时 coda-agent 仍在标准输出给出会话 ID，由调用方记下，这一步再跑才接得回。
-const talk = (args, text) => {
-  const prompt = join(env.RUNNER_TEMP, 'task.md');
-  writeFileSync(prompt, `${instructions}\n\n${text}\n`);
-  const result = spawnSync('coda-agent', [...args, '--json', '--prompt-file', prompt], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
-  if (result.error) throw result.error;
-  let reply;
-  try { reply = JSON.parse(result.stdout); } catch { /* 失败时可以没有会话信息 */ }
-  return { result, reply, failed: result.status !== 0 || !reply?.session || !reply.head };
-};
-// 执行失败：调用方记下会话后保留退出码退出；退出 0 但回复不全也按失败。
-const fail = ({ result }) => {
-  if (result.status === 0) console.error(`coda-agent 退出 0，但输出不是含 session、head 的 JSON：${result.stdout.slice(0, 300)}`);
-  process.exit(result.status || 1);
-};
 
 switch (action) {
   case 'resume':
