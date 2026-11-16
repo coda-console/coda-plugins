@@ -6,16 +6,26 @@
 // 2. A virtual mode `full` ("allow everything"). agy has no such mode and cannot change its permission policy once it
 //    runs, so a session in `full` runs in agy's `default` and the entry answers each of its permission requests itself
 //    with the allow_once option. Switching in and out is rewritten on the way: Coda sees `full` as an ordinary mode.
+// 3. Configuration probes (catalog.mjs, probe.mjs): `initialize` declares `_meta.coda.probe`, and `session/new` marked
+//    `_meta.coda.probe: true` opens a session of this connection alone, answered from the catalog and never sent to agy; so
+//    does every request about a session of the `coda-probe:` namespace. What real sessions say of their options is held to
+//    the catalog, which one that differs marks to be collected again.
 import { spawn } from 'node:child_process';
 import { agyBinary } from '../scripts/agy.mjs';
+import { createCatalog } from './catalog.mjs';
+import { PREFIX, Probes, probeMark } from './probe.mjs';
 
-const agy = spawn(agyBinary() ?? 'agy', ['acp'], { stdio: ['pipe', 'pipe', 'inherit'] });
+const binary = agyBinary() ?? 'agy';
+const agy = spawn(binary, ['acp'], { stdio: ['pipe', 'pipe', 'inherit'] });
 const initializing = new Set();
 const sessionRequests = new Set();
 const configRequests = new Map(); // request id -> { sessionId, was }: a set_config_option, whose answer lists the options; `was` for a mode switch, undone if agy refuses it
 const full = new Set(); // sessions in `full`
 const FULL_NAME = '全部放行';
 const FULL_DESCRIPTION = 'Approve everything without asking.';
+const catalog = createCatalog({ state: process.env.CODA_PLUGIN_STATE, binary });
+const probes = new Probes({ extraMode: { id: 'full', name: FULL_NAME, description: FULL_DESCRIPTION } });
+const answer = (id, reply) => process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, ...reply })}\n`);
 let stopping = false;
 
 // Only LF separates JSON messages; readline would also split literal Unicode line separators inside JSON strings.
@@ -49,8 +59,23 @@ function switchMode(message, to) {
   if (to === 'full') full.add(sessionId); else full.delete(sessionId);
 }
 
+// A probe's `session/new`: a session from the catalog, or the reason there is none. A wrong mark is refused.
+function probe(id) {
+  catalog.get().then(got => answer(id, { result: probes.open(got) }),
+    error => answer(id, { error: { code: error.code ?? -32603, message: error.message } }));
+}
+
 relay(process.stdin, agy.stdin, message => {
   const { method, params, id } = message;
+  if (method === 'session/new' && probeMark(params) !== undefined) {
+    if (!('id' in message)) return false;
+    if (probeMark(params)) probe(id); else answer(id, { error: { code: -32602, message: '_meta.coda.probe 只能为 true' } });
+    return false;
+  }
+  if (typeof params?.sessionId === 'string' && params.sessionId.startsWith(PREFIX)) {
+    if ('id' in message) answer(id, probes.handle(method, params));
+    return false;
+  }
   if (method === 'initialize' && 'id' in message) initializing.add(id);
   if (['session/new', 'session/load', 'session/resume'].includes(method)) { delete params?.additionalDirectories; sessionRequests.add(id); }
   if (method === 'session/set_mode' && typeof params?.sessionId === 'string') {
@@ -68,10 +93,13 @@ relay(process.stdin, agy.stdin, message => {
 relay(agy.stdout, process.stdout, message => {
   const { method, params, id } = message;
   if (!method) {
-    if (initializing.delete(id)) {
-      for (const key of ['sessionCapabilities', 'session_capabilities']) delete message.result?.agentCapabilities?.[key]?.additionalDirectories;
+    if (initializing.delete(id) && message.result?.agentCapabilities) {
+      const capabilities = message.result.agentCapabilities;
+      for (const key of ['sessionCapabilities', 'session_capabilities']) delete capabilities[key]?.additionalDirectories;
+      capabilities._meta = { ...capabilities._meta, coda: { ...capabilities._meta?.coda, probe: {} } };
     }
     if (sessionRequests.delete(id) && message.result) {
+      catalog.observe(message.result);
       const { modes } = message.result;
       if (Array.isArray(modes?.availableModes)) modes.availableModes.push({ id: 'full', name: FULL_NAME, description: FULL_DESCRIPTION });
       fixConfigOptions(message.result.sessionId, message.result.configOptions);
@@ -79,7 +107,7 @@ relay(agy.stdout, process.stdout, message => {
     const config = configRequests.get(id);
     if (config) {
       configRequests.delete(id);
-      if (!message.error) fixConfigOptions(config.sessionId, message.result?.configOptions);
+      if (!message.error) { catalog.observe(message.result ?? {}); fixConfigOptions(config.sessionId, message.result?.configOptions); }
       else if (config.was) full.add(config.sessionId);
       else if (config.was === false) full.delete(config.sessionId);
     }
@@ -100,7 +128,7 @@ relay(agy.stdout, process.stdout, message => {
 });
 const stop = () => {
   if (stopping) return;
-  stopping = true; agy.stdin.end(); agy.kill();
+  stopping = true; probes.clear(); catalog.abort(); agy.stdin.end(); agy.kill();
   setTimeout(() => agy.kill('SIGKILL'), 800).unref();
 };
 agy.stdin.on('error', () => {});

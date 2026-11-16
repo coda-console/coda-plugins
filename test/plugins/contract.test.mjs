@@ -75,6 +75,6 @@ test('opencode, cursor and antigravity, their relays with a fake CLI', async () 
   for (const [id, binary] of [['opencode', '.opencode/bin/opencode'], ['cursor', '.local/bin/cursor-agent'], ['antigravity', '.local/bin/agy']]) {
     const home = join(root, `${id}-home`);
     program(join(home, binary), at('../fixtures/liar.mjs'));
-    assertPasses(await check(id, id, { HOME: home }), EVERY);
+    assertPasses(await check(id, id, { HOME: home }), id === 'antigravity' ? [...EVERY, 'probe.new', 'probe.config', 'probe.prompt'] : EVERY);
   }
 });

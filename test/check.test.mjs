@@ -119,6 +119,10 @@ describe('a liar fails on the rule it breaks', () => {
     ['ignore-system-prompt', 'live.instructions', { live: true }],
     ['steer-own-turn', 'live.steering', { live: true }],
     ['steer-started', 'live.steering', { live: true }],
+    ['probe-refuses', 'probe.new', {}],
+    ['probe-stuck', 'probe.config', {}],
+    ['probe-prompt', 'probe.prompt', {}],
+    ['probe-resume', 'probe.resume', {}],
   ];
   for (const [mode, rule, options] of cases) test(mode, async () => {
     const { report } = await checkPlugin(plugin({ mode }), { ...options, limits });
@@ -129,6 +133,12 @@ describe('a liar fails on the rule it breaks', () => {
     assertPasses(report, ['handshake.system-prompt', 'live.instructions', 'live.turn', 'live.cancel']);
     assert.match(report.items.find(item => item.rule === 'live.cancel').message, /stopReason cancelled/);
     assert.ok(rules(report, 'skip').includes('live.steering'), 'steering is optional');
+  });
+  test('one that declares configuration probes opens a session of its connection alone for them', async () => {
+    const { report } = await checkPlugin(plugin({ mode: 'probe' }), { limits });
+    assertPasses(report, ['handshake.new', 'probe.new', 'probe.config', 'probe.prompt', 'probe.resume']);
+    assert.match(report.items.find(item => item.rule === 'probe.config').message, /3 个.*a（low\/medium\/high），b（low\/medium\/high\/xhigh），c（无档位）/);
+    assert.ok(rules(await checkPlugin(plugin(), { limits }).then(r => r.report), 'skip').includes('probe.skipped'), 'one that does not is not asked');
   });
   test('an agent without systemPrompt follows the instructions in the first prompt', async () => {
     const { report } = await checkPlugin(plugin({ mode: 'no-system-prompt' }), { live: true, limits });

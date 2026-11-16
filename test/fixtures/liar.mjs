@@ -4,6 +4,8 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 
+// As a CLI an entry runs, `--version` is answered (Antigravity's entry asks for it).
+if (process.argv[2] === '--version') { console.log('1.5.9'); process.exit(0); }
 const mode = process.argv[2] ?? 'honest';
 // Wire extensions supplied by a test, without duplicating the honest ACP conversation.
 const extension = process.argv[3] ? JSON.parse(readFileSync(process.argv[3], 'utf8')) : {};
@@ -13,6 +15,13 @@ const say = (sessionId, text) => notify('session/update', { sessionId, update: {
 const wait = params => notify('_coda/wait', params);
 const MODEL = { id: 'model', name: '模型', category: 'model', type: 'select', currentValue: 'liar', options: [{ value: 'liar', name: '说错话' }] };
 const asked = new Map();
+// The probe modes declare configuration probes (docs/agent-protocol.md「配置探测」) and keep the sessions of probes here,
+// their models a (low/medium/high), b (with xhigh) and c (no thinking level). Each gets one thing wrong: `probe-refuses`
+// a marked session/new, `probe-stuck` a model switch, `probe-prompt` a prompt, `probe-resume` a load once the connection is gone.
+const LEVELS = { a: ['low', 'medium', 'high'], b: ['low', 'medium', 'high', 'xhigh'], c: null }, probes = new Map();
+const select = (id, category, currentValue, values) => ({ id, name: id, category, type: 'select', currentValue, options: values.map(value => ({ value, name: value })) });
+const probeOptions = ({ model, level }) => [select('model', 'model', model, Object.keys(LEVELS)), ...(LEVELS[model] ? [select('thought_level', 'thought_level', level, LEVELS[model])] : [])];
+const invalid = message => Object.assign(new Error(message), { code: -32602 });
 let next = 0, turn = null, running = null, turns = 0, afterCancel = null, afterSteer = null, context = '';
 const textOf = blocks => (blocks ?? []).filter(block => block.type === 'text').map(block => block.text).join('\n');
 // What it was told: the session instructions, from its system prompt or in front of its first input (as a relay without a
@@ -33,11 +42,18 @@ function ask(method, params) {
 const opened = new Set();
 const methods = {
   initialize: () => ({ protocolVersion: mode === 'protocol-version' ? 2 : 1,
-    agentCapabilities: { loadSession: mode === 'load-fails' || mode === 'load-forgets', ...(mode.startsWith('no-system-prompt') ? {} : { sessionCapabilities: { systemPrompt: {} } }), _meta: { coda: { waits: {}, ...(mode.startsWith('remote-code') ? { remote: {} } : {}) } } },
+    agentCapabilities: { loadSession: mode === 'load-fails' || mode === 'load-forgets' || mode.startsWith('probe'), ...(mode.startsWith('no-system-prompt') ? {} : { sessionCapabilities: { systemPrompt: {} } }),
+      _meta: { coda: { waits: {}, ...(mode.startsWith('remote-code') ? { remote: {} } : {}), ...(mode.startsWith('probe') ? { probe: {} } : {}) } } },
     authMethods: [], ...(STEERS.includes(mode) ? { _meta: { steering: { supported: true } } } : {}), ...extension.initialize }),
   'session/new': params => {
     if (mode === 'signed-out') throw Object.assign(new Error('Authentication required'), { code: -32000 });
     if (mode.startsWith('no-system-prompt') && params.systemPrompt) throw new Error('unexpected systemPrompt');
+    if (mode.startsWith('probe') && params._meta?.coda?.probe === true) {
+      if (mode === 'probe-refuses') throw new Error('No catalog');
+      const sessionId = `probe-${randomUUID()}`, session = { model: 'a', level: 'medium' };
+      probes.set(sessionId, session);
+      return { sessionId, configOptions: probeOptions(session) };
+    }
     instructed(params);
     const sessionId = randomUUID();
     opened.add(sessionId);
@@ -46,14 +62,36 @@ const methods = {
     return mode === 'no-model' ? { sessionId } : { sessionId, configOptions: [MODEL], ...extension.newResult };
   },
   // Says whether the instructions came with it; or answers the load and keeps no session for it (OpenCode before 1.0.151).
-  'session/load': ({ systemPrompt }) => {
+  'session/load': ({ systemPrompt, sessionId }) => {
+    if (sessionId?.startsWith('probe-')) {
+      if (mode === 'probe-resume') return { configOptions: probeOptions({ model: 'a', level: 'medium' }) };
+      throw Object.assign(new Error('Unknown session'), { code: -32002 });
+    }
     if (extension.loadResult) return extension.loadResult;
     if (extension.loadError) throw Object.assign(new Error('Cannot load'), extension.loadError);
     if (mode === 'load-forgets') return { configOptions: [MODEL] };
     const word = /reply with exactly (\S+) and nothing else/.exec(textOf(systemPrompt?.content))?.[1];
     throw Object.assign(new Error(`会话不见了${word ? `（收到了检查词 ${word} 的会话指令）` : ''}`), { code: -32002 });
   },
+  // A probe session's own options; of the others, the one model.
+  'session/set_config_option': ({ sessionId, configId, value }) => {
+    const session = probes.get(sessionId);
+    if (!session) {
+      if (configId !== 'model' || value !== 'liar') throw invalid(`no ${configId} ${value}`);
+      return { configOptions: [MODEL] };
+    }
+    if (configId === 'model') {
+      if (!(value in LEVELS)) throw invalid(`no model ${value}`);
+      if (mode !== 'probe-stuck') Object.assign(session, { model: value, level: LEVELS[value] ? 'medium' : undefined });
+    } else if (configId === 'thought_level' && LEVELS[session.model]?.includes(value)) session.level = value;
+    else throw invalid(`no ${configId} ${value}`);
+    return { configOptions: probeOptions(session) };
+  },
   'session/prompt': async ({ sessionId, prompt }) => {
+    if (probes.has(sessionId)) {
+      if (mode === 'probe-prompt') return { stopReason: 'end_turn' };
+      throw invalid('配置探测会话不接受 prompt');
+    }
     if (mode === 'load-forgets' && !opened.has(sessionId)) throw Object.assign(new Error(`Session not found: ${sessionId}`), { code: -32602 });
     const text = textOf(prompt);
     if (text.includes('What is the Coda check word?')) {
