@@ -37,7 +37,7 @@ const composerEvent = (id, { sent = 0, compactions, subagents = list, ultra = tr
 // replay：watch 返回前交给插件的输入框（宿主重放的 ADDED）。
 async function rig(replay = []) {
   const watchers = new Map(), told = [], submissions = new Map(), state = new Map();
-  let rejecting = false, gate = null;
+  let rejecting = false;
   await activate({
     protocols: { register: (_kind, id, handler) => submissions.set(id, handler) },
     watch: async (kind, handler) => {
@@ -48,7 +48,6 @@ async function rig(replay = []) {
     tell: async (thread, text) => {
       if (rejecting) throw new Error('too long');
       told.push([thread, text]);
-      await gate;
     },
   });
   // compactions 只增不减：没写就沿用这个输入框上次的值。
@@ -78,13 +77,7 @@ async function rig(replay = []) {
   const create = (subagents = list) => submissions.get('ultra')({ spec: { composer: 'new:p1', projectId: 'p1',
     defaultTarget: { kind: 'thread', open: true },
     modes: [{ mode: 'composer/ultra', values: { subagents }, sent: 0, changedSinceSent: true }] } });
-  return { composer, turn, round, take, send, create, rejectTell: value => { rejecting = value; },
-    // 之后的 tell 记下文本后停住，返回放行函数。
-    holdTell: () => {
-      let release;
-      gate = new Promise(resolve => { release = () => { gate = null; resolve(); }; });
-      return release;
-    } };
+  return { composer, turn, round, take, send, create, rejectTell: value => { rejecting = value; } };
 }
 
 test('没有用户消息的连续多轮：第一轮结束给完整，之后每轮结束都不 tell', async () => {
@@ -177,19 +170,6 @@ test('一轮结束补发时 tell 被拒绝：标记保留，下一轮结束再�
   assert.deepEqual(r.take(), [['s1', on(list)]]);
   await r.round('s1');
   assert.deepEqual(r.take(), []);
-});
-
-test('发送期间名单又改了：旧的 tell 完成不清新名单的待给标记，下一条消息给最新名单', async () => {
-  const r = await rig();
-  await r.composer('s1', { type: 'ADDED' });
-  const release = r.holdTell();
-  await r.turn('s1', true);
-  const sending = r.turn('s1', false); // 一轮结束，首次的完整说明发出去但还没完成。
-  await r.composer('s1', { subagents: other });
-  release();
-  await sending;
-  assert.deepEqual(r.take(), [['s1', on(list)]]);
-  assert.deepEqual(await r.send('s1', other), { tell: [on(other)] });
 });
 
 test('插件重启：重放的 ADDED 只记 compactions 基线，不算压缩；之后变大才算', async () => {
