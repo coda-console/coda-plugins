@@ -4,7 +4,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { agentArgs, checksText, command, git, instructions, output, reviewsText } from './shared.mjs';
+import { agentArgs, checksText, command, git, instructions, output, resumeText, reviewsText } from './shared.mjs';
 import { fixText, historyText, previousFor, readResponses, triage } from './triage.mjs';
 
 const env = process.env, action = process.argv[2];
@@ -13,9 +13,6 @@ const statePath = join(env.CODA_ARTIFACTS, 'piece.json');
 // 跟上目标分支的块以合并提交快进进需求分支，执行者要知道为什么只能合并、不能变基。
 const syncTask = base => `这一块用来跟上目标分支 ${base}：先 git fetch origin ${base}，把 origin/${base} 合并（merge）进当前分支，不要变基、不要压成一个提交；它以合并提交快进进需求分支，保住需求分支与目标分支的祖先关系。
 解决冲突；数据库迁移等版本号和目标分支撞号时，顺延需求分支这边的。`;
-
-// 执行步骤失败后重跑，接回已开的执行会话时的开头：现场可能已经做了一部分，先看清再接着做。
-const resumeText = `这一项之前已经交给你，上一次没有正常结束（流程恢复或重试）。先核对现场：工作区状态（git status）、git log 里已有的提交、上次做到哪；再接着完成原任务，不要从头重做，已经做好的不要丢。`;
 
 // 让执行者把需求分支合进自己的分支：试合并发现冲突和主 Agent 选「让执行者合并需求分支」用同一段说明。
 const syncText = (branch, files = []) => `需求分支是 ${branch}，别的块可能已经合进去了。${files.length ? `\n试合并发现这次提交与它冲突的文件：\n${files.map(file => `- ${file}`).join('\n')}` : ''}

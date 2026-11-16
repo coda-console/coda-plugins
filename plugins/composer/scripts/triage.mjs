@@ -12,7 +12,7 @@ const short = sha => String(sha ?? '').slice(0, 12) || '（没有）';
 // 发现账本，块与整体评审共用：results 是评审子流程各份的输出（review-commit 的结果加 slot、state、reviewed：评的 head）；
 // findings 是之前各轮记下的发现（每条有固定编号 id = <评审位置>:<序号>、status：open / resolved / withdrawn / superseded，执行者回应过的有 response）；
 // head 是当前 head，full 表示这次是完整评审（不是增量复评）：之前没关的发现作废，由这次的结果代替。
-// 返回更新后的全部发现（新发现接着各位置的序号编号，不改旧编号）、这次新编的编号 added、评审者这次对旧发现的结论 resolutions，
+// 返回更新后的全部发现（新发现接着各位置的序号编号，不改旧编号）、这次新编的编号 added、评审者这次对旧发现的结论 resolutions（坚持的带上原发现 finding），
 // 以及不论怎么分流都要升级的原因 reasons：没评成、评的不是当前 head、执行者反驳了评审者仍坚持。
 function record(results, { head, findings = [], full = false }) {
   const ledger = findings.map(f => ({ ...f, status: full && f.status === 'open' ? 'superseded' : f.status }));
@@ -25,7 +25,7 @@ function record(results, { head, findings = [], full = false }) {
     for (const { id, status, reason } of JSON.parse(r.resolutions)) {
       const f = ledger.find(f => f.id === id);
       f.verdict = { status, reason };
-      resolutions.push({ id, status, reason });
+      resolutions.push(status === 'upheld' ? { id, status, reason, finding: { id, severity: f.severity, kind: f.kind, blocking: f.blocking, title: f.title, location: f.location, detail: f.detail } } : { id, status, reason });
       if (status !== 'upheld') f.status = status;
       else if (f.response?.disposition === 'disputed') reasons.push(`${id}：执行者反驳了，${who}仍坚持`);
     }
@@ -104,7 +104,8 @@ export function readResponses(answer, ids) {
   return responses;
 }
 
-// 收敛经过：每轮评审的新发现与结论、交执行者的那轮回应、分流的结论，给主 Agent 的审查卡。
+// 收敛经过：每轮评审的新发现（带说明）与结论、交执行者的那轮回应、分流的结论，给主 Agent 的审查卡。
+// 坚持的发现在那一轮下面再列一遍原发现，只放最后一轮上卡时也看得到它说的是什么。
 export function historyText(history) {
   const flat = text => String(text ?? '').replace(/\s*[\r\n]+\s*/g, ' ');
   return history.map(entry => {
@@ -114,7 +115,7 @@ export function historyText(history) {
       ...entry.note ? [`结论：${entry.note}`] : []].join('\n');
     const conclusion = { pass: '没有阻塞级发现，交主 Agent 审查', accept: '只有 P3 或没有发现，直接进验收', fix: '交执行者逐条修复或反驳', escalate: `升级给主 Agent：${entry.reasons.join('；')}` }[entry.route];
     return [`${entry.full ? '评审' : '复评'}（head ${short(entry.head)}）：`,
-      ...entry.resolutions.map(r => `- ${r.id} → ${r.status}${r.reason ? `：${flat(r.reason)}` : ''}`),
-      ...entry.added.map(f => findingLine(f, false)), `结论：${conclusion}`].join('\n');
+      ...entry.resolutions.map(r => `- ${r.id} → ${r.status}${r.reason ? `：${flat(r.reason)}` : ''}${r.finding ? `\n  ${findingLine(r.finding, true).replace(/\n/g, '\n  ')}` : ''}`),
+      ...entry.added.map(f => findingLine(f, true)), `结论：${conclusion}`].join('\n');
   }).join('\n\n');
 }
