@@ -12,13 +12,12 @@ const reasons = extra => autoLandReasons({ ...eligible, ...extra });
 
 test('全部满足时可以免审', () => {
   assert.deepEqual(reasons({}), []);
-  assert.deepEqual(reasons({ stack: { restacked: true } }), [], '叠放已重接');
   assert.deepEqual(reasons({ changes: [change('README.md'), change('plugins/composer/THIRD_PARTY_NOTICES.md', 'M')], patches: {} }), []);
 });
 
-test('开关、跟上目标分支、叠放未重接、检查、评审与账本：缺一条就不免审', () => {
+test('开关、跟上目标分支、检查、评审与账本：缺一条就不免审', () => {
   for (const [extra, text] of [
-    [{ auto: false }, /没开/], [{ sync: true }, /跟上目标分支/], [{ stack: { restacked: false } }, /没有重接/],
+    [{ auto: false }, /没开/], [{ sync: true }, /跟上目标分支的块不免审/],
     [{ checks: undefined }, /项目检查没有通过/], [{ checks: { head: 'b'.repeat(40) } }, /项目检查没有通过/],
     [{ reviews: [{ state: 'skipped' }, { state: 'skipped' }] }, /没有评审者/],
     [{ reviews: [approve(), { state: 'lost', slot: 'reviewer2' }] }, /第二评审者没评成/],
@@ -31,10 +30,10 @@ test('开关、跟上目标分支、叠放未重接、检查、评审与账本�
 });
 
 test('路径：只放行测试与非契约说明文档；源码、package.json、schema、.coda、.github、scripts、check、bin、docs、AGENTS.md、CLAUDE.md、.bpmn 一律不免审', () => {
-  for (const path of ['test/plugins/composer/lane-pr.test.mjs', 'test/plugins/composer/fixtures/lane-pr-10.0.0.bpmn', 'plugins/x/a.test.js', 'App/FooTests.swift',
+  for (const path of ['test/plugins/composer/piece.test.mjs', 'test/plugins/composer/fixtures/piece-11.0.0.bpmn', 'plugins/x/a.test.js', 'App/FooTests.swift',
     'README.md', 'THIRD_PARTY_NOTICES.md', 'plugins/composer/THIRD_PARTY_NOTICES.md']) assert.ok(isMinorPath(path), path);
-  for (const path of ['plugins/composer/scripts/lane-pr.mjs', 'plugins/composer/package.json', 'package-lock.json', 'plugins/x/schema.json',
-    'plugins/composer/.coda/workflows/lane-pr.bpmn', '.github/workflows/ci.yml', 'scripts/a.test.mjs', 'check/agent.mjs', 'bin/check.mjs',
+  for (const path of ['plugins/composer/scripts/piece.mjs', 'plugins/composer/package.json', 'package-lock.json', 'plugins/x/schema.json',
+    'plugins/composer/.coda/workflows/piece.bpmn', '.github/workflows/ci.yml', 'scripts/a.test.mjs', 'check/agent.mjs', 'bin/check.mjs',
     'docs/workflows.md', 'docs/README.md', 'AGENTS.md', 'CLAUDE.md', 'plugins/x/docs/README.md', 'plugins/x/.coda/a.test.mjs',
     'test/AGENTS.md', 'test/CLAUDE.md', 'test/package.json', 'test/package-lock.json', 'test/.coda/live.bpmn', 'test/live.bpmn', 'test/.github/ci.yml',
     'test/scripts/a.test.mjs', 'test/plugins/x/docs/a.md', 'plugins/composer/README.md', 'plugins/review/README.md']) assert.ok(!isMinorPath(path), path);

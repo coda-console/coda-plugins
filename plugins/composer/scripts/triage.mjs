@@ -1,5 +1,5 @@
 // 评审意见的分流（README.md「评审回路」）：评审之后，发现先交执行者逐条修复或反驳、原评审者复评，收敛了才给主 Agent；
-// 判断不了的升级给主 Agent。纯函数，不读写文件、不跑命令：泳道 PR 用它，监督开发的整体评审也要用。
+// 判断不了的升级给主 Agent。纯函数，不读写文件、不跑命令：块用它，监督开发的整体评审也要用。
 import { SLOTS } from './shared.mjs';
 
 export const SEVERITIES = ['P0', 'P1', 'P2', 'P3'];
@@ -9,7 +9,7 @@ export const MAX_ROUNDS = 2;
 
 const short = sha => String(sha ?? '').slice(0, 12) || '（没有）';
 
-// 发现账本，泳道 PR 与整体评审共用：results 是评审子流程各份的输出（review-commit 的结果加 slot、state、reviewed：评的 head）；
+// 发现账本，块与整体评审共用：results 是评审子流程各份的输出（review-commit 的结果加 slot、state、reviewed：评的 head）；
 // findings 是之前各轮记下的发现（每条有固定编号 id = <评审位置>:<序号>、status：open / resolved / withdrawn / superseded，执行者回应过的有 response）；
 // head 是当前 head，full 表示这次是完整评审（不是增量复评）：之前没关的发现作废，由这次的结果代替。
 // 返回更新后的全部发现（新发现接着各位置的序号编号，不改旧编号）、这次新编的编号 added、评审者这次对旧发现的结论 resolutions（坚持的带上原发现 finding），
@@ -40,7 +40,7 @@ function record(results, { head, findings = [], full = false }) {
   return { findings: ledger, reasons, added, resolutions };
 }
 
-// 泳道 PR 的分流（账本见 record），rounds 是已经交执行者修了几轮。
+// 块的分流（账本见 record），rounds 是已经交执行者修了几轮。
 // 返回 route：pass（没有阻塞级发现，照常交主 Agent 审查）、fix（交执行者）、escalate（升级给主 Agent），reasons 是升级的原因，其余同 record。
 export function triage(results, { head, findings = [], rounds = 0, full = false, maxRounds = MAX_ROUNDS }) {
   const result = record(results, { head, findings, full }), { reasons } = result;
@@ -81,7 +81,7 @@ export const findingLine = (f, detailed) => {
 export const previousFor = (findings, slot) => JSON.stringify(findings.filter(f => f.slot === slot && f.status === 'open')
   .map(({ id, severity, kind, title, location, detail, response }) => ({ id, severity, kind, title, location, detail, response })));
 
-// 交给执行者的发现（泳道 PR 与整体评审共用）：编号固定，逐条修复（fixed）或反驳（disputed），结构化交回。
+// 交给执行者的发现（块与整体评审共用）：编号固定，逐条修复（fixed）或反驳（disputed），结构化交回。
 export const fixText = (head, findings) => `评审者对这次交付（提交 ${head}）提了下面这些发现，编号固定，之后几轮沿用。逐条处理：
 - 成立的：修好并提交，回 fixed，附修复它的提交号；
 - 不成立的：不要改，回 disputed，写明理由和证据（代码位置、命令与输出、文档出处）。原评审者会复评核实，你说不成立不等于关闭。
