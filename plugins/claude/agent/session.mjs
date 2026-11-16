@@ -51,6 +51,11 @@ const takenIn = m => m.user_message_uuids ?? (m.user_message_uuid ? [m.user_mess
 const conversing = m => !m.parent_tool_use_id && (['assistant', 'stream_event'].includes(m.type)
   || (m.type === 'user' && (!!m.origin || (Array.isArray(m.message?.content) && m.message.content.some(block => block?.type === 'tool_result')))));
 const failure = (message, code = -32603) => new RequestError(code, message);
+// A request for a session not running, with why (what ended it, `endReason`).
+const notRunning = reason => failure(`Claude 会话未在运行${reason ? `：${reason}` : ''}`, -32001);
+// An input refused before it went into the native session: nothing ran it, so Coda may send it again (docs/agent-protocol.md
+// 「服务暂不可用」: the protocol's one `not_accepted`, as for the prompts still queued when the session fails, `result`).
+const refused = error => new RequestError(error.code ?? -32603, error.message, { _meta: { coda: { failure: { kind: 'service_unavailable', input: 'not_accepted' } } } });
 const denied = { behavior: 'deny', message: 'Coda 没有在请求结束前给出审批' };
 // A child session's output that comes before its task, kept until the task names that session: all of it, since what streamed
 // counts as said, a message's streamed pieces as one.
@@ -246,7 +251,7 @@ export class ClaudeSession {
     this.query = null; this.input.close();
     try { previous.close(); } catch {}
     await this.pump;
-    if (this.phase !== 'running') throw failure('Claude 会话未在运行', -32001);
+    if (this.phase !== 'running') throw notRunning(this.endReason);
     // One that cannot be started, or does not start, ends the session, as one that ends of itself does: no later turn waits on it.
     try {
       const said = await this.sdk.getSessionInfo(this.sessionId, { dir: this.cwd });
@@ -270,7 +275,7 @@ export class ClaudeSession {
   // Whether the next turn runs in another query than this one: on another service's model, or back on Claude's own.
   rerouted() { return (this.served(this.current.model)?.id ?? null) !== this.serviceModel; }
   async configure(configId, value) {
-    if (this.phase !== 'running') throw failure('Claude 会话未在运行', -32001);
+    if (this.phase !== 'running') throw notRunning(this.endReason);
     if (configId === 'mode') {
       if (!MODES.some(mode => mode.id === value)) throw failure('审批模式不可用', -32602);
       await this.query.setPermissionMode(value); this.current.mode = value;
@@ -298,10 +303,11 @@ export class ClaudeSession {
   }
   // Answered when the native result that names this input arrives; accepting it into the input says nothing yet.
   async prompt({ prompt }) {
-    if (this.phase !== 'running') throw failure('Claude 会话未在运行', -32001);
+    if (this.phase !== 'running') throw refused(notRunning(this.endReason));
     if (this.rerouted()) {
       if (!this.rerouting) { this.cancelling = false; this.rerouting = this.reroute().finally(() => { this.rerouting = null; }); }
-      await this.rerouting;
+      // A query that cannot be moved to fails here, before the input is pushed.
+      try { await this.rerouting; } catch (error) { throw refused(error); }
       // Stopped while it moved: the input is not given to the new query.
       if (this.cancelling) { this.cancelling = false; return { stopReason: 'cancelled' }; }
     }
@@ -445,10 +451,13 @@ export class ClaudeSession {
   end(query, error) {
     if (this.phase === 'ended') return;
     const intended = this.phase === 'closing';
+    // What ended it, kept for the turns that go on asking and written to the log: a query that ends without an error says so.
+    this.endReason = intended ? 'Coda 关闭了会话' : error?.message || 'Claude SDK 查询结束，没有给出错误';
+    if (!intended) process.stderr.write(`Claude 会话结束：${this.endReason}\n`);
     this.phase = 'ended'; this.input.close(); this.steering.clear(); this.held = null; this.ending = null;
     this.compacting?.answer({ compacted: false, reason: error?.message ?? 'Claude 会话已结束' }); this.compacting = null;
     for (const withdrawn of this.withdrawals) withdrawn.abort();
-    for (const { reject } of this.prompts.values()) reject(failure(error?.message ?? 'Claude 会话已结束'));
+    for (const { reject } of this.prompts.values()) reject(failure(`Claude 会话已结束：${this.endReason}`));
     this.prompts.clear();
     try { query?.close(); } catch {}
     this.dropMcpConfig();

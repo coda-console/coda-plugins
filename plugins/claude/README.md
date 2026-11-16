@@ -20,6 +20,14 @@ Coda 给会话一个临时目录时（环境变量 `CODA_SESSION_TMP`，绝对�
 - 已经留在 `/private/tmp/claude-*` 下的存量目录不在这里处理。
 - 上一节的 `coda-claude-mcp-*` 会话结束时由入口自己删，不在这个目录里。
 
+## 会话怎样结束、结束后怎么答
+
+SDK 的查询自己结束（Claude 进程被杀、崩溃、正常退出）时，入口把原因记下来：查询抛的错误文字（SDK 已把原生进程的退出码或信号和 stderr 末尾几行写在里面），没有错误就写「Claude SDK 查询结束，没有给出错误」。
+原因写进插件的 stderr 日志（`Claude 会话结束：…`），并放进还在进行的那一轮的错误信息（`Claude 会话已结束：…`）。Coda 主动关闭的会话不写日志。
+
+会话已结束后再来的 `session/prompt` 当场拒绝，错误文字是 `Claude 会话未在运行：<原因>`，并按协议现有的标记报 `service_unavailable`、`input: "not_accepted"`（输入没有进原生会话，Coda 重投原输入）。
+换模型服务时重启查询失败、输入还没交给新查询的，同样是 `not_accepted`。协议里 `input` 只跟着 `service_unavailable` 出现，所以这里借用这个类别；没有新字段。设置项请求（`session/set_config_option`）只带原因，不带标记。
+
 ## 失败怎样分类
 
 一轮失败时，入口（`agent/errors.mjs` 的 `claudeFailure`，纯函数）只按最终错误标失败类别（协议 `failure.json`），重试策略归 Coda，插件里没有重试或等待。
