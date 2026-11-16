@@ -533,8 +533,12 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   }
   assert.equal(route('acceptance-route', { acceptance: { route: 'return' } }), 'resume');
   assert.equal(route('acceptance-route', { acceptance: { route: 'passed' } }), 'tell-device');
-  const tell = (field) => evaluate(params('tell-device')[field].slice(1), { lane: { title: '输入框' }, run: { id: 'run-1' }, pr: { head: 'head-1' } }).value;
+  const tell = (field, extra = {}) => evaluate(params('tell-device')[field].slice(1), { lane: { title: '输入框' }, run: { id: 'run-1' }, pr: { head: 'head-1' }, inputs: { delivery: '' }, ...extra }).value;
+  // 按之后的实际去向说：归属需求交付的进交付验收，整体评审直接通过（auto）的自动合并，其余等用户批准合并；没有整体评审者时没有 overall-triage。
   assert.equal(tell('text'), '需求「输入框」：用户设备验收通过，接下来等用户批准合并。');
+  assert.equal(tell('text', { 'overall-triage': { auto: false } }), '需求「输入框」：用户设备验收通过，接下来等用户批准合并。');
+  assert.equal(tell('text', { 'overall-triage': { auto: true } }), '需求「输入框」：用户设备验收通过，检查和整体评审已通过，流程将自动合并。');
+  assert.equal(tell('text', { inputs: { delivery: 'deliver-1' }, 'overall-triage': { auto: true } }), '需求「输入框」：用户设备验收通过，接下来进入需求交付验收。');
   assert.equal(tell('key'), 'run-1:device:head-1');
   assert.equal(next('tell-device'), 'delivery-choice');
   assert.equal(route('delivery-choice', { inputs: { delivery: '' } }), 'auto-merge-choice');

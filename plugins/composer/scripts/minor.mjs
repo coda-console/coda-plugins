@@ -10,8 +10,11 @@ export const isTest = path => {
   if (path.endsWith('.bpmn')) return path.startsWith('test/') && parts.includes('fixtures');
   return path.startsWith('test/') || /\.test\.m?js$|Tests\.swift$/.test(path);
 };
-// 非契约说明文档：仓库根或插件目录下的 README.md、THIRD_PARTY_NOTICES.md。其余一律不免审。
-export const isMinorPath = path => isTest(path) || /^(plugins\/[^/]+\/)?(README|THIRD_PARTY_NOTICES)\.md$/.test(path);
+// 测试运行器会发现、执行的测试文件（*.test.mjs、*.test.js、*Tests.swift）；isTest 里其余的是测试辅助模块与夹具。
+export const isRunnableTest = path => isTest(path) && /\.test\.m?js$|Tests\.swift$/.test(path);
+// 非契约说明文档：仓库根的 README.md，仓库根或插件目录下的 THIRD_PARTY_NOTICES.md。
+// 插件目录下的 README.md 记载流程输入输出、状态机与兼容契约，不免审；其余一律不免审。
+export const isMinorPath = path => isTest(path) || path === 'README.md' || /^(plugins\/[^/]+\/)?THIRD_PARTY_NOTICES\.md$/.test(path);
 
 // git diff --raw -z -M 的输出：每项 `:<旧 mode> <新 mode> <旧 sha> <新 sha> <状态>`，后跟一个路径，重命名、复制跟旧、新两个路径。
 export function parseRaw(text) {
@@ -25,8 +28,10 @@ export function parseRaw(text) {
 }
 
 // 测试文件新增的行（去掉行首 +）里跳过或独占用例的写法：test.skip、it.todo、test.only、describe.only；行首或 {、, 之后的 skip:、todo:
-// （含多行选项对象里单独一行的 `  skip: true,`）；行首或 {、, 之后的 only: true（`{ only: '[]' }` 这类测试数据不算）。
-const SKIP = [/\.(skip|todo|only)\b/, /(?:^|[{,])\s*(skip|todo)\s*:/, /(?:^|[{,])\s*only\s*:\s*true\b/];
+// （含多行选项对象里单独一行的 `  skip: true,`）；行首或 {、, 之后的 only: true（`{ only: '[]' }` 这类测试数据不算）；
+// Swift 的 XCTSkip、XCTSkipIf、XCTSkipUnless 与 Swift Testing 的 @Test(.disabled(...))、@Suite(.disabled(...))。
+const SKIP = [/\.(skip|todo|only)\b/, /(?:^|[{,])\s*(skip|todo)\s*:/, /(?:^|[{,])\s*only\s*:\s*true\b/,
+  /\bXCTSkip(?:If|Unless)?\b/, /@(?:Test|Suite)\s*\([^)]*\.disabled\b/];
 const skips = line => SKIP.some(pattern => pattern.test(line.slice(1)));
 
 // 不能免审的原因，空数组就是可以免审。reviews 是评审子流程各份的输出，findings 是收敛账本，
@@ -55,6 +60,8 @@ export function autoLandReasons({ auto, sync, stack, head, checks, reviews, find
     else if (status === 'D' && paths.some(isTest)) reasons.push(`删了测试文件 ${paths[0]}`);
     // 重命名、移动成非测试文件（如 test/a.test.mjs → README.md），原测试同样不再被发现。
     else if (isTest(paths[0]) && !isTest(paths.at(-1))) reasons.push(`把测试文件 ${paths[0]} 改成了非测试文件 ${paths.at(-1)}`);
+    // 改名成测试运行器不再发现的文件（如 test/a.test.mjs → test/a.disabled.mjs），原测试同样不再执行。
+    else if (isRunnableTest(paths[0]) && !isRunnableTest(paths.at(-1))) reasons.push(`把测试文件 ${paths[0]} 改成了不会被执行的 ${paths.at(-1)}`);
   }
   for (const [path, { added, removed }] of Object.entries(patches)) {
     if (added.some(skips)) reasons.push(`${path} 新增了 skip、todo 或 only`);

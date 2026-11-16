@@ -393,7 +393,7 @@ PR：{{pr.url}}
     <serviceTask id="tell-device" name="告诉主 Agent 验收通过" coda:action="tell-session">
       <extensionElements>
         <coda:param name="key" value='=run.id + ":device:" + pr.head' />
-        <coda:param name="text" value='="需求「" + lane.title + "」：用户设备验收通过，接下来等用户批准合并。"' />
+        <coda:param name="text" value='="需求「" + lane.title + "」：用户设备验收通过，" + (if inputs.delivery != "" then "接下来进入需求交付验收。" else if overall-triage.auto = true then "检查和整体评审已通过，流程将自动合并。" else "接下来等用户批准合并。")' />
       </extensionElements>
     </serviceTask>
     <sequenceFlow id="told-device" sourceRef="tell-device" targetRef="delivery-choice" />
