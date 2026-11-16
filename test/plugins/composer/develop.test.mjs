@@ -215,6 +215,24 @@ test('提交验收开需求分支进目标分支的 PR：不带会话开，正�
     ['pr', 'list', '--head', 'lane/run-1', '--base', 'main', '--state', 'open', '--limit', '1', '--json', 'url', '--jq', '.[].url']);
 });
 
+test('块列表也列出在合并提交第二父链上的块：跟上目标分支的块开工后别的块先合入，它把需求分支合进自己再快进', t => {
+  const f = fixture(t); f.run('lane');
+  const start = f.remote('lane/run-1');
+  const other = f.land('b', 'b', '补齐状态\n\nCoda-Piece: piece-b');
+  const main = f.advanceMain('m', 'm');
+  // 跟上目标分支的块：从开工时的需求分支 head 合并目标分支，再把已前进的需求分支合进来，快进进需求分支。
+  f.git('switch', '-q', '--detach', start); f.git('merge', '-q', '--no-ff', '--no-edit', main);
+  const synced = f.git('rev-parse', 'HEAD');
+  f.git('merge', '-q', '--no-edit', other); f.git('push', '-q', 'origin', 'HEAD:refs/heads/lane/run-1');
+  const head = f.git('rev-parse', 'HEAD');
+  assert.deepEqual(parents(f, head), [synced, other], '别的块在第二父链上');
+  f.progress('submit', '汇报');
+  const summary = f.run('pr').outputs.summary;
+  const list = summary.split('\n\n')[1].split('\n').slice(1);
+  assert.ok(list.includes(`- ${other.slice(0, 12)} 补齐状态（coda://workflow-runs/piece-b）`), summary);
+  assert.deepEqual(list.filter(line => !line.includes('piece-b')).map(line => line.slice(2, 14)), [synced.slice(0, 12), head.slice(0, 12)], 'first-parent 上没带标记的照列');
+});
+
 test('项目检查按需求分支 head 复用：同一 head 通过过就不再跑，需求分支动了就再跑', async t => {
   const { route } = await definition();
   const f = fixture(t); f.run('lane'); f.land('one', 'first'); f.progress('submit', '汇报');

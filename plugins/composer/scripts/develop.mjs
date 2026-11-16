@@ -61,12 +61,14 @@ const changes = base => {
   return [`改动：${line(total)}`, ...Object.entries(areas).sort(([, a], [, b]) => b.added + b.deleted - a.added - a.deleted).map(([area, group]) => `- ${area}：${line(group)}`)].join('\n');
 };
 
-// 合进需求分支的块，从需求分支的历史读：目标分支最新提交到需求分支 head 的 first-parent 提交，按先后；流程直接推的另列，不算块。
-// 块（piece）合入的提交说明带 Coda-Piece: <运行 ID>，有就附上那次运行。
+// 合进需求分支的块，从需求分支的历史读（目标分支最新提交到需求分支 head，按先后）：说明带 Coda-Piece: <运行 ID> 的块合入提交，
+// 不论在哪条父链上（跟上目标分支的块把需求分支合进自己时，别的块在合并提交的第二父链上），附上那次运行；
+// 再加上 first-parent 上没带它的提交（跟上目标分支的块的合并提交等）。流程直接推的另列，不算块。
 const pieces = (base, head) => {
-  const direct = new Set((state.pushed ?? []).map(p => p.commit));
-  const lines = git('log', '--first-parent', '--reverse', '--format=%H%x09%s%x09%(trailers:key=Coda-Piece,valueonly,separator=%x2C)', `${base}..${head}`).split('\n').filter(Boolean);
-  return lines.map(line => line.split('\t')).filter(([commit]) => !direct.has(commit))
+  const direct = new Set((state.pushed ?? []).map(p => p.commit)), range = `${base}..${head}`;
+  const first = new Set(git('log', '--first-parent', '--format=%H', range).split('\n'));
+  const lines = git('log', '--topo-order', '--reverse', '--format=%H%x09%s%x09%(trailers:key=Coda-Piece,valueonly,separator=%x2C)', range).split('\n').filter(Boolean);
+  return lines.map(line => line.split('\t')).filter(([commit, , run]) => (run || first.has(commit)) && !direct.has(commit))
     .map(([commit, subject, run]) => `- ${commit.slice(0, 12)} ${subject}${run ? `（coda://workflow-runs/${run}）` : ''}`).join('\n') || '（还没有合进需求分支的块）';
 };
 
