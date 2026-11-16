@@ -20,9 +20,10 @@ const PROBE = { _meta: { coda: { probe: true } } };
 // A client of the entry, as Coda is: one JSON message a line, split at LF alone.
 class Client {
   constructor(env) {
-    this.next = 0; this.pending = new Map(); this.notes = [];
-    this.child = spawn('/bin/sh', ['-c', manifest('antigravity').contributes.agents[0].command], { env, detached: true, stdio: ['pipe', 'pipe', 'ignore'] });
+    this.next = 0; this.pending = new Map(); this.notes = []; this.errors = '';
+    this.child = spawn('/bin/sh', ['-c', manifest('antigravity').contributes.agents[0].command], { env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
     this.exited = new Promise(resolve => this.child.on('exit', code => resolve(code)));
+    this.child.stderr.setEncoding('utf8').on('data', text => { this.errors += text; });
     let rest = '';
     this.child.stdout.setEncoding('utf8').on('data', text => {
       const lines = (rest + text).split('\n'); rest = lines.pop();
@@ -44,6 +45,15 @@ class Client {
     const m = await this.request(method, params);
     assert.ok(!m.error, `${method}: ${JSON.stringify(m.error)}`);
     return m.result;
+  }
+  // Once the entry has said `pattern` on its standard error: its catalog logs an event there when it is done with it.
+  said(pattern) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`never said ${pattern}`)), 15_000);
+      const look = () => { if (pattern.test(this.errors)) { clearTimeout(timer); this.child.stderr.off('data', look); resolve(); } };
+      this.child.stderr.on('data', look);
+      look();
+    });
   }
   init() { return this.result('initialize', { protocolVersion: 1, clientCapabilities: {} }); }
   close() { this.child.stdin.end(); return this.exited; }
@@ -248,7 +258,7 @@ test('two probe sessions do not reach each other, nor real sessions of the same 
 });
 
 test('a real session whose options differ from the catalog has it collected again at the next probe', async t => {
-  const { probe, entry, natives, state } = machine(t);
+  const { probe, entry, natives } = machine(t);
   await probe();
   const c = entry();
   await c.init();
@@ -257,8 +267,10 @@ test('a real session whose options differ from the catalog has it collected agai
   assert.equal(natives().length, 2, 'a session like the catalog changes nothing');
   const changed = entry({ FAKE_AGY_EXTRA_MODEL: '1' });
   await changed.init();
+  // Its answer does not wait for the catalog to be marked: the probe goes once the mark is written.
+  const marked = changed.said(/"event":"stale"/);
   await changed.result('session/new', { cwd: '/real', mcpServers: [] });
-  for (let i = 0; i < 50 && !existsSync(join(state, 'catalog-v1.stale.json')); i++) await new Promise(resolve => setTimeout(resolve, 20));
+  await marked;
   const { m } = await probe('/work', { FAKE_AGY_EXTRA_MODEL: '1' });
   assert.deepEqual(choices(option(m.result.configOptions, 'model')), ['m', 'xh', 'none', 'extra']);
   assert.equal(natives().length, 4);
