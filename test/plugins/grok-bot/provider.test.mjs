@@ -170,6 +170,50 @@ test('authentication rejected (401/403, or refresh failed) says effects none; ot
   await assert.rejects(f.provider.post({text:'d'},call(f,'d')),{code:'unauthorized',effects:'none'});
 });
 
+test('renewal failing after a 401 says effects none whether offline or timed out; after renewal, only 401/403 is none', async t => {
+  const f=await fixture(t); const original=f.native.handler;
+  const rejected=(method,params)=>method==='SendGrokBotUserMessage'?new Response('{}',{status:401}):original(method,params);
+  f.auth.use({accessToken:'fixture',refreshToken:'refresh'});
+  f.native.handler=async (method,params)=>{if(method==='token')throw new TypeError('fetch failed');return rejected(method,params);};
+  await assert.rejects(f.provider.post({text:'a'},call(f,'offline')),{code:'unauthorized',effects:'none',message:/续期失败.*fetch failed/});
+  f.native.handler=async (method,params)=>{if(method==='token')throw new DOMException('timed out','TimeoutError');return rejected(method,params);};
+  await assert.rejects(f.provider.post({text:'b'},call(f,'timeout')),{code:'unauthorized',effects:'none',message:/续期失败/});
+  // Renewed: the resend is a new request, so a lost connection is unknown, a rejection is none.
+  const renew=resend=>{
+    let sends=0;
+    return async (method,params)=>{
+      if(method==='token')return Response.json({access_token:'renewed'});
+      if(method==='SendGrokBotUserMessage')return ++sends===1?new Response('{}',{status:401}):resend();
+      return original(method,params);
+    };
+  };
+  f.auth.use({accessToken:'fixture',refreshToken:'refresh'});
+  f.native.handler=renew(()=>{throw new Error('lost');});
+  await assert.rejects(f.provider.post({text:'c'},call(f,'lost')),{code:'unknown',effects:'unknown',message:'lost'});
+  f.auth.use({accessToken:'fixture',refreshToken:'refresh'});
+  f.native.handler=renew(()=>new Response('{}',{status:401}));
+  await assert.rejects(f.provider.post({text:'d'},call(f,'again')),{code:'unauthorized',effects:'none'});
+});
+
+test('the Bot list loop shows the original error when renewal fails offline, and asks for login when it is rejected', async t => {
+  const f=await fixture(t); const original=f.native.handler;
+  const reason=()=>f.provider.records.get(f.id()).status.reason;
+  // sync reloads the credentials file, so the refresh token must be on disk.
+  writeFileSync(join(f.root,'native-auth.json'),JSON.stringify({accessToken:'fixture',refreshToken:'refresh'}));
+  f.native.handler=async (method,params)=>{
+    if(method==='token')throw new TypeError('fetch failed');
+    return method==='GetMe'?new Response('{}',{status:401}):original(method,params);
+  };
+  await f.provider.schedule(()=>f.provider.sync());
+  assert.equal(reason(),'fetch failed');
+  f.native.handler=async (method,params)=>{
+    if(method==='token')return Response.json({},{status:400});
+    return method==='GetMe'?new Response('{}',{status:401}):original(method,params);
+  };
+  await f.provider.schedule(()=>f.provider.sync());
+  assert.equal(reason(),'请在资源页重新登录');
+});
+
 test('widget answer refused (false) says effects none; a missing field stays unknown', async t => {
   const f=await fixture(t); await until(()=>f.native.connections.length); const original=f.native.handler;
   f.native.emit(f.native.row('widget',{kind:'send-message',message:{type:'widget',widget:{prompt:'Choose',options:[{label:'Yes',value:'yes'}]}}},1));
