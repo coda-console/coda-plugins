@@ -51,6 +51,17 @@ for (const [text, how, input] of [['crash', /退出码 3[\s\S]*fake grok: Operat
     assert.match(p.stderr, how);
   });
 
+// A request ID Coda sends again after the prompt that had it is answered starts without what was heard of that one.
+test('a prompt that reuses the ID of an answered one does not inherit its accepted input', async t => {
+  const { p, request } = start(t);
+  await request('initialize', { protocolVersion: 1, clientCapabilities: {} });
+  await request('session/new', { cwd: '/', mcpServers: [] });
+  const params = text => ({ sessionId: 'native', prompt: [{ type: 'text', text }] });
+  assert.equal((await p.request('session/prompt', params('hello'), { id: 'again', timeout: 5000 })).error, undefined);
+  const reply = await p.request('session/prompt', params('kill'), { id: 'again', timeout: 5000 });
+  assert.deepEqual(reply.error.data._meta.coda.failure, { kind: 'session_ended' });
+});
+
 test('Grok declares session/delete and answers it with `grok sessions delete`, never passing it to the agent', async t => {
   const { dir, p, request } = start(t);
   const calls = () => { try { return readFileSync(join(dir, 'sessions-calls.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l)); } catch { return []; } };

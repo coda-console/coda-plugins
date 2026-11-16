@@ -93,7 +93,7 @@ read(grok.stdout, message => {
   }
   const request = !message.method && pending.get(message.id);
   if (request) {
-    pending.delete(message.id);
+    pending.delete(message.id); heard.delete(message.id);
     if (message.result && request.method === 'initialize') {
       const capabilities = message.result.agentCapabilities ??= {};
       capabilities.sessionCapabilities = { ...capabilities.sessionCapabilities, delete: {} };
