@@ -2,6 +2,7 @@
 // mid-turn, through Coda's backend, stays in Coda.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -64,7 +65,9 @@ for (const [name, exit, how, say, input] of [['a non-zero exit code', '7', /é€€å
     const root = await mkdtemp(join(tmpdir(), 'codex-exit-')), codex = join(root, 'codex');
     await writeFile(codex, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(fixture)} "$@"\n`); await chmod(codex, 0o700);
     const peer = new AgentProcess({ command: `exec ${quote(process.execPath)} ${quote(join(pluginDir('codex'), 'agent/entry.mjs'))}`, cwd: root,
-      env: { ...process.env, FAKE_CODEX_EXIT: exit, ...(say ? { FAKE_CODEX_SAY: say } : {}), FAKE_CODEX_STATE: root, CODEX_PATH: codex, CODEX_HOME: join(root, 'home') } });
+      env: { ...process.env, FAKE_CODEX_EXIT: exit, ...(say ? { FAKE_CODEX_SAY: say } : {}), FAKE_CODEX_STATE: root, CODEX_PATH: codex, CODEX_HOME: join(root, 'home') },
+      // What the turn said, said: only then is the Codex process killed, so the entry has heard it before the process ends.
+      onMessage: message => { if (say && message.params?.update?.content?.text === 'working') process.kill(Number(readFileSync(join(root, 'pid'), 'utf8')), exit); } });
     t.after(async () => { await peer.terminate(2000); peer.kill(); await rm(root, { recursive: true, force: true }); });
     const request = (method, params) => peer.request(method, params, { timeout: 10_000 });
     await request('initialize', { protocolVersion: 1, clientCapabilities: {} });
