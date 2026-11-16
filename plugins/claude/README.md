@@ -25,8 +25,10 @@ Coda 给会话一个临时目录时（环境变量 `CODA_SESSION_TMP`，绝对�
 SDK 的查询自己结束（Claude 进程被杀、崩溃、正常退出）时，入口把原因记下来：查询抛的错误文字（SDK 已把原生进程的退出码或信号和 stderr 末尾几行写在里面），没有错误就写「Claude SDK 查询结束，没有给出错误」。
 原因写进插件的 stderr 日志（`Claude 会话结束：…`），并放进还在进行的那一轮的错误信息（`Claude 会话已结束：…`）。Coda 主动关闭的会话不写日志。
 
-会话已结束后再来的 `session/prompt` 当场拒绝，错误文字是 `Claude 会话未在运行：<原因>`，并按协议现有的标记报 `service_unavailable`、`input: "not_accepted"`（输入没有进原生会话，Coda 重投原输入）。
-换模型服务时重启查询失败、输入还没交给新查询的，同样是 `not_accepted`。协议里 `input` 只跟着 `service_unavailable` 出现，所以这里借用这个类别；没有新字段。设置项请求（`session/set_config_option`）只带原因，不带标记。
+这些错误都标 `session_ended`（原生会话或进程已结束，不是上游服务的问题，Coda 不按服务故障重试）。`input` 只写插件能确定的：正在跑的那一轮的输入是 `accepted`，排在它后面没跑过的是 `not_accepted`，没有一轮在跑时输入有没有被读走说不准，不写。
+
+会话已结束后再来的 `session/prompt` 当场拒绝，错误文字是 `Claude 会话未在运行：<原因>`，标 `session_ended`、`input: "not_accepted"`（输入没有进原生会话，Coda 整条重发）。
+换模型服务时重启查询失败、输入还没交给新查询的，同样是 `session_ended` + `not_accepted`；失败本身已带别的类别（如额度、服务）的保留原类别，类别允许 `input` 时补上 `not_accepted`（`auth_required` 不带 `input`，原样保留）。设置项请求（`session/set_config_option`）只带原因，不带标记。
 
 ## 失败怎样分类
 
