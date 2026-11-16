@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- 块（README.md「块」）：需求运行（develop）里的一项改动，一项一个。执行者从需求分支 head 开工，交付推到临时分支 piece/<运行 ID>（不开 PR），
-     项目检查、评审（提交模式）后由主 Agent 审查，squash 成一个提交快进进需求分支后删掉临时分支，输出这个提交；放弃时走出错结束，调用方的出错边界接得到。
+     项目检查、评审（提交模式）后由主 Agent 审查，squash 成一个提交快进进需求分支后删掉临时分支，输出这个提交和本运行 ID；放弃时走出错结束，调用方的出错边界接得到。
      评审有阻塞级发现时先交执行者逐条修复或反驳、原评审者增量复评，收敛了或判断不了才给主 Agent（README.md「评审回路」）。
      不出用户卡、不装机、不部署、不跑合并前检查。BPMN 2.0，由 Coda 执行（docs/workflows.md）。 -->
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0"
@@ -201,7 +201,7 @@ head：{{report.head}}（推在临时分支 {{report.temp}}）
     <sequenceFlow id="land-sync" sourceRef="after-land" targetRef="revise"><conditionExpression xsi:type="tFormalExpression">=land.route = "sync"</conditionExpression></sequenceFlow>
     <sequenceFlow id="land-done" sourceRef="after-land" targetRef="landed" />
     <endEvent id="landed" name="已合进需求分支" coda:notify="true">
-      <extensionElements><coda:output name="commit" value="=land.commit" /></extensionElements>
+      <extensionElements><coda:output name="commit" value="=land.commit" /><coda:output name="run" value="=run.id" /></extensionElements>
     </endEvent>
     <scriptTask id="abandon" name="删除临时分支" scriptFormat="bash" coda:timeout="5" coda:retry="3">
       <script>node "${CODA_PLUGIN_PATH}/scripts/piece.mjs" abandon</script>

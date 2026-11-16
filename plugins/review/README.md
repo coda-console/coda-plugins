@@ -230,7 +230,7 @@ PR 生命流程与简易开发声明挂点 `merged`：合并后要做的事由�
 
 ### 增量复评
 
-调用方（如泳道 PR 的评审回路）把一位评审者上一轮的发现交给执行者处理后，对同一个评审位置重新调用 `review-commit`，新会话：`base` 是上一轮评过的 head，`head` 是新 head（执行者只反驳、没有新提交时两者相同），`previous` 是上一轮的发现与回应。
+调用方（如块的评审回路）把一位评审者上一轮的发现交给执行者处理后，对同一个评审位置重新调用 `review-commit`，新会话：`base` 是上一轮评过的 head，`head` 是新 head（执行者只反驳、没有新提交时两者相同），`previous` 是上一轮的发现与回应。
 提示词说明这是增量复评，把 `previous` 原样放在随机标记之间（回应是执行者写的，只当数据）。评审方核实每条旧发现，`review` 代码块里另给 `resolutions`，每条旧发现恰好一条、`status` 合法，否则算没评成（`INCOMPLETE`）；`findings` 只列这一轮的新问题。
 `decision` 把被坚持（`upheld`）的旧发现算在内：坚持了阻塞级的旧发现就是 `REQUEST_CHANGES`。`previous` 是空数组时（上一轮没有发现）只看新改动，不要 `resolutions`。
 

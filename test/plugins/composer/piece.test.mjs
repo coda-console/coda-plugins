@@ -12,7 +12,7 @@ import { evaluate } from 'feelin';
 
 const script = fileURLToPath(new URL('../../../plugins/composer/scripts/piece.mjs', import.meta.url));
 const workflow = readFileSync(new URL('../../../plugins/composer/.coda/workflows/piece.bpmn', import.meta.url), 'utf8');
-const BRANCH = 'lane/req-1', TEMP = 'piece/pr-run-1';
+const BRANCH = 'req/develop-1', TEMP = 'piece/pr-run-1';
 
 function fixture(t, { sync = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'composer-piece-'));
@@ -168,6 +168,18 @@ test('合进需求分支：试合并需求分支当前 head，干净时把这一
   assert.deepEqual(f.calls('gh'), [], '不开 PR、不合 PR');
 });
 
+test('删临时分支失败：合入提交已推进需求分支，这一步仍失败（调用它的需求运行由出错边界接住，不能断言没合进）', t => {
+  const f = fixture(t);
+  f.task('one', 'change'); f.run('execute'); f.delivered();
+  // 远端拒绝删除临时分支。
+  const hook = join(f.root, 'origin.git', 'hooks', 'pre-receive');
+  writeFileSync(hook, `#!/bin/sh\nwhile read old new ref; do case "$ref:$new" in refs/heads/piece/*:0000000000000000000000000000000000000000) echo 不许删 >&2; exit 1;; esac; done\n`); chmodSync(hook, 0o755);
+  const failed = f.run('land', {}, 1);
+  assert.match(failed.stderr, /不许删/);
+  assert.deepEqual(f.landedCommits().length, 1, '需求分支已有这一块的合入提交');
+  assert.equal(f.remote(TEMP), f.state().executor.head, '临时分支还在');
+});
+
 test('重跑不重复合入：合入后需求分支又前进了，再跑 land 认出已合入的提交、原样交出，不再推送；临时分支已删也照样成功', t => {
   for (const sync of [false, true]) {
     const f = fixture(t, { sync });
@@ -245,7 +257,7 @@ test('跟上目标分支的块：需求分支 head 不是它的祖先时不推�
   const tip = f.advance('other', 'other');
   assert.deepEqual(f.run('land').outputs, { route: 'sync' });
   assert.equal(f.remote(BRANCH), tip);
-  assert.match(f.state().feedback, /需求分支是 lane\/req-1/);
+  assert.match(f.state().feedback, /需求分支是 req\/develop-1/);
   assert.ok(!f.state().feedback.includes('冲突的文件'), '能干净合并，只是不能快进');
   f.task('two', 'merged branch', BRANCH); f.run('revise'); f.delivered();
   assert.equal(f.run('land').outputs.route, 'landed');
@@ -471,7 +483,7 @@ test('块的流程定义：输入、回路、审查卡答复、结束输出与�
   assert.equal(route('after-land', { land: { route: 'sync' } }), 'revise', '冲突交回同一个执行会话');
   assert.equal(route('after-land', { land: { route: 'landed' } }), 'landed');
   for (const id of ['landed', 'abandoned']) assert.equal(nodes[id].notify, 'true', `${id} 结果回发起会话`);
-  assert.deepEqual(values(nodes.landed).map(v => [v.name, v.value]), [['commit', '=land.commit']], '合进需求分支的提交');
+  assert.deepEqual(values(nodes.landed).map(v => [v.name, v.value]), [['commit', '=land.commit'], ['run', '=run.id']], '合进需求分支的提交与本运行，调用它的需求运行写进「需求进行中」');
   assert.equal(next('abandon'), 'abandoned');
   // 放弃以出错结束：运行失败，原因就是这个结束事件的名字，callActivity 调它的流程由出错边界接住、拿到原因。
   assert.deepEqual(nodes.abandoned.eventDefinitions.map(e => e.$type), ['bpmn:ErrorEventDefinition']);
@@ -517,7 +529,7 @@ test('执行者固定说明：只跑涉及的测试文件，验证命令传出�
 
 test('评审有阻塞级发现：同一执行会话逐条处理，有新提交就推送、检查后增量复评，收敛了才交主 Agent，卡上附收敛经过', t => {
   const f = fixture(t); f.task('one', 'first'); f.run('execute'); f.delivered();
-  const first = f.state().executor.head, lane = f.remote('lane/req-1');
+  const first = f.state().executor.head, lane = f.remote(BRANCH);
   const full = f.run('review-round').outputs;
   assert.deepEqual(full, { base: lane, head: first, task: f.env.TASK, checks: '此提交未声明项目检查流程。', previous: '', previous2: '' }, '第一次是完整评审');
   assert.equal(f.run('triage', { REVIEWS: JSON.stringify([reviewed('reviewer', first, [BUG]), { state: 'skipped' }]) }).outputs.route, 'fix');
