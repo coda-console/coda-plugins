@@ -9,7 +9,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { grokBinary } from '../scripts/ask.mjs';
 import { deleteSession } from './delete.mjs';
-import { describeExit } from './exit.mjs';
+import { describeExit, endedError } from './exit.mjs';
 import { ASK, questionForm } from './questions.mjs';
 
 const modes = [{ id: 'auto', name: '自动审批', _meta: { coda: { shortName: '自动审批' } } },
@@ -21,6 +21,8 @@ grok.stderr.on('data', chunk => { process.stderr.write(chunk); stderr = (stderr 
 const send = (stream, message) => stream.write(`${JSON.stringify(message)}\n`);
 const say = message => send(process.stdout, { jsonrpc: '2.0', ...message });
 const pending = new Map();
+// The ids of the prompts Grok has said anything of since they were asked.
+const heard = new Set();
 // What Grok says of a compaction of the main session, as Coda takes it. A /compact says its end only.
 const COMPACTION = { auto_compact_started: 'in_progress', auto_compact_completed: 'completed', auto_compact_failed: 'failed', auto_compact_cancelled: 'failed' };
 let compaction = null;
@@ -77,6 +79,7 @@ read(process.stdin, message => {
   send(grok.stdin, message);
 });
 read(grok.stdout, message => {
+  if (message.method && message.params?.sessionId) for (const [id, request] of pending) if (request.method === 'session/prompt' && request.params?.sessionId === message.params.sessionId) heard.add(id);
   if (message.method === ASK && 'id' in message) {
     const id = `grok-ask-${++asked}`, { params, answer } = questionForm(message.params ?? {});
     questions.set(id, { id: message.id, toolCallId: params.toolCallId, answer });
@@ -121,7 +124,7 @@ grok.on('close', (code, signal) => {
   if (!stopping && (code !== 0 || waiting.length)) {
     const message = describeExit({ code, signal, stderr });
     process.stderr.write(`${message}\n`);
-    for (const [id] of waiting) say({ id, error: { code: -32603, message } });
+    for (const [id] of waiting) say({ id, error: endedError(message, heard.has(id)) });
   }
   // What was said reaches Coda before this process ends.
   process.stdout.write('', () => process.exit(stopping ? 0 : code ?? 1));

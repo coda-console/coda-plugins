@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { agentValueProblem } from '@coda-console/protocol/agent';
 import { AgentProcess } from '../../../check/process.mjs';
 import { pluginDir } from '../plugin.mjs';
 import { MINIMUM, needed, older } from '../../../plugins/grok/scripts/setup.mjs';
@@ -35,7 +36,7 @@ function start(t) {
   return { dir, p, messages, request, prompt, said, next };
 }
 
-for (const [text, how] of [['crash', /退出码 3[\s\S]*fake grok: Operation not permitted/], ['quit', /退出码 0/], ['kill', /被信号 SIGKILL 终止/]])
+for (const [text, how, input] of [['crash', /退出码 3[\s\S]*fake grok: Operation not permitted/], ['quit', /退出码 0/], ['kill', /被信号 SIGKILL 终止/], ['speak and kill', /被信号 SIGKILL 终止/, 'accepted']])
   test(`the prompt error and the plugin's stderr say how Grok ended on its own: ${text}`, async t => {
     const { p, request } = start(t);
     await request('initialize', { protocolVersion: 1, clientCapabilities: {} });
@@ -43,6 +44,9 @@ for (const [text, how] of [['crash', /退出码 3[\s\S]*fake grok: Operation not
     const reply = await p.request('session/prompt', { sessionId: 'native', prompt: [{ type: 'text', text }] }, { timeout: 5000 });
     assert.equal(reply.error?.code, -32603, JSON.stringify(reply));
     assert.match(reply.error.message, how);
+    const failure = reply.error.data?._meta?.coda?.failure;
+    assert.equal(agentValueProblem('failure.json', failure, 'failure'), null);
+    assert.deepEqual(failure, input ? { kind: 'session_ended', input } : { kind: 'session_ended' });
     await p.exited;
     assert.match(p.stderr, how);
   });
