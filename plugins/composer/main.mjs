@@ -43,10 +43,12 @@ export async function activate(coda) {
   }));
 
   // 给完整说明：tell 成功后才清待给标记、记已发；被拒绝（如超长）时标记保留，留给下一个时点补发。
+  // 发送期间名单又改了（key 变了），新名单还没给，标记保留。
   const give = async (thread, state) => {
+    const { key } = state;
     state.needFull = true;
     await coda.tell(thread, on(state.list));
-    state.needFull = false;
+    if (state.key === key) state.needFull = false;
     state.told = true;
   };
   // 先看会话的轮，一轮结束时只有要给完整说明的才 tell，其余不发。
