@@ -125,6 +125,9 @@ describe('a liar fails on the rule it breaks', () => {
     ['probe-resume', 'probe.resume', {}],
     ['probe-new-work', 'probe.quiet', {}],
     ['probe-signed-out-work', 'probe.quiet', {}],
+    ['probe-wait-work', 'probe.quiet', {}],
+    ['probe-wait-ask', 'probe.quiet', {}],
+    ['probe-wait-only', 'probe.quiet', {}],
   ];
   for (const [mode, rule, options] of cases) test(mode, async () => {
     const { report } = await checkPlugin(plugin({ mode }), { ...options, limits });
@@ -148,6 +151,12 @@ describe('a liar fails on the rule it breaks', () => {
     assert.match(work.items.find(item => item.rule === 'probe.quiet').message, /agent_message_chunk/);
     const ask = (await checkPlugin(plugin({ mode: 'probe-new-ask' }), { limits })).report;
     assert.match(ask.items.find(item => item.rule === 'probe.quiet').message, /审批/);
+  });
+  test('a probe that registers activity fails however the rest of it is taken as a turn', async () => {
+    const quiet = async mode => (await checkPlugin(plugin({ mode }), { limits })).report.items.find(item => item.rule === 'probe.quiet').message;
+    assert.match(await quiet('probe-wait-work'), /_coda\/wait.*agent_message_chunk/);
+    assert.match(await quiet('probe-wait-ask'), /_coda\/wait.*审批/);
+    assert.match(await quiet('probe-wait-only'), /_coda\/wait/);
   });
   test('an agent without systemPrompt follows the instructions in the first prompt', async () => {
     const { report } = await checkPlugin(plugin({ mode: 'no-system-prompt' }), { live: true, limits });
