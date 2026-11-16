@@ -1108,6 +1108,31 @@ test('叠放：执行期间前置已 squash 合进泳道并删了分支，gate �
   assert.equal(f.run('stack-status').outputs.route, 'ready');
 });
 
+test('叠放：执行期间前置被 force-push 改写后合进泳道，gate 直接去重接、重接升级前先以草稿开进泳道，主 Agent 放弃能关掉 PR、删掉分支', t => {
+  const f = fixture(t);
+  const parent = f.parent(), old = f.remote('lane/req-1');
+  f.task('child', 'child work'); f.run('execute', { DEPENDS_ON: PARENT });
+  f.git('switch', '-q', '--detach', old); writeFileSync(join(f.work, 'p1'), 'parent redo'); f.git('add', 'p1'); f.git('commit', '-qm', 'parent redo');
+  const rewritten = f.git('rev-parse', 'HEAD');
+  f.git('push', '-q', '--force', 'origin', `${rewritten}:refs/heads/lane-pr/parent-run`);
+  f.setParent({ headRefOid: rewritten });
+  f.squash(rewritten);
+  f.dropParent();
+  assert.equal(f.run('gate').outputs.route, 'restack');
+  assert.equal(f.state().pr, '');
+  assert.equal(f.run('restack').outputs.route, 'review');
+  const created = f.calls('gh').filter(c => c.args[1] === 'create');
+  assert.equal(created.length, 1);
+  assert.deepEqual(created[0].args.slice(0, 7), ['pr', 'create', '--base', 'lane/req-1', '--head', 'lane-pr/pr-run-1', '--draft'], '升级前以草稿开进泳道');
+  assert.ok(created[0].body.includes(PARENT));
+  assert.deepEqual([f.state().pr, f.state().stack.recover], [PR, true]);
+  assert.equal(f.run('review').outputs.pr, PR, '审查卡上有 PR');
+  assert.equal(f.decide('abandon'), 'abandon');
+  assert.deepEqual(f.run('abandon').outputs, { pr: PR });
+  assert.deepEqual(f.calls('gh').find(c => c.args[1] === 'close').args.slice(0, 3), ['pr', 'close', PR]);
+  assert.equal(f.remote('lane-pr/pr-run-1'), '', '分支已删');
+});
+
 test('叠放：执行期间前置关了没合并、删了分支，gate 以草稿开进泳道后直接交主 Agent；退回修改变基到泳道后转正，照常合进泳道', t => {
   const f = fixture(t);
   const parent = f.parent();
