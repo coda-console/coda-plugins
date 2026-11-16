@@ -2,7 +2,7 @@
 // installer puts it; Coda's back end does not always have that directory on its PATH), then the PATH.
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 export function agyBinary(env = process.env) {
@@ -14,6 +14,21 @@ export function agyBinary(env = process.env) {
 // which the setup and the resources share.
 export const asked = binary => spawnSync(binary, ['--version'], { encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] });
 export const versionOf = ran => /(\d+)\.(\d+)\.(\d+)/.exec(`${ran.stdout ?? ''}\n${ran.stderr ?? ''}`)?.slice(1).join('.') ?? null;
+// The CLI's usage report, parsed: `agy -p /usage --output-format json`, which the CLI answers itself, without a turn, the
+// quota spent or a conversation left behind. Run from the temporary directory, so that no project of the CLI's is made for
+// a directory of the user's, and with its update off for this run alone. Throws, with the reason in a line, for a CLI that
+// fails or times out (kept well under the 30 seconds Coda gives a reading) or answers anything but a successful usage report.
+export function usageReport(binary, run = spawnSync) {
+  const ran = run(binary, ['-p', '/usage', '--output-format', 'json'], { encoding: 'utf8', cwd: tmpdir(), timeout: 20_000,
+    env: { ...process.env, AGY_CLI_DISABLE_AUTO_UPDATE: 'true' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  if (ran.error?.code === 'ETIMEDOUT') throw new Error('读取超时');
+  if (ran.error) throw new Error(`无法运行 Antigravity CLI：${ran.error.code ?? ran.error.message}`);
+  if (ran.status !== 0) throw new Error(`Antigravity CLI 退出码 ${ran.status ?? ran.signal}：${`${ran.stderr ?? ''}`.trim().split('\n')[0]}`);
+  let report;
+  try { report = JSON.parse(ran.stdout); } catch { throw new Error('Antigravity CLI 的额度报告不是 JSON'); }
+  if (report?.status !== 'SUCCESS' || report.command?.name !== 'usage') throw new Error(`Antigravity CLI 没有给出额度报告（${report?.status ?? '无状态'}）`);
+  return report;
+}
 // Whether one version is older than another.
 export function older(version, than) {
   const a = version.split('.').map(Number), b = than.split('.').map(Number), i = a.findIndex((n, k) => n !== b[k]);
