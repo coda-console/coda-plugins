@@ -136,8 +136,9 @@ class Session {
       problems.push(optionalValueProblem('review.json', update._meta?.coda?.review, 'session/update params.update._meta.coda.review'));
     if (kind === 'usage_update') problems.push(optionalValueProblem('usage.json', update._meta?.coda, 'session/update params.update._meta.coda'));
     for (const problem of problems.filter(Boolean)) { this.malformed++; this.at.fail('update.schema', problem); }
-    // Of a session being opened Coda keeps only its commands and title; a replayed history it does not want.
-    if (this.loading) return;
+    // Of a session being opened Coda keeps only its commands and title; a replayed history it does not want. A probe has no
+    // history: whatever works while its session/new is answered is work (「配置探测 · 通知」).
+    if (this.loading) { if (this.probing && !BOOKKEEPING.has(kind)) this.idleWork.push(kind); return; }
     if (!this.waits.owns(params.sessionId)) {
       this.at.fail('update.session', `session/update 说的会话 ${params.sessionId} 不是本会话，也不是 _coda/wait 登记过的子会话：Coda 丢弃`);
       return;
@@ -170,6 +171,7 @@ class Session {
       if (!parsed.success) { this.at.fail('request.schema', `${m.method} 不合 ACP schema：${explain(parsed.error, m.params)}`); this.proc.respond(m.id, refuse); return; }
       if (typeof m.params.sessionId === 'string' && !this.waits.owns(m.params.sessionId)) this.at.fail('request.session', `${what}说的会话 ${m.params.sessionId} 不是本会话或登记过的子会话`);
       if (!inTurn) {
+        if (this.probing) this.idleWork.push(what);
         this.at.fail('request.outside-turn', `${what}在一轮之外发来（没有进行中的 session/prompt，也没有 handling 的活动）：Coda 拒绝（${permission ? '回 cancelled' : '回 cancel'}），在会话里记一条说明`);
         this.proc.respond(m.id, refuse);
         return;
@@ -436,6 +438,7 @@ async function probe({ agent, checked, base, limits, say, instructions }) {
   const scopes = { handshake: say, live: say }, init = { protocolVersion: ACP_PROTOCOL_VERSION, clientCapabilities: clientCapabilities() };
   const session = new Session({ agent, checked, base, say: scopes, limits, instructions });
   const ask = (method, params, proc = session.proc) => proc.request(method, params, { timeout: limits.open });
+  session.probing = true;
   let sessionId, rule = 'probe.new';
   try {
     let reply = await ask('initialize', init);
@@ -458,7 +461,7 @@ async function probe({ agent, checked, base, limits, say, instructions }) {
     if (!turn.error) say.fail(rule, `虚拟会话接受了 session/prompt（stopReason ${turn.result?.stopReason}）：配置探测会话不执行 prompt，要回 -32602`);
     else if (turn.error.code !== -32602) say.warn(rule, `虚拟会话的 session/prompt 回了 ${turn.error.code}（${turn.error.message}）：约定是 -32602`);
     else say.pass(rule, `虚拟会话的 session/prompt 回 -32602：${turn.error.message}`);
-    if (session.idleWork.length) say.fail('probe.quiet', `探测期间 Agent 发了干活的 session/update（${[...new Set(session.idleWork)].join('、')}）：探测不执行任何东西`);
+    if (session.idleWork.length) say.fail('probe.quiet', `探测期间 Agent 发了干活的 session/update 或审批、提问（${[...new Set(session.idleWork)].join('、')}）：探测不执行任何东西`);
   } catch (e) { return say.fail(rule, `${rule === 'probe.new' ? '带探测标记的 session/new' : '探测'}失败：${e.message}`); }
   finally { await session.proc.terminate(limits.exit); session.proc.kill(); }
   // The connection is gone: another one has nothing of the session.

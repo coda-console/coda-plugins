@@ -123,6 +123,7 @@ describe('a liar fails on the rule it breaks', () => {
     ['probe-stuck', 'probe.config', {}],
     ['probe-prompt', 'probe.prompt', {}],
     ['probe-resume', 'probe.resume', {}],
+    ['probe-new-work', 'probe.quiet', {}],
   ];
   for (const [mode, rule, options] of cases) test(mode, async () => {
     const { report } = await checkPlugin(plugin({ mode }), { ...options, limits });
@@ -139,6 +140,13 @@ describe('a liar fails on the rule it breaks', () => {
     assertPasses(report, ['handshake.new', 'probe.new', 'probe.config', 'probe.prompt', 'probe.resume']);
     assert.match(report.items.find(item => item.rule === 'probe.config').message, /3 个.*a（low\/medium\/high），b（low\/medium\/high\/xhigh），c（无档位）/);
     assert.ok(rules(await checkPlugin(plugin(), { limits }).then(r => r.report), 'skip').includes('probe.skipped'), 'one that does not is not asked');
+  });
+  test('a probe may say its commands and config while its session/new is answered, but not work or ask', async () => {
+    assertPasses((await checkPlugin(plugin({ mode: 'probe-quiet-updates' }), { limits })).report, ['probe.new']);
+    const work = (await checkPlugin(plugin({ mode: 'probe-new-work' }), { limits })).report;
+    assert.match(work.items.find(item => item.rule === 'probe.quiet').message, /agent_message_chunk/);
+    const ask = (await checkPlugin(plugin({ mode: 'probe-new-ask' }), { limits })).report;
+    assert.match(ask.items.find(item => item.rule === 'probe.quiet').message, /审批/);
   });
   test('an agent without systemPrompt follows the instructions in the first prompt', async () => {
     const { report } = await checkPlugin(plugin({ mode: 'no-system-prompt' }), { live: true, limits });
