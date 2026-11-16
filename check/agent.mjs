@@ -409,6 +409,12 @@ async function inputEnd({ agent, checked, base, limits, say }) {
 // and, the connection gone, nothing to load, resume or list. Its own process, apart from the handshake's real session.
 // Coda's own `supportsProbe` is not in the copy of its contract yet: the declaration is read here as the protocol says.
 const supportsProbe = init => { const probe = init?.agentCapabilities?._meta?.coda?.probe; return !!probe && typeof probe === 'object' && !Array.isArray(probe); };
+// An `initialize` answer the probe goes on from, read as the handshake reads one: no error, a result ACP's schema takes.
+function initializeProblem({ error, result }) {
+  if (error) return `initialize 回了错误 ${error.code}：${error.message}`;
+  const parsed = schemas.zInitializeResponse.safeParse(result);
+  return parsed.success ? null : `initialize 的结果不合 ACP schema：${explain(parsed.error)}`;
+}
 const choices = option => (Array.isArray(option?.options) ? option.options : []).flatMap(o => Array.isArray(o?.options) ? o.options : [o]).map(o => o?.value);
 
 async function probeModels(ask, sessionId, opened, say) {
@@ -419,6 +425,7 @@ async function probeModels(ask, sessionId, opened, say) {
     for (const { modelId } of models) {
       const m = await ask('session/set_model', { sessionId, modelId });
       if (m.error) return say.fail('probe.config', `session/set_model ${modelId} 回了错误 ${m.error.code}：${m.error.message}：只报 models 却不能切换，不满足配置探测`);
+      if (!m.result || typeof m.result !== 'object' || Array.isArray(m.result)) return say.fail('probe.config', `session/set_model ${modelId} 的答复没有 result 对象（${JSON.stringify(m.result)}）：不知道切换成没成`);
     }
     return say.pass('probe.config', `逐个模型 session/set_model ${models.length} 个`);
   }
@@ -436,6 +443,8 @@ async function probeModels(ask, sessionId, opened, say) {
     if (level) {
       const back = await ask('session/set_config_option', { sessionId, configId: level.id, value: level.currentValue });
       if (back.error) return say.fail('probe.config', `模型 ${value} 设思考档位 ${level.currentValue} 回了错误 ${back.error.code}：${back.error.message}：Coda 读完一个模型会把档位设回默认`);
+      const set = schemas.zSetSessionConfigOptionResponse.safeParse(back.result);
+      if (!set.success) return say.fail('probe.config', `模型 ${value} 设思考档位 ${level.currentValue} 的结果不合 ACP schema：${explain(set.error)}`);
     }
     seen.push(`${value}（${level ? choices(level).join('/') : '无档位'}）`);
   }
@@ -452,7 +461,8 @@ async function probe({ agent, checked, base, limits, say, instructions }) {
   let sessionId, rule = 'probe.new';
   try {
     let reply = await ask('initialize', init);
-    if (reply.error) return say.fail(rule, `initialize 回了错误 ${reply.error.code}：${reply.error.message}`);
+    const initFailure = initializeProblem(reply);
+    if (initFailure) return say.fail(rule, initFailure);
     reply = await ask('session/new', { cwd: session.cwd, mcpServers: [], _meta: { coda: { probe: true } } });
     if (reply.error?.code === SIGNED_OUT) return say.skip('probe.signed-out', '带探测标记的 session/new 回了 -32000（未登录）：配置探测跳过');
     if (reply.error) return say.fail(rule, `带探测标记的 session/new 回了错误 ${reply.error.code}：${reply.error.message}（Coda 不改发普通 session/new，这次读不到目录）`);
@@ -480,7 +490,10 @@ async function probe({ agent, checked, base, limits, say, instructions }) {
   // The connection is gone: another one has nothing of the session.
   const again = new Session({ agent, checked, base, say: scopes, limits, instructions }), asked = [];
   try {
-    const caps = (await ask('initialize', init, again.proc)).result?.agentCapabilities ?? {};
+    const reply = await ask('initialize', init, again.proc), initFailure = initializeProblem(reply);
+    // An initialize that did not come back says nothing of what the new connection would resume.
+    if (initFailure) return say.fail('probe.resume', `断线后新进程的 ${initFailure}：查不了虚拟会话能不能恢复`);
+    const caps = reply.result.agentCapabilities ?? {};
     const tries = [caps.loadSession === true && 'session/load', caps.sessionCapabilities?.resume != null && 'session/resume'].filter(Boolean);
     for (const method of tries) {
       asked.push(method);
