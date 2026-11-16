@@ -307,6 +307,28 @@ test('审查前检查失败自动续作同一会话，连续三次交回主 Agen
   assert.equal(f.run('review').outputs.checks, passed.checks);
 });
 
+test('普通块交付相对需求分支没有新提交：不进检查和评审，自动退回同一执行会话并计入连续失败，三次交主 Agent；sync 块没有新提交照常合入', t => {
+  const noCommit = { noCommit: true, answer: '改好了' };
+  const f = fixture(t); writeFileSync(join(f.root, 'agent-task'), JSON.stringify(noCommit)); f.run('execute');
+  const session = f.state().executor.session, tip = f.remote(BRANCH);
+  for (let i = 1; i <= 3; i++) {
+    if (i > 1) f.run('revise');
+    assert.equal(f.run('gate').outputs.empty, 'true');
+    assert.equal(f.run('gate-failed', { EMPTY: 'true' }).outputs.route, i === 3 ? 'review' : 'revise');
+  }
+  assert.equal(f.state().executor.head, tip, '执行者没提交，交付就是需求分支 head');
+  assert.equal(f.state().executor.session, session, '同一会话');
+  const { feedback } = f.run('review').outputs;
+  assert.equal(feedback.split(`这次交付相对需求分支 ${BRANCH} 没有新提交：先 git status 看工作区，把这一项的改动提交到当前分支再回报`).length - 1, 3);
+  assert.ok(!feedback.includes('项目检查未通过'));
+  assert.ok(f.calls('agent')[1].prompt.includes('没有新提交'), '退回时把说明交给执行者');
+
+  const g = fixture(t, { sync: true }); writeFileSync(join(g.root, 'agent-task'), JSON.stringify(noCommit)); g.run('execute');
+  assert.equal(g.run('gate').outputs.empty, 'false', 'sync 块没有新提交是正常的');
+  g.run('gate-passed', { RUNS: '[]' });
+  assert.equal(g.run('land').outputs.route, 'landed');
+});
+
 test('放弃：删掉临时分支，需求分支不动；重跑时临时分支已不在就跳过，照样成功', t => {
   const f = fixture(t); f.task('code', 'first'); f.run('execute'); f.delivered();
   const tip = f.remote(BRANCH);
@@ -473,7 +495,10 @@ test('块的流程定义：输入、回路、审查卡答复、结束输出与�
   for (const [value, target] of [['review', 'rounds'], ['revise', 'revise'], ['swap', 'swap'], ['abandon', 'abandon'], ['land', 'land']]) assert.equal(route('how', { decide: { route: value } }), target);
   assert.equal(next('rounds'), 'report', '每次出审查卡前先整理收敛经过');
   for (const id of ['execute', 'revise', 'swap']) assert.equal(next(id), 'gate');
-  assert.equal(next('gate'), 'checks');
+  assert.equal(next('gate'), 'has-new');
+  assert.equal(route('has-new', { gate: { empty: 'false' } }), 'checks');
+  assert.equal(route('has-new', { gate: { empty: 'true' } }), 'check-feedback', '没有新提交的交付当作检查没过自动退回，不进检查和评审');
+  assert.equal(params('check-feedback').EMPTY, '=gate.empty');
   assert.equal(next('checks'), 'gate-passed');
   assert.equal(next('gate-passed'), 'review-round');
   assert.equal(next('review-round'), 'reviews-choice');

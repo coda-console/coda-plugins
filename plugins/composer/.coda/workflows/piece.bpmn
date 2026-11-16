@@ -32,17 +32,20 @@
     </scriptTask>
     <sequenceFlow id="execute-report" sourceRef="execute" targetRef="gate" />
     <scriptTask id="gate" name="推送到临时分支" scriptFormat="bash" coda:timeout="5" coda:retry="3">
-      <extensionElements><coda:output name="head" /></extensionElements>
+      <extensionElements><coda:output name="head" /><coda:output name="empty" /></extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/piece.mjs" gate</script>
     </scriptTask>
-    <sequenceFlow id="gate-checks" sourceRef="gate" targetRef="checks" />
+    <sequenceFlow id="gate-delivery" sourceRef="gate" targetRef="has-new" />
+    <exclusiveGateway id="has-new" name="相对需求分支有没有新提交" default="gate-checks" />
+    <sequenceFlow id="gate-checks" sourceRef="has-new" targetRef="checks" />
+    <sequenceFlow id="gate-empty" sourceRef="has-new" targetRef="check-feedback"><conditionExpression xsi:type="tFormalExpression">=gate.empty = "true"</conditionExpression></sequenceFlow>
     <serviceTask id="checks" name="项目检查" coda:action="run-workflows">
       <extensionElements><coda:param name="hook" value="check" /><coda:param name="commit" value="=gate.head" /></extensionElements>
     </serviceTask>
     <boundaryEvent id="checks-failed" attachedToRef="checks"><errorEventDefinition /></boundaryEvent>
     <sequenceFlow id="checks-feedback" sourceRef="checks-failed" targetRef="check-feedback" />
     <scriptTask id="check-feedback" name="自动退回检查失败" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
-      <extensionElements><coda:output name="route" /></extensionElements>
+      <extensionElements><coda:env name="EMPTY" value="=gate.empty" /><coda:output name="route" /></extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/piece.mjs" gate-failed</script>
     </scriptTask>
     <sequenceFlow id="checks-review" sourceRef="check-feedback" targetRef="gate-route" />
