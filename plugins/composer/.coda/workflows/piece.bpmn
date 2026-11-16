@@ -38,7 +38,7 @@
     <sequenceFlow id="gate-delivery" sourceRef="gate" targetRef="has-new" />
     <exclusiveGateway id="has-new" name="相对需求分支有没有新提交" default="gate-checks" />
     <sequenceFlow id="gate-checks" sourceRef="has-new" targetRef="checks" />
-    <sequenceFlow id="gate-empty" sourceRef="has-new" targetRef="check-feedback"><conditionExpression xsi:type="tFormalExpression">=gate.empty = "true"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="gate-empty" sourceRef="has-new" targetRef="check-feedback"><conditionExpression xsi:type="tFormalExpression">=gate.empty = true</conditionExpression></sequenceFlow>
     <serviceTask id="checks" name="项目检查" coda:action="run-workflows">
       <extensionElements><coda:param name="hook" value="check" /><coda:param name="commit" value="=gate.head" /></extensionElements>
     </serviceTask>

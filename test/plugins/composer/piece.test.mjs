@@ -1,5 +1,5 @@
 // 块（plugins/composer/.coda/workflows/piece.bpmn、scripts/piece.mjs）：临时 Git 仓库、假的 coda-agent，gh 只记调用（块不开 PR），
-// 网关条件用与引擎同版本的 FEEL 求值。
+// 网关条件用与引擎同版本的 FEEL 求值；脚本输出先照引擎把 "true"/"false" 变成布尔值。
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { readWorkflow } from '@coda-console/protocol/workflow';
 import { evaluate } from 'feelin';
+import { evaluateTyped } from './feel.mjs';
 
 const script = fileURLToPath(new URL('../../../plugins/composer/scripts/piece.mjs', import.meta.url));
 const workflow = readFileSync(new URL('../../../plugins/composer/.coda/workflows/piece.bpmn', import.meta.url), 'utf8');
@@ -100,7 +101,7 @@ process.exit(1);
   // 别的块合进了需求分支：在需求分支上另提交一个。
   const advance = (file, text) => {
     git('fetch', '-q', 'origin', BRANCH); git('switch', '-q', '--detach', 'FETCH_HEAD');
-    writeFileSync(join(work, file), text); git('add', file); git('commit', '-qm', `lane ${file}`); git('push', '-q', 'origin', `HEAD:refs/heads/${BRANCH}`);
+    writeFileSync(join(work, file), text); git('add', file); git('commit', '-qm', `需求分支提交 ${file}`); git('push', '-q', 'origin', `HEAD:refs/heads/${BRANCH}`);
     return git('rev-parse', 'HEAD');
   };
   const delivered = () => { run('gate'); run('gate-passed', { RUNS: '[]' }); };
@@ -119,7 +120,7 @@ async function definition(source = workflow) {
   const params = id => Object.fromEntries(values(nodes[id]).map(v => [v.name, v.value]));
   const route = (id, context) => {
     const node = nodes[id], flows = elements.filter(e => e.sourceRef === node);
-    return (flows.find(e => e.conditionExpression && evaluate(e.conditionExpression.body.trim().slice(1), context).value) ?? node.default).targetRef.id;
+    return (flows.find(e => e.conditionExpression && evaluateTyped(e.conditionExpression.body.trim().slice(1), context)) ?? node.default).targetRef.id;
   };
   const next = id => elements.find(e => e.$type === 'bpmn:SequenceFlow' && e.sourceRef === nodes[id]).targetRef.id;
   return { process, sub, elements, nodes, values, params, route, next };
@@ -554,9 +555,9 @@ test('执行者固定说明：只跑涉及的测试文件，验证命令传出�
 
 test('评审有阻塞级发现：同一执行会话逐条处理，有新提交就推送、检查后增量复评，收敛了才交主 Agent，卡上附收敛经过', t => {
   const f = fixture(t); f.task('one', 'first'); f.run('execute'); f.delivered();
-  const first = f.state().executor.head, lane = f.remote(BRANCH);
+  const first = f.state().executor.head, branchHead = f.remote(BRANCH);
   const full = f.run('review-round').outputs;
-  assert.deepEqual(full, { base: lane, head: first, task: f.env.TASK, checks: '此提交未声明项目检查流程。', previous: '', previous2: '' }, '第一次是完整评审');
+  assert.deepEqual(full, { base: branchHead, head: first, task: f.env.TASK, checks: '此提交未声明项目检查流程。', previous: '', previous2: '' }, '第一次是完整评审');
   assert.equal(f.run('triage', { REVIEWS: JSON.stringify([reviewed('reviewer', first, [BUG]), { state: 'skipped' }]) }).outputs.route, 'fix');
 
   writeFileSync(join(f.root, 'agent-task'), JSON.stringify({ file: 'one', answer: answer('修好了', [{ id: 'reviewer:1', disposition: 'fixed', commit: 'c1', reason: '加了退出码' }]) }));
