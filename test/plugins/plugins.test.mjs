@@ -30,8 +30,12 @@ function argumentsAt(source, open) {
 // Every package a file asks for by name: `import … from`, `import '…'`, `export … from`, and the names in the arguments of
 // `import()`, `require()` and the module resolvers (import.meta.resolve, require.resolve, createRequire(…).resolve, and a
 // name bound to a createRequire) — multi-line, conditional and fallback forms included. A name built at run time (a
-// template with ${…}) is the business of the package it is resolved beside, and is left out.
+// template with ${…}) is the business of the package it is resolved beside, and is left out. Comments are left out too
+// (a `#require(` in one would otherwise take the strings after it for names); strings, templates and regular expressions
+// are matched alongside them only so the `//` in a URL or a pattern is not taken for one.
 export function packagesUsed(source) {
+  source = source.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*|(['"])(?:\\.|(?!\1)[^\\\n])*\1|`(?:\\.|[^\\`])*`|\/(?:\\.|\[(?:\\.|[^\]\n])*\]|[^/\\\n])+\//g,
+    m => /^\/[/*]/.test(m) ? ' ' : m);
   const names = [], requires = [...source.matchAll(/\b([\w$]+)\s*=\s*createRequire\s*\(/g)].map(m => m[1]);
   const calls = new RegExp(String.raw`\b(?:import|require)\s*\(|(?:\bimport\.meta|\brequire|\)${requires.map(r => `|\\b${r}`).join('')})\.resolve\s*\(`, 'g');
   for (const m of source.matchAll(/\b(?:from|import)\s*(['"])([^'"\n]+)\1/g)) names.push(m[2]);
@@ -45,7 +49,8 @@ test('a package is found however a plugin asks for it, and only a package', () =
   assert.deepEqual(packagesUsed(`import { a,\n  b } from '@x/one';\nconst c = await import(process.env.X ? pathToFileURL(process.env.X).href : '@x/two');
     createRequire(env.Y || createRequire(import.meta.url).resolve('three/sub/file.js')); new URL(import.meta.resolve('@x/four/bin/x.js'));
     import('./local.mjs'); import { join } from 'node:path'; require('fs'); sdk.resolve(\`@x/five-\${arch}/bin\`); spawn('kimi', ['acp']);
-    Promise.resolve({ action: 'cancel' }); const req = createRequire(here); req.resolve('six');`),
+    // Swift #require(
+    /* require('seven') */ fetch('https://example.com'); Promise.resolve({ action: 'cancel' }); const req = createRequire(here); req.resolve('six');`),
   ['@x/one', '@x/two', 'three', '@x/four', 'six']);
 });
 
