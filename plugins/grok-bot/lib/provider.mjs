@@ -230,10 +230,12 @@ export class Provider {
     try {
       if (widget) {
         const answer = await this.auth.client.request('RespondGrokBotWidget', { agentId: target.bot, sessionId: '', entryId: entry.entryId, value: option.value });
+        if (answer.accepted === false) throw none('Grok 拒绝了这个选项', 'refused');
         if (!answer.accepted) throw new Error('Grok 未确认接受选项');
       } else {
         const answer = await this.auth.client.request('SendGrokBotUserMessage', { agentId: target.bot, sessionId: '', messageId: key, text: input.text,
           ...(entry ? { replyToId: entry.entryId } : {}), sentAtMs: String(Date.now()), source: 1, initiator: 1, sendSource: 1 });
+        if (answer.dispatched === false) throw none('Grok 拒绝发送这条消息', 'refused');
         if (!answer.dispatched) throw new Error('Grok 未确认发送');
       }
       // Confirm in the native transcript, never invent a successful message cursor.
@@ -248,7 +250,7 @@ export class Provider {
         return this.visible(record.id).find(m => widget ? m.replyTo === base && m.sender === target.self : m.id === base);
       });
       return { message: { id: found.id, cursor: found.cursor } };
-    } catch (e) { throw this.coda.error('unknown', e.message, { effects: 'unknown' }); }
+    } catch (e) { throw e.effects ? e : this.coda.error('unknown', e.message, { effects: 'unknown' }); }
   }
   echo(id, find) {
     return new Promise((resolve, reject) => {

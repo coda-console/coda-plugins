@@ -43,12 +43,12 @@ function host(root) {
     handle: (kind, op, fn) => { handlers.set(`${kind}/${op}`, fn); return { dispose() {} }; },
     error: (code, message, { effects } = {}) => Object.assign(new Error(message), { code, effects: effects ?? 'unknown' }),
     protocols: {
-    observe: async (kind, fn) => { const w = { kind, fn }; watchers.push(w); for (const o of records.values()) if (o.kind === kind) fn({ type: 'ADDED', id: o.id, object: o }); return { dispose() { watchers.splice(watchers.indexOf(w), 1); } }; },
-    put: async o => save(o), publish: async () => {},
-    update: async (kind, id, spec, rev) => { const o=records.get(key(kind,id)); assert.equal(rev,o.revision); return save({...o,spec}); },
-    setStatus: async (kind,id,status,rev) => { const o=records.get(key(kind,id)); assert.equal(rev,o.revision); return save({...o,status}); },
-    delete: async (kind,id) => records.delete(key(kind,id)),
-  } };
+      observe: async (kind, fn) => { const w = { kind, fn }; watchers.push(w); for (const o of records.values()) if (o.kind === kind) fn({ type: 'ADDED', id: o.id, object: o }); return { dispose() { watchers.splice(watchers.indexOf(w), 1); } }; },
+      put: async o => save(o), publish: async () => {},
+      update: async (kind, id, spec, rev) => { const o=records.get(key(kind,id)); assert.equal(rev,o.revision); return save({...o,spec}); },
+      setStatus: async (kind,id,status,rev) => { const o=records.get(key(kind,id)); assert.equal(rev,o.revision); return save({...o,status}); },
+      delete: async (kind,id) => records.delete(key(kind,id)),
+    } };
   return { coda, records, save, handlers };
 }
 async function fixture(t, loggedIn = true, setup = () => {}) {
@@ -144,6 +144,24 @@ test('failure before sending says effects none; once sending started it is unkno
   f.native.handler=async (method,params)=>{if(method==='SendGrokBotUserMessage')throw new Error('lost');return original(method,params);};
   await assert.rejects(f.provider.post({text:'hello'},call(f)),{code:'unknown',effects:'unknown',message:'lost'});
   assert.equal(f.native.requests.filter(r=>r.method==='SendGrokBotUserMessage').length,1);
+});
+
+test('server refusing (false) says effects none; a missing field stays unknown', async t => {
+  const f=await fixture(t); const original=f.native.handler;
+  f.native.handler=async (method,params)=>method==='SendGrokBotUserMessage'?Response.json({dispatched:false}):original(method,params);
+  await assert.rejects(f.provider.post({text:'no'},call(f,'refused')),{code:'refused',effects:'none'});
+  f.native.handler=async (method,params)=>method==='SendGrokBotUserMessage'?Response.json({}):original(method,params);
+  await assert.rejects(f.provider.post({text:'missing'},call(f,'missing')),{code:'unknown',effects:'unknown'});
+});
+
+test('widget answer refused (false) says effects none; a missing field stays unknown', async t => {
+  const f=await fixture(t); await until(()=>f.native.connections.length); const original=f.native.handler;
+  f.native.emit(f.native.row('widget',{kind:'send-message',message:{type:'widget',widget:{prompt:'Choose',options:[{label:'Yes',value:'yes'}]}}},1));
+  await until(()=>f.provider.records.get(f.id()).status.head==='0:1');
+  f.native.handler=async (method,params)=>method==='RespondGrokBotWidget'?Response.json({accepted:false}):original(method,params);
+  await assert.rejects(f.provider.post({text:'Yes',replyTo:'0:widget'},call(f,'refused')),{code:'refused',effects:'none'});
+  f.native.handler=async (method,params)=>method==='RespondGrokBotWidget'?Response.json({}):original(method,params);
+  await assert.rejects(f.provider.post({text:'Yes',replyTo:'0:widget'},call(f,'missing')),{code:'unknown',effects:'unknown'});
 });
 
 test('cancel before sending throws the signal reason and sends nothing; cancel after sending started still returns the message', async t => {
@@ -299,6 +317,9 @@ test('rebuilding the transcript mirror also rebuilds live state', async t => {
 test('session read, draft and post answer through the registered handlers and the resource list has no actions', async t => {
   const f = await fixture(t), handle = (op, input, ctx) => f.handlers.get(`${SESSION}/${op}`)(input, ctx);
   assert.deepEqual([...f.handlers.keys()].sort(), [`${SESSION}/draft`, `${SESSION}/post`, `${SESSION}/read`]);
+  // post is a plain function: a registered `resume` would change what users see after a restart.
+  assert.equal(typeof f.handlers.get(`${SESSION}/post`), 'function');
+  assert.equal(f.handlers.get(`${SESSION}/post`).resume, undefined);
   assert.deepEqual(await handle('draft', { text: 'unsent' }), {});
   const ctx = call(f, 'handler-call');
   const result = await handle('post', { text: 'via handler' }, ctx);
