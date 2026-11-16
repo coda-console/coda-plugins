@@ -65,7 +65,7 @@ Coda 插件页的「商店」列出 Coda 自带的插件，以及 npm 上 `@coda
 | `claude` | `@agentclientprotocol/sdk` 1.4.0、`@anthropic-ai/claude-agent-sdk` 0.3.312（平台二进制是 SDK 自己的可选依赖） | — |
 | `codex-accounts` | `proper-lockfile` 4.1.2；用依赖插件 `codex` 的 Codex CLI | 无；依赖 `codex` 插件 |
 | `kimi` | 无 | Kimi CLI 2.1.1 及以上（缺失或更旧时设置动作装入口核对过的 2.1.1，更新的不动；资源页上可从 Coda 安装、登录） |
-| `grok` | 无 | Grok CLI 1.0.52 及以上（设置动作安装或升级；资源页上可从 Coda 安装、登录） |
+| `grok` | 无 | Grok CLI 1.0.52 及以上（`sessions delete` 核对于 1.0.77，更旧的 CLI 没有它时删除会话回错误；设置动作安装或升级；资源页上可从 Coda 安装、登录） |
 | `opencode` | `jsonc-parser` 3.3.1 | 已登录的 OpenCode CLI 2.1.4 及以上（设置动作安装或升级，OpenCode 1 升到 2） |
 
 带依赖的插件各有自己的 `package-lock.json`（`node_modules` 不提交）；Coda 在插件的版本目录里 `npm ci` 装它们，
@@ -154,7 +154,7 @@ OpenCode 的后台 shell 命令由随插件带的原生观察器 `runtime/server
 
 Kimi、Grok、OpenCode、Cursor 带设置动作（`contributes.setup`，`scripts/setup.mjs`），用户安装或更新插件时 Coda 在每台机器上运行：
 CLI 不在或运行不了就用它自己的安装程序安装，低于插件要求的版本就升级，较新的版本保留。要求的版本：Kimi 2.1.1（入口读得懂的会话文件布局）、
-Grok 1.0.52（审批模式通知核对过的版本）、OpenCode 2.1.4（入口核对过的版本；OpenCode 1 遇到模型服务的 `Retry-After` 会一声不响地等，多久都等，见下文。用 OpenCode 2 自己的安装程序 `https://opencode.ai/v2/install`，装在同一个 `~/.opencode/bin`，OpenCode 1 的会话由它按原 ID 接过去）；Cursor 没有已知的下限，能运行就行（它自己会更新）。
+Grok 1.0.52（审批模式通知核对过的版本；`sessions delete` 核对于 1.0.77）、OpenCode 2.1.4（入口核对过的版本；OpenCode 1 遇到模型服务的 `Retry-After` 会一声不响地等，多久都等，见下文。用 OpenCode 2 自己的安装程序 `https://opencode.ai/v2/install`，装在同一个 `~/.opencode/bin`，OpenCode 1 的会话由它按原 ID 接过去）；Cursor 没有已知的下限，能运行就行（它自己会更新）。
 Codex 与 Claude 的 CLI、SDK 是插件的 npm 依赖，不需要设置动作。
 
 ### 模型服务

@@ -1,6 +1,21 @@
 // Grok's modes are changed by a notification, not by ACP set_mode. Report what subsequent prompts actually use. Its questions are
 // a request of its own (`_x.ai/ask_user_question`): `ask` reports the answer it is given, `give up` ends the tool call unanswered.
+import { appendFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
+// `grok sessions delete <id>`, as the CLI prints it (exit 0 also for a session it does not have); logs how it was called, and the
+// id says how it ends (HOME is the test's temporary directory).
+if (process.argv[2] === 'sessions') {
+  const id = process.argv.at(-1);
+  appendFileSync(`${process.env.HOME}/sessions-calls.jsonl`, `${JSON.stringify(process.argv.slice(2))}\n`);
+  if (id === 'slow') setTimeout(() => { appendFileSync(`${process.env.HOME}/order.log`, 'delete-done\n'); process.stdout.write(`Deleted session ${id}\n`); }, 600);
+  else if (id === 'gone') { process.stdout.write(`No session found with id ${id}.\n`); process.exit(0); }
+  else if (id === 'odd') { process.stdout.write('\nsomething else\n'); process.exit(0); }
+  else if (id === 'mute') process.exit(0);
+  else if (id === 'broken') { process.stderr.write('\nstorage is locked\nmore\n'); process.exit(1); }
+  else if (id === 'killed') process.kill(process.pid, 'SIGKILL');
+  else if (id === 'quiet') process.exit(3);
+  else { process.stdout.write(`Deleted session ${id}\n`); process.exit(0); }
+} else {
 const send = message => process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`);
 const say = text => send({ method: 'session/update', params: { sessionId: 'native', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } } } });
 let mode = 'machine', effort = 'low', held, asking;
@@ -17,6 +32,7 @@ createInterface({ input: process.stdin }).on('line', m => {
   const result = m.method === 'initialize' ? { protocolVersion: 1, agentCapabilities: { loadSession: true } }
     : m.method === 'session/new' ? { sessionId: 'native', configOptions: options() }
     : m.method === 'session/load' ? { configOptions: options() }
+    : m.method === 'session/close' ? (appendFileSync(`${process.env.HOME}/order.log`, 'close\n'), {})
     : m.method === 'session/set_config_option' ? (effort = m.params.value, { configOptions: options() }) : null;
   if (result) { send({ id: m.id, result }); return; }
   if (m.method === 'session/prompt') {
@@ -39,3 +55,4 @@ createInterface({ input: process.stdin }).on('line', m => {
   }
   send({ id: m.id, error: { code: -32601, message: 'Method not found' } });
 }).on('close', () => process.exit(0));
+}
