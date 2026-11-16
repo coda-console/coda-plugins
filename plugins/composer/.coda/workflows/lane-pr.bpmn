@@ -174,7 +174,7 @@
       <extensionElements>
         <coda:env name="REVIEWS" value="=reviews" />
         <coda:output name="session" /><coda:output name="branch" /><coda:output name="head" /><coda:output name="pr" />
-        <coda:output name="checks" /><coda:output name="answer" /><coda:output name="lane" /><coda:output name="feedback" /><coda:output name="reviews" /><coda:output name="returns" />
+        <coda:output name="checks" /><coda:output name="answer" /><coda:output name="lane" /><coda:output name="feedback" /><coda:output name="reviews" /><coda:output name="returns" /><coda:output name="stack" />
       </extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/lane-pr.mjs" review</script>
     </scriptTask>
@@ -187,7 +187,7 @@
 head：{{report.head}}
 泳道：{{report.lane}}
 在仓库中看改动：git fetch origin {{report.lane}}，再 git diff FETCH_HEAD...{{report.head}}
-{{if inputs.dependsOn = "" then "" else "叠放：这一项叠在前置泳道 PR " + inputs.dependsOn + " 上（开工时它已合进泳道则没有叠放）。前置合进泳道、流程重接之前，上面的 diff 带着前置的改动，只看这一项的增量要对照前置分支；这时选「合进泳道」不会合并，流程回去等前置合进泳道、重接后重新检查与评审，再回到这张卡。\n"}}这一项已退回 {{report.returns}} 次（只数你选的「退回修改」）。
+{{if report.stack = null or report.stack = "" then "" else "叠放：这一项叠在前置泳道 PR " + report.stack + " 上，还没重接到泳道。前置合进泳道、流程重接之前，上面的 diff 带着前置的改动，只看这一项的增量要对照前置分支；这时选「合进泳道」不会合并，流程回去等前置合进泳道、重接后重新检查与评审，再回到这张卡。\n"}}这一项已退回 {{report.returns}} 次（只数你选的「退回修改」）。
 备用执行者：{{if inputs.executor2 = null then "未指定，不能换人" else string join([inputs.executor2.agent, inputs.executor2.model, inputs.executor2.effort][item != null], " · ")}}
 
 项目检查结果：
