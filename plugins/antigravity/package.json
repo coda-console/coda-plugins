@@ -3,7 +3,7 @@
   "id": "antigravity",
   "displayName": "Antigravity",
   "description": "用 Antigravity CLI 跑会话",
-  "version": "1.1.1",
+  "version": "1.2.1",
   "categories": ["Agent"],
   "contributes": {
     "agents": [
@@ -19,7 +19,8 @@
           "title": "工作模式",
           "unset": "Agent 默认",
           "auto": "auto",
-          "note": "Auto 对不可逆操作与 Coda 的 MCP 工具仍会询问；权限沿用运行机的 ~/.gemini/antigravity-cli/settings.json，可在那里放行。"
+          "full": "full",
+          "note": "全部放行由插件代答审批，底层跑 default；Auto 对不可逆操作与 MCP 工具仍会询问。其余权限沿用运行机 ~/.gemini/antigravity-cli/settings.json。"
         },
         "skillsDir": ".agents/skills",
         "configFiles": [
