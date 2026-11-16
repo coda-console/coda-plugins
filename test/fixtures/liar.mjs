@@ -83,12 +83,12 @@ const methods = {
     const word = /reply with exactly (\S+) and nothing else/.exec(textOf(systemPrompt?.content))?.[1];
     throw Object.assign(new Error(`会话不见了${word ? `（收到了检查词 ${word} 的会话指令）` : ''}`), { code: -32002 });
   },
-  // A probe session's own options; of the others, the one model.
   // Lists none of the probe sessions, which are gone with their connection.
   'session/list': () => {
     if (mode === 'probe-list-error') throw Object.assign(new Error('database unavailable'), { code: -32603 });
     return mode === 'probe-list-shapeless' ? {} : { sessions: [] };
   },
+  // A probe session's own options; of the others, the one model.
   'session/set_config_option': ({ sessionId, configId, value }) => {
     const session = probes.get(sessionId);
     if (!session) {
