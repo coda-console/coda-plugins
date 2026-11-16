@@ -30,6 +30,19 @@ createInterface({ input: process.stdin }).on('line', m => {
       send({ method: 'session/update', params: { sessionId: 'native', update: { sessionUpdate: 'tool_call_update', toolCallId, status: 'completed' } } });
       send({ id: m.id, result: { stopReason: 'end_turn' } }); return;
     }
+    // Its compactions, as `_x.ai/session_notification` updates: an auto one from its start to its end, a user's /compact with an end only,
+    // a failed one, one of a child session (not the main one's), and an update of another kind.
+    if (m.params.prompt[0].text === 'compact') {
+      const note = (sessionId, update) => send({ method: '_x.ai/session_notification', params: { sessionId, update } });
+      note('native', { sessionUpdate: 'auto_compact_started', tokens_used: 218000, context_window: 256000, percentage: 85, reason: 'Context window 85% full' });
+      note('native', { sessionUpdate: 'turn_completed', prompt_id: 'p', stop_reason: 'end_turn' });
+      note('native', { sessionUpdate: 'auto_compact_completed', tokens_before: 218000, tokens_after: 23000, elapsed_ms: 9000, summary_preview: null });
+      note('native', { sessionUpdate: 'auto_compact_completed', tokens_before: 23000, tokens_after: 23000 });
+      note('native', { sessionUpdate: 'auto_compact_started', tokens_used: 218000, context_window: 256000, percentage: 85, reason: 'Context window 85% full' });
+      note('native', { sessionUpdate: 'auto_compact_failed' });
+      note('child', { sessionUpdate: 'auto_compact_started' });
+      say('compacted'); send({ id: m.id, result: { stopReason: 'end_turn' } }); return;
+    }
     // The checker's question about the session instructions, answered from what came in front of it as a model would.
     const given = m.params.prompt.map(block => block.text ?? '').join('\n');
     if (given.includes('What is the Coda check word?')) {
