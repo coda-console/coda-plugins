@@ -737,6 +737,19 @@ test('跟上目标分支：需求分支已包含目标分支不动；需求分�
   assert.equal(f.state().head, merged, '之后的检查跑在新 head 上');
 });
 
+test('从头重跑 branch：保留流程直推的记录，之后的汇总仍把它们列在「流程直接推到需求分支的提交」里，不列成块', t => {
+  const f = fixture(t); f.run('branch'); f.progress('submit', '汇报');
+  const landed = f.land('one', 'first'), base = f.advanceMain('two', 'main');
+  assert.equal(f.run('sync-base', { FIXER: 'false' }).outputs.route, 'pr');
+  const merged = f.remote('req/run-1'), pushed = f.state().pushed;
+  assert.equal(pushed.length, 1);
+  f.run('branch');
+  assert.deepEqual(f.state().pushed, pushed, '重跑不丢记录');
+  assert.equal(f.state().feedback, '', '其余照旧重置');
+  const summary = f.run('pr').outputs.summary;
+  assert.ok(summary.includes(`块：\n- ${landed.slice(0, 12)} lane one\n\n流程直接推到需求分支的提交：\n- ${merged.slice(0, 12)} 合并 main 到 req/run-1（跟上 main）\n\n改动：`), summary);
+});
+
 test('跟上目标分支有冲突：没填执行者带着冲突文件回到进行中；填了就交执行者从需求分支 head 合并，两端都包含才推送', t => {
   const f = fixture(t); f.run('branch'); f.progress('submit', '汇报');
   const lane = f.land('shared', 'lane side'), base = f.advanceMain('shared', 'main side');

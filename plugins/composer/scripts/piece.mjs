@@ -115,6 +115,8 @@ switch (action) {
     state.tip = branchHead();
     save();
     output('head', state.executor.head);
+    // 普通的块相对需求分支没有新提交：不进检查和评审，当作检查没过自动退回（跟上目标分支的块没有新提交是正常的，不拦）。
+    output('empty', String(!state.sync && spawnSync('git', ['merge-base', '--is-ancestor', state.executor.head, state.tip]).status === 0));
     break;
   }
   case 'gate-passed':
@@ -127,7 +129,8 @@ switch (action) {
     save();
     break;
   case 'gate-failed': {
-    const failure = `项目检查未通过，提交 ${state.executor.head}。运行：coda://workflow-runs/${env.GITHUB_RUN_ID}。请用 workflow_status 查看项目检查调用的失败流程、步骤和日志尾，修复后提交。`;
+    const failure = env.EMPTY === 'true' ? `这次交付相对需求分支 ${state.branch} 没有新提交：先 git status 看工作区，把这一项的改动提交到当前分支再回报。`
+      : `项目检查未通过，提交 ${state.executor.head}。运行：coda://workflow-runs/${env.GITHUB_RUN_ID}。请用 workflow_status 查看项目检查调用的失败流程、步骤和日志尾，修复后提交。`;
     delete state.checks;
     state.failures.push(failure);
     state.feedback = state.failures.join('\n\n');

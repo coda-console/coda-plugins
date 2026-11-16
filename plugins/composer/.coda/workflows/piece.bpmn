@@ -9,7 +9,7 @@
     <extensionElements>
       <coda:input name="branch" label="需求分支" type="string" required="true" description="这一块合进的需求分支名，执行者从它的 head 开工" />
       <coda:input name="base" label="目标分支" type="string" required="true" description="需求最后合进的分支；跟上目标分支的块把 origin/&lt;它&gt; 合并进来" />
-      <coda:input name="title" label="标题" type="string" required="true" description="也是合进需求分支那个提交的标题" />
+      <coda:input name="title" label="标题" type="string" required="true" description="块的名字，用在运行标题和提交说明里；普通块合入时是那个 squash 提交的标题，跟上目标分支的块合入的是执行者自己的合并提交，不用它" />
       <coda:input name="task" label="任务" type="string" required="true" description="自足的任务书：背景、范围与验收要求" />
       <coda:input name="sync" label="跟上目标分支" type="boolean" default="false" description="把目标分支合进需求分支的块：以合并提交快进，不 squash" />
       <coda:input name="executor" label="执行者" type="agent" required="true" description="必填，做这一项的 Agent；通常是所属监督开发的开工执行者" />
@@ -32,17 +32,20 @@
     </scriptTask>
     <sequenceFlow id="execute-report" sourceRef="execute" targetRef="gate" />
     <scriptTask id="gate" name="推送到临时分支" scriptFormat="bash" coda:timeout="5" coda:retry="3">
-      <extensionElements><coda:output name="head" /></extensionElements>
+      <extensionElements><coda:output name="head" /><coda:output name="empty" /></extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/piece.mjs" gate</script>
     </scriptTask>
-    <sequenceFlow id="gate-checks" sourceRef="gate" targetRef="checks" />
+    <sequenceFlow id="gate-delivery" sourceRef="gate" targetRef="has-new" />
+    <exclusiveGateway id="has-new" name="相对需求分支有没有新提交" default="gate-checks" />
+    <sequenceFlow id="gate-checks" sourceRef="has-new" targetRef="checks" />
+    <sequenceFlow id="gate-empty" sourceRef="has-new" targetRef="check-feedback"><conditionExpression xsi:type="tFormalExpression">=gate.empty = "true"</conditionExpression></sequenceFlow>
     <serviceTask id="checks" name="项目检查" coda:action="run-workflows">
       <extensionElements><coda:param name="hook" value="check" /><coda:param name="commit" value="=gate.head" /></extensionElements>
     </serviceTask>
     <boundaryEvent id="checks-failed" attachedToRef="checks"><errorEventDefinition /></boundaryEvent>
     <sequenceFlow id="checks-feedback" sourceRef="checks-failed" targetRef="check-feedback" />
     <scriptTask id="check-feedback" name="自动退回检查失败" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
-      <extensionElements><coda:output name="route" /></extensionElements>
+      <extensionElements><coda:env name="EMPTY" value="=gate.empty" /><coda:output name="route" /></extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/piece.mjs" gate-failed</script>
     </scriptTask>
     <sequenceFlow id="checks-review" sourceRef="check-feedback" targetRef="gate-route" />

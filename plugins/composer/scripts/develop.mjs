@@ -1,7 +1,7 @@
 // 需求运行（README.md「监督开发」）：一个需求一条需求分支 req/<运行 ID>，主 Agent 在「需求进行中」派块（piece，本运行调用的子运行）往里提改动，提交验收后需求分支开 PR 进目标分支。
 // 每步的工作区都会回收；反馈与汇报暂存在本次运行的产物里。进度以 GitHub 为准：需求分支、已合并的块和需求分支进目标分支的 PR，从头重跑也接得上。
 import { spawnSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { waitForGitHubChecks } from './github-checks.mjs';
 import { agentArgs, checksText, command, gh, git, instructions, mergedCommit, mergePr, openPr, output, outputFilled, outputPicked, reviewsText } from './shared.mjs';
@@ -21,7 +21,7 @@ if (action === 'brief') {
   process.exit(0);
 }
 
-// 从目标分支最新提交建需求分支；远端已有同名需求分支时沿用（运行从头重跑）。
+// 从目标分支最新提交建需求分支；远端已有同名需求分支时沿用（运行从头重跑）。重跑时状态文件里流程直推的记录（pushed）保留，其余重置。
 if (action === 'branch') {
   const base = env.BASE || gh('repo', 'view', '--json', 'defaultBranchRef', '--jq', '.defaultBranchRef.name');
   const branch = `req/${env.GITHUB_RUN_ID}`;
@@ -30,7 +30,8 @@ if (action === 'branch') {
     git('fetch', 'origin', base);
     git('push', 'origin', `FETCH_HEAD:refs/heads/${branch}`);
   }
-  writeFileSync(statePath, JSON.stringify({ title: env.TITLE, goal: env.GOAL, base, branch, feedback: '', report: '' }));
+  const { pushed } = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : {};
+  writeFileSync(statePath, JSON.stringify({ title: env.TITLE, goal: env.GOAL, base, branch, feedback: '', report: '', ...pushed && { pushed } }));
   for (const [name, value] of Object.entries({ title: env.TITLE, goal: env.GOAL, base, branch })) output(name, value);
   process.exit(0);
 }
