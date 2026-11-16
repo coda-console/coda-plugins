@@ -101,3 +101,17 @@ test('setup installs a missing or broken Grok CLI, upgrades one older than the e
   assert.deepEqual(needed('/bin/grok', run(0, 'grok 1.1.0 (abc)\n')), { action: 'none', version: '1.1.0' });
   assert.ok(older('1.0.9', '1.0.52') && !older('1.0.52', '1.0.52') && !older('2.0.0', '1.9.99'));
 });
+
+test('Grok\'s compactions of the main session are told as compaction updates, one id from start to end, a user\'s /compact by its end alone', async t => {
+  const { dir, messages, request, prompt } = start(t);
+  await request('initialize', { protocolVersion: 1, clientCapabilities: {} });
+  await request('session/new', { cwd: dir, mcpServers: [] });
+  await prompt('compact');
+  const told = messages.filter(m => m.params?.update?.sessionUpdate === 'compaction_update').map(m => m.params.update);
+  assert.deepEqual(told.map(u => u.status), ['in_progress', 'completed', 'completed', 'in_progress', 'failed']);
+  assert.ok(told.every(u => u.error === null));
+  assert.equal(told[0].compactionId, told[1].compactionId);
+  assert.equal(told[3].compactionId, told[4].compactionId);
+  assert.equal(new Set(told.map(u => u.compactionId)).size, 3);
+  assert.equal(messages.filter(m => m.method === '_x.ai/session_notification').length, 7, 'what Grok said is passed on as it was');
+});

@@ -234,3 +234,37 @@ test('a goal Kimi paused after a turn failed ends failed with the reason; one wh
   assert.deepEqual(paused.map(brief), [['wait', 'g2', 'waiting'], ['wait', 'g2', 'failed']]);
   assert.deepEqual(paused.at(-1).params, { sessionId: SESSION, waitId: 'g2', state: 'failed', title: '额度不足', detail: QUOTA.message });
 });
+
+test('the main agent compacting its context is told as it begins and ends, under one id, once each; only what the wire adds after the first look', async t => {
+  const f = await layout(t), look = looker(f);
+  const compaction = ({ params: { update } }) => [update.sessionUpdate, update.status, update.error];
+  await f.write({ type: 'full_compaction.begin', source: 'auto', time: 5 });
+  assert.deepEqual(await look(), [], 'a compaction from before the first look is not told');
+  await f.write({ type: 'full_compaction.begin', source: 'auto', time: 10 });
+  const [began] = await look();
+  assert.deepEqual(compaction(began), ['compaction_update', 'in_progress', null]);
+  assert.deepEqual(await look(), []);
+  await f.write({ type: 'context.apply_compaction', summary: '交接摘要', time: 11 }, { type: 'full_compaction.complete', time: 12 });
+  const [done] = await look();
+  assert.deepEqual(compaction(done), ['compaction_update', 'completed', null]);
+  assert.equal(done.params.update.compactionId, began.params.update.compactionId);
+  assert.deepEqual(await look(), []);
+  // A cancelled one fails, under an id of its own; an end whose begin was not seen is told alone.
+  await f.write({ type: 'full_compaction.begin', source: 'manual', time: 20 }, { type: 'full_compaction.cancel', time: 21 });
+  const [again, cancelled] = await look();
+  assert.deepEqual([compaction(again), compaction(cancelled)], [['compaction_update', 'in_progress', null], ['compaction_update', 'failed', '压缩已取消']]);
+  assert.equal(again.params.update.compactionId, cancelled.params.update.compactionId);
+  assert.notEqual(again.params.update.compactionId, began.params.update.compactionId);
+  await f.write({ type: 'full_compaction.complete', time: 30 });
+  assert.deepEqual((await look()).map(compaction), [['compaction_update', 'completed', null]]);
+  // A subagent's compaction is its own: the main wire's records are the main agent's.
+  await f.write({ type: 'full_compaction.begin', agentId: 'agent-1', source: 'auto', time: 40 });
+  assert.deepEqual(await look(), []);
+});
+
+test('a compaction going when the files stop reading as understood ends failed', () => {
+  const turns = new KimiTurns({ sessionId: SESSION });
+  turns.read([{ type: 'compaction', phase: 'begin', time: 1 }]);
+  assert.deepEqual(turns.lost().map(m => m.params.update.status), ['failed']);
+  assert.deepEqual(turns.lost(), []);
+});
