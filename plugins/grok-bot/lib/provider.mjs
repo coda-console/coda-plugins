@@ -250,7 +250,12 @@ export class Provider {
         return this.visible(record.id).find(m => widget ? m.replyTo === base && m.sender === target.self : m.id === base);
       });
       return { message: { id: found.id, cursor: found.cursor } };
-    } catch (e) { throw e.effects ? e : this.coda.error('unknown', e.message, { effects: 'unknown' }); }
+    } catch (e) {
+      if (e.effects) throw e;
+      // The server rejected authentication, so the request was never accepted.
+      if (e.status === 401 || e.status === 403) throw none(e.message, 'unauthorized');
+      throw this.coda.error('unknown', e.message, { effects: 'unknown' });
+    }
   }
   echo(id, find) {
     return new Promise((resolve, reject) => {

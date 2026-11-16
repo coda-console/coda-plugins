@@ -49,7 +49,7 @@ function host(root) {
       setStatus: async (kind,id,status,rev) => { const o=records.get(key(kind,id)); assert.equal(rev,o.revision); return save({...o,status}); },
       delete: async (kind,id) => records.delete(key(kind,id)),
     } };
-  return { coda, records, save, handlers };
+  return { coda, handlers };
 }
 async function fixture(t, loggedIn = true, setup = () => {}) {
   const root = temporary(t), native = new FakeNative(), h = host(root);
@@ -152,6 +152,22 @@ test('server refusing (false) says effects none; a missing field stays unknown',
   await assert.rejects(f.provider.post({text:'no'},call(f,'refused')),{code:'refused',effects:'none'});
   f.native.handler=async (method,params)=>method==='SendGrokBotUserMessage'?Response.json({}):original(method,params);
   await assert.rejects(f.provider.post({text:'missing'},call(f,'missing')),{code:'unknown',effects:'unknown'});
+});
+
+test('authentication rejected (401/403, or refresh failed) says effects none; other statuses stay unknown', async t => {
+  const f=await fixture(t); const original=f.native.handler;
+  const reply=status=>(method,params)=>method==='SendGrokBotUserMessage'?new Response('{}',{status}):original(method,params);
+  f.native.handler=reply(401);
+  await assert.rejects(f.provider.post({text:'a'},call(f,'a')),{code:'unauthorized',effects:'none'});
+  f.native.handler=reply(403);
+  await assert.rejects(f.provider.post({text:'b'},call(f,'b')),{code:'unauthorized',effects:'none'});
+  for (const status of [400,429,500]) {
+    f.native.handler=reply(status);
+    await assert.rejects(f.provider.post({text:'c'},call(f,`c${status}`)),{code:'unknown',effects:'unknown'});
+  }
+  f.auth.use({accessToken:'fixture',refreshToken:'refresh'});
+  f.native.handler=async (method,params)=>method==='token'?Response.json({},{status:400}):reply(401)(method,params);
+  await assert.rejects(f.provider.post({text:'d'},call(f,'d')),{code:'unauthorized',effects:'none'});
 });
 
 test('widget answer refused (false) says effects none; a missing field stays unknown', async t => {
