@@ -100,7 +100,9 @@ if (args[0] === 'api') {
   if (method === 'DELETE') process.exit(exists ? git('update-ref', '-d', ref).status : 1);
   if (exists) console.log(ref);
 }
+else if (args[0] === 'repo' && args[1] === 'view') console.log('https://github.com/example/fixture');
 else if (args[1] === 'create') console.log('${PR}');
+else if (args[1] === 'edit' && process.env.EDIT_EXIT) process.exit(Number(process.env.EDIT_EXIT));
 else if (args[1] === 'list') { if (process.env.OPEN_PR) console.log(process.env.OPEN_PR); }
 else if (args[1] === 'merge') { if (process.env.MERGE_EXIT) process.exit(Number(process.env.MERGE_EXIT)); }
 else if (args[1] === 'view' && args.includes('state,headRefOid,mergeCommit')) console.log(JSON.stringify({ state: process.env.PR_STATE || 'OPEN', headRefOid: state().executor.head, mergeCommit: { oid: 'f'.repeat(40) } }));
@@ -120,9 +122,9 @@ else if (args[1] === 'view') console.log('f'.repeat(40));
   const noCheckout = new Set([...workflow.matchAll(/<scriptTask\b[^>]*>[\s\S]*?<\/scriptTask>/g)]
     .filter(([task]) => /coda:checkout="false"/.test(task.slice(0, task.indexOf('>'))))
     .map(([task]) => task.match(/lane-pr\.mjs" ([\w-]+)</)[1]));
-  const run = (action, extra = {}, expected = 0) => {
+  // cwd：在别的检出里跑（流程每次重试都是新检出的工作区，见 fresh）。
+  const run = (action, extra = {}, expected = 0, cwd = noCheckout.has(action) ? empty : work) => {
     writeFileSync(env.GITHUB_OUTPUT, '');
-    const cwd = noCheckout.has(action) ? empty : work;
     const result = spawnSync(process.execPath, [script, action], { cwd, env: { ...env, ...(cwd === empty && { GIT_CEILING_DIRECTORIES: root }), ...extra }, encoding: 'utf8' });
     assert.equal(result.status, expected, result.stderr);
     const outputs = Object.fromEntries([...readFileSync(env.GITHUB_OUTPUT, 'utf8').matchAll(/(\w+)<<([^\n]+)\n([\s\S]*?)\n\2\n/g)].map(([, key, , value]) => [key, value]));
@@ -152,7 +154,10 @@ else if (args[1] === 'view') console.log('f'.repeat(40));
     setParent({ state: 'MERGED' });
     return git('rev-parse', 'HEAD');
   };
-  return { root, work, env, git, run, state, calls, task, decide, remote, advanceLane, delivered, parent, setParent, squash };
+  // 新检出的工作区：从 origin 克隆，没有上一次工作区里留下的对象。
+  let checkouts = 0;
+  const fresh = () => { const dir = join(root, `checkout-${++checkouts}`); git('clone', '-q', origin, dir); return dir; };
+  return { root, work, env, git, run, state, calls, task, decide, remote, advanceLane, delivered, parent, setParent, squash, fresh };
 }
 
 async function definition(source = workflow) {
@@ -853,7 +858,8 @@ test('叠放：前置开着时从它的 head 开工、草稿 PR 开进它的分�
   const parent = f.parent();
   f.task('child', 'child work'); f.run('execute', { DEPENDS_ON: PARENT });
   assert.deepEqual(f.calls('agent')[0].args.slice(0, 2), ['--commit', parent.head], '从前置的 head 开工');
-  assert.deepEqual(f.calls('gh')[0].args, ['pr', 'view', PARENT, '--repo', 'github.com/example/fixture', '--json', 'url,state,headRefName,headRefOid,baseRefName']);
+  assert.deepEqual(f.calls('gh')[0].args, ['repo', 'view', '--json', 'url', '--jq', '.url'], '先认当前仓库');
+  assert.deepEqual(f.calls('gh')[1].args, ['pr', 'view', PARENT, '--repo', 'github.com/example/fixture', '--json', 'url,state,headRefName,headRefOid,baseRefName']);
   assert.deepEqual(f.state().stack, { pr: PARENT, branch: 'lane-pr/parent-run', head: parent.head, restacked: false });
   const first = f.state().executor.head;
 
@@ -897,21 +903,50 @@ test('叠放：前置开着时从它的 head 开工、草稿 PR 开进它的分�
   assert.equal(f.state().stack.note, undefined);
 });
 
-test('叠放：重接推送用 --force-with-lease，远端分支被别人改过时不覆盖；重跑从记下的重接结果接着收尾', t => {
+test('叠放：重接推送用 --force-with-lease，远端分支被别人改过时不覆盖、状态不动；重试在新检出的工作区重新变基并推送', t => {
   const f = fixture(t);
   const parent = f.parent();
   f.task('child', 'child work'); f.run('execute', { DEPENDS_ON: PARENT }); f.delivered();
-  f.squash(parent.head);
+  const first = f.state().executor.head, lane = f.squash(parent.head);
   const moved = f.advanceLane('other', 'other');
   f.git('push', '-q', '--force', 'origin', `${moved}:refs/heads/lane-pr/pr-run-1`);
+  const before = f.state();
   f.run('restack', {}, 1);
   assert.equal(f.remote('lane-pr/pr-run-1'), moved, '租约不符，远端不动');
+  assert.deepEqual(f.state(), before, '推之前失败，状态没动');
+  assert.equal(f.calls('gh').filter(c => ['edit', 'ready'].includes(c.args[1])).length, 0);
+
+  f.git('push', '-q', '--force', 'origin', `${first}:refs/heads/lane-pr/pr-run-1`);
+  const lanes = f.remote('lane/req-1');
+  assert.equal(f.run('restack', {}, 0, f.fresh()).outputs.route, 'gate');
   const head = f.state().executor.head;
-  assert.ok(f.state().stack.pending && !f.state().stack.restacked);
-  f.git('push', '-q', '--force', 'origin', `${f.state().stack.pending.from}:refs/heads/lane-pr/pr-run-1`);
-  assert.equal(f.run('restack').outputs.route, 'gate');
-  assert.equal(f.state().executor.head, head, '不再变基一次');
+  assert.notEqual(head, first);
   assert.equal(f.remote('lane-pr/pr-run-1'), head);
+  f.git('fetch', '-q', 'origin', 'lane-pr/pr-run-1');
+  assert.deepEqual(f.git('rev-list', '--parents', '-n', '1', head).split(' '), [head, lanes], '重新变基到泳道最新 head');
+  assert.ok(!ancestorOf(f, parent.head, head) && ancestorOf(f, lane, head));
+  assert.deepEqual([f.state().stack.restacked, f.state().stack.pushed, f.state().base], [true, undefined, lanes]);
+  assert.deepEqual(f.calls('gh').slice(-2).map(c => c.args[1]), ['edit', 'ready']);
+});
+
+test('叠放：重接推送成功、改 PR 失败后，重试在新检出的工作区不再变基、推送，只切 base、转正', t => {
+  const f = fixture(t);
+  const parent = f.parent();
+  f.task('child', 'child work'); f.run('execute', { DEPENDS_ON: PARENT }); f.delivered();
+  const lane = f.squash(parent.head);
+  f.run('restack', { EDIT_EXIT: '1' }, 1);
+  const head = f.state().executor.head;
+  assert.equal(f.remote('lane-pr/pr-run-1'), head, '推送成功');
+  assert.deepEqual([f.state().stack.pushed, f.state().stack.restacked], [lane, false]);
+  assert.match(f.state().stack.note, /reset --hard/);
+
+  // 重试时推送一律失败：成功就说明没有再推。
+  const noPush = { GIT_CONFIG_COUNT: '3', GIT_CONFIG_KEY_2: 'remote.origin.pushurl', GIT_CONFIG_VALUE_2: join(f.root, 'no-such-remote') };
+  assert.equal(f.run('restack', noPush, 0, f.fresh()).outputs.route, 'gate');
+  assert.equal(f.state().executor.head, head, '不再变基');
+  assert.equal(f.remote('lane-pr/pr-run-1'), head);
+  assert.deepEqual([f.state().stack.restacked, f.state().stack.pushed, f.state().base], [true, undefined, lane]);
+  assert.deepEqual(f.calls('gh').slice(-2).map(c => c.args.slice(1)), [['edit', PR, '--repo', 'github.com/example/fixture', '--base', 'lane/req-1'], ['ready', PR, '--repo', 'github.com/example/fixture']]);
 });
 
 test('叠放：重接冲突交原执行会话变基解冲突，回来核对后收尾', t => {
@@ -1035,7 +1070,7 @@ test('叠放：升级后换备用执行者从泳道开工，推送时解绑叠�
   assert.equal(f.state().base, lane);
 });
 
-test('叠放开工的校验：sync 不能叠放，前置关了、多级叠放、叠在自己上都拒绝；前置已合进泳道就不叠放', t => {
+test('叠放开工的校验：sync 不能叠放，地址不合法、不在当前仓库、前置关了、多级叠放、叠在自己上都拒绝；前置已合进泳道就不叠放', t => {
   const f = fixture(t, { sync: true });
   f.parent();
   f.task('child', 'work');
@@ -1049,9 +1084,22 @@ test('叠放开工的校验：sync 不能叠放，前置关了、多级叠放、
     assert.match(g.run('execute', { DEPENDS_ON: PARENT }, 2).stderr, text);
     writeFileSync(join(g.root, 'parent'), saved);
   }
+  for (const url of ['example/fixture#6', 'https://github.com/example/fixture/issues/6', `${PARENT}/files`]) {
+    assert.match(g.run('execute', { DEPENDS_ON: url }, 2).stderr, /不是 PR 的完整地址/, url);
+  }
+  // 别的仓库（含 fork）的 PR：开着且分支、提交都一样，或已合进同名泳道，都不放行。
+  const other = 'https://github.com/someone/fixture/pull/6';
+  for (const state of ['OPEN', 'MERGED']) {
+    const saved = readFileSync(join(g.root, 'parent'), 'utf8');
+    g.setParent({ state, url: other });
+    assert.match(g.run('execute', { DEPENDS_ON: other }, 2).stderr, /不在当前仓库 github\.com\/example\/fixture/, state);
+    assert.match(g.run('execute', { DEPENDS_ON: PARENT }, 2).stderr, /不在当前仓库/, `${state}：gh 给的 PR 地址也要在当前仓库`);
+    writeFileSync(join(g.root, 'parent'), saved);
+  }
+  assert.equal(g.calls('gh').filter(c => c.args[2] === other).length, 0, '地址不在当前仓库，不再查 PR');
   assert.equal(g.calls('agent').length, 0, '都没开工');
   g.setParent({ state: 'MERGED' });
-  g.run('execute', { DEPENDS_ON: PARENT });
+  g.run('execute', { DEPENDS_ON: PARENT.replace('example/fixture', 'Example/Fixture') });
   assert.deepEqual(g.calls('agent')[0].args.slice(0, 2), ['--commit', g.remote('lane/req-1')], '前置已合进泳道，照常从泳道开工');
   assert.equal(g.state().stack, undefined);
 });

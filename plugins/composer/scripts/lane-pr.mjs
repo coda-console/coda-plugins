@@ -57,7 +57,12 @@ switch (action) {
     if (action === 'execute' && env.DEPENDS_ON && !state.stack) {
       const fail = text => { console.error(`前置泳道 PR ${env.DEPENDS_ON}：${text}`); process.exit(2); };
       if (state.sync) fail('跟上目标分支的泳道 PR（sync）不能叠放');
+      if (!/^https:\/\/[^/\s]+\/[^/\s]+\/[^/\s]+\/pull\/\d+$/.test(env.DEPENDS_ON)) fail('不是 PR 的完整地址（https://<主机>/<owner>/<repo>/pull/<编号>）');
+      // 同仓库：异仓库（含 fork）的 PR 分支名、提交可能碰巧一样，也不会合进这条泳道。主机、owner、仓库名不分大小写。
+      const here = repoOf(gh('repo', 'view', '--json', 'url', '--jq', '.url')).toLowerCase();
+      if (repoOf(env.DEPENDS_ON).toLowerCase() !== here) fail(`不在当前仓库 ${here}`);
       const parent = JSON.parse(gh('pr', 'view', env.DEPENDS_ON, '--repo', repoOf(env.DEPENDS_ON), '--json', 'url,state,headRefName,headRefOid,baseRefName'));
+      if (repoOf(parent.url).toLowerCase() !== here) fail(`不在当前仓库 ${here}`);
       if (parent.headRefName === state.branch) fail('不能叠在自己上');
       if (parent.state === 'CLOSED') fail('已关闭、没有合并，不能叠在它上面');
       if (parent.baseRefName !== state.lane) fail(parent.baseRefName.startsWith('lane-pr/')
@@ -147,6 +152,7 @@ switch (action) {
         state.stack.restacked = true;
         delete state.stack.recover;
         delete state.stack.pending;
+        delete state.stack.pushed;
       }
     }
     // 叠放还没重接时检查与评审只对前置的 head，评的是这个 PR 自己的增量。
@@ -327,12 +333,15 @@ switch (action) {
   // 前置已 squash 合进泳道：只把这个 PR 自己的提交（stack.head..executor.head）用 rebase --onto 重放到泳道最新 head 上，不 merge，
   // 免得把前置 squash 前的散提交带进来；--force-with-lease 更新分支，PR 改开进泳道、转为正式 PR，之后回到推送、检查并以泳道为 base 完整评审（gate）。
   // 重接冲突交同一执行会话（revise）自己变基重接，回来再到这一步收尾；祖先关系不对、或执行者没变基到泳道上，交主 Agent（review）。
+  // 每次重试都是新检出的工作区：推送远端分支是分界，推成功才记下结果（stack.pushed 是重接到的泳道 head）。推之前失败，状态没动，
+  // 重试从头变基、推送；推之后失败（改 PR），重试不再变基、推送，只改 PR 收尾。
   case 'restack': {
     const s = state.stack, lane = laneHead();
     git('fetch', 'origin', state.branch);
     // 升级后等主 Agent 退回、执行者直接变基到泳道上，由 gate 解绑叠放（recover）。
-    const escalate = text => { state.feedback = text; s.recover = true; delete s.pending; save(); output('route', 'review'); };
-    if (!s.pending) {
+    const escalate = text => { state.feedback = text; s.recover = true; delete s.pending; delete s.pushed; save(); output('route', 'review'); };
+    const push = (head, from) => git('push', '--no-follow-tags', `--force-with-lease=refs/heads/${state.branch}:${from}`, 'origin', `${head}:refs/heads/${state.branch}`);
+    if (!s.pushed && !s.pending) {
       const from = state.executor.head;
       if (!ancestor(s.head, from)) {
         escalate(`前置泳道 PR ${s.pr} 已合进泳道，但这个 PR 的 head ${from} 不再以前置的 head ${s.head} 为祖先，流程分不清哪些是它自己的提交，没有自动重接。请退回修改，让执行者把自己的改动重接到泳道 ${state.lane} 最新 head 上；或放弃。`);
@@ -341,11 +350,11 @@ switch (action) {
       git('switch', '-q', '--detach', from);
       const rebase = spawnSync('git', ['rebase', '--onto', lane, s.head], { encoding: 'utf8' });
       if (rebase.error) throw rebase.error;
-      s.pending = { lane, from };
       if (rebase.status !== 0) {
         const files = git('diff', '--name-only', '--diff-filter=U').split('\n').filter(Boolean);
         if (!files.length) { process.stderr.write(rebase.stdout + rebase.stderr); process.exit(rebase.status ?? 1); }
         git('rebase', '--abort');
+        s.pending = { lane, from };
         state.feedback = `前置泳道 PR ${s.pr} 已 squash 合进泳道 ${state.lane}（现在是 ${lane}）。流程要把这个 PR 自己的提交 ${s.head}..${from} 重接到 ${lane} 上，有冲突：
 ${files.map(file => `- ${file}`).join('\n')}
 先 git fetch origin ${state.lane}，再在当前分支上 git rebase --onto ${lane} ${s.head}，解决冲突；只重放自己的提交，不要 merge，也不要把前置 squash 前的旧提交混进来。跑和冲突相关的测试后回报冲突了哪些文件、各自怎么解决的、跑了什么。`;
@@ -353,23 +362,29 @@ ${files.map(file => `- ${file}`).join('\n')}
         output('route', 'revise');
         break;
       }
-      // 先记下重接结果再推送：推送或改 PR 失败后重跑这一步，从下面接着收尾，不再变基一次。
-      state.executor.head = git('rev-parse', 'HEAD');
-      s.note = `前置泳道 PR 已 squash 合进泳道，流程把你的提交用 rebase --onto 重接到了泳道 ${lane} 上，远端分支 ${state.branch} 现在是 ${state.executor.head}。先 git fetch origin ${state.branch}，把当前分支重置到它（git reset --hard FETCH_HEAD），再接着做；不要把重接前的旧提交带回来。`;
+      const head = git('rev-parse', 'HEAD');
+      push(head, from);
+      state.executor.head = head;
+      s.pushed = lane;
+      s.note = `前置泳道 PR 已 squash 合进泳道，流程把你的提交用 rebase --onto 重接到了泳道 ${lane} 上，远端分支 ${state.branch} 现在是 ${head}。先 git fetch origin ${state.branch}，把当前分支重置到它（git reset --hard FETCH_HEAD），再接着做；不要把重接前的旧提交带回来。`;
+      save();
+    } else if (!s.pushed) {
+      const head = state.executor.head;
+      if (!ancestor(s.pending.lane, head) || ancestor(s.head, head)) {
+        escalate(`前置泳道 PR ${s.pr} 已 squash 合进泳道，交给执行者重接到 ${s.pending.lane} 之后，它交回的 ${head} 没有变基到泳道上（泳道 ${s.pending.lane} 不是它的祖先，或前置的旧提交 ${s.head} 还在它的历史里）。请退回修改，让执行者把自己的提交用 rebase --onto 重接到泳道最新 head；或放弃。`);
+        break;
+      }
+      push(head, s.pending.from);
+      s.pushed = s.pending.lane;
+      delete s.pending;
       save();
     }
-    const head = state.executor.head;
-    if (!ancestor(s.pending.lane, head) || ancestor(s.head, head)) {
-      escalate(`前置泳道 PR ${s.pr} 已 squash 合进泳道，交给执行者重接到 ${s.pending.lane} 之后，它交回的 ${head} 没有变基到泳道上（泳道 ${s.pending.lane} 不是它的祖先，或前置的旧提交 ${s.head} 还在它的历史里）。请退回修改，让执行者把自己的提交用 rebase --onto 重接到泳道最新 head；或放弃。`);
-      break;
-    }
-    git('push', '--no-follow-tags', `--force-with-lease=refs/heads/${state.branch}:${s.pending.from}`, 'origin', `${head}:refs/heads/${state.branch}`);
     const repo = repoOf(state.pr);
     gh('pr', 'edit', state.pr, '--repo', repo, '--base', state.lane);
     gh('pr', 'ready', state.pr, '--repo', repo);
-    state.base = lane;
+    state.base = s.pushed;
     s.restacked = true;
-    delete s.pending;
+    delete s.pushed;
     save();
     output('route', 'gate');
     break;
