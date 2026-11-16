@@ -10,6 +10,7 @@ import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
+import { RequestError } from '@agentclientprotocol/sdk';
 import { ClaudeSession } from '../../../plugins/claude/agent/session.mjs';
 import { describeChange } from '../../../plugins/claude/agent/permissions.mjs';
 import { OTHER } from '../../../plugins/claude/agent/questions.mjs';
@@ -20,6 +21,7 @@ import { SessionTitle } from '../../../plugins/claude/agent/titles.mjs';
 import { ToolCallCache } from '../../../plugins/claude/agent/tools.mjs';
 import { ClaudeSessionLimits, accountHash } from '../../../plugins/claude/agent/limits.mjs';
 import { KNOWN_TOOLS } from '../../../plugins/claude/agent/registry.mjs';
+import { agentValueProblem } from '@coda-console/protocol/agent';
 import { fixtureSdk, queries } from './fixture-sdk.mjs';
 import { substituted } from '../substitute.mjs';
 
@@ -27,6 +29,8 @@ import { substituted } from '../substitute.mjs';
 const entry = fileURLToPath(new URL('../../../plugins/claude/agent/entry.mjs', import.meta.url));
 const fixture = fileURLToPath(new URL('./fixture-sdk.mjs', import.meta.url));
 async function until(fn) { for (let i = 0; i < 1000; i++) { const value = await fn(); if (value) return value; await delay(5); } throw new Error('Timed out'); }
+// A failure the plugin reports, valid in the protocol's schema.
+const marked = error => { assert.equal(agentValueProblem('failure.json', error.data._meta.coda.failure), null); return error.data._meta.coda.failure; };
 async function setup(t, { env = {}, sdk = fixtureSdk(), ...options } = {}) {
   const cwd = await mkdtemp(join(tmpdir(), 'coda-claude-entry-'));
   const out = [], answered = new Set();
@@ -1163,6 +1167,7 @@ test('a query for the service\'s model that does not start ends the session: the
   await c.request('session/set_config_option', { sessionId: c.sessionId, configId: 'model', value: 'magpie/anthropic/fake/alpha' });
   const failed = await c.prompt('hello');
   assert.deepEqual([failed.error?.code, failed.error?.message], [-32001, 'Claude 初始化超时']);
+  assert.deepEqual(marked(failed.error), { kind: 'session_ended', input: 'not_accepted' });
   assert.deepEqual([ended, hung.closed], [1, true], 'the session ends, as one whose query ends of itself does');
   const refused = await c.prompt('again');
   assert.deepEqual([refused.error?.code, started], [-32001, 2], 'refused at once, no other query started');
@@ -1179,9 +1184,28 @@ test('a query for the service\'s model that cannot even be started ends the sess
   await c.request('session/set_config_option', { sessionId: c.sessionId, configId: 'model', value: 'magpie/anthropic/fake/alpha' });
   const failed = await c.prompt('hello');
   assert.deepEqual([failed.error?.code, failed.error?.message], [-32603, 'args must be a string without null bytes']);
+  assert.deepEqual(marked(failed.error), { kind: 'session_ended', input: 'not_accepted' });
   assert.equal(ended, 1);
   const refused = await c.prompt('again');
   assert.deepEqual([refused.error?.code, started], [-32001, 2]);
+});
+
+test('a move to the service\'s query that fails with a failure of its own keeps its kind, and takes not_accepted where the kind has an input', async t => {
+  const service = await modelService(t);
+  for (const [name, own, expected] of [['quota', { kind: 'quota_exhausted' }, { kind: 'quota_exhausted', input: 'not_accepted' }],
+    ['service', { kind: 'service_unavailable', input: 'accepted' }, { kind: 'service_unavailable', input: 'not_accepted' }],
+    ['login', { kind: 'auth_required', login: 'Anthropic OAuth' }, { kind: 'auth_required', login: 'Anthropic OAuth' }]])
+    await t.test(name, async t => {
+      const sdk = fixtureSdk(), info = sdk.getSessionInfo;
+      let moving = false;
+      sdk.getSessionInfo = (...args) => { if (moving) throw new RequestError(-32603, 'own failure', { _meta: { coda: { failure: own } } }); return info(...args); };
+      const c = await setup(t, { env: service.env, sdk });
+      await c.open();
+      await c.request('session/set_config_option', { sessionId: c.sessionId, configId: 'model', value: 'magpie/anthropic/fake/alpha' });
+      moving = true;
+      const failed = await c.prompt('hello');
+      assert.deepEqual([failed.error.code, failed.error.message, marked(failed.error)], [-32603, 'own failure', expected]);
+    });
 });
 
 // A message into the turn going (docs/agent-protocol.md「插话」): sent to Claude Code marked `next`, which takes it at the turn's
@@ -1360,6 +1384,21 @@ test('asked by Coda, a session compacts in a turn of no one\'s that says nothing
   assert.deepEqual((await after).result, { stopReason: 'end_turn' });
   assert.deepEqual(c.query.received.map(m => m.message.content), ['hello', '/compact', 'again', '/compact', 'after']);
   assert.deepEqual(c.said(), ['hello', 'again', 'after']);
+});
+
+test('when the session ends during a compaction, the prompt waiting behind it is not accepted: the turn going is the compaction\'s', async t => {
+  const write = process.stderr.write;
+  process.stderr.write = () => true;
+  t.after(() => { process.stderr.write = write; });
+  const c = await compactable(t);
+  await c.prompt('hello');
+  c.query.compactHeld = true;
+  // The prompt comes before the compaction's init is read, so that init does not open a turn of Claude's own.
+  const asked = c.session.compact({ sessionId: c.sessionId }), waiting = c.session.prompt({ prompt: [{ type: 'text', text: 'manual' }] }).catch(error => error);
+  await until(() => c.query.received.length === 3 && c.compactions().length === 1);
+  c.query.queue.push(() => { throw new Error('killed'); }); c.query.wake?.();
+  assert.deepEqual(marked(await waiting), { kind: 'session_ended', input: 'not_accepted' });
+  assert.equal((await asked).compacted, false);
 });
 
 test('compaction status and boundary finish one entry in either order; the next compaction gets its own', async t => {
@@ -1578,7 +1617,7 @@ test('MCP servers go to Claude in a file only this user reads, by path: the same
   assert.equal(existsSync(dir), false);
 });
 
-test('a query that ends with an error tells the turn going and the log why, and later prompts are refused as not accepted with that reason', async t => {
+test('a query that ends with an error tells the turn going and the log why as an ended session, and later prompts are refused as not accepted with that reason', async t => {
   const logged = [], write = process.stderr.write;
   process.stderr.write = chunk => { logged.push(String(chunk)); return true; };
   t.after(() => { process.stderr.write = write; });
@@ -1590,16 +1629,34 @@ test('a query that ends with an error tells the turn going and the log why, and 
   c.query.queue.push(() => { throw new Error(reason); }); c.query.wake?.();
   const failed = await pending;
   assert.equal(failed.error.message, `Claude 会话已结束：${reason}`);
+  assert.deepEqual(marked(failed.error), { kind: 'session_ended', input: 'accepted' }, 'its turn was running: the input was taken');
   assert.equal(ended, 1);
   assert.ok(logged.includes(`Claude 会话结束：${reason}\n`));
   const refused = await c.prompt('again');
   assert.deepEqual([refused.error.code, refused.error.message], [-32001, `Claude 会话未在运行：${reason}`]);
-  assert.deepEqual(refused.error.data._meta.coda.failure, { kind: 'service_unavailable', input: 'not_accepted' });
+  assert.deepEqual(marked(refused.error), { kind: 'session_ended', input: 'not_accepted' });
   assert.equal(c.query.received.length, 1, 'the refused input never went into the query');
   // A setting is refused with the reason too, without a mark: it has no input.
   const config = await c.request('session/set_config_option', { sessionId: c.sessionId, configId: 'mode', value: 'plan' });
   assert.equal(config.error.message, `Claude 会话未在运行：${reason}`);
   assert.equal(config.error.data, undefined);
+});
+
+test('when the session ends with the turn over and a message of it not taken (held), the prompt is accepted and the ones queued behind it are not', async t => {
+  const write = process.stderr.write;
+  process.stderr.write = () => true;
+  t.after(() => { process.stderr.write = write; });
+  const c = await setup(t);
+  await c.open();
+  const first = c.prompt('hold-idle:until-end');
+  await until(() => c.said().includes('等着结束'));
+  assert.deepEqual((await steer(c, '再补一句')).result, { outcome: 'injected' });
+  await writeFile(join(c.cwd, '.end-turn'), '');
+  await resulted(c);
+  const second = c.prompt('manual'); await until(() => c.session.prompts.size === 2);
+  c.query.queue.push(() => { throw new Error('killed'); }); c.query.wake?.();
+  assert.deepEqual(marked((await first).error), { kind: 'session_ended', input: 'accepted' });
+  assert.deepEqual(marked((await second).error), { kind: 'session_ended', input: 'not_accepted' });
 });
 
 test('a query that ends without an error says so, and a session Coda closes is not logged as an end', async t => {
@@ -1612,13 +1669,33 @@ test('a query that ends without an error says so, and a session Coda closes is n
   await until(() => c.session.phase === 'ended');
   const refused = await c.prompt('again');
   assert.equal(refused.error.message, 'Claude 会话未在运行：Claude SDK 查询结束，没有给出错误');
-  assert.deepEqual(refused.error.data._meta.coda.failure, { kind: 'service_unavailable', input: 'not_accepted' });
+  assert.deepEqual(marked(refused.error), { kind: 'session_ended', input: 'not_accepted' });
   assert.deepEqual(logged, ['Claude 会话结束：Claude SDK 查询结束，没有给出错误\n']);
   const d = await setup(t);
   await d.open(); logged.length = 0;
   await d.session.close();
   assert.deepEqual(logged, []);
   assert.equal((await d.prompt('again')).error.message, 'Claude 会话未在运行：Coda 关闭了会话');
+});
+
+test('when the session ends, the prompt whose turn runs is accepted, the ones queued behind it are not, and with no turn going nothing is said', async t => {
+  const write = process.stderr.write;
+  process.stderr.write = () => true;
+  t.after(() => { process.stderr.write = write; });
+  const c = await setup(t);
+  await c.open();
+  const first = c.prompt('manual'); await until(() => c.query.inputId);
+  const second = c.prompt('manual'); await until(() => c.query.received.length === 2);
+  c.query.queue.push(() => { throw new Error('killed'); }); c.query.wake?.();
+  assert.deepEqual(marked((await first).error), { kind: 'session_ended', input: 'accepted' });
+  assert.deepEqual(marked((await second).error), { kind: 'session_ended', input: 'not_accepted' });
+  // Given to a query that ends before any turn of it began: whether it was read cannot be told.
+  const d = await setup(t);
+  await d.open();
+  d.send({ id: 'p', method: 'session/prompt', params: { sessionId: d.sessionId, prompt: [{ type: 'text', text: 'manual' }] } });
+  await until(() => d.session.prompts.size);
+  d.session.turning = false; d.session.end(d.session.query, new Error('killed'));
+  assert.deepEqual(marked((await until(() => d.out.find(m => m.id === 'p'))).error), { kind: 'session_ended' });
 });
 
 test('the MCP servers\' file is deleted when the session ends of itself, and when it fails to start', async t => {
