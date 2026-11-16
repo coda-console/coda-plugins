@@ -488,8 +488,11 @@ async function probe({ agent, checked, base, limits, say, instructions }) {
     }
     if (caps.sessionCapabilities?.list != null) {
       asked.push('session/list');
-      const { result } = await ask('session/list', {}, again.proc);
-      if (result?.sessions?.some?.(s => s?.sessionId === sessionId)) return say.fail('probe.resume', `断线后 session/list 列出了虚拟会话 ${sessionId}`);
+      const { result, error } = await ask('session/list', {}, again.proc);
+      // A list that did not come back says nothing of whether the session was kept.
+      if (error) return say.fail('probe.resume', `断线后 session/list 回了错误 ${error.code}：${error.message}：查不了虚拟会话是否留在历史里`);
+      if (!Array.isArray(result?.sessions)) return say.fail('probe.resume', `断线后 session/list 的答复没有 sessions 数组（${JSON.stringify(result?.sessions)}）：查不了虚拟会话是否留在历史里`);
+      if (result.sessions.some(s => s?.sessionId === sessionId)) return say.fail('probe.resume', `断线后 session/list 列出了虚拟会话 ${sessionId}`);
     }
     if (asked.length) say.pass('probe.resume', `断线后 ${asked.join('、')} 都不接受、不列出虚拟会话`);
     else say.skip('probe.resume', '没声明 loadSession、resume、list：没有恢复的路');
