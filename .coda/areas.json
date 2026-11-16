@@ -1,4 +1,5 @@
 {
+  "antigravity 插件": ["plugins/antigravity/"],
   "claude 插件": ["plugins/claude/"],
   "codex 插件": ["plugins/codex/"],
   "codex-accounts 插件": ["plugins/codex-accounts/"],

@@ -1,0 +1,63 @@
+{
+  "name": "@coda-console/antigravity",
+  "id": "antigravity",
+  "displayName": "Antigravity",
+  "description": "用 Antigravity CLI 跑会话",
+  "version": "1.0.0",
+  "categories": ["Agent"],
+  "contributes": {
+    "agents": [
+      {
+        "id": "antigravity",
+        "displayName": "Antigravity",
+        "icon": {
+          "light": "icons/antigravity.pdf",
+          "template": true
+        },
+        "command": "if [ -x \"$HOME/.local/bin/agy\" ]; then exec \"$HOME/.local/bin/agy\" acp; else exec agy acp; fi",
+        "modes": {
+          "title": "工作模式",
+          "unset": "Agent 默认",
+          "auto": "auto",
+          "note": "Auto 遇到不可逆操作仍会询问；工具权限沿用运行机的 Antigravity 配置（~/.gemini/antigravity-cli/settings.json）。"
+        },
+        "skillsDir": ".agents/skills",
+        "configFiles": [
+          "~/.gemini/antigravity-cli/settings.json"
+        ],
+        "setupHint": "请在「资源」里为运行机添加 Antigravity。"
+      }
+    ],
+    "resources": [
+      {
+        "id": "account",
+        "title": "Antigravity",
+        "command": "node \"$CODA_PLUGIN_PATH/scripts/resources.mjs\"",
+        "maxAge": "PT5M",
+        "signIn": {
+          "command": "a=\"$HOME/.local/bin/agy\"; [ -x \"$a\" ] || a=agy; BROWSER=/usr/bin/true NO_COLOR=1 exec \"$a\" acp --login",
+          "installed": "node \"$CODA_PLUGIN_PATH/scripts/setup.mjs\" --check",
+          "install": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/setup.mjs\"",
+          "input": "authorizationCode",
+          "note": "登录保存在这台机器的系统钥匙串里，由 Antigravity CLI 自己续期；用 Google 账号确认，把授权页给的授权码贴回来。"
+        }
+      }
+    ],
+    "setup": {
+      "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/setup.mjs\""
+    }
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coda-console/coda-plugins.git",
+    "directory": "plugins/antigravity"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "scripts",
+    "icons"
+  ]
+}
