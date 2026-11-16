@@ -121,6 +121,21 @@ test('a quota that cannot be had is said, with the CLI\'s version still shown', 
   }
 });
 
+test('a long reason is cut to a line the reading takes, and the version is still shown', async t => {
+  const m = await machine(t, { usageExit: 1 });
+  await writeFile(join(m.home, '.local/bin/agy'), `#!/bin/sh
+if [ "$1" = --version ]; then echo 1.5.9; exit 0; fi
+echo "Error: failed to start the language server: could not find a usable network interface for the session" >&2
+exit 1
+`, { mode: 0o755 });
+  const result = await run(declared.command, m.env);
+  assert.equal(result.code, 0, result.stderr);
+  const [resource] = readResources(result.stdout, declared);
+  assert.equal([...resource.error].length, 80);
+  assert.match(resource.error, /^暂时无法获取额度：Antigravity CLI 退出码 1：Error: failed/);
+  assert.deepEqual(resource.values, [{ label: 'CLI 版本', value: '1.5.9' }]);
+});
+
 test('a login with a CLI that is old or gone is shown with what to do, and a CLI that cannot say its version fails the reading', async t => {
   const old = await run(declared.command, (await machine(t, { version: '1.5.8' })).env);
   assert.equal(old.code, 0, old.stderr);

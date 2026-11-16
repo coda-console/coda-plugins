@@ -21,7 +21,7 @@ if (!tooOld) {
   try { values = windows(usageReport(binary)); if (!values.length) failure = 'Antigravity CLI 没有给出额度'; }
   catch (error) { failure = error.message; }
 }
-const line = text => [...text.replace(/\s+/g, ' ').trim()].slice(0, 120).join('');
+const line = text => [...text.replace(/\s+/g, ' ').trim()].slice(0, 80).join('');
 print({ resources: [{ name: 'Antigravity', values: [...values, { label: 'CLI 版本', value: version }],
   ...(tooOld ? { error: `Antigravity CLI 低于所需的 ${MINIMUM}，请重新安装插件或在运行机运行 agy update` }
     : failure ? { error: line(`暂时无法获取额度：${failure}`) } : {}) }] });
