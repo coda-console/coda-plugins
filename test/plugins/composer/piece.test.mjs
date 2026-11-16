@@ -168,6 +168,18 @@ test('合进需求分支：试合并需求分支当前 head，干净时把这一
   assert.deepEqual(f.calls('gh'), [], '不开 PR、不合 PR');
 });
 
+test('删临时分支失败：合入提交已推进需求分支，这一步仍失败（调用它的需求运行由出错边界接住，不能断言没合进）', t => {
+  const f = fixture(t);
+  f.task('one', 'change'); f.run('execute'); f.delivered();
+  // 远端拒绝删除临时分支。
+  const hook = join(f.root, 'origin.git', 'hooks', 'pre-receive');
+  writeFileSync(hook, `#!/bin/sh\nwhile read old new ref; do case "$ref:$new" in refs/heads/piece/*:0000000000000000000000000000000000000000) echo 不许删 >&2; exit 1;; esac; done\n`); chmodSync(hook, 0o755);
+  const failed = f.run('land', {}, 1);
+  assert.match(failed.stderr, /不许删/);
+  assert.deepEqual(f.landedCommits().length, 1, '需求分支已有这一块的合入提交');
+  assert.equal(f.remote(TEMP), f.state().executor.head, '临时分支还在');
+});
+
 test('重跑不重复合入：合入后需求分支又前进了，再跑 land 认出已合入的提交、原样交出，不再推送；临时分支已删也照样成功', t => {
   for (const sync of [false, true]) {
     const f = fixture(t, { sync });

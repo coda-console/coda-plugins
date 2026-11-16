@@ -256,16 +256,20 @@ test('跟上目标分支：派 sync=true 的块，标题与任务固定，备注
   assert.deepEqual((await pieceInputs(noted, KICKOFF)).executor, { agent: 'claude-sdk' });
 });
 
-test('块结束回到需求进行中：合进了写上提交和块的运行；没合进（失败、取消、主 Agent 在块里放弃）带着原因，需求运行不失败', t => {
+test('块结束回到需求进行中：合进了写上提交和块的运行；没正常结束（失败、取消、主 Agent 在块里放弃）带着原因、要先核实合入状态，需求运行不失败', t => {
   const f = fixture(t); f.run('branch');
   f.run('piece-landed', { TITLE: '修好登录跳转', COMMIT: 'c'.repeat(40), PIECE_RUN: 'piece-7' });
   const landed = f.reason();
   for (const part of ['块「修好登录跳转」已合进需求分支 req/run-1', `提交 ${'c'.repeat(40)}`, 'coda://workflow-runs/piece-7']) assert.ok(landed.includes(part), part);
   f.dispatch('piece', '下一块\n任务');
   assert.equal(f.reason(), '', '下一块派出去就清掉');
+  // 块已推进需求分支、随后删临时分支失败（piece.test.mjs「删临时分支失败」）：块失败，但不能说没合进、需求分支没动。
+  f.land('next', 'next', '下一块\n\nCoda-Piece: piece-8');
   f.run('piece-failed', { TITLE: '下一块' });
   const lost = f.reason();
-  for (const part of ['块「下一块」没有合进需求分支 req/run-1', '你在块里选了放弃', '需求分支没动', 'coda://workflow-runs/run-1', '「块」调用的块运行']) assert.ok(lost.includes(part), part);
+  for (const part of ['块「下一块」没有正常结束', '你在块里选了放弃', '可能已经合进需求分支 req/run-1', '合入状态待核实', 'Coda-Piece: <块运行 ID>', 'coda://workflow-runs/run-1', '「块」调用的块运行', '确认没合进才重新派这一块'])
+    assert.ok(lost.includes(part), part);
+  assert.doesNotMatch(lost, /需求分支没动|没有合进需求分支/);
 });
 
 test('提交验收开需求分支进目标分支的 PR：不带会话开，正文是汇报、从需求分支历史读的块与改动区域；再提交更新同一个 PR', t => {

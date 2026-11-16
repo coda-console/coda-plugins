@@ -165,9 +165,10 @@ switch (action) {
   case 'piece-landed':
     back(`块「${env.TITLE}」已合进需求分支 ${state.branch}：提交 ${env.COMMIT}，运行 coda://workflow-runs/${env.PIECE_RUN}。`);
     break;
-  // 块没合进来（失败、被取消，或主 Agent 在块里选了放弃）：引擎只把调用失败交给出错边界，不带被调运行的原因，所以指向本运行里调用的块。
+  // 块没正常结束（失败、被取消，或主 Agent 在块里选了放弃）：引擎只把调用失败交给出错边界，不带被调运行的原因，所以指向本运行里调用的块。
+  // 合入状态不能断言：piece.mjs 的 land 先推需求分支再删临时分支，删除失败时块失败但提交已经合进去了。
   case 'piece-failed':
-    back(`块「${env.TITLE}」没有合进需求分支 ${state.branch}：块运行失败、被取消，或你在块里选了放弃，需求分支没动。\n请用 workflow_status 查看本运行 coda://workflow-runs/${env.GITHUB_RUN_ID} 的步骤「块」调用的块运行，读它的结局、错误和日志；处理好再派一块。`);
+    back(`块「${env.TITLE}」没有正常结束：块运行失败、被取消，或你在块里选了放弃。它可能已经合进需求分支 ${state.branch}（比如合入后删临时分支失败），合入状态待核实。\n先核实再决定：看需求分支 ${state.branch} 最新的提交里有没有这一块（普通的块说明带 Coda-Piece: <块运行 ID>，跟上目标分支的块是执行者的合并提交），再用 workflow_status 查看本运行 coda://workflow-runs/${env.GITHUB_RUN_ID} 的步骤「块」调用的块运行，读它的结局、错误和日志；确认没合进才重新派这一块。`);
     break;
   case 'paused': {
     const { choice, note = '' } = JSON.parse(env.PAUSED);

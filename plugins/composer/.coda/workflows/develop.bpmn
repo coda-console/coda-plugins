@@ -111,7 +111,7 @@
     <sequenceFlow id="progress-abandon" sourceRef="after-progress" targetRef="abandoned"><conditionExpression xsi:type="tFormalExpression">=progress-result.route = "abandon"</conditionExpression></sequenceFlow>
     <!-- 派块：调用块（piece），是本运行的子运行（取消需求运行时一起停，运行页「调用的流程」列出每一块），它的人工任务照旧交给发起需求运行的会话。
          人选默认取开工值，备注里换了的由答复里的标量拼成 agent 对象（参数保留表达式的类型，对象原样传给 agent 参数）。
-         一次一块，结束后回到「需求进行中」：合进了带上提交和块的运行，没合进（失败、被取消、主 Agent 在块里放弃）带着原因。 -->
+         一次一块，结束后回到「需求进行中」：合进了带上提交和块的运行，没正常结束（失败、被取消、主 Agent 在块里放弃）带着原因，合入状态待主 Agent 核实。 -->
     <callActivity id="piece" name="块" calledElement="piece">
       <extensionElements>
         <coda:param name="branch" value="=req.branch" />
@@ -127,7 +127,7 @@
     </callActivity>
     <boundaryEvent id="piece-failed" attachedToRef="piece"><errorEventDefinition /></boundaryEvent>
     <sequenceFlow id="piece-failed-flow" sourceRef="piece-failed" targetRef="piece-lost" />
-    <scriptTask id="piece-lost" name="交回没合进的块" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+    <scriptTask id="piece-lost" name="交回没正常结束的块" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
       <extensionElements><coda:env name="TITLE" value="=progress-result.title" /></extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" piece-failed</script>
     </scriptTask>
