@@ -3,7 +3,8 @@
 // later request fails against the dead child. Follow the child out instead, so the session host reports
 // an agent exit. A deliberate provider restart moves the generation first, and stays unaffected. How the child exited (code or
 // signal, and the end of its stderr) is told to the entry first, which logs it and answers the turns still waiting with it, so
-// the backend settles them with that error. Fails loudly once the adapter changes.
+// the backend settles them with that error. Fails loudly once the adapter changes, `getRecentStderr` included, which the patch calls
+// from the exit callback.
 const before = `.once("exit", () => {
       if (generation !== this.codexProcessGeneration) return;
       void this.finishAllAsyncTasks("failed", "after the Codex process exited");`;
@@ -16,7 +17,7 @@ const after = `.once("exit", (code, signal) => {
         process.stdout.write("", () => process.exit(1));
       });`;
 export function followCodexProcessExit(source) {
-  if (source.split(before).length !== 2) throw new Error('codex-acp process exit patch no longer matches the locked adapter');
+  if (source.split(before).length !== 2 || !source.includes('this.getRecentStderr = ')) throw new Error('codex-acp process exit patch no longer matches the locked adapter');
   return `import * as codaProcessExit from ${JSON.stringify(import.meta.url)};\n${source.replace(before, after)}`;
 }
 
@@ -30,6 +31,7 @@ export function describeExit({ code, signal, stderr }) {
 }
 
 // The error that ends a prompt as the process ends (docs/agent-protocol.md「原生会话已结束」): the category tells Coda the native
-// session is over, not that the service failed. `input` is written only when known: `accepted` once the prompt's turn has had any output.
-export const endedError = (message, accepted) => ({ code: -32603, message,
-  data: { _meta: { coda: { failure: { kind: 'session_ended', ...(accepted ? { input: 'accepted' } : {}) } } } } });
+// session is over, not that the service failed. `input` is not written: nothing the
+// process said proves this prompt was read, and Coda then resumes by checking first, with the whole original input.
+export const endedError = message => ({ code: -32603, message,
+  data: { _meta: { coda: { failure: { kind: 'session_ended' } } } } });

@@ -16,35 +16,28 @@ import { pluginDir, resolveFrom } from '../plugin.mjs';
 const fixture = fileURLToPath(new URL('./app-server-fixture.mjs', import.meta.url));
 const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
 
-// The category of the error as the protocol checks it, and the `input` it says.
-const ended = (error, input) => {
+// The category of the error as the protocol checks it; no `input` is said.
+const ended = error => {
   const failure = error.data?._meta?.coda?.failure;
   assert.equal(agentValueProblem('failure.json', failure, 'failure'), null);
-  assert.deepEqual(failure, input ? { kind: 'session_ended', input } : { kind: 'session_ended' });
-};
-// Through the real codex-acp, whether it has said anything of the turn before the process ends is up to its timing: without the
-// fixture saying something, the input is `accepted` or not written.
-const endedMaybeAccepted = error => {
-  assert.equal(agentValueProblem('failure.json', error.data?._meta?.coda?.failure, 'failure'), null);
-  assert.equal(error.data._meta.coda.failure.kind, 'session_ended');
-  assert.ok([undefined, 'accepted'].includes(error.data._meta.coda.failure.input));
+  assert.deepEqual(failure, { kind: 'session_ended' });
 };
 
 const bundle = await readFile(resolveFrom('codex', '@agentclientprotocol/codex-acp'), 'utf8');
 
-test('what the session said since the prompt was asked makes its input accepted', () => {
+test('an update of the same session before the process ends does not make the prompt\'s input accepted', () => {
   const waits = new CodexWaits();
   waits.fromCoda({ jsonrpc: '2.0', id: 1, method: 'session/prompt', params: { sessionId: 'root', prompt: [] } });
-  waits.fromCoda({ jsonrpc: '2.0', id: 2, method: 'session/prompt', params: { sessionId: 'other', prompt: [] } });
+  waits.fromAgent({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'root:generation:2', update: { sessionUpdate: 'session_info_update', title: 'renamed' } } });
   waits.fromAgent({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'root:generation:2', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'hi' } } } });
-  const [first, second] = waits.fail('gone');
-  ended(first.error, 'accepted');
-  ended(second.error);
+  const [answer] = waits.fail('gone');
+  ended(answer.error);
 });
 
 test('the patch fails loudly once the locked adapter changes', () => {
   assert.match(followCodexProcessExit(bundle), /ending the adapter with it/);
   assert.throws(() => followCodexProcessExit(bundle.replace('void this.finishAllAsyncTasks("failed", "after the Codex process exited");', 'changed();')), /no longer matches/);
+  assert.throws(() => followCodexProcessExit(bundle.replace('this.getRecentStderr = ', 'this.recentStderr = ')), /no longer matches/);
 });
 
 test('turns waiting on the Codex process are answered with how it ended, and its own late answers are dropped', () => {
@@ -59,8 +52,8 @@ test('turns waiting on the Codex process are answered with how it ended, and its
   assert.deepEqual(waits.fromAgent({ jsonrpc: '2.0', id: 1, result: {} }).length, 1);
 });
 
-for (const [name, exit, how, say, input] of [['a non-zero exit code', '7', /退出码 7[\s\S]*fake codex: boom/], ['a signal', 'SIGKILL', /被信号 SIGKILL 终止/], ['exit code 0', '0', /退出码 0/],
-  ['a signal after the turn said something', 'SIGKILL', /被信号 SIGKILL 终止/, '1', 'accepted']])
+for (const [name, exit, how, say] of [['a non-zero exit code', '7', /退出码 7[\s\S]*fake codex: boom/], ['a signal', 'SIGKILL', /被信号 SIGKILL 终止/], ['exit code 0', '0', /退出码 0/],
+  ['a signal after the turn said something', 'SIGKILL', /被信号 SIGKILL 终止/, '1']])
   test(`the turn error and the plugin's stderr say how the Codex process ended: ${name}`, async t => {
     const root = await mkdtemp(join(tmpdir(), 'codex-exit-')), codex = join(root, 'codex');
     await writeFile(codex, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(fixture)} "$@"\n`); await chmod(codex, 0o700);
@@ -75,7 +68,7 @@ for (const [name, exit, how, say, input] of [['a non-zero exit code', '7', /退�
     const reply = await request('session/prompt', { sessionId: session.result.sessionId, prompt: [{ type: 'text', text: 'original task' }] });
     assert.equal(reply.error?.code, -32603, JSON.stringify(reply));
     assert.match(reply.error.message, how);
-    if (say) ended(reply.error, input); else endedMaybeAccepted(reply.error);
+    ended(reply.error);
     await peer.exited;
     assert.match(peer.stderr, how);
   });

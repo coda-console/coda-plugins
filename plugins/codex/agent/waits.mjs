@@ -52,13 +52,12 @@ export class CodexWaits {
     if (wait?.stoppable) return { agent: [{ jsonrpc: '2.0', method: 'session/cancel', params: { sessionId: wait.subagentSessionId } }], coda: [{ jsonrpc: '2.0', id, result: {} }] };
     return { agent: [], coda: [{ jsonrpc: '2.0', id, error: { code: -32602, message: '没有可以停止的等待项' } }] };
   }
-  // The Codex process is gone: answer every prompt still waiting with the error `message`, as a session that ended; its input was
-  // accepted if the session has said anything since. A later answer of codex-acp's own to one of them (its pending requests failing
+  // The Codex process is gone: answer every prompt still waiting with the error `message`, as a session that ended. A later answer of codex-acp's own to one of them (its pending requests failing
   // as the connection closes) is dropped.
   fail(message) {
     const answers = [];
     for (const [id, asked] of this.asked) if (asked?.prompt) {
-      answers.push(...this.finishSleeps(base(asked.prompt), 'failed'), { jsonrpc: '2.0', id, error: endedError(message, asked.heard) });
+      answers.push(...this.finishSleeps(base(asked.prompt), 'failed'), { jsonrpc: '2.0', id, error: endedError(message) });
       this.asked.set(id, 'failed');
     }
     return answers;
@@ -75,7 +74,6 @@ export class CodexWaits {
     }
     if (record(message.params) && string(message.params.sessionId)) {
       message = { ...message, params: { ...message.params, sessionId: base(message.params.sessionId) } };
-      for (const asked of this.asked.values()) if (asked?.prompt && base(asked.prompt) === message.params.sessionId) asked.heard = true;
     }
     if (message.method !== 'session/update' || !record(message.params?.update)) return [message];
     const { sessionId, update: u } = message.params;
