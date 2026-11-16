@@ -100,11 +100,18 @@ test('the usage report is the CLI\'s successful one, and anything else is why th
   assert.deepEqual(usageReport('agy', ran()), report);
   assert.throws(() => usageReport('agy', ran({ error: Object.assign(new Error('x'), { code: 'ETIMEDOUT' }), status: null })), /读取超时/);
   assert.throws(() => usageReport('agy', ran({ error: Object.assign(new Error('x'), { code: 'EACCES' }), status: null })), /EACCES/);
-  assert.throws(() => usageReport('agy', ran({ status: 1, stderr: 'boom\nmore' })), /退出码 1：boom$/);
-  assert.throws(() => usageReport('agy', ran({ status: null, signal: 'SIGKILL' })), /退出码 SIGKILL/);
+  // The CLI's first line is the reason, with no prefix of its own; its exit code is said only when it said nothing.
+  assert.throws(() => usageReport('agy', ran({ status: 1, stderr: 'boom\nmore' })), error => error.message === 'boom');
+  assert.throws(() => usageReport('agy', ran({ status: 1, stderr: '  \n' })), error => error.message === '退出码 1');
+  assert.throws(() => usageReport('agy', ran({ status: null, signal: 'SIGKILL' })), error => error.message === '退出码 SIGKILL');
   assert.throws(() => usageReport('agy', ran({ stdout: 'not json' })), /不是 JSON/);
-  assert.throws(() => usageReport('agy', ran({ stdout: JSON.stringify({ ...report, status: 'ERROR' }) })), /（ERROR）/);
-  assert.throws(() => usageReport('agy', ran({ stdout: JSON.stringify({ ...report, command: { name: 'help' } }) })), /没有给出额度报告/);
+  assert.throws(() => usageReport('agy', ran({ stdout: JSON.stringify({ ...report, status: 'ERROR' }) })), /状态不是 SUCCESS（ERROR）/);
+  assert.throws(() => usageReport('agy', ran({ stdout: '{}' })), /状态不是 SUCCESS（无状态）/);
+  assert.throws(() => usageReport('agy', ran({ stdout: JSON.stringify({ ...report, command: { name: 'help' } }) })), /返回的不是额度报告/);
+  // The time it may take is the one it is given.
+  let given;
+  usageReport('agy', (binary, args, options) => { given = options.timeout; return ran()(); }, 1234);
+  assert.equal(given, 1234);
 });
 
 test('a quota that cannot be had is said, with the CLI\'s version still shown', async t => {
@@ -132,8 +139,59 @@ exit 1
   assert.equal(result.code, 0, result.stderr);
   const [resource] = readResources(result.stdout, declared);
   assert.equal([...resource.error].length, 80);
-  assert.match(resource.error, /^暂时无法获取额度：Antigravity CLI 退出码 1：Error: failed/);
+  // The reason is cut, not the words before it, and the CLI's own words are the reason, not its exit code.
+  assert.match(resource.error, /^暂时无法获取额度：Error: failed to start the language server: could not find a usable net$/);
   assert.deepEqual(resource.values, [{ label: 'CLI 版本', value: '1.5.9' }]);
+});
+
+// The reading has a time of its own (`CODA_ANTIGRAVITY_BUDGET_MS`, 25 seconds of the 30 Coda gives, here a few seconds): the
+// version and the quota are given what is left of it, and no quota is asked for when too little is left.
+async function slow(t, { version, usage }) {
+  const m = await machine(t);
+  await writeFile(join(m.home, '.local/bin/agy'), `#!/bin/sh
+if [ "$1" = --version ]; then sleep ${version}; echo 1.5.9; exit 0; fi
+echo started > "${m.home}/usage-started"
+if [ ${usage} -gt 0 ]; then exec sleep ${usage}; fi
+cat "${m.home}/usage.json"
+`, { mode: 0o755 });
+  return { ...m, env: { ...m.env, CODA_ANTIGRAVITY_BUDGET_MS: '6000' } };
+}
+
+test('a quota that outlasts what is left of the reading time is said, with the version, before Coda would end the reading', async t => {
+  const m = await slow(t, { version: 1, usage: 30 });
+  const began = Date.now();
+  const result = await run(declared.command, m.env);
+  assert.equal(result.code, 0, result.stderr);
+  assert.ok(Date.now() - began < 6000, 'printed within the time');
+  const [resource] = readResources(result.stdout, declared);
+  assert.equal(resource.error, '暂时无法获取额度：读取超时');
+  assert.deepEqual(resource.values, [{ label: 'CLI 版本', value: '1.5.9' }]);
+  assert.equal((await readFile(join(m.home, 'usage-started'), 'utf8')).trim(), 'started');
+});
+
+test('no quota is asked for when the version took the time', async t => {
+  const m = await slow(t, { version: 3, usage: 0 });
+  const result = await run(declared.command, m.env);
+  assert.equal(result.code, 0, result.stderr);
+  const [resource] = readResources(result.stdout, declared);
+  assert.equal(resource.error, '暂时无法获取额度：读取超时');
+  assert.deepEqual(resource.values, [{ label: 'CLI 版本', value: '1.5.9' }]);
+  await assert.rejects(readFile(join(m.home, 'usage-started'), 'utf8'), { code: 'ENOENT' });
+});
+
+test('a report of more groups than a reading lists values is cut to 7, the version still the last, and its words to the limit', async t => {
+  const bucket = window => ({ window, remaining_fraction: 0.5, reset_time: '2026-11-23T06:16:54Z' });
+  const groups = ['A', 'B', 'C', 'D'].map(name => ({ name: `${name}${'x'.repeat(100)} Models`, buckets: [bucket('weekly'), bucket('5h')] }));
+  assert.equal(windows({ command: { data: { groups } } }).length, 8);
+  assert.ok(windows({ command: { data: { groups } } }).every(v => [...v.label].length <= 80));
+  const m = await machine(t, { usage: JSON.stringify({ ...report, command: { name: 'usage', data: { groups } } }) });
+  const result = await run(declared.command, m.env);
+  assert.equal(result.code, 0, result.stderr);
+  const [resource] = readResources(result.stdout, declared);
+  assert.equal(resource.values.length, 8);
+  assert.deepEqual(resource.values.slice(0, 7).map(v => v.label.slice(0, 1)), ['A', 'A', 'B', 'B', 'C', 'C', 'D']);
+  assert.deepEqual(resource.values[7], { label: 'CLI 版本', value: '1.5.9' });
+  assert.equal(resource.error, undefined);
 });
 
 test('a login with a CLI that is old or gone is shown with what to do, and a CLI that cannot say its version fails the reading', async t => {
