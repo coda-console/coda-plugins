@@ -1,0 +1,51 @@
+// The Antigravity manifest starts `agy acp` directly; the setup's decision (scripts/setup.mjs) against a stand-in `--version`.
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { MINIMUM, needed } from '../../../plugins/antigravity/scripts/setup.mjs';
+import { manifest, pluginEnv, run as runCommand } from '../command.mjs';
+import { relaysInstructions } from '../relay.mjs';
+
+test('the entry relays agy acp from ~/.local/bin and forwards Coda instructions unchanged', t =>
+  relaysInstructions(t, 'antigravity', '.local/bin/agy', ['acp']));
+
+test('setup installs a missing CLI, upgrades an old one, reports one that does not run, and keeps one that is new enough', () => {
+  const run = (status, stdout = '', stderr = '') => () => ({ status, stdout, stderr });
+  assert.equal(MINIMUM, '1.5.9');
+  assert.equal(needed(null).action, 'install');
+  assert.equal(needed('/bin/agy', run(127)).action, 'broken');
+  assert.match(needed('/bin/agy', run(127)).reason, /无法运行（\/bin\/agy）/);
+  assert.equal(needed('/bin/agy', run(0, 'agy\n')).action, 'upgrade');
+  assert.equal(needed('/bin/agy', run(0, '1.5.8\n')).action, 'upgrade');
+  assert.match(needed('/bin/agy', run(0, '1.5.8\n')).reason, /1\.5\.8 低于所需的 1\.5\.9/);
+  assert.equal(needed('/bin/agy', run(0, '1.4.20\n')).action, 'upgrade');
+  assert.equal(needed('/bin/agy', run(0, '', '0.9.99')).action, 'upgrade', 'a version printed on standard error is read too');
+  assert.deepEqual(needed('/bin/agy', run(0, '1.5.9\n')), { action: 'none', version: '1.5.9' });
+  assert.deepEqual(needed('/bin/agy', run(0, '1.10.0\n')), { action: 'none', version: '1.10.0' });
+});
+
+test('setup installs with Google\'s installer under a temporary HOME, the binary going to the real ~/.local/bin, and leaves the shell profiles alone', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'coda-antigravity-setup-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  for (const profile of ['.bashrc', '.zshrc', '.profile']) await writeFile(join(home, profile), `# ${profile}\n`);
+  // A curl that serves an installer in place of Google's: it notes the HOME and arguments it runs with, edits the profiles of
+  // that HOME as `agy install` does, and puts an `agy` in --dir.
+  await mkdir(join(home, 'fake-bin'));
+  await writeFile(join(home, 'fake-bin/curl'), `#!/bin/sh
+cat <<'EOT'
+echo "$HOME|$*" > "${home}/ran"
+echo 'export PATH=x' >> "$HOME/.bashrc"
+mkdir -p "$2" && printf '%s\\n' '#!/bin/sh' 'echo 1.5.9' > "$2/agy" && chmod +x "$2/agy"
+EOT
+`, { mode: 0o755 });
+  const ran = await runCommand(manifest('antigravity').contributes.setup.command, pluginEnv('antigravity', { HOME: home, CODA_NODE: process.execPath, PATH: `${join(home, 'fake-bin')}:/usr/bin:/bin` }));
+  assert.deepEqual([ran.code, ran.stdout.trim()], [0, 'Antigravity CLI 1.5.9'], ran.stderr);
+  const [installerHome, args] = (await readFile(join(home, 'ran'), 'utf8')).trimEnd().split('|');
+  assert.notEqual(installerHome, home, 'the installer runs with another HOME');
+  assert.equal(args, `--dir ${join(home, '.local/bin')}`);
+  assert.equal(existsSync(installerHome), false, 'and it is removed');
+  for (const profile of ['.bashrc', '.zshrc', '.profile']) assert.equal(await readFile(join(home, profile), 'utf8'), `# ${profile}\n`, profile);
+});
