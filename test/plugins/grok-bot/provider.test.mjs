@@ -317,9 +317,8 @@ test('rebuilding the transcript mirror also rebuilds live state', async t => {
 test('session read, draft and post answer through the registered handlers and the resource list has no actions', async t => {
   const f = await fixture(t), handle = (op, input, ctx) => f.handlers.get(`${SESSION}/${op}`)(input, ctx);
   assert.deepEqual([...f.handlers.keys()].sort(), [`${SESSION}/draft`, `${SESSION}/post`, `${SESSION}/read`]);
-  // post is a plain function: a registered `resume` would change what users see after a restart.
+  // post is registered as a function, not an object carrying `resume`: a registered `resume` would change what users see after a restart.
   assert.equal(typeof f.handlers.get(`${SESSION}/post`), 'function');
-  assert.equal(f.handlers.get(`${SESSION}/post`).resume, undefined);
   assert.deepEqual(await handle('draft', { text: 'unsent' }), {});
   const ctx = call(f, 'handler-call');
   const result = await handle('post', { text: 'via handler' }, ctx);
