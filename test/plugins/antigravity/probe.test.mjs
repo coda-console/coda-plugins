@@ -3,7 +3,8 @@
 // with a native session of the probe's.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import * as fsPromises from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -298,10 +299,70 @@ test('a failure is waited out for five minutes of the clock', async t => {
 
 test('waiting for another entry\'s collection has a limit', async t => {
   const { state, home } = machine(t);
-  writeFileSync(join(state, 'catalog-v1.lock'), JSON.stringify({ pid: process.pid, at: Date.now() }));
+  writeFileSync(join(state, 'catalog-v1.lock.1'), JSON.stringify({ pid: process.pid, at: Date.now() }));
   const catalog = createCatalog({ state, home, binary: join(home, '.local/bin/agy'), version: async () => '1.5.9', limits: { wait: 300, poll: 50 } });
   await assert.rejects(catalog.get(), /等另一个进程读取模型目录超过/);
-  // One whose holder is gone is taken over.
-  writeFileSync(join(state, 'catalog-v1.lock'), JSON.stringify({ pid: 2 ** 22 + 12345, at: Date.now() }));
+  // One whose holder is gone is taken over, by the next generation; it is freed, and the older ones are cleared.
+  writeFileSync(join(state, 'catalog-v1.lock.1'), JSON.stringify({ pid: 2 ** 22 + 12345, at: Date.now() }));
   assert.ok((await catalog.get()).byModel.xh);
+  assert.deepEqual(readdirSync(state).filter(name => name.includes('lock')), ['catalog-v1.lock.2', 'catalog-v1.lock.2.free']);
+});
+
+// Two catalogs of one state directory, as two entries are; `gated(path)` holds the second's reads of matching files until
+// `open()`. `collections` counts the agy collections both started, and the most at once.
+function twoEntries(t, gated, env = {}) {
+  const { state, home } = machine(t);
+  let open, reached;
+  const gate = new Promise(resolve => { open = resolve; }), arrived = new Promise(resolve => { reached = resolve; });
+  const counted = { collections: 0, running: 0, most: 0 };
+  let started;
+  const collecting = new Promise(resolve => { started = resolve; });
+  const run = (cmd, args, options) => {
+    counted.collections++; counted.most = Math.max(counted.most, ++counted.running); started();
+    const child = spawn(cmd, args, { ...options, env: { ...process.env, FAKE_AGY_DELAY: '200', ...env } });
+    child.on('close', () => { counted.running--; });
+    return child;
+  };
+  const make = fs => createCatalog({ state, home, binary: join(home, '.local/bin/agy'), version: async () => '1.5.9', spawn: run, fs, limits: { poll: 20 } });
+  const held = { ...fsPromises };
+  for (const name of ['readdir', 'readFile']) held[name] = async (path, ...rest) => { if (gated(name, `${path}`)) { reached(); await gate; } return fsPromises[name](path, ...rest); };
+  return { first: make(fsPromises), second: make(held), arrived, open, collecting, counted, state };
+}
+
+test('an entry that takes the lock after another\'s collection failed keeps to the cool-down that failure left', async t => {
+  const { first, second, arrived, open, counted } = twoEntries(t, name => name === 'readdir', { FAKE_AGY_FAIL_MODEL: 'xh' });
+  // The second has read that there is no catalog and no failure, and waits at the lock while the first fails.
+  const waiting = second.get();
+  await arrived;
+  await assert.rejects(first.get(), /invalid model xh/);
+  open();
+  await assert.rejects(waiting, /秒后再试：.*invalid model xh/);
+  assert.equal(counted.collections, 1);
+});
+
+test('two entries taking over the same lock left behind do not both collect', async t => {
+  const { first, second, arrived, open, collecting, counted, state } = twoEntries(t, (name, path) => name === 'readFile' && path.endsWith('catalog-v1.lock.1'));
+  writeFileSync(join(state, 'catalog-v1.lock.1'), JSON.stringify({ pid: 2 ** 22 + 12345, at: Date.now() }));
+  // Both read the dead holder; the first takes the lock over and collects before the second goes on.
+  const waiting = second.get();
+  await arrived;
+  const collected = first.get();
+  await collecting;
+  open();
+  const [a, b] = await Promise.all([collected, waiting]);
+  assert.equal(a.collectedAt, b.collectedAt);
+  assert.deepEqual([counted.collections, counted.most], [1, 1]);
+});
+
+test('options agy answers that do not hold together fail the collection and leave the catalog there was', async t => {
+  const { state, home } = machine(t);
+  let version = '1.5.9', bad = {};
+  const catalog = createCatalog({ state, home, binary: join(home, '.local/bin/agy'), version: async () => version,
+    spawn: (cmd, args, options) => spawn(cmd, args, { ...options, env: { ...process.env, ...bad } }) });
+  await catalog.get();
+  const kept = readFileSync(join(state, 'catalog-v1.json'), 'utf8');
+  version = '1.6.0'; bad = { FAKE_AGY_BAD_LEVEL: 'xh' };
+  await assert.rejects(catalog.get(), /切到模型 xh 后 agy 给的配置不对：配置项 thought_level 的当前值 ultra 不在它的选项里/);
+  assert.equal(readFileSync(join(state, 'catalog-v1.json'), 'utf8'), kept);
+  assert.match(readFileSync(join(state, 'catalog-v1.failure.json'), 'utf8'), /ultra/);
 });

@@ -6,12 +6,18 @@
 // empty conversation; its ID goes to the log, `catalog-v1.log`.
 //
 // Out of date: a day old, another format, another agy (path or version), another stat of ~/.gemini/antigravity-cli/settings.json,
-// or marked by a real session whose options did not match. Entries collect one at a time (a lock file in the state directory,
-// waited on for a while, the catalog read again once it is free); a collection that fails is not tried again for five
-// minutes for the same agy and settings, and leaves the catalog there was.
+// or marked by a real session whose options did not match. Entries collect one at a time (a lock in the state directory,
+// waited on for a while, the catalog and the last failure read again once it is held); a collection that fails, or answers
+// options that do not hold together, is not tried again for five minutes for the same agy and settings, and leaves the
+// catalog there was.
+//
+// The lock is a line of generations, `catalog-v1.lock.<n>`, each made at once with its holder in it (a hard link); the
+// highest is the lock. It is free once its holder marks it `.free`, is gone, or is past a collection's time, and is then
+// taken by making the next generation, which only one entry can. No entry removes a lock above its own, so taking over a
+// lock left behind cannot remove another's; the holder of a generation clears those below it.
 import { execFile, spawn as spawnProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { rmSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import * as fsPromises from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -33,6 +39,17 @@ export const values = option => (Array.isArray(option?.options) ? option.options
 // What a list of options offers, without what is chosen: compared with the catalog's for the same model.
 const shape = configOptions => JSON.stringify(configOptions.map(option => [option?.id, option?.category, option?.type, values(option)]));
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+// What is wrong with a list of options agy gave, or null: each select's current value is one of its own values.
+function optionsProblem(configOptions) {
+  if (!Array.isArray(configOptions) || !configOptions.length) return '没有配置项';
+  for (const option of configOptions) {
+    if (typeof option?.id !== 'string') return '配置项没有 id';
+    if (option.type === 'select' && !values(option).includes(option.currentValue)) return `配置项 ${option.id} 的当前值 ${option.currentValue} 不在它的选项里`;
+  }
+  return null;
+}
+const LOCK = /^catalog-v1\.lock\.(\d+)(\.free)?$/;
+const generation = name => Number(LOCK.exec(name)?.[1] ?? 0);
 
 async function askVersion(binary, timeout) {
   return new Promise(resolve => execFile(binary, ['--version'], { encoding: 'utf8', timeout, env: { ...process.env, AGY_CLI_DISABLE_AUTO_UPDATE: 'true' } },
@@ -46,9 +63,10 @@ export function createCatalog({ state, binary, home = homedir(), now = Date.now,
   limits: given = {} } = {}) {
   const limits = { ...LIMITS, ...given };
   const file = name => join(state, name);
-  const paths = state && { catalog: file('catalog-v1.json'), lock: file('catalog-v1.lock'), failure: file('catalog-v1.failure.json'),
+  const paths = state && { catalog: file('catalog-v1.json'), failure: file('catalog-v1.failure.json'),
     stale: file('catalog-v1.stale.json'), log: file('catalog-v1.log'), cwd: file('catalog-cwd') };
-  let child = null, holding = false, aborted = false;
+  const lockFile = n => file(`catalog-v1.lock.${n}`);
+  let child = null, holding = 0, aborted = false;
 
   const readJson = async path => { try { return JSON.parse(await fs.readFile(path, 'utf8')); } catch { return null; } };
   const log = async event => {
@@ -68,23 +86,28 @@ export function createCatalog({ state, binary, home = homedir(), now = Date.now,
     if (!(age >= 0 && age < limits.ttl)) return false;
     return (await readJson(paths.stale))?.collectedAt !== catalog.collectedAt;
   }
-  // The lock, or false while another live entry holds it. One whose holder is gone, or past a collection's time, is taken over.
+  // The lock, or false while another live entry holds it (or took it first).
   async function lock() {
-    try {
-      const handle = await fs.open(paths.lock, 'wx');
-      try { await handle.writeFile(JSON.stringify({ pid: process.pid, at: now() })); } finally { await handle.close(); }
-      holding = true;
-      return true;
-    } catch (error) {
-      if (error.code !== 'EEXIST') throw new CatalogError(`插件状态目录写不进去（${error.code ?? error.message}）：${state}`);
+    const names = await fs.readdir(state).catch(error => { throw new CatalogError(`插件状态目录读不了（${error.code ?? error.message}）：${state}`); });
+    const top = Math.max(0, ...names.filter(name => !name.endsWith('.free')).map(generation));
+    if (top) {
+      const holder = await readJson(lockFile(top));
+      if (!names.includes(`catalog-v1.lock.${top}.free`) && holder && alive(holder.pid) && now() - holder.at <= limits.collect + 10_000) return false;
     }
-    const holder = await readJson(paths.lock);
-    const gone = holder ? !alive(holder.pid) || now() - holder.at > limits.collect + 10_000
-      : await fs.stat(paths.lock).then(s => Date.now() - s.mtimeMs > limits.collect + 10_000, () => true);
-    if (gone) await fs.rm(paths.lock, { force: true });
-    return false;
+    const mine = top + 1, temporary = `${lockFile(mine)}.${randomUUID()}.tmp`;
+    try { await fs.writeFile(temporary, JSON.stringify({ pid: process.pid, at: now() })); await fs.link(temporary, lockFile(mine)); }
+    catch (error) {
+      if (error.code === 'EEXIST') return false;
+      throw new CatalogError(`插件状态目录写不进去（${error.code ?? error.message}）：${state}`);
+    } finally { await fs.rm(temporary, { force: true }); }
+    // One that read an older line than there is now may have made a generation that was cleared: a higher one wins.
+    const current = await fs.readdir(state);
+    if (current.some(name => generation(name) > mine)) return false;
+    holding = mine;
+    for (const name of current) if (generation(name) && generation(name) < mine) await fs.rm(file(name), { force: true });
+    return true;
   }
-  const unlock = async () => { if (holding) { holding = false; await fs.rm(paths.lock, { force: true }); } };
+  const unlock = async () => { if (holding) { const n = holding; holding = 0; await fs.writeFile(`${lockFile(n)}.free`, ''); } };
 
   // One collection, through an agy of its own: the catalog, or a CatalogError.
   async function collect(print) {
@@ -122,11 +145,16 @@ export function createCatalog({ state, binary, home = homedir(), now = Date.now,
       const { sessionId, models, modes, configOptions } = opened ?? {};
       const model = Array.isArray(configOptions) ? configOptions.find(option => option?.category === 'model' && option.type === 'select') : null;
       if (!model) throw new CatalogError('agy 的 session/new 没给 category 为 model 的配置项');
+      const problem = optionsProblem(configOptions);
+      if (problem) throw new CatalogError(`agy 的 session/new 给的配置不对：${problem}`);
+      if (modes && !modes.availableModes?.some?.(mode => mode?.id === modes.currentModeId)) throw new CatalogError(`agy 的当前模式 ${modes.currentModeId} 不在它的模式里`);
       const byModel = {};
       for (const value of values(model)) {
         const answer = await call('session/set_config_option', { sessionId, configId: model.id, value });
         const chosen = Array.isArray(answer?.configOptions) ? answer.configOptions.find(option => option?.id === model.id) : null;
         if (chosen?.currentValue !== value) throw new CatalogError(`切到模型 ${value} 后 agy 给的配置不是这个模型的`);
+        const wrong = optionsProblem(answer.configOptions) ?? (same(values(chosen), values(model)) ? null : '模型列表与 session/new 的不同');
+        if (wrong) throw new CatalogError(`切到模型 ${value} 后 agy 给的配置不对：${wrong}`);
         byModel[value] = answer.configOptions;
       }
       if (!Object.keys(byModel).length) throw new CatalogError('agy 没给任何模型');
@@ -164,18 +192,21 @@ export function createCatalog({ state, binary, home = homedir(), now = Date.now,
     async get() {
       if (!state) throw new CatalogError('没有插件状态目录（CODA_PLUGIN_STATE），存不了模型目录');
       const print = await fingerprint(), deadline = now() + limits.wait;
-      for (;;) {
+      // The catalog if it is up to date, null if it is to be collected; a failure still cooling down is thrown.
+      const settled = async () => {
         const cached = await readJson(paths.catalog);
         if (await usable(cached, print)) return cached;
         const failure = await readJson(paths.failure);
         if (failure && same(failure.fingerprint, print) && now() - failure.at < limits.cooldown)
           throw new CatalogError(`读取 Antigravity 的模型目录失败，${Math.ceil((failure.at + limits.cooldown - now()) / 1000)} 秒后再试：${failure.reason}`);
+        return null;
+      };
+      for (;;) {
+        const cached = await settled();
+        if (cached) return cached;
         if (await lock()) {
-          try {
-            // Another entry may have finished between the reading and the lock.
-            const again = await readJson(paths.catalog);
-            return await usable(again, print) ? again : await refresh(print);
-          } finally { await unlock(); }
+          // Another entry may have collected, or failed to, between the reading and the lock.
+          try { return await settled() ?? await refresh(print); } finally { await unlock(); }
         }
         if (now() >= deadline) throw new CatalogError(`等另一个进程读取模型目录超过 ${limits.wait / 1000} 秒`);
         await delay(limits.poll);
@@ -203,7 +234,7 @@ export function createCatalog({ state, binary, home = homedir(), now = Date.now,
     abort() {
       aborted = true;
       child?.kill('SIGKILL');
-      if (holding) { holding = false; rmSync(paths.lock, { force: true }); }
+      if (holding) { writeFileSync(`${lockFile(holding)}.free`, ''); holding = 0; }
     },
   };
 }

@@ -6,7 +6,8 @@
 // Its models are as agy's are: `m` with low/medium/high thinking, `xh` with xhigh as well, `none` with no thinking level
 // (FAKE_AGY_EXTRA_MODEL adds `extra`). `agy --version` says FAKE_AGY_VERSION (1.5.9); each native session/new is a line
 // `new <cwd>` in the file FAKE_AGY_LOG, after FAKE_AGY_DELAY ms; FAKE_AGY_FAIL_MODEL is a model it refuses to switch to,
-// FAKE_AGY_SIGNED_OUT has session/new answer -32000.
+// FAKE_AGY_SIGNED_OUT has session/new answer -32000, FAKE_AGY_BAD_LEVEL is a model whose thinking level it says is `ultra`,
+// which is not one of the model's.
 import { appendFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 
@@ -22,7 +23,7 @@ const announce = (sessionId, modeId) => { modes.set(sessionId, modeId); send({ m
 const configOptions = sessionId => {
   const model = models.get(sessionId) ?? 'm', levels = LEVELS[model];
   return [{ id: 'model', category: 'model', type: 'select', currentValue: model, options: Object.keys(LEVELS).map(value => ({ value, name: `模型 ${value} ☃` })) },
-    ...(levels ? [{ id: 'thought_level', category: 'thought_level', type: 'select', currentValue: levels.includes('medium') ? 'medium' : levels[0], options: levels.map(value => ({ value, name: value })) }] : []),
+    ...(levels ? [{ id: 'thought_level', category: 'thought_level', type: 'select', currentValue: model === process.env.FAKE_AGY_BAD_LEVEL ? 'ultra' : levels.includes('medium') ? 'medium' : levels[0], options: levels.map(value => ({ value, name: value })) }] : []),
     { id: 'mode', category: 'mode', type: 'select', currentValue: modes.get(sessionId) ?? 'default', options: MODES.map(value => ({ value, name: value })) }];
 };
 const sessionResult = (m, sessionId) => {
