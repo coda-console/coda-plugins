@@ -67,7 +67,7 @@ else if (args[1] === 'checks') {
   chmodSync(gh, 0o755);
   writeFileSync(join(root, 'gh-calls'), '[]');
   // 执行者：开新会话时从 --commit 建工作树；advance 是别人先推进泳道的提交，merge 是要合并进来的远端分支（留着冲突，由 file 写好解决），
-  // noCommit 时不提交。回答就是 answer。
+  // noCommit 时不提交。回答就是 answer。exit 是做完、给出回复后的退出码（失败但会话还在）；lost 时接回会话（--continue）直接失败、不给回复。
   const agent = join(bin, 'coda-agent');
   writeFileSync(agent, `#!${process.execPath}\n` + String.raw`
 const { readFileSync, writeFileSync } = require('node:fs');
@@ -79,6 +79,7 @@ const task = JSON.parse(readFileSync(join(root, 'agent-task'), 'utf8'));
 const calls = JSON.parse(readFileSync(join(root, 'agent-calls'), 'utf8'));
 calls.push({ args, prompt: readFileSync(value('--prompt-file'), 'utf8') }); writeFileSync(join(root, 'agent-calls'), JSON.stringify(calls));
 const continued = args.includes('--continue');
+if (continued && task.lost) process.exit(1);
 const session = continued ? value('--continue') : 'worker-' + calls.length, cwd = join(root, session);
 const git = (...params) => execFileSync('git', params, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 if (!continued) execFileSync('git', ['worktree', 'add', '-q', '--detach', cwd, value('--commit')], { stdio: 'pipe' });
@@ -86,6 +87,7 @@ if (task.advance) git('push', '-q', 'origin', task.advance + ':refs/heads/lane/r
 if (task.merge) { git('fetch', '-q', 'origin', task.merge); spawnSync('git', ['merge', '--no-commit', 'FETCH_HEAD'], { cwd }); }
 if (!task.noCommit) { writeFileSync(join(cwd, task.file), task.text ?? task.answer); git('add', '-A'); git('commit', '-qm', task.subject ?? 'fix'); }
 console.log(JSON.stringify({ session, branch: null, head: git('rev-parse', 'HEAD'), answer: task.answer }));
+process.exit(task.exit ?? 0);
 `);
   chmodSync(agent, 0o755);
   writeFileSync(join(root, 'agent-calls'), '[]');
@@ -403,10 +405,10 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   assert.equal(process.name, '监督开发'); assert.equal(process.kind, undefined); assert.equal(process.concurrency, undefined);
   assert.deepEqual(values(process).filter(v => v.$type === 'coda:Join').map(j => j.hook), ['develop'], '开发流程：加入挂点 develop');
   const inputs = Object.fromEntries(values(process).filter(v => v.$type === 'coda:Input').map(v => [v.name, v]));
-  assert.deepEqual(Object.keys(inputs), ['title', 'devices', 'device', 'hold', 'delivery', 'executor', 'executor2', 'reviewer', 'reviewer2', 'reviewer3', 'base']);
+  assert.deepEqual(Object.keys(inputs), ['title', 'devices', 'device', 'hold', 'delivery', 'executor', 'executor2', 'reviewer', 'reviewer2', 'reviewer3', 'autoMerge', 'base']);
   assert.deepEqual(Object.values(inputs).filter(v => v.required), [], '用户在会话里开启时什么都不必填');
   for (const name of ['title', 'device', 'delivery', 'base']) assert.equal(inputs[name].default, '', name);
-  assert.deepEqual([inputs.devices.type, inputs.devices.default], ['boolean', 'false']);
+  for (const name of ['devices', 'autoMerge']) assert.deepEqual([inputs[name].type, inputs[name].default], ['boolean', 'false'], name);
   for (const name of ['executor', 'executor2', 'reviewer', 'reviewer2', 'reviewer3']) assert.deepEqual([inputs[name].type, inputs[name].default, inputs[name].defaultFrom], ['agent', undefined, undefined], name);
   assert.equal(nodes.start.eventDefinitions, undefined, '不订阅 PR 事件');
   assert.ok(manifest.files.includes('.coda/workflows')); assert.ok(manifest.files.includes('scripts'));
@@ -530,7 +532,8 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   assert.equal(tell('text'), '需求「输入框」：用户设备验收通过，接下来等用户批准合并。');
   assert.equal(tell('key'), 'run-1:device:head-1');
   assert.equal(next('tell-device'), 'delivery-choice');
-  assert.equal(route('delivery-choice', { inputs: { delivery: '' } }), 'joiners');
+  assert.equal(route('delivery-choice', { inputs: { delivery: '' } }), 'auto-merge-choice');
+  assert.equal(route('auto-merge-choice', { inputs: { delivery: '' } }), 'joiners');
   assert.equal(route('delivery-choice', { inputs: { delivery: 'deliver-1' } }), 'delivery');
   assert.deepEqual(values(nodes.delivery).map(v => [v.id, v.name]), [['revise', '退回修改'], ['merge', '放行合并']]);
   for (const [value, target] of [['delivery', 'delivery'], ['progress', 'resume'], ['merge', 'merge']]) assert.equal(route('after-delivery', { 'delivery-result': { route: value } }), target);
@@ -800,6 +803,132 @@ test('新流程定义：提交验收先跟上目标分支，再开 PR；整体�
   const card = nodes.review.documentation[0].text, expression = [...card.matchAll(/{{(.*?)}}/g)].find(m => m[1].includes('overall-rounds.text'))[1];
   assert.equal(evaluate(expression, { 'overall-rounds': { text: '' } }).value, '');
   assert.match(evaluate(expression, { 'overall-rounds': { text: '经过' } }).value, /^\n收敛经过（.*）：\n经过\n$/);
+});
+
+test('执行者合并目标分支失败：会话记进运行状态，再跑接回它、先核对现场；接不回（没有会话 ID）才从泳道 head 新开一次', t => {
+  const f = fixture(t); f.run('lane'); f.progress('submit', '汇报');
+  const lane = f.land('shared', 'lane side'), base = f.advanceMain('shared', 'main side'), executor = { EXECUTOR: JSON.stringify({ agent: 'codex' }) };
+  f.run('sync-base', { FIXER: 'true' });
+  f.task({ merge: 'main', file: 'shared', text: 'both', answer: '解到一半', exit: 1 });
+  f.run('sync-resolve', executor, 1);
+  assert.equal(f.state().sync.session, 'worker-1');
+  assert.equal(f.remote('lane/run-1'), lane, '失败不推送');
+  f.task({ noCommit: true, answer: '解好了' });
+  assert.equal(f.run('sync-resolve', executor).outputs.route, 'pr');
+  const resumed = f.agentCalls()[1];
+  assert.deepEqual(resumed.args.slice(0, 2), ['--continue', 'worker-1']);
+  for (const part of ['不再委派', '上一次没有正常结束', 'git status', '原任务：', `git merge ${base}`]) assert.ok(resumed.prompt.includes(part), part);
+  assert.deepEqual(parents(f, f.remote('lane/run-1')), [lane, base], '上次做好的合并提交推到泳道');
+
+  const f2 = fixture(t); f2.run('lane'); f2.progress('submit', '汇报');
+  const lane2 = f2.land('shared', 'lane side'), base2 = f2.advanceMain('shared', 'main side');
+  f2.run('sync-base', { FIXER: 'true' });
+  f2.task({ merge: 'main', file: 'shared', text: 'both', answer: '解到一半', exit: 1 });
+  f2.run('sync-resolve', executor, 1);
+  f2.task({ lost: true, merge: 'main', file: 'shared', text: 'both', answer: '重新解好了' });
+  assert.equal(f2.run('sync-resolve', executor).outputs.route, 'pr');
+  const calls = f2.agentCalls();
+  assert.deepEqual(calls.map(c => c.args[0]), ['--commit', '--continue', '--commit'], '接不回只新开一次');
+  assert.deepEqual(calls[2].args.slice(0, 2), ['--commit', lane2]);
+  assert.ok(!calls[2].prompt.includes('上一次没有正常结束'), '新开的会话不用核对现场');
+  assert.equal(f2.state().sync.session, undefined);
+  assert.deepEqual(parents(f2, f2.remote('lane/run-1')), [lane2, base2]);
+});
+
+test('整体评审修复失败：会话与「这一轮没做完」记进运行状态，再跑接回它、先核对现场；新一轮照常续会话；第一轮之后接不回不新开', t => {
+  const { f, pr } = submitted(t), executor = { EXECUTOR: JSON.stringify({ agent: 'codex' }) }, converge = () => f.state().converge;
+  f.run('overall-round', { BASE: pr.base });
+  f.run('overall-triage', { REVIEWS: JSON.stringify([overallReview('reviewer', pr.head, [DOC])]), SUMMARY: pr.summary, FIXER: 'true' });
+  f.task({ file: 'README.md', text: '补到一半', subject: '补 README', answer: '中断', exit: 1 });
+  f.run('overall-fix', executor, 1);
+  assert.deepEqual([converge().session, converge().fixing, converge().rounds], ['worker-1', true, 0]);
+  assert.equal(f.remote('lane/run-1'), pr.head, '失败不推送');
+  f.task({ noCommit: true, answer: responded('补了', [{ id: 'reviewer:1', disposition: 'fixed' }]) });
+  assert.equal(f.run('overall-fix', executor).outputs.route, 'pr');
+  const resumed = f.agentCalls()[1];
+  assert.deepEqual(resumed.args.slice(0, 2), ['--continue', 'worker-1']);
+  for (const part of ['不再委派', '上一次没有正常结束', 'git status', '原任务：', '- reviewer:1 [P2·documentation·阻塞] README 漏了新输入']) assert.ok(resumed.prompt.includes(part), part);
+  const fixed = f.remote('lane/run-1');
+  assert.deepEqual(parents(f, fixed), [pr.head], '上次做好的提交推到泳道');
+  assert.deepEqual([converge().session, converge().fixing, converge().rounds], ['worker-1', undefined, 1]);
+
+  // 第二轮：续同一会话、不带核对现场；接不回（没有会话 ID）就按失败退出，不新开会话；再跑才是续这一轮。
+  const head = f.run('pr').outputs.head;
+  f.run('overall-round', { BASE: pr.base });
+  const kept = JSON.stringify([{ id: 'reviewer:1', status: 'upheld', reason: '还不全' }]);
+  assert.equal(f.run('overall-triage', { REVIEWS: JSON.stringify([overallReview('reviewer', head, [], { resolutions: kept })]), SUMMARY: '', FIXER: 'true' }).outputs.route, 'fix');
+  f.task({ lost: true });
+  f.run('overall-fix', executor, 1);
+  assert.equal(f.agentCalls().length, 3, '没有新开会话');
+  assert.deepEqual(f.agentCalls()[2].args.slice(0, 2), ['--continue', 'worker-1']);
+  assert.ok(!f.agentCalls()[2].prompt.includes('上一次没有正常结束'), '新一轮不是续跑');
+  assert.deepEqual([converge().session, converge().fixing, converge().rounds], ['worker-1', true, 1]);
+  f.task({ file: 'README.md', text: '补全', answer: responded('补全了', [{ id: 'reviewer:1', disposition: 'fixed' }]) });
+  assert.equal(f.run('overall-fix', executor).outputs.route, 'pr');
+  assert.ok(f.agentCalls()[3].prompt.includes('上一次没有正常结束'), '续这一轮');
+  assert.equal(converge().rounds, 2);
+
+  // 第一轮接不回：从泳道 head 新开一次。
+  const { f: f2, pr: pr2 } = submitted(t);
+  f2.run('overall-round', { BASE: pr2.base });
+  f2.run('overall-triage', { REVIEWS: JSON.stringify([overallReview('reviewer', pr2.head, [DOC])]), SUMMARY: pr2.summary, FIXER: 'true' });
+  f2.task({ file: 'README.md', text: '补到一半', answer: '中断', exit: 1 });
+  f2.run('overall-fix', executor, 1);
+  f2.task({ lost: true, file: 'README.md', text: '补了', answer: responded('补了', [{ id: 'reviewer:1', disposition: 'fixed' }]) });
+  assert.equal(f2.run('overall-fix', executor).outputs.route, 'pr');
+  assert.deepEqual(f2.agentCalls().map(c => c.args[0]), ['--commit', '--continue', '--commit']);
+  assert.deepEqual(f2.agentCalls()[2].args.slice(0, 2), ['--commit', pr2.head]);
+  assert.deepEqual([f2.state().converge.session, f2.state().converge.rounds], ['worker-3', 1]);
+});
+
+test('自动合并：开了 autoMerge、填了整体评审者、这次整体评审直接通过（开了设备验收的已通过、不是成员运行）才不出批准卡直接合并；不跑合并后的流程，照常通知', async () => {
+  const { nodes, values, route, next } = await definition();
+  // 从 from 走到 stops 之一：网关按 context 分流，其余走唯一的出口；返回经过的节点，最后一个是停下的。
+  const walk = (from, context, stops) => {
+    const visited = [from];
+    while (!stops.includes(visited.at(-1))) { const step = visited.at(-1); visited.push(nodes[step].$type === 'bpmn:ExclusiveGateway' ? route(step, context) : next(step)); }
+    return visited;
+  };
+  const reach = (from, context) => walk(from, context, ['merge', 'approve', 'delivery', 'resume', 'overall-rounds']).at(-1);
+  const auto = { inputs: { autoMerge: true, reviewer: { agent: 'a' }, reviewer2: null, reviewer3: null, devices: false, delivery: '' }, 'overall-triage': { route: 'accept' } };
+  const set = (inputs, extra = {}) => ({ ...auto, ...extra, inputs: { ...auto.inputs, ...inputs } });
+  assert.equal(reach('overall-triage-route', auto), 'merge', '条件都满足：跳过合并后流程的清单和批准卡');
+  for (const reviewers of [{ reviewer: null, reviewer2: { agent: 'b' } }, { reviewer: null, reviewer3: { agent: 'c' } }]) assert.equal(reach('overall-triage-route', set(reviewers)), 'merge');
+  for (const [why, from, context] of [
+    ['默认不开', 'overall-triage-route', set({ autoMerge: false })],
+    ['旧运行没有这个输入', 'overall-triage-route', set({ autoMerge: undefined })],
+    ['没填整体评审者', 'reviews-choice', { inputs: { ...auto.inputs, reviewer: null } }],
+  ]) assert.equal(reach(from, context), 'approve', why);
+  assert.equal(route('auto-merge-choice', set({ reviewer: null })), 'joiners', '网关本身也要求填了整体评审者');
+  // 整体评审交过主 Agent（升级或修过之后交卡），主 Agent 选继续验收也不自动合并。
+  for (const value of ['escalate', 'fix']) assert.equal(reach('after-review', set({}, { 'overall-triage': { route: value }, 'review-result': { route: 'continue' } })), 'approve', value);
+  // 开了设备验收：验收通过才走到这里；没通过回到进行中。
+  assert.equal(reach('overall-triage-route', set({ devices: true }, { acceptance: { route: 'return' } })), 'resume');
+  assert.equal(reach('overall-triage-route', set({ devices: true }, { acceptance: { route: 'passed' } })), 'merge');
+  // 需求交付的成员照常进「待交付」。
+  assert.equal(reach('overall-triage-route', set({ devices: true, delivery: 'deliver-1' })), 'delivery');
+
+  // 合并之后：自动合并不跑合并后的流程（哪怕留着之前批准卡的答复），照常通知、输出 PR 与合并提交；冲突回到进行中。
+  const stale = { approve: { options: { notify: false } }, 'approval-result': { only: '["deploy"]', missing: '' }, merge: { route: 'merged' } };
+  const after = ['done', 'done-none', 'resume', 'merged-inputs'];
+  assert.deepEqual(walk('after-merge', { ...auto, ...stale }, after), ['after-merge', 'merged-choice', 'done']);
+  assert.equal(route('merged-choice', { ...auto, ...stale }), 'done');
+  assert.equal(route('merged-choice', set({ autoMerge: false }, stale)), 'fill-choice', '批准合并的照旧跑勾了的');
+  assert.equal(route('after-merge', { ...auto, merge: { route: 'conflict' } }), 'resume');
+  const notify = [nodes.done.notify, values(nodes.done).find(v => v.name === 'notify').value];
+  for (const expression of notify) {
+    assert.equal(evaluate(expression.slice(1), { ...auto, ...stale }).value, true);
+    assert.equal(evaluate(expression.slice(1), { ...auto, inputs: { ...auto.inputs, autoMerge: false }, ...stale }).value, false, '批准卡上没勾通知');
+  }
+  assert.deepEqual(values(nodes.done).map(v => [v.name, v.value?.slice(0, 13)]).slice(0, 2), [['pr', '=pr.url'], ['commit', '=merge.commit']]);
+
+  // 已发布的定义（10.0.0、10.1.4）没有这个开关：照样出批准卡。
+  for (const { version, source } of olds) {
+    const previous = await definition(source);
+    assert.equal(previous.nodes['auto-merge-choice'], undefined, version);
+    assert.equal(previous.route('delivery-choice', auto), 'joiners', version);
+    assert.equal(previous.next('joiners'), 'approve', version);
+  }
 });
 
 // 旧定义里每个脚本步骤：动作名、env 与输出。
