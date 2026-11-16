@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { readWorkflow } from '@coda-console/protocol/workflow';
 import { evaluate } from 'feelin';
+import { evaluateTyped, typedOutputs } from './feel.mjs';
 
 const script = fileURLToPath(new URL('../../../plugins/composer/scripts/develop.mjs', import.meta.url));
 const workflow = readFileSync(new URL('../../../plugins/composer/.coda/workflows/develop.bpmn', import.meta.url), 'utf8');
@@ -96,7 +97,7 @@ console.log(JSON.stringify({ session, branch: null, head: git('rev-parse', 'HEAD
   };
   const remote = ref => git('ls-remote', 'origin', ref).split('\t')[0];
   // 一个块合进了需求分支：在需求分支上另提交一个；message 照块（piece）合入的提交写，带 Coda-Piece: <运行 ID>。
-  const land = (file, text, message = `lane ${file}`) => {
+  const land = (file, text, message = `块 ${file}`) => {
     git('fetch', '-q', 'origin', state().branch); git('switch', '-q', '--detach', 'FETCH_HEAD');
     writeFileSync(join(work, file), text); git('add', file); git('commit', '-qm', message); git('push', '-q', 'origin', `HEAD:refs/heads/${state().branch}`);
     return git('rev-parse', 'HEAD');
@@ -127,9 +128,7 @@ async function definition(source = workflow) {
   const params = id => Object.fromEntries(values(nodes[id]).map(v => [v.name, v.value]));
   const route = (id, context) => {
     const node = nodes[id], flows = elements.filter(e => e.sourceRef === node);
-    const typed = Object.fromEntries(Object.entries(context).map(([key, value]) => [key, typeof value === 'object' && value
-      ? Object.fromEntries(Object.entries(value).map(([k, v]) => [k, v === 'true' ? true : v === 'false' ? false : v])) : value]));
-    return (flows.find(e => e.conditionExpression && evaluate(e.conditionExpression.body.trim().slice(1), typed).value) ?? node.default).targetRef.id;
+    return (flows.find(e => e.conditionExpression && evaluateTyped(e.conditionExpression.body.trim().slice(1), context)) ?? node.default).targetRef.id;
   };
   const next = id => elements.find(e => e.$type === 'bpmn:SequenceFlow' && e.sourceRef === nodes[id]).targetRef.id;
   return { process, elements, nodes, values, params, route, next };
@@ -140,7 +139,7 @@ test('建需求分支：从目标分支最新提交建 req/<运行 ID> 并推送
   const created = f.run('branch').outputs;
   assert.deepEqual(created, { title: '输入框', goal: '输入框可以输入', base: 'main', branch: 'req/run-1' });
   assert.equal(f.remote('req/run-1'), f.remote('main'));
-  const landed = f.land('one', 'first lane PR');
+  const landed = f.land('one', 'first piece');
   f.git('switch', '-q', 'main');
   writeFileSync(join(f.work, 'later'), 'later'); f.git('add', 'later'); f.git('commit', '-qm', 'main moved'); f.git('push', '-q', 'origin', 'main');
   assert.equal(f.run('branch').outputs.branch, 'req/run-1');
@@ -189,8 +188,7 @@ test('需求已暂停：用户选继续带着原因回到进行中，选放弃�
 // 派块的参数照引擎读：答复的输出先把 "true"/"false" 变成布尔值，再读 callActivity 上的 FEEL（参数保留表达式的类型）。
 const pieceInputs = async (outputs, inputs) => {
   const { params } = await definition();
-  const typed = Object.fromEntries(Object.entries(outputs).map(([k, v]) => [k, v === 'true' ? true : v === 'false' ? false : v]));
-  return Object.fromEntries(Object.entries(params('piece')).map(([name, value]) => [name, evaluate(value.slice(1), { inputs, req: { branch: 'req/run-1', base: 'main' }, 'progress-result': typed }).value]));
+  return Object.fromEntries(Object.entries(params('piece')).map(([name, value]) => [name, evaluate(value.slice(1), { inputs, req: { branch: 'req/run-1', base: 'main' }, 'progress-result': typedOutputs(outputs) }).value]));
 };
 const KICKOFF = { executor: { agent: 'codex', model: 'gpt-6.1-sol', options: { 'service-tier': 'priority' } }, executor2: { agent: 'claude-sdk' }, reviewer: { agent: 'kimi', effort: 'high' }, reviewer2: null, reviewer3: { agent: 'grok' } };
 
@@ -295,7 +293,7 @@ test('提交验收开需求分支进目标分支的 PR：不带会话开，正�
   assert.equal(f.calls().filter(c => c.args[1] === 'create').length, 1);
   const edit = f.calls().find(c => c.args[1] === 'edit');
   assert.deepEqual(edit.args.slice(0, 3), ['pr', 'edit', PR]);
-  assert.ok(edit.body.startsWith(`新汇报\n\n块：\n- ${first.slice(0, 12)} 输入框可以输入（coda://workflow-runs/piece-9）\n- ${head.slice(0, 12)} 补齐状态（coda://workflow-runs/piece-12）\n- ${third.slice(0, 12)} lane three\n\n改动：3 个文件 +3 -0`), edit.body);
+  assert.ok(edit.body.startsWith(`新汇报\n\n块：\n- ${first.slice(0, 12)} 输入框可以输入（coda://workflow-runs/piece-9）\n- ${head.slice(0, 12)} 补齐状态（coda://workflow-runs/piece-12）\n- ${third.slice(0, 12)} 块 three\n\n改动：3 个文件 +3 -0`), edit.body);
   assert.deepEqual(f.calls().find(c => c.args[1] === 'list' && c.args.includes('open')).args,
     ['pr', 'list', '--head', 'req/run-1', '--base', 'main', '--state', 'open', '--limit', '1', '--json', 'url', '--jq', '.[].url']);
 });
@@ -725,15 +723,15 @@ test('跟上目标分支：需求分支已包含目标分支不动；需求分�
   assert.equal(f2.remote('req/run-1'), main, '快进到目标分支');
   assert.equal(f2.state().pushed, undefined, '快进没有流程自己做的提交');
 
-  const lane = f.land('three', 'lane'), base = f.advanceMain('four', 'main');
+  const landedHead = f.land('three', '块'), base = f.advanceMain('four', 'main');
   assert.equal(sync({ FIXER: 'false' }), 'pr', '干净合并不需要执行者');
   const merged = f.remote('req/run-1');
-  assert.deepEqual(parents(f, merged), [lane, base], '需求分支在前、目标分支在后');
+  assert.deepEqual(parents(f, merged), [landedHead, base], '需求分支在前、目标分支在后');
   assert.equal(f.git('show', '-s', '--format=%s', merged), '合并 main 到 req/run-1');
   assert.equal(f.git('ls-tree', '--name-only', merged).split('\n').sort().join(','), 'base,four,one,three');
   assert.deepEqual(f.state().pushed, [{ commit: merged, subject: '合并 main 到 req/run-1', why: '跟上 main' }]);
   const summary = f.run('pr').outputs.summary;
-  assert.ok(summary.includes(`块：\n- ${landed.slice(0, 12)} lane one\n- ${lane.slice(0, 12)} lane three\n\n流程直接推到需求分支的提交：\n- ${merged.slice(0, 12)} 合并 main 到 req/run-1（跟上 main）\n\n改动：`), summary);
+  assert.ok(summary.includes(`块：\n- ${landed.slice(0, 12)} 块 one\n- ${landedHead.slice(0, 12)} 块 three\n\n流程直接推到需求分支的提交：\n- ${merged.slice(0, 12)} 合并 main 到 req/run-1（跟上 main）\n\n改动：`), summary);
   assert.equal(f.state().head, merged, '之后的检查跑在新 head 上');
 });
 
@@ -747,53 +745,53 @@ test('从头重跑 branch：保留流程直推的记录，之后的汇总仍把�
   assert.deepEqual(f.state().pushed, pushed, '重跑不丢记录');
   assert.equal(f.state().feedback, '', '其余照旧重置');
   const summary = f.run('pr').outputs.summary;
-  assert.ok(summary.includes(`块：\n- ${landed.slice(0, 12)} lane one\n\n流程直接推到需求分支的提交：\n- ${merged.slice(0, 12)} 合并 main 到 req/run-1（跟上 main）\n\n改动：`), summary);
+  assert.ok(summary.includes(`块：\n- ${landed.slice(0, 12)} 块 one\n\n流程直接推到需求分支的提交：\n- ${merged.slice(0, 12)} 合并 main 到 req/run-1（跟上 main）\n\n改动：`), summary);
 });
 
 test('跟上目标分支有冲突：没填执行者带着冲突文件回到进行中；填了就交执行者从需求分支 head 合并，两端都包含才推送', t => {
   const f = fixture(t); f.run('branch'); f.progress('submit', '汇报');
-  const lane = f.land('shared', 'lane side'), base = f.advanceMain('shared', 'main side');
+  const landedHead = f.land('shared', '块 side'), base = f.advanceMain('shared', 'main side');
   assert.equal(f.run('sync-base', { FIXER: 'false' }).outputs.route, 'progress');
   const text = f.reason();
   for (const part of ['有冲突', '- shared', '没填开工执行者', '选「跟上目标分支」派一块（备注最前面写执行者）']) assert.ok(text.includes(part), part);
-  assert.equal(f.remote('req/run-1'), lane, '需求分支不动');
+  assert.equal(f.remote('req/run-1'), landedHead, '需求分支不动');
 
   f.progress('submit', '汇报');
   assert.equal(f.run('sync-base', { FIXER: 'true' }).outputs.route, 'resolve');
   f.task({ merge: 'main', file: 'shared', text: 'both', answer: '解好了', subject: '合并 main' });
   assert.equal(f.run('sync-resolve', { EXECUTOR: JSON.stringify({ agent: 'codex', model: 'm1' }) }).outputs.route, 'pr');
   const call = f.agentCalls()[0], resolved = f.remote('req/run-1');
-  assert.deepEqual(call.args.slice(0, 8), ['--commit', lane, '--title', '输入框：跟上 main', '--agent', 'codex', '--model', 'm1']);
+  assert.deepEqual(call.args.slice(0, 8), ['--commit', landedHead, '--title', '输入框：跟上 main', '--agent', 'codex', '--model', 'm1']);
   for (const part of ['不再委派', '- shared', `git merge ${base}`, '不要变基', '顺延需求分支这边的']) assert.ok(call.prompt.includes(part), part);
-  assert.deepEqual(parents(f, resolved), [lane, base]);
+  assert.deepEqual(parents(f, resolved), [landedHead, base]);
   assert.deepEqual(f.state().pushed.map(p => [p.commit, p.why]), [[resolved, '跟上 main，执行者解冲突']]);
 
   // 执行者没有把目标分支合并进来：不推送，回到进行中。
   const f2 = fixture(t); f2.run('branch'); f2.progress('submit', '汇报');
-  const lane2 = f2.land('shared', 'lane side'); f2.advanceMain('shared', 'main side');
+  const landed2 = f2.land('shared', '块 side'); f2.advanceMain('shared', 'main side');
   f2.run('sync-base', { FIXER: 'true' });
   f2.task({ file: 'other', answer: '没合' });
   assert.equal(f2.run('sync-resolve', { EXECUTOR: JSON.stringify({ agent: 'codex' }) }).outputs.route, 'progress');
   assert.match(f2.reason(), /执行者没有把 main .* 合并进需求分支[\s\S]*没合/);
-  assert.equal(f2.remote('req/run-1'), lane2);
+  assert.equal(f2.remote('req/run-1'), landed2);
 });
 
 test('流程推需求分支被拒（需求分支被别人推进了）：不重试、不覆盖，带着原因回到进行中；需求分支没动的推送失败保留退出码', t => {
   const f = fixture(t); f.run('branch'); f.progress('submit', '汇报');
-  const lane = f.land('shared', 'lane side'); f.advanceMain('shared', 'main side');
+  const landedHead = f.land('shared', '块 side'); f.advanceMain('shared', 'main side');
   f.run('sync-base', { FIXER: 'true' });
   // 别人推进了需求分支：执行者解冲突期间需求分支前进一个提交。
-  f.git('switch', '-q', '--detach', lane); writeFileSync(join(f.work, 'other'), 'other'); f.git('add', 'other'); f.git('commit', '-qm', 'other');
+  f.git('switch', '-q', '--detach', landedHead); writeFileSync(join(f.work, 'other'), 'other'); f.git('add', 'other'); f.git('commit', '-qm', 'other');
   const other = f.git('rev-parse', 'HEAD');
   f.task({ advance: other, merge: 'main', file: 'shared', text: 'both', answer: '解好了' });
   assert.equal(f.run('sync-resolve', { EXECUTOR: JSON.stringify({ agent: 'codex' }) }).outputs.route, 'progress');
   assert.equal(f.remote('req/run-1'), other, '别人的提交还在');
-  for (const part of ['被拒', `需求分支已不是 ${lane}`, '流程没有覆盖', '重新提交验收']) assert.ok(f.reason().includes(part), part);
+  for (const part of ['被拒', `需求分支已不是 ${landedHead}`, '流程没有覆盖', '重新提交验收']) assert.ok(f.reason().includes(part), part);
   assert.equal(f.state().pushed, undefined);
 
   // 服务端拒收、需求分支没动：不是被推进了，保留原退出码。
   const f2 = fixture(t); f2.run('branch'); f2.progress('submit', '汇报');
-  f2.land('one', 'lane'); f2.advanceMain('two', 'main');
+  f2.land('one', '块'); f2.advanceMain('two', 'main');
   const hook = join(f2.origin, 'hooks', 'pre-receive');
   writeFileSync(hook, '#!/bin/sh\nexit 1\n'); chmodSync(hook, 0o755);
   assert.deepEqual(f2.run('sync-base', { FIXER: 'true' }, 1).outputs, {});
