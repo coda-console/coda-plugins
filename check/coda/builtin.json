@@ -404,7 +404,7 @@
     "id": "guide",
     "displayName": "Coda 使用指南",
     "description": "让 Agent 会回答 Coda 怎么用",
-    "version": "1.0.9",
+    "version": "1.0.16",
     "category": "工作流程",
     "icon": {
       "symbol": "book.fill",
@@ -441,7 +441,7 @@
     "id": "maintenance",
     "displayName": "维护",
     "description": "定期清理旧记录和构建产物",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "category": "工作流程",
     "icon": {
       "symbol": "wrench.adjustable.fill",
@@ -480,8 +480,8 @@
       "maintenance.archivedGrace": {
         "type": "string",
         "format": "duration",
-        "description": "会话（随它的根会话）归档满这么久，就删掉它的密钥文件、人机验证截图和批准执行命令的输出；期间取消归档就保留。实际删除发生在这之后的下一次维护。ISO 8601 时长，如 PT10M。",
-        "title": "归档后多久删掉会话的密钥与命令输出",
+        "description": "会话（随它的根会话）归档满这么久，就删掉它的密钥文件、人机验证截图、批准执行命令的输出，以及它的 Agent 的临时目录（`CODA_SESSION_TMP`；会话还有进程在就等下一次）；期间取消归档就保留。实际删除发生在这之后的下一次维护。ISO 8601 时长，如 PT10M。",
+        "title": "归档后多久删掉会话的密钥、命令输出与临时目录",
         "order": 6,
         "default": "PT10M"
       },
@@ -514,7 +514,7 @@
     "id": "resources",
     "displayName": "资源",
     "description": "各台电脑的账号、额度与负载",
-    "version": "2.4.0",
+    "version": "2.4.2",
     "category": "机器与资源",
     "icon": {
       "symbol": "gauge.with.dots.needle.67percent",
@@ -585,7 +585,7 @@
                 "$ref": "common.json#/$defs/command"
               },
               "kind": {
-                "description": "种类名：声明后这类资源成为节点内核里的可引用种类，由这台电脑上报读数；小写字母、数字和「-」，全空间唯一",
+                "description": "种类名：声明后这类资源成为可引用种类，读数由这台电脑写成后端目录库里的记录；小写字母、数字和「-」，全空间唯一",
                 "type": "string",
                 "maxLength": 63,
                 "pattern": "^[a-z][a-z0-9-]{0,62}$"
@@ -912,7 +912,7 @@
     "id": "space",
     "displayName": "空间",
     "description": "把几台电脑组成一个空间",
-    "version": "1.3.0",
+    "version": "1.3.2",
     "category": "机器与资源",
     "icon": {
       "symbol": "square.stack.3d.up.fill",
@@ -1065,7 +1065,7 @@
     "id": "claude",
     "displayName": "Claude",
     "description": "用 Claude Agent SDK 跑会话",
-    "version": "1.12.3",
+    "version": "1.14.0",
     "category": "Agent",
     "icon": {
       "light": "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",
@@ -1076,8 +1076,8 @@
       "kind": "builtin",
       "package": "@coda-console/claude",
       "tag": "latest",
-      "version": "1.12.3",
-      "integrity": "sha512-IeLAR+Fx1DuAdE7CawFvb7SaY9bSpIZ15Z7VVMJXRFprwG2N8i7P9QfsOnpVeCFNGWuY0+8k2cwxi+4rE18tfw==",
+      "version": "1.14.0",
+      "integrity": "sha512-Ne0bs9jWmZiHH9avBhVoW6L5s6/qVwlweUt1NE3jvvdoGlx4kXjMxNTdd+OMgtgAvZk7MUth9xCZR7mL5eDQZQ==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/claude"
     },
@@ -1161,7 +1161,7 @@
     "id": "codex",
     "displayName": "Codex",
     "description": "用 OpenAI Codex 跑会话",
-    "version": "1.13.0",
+    "version": "1.13.1",
     "category": "Agent",
     "icon": {
       "light": "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",
@@ -1172,8 +1172,8 @@
       "kind": "builtin",
       "package": "@coda-console/codex",
       "tag": "latest",
-      "version": "1.13.0",
-      "integrity": "sha512-k7rqp1vnPsOv5tUkv3BKHJHXA9WEsnCwAyQWNjZxZragKp7Lx9B9FJ9WwfECwY+uRJjM5i5d8QBZk0X7ruCD9A==",
+      "version": "1.13.1",
+      "integrity": "sha512-g9MTjk4VryCMDMeStmm+lsM9t93EYipzWrDF9+gkbZc6WTPFmDL/nj4J3QOZIkofe5vxG7hQFLmtcdl5cDOwyQ==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/codex"
     },
@@ -1328,7 +1328,7 @@
     "id": "composer",
     "displayName": "输入框模式",
     "description": "交接、子会话、! 命令、Ultra 与循环",
-    "version": "9.2.0",
+    "version": "10.2.0",
     "category": "工作流程",
     "icon": {
       "symbol": "character.cursor.ibeam",
@@ -1339,8 +1339,8 @@
       "kind": "builtin",
       "package": "@coda-console/composer",
       "tag": "latest",
-      "version": "9.2.0",
-      "integrity": "sha512-upykW4ctCyaLNw4LTvBxR/L77hQBIw7wix93sB7LurVDZNWlgvCQn3tNFxgcRBnPlyhWv+bYiTOts25MEbBHLw==",
+      "version": "10.2.0",
+      "integrity": "sha512-/N6fdF74tlziAGfYVBjTPx0k8wpswW4JpdPdXAB8KuR1qwD0mLV6NOSKu/wK0hXexKQmw8fPn/izyhNIHpj9+A==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/composer"
     },
@@ -1759,7 +1759,7 @@
     "id": "kimi",
     "displayName": "Kimi Code",
     "description": "用 Kimi Code 跑会话",
-    "version": "1.4.3",
+    "version": "1.4.4",
     "category": "Agent",
     "icon": {
       "light": "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",
@@ -1771,8 +1771,8 @@
       "kind": "builtin",
       "package": "@coda-console/kimi",
       "tag": "latest",
-      "version": "1.4.3",
-      "integrity": "sha512-f8JFMkfkAe8kNPQTS17rDWaz6inr1D0uG+wY0TwkQyVinObNK2cklh495kF5DpCl381rEvpPZTuc5nQeJ0te5Q==",
+      "version": "1.4.4",
+      "integrity": "sha512-2Pdw4IXeibl3Q4XV445TjolNuAyPLaoxmjtGVv8Hc13Go2eUnjWQlki2vNbVevu7tbqKOORC7DrLkB335toXoQ==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/kimi"
     },
@@ -1838,7 +1838,7 @@
     "id": "opencode",
     "displayName": "OpenCode",
     "description": "用 OpenCode 跑会话",
-    "version": "2.3.2",
+    "version": "2.3.3",
     "category": "Agent",
     "icon": {
       "light": "JVBERi0xLjcKJbXtrvsKNCAwIG9iago8PCAvTGVuZ3RoIDUgMCBSCiAgIC9GaWx0ZXIgL0ZsYXRlRGVjb2RlCj4+CnN0cmVhbQp4nDNUMABCXUMgYWRkqpCcy1XIVaigX2yukF6soF9hoeCSrxDIFcgFAKn0CNoKZW5kc3RyZWFtCmVuZG9iago1IDAgb2JqCiAgIDQ1CmVuZG9iagozIDAgb2JqCjw8CiAgIC9FeHRHU3RhdGUgPDwKICAgICAgL3M3IDcgMCBSCiAgID4+CiAgIC9YT2JqZWN0IDw8IC94OCA4IDAgUiA+Pgo+PgplbmRvYmoKMTAgMCBvYmoKPDwgL1R5cGUgL1hPYmplY3QKICAgL0xlbmd0aCA0MAogICAvRmlsdGVyIC9GbGF0ZURlY29kZQogICAvU3VidHlwZSAvRm9ybQogICAvQkJveCBbIDAgMCAxODAgMjI1IF0KICAgL0dyb3VwIDw8CiAgICAgIC9UeXBlIC9Hcm91cAogICAgICAvUyAvVHJhbnNwYXJlbmN5CiAgICAgIC9JIHRydWUKICAgICAgL0NTIC9EZXZpY2VSR0IKICAgPj4KICAgL1Jlc291cmNlcwo8PAogICAvRXh0R1N0YXRlIDw8CiAgICAgIC9nczAgPDwgL0JNIC9Ob3JtYWwgL1NNYXNrIC9Ob25lIC9DQSAxLjAgL2NhIDEuMCA+PgogICAgICAvYTAgPDwgL0NBIDEgL2NhIDEgPj4KICAgPj4KICAgL1hPYmplY3QgPDwgL3gxMSAxMSAwIFIgPj4KPj4KPj4Kc3RyZWFtCnicK+Qy0DM3VTAAQRgjOZdLP9FAIb1YQb/C0FDBJZ8rkAsApsoIhQplbmRzdHJlYW0KZW5kb2JqCjggMCBvYmoKPDwgL1R5cGUgL1hPYmplY3QKICAgL0xlbmd0aCAyOAogICAvRmlsdGVyIC9GbGF0ZURlY29kZQogICAvU3VidHlwZSAvRm9ybQogICAvQkJveCBbIDAgMCAxODAgMjI1IF0KICAgL0dyb3VwIDw8CiAgICAgIC9UeXBlIC9Hcm91cAogICAgICAvUyAvVHJhbnNwYXJlbmN5CiAgICAgIC9JIHRydWUKICAgICAgL0NTIC9EZXZpY2VSR0IKICAgPj4KICAgL1Jlc291cmNlcwo8PAogICAv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",
@@ -1850,8 +1850,8 @@
       "kind": "builtin",
       "package": "@coda-console/opencode",
       "tag": "latest",
-      "version": "2.3.2",
-      "integrity": "sha512-cYe5vYftuIV9daeToj/ZhHn6imqjHqEALV1dgO2u0Ptj7sJqzNIEceiXPRszcSx+TwaKHnwKJo26fOEtawEgZQ==",
+      "version": "2.3.3",
+      "integrity": "sha512-MJ/D5cchatMZnBJtaArYXkWJo9wDqKSjO8Dp8kOGn0CkA8sTDEt1uJoHACoOqtA928ZrsY24pgaRq/ruM9MfJg==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/opencode"
     },
@@ -1918,7 +1918,7 @@
     "id": "review",
     "displayName": "PR 生命流程",
     "description": "PR 从检查、评审到批准合并；简易开发",
-    "version": "3.3.0",
+    "version": "3.4.0",
     "category": "工作流程",
     "icon": {
       "symbol": "checkmark.bubble.fill",
@@ -1929,8 +1929,8 @@
       "kind": "builtin",
       "package": "@coda-console/review",
       "tag": "latest",
-      "version": "3.3.0",
-      "integrity": "sha512-gRoC1I+MZmlx+hBI2seQVSIYG0flcxYQcgc5CuTPC0BTPpOOxz1UnAo6ftn/TvAO0dZeF+KQdMsZGrQCKkfgkQ==",
+      "version": "3.4.0",
+      "integrity": "sha512-F07P+V8EiQo7NybXLU4dwkFMtrxjn0yb16x5Yoiqe57odCC1lrnxD046slg2xhoTF4tam7CtNLwYOK0FMiQyfQ==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/review"
     },

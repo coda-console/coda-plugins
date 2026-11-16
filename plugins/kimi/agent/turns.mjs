@@ -19,6 +19,8 @@ export class KimiTurns {
     // The goal as told ({ id, active, state, turn, failure }) and as the wire last left it. Main turns going, those whose content is
     // told, the last Coda prompt's turn seen, and the prompts held.
     this.goal = null; this.latest = null; this.going = new Set(); this.telling = new Set(); this.user = null; this.held = [];
+    // The id of the compaction going, told as `compaction_update` (docs/agent-protocol.md): Kimi's ACP says it in text only.
+    this.compaction = null;
   }
   // Holds `answer`, Kimi's answer to the prompt sent at `sentAt`, when Kimi did not run that prompt yet: no turn of Coda's
   // prompts began since, or the one that did is still going, while some turn is. False when it is to be passed on now.
@@ -36,9 +38,18 @@ export class KimiTurns {
       if (entry.type === 'goal') this.noteGoal(entry, told);
       else if (entry.type === 'turn') this.begin(entry, told);
       else if (entry.type === 'ended') this.end(entry, told);
+      else if (entry.type === 'compaction') this.compact(entry, told);
       else if (entry.type === 'update' && this.telling.has(entry.turnId)) told.push(update(this.sessionId, entry.update));
     }
     return told;
+  }
+  // The main agent's context is being compacted, auto or at Coda's `/compact`: told when it begins and when it ends, under one
+  // id. One that began before this process is told only at its end.
+  compact({ phase, time }, told) {
+    this.compaction ??= `${this.sessionId}:${time}`;
+    told.push(update(this.sessionId, { sessionUpdate: 'compaction_update', compactionId: this.compaction,
+      status: { begin: 'in_progress', complete: 'completed', cancel: 'failed' }[phase], error: phase === 'cancel' ? '压缩已取消' : null }));
+    if (phase !== 'begin') this.compaction = null;
   }
   // The goal as the wire now leaves it. The one told goes on while it is this one and active; otherwise it ends, once its
   // turn did, and this one is told if active.
@@ -118,6 +129,7 @@ export class KimiTurns {
   // The files no longer read as understood: the goal ends, and held answers are passed on as Kimi gave them.
   lost() {
     const told = [];
+    if (this.compaction) this.compact({ phase: 'cancel' }, told);
     if (open(this.goal)) { this.goal.turn = undefined; this.say(told, 'failed'); }
     this.going.clear(); this.telling.clear(); this.user = null;
     return [...told, ...this.held.splice(0).map(held => held.answer)];

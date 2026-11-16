@@ -1,10 +1,12 @@
 // Grok (checked on 1.0.52) reports no ACP modes. Translate set_mode to the notification its own UI sends; everything else passes
 // through. No selected mode (the empty currentModeId) leaves the machine's configuration in charge, as before.
 // Grok's questions are asked of Coda as ACP forms (questions.mjs). Grok gives one up (its timeout, a cancelled turn)
-// by ending the tool call alone, so that end withdraws the form.
+// by ending the tool call alone, so that end withdraws the form. Its context compactions, auto or a /compact of the user's, are
+// told as `_x.ai/session_notification` updates, which are also told to Coda as `compaction_update` (docs/agent-protocol.md).
 // Grok's ACP has no session/delete, so the entry declares it and answers it with `grok sessions delete`
 // (delete.mjs; checked on 1.0.77): Coda's probes (session/new, then gone) leave no empty sessions in Grok's history.
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { grokBinary } from '../scripts/ask.mjs';
 import { deleteSession } from './delete.mjs';
 import { ASK, questionForm } from './questions.mjs';
@@ -16,6 +18,9 @@ const grok = spawn(binary, ['agent', '--no-leader', 'stdio'], { stdio: ['pipe', 
 const send = (stream, message) => stream.write(`${JSON.stringify(message)}\n`);
 const say = message => send(process.stdout, { jsonrpc: '2.0', ...message });
 const pending = new Map();
+// What Grok says of a compaction of the main session, as Coda takes it. A /compact says its end only.
+const COMPACTION = { auto_compact_started: 'in_progress', auto_compact_completed: 'completed', auto_compact_failed: 'failed', auto_compact_cancelled: 'failed' };
+let compaction = null;
 // The deletes under way, by session: Coda closes a probe's session once its delete has had its few seconds, and a close
 // reaching Grok while `sessions delete` still runs could write the session back.
 const deleting = new Map();
@@ -93,6 +98,12 @@ read(grok.stdout, message => {
     }
   }
   say(message);
+  const status = message.method === '_x.ai/session_notification' && message.params?.sessionId === sessionId ? COMPACTION[message.params.update?.sessionUpdate] : null;
+  if (status) {
+    compaction ??= randomUUID();
+    say({ method: 'session/update', params: { sessionId, update: { sessionUpdate: 'compaction_update', compactionId: compaction, status, error: null } } });
+    if (status !== 'in_progress') compaction = null;
+  }
 });
 const stop = () => {
   if (stopping) return;

@@ -5,3 +5,6 @@ export const THREAD_ENV = 'CODA_THREAD_ID';
 // what the process brings back beside the session it names. A plugin's process takes its environment through `cleared`
 // (components/plugins/plugin-rules.mjs), which leaves out both.
 export const TOKEN_ENV = 'CODA_TOKEN';
+// A directory of the session's own for its agent's temporary files, which goes with the session once it is archived and its
+// process is gone (docs/plugins.md「插件进程的环境」); none for a backend without a state root. Not the agent's TMPDIR.
+export const SESSION_TMP_ENV = 'CODA_SESSION_TMP';

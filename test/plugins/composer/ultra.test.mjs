@@ -1,23 +1,19 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { activate } from '../../../plugins/composer/main.mjs';
-import { OFF, on, reminder } from '../../../plugins/composer/ultra.mjs';
+import { OFF, on } from '../../../plugins/composer/ultra.mjs';
 
 const chosen = { agent: 'codex', model: 'gpt-6.1-sol', effort: 'ultra', mode: 'agent', options: { 'service-tier': 'priority' } };
 const list = [{ who: chosen, when: '任何工作' }];
 const other = [{ who: { agent: 'claude-sdk', model: 'claude-opus-5-5' } }];
 
-test('Ultra 名单给 spawn、泳道 PR 与监督开发的执行者、整体评审者按任务选 Agent，带上选项', () => {
+test('Ultra 名单通用：凡为委派的工作选 Agent 都按任务从名单选，带上选项；不点名流程输入', () => {
   const full = on(list);
   assert.match(full, /- agent=codex model=gpt-6\.1-sol effort=ultra mode=agent options=\{"service-tier":"priority"\}: 任何工作/);
-  for (const text of [full, reminder(list)]) {
-    assert.match(text, /Pick the Agent from this list by task \(pass agent\/model\/effort\/mode\/options\)/);
-    assert.match(text, /Coda spawn, lane-pr executor, executor2, reviewer, reviewer2, and the executor, executor2 and the overall reviewer, reviewer2, reviewer3 of develop/);
-    assert.match(text, /Your own agent only if no entry fits/);
-  }
-  for (const text of [on([]), reminder([])]) {
-    assert.ok(text.endsWith('Use your own agent and model for Coda spawn, lane-pr and the executors and overall reviewers of develop.'));
-  }
+  assert.match(full, /For any delegated work that needs an Agent \(Coda spawn, or a workflow input that asks for one\), pick it from this list by task \(pass agent\/model\/effort\/mode\/options\)/);
+  assert.match(full, /Your own agent only if no entry fits/);
+  assert.ok(on([]).endsWith('Use your own agent and model for any delegated work that needs an Agent.'));
+  for (const text of [full, on([]), OFF]) assert.doesNotMatch(text, /lane-pr|develop|reviewer|executor2/);
 });
 
 // 开发流程由用户在会话里开启，规则写在流程的任务里：Ultra 可以点名流程来说选谁，但不讲流程怎么走。
@@ -27,23 +23,21 @@ test('Ultra 留派活规则：主 Agent 定任务、做决定、审查，spawn �
     'Write each brief to stand alone', 'what is already known or ruled out', 'conclusions first, then sources and actual evidence (paths, commands, output)',
     'Do not repeat their routine work', 'When a result falls short, act on the cause', 'send it to the same session', 'ask that session for the evidence',
     'give the task to another entry of the list', 'retry', 'Do not quietly redo the work yourself', 'native subagents', 'concurrency is full']) assert.ok(full.includes(text), text);
-  const short = reminder(list);
-  for (const text of ['frame', 'review', 'without code changes', '`spawn`', 'concurrency is full', 'No native subagents']) assert.ok(short.includes(text), text);
-  for (const text of [full, short, OFF]) assert.doesNotMatch(text, /ALL code changes|确认达标|放行合并|待交付|preview-install/);
+  for (const text of [full, OFF]) assert.doesNotMatch(text, /ALL code changes|确认达标|放行合并|待交付|preview-install/);
   assert.ok(full.length < 2000, '默认说明给执行者名单留下空间');
-  assert.ok(short.length - short.split('\n').at(-1).length <= 450, '短提醒除名单外约 400 字');
 });
 
-const composerEvent = (id, { sent = 0, subagents = list, ultra = true, type = 'MODIFIED' } = {}) => ({ type, id, object: {
+const composerEvent = (id, { sent = 0, compactions, subagents = list, ultra = true, type = 'MODIFIED' } = {}) => ({ type, id, object: {
   kind: 'coda/composer@1', id, revision: 1,
   spec: { ...(id.startsWith('new:') ? { project: id.slice(4) } : { thread: id }),
     modes: [...(ultra ? [{ mode: 'composer/ultra', values: { subagents } }] : []), { mode: 'composer/loop', values: { every: 'PT30M' } }] },
-  status: { modes: [...(ultra ? [{ mode: 'composer/ultra', sent, changedSinceSent: false, presets: {} }] : []),
+  status: { ...(compactions === undefined ? {} : { compactions }), modes: [...(ultra ? [{ mode: 'composer/ultra', sent, changedSinceSent: false, presets: {} }] : []),
     { mode: 'composer/loop', sent: 42, changedSinceSent: false, presets: {} }] },
 } });
 // replay：watch 返回前交给插件的输入框（宿主重放的 ADDED）。
 async function rig(replay = []) {
   const watchers = new Map(), told = [], submissions = new Map(), state = new Map();
+  let rejecting = false;
   await activate({
     protocols: { register: (_kind, id, handler) => submissions.set(id, handler) },
     watch: async (kind, handler) => {
@@ -51,9 +45,18 @@ async function rig(replay = []) {
       if (kind === 'coda/composer@1') for (const [id, options] of replay) await handler(composerEvent(id, { ...options, type: 'ADDED' }));
       return { dispose() {} };
     },
-    tell: async (thread, text) => { told.push([thread, text]); },
+    tell: async (thread, text) => {
+      if (rejecting) throw new Error('too long');
+      told.push([thread, text]);
+    },
   });
-  const composer = (id, options) => watchers.get('coda/composer@1')(composerEvent(id, options));
+  // compactions 只增不减：没写就沿用这个输入框上次的值。
+  const compactionsOf = new Map();
+  const composer = (id, options = {}) => {
+    const compactions = options.compactions ?? compactionsOf.get(id);
+    compactionsOf.set(id, compactions);
+    return watchers.get('coda/composer@1')(composerEvent(id, { ...options, compactions }));
+  };
   const turn = async (id, running) => {
     const type = state.has(id) ? 'MODIFIED' : 'ADDED';
     state.set(id, running);
@@ -74,56 +77,111 @@ async function rig(replay = []) {
   const create = (subagents = list) => submissions.get('ultra')({ spec: { composer: 'new:p1', projectId: 'p1',
     defaultTarget: { kind: 'thread', open: true },
     modes: [{ mode: 'composer/ultra', values: { subagents }, sent: 0, changedSinceSent: true }] } });
-  return { composer, turn, round, take, send, create };
+  return { composer, turn, round, take, send, create, rejectTell: value => { rejecting = value; } };
 }
 
-test('没有用户消息的连续多轮：第一轮结束给完整，之后每轮结束都给短提醒', async () => {
+test('没有用户消息的连续多轮：第一轮结束给完整，之后每轮结束都不 tell', async () => {
   const r = await rig();
   await r.composer('s1', { type: 'ADDED' });
   assert.deepEqual(r.take(), [], '输入框的变化不 tell');
   await r.round('s1');
   assert.deepEqual(r.take(), [['s1', on(list)]]);
-  for (let i = 0; i < 12; i++) {
-    await r.round('s1'); // 流程结果、卡片叫醒的轮，输入框一直没变。
-    assert.deepEqual(r.take(), [['s1', reminder(list)]]);
-  }
+  for (let i = 0; i < 12; i++) await r.round('s1'); // 流程结果、卡片叫醒的轮，输入框一直没变。
+  assert.deepEqual(r.take(), []);
 });
 
-test('短提醒含名单行和泳道 PR 范围；名单为空时写用自己的 Agent', async () => {
+test('名单为空：首次的完整说明写用自己的 Agent', async () => {
   const r = await rig();
   await r.composer('s1', { type: 'ADDED', subagents: [] });
   await r.round('s1');
   await r.round('s1');
-  assert.deepEqual(r.take(), [['s1', on([])], ['s1', reminder([])]]);
-  assert.match(reminder([]), /Use your own agent and model for Coda spawn, lane-pr/);
-  const text = reminder(list);
-  assert.match(text, /- agent=codex model=gpt-6\.1-sol effort=ultra mode=agent options=\{"service-tier":"priority"\}: 任何工作/);
-  assert.match(text, /lane-pr executor, executor2, reviewer, reviewer2, and the executor, executor2 and the overall reviewer, reviewer2, reviewer3/);
+  assert.deepEqual(r.take(), [['s1', on([])]]);
 });
 
-test('压缩（sent 由大于 0 变 0）：这一轮结束给完整说明，再下一轮回到短；用户随后发消息不再返回第二份', async () => {
+test('压缩（compactions 变大）：立即给完整说明，不论空闲还是正在跑一轮；之后一轮结束、用户发消息都不再给', async () => {
   const r = await rig();
-  await r.composer('s1', { type: 'ADDED' });
+  await r.composer('s1', { type: 'ADDED', compactions: 2 });
   await r.send('s1');
   r.take();
-  await r.composer('s1', { sent: 5 });
-  await r.composer('s1', { sent: 0 }); // 空闲时压缩：不 tell。
-  assert.deepEqual(r.take(), []);
-  await r.round('s1');
+  await r.composer('s1', { sent: 5, compactions: 2 });
+  await r.composer('s1', { sent: 0, compactions: 3 }); // 空闲时压缩：当场 tell。
   assert.deepEqual(r.take(), [['s1', on(list)]]);
+  await r.round('s1');
   assert.equal(await r.send('s1', list, 0), null);
-  assert.deepEqual(r.take(), [['s1', reminder(list)]]);
-  await r.composer('s1', { sent: 3 });
-  await r.turn('s1', true); // 正在跑时压缩，等这一轮结束。
-  await r.composer('s1', { sent: 0 });
   assert.deepEqual(r.take(), []);
-  await r.turn('s1', false);
+  await r.turn('s1', true); // 正在跑时压缩：同样当场 tell，不等这一轮结束。
+  await r.composer('s1', { sent: 0, compactions: 4 });
   assert.deepEqual(r.take(), [['s1', on(list)]]);
-  await r.round('s1');
-  assert.deepEqual(r.take(), [['s1', reminder(list)]]);
+  await r.turn('s1', false);
+  assert.deepEqual(r.take(), []);
 });
 
-test('空闲时连续改名单不 tell；用户发消息，参与者只返回一份最新名单的完整说明', async () => {
+test('两次压缩之间没有用户消息（sent 一直是 0）：两次都识别；compactions 没变、sent 变化不算压缩', async () => {
+  const r = await rig();
+  await r.composer('s1', { type: 'ADDED' }); // 缺省 compactions 按 0 计。
+  await r.send('s1');
+  r.take();
+  await r.composer('s1', { sent: 0, compactions: 1 });
+  await r.composer('s1', { sent: 0, compactions: 1 });
+  assert.deepEqual(r.take(), [['s1', on(list)]]);
+  await r.composer('s1', { sent: 0, compactions: 2 });
+  assert.deepEqual(r.take(), [['s1', on(list)]]);
+  await r.composer('s1', { sent: 7, compactions: 2 });
+  await r.composer('s1', { sent: 0, compactions: 2 }); // 只有 sent 由大于 0 变 0，不再推断为压缩。
+  await r.round('s1');
+  assert.deepEqual(r.take(), []);
+});
+
+test('压缩时名单也变了：给的是最新名单的完整说明，之后不再重复', async () => {
+  const r = await rig();
+  await r.composer('s1', { type: 'ADDED', compactions: 0 });
+  await r.round('s1');
+  r.take();
+  await r.composer('s1', { subagents: other, compactions: 1 });
+  assert.deepEqual(r.take(), [['s1', on(other)]]);
+  await r.round('s1');
+  assert.deepEqual(r.take(), []);
+});
+
+test('压缩时 tell 被拒绝：待给标记保留，下一轮结束再补发，成功后不再重复', async () => {
+  const r = await rig();
+  await r.composer('s1', { type: 'ADDED', compactions: 0 });
+  await r.send('s1');
+  r.take();
+  r.rejectTell(true);
+  await assert.rejects(r.composer('s1', { sent: 0, compactions: 1 }), /too long/);
+  r.rejectTell(false);
+  assert.deepEqual(r.take(), []);
+  await r.round('s1');
+  assert.deepEqual(r.take(), [['s1', on(list)]]);
+  await r.round('s1');
+  assert.deepEqual(r.take(), []);
+});
+
+test('一轮结束补发时 tell 被拒绝：标记保留，下一轮结束再给，成功后不再重复', async () => {
+  const r = await rig();
+  await r.composer('s1', { type: 'ADDED' });
+  r.rejectTell(true);
+  await assert.rejects(r.round('s1'), /too long/);
+  await assert.rejects(r.round('s1'), /too long/);
+  r.rejectTell(false);
+  assert.deepEqual(r.take(), []);
+  await r.round('s1');
+  assert.deepEqual(r.take(), [['s1', on(list)]]);
+  await r.round('s1');
+  assert.deepEqual(r.take(), []);
+});
+
+test('插件重启：重放的 ADDED 只记 compactions 基线，不算压缩；之后变大才算', async () => {
+  const r = await rig([['old', { sent: 4, compactions: 6 }]]);
+  assert.deepEqual(r.take(), []);
+  await r.composer('old', { sent: 4, compactions: 6 });
+  assert.deepEqual(r.take(), []);
+  await r.composer('old', { sent: 0, compactions: 7 });
+  assert.deepEqual(r.take(), [['old', on(list)]]);
+});
+
+test('空闲时连续改名单不 tell；用户发消息，参与者只返回一份最新名单的完整说明，之后不再发', async () => {
   const r = await rig();
   await r.composer('s1', { type: 'ADDED' });
   await r.round('s1');
@@ -131,23 +189,23 @@ test('空闲时连续改名单不 tell；用户发消息，参与者只返回一
   for (const subagents of [[{ who: { agent: 'codex' } }], [{ who: { agent: 'codex', model: 'gpt-6.1-sol' } }], other]) await r.composer('s1', { subagents });
   assert.deepEqual(r.take(), []);
   assert.deepEqual(await r.send('s1', other), { tell: [on(other)] });
-  // 这一轮结束给短提醒（名单已是新的）；再发消息不再返回完整说明。
-  assert.deepEqual(r.take(), [['s1', reminder(other)]]);
+  assert.deepEqual(r.take(), []);
   assert.equal(await r.send('s1', other, 2), null);
+  assert.deepEqual(r.take(), []);
 });
 
-test('空闲时连续改名单，下一轮由流程叫醒：结束时给一份最新名单的完整说明', async () => {
+test('空闲时连续改名单，下一轮由流程叫醒：结束时给一份最新名单的完整说明，之后不再发', async () => {
   const r = await rig();
   await r.composer('s1', { type: 'ADDED' });
   await r.round('s1');
   r.take();
-  await r.composer('s1', { subagents: list.slice(0, 0) });
+  await r.composer('s1', { subagents: [] });
   await r.composer('s1', { subagents: other });
   assert.deepEqual(r.take(), []);
   await r.round('s1');
   assert.deepEqual(r.take(), [['s1', on(other)]]);
   await r.round('s1');
-  assert.deepEqual(r.take(), [['s1', reminder(other)]]);
+  assert.deepEqual(r.take(), []);
   // 正在跑时改名单，同样等这一轮结束。
   await r.turn('s1', true);
   await r.composer('s1', { subagents: list });
@@ -157,7 +215,7 @@ test('空闲时连续改名单，下一轮由流程叫醒：结束时给一份�
   assert.deepEqual(r.take(), [['s1', on([])]]);
 });
 
-test('首次看到的输入框：重放→一轮结束给完整；重放后 sent=1 的新会话→给短；重放后 sent=0→下一次给完整', async () => {
+test('首次看到的输入框：重放→一轮结束给完整；重放后 sent=1 的新会话→不再给；重放后 sent=0→下一次给完整', async () => {
   const r = await rig([['old', { sent: 4 }]]);
   assert.deepEqual(r.take(), []);
   await r.round('old');
@@ -165,10 +223,10 @@ test('首次看到的输入框：重放→一轮结束给完整；重放后 sent
   await r.composer('c1', { type: 'ADDED', sent: 1 }); // 带着 Ultra 新建的会话，第一条已带完整说明。
   assert.deepEqual(r.take(), []);
   await r.round('c1');
-  assert.deepEqual(r.take(), [['c1', reminder(list)]]);
+  assert.deepEqual(r.take(), []);
   await r.composer('n1', { type: 'ADDED', sent: 0 }); // 刚进入 Ultra：发消息时给。
   assert.deepEqual(await r.send('n1'), { tell: [on(list)] });
-  assert.deepEqual(r.take(), [['n1', reminder(list)]]);
+  assert.deepEqual(r.take(), []);
   await r.composer('n2', { type: 'ADDED', sent: 0 }); // 或者一轮结束时给。
   await r.round('n2');
   assert.deepEqual(r.take(), [['n2', on(list)]]);
@@ -181,10 +239,10 @@ test('新会话创建与另一个已有会话开启 Ultra 交错、名单相同�
   await r.composer('c1', { type: 'ADDED', sent: 1 });
   await r.round('c1');
   await r.round('s1');
-  assert.deepEqual(r.take(), [['c1', reminder(list)], ['s1', on(list)]]);
+  assert.deepEqual(r.take(), [['s1', on(list)]]);
 });
 
-test('关闭：收到过说明（轮结束或消息带的）就 tell OFF 一次，之后不再提醒', async () => {
+test('关闭：收到过说明（轮结束、压缩或消息带的）就 tell OFF 一次，之后不再提醒', async () => {
   const r = await rig();
   await r.composer('s1', { type: 'ADDED' });
   await r.round('s1');
@@ -200,6 +258,12 @@ test('关闭：收到过说明（轮结束或消息带的）就 tell OFF 一次�
   r.take();
   await r.composer('s2', { ultra: false, sent: 0 });
   assert.deepEqual(r.take(), [['s2', OFF]]);
+  // 压缩后给过说明，退出也要告知。
+  await r.composer('s5', { type: 'ADDED', sent: 1 });
+  await r.composer('s5', { sent: 0, compactions: 1 });
+  r.take();
+  await r.composer('s5', { ultra: false, sent: 0, compactions: 1 });
+  assert.deepEqual(r.take(), [['s5', OFF]]);
   // 还没收到过说明就退出：不告知关闭。
   await r.composer('s3', { type: 'ADDED' });
   await r.composer('s3', { ultra: false });
