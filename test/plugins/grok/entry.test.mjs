@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { AgentProcess } from '../../../check/process.mjs';
 import { pluginDir } from '../plugin.mjs';
 import { MINIMUM, needed, older } from '../../../plugins/grok/scripts/setup.mjs';
+import { deleteSession } from '../../../plugins/grok/agent/delete.mjs';
 import { OTHER } from '../../../plugins/grok/agent/questions.mjs';
 import { relaysInstructions } from '../relay.mjs';
 
@@ -17,7 +18,7 @@ const quote = s => `'${s.replaceAll("'", "'\\''")}'`;
 function start(t) {
   const dir = mkdtempSync(join(tmpdir(), 'grok-entry-')), messages = [], waiting = [];
   mkdirSync(join(dir, '.grok/bin'), { recursive: true });
-  writeFileSync(join(dir, '.grok/bin/grok'), `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(fileURLToPath(new URL('./fixture.mjs', import.meta.url)))}\n`, { mode: 0o755 });
+  writeFileSync(join(dir, '.grok/bin/grok'), `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(fileURLToPath(new URL('./fixture.mjs', import.meta.url)))} "$@"\n`, { mode: 0o755 });
   const p = new AgentProcess({ command: manifest.contributes.agents[0].command, cwd: dir, env: { ...process.env, HOME: dir,
     CODA_NODE: process.execPath, CODA_PLUGIN_PATH: pluginDir('grok') }, onMessage: m => {
     messages.push(m);
@@ -33,6 +34,40 @@ function start(t) {
   const next = method => new Promise(resolve => waiting.push({ method, resolve }));
   return { dir, p, messages, request, prompt, said, next };
 }
+
+test('Grok declares session/delete and answers it with `grok sessions delete`, never passing it to the agent', async t => {
+  const { dir, p, request } = start(t);
+  const calls = () => { try { return readFileSync(join(dir, 'sessions-calls.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l)); } catch { return []; } };
+  const init = await request('initialize', { protocolVersion: 1, clientCapabilities: {} });
+  assert.deepEqual(init.agentCapabilities, { loadSession: true, sessionCapabilities: { delete: {} } });
+  await request('session/new', { cwd: dir, mcpServers: [] });
+  assert.deepEqual(await request('session/delete', { sessionId: 'abc' }), {});
+  assert.deepEqual(calls(), [['sessions', 'delete', '--', 'abc']]);
+  for (const [sessionId, code, message] of [['gone', -32002, 'No session found with id gone.'], ['odd', -32603, '没有确认删除：something else'],
+    ['mute', -32603, '没有确认删除：没有输出'], ['broken', -32603, 'storage is locked'], ['quiet', -32603, '退出码 3'], ['killed', -32603, '被信号 SIGKILL 结束']]) {
+    const r = await p.request('session/delete', { sessionId }, { timeout: 5000 });
+    assert.equal(r.result, undefined);
+    assert.equal(r.error.code, code);
+    assert.ok(r.error.message.endsWith(message), r.error.message);
+  }
+  assert.equal((await p.request('session/delete', {}, { timeout: 5000 })).error.code, -32602);
+  assert.equal(calls().length, 7, 'the invalid request never starts the command');
+  // A close that comes while a delete is still running waits for it: the agent hears of it after the session is gone.
+  const order = () => readFileSync(join(dir, 'order.log'), 'utf8').trim().split('\n');
+  const [deleted, closed] = await Promise.all([p.request('session/delete', { sessionId: 'slow' }, { timeout: 5000 }),
+    p.request('session/close', { sessionId: 'slow' }, { timeout: 5000 })]);
+  assert.deepEqual([deleted.result, closed.result], [{}, {}]);
+  assert.deepEqual(order(), ['delete-done', 'close']);
+  // A CLI that never answers, stood in for by one that only sleeps.
+  const slow = join(dir, 'slow-grok');
+  writeFileSync(slow, '#!/bin/sh\nexec sleep 30\n', { mode: 0o755 });
+  const started = Date.now();
+  assert.deepEqual(await deleteSession(slow, 'abc', 300), { code: -32603, message: '删除 Grok 会话超时' });
+  assert.ok(Date.now() - started < 3000);
+  // The native fixture answers session/delete with Method not found: none of those errors came from it, and the rest passes through.
+  assert.equal((await p.request('session/nope', {}, { timeout: 5000 })).error.message, 'Method not found');
+  assert.equal((await request('session/set_config_option', { sessionId: 'native', configId: 'reasoning_effort', value: 'high' })).configOptions[0].id, 'model');
+});
 
 test('Grok mode selection takes effect in the same process, preserving options; active turns cannot change mode', async t => {
   const { dir, p, messages, request, prompt, said } = start(t);
@@ -89,7 +124,7 @@ test('Grok\'s questions are a plain form, answered as Grok takes them, and withd
 });
 
 test('the entry forwards Coda instructions to Grok unchanged', t =>
-  relaysInstructions(t, 'grok', '.grok/bin/grok', ['agent', '--no-leader', 'stdio']));
+  relaysInstructions(t, 'grok', '.grok/bin/grok', ['agent', '--no-leader', 'stdio'], { list: {}, delete: {} }));
 
 test('setup installs a missing or broken Grok CLI, upgrades one older than the entry was checked against, and keeps a newer one', () => {
   const run = (status, stdout = '') => () => ({ status, stdout, stderr: '' });
