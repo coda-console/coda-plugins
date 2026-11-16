@@ -169,6 +169,41 @@ test('合进需求分支：试合并需求分支当前 head，干净时把这一
   assert.deepEqual(f.calls('gh'), [], '不开 PR、不合 PR');
 });
 
+test('合进需求分支时交付相对需求分支没有改动（空交付，或净改动为零只剩合并提交）：不生成提交、不推送，带说明交回同一执行会话，不算退回', t => {
+  const message = `这次交付相对需求分支 ${BRANCH} 没有改动，没有可以合入的内容`;
+  const check = (f, session, tip) => {
+    assert.equal(f.decide('land'), 'land');
+    assert.deepEqual(f.run('land').outputs, { route: 'sync' });
+    assert.equal(f.remote(BRANCH), tip, '需求分支没动');
+    assert.deepEqual(f.landedCommits(), [], '没有合入提交');
+    assert.ok(f.remote(TEMP), '临时分支还在');
+    assert.ok(f.run('review').outputs.feedback.includes(message));
+    assert.equal(f.run('review').outputs.returns, '0');
+    f.task('after', 'added', BRANCH); f.run('revise');
+    assert.equal(f.state().executor.session, session, '同一会话');
+    assert.ok(f.calls('agent').at(-1).prompt.includes(message));
+  };
+  // 空交付：交付就是需求分支 head（head 是需求分支的祖先），连续三次退回后主 Agent 仍选了合进。
+  const empty = fixture(t); writeFileSync(join(empty.root, 'agent-task'), JSON.stringify({ noCommit: true, answer: '改好了' })); empty.run('execute');
+  empty.delivered();
+  check(empty, empty.state().executor.session, empty.remote(BRANCH));
+  // 净改动为零：执行者把改动撤掉，又合并了需求分支，交付只剩一个合并提交。
+  const net = fixture(t); net.task('one', 'change'); net.run('execute');
+  const { session } = net.state().executor, cwd = join(net.root, session);
+  const worker = (...args) => { const result = spawnSync('git', args, { cwd, env: net.env, encoding: 'utf8' }); assert.equal(result.status, 0, result.stderr); return result.stdout.trim(); };
+  worker('revert', '--no-edit', 'HEAD');
+  const tip = net.advance('other', 'other');
+  worker('fetch', '-q', 'origin', BRANCH); worker('merge', '-q', '--no-edit', 'FETCH_HEAD');
+  net.git('fetch', '-q', 'origin', BRANCH);
+  const head = worker('rev-parse', 'HEAD');
+  assert.equal(net.git('rev-parse', `${head}^{tree}`), net.git('rev-parse', `${tip}^{tree}`), '交付的树和需求分支 head 的树相同');
+  assert.equal(net.git('rev-parse', `${head}^@`).split('\n').length, 2, '交付是合并提交');
+  const state = JSON.parse(readFileSync(join(net.root, 'artifacts', 'piece.json'), 'utf8'));
+  writeFileSync(join(net.root, 'artifacts', 'piece.json'), JSON.stringify({ ...state, executor: { ...state.executor, head } }));
+  net.delivered();
+  check(net, session, tip);
+});
+
 test('删临时分支失败：合入提交已推进需求分支，这一步仍失败（调用它的需求运行由出错边界接住，不能断言没合进）', t => {
   const f = fixture(t);
   f.task('one', 'change'); f.run('execute'); f.delivered();

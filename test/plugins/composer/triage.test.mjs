@@ -150,9 +150,9 @@ test('整体评审：最多自动修两轮；反驳被坚持交主 Agent；修�
 
 test('整体评审与块同样的发现、不同的路由：同一本账，编号与结论一致', () => {
   const results = [done('reviewer', [finding('P2', 'correctness'), finding('P3', 'style')]), done('reviewer2', [finding('P2', 'style')])];
-  const lane = triage(results, { head: HEAD, full: true }), whole = overall(results);
-  assert.deepEqual([lane.route, whole.route], ['fix', 'escalate']);
-  assert.deepEqual(whole.findings, lane.findings);
-  assert.deepEqual([whole.added, whole.resolutions], [lane.added, lane.resolutions]);
+  const pieceRoute = triage(results, { head: HEAD, full: true }), whole = overall(results);
+  assert.deepEqual([pieceRoute.route, whole.route], ['fix', 'escalate']);
+  assert.deepEqual(whole.findings, pieceRoute.findings);
+  assert.deepEqual([whole.added, whole.resolutions], [pieceRoute.added, pieceRoute.resolutions]);
   assert.match(historyText([{ kind: 'review', full: true, head: HEAD, resolutions: [], added: [], route: 'accept', reasons: [] }]), /结论：只有 P3 或没有发现，直接进验收/);
 });

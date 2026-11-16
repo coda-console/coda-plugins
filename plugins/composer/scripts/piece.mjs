@@ -178,6 +178,13 @@ switch (action) {
     } else if (!commit) {
       const merged = tryMerge(tip);
       files = merged.files;
+      // 合并后的树和需求分支 head 的树相同：交付没有可合入的内容，不生成空提交，交回执行者。
+      if (merged.tree && merged.tree === git('rev-parse', `${tip}^{tree}`)) {
+        state.feedback = `这次交付相对需求分支 ${state.branch} 没有改动，没有可以合入的内容：先对照需求分支确认这一项的改动都已提交到当前分支，补上后再回报。`;
+        save();
+        output('route', 'sync');
+        break;
+      }
       if (merged.tree) {
         commit = git('commit-tree', merged.tree, '-p', tip, '-m', `${state.title}\n\n${trailer}`);
         git('push', 'origin', `${commit}:refs/heads/${state.branch}`);
