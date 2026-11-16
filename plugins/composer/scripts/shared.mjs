@@ -16,7 +16,7 @@ export const command = (bin, args, env = process.env) => {
 export const git = (...args) => command('git', args);
 export const gh = (...args) => command('gh', args);
 
-// 执行者的固定说明，放在每个交给执行者的任务前面：泳道 PR 的执行与修改、监督开发的同步与整体评审修复都用它。
+// 执行者的固定说明，放在每个交给执行者的任务前面：块的执行与修改、监督开发的同步与整体评审修复都用它。
 export const instructions = `你是这次开发流程的执行者，自己完成这一项任务，不继承主 Agent 的协调职责，不再委派。
 只做这一项，在当前分支提交，不推送、不开 PR、不合并、不部署。
 遵守仓库的 AGENTS.md。只改必需的地方，不写防御性、冗余的代码，不顺手重构。
@@ -36,7 +36,7 @@ export const agentArgs = ({ options = {}, ...chosen }) => {
 };
 
 // 流程步骤替运行所属的会话说话（CODA_THREAD_ID），GitHub 插件的 gh 会把它开的 PR 报给「PR 观察」，
-// 进而启动 review 插件的 PR 生命流程。流程开的 PR 由流程自己检查、评审、合并，开的时候不带会话，不上报。
+// 进而启动 review 插件的 PR 生命流程。监督开发开的 PR 由流程自己检查、评审、合并，开的时候不带会话，不上报。
 export const openPr = (...args) => {
   const { CODA_THREAD_ID: _thread, ...env } = process.env;
   return command('gh', ['pr', 'create', ...args], env);

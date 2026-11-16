@@ -13,7 +13,7 @@ test('Ultra 名单通用：凡为委派的工作选 Agent 都按任务从名单�
   assert.match(full, /For any delegated work that needs an Agent \(Coda spawn, or a workflow input that asks for one\), pick it from this list by task \(pass agent\/model\/effort\/mode\/options\)/);
   assert.match(full, /Your own agent only if no entry fits/);
   assert.ok(on([]).endsWith('Use your own agent and model for any delegated work that needs an Agent.'));
-  for (const text of [full, on([]), OFF]) assert.doesNotMatch(text, /lane-pr|develop|reviewer|executor2/);
+  for (const text of [full, on([]), OFF]) assert.doesNotMatch(text, /piece|develop|reviewer|executor2/);
 });
 
 // 开发流程由用户在会话里开启，规则写在流程的任务里：Ultra 可以点名流程来说选谁，但不讲流程怎么走。
