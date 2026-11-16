@@ -1,8 +1,7 @@
 // The OpenCode agent as Coda starts it (the plugin's `contributes.agents`): `opencode acp` as a child in this process's group,
 // its ACP passed on a message at a time both ways, but for its models, which it groups by provider (groups.mjs), and a
 // model service's long wait, which ends the turn instead (retries.mjs), the category of its failures (errors.mjs), native
-// child sessions (children.mjs), and native background shell lifecycle facts supplied by the per-process observer
-// (shells.mjs, runtime/server.mjs).
+// child sessions (children.mjs), and native background shell lifecycle facts supplied by the per-process observer (shells.mjs, runtime/server.mjs).
 // It ends as OpenCode ends, once what it said has reached Coda.
 import { spawn } from 'node:child_process';
 import { readLines } from './lines.mjs';

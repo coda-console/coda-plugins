@@ -76,7 +76,7 @@ export function kimiSession({ sessionId, cwd, env = {}, version, startedAt = 0, 
   // the schedule config that count uses (`schedule`), and what its subagents said since the last look, to `emit` as their
   // own sessions' updates. `main` is what the main wire added since the last look, in its order, for turns.mjs: the goal
   // as it changes, each main turn as it begins and ends (with the error a failed one ended with), and what is said in a
-  // goal's or Coda's prompt's turn (as ACP updates); it opens with the goal and the turns still going as of the last look. A cron's prompt and a goal's objective
+  // goal's or Coda's prompt's turn (as ACP updates), and each compaction of its context as it begins and ends; it opens with the goal and the turns still going as of the last look. A cron's prompt and a goal's objective
   // do not leave here, only a short title cut from the first line. Null when the files are not this session's, or not laid
   // out as understood; a read that fails (a file being written) throws. A cron or goal event that is not the shape
   // understood is skipped, so one of them cannot hide the tasks.
@@ -175,6 +175,8 @@ export function kimiSession({ sessionId, cwd, env = {}, version, startedAt = 0, 
         for (const cron of crons.values()) if (cron.fireTurn === event.turnId) cron.fireEnded = true;
         if (span.turn?.turnId === event.turnId) span.turn = null;
         if (fresh) main.push({ type: 'ended', turnId: event.turnId, reason: event.reason, ...(object(event.error) ? { error: event.error } : {}) });
+      } else if (COMPACTION[event.type]) {
+        if (fresh && event.agentId === 'main') main.push({ type: 'compaction', phase: COMPACTION[event.type], time: event.time });
       } else if (event.type === 'goal.create' || event.type === 'goal.update' || event.type === 'goal.clear') {
         const next = noteGoal(goal, event);
         if (next === goal) continue;
@@ -196,6 +198,8 @@ export function kimiSession({ sessionId, cwd, env = {}, version, startedAt = 0, 
   } };
 }
 
+// How the main wire tells its context being compacted (`full_compaction.begin` of an auto or a manual one, then one of the others).
+const COMPACTION = { 'full_compaction.begin': 'begin', 'full_compaction.complete': 'complete', 'full_compaction.cancel': 'cancel' };
 // Who began a main turn: Coda's prompt (`user`), the goal (`goal`), or something else Kimi took up.
 function turnKind(origin) {
   if (origin?.kind === 'user') return 'user';
