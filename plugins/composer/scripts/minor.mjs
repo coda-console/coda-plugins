@@ -33,7 +33,7 @@ export function parseRaw(text) {
 // 只认 .swift，JS 测试里 DOM 的 .disabled() 不算）。
 const SKIP = [/\.(skip|todo|only)\b/, /(?:^|[{,])\s*(skip|todo)\s*:/, /(?:^|[{,])\s*only\s*:\s*true\b/, /\bXCTSkip(?:If|Unless)?\b/];
 const skips = (line, swift) => SKIP.some(pattern => pattern.test(line.slice(1))) || (swift && /\.disabled\s*\(/.test(line.slice(1)));
-// 断言：JS 的 assert.，XCTest 的 XCTAssert…，Swift Testing 的 #expect(、#require(。
+// 断言：JS 的 assert.，XCTest 的 XCTAssert…，Swift Testing 的 #expect、#require。
 const asserts = line => line.includes('assert.') || /\bXCTAssert|#(?:expect|require)\s*\(/.test(line);
 
 // 不能免审的原因，空数组就是可以免审。reviews 是评审子流程各份的输出，findings 是收敛账本，
