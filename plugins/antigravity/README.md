@@ -63,7 +63,7 @@
 | skills | 读工作副本的 `.agents/skills`（清单的 `skillsDir`） |
 | 上下文占用、标题 | Antigravity 报 `usage_update` 与会话标题更新 |
 | 模型列表何时重读 | `~/.gemini/antigravity-cli/settings.json` 变了时 |
-| 资源页 | 登录后显示一条「Antigravity」，读数是各模型组的每周、每 5 小时剩余比例与重置时间（如「Gemini 每周」「Claude and GPT 5 小时」，组与周期按报告动态给出），最后是 CLI 版本。额度来自官方的只读报告 `agy -p /usage --output-format json`（CLI 1.1.11 起支持，插件要求 1.5.9 及以上）：由 CLI 自己回答，不开会话、不花额度、不留对话，插件不读 token；这一次运行只设 `AGY_CLI_DISABLE_AUTO_UPDATE=true`，在系统临时目录里跑，限时 20 秒。读不到额度（退出非 0、超时、报告不是成功、没有可显示的桶）时那一条带「暂时无法获取额度：原因」，版本照旧显示；缺比例、不在 0–1 内或标了 `disabled` 的桶不显示。登录状态只查钥匙串条目在不在（macOS 用 `security find-generic-password -s gemini -a antigravity`，只查条目，不读内容），也不读邮箱；钥匙串问不出来时读数失败，不当作登出（Linux 的细节见下） |
+| 资源页 | 登录后显示一条「Antigravity」，读数是各模型组的每周、每 5 小时剩余比例与重置时间（如「Gemini 每周」「Claude and GPT 5 小时」，组与周期按报告动态给出），最后是 CLI 版本。额度来自官方的只读报告 `agy -p /usage --output-format json`（CLI 1.1.11 起支持，插件要求 1.5.9 及以上）：由 CLI 自己回答，不开会话、不花额度、不留对话，插件不读 token；这一次运行只设 `AGY_CLI_DISABLE_AUTO_UPDATE=true`，在系统临时目录里跑。整次读取给自己 25 秒（宿主只给 30 秒）：版本和额度都只用剩下的时间并留 1 秒输出，剩下不到 3 秒就不再查额度，直接写「暂时无法获取额度：读取超时」，版本照旧显示。读数最多 8 条：额度最多 7 条，CLI 版本始终在最后。读不到额度（退出非 0、超时、报告不是成功、没有可显示的桶）时那一条带「暂时无法获取额度：原因」（原因是 CLI stderr 的首行，没有才写退出码；整句不超过 80 字，只截原因），版本照旧显示；缺比例、不在 0–1 内或标了 `disabled` 的桶不显示。登录状态只查钥匙串条目在不在（macOS 用 `security find-generic-password -s gemini -a antigravity`，只查条目，不读内容），也不读邮箱；钥匙串问不出来时读数失败，不当作登出（Linux 的细节见下） |
 
 ## 已知限制
 

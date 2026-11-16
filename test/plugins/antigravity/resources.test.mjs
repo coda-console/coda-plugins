@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { readResources } from '../../../check/panel.mjs';
 import { authorizationLink } from '../../../check/coda/resources/plugins/resources/panels/sign-in.mjs';
-import { signedIn, usageReport } from '../../../plugins/antigravity/scripts/agy.mjs';
+import { reading, signedIn, usageReport } from '../../../plugins/antigravity/scripts/agy.mjs';
 import { windows } from '../../../plugins/antigravity/scripts/quota.mjs';
 import { declaredPanel, installed, pluginEnv, run, signIn } from '../command.mjs';
 
@@ -100,11 +100,18 @@ test('the usage report is the CLI\'s successful one, and anything else is why th
   assert.deepEqual(usageReport('agy', ran()), report);
   assert.throws(() => usageReport('agy', ran({ error: Object.assign(new Error('x'), { code: 'ETIMEDOUT' }), status: null })), /读取超时/);
   assert.throws(() => usageReport('agy', ran({ error: Object.assign(new Error('x'), { code: 'EACCES' }), status: null })), /EACCES/);
-  assert.throws(() => usageReport('agy', ran({ status: 1, stderr: 'boom\nmore' })), /退出码 1：boom$/);
-  assert.throws(() => usageReport('agy', ran({ status: null, signal: 'SIGKILL' })), /退出码 SIGKILL/);
+  // The CLI's first line is the reason, with no prefix of its own; its exit code is said only when it said nothing.
+  assert.throws(() => usageReport('agy', ran({ status: 1, stderr: 'boom\nmore' })), error => error.message === 'boom');
+  assert.throws(() => usageReport('agy', ran({ status: 1, stderr: '  \n' })), error => error.message === '退出码 1');
+  assert.throws(() => usageReport('agy', ran({ status: null, signal: 'SIGKILL' })), error => error.message === '退出码 SIGKILL');
   assert.throws(() => usageReport('agy', ran({ stdout: 'not json' })), /不是 JSON/);
-  assert.throws(() => usageReport('agy', ran({ stdout: JSON.stringify({ ...report, status: 'ERROR' }) })), /（ERROR）/);
-  assert.throws(() => usageReport('agy', ran({ stdout: JSON.stringify({ ...report, command: { name: 'help' } }) })), /没有给出额度报告/);
+  assert.throws(() => usageReport('agy', ran({ stdout: JSON.stringify({ ...report, status: 'ERROR' }) })), /状态不是 SUCCESS（ERROR）/);
+  assert.throws(() => usageReport('agy', ran({ stdout: '{}' })), /状态不是 SUCCESS（无状态）/);
+  assert.throws(() => usageReport('agy', ran({ stdout: JSON.stringify({ ...report, command: { name: 'help' } }) })), /返回的不是额度报告/);
+  // The time it may take is the one it is given.
+  let given;
+  usageReport('agy', (binary, args, options) => { given = options.timeout; return ran()(); }, 1234);
+  assert.equal(given, 1234);
 });
 
 test('a quota that cannot be had is said, with the CLI\'s version still shown', async t => {
@@ -132,8 +139,53 @@ exit 1
   assert.equal(result.code, 0, result.stderr);
   const [resource] = readResources(result.stdout, declared);
   assert.equal([...resource.error].length, 80);
-  assert.match(resource.error, /^暂时无法获取额度：Antigravity CLI 退出码 1：Error: failed/);
+  // The reason is cut, not the words before it, and the CLI's own words are the reason, not its exit code.
+  assert.match(resource.error, /^暂时无法获取额度：Error: failed to start the language server: could not find a usable net$/);
   assert.deepEqual(resource.values, [{ label: 'CLI 版本', value: '1.5.9' }]);
+});
+
+// The reading has 25 seconds of the 30 Coda gives: the version and the quota are asked what is left of them less a second to
+// print, and no quota is asked for when under 3 seconds are left. A clock the fake CLI moves, and nothing waited for.
+function readingAt(spent) {
+  let clock = 0; const asks = [];
+  const io = { now: () => clock,
+    ask: (binary, timeout) => { asks.push(['version', timeout]); clock += spent; return { status: 0, stdout: '1.5.9\n' }; },
+    report: (binary, run, timeout) => { asks.push(['usage', timeout]); return report; } };
+  return { got: reading('agy', 25_000, '1.5.9', io), asks };
+}
+
+test('the version and the quota are given what is left of the reading time, and no quota is asked for when too little is left', () => {
+  const quick = readingAt(1_000);
+  assert.deepEqual(quick.asks, [['version', 24_000], ['usage', 20_000]]);
+  assert.deepEqual(quick.got.report, report);
+  // 20 seconds went in the version: 4 seconds are left, less the one to print.
+  const slow = readingAt(20_000);
+  assert.deepEqual(slow.asks, [['version', 24_000], ['usage', 4_000]]);
+  assert.equal(slow.got.version, '1.5.9');
+  // 22 seconds: 2 are left, which is too little to ask for a report; it is said, and the version still given.
+  const late = readingAt(22_000);
+  assert.deepEqual(late.asks, [['version', 24_000]]);
+  assert.deepEqual(late.got, { version: '1.5.9', failure: '读取超时' });
+  // A CLI too old is not asked for a quota, and one that cannot say its version has none.
+  assert.deepEqual(reading('agy', 25_000, '1.5.9', { now: () => 0, ask: () => ({ status: 0, stdout: '1.5.8' }) }), { version: '1.5.8', tooOld: true });
+  assert.deepEqual(reading('agy', 25_000, '1.5.9', { now: () => 0, ask: () => ({ status: 1 }) }), { version: null });
+  // A report that fails is the reason.
+  assert.deepEqual(reading('agy', 25_000, '1.5.9', { now: () => 0, ask: () => ({ status: 0, stdout: '1.5.9' }), report: () => { throw new Error('boom'); } }), { version: '1.5.9', failure: 'boom' });
+});
+
+test('a report of more groups than a reading lists values is cut to 7, the version still the last, and its words to the limit', async t => {
+  const bucket = window => ({ window, remaining_fraction: 0.5, reset_time: '2026-11-23T06:16:54Z' });
+  const groups = ['A', 'B', 'C', 'D'].map(name => ({ name: `${name}${'x'.repeat(100)} Models`, buckets: [bucket('weekly'), bucket('5h')] }));
+  assert.equal(windows({ command: { data: { groups } } }).length, 8);
+  assert.ok(windows({ command: { data: { groups } } }).every(v => [...v.label].length <= 80));
+  const m = await machine(t, { usage: JSON.stringify({ ...report, command: { name: 'usage', data: { groups } } }) });
+  const result = await run(declared.command, m.env);
+  assert.equal(result.code, 0, result.stderr);
+  const [resource] = readResources(result.stdout, declared);
+  assert.equal(resource.values.length, 8);
+  assert.deepEqual(resource.values.slice(0, 7).map(v => v.label.slice(0, 1)), ['A', 'A', 'B', 'B', 'C', 'C', 'D']);
+  assert.deepEqual(resource.values[7], { label: 'CLI 版本', value: '1.5.9' });
+  assert.equal(resource.error, undefined);
 });
 
 test('a login with a CLI that is old or gone is shown with what to do, and a CLI that cannot say its version fails the reading', async t => {

@@ -13,7 +13,7 @@ export function windows(report) {
     const left = bucket?.remaining_fraction;
     if (bucket?.disabled === true || typeof left !== 'number' || !Number.isFinite(left) || left < 0 || left > 1) return [];
     const percent = Math.round(left * 100), resets = instant(bucket.reset_time);
-    const label = [short(group.name), WINDOWS[bucket.window] ?? bucket.window].filter(Boolean).join(' ');
+    const label = [...[short(group.name), WINDOWS[bucket.window] ?? bucket.window].filter(Boolean).join(' ')].slice(0, 80).join('');
     return [{ label, value: `剩余 ${percent}%`, fraction: percent / 100, ...(resets ? { time: resets } : {}) }];
   }));
 }
