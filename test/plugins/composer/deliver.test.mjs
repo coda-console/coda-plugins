@@ -33,9 +33,9 @@ function fixture(t, devices = true) {
   const base = commit('base', 'base');
   env.GITHUB_SHA = base;
   git('init', '--bare', '-q', origin); git('remote', 'add', 'origin', origin); git('push', '-q', 'origin', 'main');
-  const members = [{ url: 'https://github.com/example/coda-plugins/pull/1', headRefOid: 'a'.repeat(40), headRefName: 'lane/plugin', baseRefName: 'main' }];
+  const members = [{ url: 'https://github.com/example/coda-plugins/pull/1', headRefOid: 'a'.repeat(40), headRefName: 'req/plugin', baseRefName: 'main' }];
   const member = (id, file, content) => {
-    const branch = `lane/feature-${id}`;
+    const branch = `req/feature-${id}`;
     git('switch', '-C', branch, base);
     const head = commit(file, content);
     git('push', '-q', 'origin', branch);
@@ -206,9 +206,9 @@ test('需求流程回路、人工任务、结果通知和合并后的流程契�
   assert.deepEqual([nodes.brief.wake, nodes.brief.assignee], ['false', undefined]);
   assert.deepEqual(values(nodes.brief).map(v => [v.id, v.note]), [['start', 'required']]);
   // 成员怎样发起写在任务里：Ultra 不再讲开发流程。
-  for (const text of ['workflow_run 发起 develop', '传 title、message（这个仓库要做的部分与完成标准）', 'delivery="{{run.id}}"', 'devices=false', 'project', '需求进行中', '泳道 PR', '确认达标', '待交付']) assert.ok(nodes.brief.documentation[0].text.includes(text), text);
+  for (const text of ['workflow_run 发起 develop', '传 title、message（这个仓库要做的部分与完成标准）', 'delivery="{{run.id}}"', 'devices=false', 'project', '需求进行中', '块', '确认达标', '待交付']) assert.ok(nodes.brief.documentation[0].text.includes(text), text);
   assert.doesNotMatch(workflow, /task（/);
-  assert.match(nodes.brief.documentation[0].text, /为每个成员选好执行者 executor 和备用执行者 executor2/, '成员的开工执行者由这里选，泳道 PR 的执行者再由各成员的主 Agent 按块定');
+  assert.match(nodes.brief.documentation[0].text, /为每个成员选好执行者 executor 和备用执行者 executor2/, '成员的开工执行者由这里选，块的执行者再由各成员的主 Agent 按块定');
   assert.doesNotMatch(nodes.brief.documentation[0].text, /goal/);
   for (const [field, written] of [['TITLE', 'title'], ['GOAL', 'goal']]) {
     const expression = params('init')[field].slice(1);

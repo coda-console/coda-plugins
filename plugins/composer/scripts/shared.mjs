@@ -16,7 +16,7 @@ export const command = (bin, args, env = process.env) => {
 export const git = (...args) => command('git', args);
 export const gh = (...args) => command('gh', args);
 
-// 执行者的固定说明，放在每个交给执行者的任务前面：泳道 PR 的执行与修改、监督开发的同步与整体评审修复都用它。
+// 执行者的固定说明，放在每个交给执行者的任务前面：块的执行与修改、监督开发的同步与整体评审修复都用它。
 export const instructions = `你是这次开发流程的执行者，自己完成这一项任务，不继承主 Agent 的协调职责，不再委派。
 只做这一项，在当前分支提交，不推送、不开 PR、不合并、不部署。
 遵守仓库的 AGENTS.md。只改必需的地方，不写防御性、冗余的代码，不顺手重构。
@@ -27,6 +27,26 @@ export const instructions = `你是这次开发流程的执行者，自己完成
 run-held 和流程运行的结果会自己送回，不要另起 Monitor 或后台任务去盯日志。
 回报改了什么、为什么、实际跑了哪些验证及未验证部分。`;
 
+// 执行步骤失败后重跑、接回已开的执行会话时的开头：现场可能已经做了一部分，先看清再接着做。
+export const resumeText = `这一项之前已经交给你，上一次没有正常结束（流程恢复或重试）。先核对现场：工作区状态（git status）、git log 里已有的提交、上次做到哪；再接着完成原任务，不要从头重做，已经做好的不要丢。`;
+
+// 交执行者一次（任务前面带固定说明）：失败时 coda-agent 仍在标准输出给出会话 ID，由调用方记下，这一步再跑才接得回。
+// fields 是回复必须有的字段：退出 0 但缺了也按失败，免得后面的步骤读执行者时才崩、恢复也一直重复同一个错。
+export const talk = (args, text, fields = ['session', 'head']) => {
+  const prompt = join(process.env.RUNNER_TEMP, 'task.md');
+  writeFileSync(prompt, `${instructions}\n\n${text}\n`);
+  const result = spawnSync('coda-agent', [...args, '--json', '--prompt-file', prompt], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
+  if (result.error) throw result.error;
+  let reply;
+  try { reply = JSON.parse(result.stdout); } catch { /* 失败时可以没有会话信息 */ }
+  return { result, reply, fields, failed: result.status !== 0 || fields.some(field => !reply?.[field]) };
+};
+// 执行失败：调用方记下会话后保留退出码退出；退出 0 但回复不全也按失败。
+export const fail = ({ result, fields }) => {
+  if (result.status === 0) console.error(`coda-agent 退出 0，但输出不是含 ${fields.join('、')} 的 JSON：${result.stdout.slice(0, 300)}`);
+  process.exit(result.status || 1);
+};
+
 // 一组 Agent 选择（流程参数的 agent 类型）转成 coda-agent 开新会话的参数：没选的模型、强度、模式用 Agent 的默认值。
 export const agentArgs = ({ options = {}, ...chosen }) => {
   const args = [];
@@ -36,7 +56,7 @@ export const agentArgs = ({ options = {}, ...chosen }) => {
 };
 
 // 流程步骤替运行所属的会话说话（CODA_THREAD_ID），GitHub 插件的 gh 会把它开的 PR 报给「PR 观察」，
-// 进而启动 review 插件的 PR 生命流程。流程开的 PR 由流程自己检查、评审、合并，开的时候不带会话，不上报。
+// 进而启动 review 插件的 PR 生命流程。监督开发开的 PR 由流程自己检查、评审、合并，开的时候不带会话，不上报。
 export const openPr = (...args) => {
   const { CODA_THREAD_ID: _thread, ...env } = process.env;
   return command('gh', ['pr', 'create', ...args], env);

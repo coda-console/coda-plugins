@@ -100,6 +100,28 @@ test('收敛经过：每轮的发现、回应与结论', () => {
 // 监督开发的整体评审：同一本账，路由按严重程度与类别。
 const overall = (results, options = {}) => triageOverall(results, { head: HEAD, full: true, ...options });
 
+test('收敛经过带原发现的说明：新发现写全 detail，复评坚持的在那一轮下面再列原发现，只取最后一轮也看得到', () => {
+  const detail = '入口函数没处理空输入\n复现：传 ""', first = overall([done('reviewer', [{ ...finding('P2', 'documentation', 'README 漏了'), detail }])]);
+  const disputed = first.findings.map(f => ({ ...f, response: { disposition: 'disputed', reason: '写了' } }));
+  const upheld = JSON.stringify([{ id: 'reviewer:1', status: 'upheld', reason: '没写' }]);
+  const second = overall([done('reviewer', [], { resolutions: upheld })], { findings: disputed, rounds: 1, full: false });
+  assert.equal(second.route, 'escalate');
+  assert.deepEqual(second.resolutions, [{ id: 'reviewer:1', status: 'upheld', reason: '没写',
+    finding: { id: 'reviewer:1', severity: 'P2', kind: 'documentation', blocking: true, title: 'README 漏了', location: 'a.mjs:1', detail } }]);
+  const history = [
+    { kind: 'review', full: true, head: HEAD, resolutions: first.resolutions, added: first.findings, route: first.route, reasons: first.reasons },
+    { kind: 'fix', round: 1, from: HEAD, head: HEAD, ids: ['reviewer:1'], responses: { 'reviewer:1': { disposition: 'disputed', reason: '写了' } }, note: '' },
+    { kind: 'review', full: false, head: HEAD, resolutions: second.resolutions, added: [], route: second.route, reasons: second.reasons },
+  ];
+  assert.ok(historyText(history).includes('- reviewer:1 [P2·documentation·阻塞] README 漏了（a.mjs:1）\n  入口函数没处理空输入\n  复现：传 ""\n'), '第 1 轮的新发现带说明');
+  assert.equal(historyText(history.slice(-1)), `复评（head ${HEAD.slice(0, 12)}）：\n- reviewer:1 → upheld：没写\n  - reviewer:1 [P2·documentation·阻塞] README 漏了（a.mjs:1）\n    入口函数没处理空输入\n    复现：传 ""\n`
+    + '结论：升级给主 Agent：reviewer:1：执行者反驳了，评审者仍坚持');
+  // 没被坚持的结论只有一行。
+  const resolved = overall([done('reviewer', [], { resolutions: JSON.stringify([{ id: 'reviewer:1', status: 'resolved', reason: '' }]) })], { findings: disputed, rounds: 1, full: false });
+  assert.deepEqual(resolved.resolutions, [{ id: 'reviewer:1', status: 'resolved', reason: '' }]);
+});
+
+
 test('整体评审：只有 P3 或没有发现直接验收；P2 全是测试、文档、风格类交执行者；不看 review 设置的阻塞级别', () => {
   assert.equal(overall([done('reviewer', [])]).route, 'accept');
   const minor = overall([done('reviewer', [finding('P3', 'style'), finding('P3', 'correctness')]), done('reviewer2', [finding('P3', 'test-quality')]), { state: 'skipped' }]);
@@ -148,11 +170,11 @@ test('整体评审：最多自动修两轮；反驳被坚持交主 Agent；修�
   assert.deepEqual([done2.route, done2.findings.filter(f => f.status === 'open').map(f => f.id)], ['accept', ['reviewer:2']], '只剩 P3：轮数用完也直接验收');
 });
 
-test('整体评审与泳道 PR 同样的发现、不同的路由：同一本账，编号与结论一致', () => {
+test('整体评审与块同样的发现、不同的路由：同一本账，编号与结论一致', () => {
   const results = [done('reviewer', [finding('P2', 'correctness'), finding('P3', 'style')]), done('reviewer2', [finding('P2', 'style')])];
-  const lane = triage(results, { head: HEAD, full: true }), whole = overall(results);
-  assert.deepEqual([lane.route, whole.route], ['fix', 'escalate']);
-  assert.deepEqual(whole.findings, lane.findings);
-  assert.deepEqual([whole.added, whole.resolutions], [lane.added, lane.resolutions]);
+  const pieceRoute = triage(results, { head: HEAD, full: true }), whole = overall(results);
+  assert.deepEqual([pieceRoute.route, whole.route], ['fix', 'escalate']);
+  assert.deepEqual(whole.findings, pieceRoute.findings);
+  assert.deepEqual([whole.added, whole.resolutions], [pieceRoute.added, pieceRoute.resolutions]);
   assert.match(historyText([{ kind: 'review', full: true, head: HEAD, resolutions: [], added: [], route: 'accept', reasons: [] }]), /结论：只有 P3 或没有发现，直接进验收/);
 });

@@ -7,13 +7,13 @@ import { test } from 'node:test';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { Provider, SESSION, RUN, recordId, messageId } from '../../../plugins/grok-bot/lib/provider.mjs';
+import { Provider, SESSION, recordId, messageId } from '../../../plugins/grok-bot/lib/provider.mjs';
 import { NativeAuth } from '../../../plugins/grok-bot/lib/auth.mjs';
 import { decode } from '../../../plugins/grok-bot/lib/transcript.mjs';
 import { FakeNative } from './native-fixture.mjs';
 import { temporary } from './helpers.mjs';
 import { ProtocolTypes, validate } from '../../../check/coda/components/protocols/types.mjs';
-import { SESSION_PROTOCOL, RUN_PROTOCOL } from '@coda-console/protocol/protocol';
+import { SESSION_PROTOCOL } from '@coda-console/protocol/protocol';
 const types = new ProtocolTypes();
 // Test the 5.7.0 activity contract while Coda's synced checker still pins 5.6.0.
 // coda-protocol 5114657bff89056ffe94fd8988478b0a8b2f37b4, session.json status.activity.
@@ -27,7 +27,7 @@ sessionProtocol.status.properties.activity = {
   required: ['participant', 'text'],
   additionalProperties: false,
 };
-for (const d of [sessionProtocol, RUN_PROTOCOL]) types.register({ ...d, kind: d.name, participants: () => [] });
+for (const d of [sessionProtocol]) types.register({ ...d, kind: d.name, participants: () => [] });
 const until = async fn => { for (let i=0; i<200; i++) { if (fn()) return; await delay(5); } assert.fail('condition timed out'); };
 function host(root) {
   const records = new Map(), watchers = [], handlers = new Map(); let revision = 0;
@@ -39,15 +39,17 @@ function host(root) {
     for (const w of watchers) if (w.kind === object.kind) w.fn({ type: 'MODIFIED', id: object.id, object });
     return object;
   };
-  const coda = { plugin: { id: 'grok-bot', state: root }, protocols: {
-    observe: async (kind, fn) => { const w = { kind, fn }; watchers.push(w); for (const o of records.values()) if (o.kind === kind) fn({ type: 'ADDED', id: o.id, object: o }); return { dispose() { watchers.splice(watchers.indexOf(w), 1); } }; },
+  const coda = { plugin: { id: 'grok-bot', state: root },
     handle: (kind, op, fn) => { handlers.set(`${kind}/${op}`, fn); return { dispose() {} }; },
-    put: async o => save(o), publish: async () => {},
-    update: async (kind, id, spec, rev) => { const o=records.get(key(kind,id)); assert.equal(rev,o.revision); return save({...o,spec}); },
-    setStatus: async (kind,id,status,rev) => { const o=records.get(key(kind,id)); assert.equal(rev,o.revision); return save({...o,status}); },
-    delete: async (kind,id) => records.delete(key(kind,id)),
-  } };
-  return { coda, records, save, handlers };
+    error: (code, message, { effects } = {}) => Object.assign(new Error(message), { code, effects: effects ?? 'unknown' }),
+    protocols: {
+      observe: async (kind, fn) => { const w = { kind, fn }; watchers.push(w); for (const o of records.values()) if (o.kind === kind) fn({ type: 'ADDED', id: o.id, object: o }); return { dispose() { watchers.splice(watchers.indexOf(w), 1); } }; },
+      put: async o => save(o), publish: async () => {},
+      update: async (kind, id, spec, rev) => { const o=records.get(key(kind,id)); assert.equal(rev,o.revision); return save({...o,spec}); },
+      setStatus: async (kind,id,status,rev) => { const o=records.get(key(kind,id)); assert.equal(rev,o.revision); return save({...o,status}); },
+      delete: async (kind,id) => records.delete(key(kind,id)),
+    } };
+  return { coda, handlers };
 }
 async function fixture(t, loggedIn = true, setup = () => {}) {
   const root = temporary(t), native = new FakeNative(), h = host(root);
@@ -68,10 +70,10 @@ async function fixture(t, loggedIn = true, setup = () => {}) {
   if (loggedIn) await until(() => native.connections.length);
   return { ...h, provider, native, auth, root, id: () => [...provider.bots.keys()][0] };
 }
-function run(f, requestId='request', input={text:'hello'}, id=requestId) {
-  const record={kind:SESSION,id:f.id()}, parent=record;
-  f.save({kind:RUN,id,spec:{record,operation:'post',input,requestId,parent,awaited:true},status:{state:'working'}});
-  return {record,parent,requestId,run:{kind:RUN,id}};
+// What the plugin host hands a doing handler; `progress` collects what it reports.
+function call(f, id = 'call', controller = new AbortController()) {
+  const progress = [];
+  return { id, record: { kind: SESSION, id: f.id() }, signal: controller.signal, deadline: null, progress: text => progress.push(text), controller, reports: progress };
 }
 
 test('resource login followed by refresh lists stable per-bot records and person/agent participants', async t => {
@@ -108,39 +110,131 @@ test('read latest/before/after, edits, stable head and no Routine mirror', async
   assert.ok(!f.native.requests.some(r=>/Subagents|Automations/.test(r.method)));
 });
 
-test('post uses request-derived UUID and confirms the stream echo without reading history', async t => {
-  const f=await fixture(t), context=run(f);
+test('post uses call-derived UUID, reports progress and confirms the stream echo without reading history', async t => {
+  const f=await fixture(t), ctx=call(f);
   const reads=f.native.requests.filter(r=>r.method==='ListGrokBotTranscriptEntries').length;
-  await f.provider.post({text:'hello'},context);
-  const status=f.provider.runs.get(context.run.id).status; assert.equal(status.state,'completed');
-  assert.equal(status.result.message.id,`0:${messageId('request',f.id(),context.parent)}`);
+  const result=await f.provider.post({text:'hello'},ctx);
+  assert.equal(result.message.id,`0:${messageId('call',f.id())}`);
+  assert.deepEqual(ctx.reports,['正在发送']);
+  assert.deepEqual(Object.keys(result),['message']); assert.deepEqual(Object.keys(result.message).sort(),['cursor','id']);
   assert.equal(f.native.requests.filter(r=>r.method==='SendGrokBotUserMessage').length,1);
   assert.equal(f.native.requests.filter(r=>r.method==='ListGrokBotTranscriptEntries').length,reads);
 });
 
-test('widget is text options; reply responds once and completes with a self reply', async t => {
+test('widget is text options; reply responds once and returns the self reply', async t => {
   const f=await fixture(t); await until(()=>f.native.connections.length);
   f.native.emit(f.native.row('widget',{kind:'send-message',message:{type:'widget',widget:{prompt:'Choose',options:[{label:'Yes',value:'yes'}]}}},1));
   await until(()=>f.provider.records.get(f.id()).status.head==='0:1');
   assert.equal((await f.provider.read(f.id())).messages[0].text,'Choose\nYes');
-  const input={text:'Yes',replyTo:'0:widget'},context=run(f,'widget-answer',input);
-  await f.provider.post(input,context);
-  assert.equal(f.provider.runs.get(context.run.id).status.state,'completed');
+  const result=await f.provider.post({text:'Yes',replyTo:'0:widget'},call(f,'widget-answer'));
   assert.equal(f.native.requests.filter(r=>r.method==='RespondGrokBotWidget').length,1);
   assert.equal(f.native.requests.filter(r=>r.method==='SendGrokBotUserMessage').length,0);
   const reply=(await f.provider.read(f.id(),{after:'0:1'})).messages[0];
+  assert.equal(result.message.id,reply.id);
   assert.equal(reply.sender,f.provider.bots.get(f.id()).self); assert.equal(reply.replyTo,'0:widget');
   assert.deepEqual(reply.mentions,['inspector']);
 });
 
-test('ambiguous write fails unknown and is never retried, unsupported media fails before sending', async t => {
+test('failure before sending says effects none; once sending started it is unknown and never retried', async t => {
   const f=await fixture(t); const original=f.native.handler;
+  const input={text:'audio',parts:[{type:'audio',upload:'x'}]};
+  await assert.rejects(f.provider.post(input,call(f,'media')),{code:'unsupported',effects:'none'});
+  await assert.rejects(f.provider.post({text:'x',replyTo:'0:missing'},call(f,'reply')),{code:'invalid',effects:'none'});
+  assert.equal(f.native.requests.filter(r=>r.method==='SendGrokBotUserMessage').length,0);
   f.native.handler=async (method,params)=>{if(method==='SendGrokBotUserMessage')throw new Error('lost');return original(method,params);};
-  const context=run(f); await f.provider.post({text:'hello'},context);
-  assert.equal(f.provider.runs.get(context.run.id).status.result.code,'unknown');
+  await assert.rejects(f.provider.post({text:'hello'},call(f)),{code:'unknown',effects:'unknown',message:'lost'});
   assert.equal(f.native.requests.filter(r=>r.method==='SendGrokBotUserMessage').length,1);
-  const input={text:'audio',parts:[{type:'audio',upload:'x'}]},other=run(f,'media',input);
-  await f.provider.post(input,other); assert.equal(f.provider.runs.get(other.run.id).status.result.code,'unsupported');
+});
+
+test('server refusing (false) says effects none; a missing field stays unknown', async t => {
+  const f=await fixture(t); const original=f.native.handler;
+  f.native.handler=async (method,params)=>method==='SendGrokBotUserMessage'?Response.json({dispatched:false}):original(method,params);
+  await assert.rejects(f.provider.post({text:'no'},call(f,'refused')),{code:'refused',effects:'none'});
+  f.native.handler=async (method,params)=>method==='SendGrokBotUserMessage'?Response.json({}):original(method,params);
+  await assert.rejects(f.provider.post({text:'missing'},call(f,'missing')),{code:'unknown',effects:'unknown'});
+});
+
+test('authentication rejected (401/403, or refresh failed) says effects none; other statuses stay unknown', async t => {
+  const f=await fixture(t); const original=f.native.handler;
+  const reply=status=>(method,params)=>method==='SendGrokBotUserMessage'?new Response('{}',{status}):original(method,params);
+  f.native.handler=reply(401);
+  await assert.rejects(f.provider.post({text:'a'},call(f,'a')),{code:'unauthorized',effects:'none',message:/请在资源页重新登录.*HTTP 401/});
+  f.native.handler=reply(403);
+  await assert.rejects(f.provider.post({text:'b'},call(f,'b')),{code:'unauthorized',effects:'none',message:/^(?!.*重新登录)/s});
+  for (const status of [400,429,500]) {
+    f.native.handler=reply(status);
+    await assert.rejects(f.provider.post({text:'c'},call(f,`c${status}`)),{code:'unknown',effects:'unknown'});
+  }
+  f.auth.use({accessToken:'fixture',refreshToken:'refresh'});
+  f.native.handler=async (method,params)=>method==='token'?Response.json({},{status:400}):reply(401)(method,params);
+  await assert.rejects(f.provider.post({text:'d'},call(f,'d')),{code:'unauthorized',effects:'none'});
+});
+
+test('renewal failing after a 401 says effects none whether offline or timed out; after renewal, only 401/403 is none', async t => {
+  const f=await fixture(t); const original=f.native.handler;
+  const rejected=(method,params)=>method==='SendGrokBotUserMessage'?new Response('{}',{status:401}):original(method,params);
+  f.auth.use({accessToken:'fixture',refreshToken:'refresh'});
+  f.native.handler=async (method,params)=>{if(method==='token')throw new TypeError('fetch failed');return rejected(method,params);};
+  await assert.rejects(f.provider.post({text:'a'},call(f,'offline')),{code:'unauthorized',effects:'none',message:/^(?!.*重新登录).*续期失败.*fetch failed/s});
+  f.native.handler=async (method,params)=>{if(method==='token')throw new DOMException('timed out','TimeoutError');return rejected(method,params);};
+  await assert.rejects(f.provider.post({text:'b'},call(f,'timeout')),{code:'unauthorized',effects:'none',message:/续期失败/});
+  // Renewed: the resend is a new request, so a lost connection is unknown, a rejection is none.
+  const renew=resend=>{
+    let sends=0;
+    return async (method,params)=>{
+      if(method==='token')return Response.json({access_token:'renewed'});
+      if(method==='SendGrokBotUserMessage')return ++sends===1?new Response('{}',{status:401}):resend();
+      return original(method,params);
+    };
+  };
+  f.auth.use({accessToken:'fixture',refreshToken:'refresh'});
+  f.native.handler=renew(()=>{throw new Error('lost');});
+  await assert.rejects(f.provider.post({text:'c'},call(f,'lost')),{code:'unknown',effects:'unknown',message:'lost'});
+  f.auth.use({accessToken:'fixture',refreshToken:'refresh'});
+  f.native.handler=renew(()=>new Response('{}',{status:401}));
+  await assert.rejects(f.provider.post({text:'d'},call(f,'again')),{code:'unauthorized',effects:'none',message:/请在资源页重新登录/});
+});
+
+test('the Bot list loop shows the original error when renewal fails offline, and asks for login when it is rejected', async t => {
+  const f=await fixture(t); const original=f.native.handler;
+  const reason=()=>f.provider.records.get(f.id()).status.reason;
+  // sync reloads the credentials file, so the refresh token must be on disk.
+  writeFileSync(join(f.root,'native-auth.json'),JSON.stringify({accessToken:'fixture',refreshToken:'refresh'}));
+  f.native.handler=async (method,params)=>{
+    if(method==='token')throw new TypeError('fetch failed');
+    return method==='GetMe'?new Response('{}',{status:401}):original(method,params);
+  };
+  await f.provider.schedule(()=>f.provider.sync());
+  assert.equal(reason(),'fetch failed');
+  f.native.handler=async (method,params)=>{
+    if(method==='token')return Response.json({},{status:400});
+    return method==='GetMe'?new Response('{}',{status:401}):original(method,params);
+  };
+  await f.provider.schedule(()=>f.provider.sync());
+  assert.equal(reason(),'请在资源页重新登录');
+});
+
+test('widget answer refused (false) says effects none; a missing field stays unknown', async t => {
+  const f=await fixture(t); await until(()=>f.native.connections.length); const original=f.native.handler;
+  f.native.emit(f.native.row('widget',{kind:'send-message',message:{type:'widget',widget:{prompt:'Choose',options:[{label:'Yes',value:'yes'}]}}},1));
+  await until(()=>f.provider.records.get(f.id()).status.head==='0:1');
+  f.native.handler=async (method,params)=>method==='RespondGrokBotWidget'?Response.json({accepted:false}):original(method,params);
+  await assert.rejects(f.provider.post({text:'Yes',replyTo:'0:widget'},call(f,'refused')),{code:'refused',effects:'none'});
+  f.native.handler=async (method,params)=>method==='RespondGrokBotWidget'?Response.json({}):original(method,params);
+  await assert.rejects(f.provider.post({text:'Yes',replyTo:'0:widget'},call(f,'missing')),{code:'unknown',effects:'unknown'});
+});
+
+test('cancel before sending throws the signal reason and sends nothing; cancel after sending started still returns the message', async t => {
+  const f=await fixture(t), before=call(f,'before');
+  before.controller.abort();
+  await assert.rejects(f.provider.post({text:'never'},before),e=>e===before.controller.signal.reason&&e.name==='AbortError');
+  assert.deepEqual(before.reports,[]);
+  assert.equal(f.native.requests.filter(r=>r.method==='SendGrokBotUserMessage').length,0);
+  const original=f.native.handler, after=call(f,'after');
+  f.native.handler=async (method,params)=>{if(method==='SendGrokBotUserMessage')after.controller.abort();return original(method,params);};
+  const result=await f.provider.post({text:'already out'},after);
+  assert.equal(result.message.id,`0:${messageId('after',f.id())}`);
+  assert.equal(f.native.requests.filter(r=>r.method==='SendGrokBotUserMessage').length,1);
 });
 
 test('only changed stream rows wait for stability; reads and settling never fetch history', async t => {
@@ -216,15 +310,6 @@ test('reconnect and cursor resets rebuild once, then resume incremental rows', a
   assert.equal(reads(),4);
 });
 
-test('restart marks an unfinished host run unknown without sending it again', async t => {
-  const f=await fixture(t), context=run(f);
-  await f.provider.stop();
-  const restarted=new Provider(f.coda,{auth:f.auth,stableMs:10});
-  t.after(()=>restarted.stop()); await restarted.start();
-  assert.equal(restarted.runs.get(context.run.id).status.result.code,'unknown');
-  assert.equal(f.native.requests.filter(r=>r.method==='SendGrokBotUserMessage').length,0);
-});
-
 const liveEvent = live => ({ agentState: { live: [{ agentId: 'inspector', sessionId: '', ...live }] } });
 const settlement = { turnId: 'turn', outcome: 'success', settledAtMs: '100' };
 
@@ -290,15 +375,17 @@ test('rebuilding the transcript mirror also rebuilds live state', async t => {
   assert.equal(status().head, undefined);
 });
 test('session read, draft and post answer through the registered handlers and the resource list has no actions', async t => {
-  const f = await fixture(t), call = (op, input, context) => f.handlers.get(`${SESSION}/${op}`)(input, context);
-  assert.deepEqual(await call('draft', { text: 'unsent' }), {});
-  const context = run(f, 'handler-request', { text: 'via handler' });
-  assert.equal(await call('post', { text: 'via handler' }, context), undefined);
-  await until(() => f.provider.runs.get(context.run.id).status.state === 'completed');
+  const f = await fixture(t), handle = (op, input, ctx) => f.handlers.get(`${SESSION}/${op}`)(input, ctx);
+  assert.deepEqual([...f.handlers.keys()].sort(), [`${SESSION}/draft`, `${SESSION}/post`, `${SESSION}/read`]);
+  // post is registered as a function, not an object carrying `resume`: a registered `resume` would change what users see after a restart.
+  assert.equal(typeof f.handlers.get(`${SESSION}/post`), 'function');
+  assert.deepEqual(await handle('draft', { text: 'unsent' }), {});
+  const ctx = call(f, 'handler-call');
+  const result = await handle('post', { text: 'via handler' }, ctx);
   assert.equal(f.native.requests.filter(r => r.method === 'SendGrokBotUserMessage').length, 1);
-  const read = await call('read', {}, { record: context.record });
+  const read = await handle('read', {}, ctx);
   assert.equal(read.messages.at(-1).text, 'via handler');
-  assert.equal(read.messages.at(-1).id, f.provider.runs.get(context.run.id).status.result.message.id);
+  assert.equal(read.messages.at(-1).id, result.message.id);
   const manifest = JSON.parse(readFileSync(new URL('../../../plugins/grok-bot/package.json', import.meta.url)));
   const preload = join(f.root, 'native-preload.mjs');
   writeFileSync(preload, `import { FakeNative } from ${JSON.stringify(new URL('./native-fixture.mjs', import.meta.url).href)};
@@ -311,4 +398,5 @@ test('session read, draft and post answer through the registered handlers and th
   assert.deepEqual(rows[0].actions, []);
   assert.deepEqual(manifest.coda, { channels: ['preview'] });
   assert.equal(manifest.contributes.views, undefined);
+  assert.deepEqual(manifest.contributes.protocolImplementations, [SESSION]);
 });
