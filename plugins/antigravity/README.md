@@ -58,7 +58,7 @@
 | skills | 读工作副本的 `.agents/skills`（清单的 `skillsDir`） |
 | 上下文占用、标题 | Antigravity 报 `usage_update` 与会话标题更新 |
 | 模型列表何时重读 | `~/.gemini/antigravity-cli/settings.json` 变了时 |
-| 资源页 | 登录后显示一条「Antigravity」，读数是 CLI 版本；登录状态只查钥匙串条目在不在（macOS 用 `security find-generic-password -s gemini -a antigravity`，只查条目，不读内容），不开会话，也不读邮箱 |
+| 资源页 | 登录后显示一条「Antigravity」，读数是 CLI 版本；登录状态只查钥匙串条目在不在（macOS 用 `security find-generic-password -s gemini -a antigravity`，只查条目，不读内容），不开会话，也不读邮箱；钥匙串问不出来时读数失败，不当作登出（Linux 的细节见下） |
 
 ## 已知限制
 
@@ -72,7 +72,7 @@
 | 等待项登记 `_coda/wait` | 不登记，会话底部不列它在等什么 |
 | Plan 模式 | 产出计划文件并要求审阅，审阅前不动手 |
 | 额度耗尽 | 没有真实样本，不做失败分类，Coda 只看到 Antigravity 给的错误文字 |
-| 没有桌面会话的 Linux 登录 | 未实测：Linux 用 Secret Service（D-Bus），二进制里有「keyring 失败就落文件」的回退，但文件路径与触发条件没查清。资源页在 Linux 上用 `secret-tool lookup service gemini username antigravity` 查条目（属性名按 go-keyring 的写法，未在真机上试过），没有 `secret-tool` 或登录落在文件里时，资源页当作未登录（只是仍在「添加资源」里出现，会话不受影响） |
+| 没有桌面会话的 Linux 登录 | 未实测：Linux 用 Secret Service（D-Bus），二进制里有「keyring 失败就落文件」的回退，但文件路径与触发条件没查清。资源页在 Linux 上用 `secret-tool lookup service gemini username antigravity` 查条目（属性名按 go-keyring 的写法，未在真机上试过），没有 `secret-tool`、查不到条目，或登录落在文件里时，资源页当作未登录（只是仍在「添加资源」里出现，会话不受影响）。装了 `secret-tool` 却联系不上 Secret Service（典型是没有会话 D-Bus 的无桌面机器，它带错误信息退出）时，资源页读数失败、保留上次的显示，首次读取就没有可保留的，也就无法从资源页添加：这样的机器在终端里运行 `agy acp --login` 登录 |
 | 第三方模型 | 账号里的 Claude、GPT-OSS 未实测 |
 | 并发进程 | 不加 `--process-per-session`：Coda 交给 Agent 的 MCP 服务器都是 stdio，官方只对 HTTP MCP 要求这个参数 |
 
