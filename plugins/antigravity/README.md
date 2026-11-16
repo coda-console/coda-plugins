@@ -3,7 +3,7 @@
 把 [Google Antigravity](https://antigravity.google/cli) 的 Agent 接进 Coda。清单经一个薄转发入口（`agent/entry.mjs`）启动运行机上的 `agy acp`（Antigravity CLI 的 ACP 服务），
 先找 `~/.local/bin/agy`，没有再用 PATH。每个会话一个进程，不登记等待项。
 
-入口只改两处，其余消息原样双向转发。第一处：把 `initialize` 答复里的 `additionalDirectories` 能力去掉，Coda 就不再给它传附加目录；
+入口改三处，其余消息原样双向转发。第一处：把 `initialize` 答复里的 `additionalDirectories` 能力去掉，Coda 就不再给它传附加目录；
 `session/new`、`session/load`、`session/resume` 里若仍带 `additionalDirectories` 也删掉。原因：agy 1.5.9 收到附加目录后，
 没给 Cwd 的命令默认跑在**字典序最前的附加根**，而不是会话的工作副本（实测规律，不是上游的保证；数组顺序、`session/load` 都不改变它）；
 不传附加目录时命令就在工作副本里跑。
@@ -79,7 +79,7 @@
 | 额度的口径 | 报告按模型组给额度：同组模型共享每周与 5 小时限额，不是每个模型各算一份；报告里没有套餐名。第一次在某个目录运行 `/usage` 时，CLI 会在 `implicit/` 下留一个小文件；插件固定在系统临时目录运行，之后复用，不新增会话与项目记录 |
 | 等待项登记 `_coda/wait` | 不登记，会话底部不列它在等什么 |
 | Plan 模式 | 产出计划文件并要求审阅，审阅前不动手；plan 下只读的 shell 命令也按权限规则请求审批，这是 agy 的设计 |
-| 删除会话 | 不支持：agy 1.5.9 的 ACP 没有 `session/delete`（回 -32601），`session/close` 也不删除，所以 Coda 探测模型和模式时会在 agy 历史里留下零步的空会话。插件不自己删文件：那会绕过 agy 的取消、摘要缓存和搜索索引，agy 运行中删也不安全；等上游提供删除接口再接 |
+| 删除会话 | 不支持：agy 1.5.9 的 ACP 没有 `session/delete`（回 -32601），`session/close` 也不删除。在 agy 历史里留下零步空会话的只有两种：不支持配置探测的旧版 Coda 每次普通探测建的会话，和插件缓存采集目录时自己建的那条，见「配置探测」。插件不自己删文件：那会绕过 agy 的取消、摘要缓存和搜索索引，agy 运行中删也不安全；等上游提供删除接口再接 |
 | 附加目录 | 不交给 Antigravity：读工作副本外的附件、会话临时目录、skill 真实文件可能要审批；`.agents/skills` 的链接照旧 |
 | Coda 的 MCP 工具在 auto 下也要审批 | 无人值守的子会话、流程步骤调用它们会停下；「全部放行」下不会。要在 auto 下放行，写法是在运行机的 `~/.gemini/antigravity-cli/settings.json` 里加 `{"permissions": {"allow": ["mcp(coda/*)"]}}`，出处是官方[权限文档](https://antigravity.google/docs/permissions/)；插件不替你改这个文件 |
 | 额度耗尽 | 没有真实样本，不做失败分类，Coda 只看到 Antigravity 给的错误文字 |

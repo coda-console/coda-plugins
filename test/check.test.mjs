@@ -123,6 +123,8 @@ describe('a liar fails on the rule it breaks', () => {
     ['probe-stuck', 'probe.config', {}],
     ['probe-prompt', 'probe.prompt', {}],
     ['probe-resume', 'probe.resume', {}],
+    ['probe-list-error', 'probe.resume', {}],
+    ['probe-list-shapeless', 'probe.resume', {}],
     ['probe-new-work', 'probe.quiet', {}],
     ['probe-signed-out-work', 'probe.quiet', {}],
     ['probe-wait-work', 'probe.quiet', {}],
@@ -142,6 +144,7 @@ describe('a liar fails on the rule it breaks', () => {
   test('one that declares configuration probes opens a session of its connection alone for them', async () => {
     const { report } = await checkPlugin(plugin({ mode: 'probe' }), { limits });
     assertPasses(report, ['handshake.new', 'probe.new', 'probe.config', 'probe.prompt', 'probe.resume']);
+    assert.match(report.items.find(item => item.rule === 'probe.resume').message, /session\/list/);
     assert.match(report.items.find(item => item.rule === 'probe.config').message, /3 个.*a（low\/medium\/high），b（low\/medium\/high\/xhigh），c（无档位）/);
     assert.ok(rules(await checkPlugin(plugin(), { limits }).then(r => r.report), 'skip').includes('probe.skipped'), 'one that does not is not asked');
   });

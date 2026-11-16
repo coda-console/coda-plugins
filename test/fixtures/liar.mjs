@@ -17,7 +17,8 @@ const MODEL = { id: 'model', name: '模型', category: 'model', type: 'select', 
 const asked = new Map();
 // The probe modes declare configuration probes (docs/agent-protocol.md「配置探测」) and keep the sessions of probes here,
 // their models a (low/medium/high), b (with xhigh) and c (no thinking level). Each gets one thing wrong: `probe-refuses`
-// a marked session/new, `probe-stuck` a model switch, `probe-prompt` a prompt, `probe-resume` a load once the connection is gone.
+// a marked session/new, `probe-stuck` a model switch, `probe-prompt` a prompt, `probe-resume` a load once the connection is gone,
+// `probe-list-error` and `probe-list-shapeless` the session/list after it.
 const LEVELS = { a: ['low', 'medium', 'high'], b: ['low', 'medium', 'high', 'xhigh'], c: null }, probes = new Map();
 const select = (id, category, currentValue, values) => ({ id, name: id, category, type: 'select', currentValue, options: values.map(value => ({ value, name: value })) });
 const probeOptions = ({ model, level }) => [select('model', 'model', model, Object.keys(LEVELS)), ...(LEVELS[model] ? [select('thought_level', 'thought_level', level, LEVELS[model])] : [])];
@@ -42,7 +43,7 @@ function ask(method, params) {
 const opened = new Set();
 const methods = {
   initialize: () => ({ protocolVersion: mode === 'protocol-version' ? 2 : 1,
-    agentCapabilities: { loadSession: mode === 'load-fails' || mode === 'load-forgets' || mode.startsWith('probe'), ...(mode.startsWith('no-system-prompt') ? {} : { sessionCapabilities: { systemPrompt: {} } }),
+    agentCapabilities: { loadSession: mode === 'load-fails' || mode === 'load-forgets' || mode.startsWith('probe'), ...(mode.startsWith('no-system-prompt') ? {} : { sessionCapabilities: { systemPrompt: {}, ...(mode.startsWith('probe') ? { list: {} } : {}) } }),
       _meta: { coda: { waits: {}, ...(mode.startsWith('remote-code') ? { remote: {} } : {}), ...(mode.startsWith('probe') ? { probe: {} } : {}) } } },
     authMethods: [], ...(STEERS.includes(mode) ? { _meta: { steering: { supported: true } } } : {}), ...extension.initialize }),
   'session/new': params => {
@@ -81,6 +82,11 @@ const methods = {
     if (mode === 'load-forgets') return { configOptions: [MODEL] };
     const word = /reply with exactly (\S+) and nothing else/.exec(textOf(systemPrompt?.content))?.[1];
     throw Object.assign(new Error(`会话不见了${word ? `（收到了检查词 ${word} 的会话指令）` : ''}`), { code: -32002 });
+  },
+  // Lists none of the probe sessions, which are gone with their connection.
+  'session/list': () => {
+    if (mode === 'probe-list-error') throw Object.assign(new Error('database unavailable'), { code: -32603 });
+    return mode === 'probe-list-shapeless' ? {} : { sessions: [] };
   },
   // A probe session's own options; of the others, the one model.
   'session/set_config_option': ({ sessionId, configId, value }) => {
