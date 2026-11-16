@@ -79,6 +79,7 @@
 | 额度的口径 | 报告按模型组给额度：同组模型共享每周与 5 小时限额，不是每个模型各算一份；报告里没有套餐名。第一次在某个目录运行 `/usage` 时，CLI 会在 `implicit/` 下留一个小文件；插件固定在系统临时目录运行，之后复用，不新增会话与项目记录 |
 | 等待项登记 `_coda/wait` | 不登记，会话底部不列它在等什么 |
 | Plan 模式 | 产出计划文件并要求审阅，审阅前不动手；plan 下只读的 shell 命令也按权限规则请求审批，这是 agy 的设计 |
+| 删除会话 | 不支持：agy 1.5.9 的 ACP 没有 `session/delete`（回 -32601），`session/close` 也不删除，所以 Coda 探测模型和模式时会在 agy 历史里留下零步的空会话。插件不自己删文件：那会绕过 agy 的取消、摘要缓存和搜索索引，agy 运行中删也不安全；等上游提供删除接口再接 |
 | 附加目录 | 不交给 Antigravity：读工作副本外的附件、会话临时目录、skill 真实文件可能要审批；`.agents/skills` 的链接照旧 |
 | Coda 的 MCP 工具在 auto 下也要审批 | 无人值守的子会话、流程步骤调用它们会停下；「全部放行」下不会。要在 auto 下放行，写法是在运行机的 `~/.gemini/antigravity-cli/settings.json` 里加 `{"permissions": {"allow": ["mcp(coda/*)"]}}`，出处是官方[权限文档](https://antigravity.google/docs/permissions/)；插件不替你改这个文件 |
 | 额度耗尽 | 没有真实样本，不做失败分类，Coda 只看到 Antigravity 给的错误文字 |
