@@ -16,7 +16,7 @@ import { accountSource } from './account-source.mjs';
 import { readLines } from './lines.mjs';
 import { orderedCodexTitles } from './titles.mjs';
 import { continuedCodexSubagents } from './subagents.mjs';
-import { followCodexProcessExit } from './process-exit.mjs';
+import { describeExit, followCodexProcessExit, listenExit } from './process-exit.mjs';
 import { networkedCodexDevelopment } from './network.mjs';
 import { codexOptionsAsShown } from './options.mjs';
 import { instructedCodexThreads } from './instructions.mjs';
@@ -66,6 +66,12 @@ const toCodex = message => {
 const pass = ({ agent, coda }) => { for (const each of agent) toCodex(each); for (const each of coda) say(codexDisplayNames(explainCodexError(each))); };
 listen(line => {
   for (const message of waits.fromAgent(parse(line))) for (const told of unrecognized.fromAgent(message)) for (const each of reviews.fromAgent(told)) pass(questions.fromAgent(each));
+});
+// The Codex process ended on its own: the log and the turns waiting on it say how (process-exit.mjs).
+listenExit(exit => {
+  const message = describeExit(exit);
+  process.stderr.write(`${message}\n`);
+  for (const each of waits.fail(message)) say(each);
 });
 listenUnrecognized(report => { for (const each of unrecognized.report({ ...report, sessionId: report.sessionId ?? waits.root })) say(each); });
 readLines(process.stdin).on('line', line => {

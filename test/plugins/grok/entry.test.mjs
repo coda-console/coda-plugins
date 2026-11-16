@@ -35,6 +35,18 @@ function start(t) {
   return { dir, p, messages, request, prompt, said, next };
 }
 
+for (const [text, how] of [['crash', /退出码 3[\s\S]*fake grok: Operation not permitted/], ['kill', /被信号 SIGKILL 终止/]])
+  test(`the prompt error and the plugin's stderr say how Grok ended: ${text}`, async t => {
+    const { p, request } = start(t);
+    await request('initialize', { protocolVersion: 1, clientCapabilities: {} });
+    await request('session/new', { cwd: '/', mcpServers: [] });
+    const reply = await p.request('session/prompt', { sessionId: 'native', prompt: [{ type: 'text', text }] }, { timeout: 5000 });
+    assert.equal(reply.error?.code, -32603, JSON.stringify(reply));
+    assert.match(reply.error.message, how);
+    await p.exited;
+    assert.match(p.stderr, how);
+  });
+
 test('Grok declares session/delete and answers it with `grok sessions delete`, never passing it to the agent', async t => {
   const { dir, p, request } = start(t);
   const calls = () => { try { return readFileSync(join(dir, 'sessions-calls.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l)); } catch { return []; } };

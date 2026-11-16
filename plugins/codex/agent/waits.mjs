@@ -51,10 +51,21 @@ export class CodexWaits {
     if (wait?.stoppable) return { agent: [{ jsonrpc: '2.0', method: 'session/cancel', params: { sessionId: wait.subagentSessionId } }], coda: [{ jsonrpc: '2.0', id, result: {} }] };
     return { agent: [], coda: [{ jsonrpc: '2.0', id, error: { code: -32602, message: '没有可以停止的等待项' } }] };
   }
+  // The Codex process is gone: answer every prompt still waiting with the error `message`. A later answer of codex-acp's own
+  // to one of them (its pending requests failing as the connection closes) is dropped.
+  fail(message) {
+    const answers = [];
+    for (const [id, asked] of this.asked) if (asked?.prompt) {
+      answers.push(...this.finishSleeps(base(asked.prompt), 'failed'), { jsonrpc: '2.0', id, error: { code: -32603, message } });
+      this.asked.set(id, 'failed');
+    }
+    return answers;
+  }
   // What codex-acp says, as said to Coda.
   fromAgent(message) {
     if (!record(message)) return [];
     if ('id' in message && !('method' in message)) {
+      if (this.asked.get(message.id) === 'failed') { this.asked.delete(message.id); return []; }
       const sessionId = this.asked.get(message.id)?.prompt;
       // Cancelling or failing a turn can skip the sleep's completed item. End its waits before ending the prompt.
       const finished = sessionId ? this.finishSleeps(base(sessionId), message.error ? 'failed' : message.result?.stopReason === 'cancelled' ? 'cancelled' : 'done') : [];

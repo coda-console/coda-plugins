@@ -2,9 +2,17 @@
 // mid-turn, through Coda's backend, stays in Coda.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { AgentProcess } from '../../../check/process.mjs';
 import { followCodexProcessExit } from '../../../plugins/codex/agent/process-exit.mjs';
-import { resolveFrom } from '../plugin.mjs';
+import { CodexWaits } from '../../../plugins/codex/agent/waits.mjs';
+import { pluginDir, resolveFrom } from '../plugin.mjs';
+
+const fixture = fileURLToPath(new URL('./app-server-fixture.mjs', import.meta.url));
+const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
 
 const bundle = await readFile(resolveFrom('codex', '@agentclientprotocol/codex-acp'), 'utf8');
 
@@ -12,3 +20,30 @@ test('the patch fails loudly once the locked adapter changes', () => {
   assert.match(followCodexProcessExit(bundle), /ending the adapter with it/);
   assert.throws(() => followCodexProcessExit(bundle.replace('void this.finishAllAsyncTasks("failed", "after the Codex process exited");', 'changed();')), /no longer matches/);
 });
+
+test('turns waiting on the Codex process are answered with how it ended, and its own late answers are dropped', () => {
+  const waits = new CodexWaits();
+  waits.fromCoda({ jsonrpc: '2.0', id: 1, method: 'session/prompt', params: { sessionId: 'root', prompt: [] } });
+  waits.fromCoda({ jsonrpc: '2.0', id: 2, method: 'session/new', params: { cwd: '/', mcpServers: [] } });
+  assert.deepEqual(waits.fail('gone'), [{ jsonrpc: '2.0', id: 1, error: { code: -32603, message: 'gone' } }]);
+  assert.deepEqual(waits.fail('gone'), []);
+  assert.deepEqual(waits.fromAgent({ jsonrpc: '2.0', id: 1, error: { code: -32603, message: 'Connection is disposed' } }), []);
+  assert.deepEqual(waits.fromAgent({ jsonrpc: '2.0', id: 1, result: {} }).length, 1);
+});
+
+for (const [name, exit, how] of [['a non-zero exit code', '7', /退出码 7[\s\S]*fake codex: boom/], ['a signal', 'SIGKILL', /被信号 SIGKILL 终止/]])
+  test(`the turn error and the plugin's stderr say how the Codex process ended: ${name}`, async t => {
+    const root = await mkdtemp(join(tmpdir(), 'codex-exit-')), codex = join(root, 'codex');
+    await writeFile(codex, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(fixture)} "$@"\n`); await chmod(codex, 0o700);
+    const peer = new AgentProcess({ command: `exec ${quote(process.execPath)} ${quote(join(pluginDir('codex'), 'agent/entry.mjs'))}`, cwd: root,
+      env: { ...process.env, FAKE_CODEX_EXIT: exit, FAKE_CODEX_STATE: root, CODEX_PATH: codex, CODEX_HOME: join(root, 'home') } });
+    t.after(async () => { await peer.terminate(2000); peer.kill(); await rm(root, { recursive: true, force: true }); });
+    const request = (method, params) => peer.request(method, params, { timeout: 10_000 });
+    await request('initialize', { protocolVersion: 1, clientCapabilities: {} });
+    const session = await request('session/new', { cwd: root, mcpServers: [] });
+    const reply = await request('session/prompt', { sessionId: session.result.sessionId, prompt: [{ type: 'text', text: 'original task' }] });
+    assert.equal(reply.error?.code, -32603, JSON.stringify(reply));
+    assert.match(reply.error.message, how);
+    await peer.exited;
+    assert.match(peer.stderr, how);
+  });
