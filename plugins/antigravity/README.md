@@ -1,7 +1,12 @@
 # Antigravity
 
-把 [Google Antigravity](https://antigravity.google/cli) 的 Agent 接进 Coda。清单直接启动运行机上的 `agy acp`（Antigravity CLI 的 ACP 服务），
+把 [Google Antigravity](https://antigravity.google/cli) 的 Agent 接进 Coda。清单经一个薄转发入口（`agent/entry.mjs`）启动运行机上的 `agy acp`（Antigravity CLI 的 ACP 服务），
 先找 `~/.local/bin/agy`，没有再用 PATH。每个会话一个进程，不登记等待项。
+
+入口只改两处，其余消息原样双向转发：把 `initialize` 答复里的 `additionalDirectories` 能力去掉，Coda 就不再给它传附加目录；
+`session/new`、`session/load`、`session/resume` 里若仍带 `additionalDirectories` 也删掉。原因：agy 1.5.9 收到附加目录后，
+没给 Cwd 的命令默认跑在**字典序最前的附加根**，而不是会话的工作副本（实测规律，不是上游的保证；数组顺序、`session/load` 都不改变它）；
+不传附加目录时命令就在工作副本里跑。
 
 需要带会话指令兜底的 Coda（2026-11-13 部署版，coda#2500）或更新版本；旧版 Coda 不会给 Antigravity 送入会话指令。
 
@@ -41,7 +46,7 @@
    确认里能看到会运行的命令原文：
 
    ```sh
-   if [ -x "$HOME/.local/bin/agy" ]; then exec "$HOME/.local/bin/agy" acp; else exec agy acp; fi
+   exec "$CODA_NODE" "$CODA_PLUGIN_PATH/agent/entry.mjs"
    exec "$CODA_NODE" "$CODA_PLUGIN_PATH/scripts/setup.mjs"
    ```
 
@@ -70,7 +75,9 @@
 | 插话 | 不声明：Antigravity 的原生插话会提前结束旧一轮的回复，由 Coda 停下这一轮再发出新消息 |
 | 剩余额度 | 没有：Antigravity 没有剩余额度的接口，`session/new` 的 `_meta.antigravity.tier` 只有套餐名，资源页只显示版本 |
 | 等待项登记 `_coda/wait` | 不登记，会话底部不列它在等什么 |
-| Plan 模式 | 产出计划文件并要求审阅，审阅前不动手 |
+| Plan 模式 | 产出计划文件并要求审阅，审阅前不动手；plan 下只读的 shell 命令也按权限规则请求审批，这是 agy 的设计 |
+| 附加目录 | 不交给 Antigravity：读工作副本外的附件、会话临时目录、skill 真实文件可能要审批；`.agents/skills` 的链接照旧 |
+| Coda 的 MCP 工具在 auto 下也要审批 | 无人值守的子会话、流程步骤调用它们会停下。放行写法是在运行机的 `~/.gemini/antigravity-cli/settings.json` 里加 `{"permissions": {"allow": ["mcp(coda/*)"]}}`，出处是官方[权限文档](https://antigravity.google/docs/permissions/)；插件不替你改这个文件 |
 | 额度耗尽 | 没有真实样本，不做失败分类，Coda 只看到 Antigravity 给的错误文字 |
 | 没有桌面会话的 Linux 登录 | 未实测：Linux 用 Secret Service（D-Bus），二进制里有「keyring 失败就落文件」的回退，但文件路径与触发条件没查清。资源页在 Linux 上用 `secret-tool lookup service gemini username antigravity` 查条目（属性名按 go-keyring 的写法，未在真机上试过），没有 `secret-tool`、查不到条目，或登录落在文件里时，资源页当作未登录（只是仍在「添加资源」里出现，会话不受影响）。装了 `secret-tool` 却联系不上 Secret Service（典型是没有会话 D-Bus 的无桌面机器，它带错误信息退出）时，资源页读数失败、保留上次的显示，首次读取就没有可保留的，也就无法从资源页添加：这样的机器在终端里运行 `agy acp --login` 登录 |
 | 第三方模型 | 账号里的 Claude、GPT-OSS 未实测 |
