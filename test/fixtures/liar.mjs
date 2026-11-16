@@ -1,7 +1,8 @@
 // A fake agent that gets Coda's protocol wrong on purpose, one way per run: `node liar.mjs <mode>`. Without a mode it
 // speaks it right, so each test shows one rule failing and nothing else.
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 
 // As a CLI an entry runs, `--version` is answered (Antigravity's entry asks for it).
@@ -18,10 +19,16 @@ const asked = new Map();
 // The probe modes declare configuration probes (docs/agent-protocol.md「配置探测」) and keep the sessions of probes here,
 // their models a (low/medium/high), b (with xhigh) and c (no thinking level). Each gets one thing wrong: `probe-refuses`
 // a marked session/new, `probe-stuck` a model switch, `probe-prompt` a prompt, `probe-resume` a load once the connection is gone,
-// `probe-list-error` and `probe-list-shapeless` the session/list after it.
+// `probe-list-error` and `probe-list-shapeless` the session/list after it, `probe-reinit-error` and `probe-reinit-shapeless`
+// the initialize before it, `probe-init-shapeless` the probe's own initialize, `probe-models-shapeless` (models alone) a
+// session/set_model and `probe-level-shapeless` a thinking level set back.
 const LEVELS = { a: ['low', 'medium', 'high'], b: ['low', 'medium', 'high', 'xhigh'], c: null }, probes = new Map();
 const select = (id, category, currentValue, values) => ({ id, name: id, category, type: 'select', currentValue, options: values.map(value => ({ value, name: value })) });
 const probeOptions = ({ model, level }) => [select('model', 'model', model, Object.keys(LEVELS)), ...(LEVELS[model] ? [select('thought_level', 'thought_level', level, LEVELS[model])] : [])];
+// Its processes for one check share a working directory: the probe session opened, and each initialize, are marked there.
+// The probe's own connection is the third (after the handshake's and the one whose input is closed).
+const PROBED = join(process.cwd(), 'liar-probed'), INITS = join(process.cwd(), 'liar-inits');
+const thirdInit = () => { appendFileSync(INITS, '.'); return readFileSync(INITS, 'utf8').length === 3; };
 const invalid = message => Object.assign(new Error(message), { code: -32602 });
 let next = 0, turn = null, running = null, turns = 0, afterCancel = null, afterSteer = null, context = '';
 const textOf = blocks => (blocks ?? []).filter(block => block.type === 'text').map(block => block.text).join('\n');
@@ -31,6 +38,8 @@ const instructed = ({ systemPrompt }) => { if (systemPrompt) context += `${textO
 const assertInstructionBlock = prompt => {
   if (prompt.length !== 2 || !prompt[0].text.startsWith('<coda-session-instructions>')) throw new Error('expected first-prompt instructions');
 };
+// The new connection after a probe: its initialize fails, or comes back with no result.
+const reinit = () => { if (mode === 'probe-reinit-error') throw Object.assign(new Error('Internal error'), { code: -32603 }); };
 const STEERS = ['steer', 'steer-own-turn', 'steer-started'];
 // What the checker answered a request of ours.
 function ask(method, params) {
@@ -42,7 +51,7 @@ function ask(method, params) {
 // The sessions this process opened itself.
 const opened = new Set();
 const methods = {
-  initialize: () => ({ protocolVersion: mode === 'protocol-version' ? 2 : 1,
+  initialize: () => mode.startsWith('probe-reinit') && existsSync(PROBED) ? reinit() : mode === 'probe-init-shapeless' && thirdInit() ? undefined : ({ protocolVersion: mode === 'protocol-version' ? 2 : 1,
     agentCapabilities: { loadSession: mode === 'load-fails' || mode === 'load-forgets' || mode.startsWith('probe'), ...(mode.startsWith('no-system-prompt') ? {} : { sessionCapabilities: { systemPrompt: {}, ...(mode.startsWith('probe') ? { list: {} } : {}) } }),
       _meta: { coda: { waits: {}, ...(mode.startsWith('remote-code') ? { remote: {} } : {}), ...(mode.startsWith('probe') ? { probe: {} } : {}) } } },
     authMethods: [], ...(STEERS.includes(mode) ? { _meta: { steering: { supported: true } } } : {}), ...extension.initialize }),
@@ -53,6 +62,8 @@ const methods = {
       if (mode === 'probe-refuses') throw new Error('No catalog');
       const sessionId = `probe-${randomUUID()}`, session = { model: 'a', level: 'medium' };
       probes.set(sessionId, session);
+      if (mode.startsWith('probe-reinit')) writeFileSync(PROBED, '');
+      if (mode === 'probe-models-shapeless') return { sessionId, models: { currentModelId: 'a', availableModels: Object.keys(LEVELS).map(modelId => ({ modelId, name: modelId })) } };
       // Before the answer: what a probe may say (commands, config), and what it may not (work, asking).
       if (mode === 'probe-quiet-updates') {
         notify('session/update', { sessionId, update: { sessionUpdate: 'available_commands_update', availableCommands: [{ name: 'help', description: '帮助' }] } });
@@ -88,6 +99,8 @@ const methods = {
     if (mode === 'probe-list-error') throw Object.assign(new Error('database unavailable'), { code: -32603 });
     return mode === 'probe-list-shapeless' ? {} : { sessions: [] };
   },
+  // A model switch of a probe that reports models alone: answered with no result.
+  'session/set_model': () => mode === 'probe-models-shapeless' ? undefined : {},
   // A probe session's own options; of the others, the one model.
   'session/set_config_option': ({ sessionId, configId, value }) => {
     const session = probes.get(sessionId);
@@ -107,8 +120,10 @@ const methods = {
     if (configId === 'model') {
       if (!(value in LEVELS)) throw invalid(`no model ${value}`);
       if (mode !== 'probe-stuck') Object.assign(session, { model: value, level: LEVELS[value] ? 'medium' : undefined });
-    } else if (configId === 'thought_level' && LEVELS[session.model]?.includes(value)) session.level = value;
-    else throw invalid(`no ${configId} ${value}`);
+    } else if (configId === 'thought_level' && LEVELS[session.model]?.includes(value)) {
+      if (mode === 'probe-level-shapeless') return undefined;
+      session.level = value;
+    } else throw invalid(`no ${configId} ${value}`);
     return { configOptions: probeOptions(session) };
   },
   'session/prompt': async ({ sessionId, prompt }) => {
