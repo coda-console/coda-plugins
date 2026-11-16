@@ -89,6 +89,15 @@ const methods = {
       if (configId !== 'model' || value !== 'liar') throw invalid(`no ${configId} ${value}`);
       return { configOptions: [MODEL] };
     }
+    // A probe that registers activity of its own, and then works or asks as that activity, or only registers it.
+    if (mode.startsWith('probe-wait') && !session.waited) {
+      session.waited = true;
+      const waitId = 'probe-wait';
+      wait({ sessionId, waitId, kind: 'task', state: mode === 'probe-wait-only' ? 'waiting' : 'handling' });
+      if (mode === 'probe-wait-work') { say(sessionId, '正在干活'); wait({ sessionId, waitId, state: 'done' }); }
+      if (mode === 'probe-wait-ask') void ask('session/request_permission', { sessionId, toolCall: { toolCallId: 'c1', title: '先问一下' },
+        options: [{ optionId: 'no', name: '拒绝', kind: 'reject_once' }] });
+    }
     if (configId === 'model') {
       if (!(value in LEVELS)) throw invalid(`no model ${value}`);
       if (mode !== 'probe-stuck') Object.assign(session, { model: value, level: LEVELS[value] ? 'medium' : undefined });

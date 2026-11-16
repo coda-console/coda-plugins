@@ -84,7 +84,7 @@ class Session {
     this.say = say; this.limits = limits; this.instructions = instructions;
     this.waits = new Waits({ fail: (rule, message) => this.at.fail(rule, message), warn: (rule, message) => this.at.warn(rule, message) });
     this.turn = null; this.autonomous = null; this.autonomousTurns = 0; this.loading = true; this.pendingWaits = [];
-    this.kinds = new Map(); this.malformed = 0; this.said = new Set(); this.listeners = new Set(); this.idleWork = [];
+    this.kinds = new Map(); this.malformed = 0; this.said = new Set(); this.listeners = new Set(); this.idleWork = []; this.probeWork = [];
     // The session's working copy, and the plugin's state directory, which Coda makes for it.
     this.cwd = join(base, 'work');
     for (const dir of [this.cwd, join(base, 'state')]) mkdirSync(dir, { recursive: true });
@@ -113,6 +113,7 @@ class Session {
   }
 
   receive(m) {
+    if (this.probing) this.probeRecord(m);
     if ('id' in m) return this.request(m);
     if (m.method === 'session/update') return this.update(m.params);
     if (m.method === '_coda/wait') {
@@ -122,6 +123,17 @@ class Session {
     }
     if (m.method === '$/cancel_request') return;
     this.once(`notify:${m.method}`, () => this.at.info('notify.unknown', `Agent 发了 Coda 不认识的通知 ${m.method}：Coda 忽略`));
+  }
+  // A probe does nothing (docs/agent-protocol.md「配置探测 · 通知」): whatever else it says, whichever way the rest of the
+  // session takes it (opening, a turn, autonomous work, another session), is work.
+  probeRecord(m) {
+    const permission = m.method === 'session/request_permission';
+    if ('id' in m) this.probeWork.push(permission ? '审批' : m.method === 'elicitation/create' ? '提问' : m.method);
+    else if (m.method === '_coda/wait') this.probeWork.push(m.method);
+    else if (m.method === 'session/update') {
+      const kind = m.params?.update?.sessionUpdate;
+      if (!BOOKKEEPING.has(kind)) this.probeWork.push(kind ?? m.method);
+    }
   }
   update(params) {
     const parsed = schemas.zSessionNotification.safeParse(params);
@@ -136,9 +148,8 @@ class Session {
       problems.push(optionalValueProblem('review.json', update._meta?.coda?.review, 'session/update params.update._meta.coda.review'));
     if (kind === 'usage_update') problems.push(optionalValueProblem('usage.json', update._meta?.coda, 'session/update params.update._meta.coda'));
     for (const problem of problems.filter(Boolean)) { this.malformed++; this.at.fail('update.schema', problem); }
-    // Of a session being opened Coda keeps only its commands and title; a replayed history it does not want. A probe has no
-    // history: whatever works while its session/new is answered is work (「配置探测 · 通知」).
-    if (this.loading) { if (this.probing && !BOOKKEEPING.has(kind)) this.idleWork.push(kind); return; }
+    // Of a session being opened Coda keeps only its commands and title; a replayed history it does not want.
+    if (this.loading) return;
     if (!this.waits.owns(params.sessionId)) {
       this.at.fail('update.session', `session/update 说的会话 ${params.sessionId} 不是本会话，也不是 _coda/wait 登记过的子会话：Coda 丢弃`);
       return;
@@ -171,7 +182,6 @@ class Session {
       if (!parsed.success) { this.at.fail('request.schema', `${m.method} 不合 ACP schema：${explain(parsed.error, m.params)}`); this.proc.respond(m.id, refuse); return; }
       if (typeof m.params.sessionId === 'string' && !this.waits.owns(m.params.sessionId)) this.at.fail('request.session', `${what}说的会话 ${m.params.sessionId} 不是本会话或登记过的子会话`);
       if (!inTurn) {
-        if (this.probing) this.idleWork.push(what);
         this.at.fail('request.outside-turn', `${what}在一轮之外发来（没有进行中的 session/prompt，也没有 handling 的活动）：Coda 拒绝（${permission ? '回 cancelled' : '回 cancel'}），在会话里记一条说明`);
         this.proc.respond(m.id, refuse);
         return;
@@ -465,7 +475,7 @@ async function probe({ agent, checked, base, limits, say, instructions }) {
   finally {
     await session.proc.terminate(limits.exit); session.proc.kill();
     // Whichever way the probe ended (a signed-out answer too), what was done while it ran counts.
-    if (session.idleWork.length) say.fail('probe.quiet', `探测期间 Agent 发了干活的 session/update 或审批、提问（${[...new Set(session.idleWork)].join('、')}）：探测不执行任何东西`);
+    if (session.probeWork.length) say.fail('probe.quiet', `探测期间 Agent 发了执行类的 session/update、请求或 _coda/wait（${[...new Set(session.probeWork)].join('、')}）：探测不执行任何东西，不登记活动`);
   }
   // The connection is gone: another one has nothing of the session.
   const again = new Session({ agent, checked, base, say: scopes, limits, instructions }), asked = [];
