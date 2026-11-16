@@ -16,7 +16,9 @@
 // `request_user_input_async` says that async message, the latter with the questions of FAKE_CODEX_QUESTIONS; one that names
 // `unrecognized` says what the Codex entry has not registered (two items of a new type with text, one without, a new
 // notification and request) beside what it has (an agent message streamed, another not). What a turn is steered with goes
-// to steers.ndjson, the answers to its requests to answers.ndjson.
+// to steers.ndjson, the answers to its requests to answers.ndjson. One that names `compaction` compacts the thread as the locked
+// Codex does (a `contextCompaction` item, started and completed), with the deprecated `thread/compacted` too before it
+// (`legacy-first`), after it (`legacy-last`), or alone (`legacy-only`).
 import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -127,6 +129,16 @@ process.stdin.on('data', chunk => {
       send({ method: 'thread/fooChanged', params: { threadId: thread.id } });
       send({ method: 'thread/readState/changed', params: { threadId: thread.id } });
       send({ id: 'fake-request', method: 'item/tool/bar', params: { threadId: thread.id, turnId: turn.id } });
+    }
+    if (input.includes('compaction') && !message.params.outputSchema) {
+      const item = { type: 'contextCompaction', id: `compaction-${turn.id}` };
+      const legacy = () => send({ method: 'thread/compacted', params: { threadId: thread.id, turnId: turn.id } });
+      if (input.includes('legacy-first') || input.includes('legacy-only')) legacy();
+      if (!input.includes('legacy-only')) {
+        send({ method: 'item/started', params: { threadId: thread.id, turnId: turn.id, item } });
+        send({ method: 'item/completed', params: { threadId: thread.id, turnId: turn.id, item } });
+      }
+      if (input.includes('legacy-last')) legacy();
     }
     if (input.includes('clock.sleep') && !message.params.outputSchema) {
       const item = { type: 'sleep', id: `sleep-${turn.id}`, durationMs: 7200000 };

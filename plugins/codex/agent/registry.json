@@ -17,7 +17,7 @@
   "item:imageGeneration": { "shown": true, "why": "生成图片，作为工具调用" },
   "item:enteredReviewMode": { "shown": false, "why": "/review 开始的标记，没有内容；结果在 exitedReviewMode" },
   "item:exitedReviewMode": { "shown": true, "why": "/review 的结果" },
-  "item:contextCompaction": { "shown": true, "why": "压缩上下文，作为工具调用" },
+  "item:contextCompaction": { "shown": true, "why": "压缩上下文，作为 compaction_update（开始 in_progress、完成 completed），不再出工具卡（compaction.mjs）" },
 
   "item:agentMessage.id": { "shown": true, "why": "作为 messageId" },
   "item:agentMessage.text": { "shown": true, "why": "正文" },
@@ -88,7 +88,7 @@
   "notification:item/reasoning/summaryTextDelta": { "shown": true, "why": "思考" },
   "notification:item/reasoning/summaryPartAdded": { "shown": true, "why": "思考的分段" },
   "notification:item/reasoning/textDelta": { "shown": true, "why": "思考" },
-  "notification:thread/compacted": { "shown": true, "why": "压缩上下文（旧通知）" },
+  "notification:thread/compacted": { "shown": true, "why": "压缩上下文（旧通知；与 item 同回合出现时只报其中先到的一个，compaction.mjs）" },
   "notification:model/rerouted": { "shown": true, "why": "换了模型，作为思考" },
   "notification:model/verification": { "shown": false, "why": "codex-acp 忽略" },
   "notification:modelProvider/authRecoveryStarted": { "shown": false, "why": "模型服务的登录恢复；codex-acp 忽略" },
