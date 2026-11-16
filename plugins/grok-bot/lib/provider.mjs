@@ -234,7 +234,8 @@ export class Provider {
       try { return await this.auth.client.request(method, value); }
       catch (e) {
         if (e.renewalFailed && !e.status) throw none(`Grok 登录续期失败：${e.message}`, 'unauthorized');
-        if (e.renewalFailed || e.status === 401 || e.status === 403) throw none(e.message, 'unauthorized');
+        if (e.renewalFailed || e.status === 403) throw none(e.message, 'unauthorized');
+        if (e.status === 401) throw none(`Grok 登录已失效，请在资源页重新登录（${e.message}）`, 'unauthorized');
         throw unknown(e);
       }
     };
