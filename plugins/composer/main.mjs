@@ -42,16 +42,20 @@ export async function activate(coda) {
     targets: [{ kind: 'loop', thread, every: values.every }],
   }));
 
+  // 给完整说明：tell 成功后才清待给标记、记已发；被拒绝（如超长）时标记保留，留给下一个时点补发。
+  const give = async (thread, state) => {
+    state.needFull = true;
+    await coda.tell(thread, on(state.list));
+    state.needFull = false;
+    state.told = true;
+  };
   // 先看会话的轮，一轮结束时只有要给完整说明的才 tell，其余不发。
   const threads = await coda.watch('threads', async ({ type, id, object }) => {
     const was = running.has(id);
     if (type === 'DELETED' || object.turn == null) running.delete(id); else running.add(id);
     const state = states.get(id);
     if (!was || running.has(id) || !state) return;
-    if (!state.needFull) return;
-    state.needFull = false;
-    state.told = true;
-    await coda.tell(id, on(state.list));
+    if (state.needFull) await give(id, state);
   });
   // watch 返回前收到的 ADDED 是重放（插件重启）。
   let replayed = false;
@@ -80,11 +84,8 @@ export async function activate(coda) {
     const compacted = compactions > state.compactions;
     Object.assign(state, { list, key, sent, compactions });
     if (!compacted) return;
-    // 压缩后说明丢了：不等一轮结束或下一条消息，立即给；tell 被拒绝（如超长）时待给标记保留，留给下一个时点补发。
-    state.needFull = true;
-    await coda.tell(thread, on(list));
-    state.needFull = false;
-    state.told = true;
+    // 压缩后说明丢了：不等一轮结束或下一条消息，立即给。
+    await give(thread, state);
   });
   replayed = true;
   return { dispose() { composers.dispose(); threads.dispose(); } };

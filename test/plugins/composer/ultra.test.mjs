@@ -158,6 +158,20 @@ test('压缩时 tell 被拒绝：待给标记保留，下一轮结束再补发�
   assert.deepEqual(r.take(), []);
 });
 
+test('一轮结束补发时 tell 被拒绝：标记保留，下一轮结束再给，成功后不再重复', async () => {
+  const r = await rig();
+  await r.composer('s1', { type: 'ADDED' });
+  r.rejectTell(true);
+  await assert.rejects(r.round('s1'), /too long/);
+  await assert.rejects(r.round('s1'), /too long/);
+  r.rejectTell(false);
+  assert.deepEqual(r.take(), []);
+  await r.round('s1');
+  assert.deepEqual(r.take(), [['s1', on(list)]]);
+  await r.round('s1');
+  assert.deepEqual(r.take(), []);
+});
+
 test('插件重启：重放的 ADDED 只记 compactions 基线，不算压缩；之后变大才算', async () => {
   const r = await rig([['old', { sent: 4, compactions: 6 }]]);
   assert.deepEqual(r.take(), []);
