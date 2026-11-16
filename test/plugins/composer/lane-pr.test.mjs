@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { readWorkflow } from '@coda-console/protocol/workflow';
@@ -12,10 +12,10 @@ import { evaluate } from 'feelin';
 
 const script = fileURLToPath(new URL('../../../plugins/composer/scripts/lane-pr.mjs', import.meta.url));
 const workflow = readFileSync(new URL('../../../plugins/composer/.coda/workflows/lane-pr.bpmn', import.meta.url), 'utf8');
-// 已发布的流程定义（10.0.0、10.1.4）：在途运行按开工时的快照走，脚本却按当前装着的版本取，它引用的动作和输入输出都得留着。
-const olds = ['10.0.0', '10.1.4'].map(version => ({ version, source: readFileSync(new URL(`./fixtures/lane-pr-${version}.bpmn`, import.meta.url), 'utf8') }));
+// 已发布的流程定义（10.0.0、10.1.4、10.3.0）：在途运行按开工时的快照走，脚本却按当前装着的版本取，它引用的动作和输入输出都得留着。
+const olds = ['10.0.0', '10.1.4', '10.3.0'].map(version => ({ version, source: readFileSync(new URL(`./fixtures/lane-pr-${version}.bpmn`, import.meta.url), 'utf8') }));
 const old = olds[0].source;
-const PR = 'https://github.com/example/fixture/pull/7';
+const PR = 'https://github.com/example/fixture/pull/7', PARENT = 'https://github.com/example/fixture/pull/6';
 
 function fixture(t, { sync = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'composer-lane-pr-'));
@@ -23,7 +23,7 @@ function fixture(t, { sync = false } = {}) {
   const work = join(root, 'work'), origin = join(root, 'origin.git'), bin = join(root, 'bin'), artifacts = join(root, 'artifacts');
   for (const path of [work, bin, artifacts]) mkdirSync(path);
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, CODA_ARTIFACTS: artifacts, RUNNER_TEMP: root,
-    GITHUB_RUN_ID: 'pr-run-1', GITHUB_OUTPUT: join(root, 'outputs'), CODA_THREAD_ID: 'thread-1',
+    GITHUB_RUN_ID: 'pr-run-1', GITHUB_OUTPUT: join(root, 'outputs'), GITHUB_STEP_SUMMARY: join(root, 'summary'), CODA_THREAD_ID: 'thread-1',
     LANE: 'req-1', TITLE: '输入框可以输入', TASK: '## 背景\n\n输入框没反应\n\n## 验收\n- 能输入', SYNC: String(sync),
     GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid', GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.invalid',
     GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'commit.gpgsign', GIT_CONFIG_VALUE_0: 'false', GIT_CONFIG_KEY_1: 'core.hooksPath', GIT_CONFIG_VALUE_1: '/dev/null',
@@ -43,8 +43,8 @@ function fixture(t, { sync = false } = {}) {
     writeFileSync(path, `#!${process.execPath}\n${body}`); chmodSync(path, 0o755);
   };
   install('coda-agent', String.raw`
-const { readFileSync, writeFileSync } = require('node:fs');
-const { join } = require('node:path');
+const { mkdirSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
+const { dirname, join } = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
 const args = process.argv.slice(2), root = process.env.FIXTURE;
 const value = key => args[args.indexOf(key) + 1];
@@ -66,7 +66,18 @@ if (task.merge) {
   git('fetch', 'origin', task.merge);
   spawnSync('git', ['merge', '--no-commit', 'FETCH_HEAD'], { cwd, encoding: 'utf8' });
 }
-if (!task.noCommit) { writeFileSync(join(cwd, task.file), task.answer); git('add', '-A'); git('commit', '-qm', task.answer); }
+// rebase：先 git rebase --onto <新基> <旧基>，冲突的话写好文件后继续变基。files：一次改好几个文件，null 是删除。
+if (task.rebase) spawnSync('git', ['rebase', '--onto', ...task.rebase], { cwd, encoding: 'utf8' });
+const write = () => {
+  for (const [file, text] of Object.entries(task.files ?? { [task.file]: task.answer })) {
+    if (text === null) rmSync(join(cwd, file));
+    else { mkdirSync(dirname(join(cwd, file)), { recursive: true }); writeFileSync(join(cwd, file), text); }
+  }
+  git('add', '-A');
+};
+const rebasing = () => spawnSync('git', ['rev-parse', '-q', '--verify', 'REBASE_HEAD'], { cwd }).status === 0;
+if (rebasing()) { write(); git('-c', 'core.editor=true', 'rebase', '--continue'); }
+else if (!task.noCommit) { write(); git('commit', '-qm', task.answer); }
 // 会话失败时 coda-agent 照样在标准输出给出会话（工作已提交）、以非零退出；silent 是连会话都没开成。
 console.log(JSON.stringify({ session, branch, head: git('rev-parse', 'HEAD'), answer: task.answer }));
 process.exit(task.exit ?? 0);
@@ -89,10 +100,25 @@ if (args[0] === 'api') {
   if (method === 'DELETE') process.exit(exists ? git('update-ref', '-d', ref).status : 1);
   if (exists) console.log(ref);
 }
-else if (args[1] === 'create') console.log('${PR}');
+else if (args[0] === 'repo' && args[1] === 'view') console.log('https://github.com/example/fixture');
+// 开 PR 的 base 分支不在 origin 上（如前置合并时已删）时，GitHub 拒绝。
+else if (args[1] === 'create') {
+  const base = args[args.indexOf('--base') + 1];
+  // CREATE_LOST：GitHub 已开出 PR，响应却丢了，命令非零退出。
+  if (process.env.CREATE_LOST) process.exit(1);
+  if (require('node:child_process').spawnSync('git', ['--git-dir', join(root, 'origin.git'), 'rev-parse', '--verify', '-q', 'refs/heads/' + base]).status !== 0) { console.error('base ' + base + ' 不存在'); process.exit(1); }
+  console.log('${PR}');
+}
+else if (args[1] === 'edit' && process.env.EDIT_EXIT) process.exit(Number(process.env.EDIT_EXIT));
 else if (args[1] === 'list') { if (process.env.OPEN_PR) console.log(process.env.OPEN_PR); }
 else if (args[1] === 'merge') { if (process.env.MERGE_EXIT) process.exit(Number(process.env.MERGE_EXIT)); }
 else if (args[1] === 'view' && args.includes('state,headRefOid,mergeCommit')) console.log(JSON.stringify({ state: process.env.PR_STATE || 'OPEN', headRefOid: state().executor.head, mergeCommit: { oid: 'f'.repeat(40) } }));
+// 前置泳道 PR：开工时取全部字段，「查看前置泳道 PR」只取 state；内容在 FIXTURE/parent。本运行的 PR 只取 state 时看 OWN_STATE（默认开着）。
+else if (args[1] === 'view' && args.includes('url,state,headRefName,headRefOid,baseRefName')) console.log(readFileSync(join(root, 'parent'), 'utf8'));
+else if (args[1] === 'view' && args.at(-1) === 'state' && args[2] === '${PR}') console.log(JSON.stringify({ state: process.env.OWN_STATE || 'OPEN' }));
+// 重接前读前置合并时的最终 head（FIXTURE/parent 的 headRefOid）。
+else if (args[1] === 'view' && args.at(-1) === 'headRefOid') console.log(JSON.stringify({ headRefOid: JSON.parse(readFileSync(join(root, 'parent'), 'utf8')).headRefOid }));
+else if (args[1] === 'view' && args.at(-1) === 'state,baseRefName') { const { state, baseRefName } = JSON.parse(readFileSync(join(root, 'parent'), 'utf8')); console.log(JSON.stringify({ state, baseRefName })); }
 else if (args[1] === 'view' && args.includes('state,mergeable')) console.log(JSON.stringify({ state: 'OPEN', mergeable: process.env.PR_MERGEABLE || 'MERGEABLE' }));
 else if (args[1] === 'view') console.log('f'.repeat(40));
 `);
@@ -105,9 +131,9 @@ else if (args[1] === 'view') console.log('f'.repeat(40));
   const noCheckout = new Set([...workflow.matchAll(/<scriptTask\b[^>]*>[\s\S]*?<\/scriptTask>/g)]
     .filter(([task]) => /coda:checkout="false"/.test(task.slice(0, task.indexOf('>'))))
     .map(([task]) => task.match(/lane-pr\.mjs" ([\w-]+)</)[1]));
-  const run = (action, extra = {}, expected = 0) => {
+  // cwd：在别的检出里跑（流程每次重试都是新检出的工作区，见 fresh）。
+  const run = (action, extra = {}, expected = 0, cwd = noCheckout.has(action) ? empty : work) => {
     writeFileSync(env.GITHUB_OUTPUT, '');
-    const cwd = noCheckout.has(action) ? empty : work;
     const result = spawnSync(process.execPath, [script, action], { cwd, env: { ...env, ...(cwd === empty && { GIT_CEILING_DIRECTORIES: root }), ...extra }, encoding: 'utf8' });
     assert.equal(result.status, expected, result.stderr);
     const outputs = Object.fromEntries([...readFileSync(env.GITHUB_OUTPUT, 'utf8').matchAll(/(\w+)<<([^\n]+)\n([\s\S]*?)\n\2\n/g)].map(([, key, , value]) => [key, value]));
@@ -118,11 +144,31 @@ else if (args[1] === 'view') console.log('f'.repeat(40));
   // 别的泳道 PR 合进了泳道：在泳道上另提交一个。
   const advanceLane = (file, text) => {
     git('fetch', '-q', 'origin', 'lane/req-1'); git('switch', '-q', '--detach', 'FETCH_HEAD');
-    writeFileSync(join(work, file), text); git('add', file); git('commit', '-qm', `lane ${file}`); git('push', '-q', 'origin', 'HEAD:refs/heads/lane/req-1');
+    mkdirSync(dirname(join(work, file)), { recursive: true }); writeFileSync(join(work, file), text); git('add', file); git('commit', '-qm', `lane ${file}`); git('push', '-q', 'origin', 'HEAD:refs/heads/lane/req-1');
     return git('rev-parse', 'HEAD');
   };
   const delivered = () => { run('gate'); run('gate-passed', { RUNS: '[]' }); };
-  return { root, work, env, git, run, state, calls, task, decide, remote, advanceLane, delivered };
+  // 前置泳道 PR：从泳道开 lane-pr/parent-run，提交几个散提交后推送；squash 把它压成一个提交合进泳道。
+  const setParent = fields => writeFileSync(join(root, 'parent'), JSON.stringify({ ...JSON.parse(readFileSync(join(root, 'parent'), 'utf8')), ...fields }));
+  const parent = (files = { 'p1': 'parent one', 'p2': 'parent two' }) => {
+    git('fetch', '-q', 'origin', 'lane/req-1'); git('switch', '-q', '--detach', 'FETCH_HEAD');
+    const commits = Object.entries(files).map(([file, text]) => { writeFileSync(join(work, file), text); git('add', file); git('commit', '-qm', `parent ${file}`); return git('rev-parse', 'HEAD'); });
+    git('push', '-q', 'origin', 'HEAD:refs/heads/lane-pr/parent-run');
+    writeFileSync(join(root, 'parent'), JSON.stringify({ url: PARENT, state: 'OPEN', headRefName: 'lane-pr/parent-run', headRefOid: commits.at(-1), baseRefName: 'lane/req-1' }));
+    return { head: commits.at(-1), commits };
+  };
+  const squash = head => {
+    git('fetch', '-q', 'origin', 'lane/req-1'); git('switch', '-q', '--detach', 'FETCH_HEAD');
+    git('merge', '-q', '--squash', head); git('commit', '-qm', 'parent (squash)'); git('push', '-q', 'origin', 'HEAD:refs/heads/lane/req-1');
+    setParent({ state: 'MERGED' });
+    return git('rev-parse', 'HEAD');
+  };
+  // 前置合并或关闭时 GitHub 删了它的分支。
+  const dropParent = () => git('push', '-q', 'origin', ':refs/heads/lane-pr/parent-run');
+  // 新检出的工作区：从 origin 克隆，没有上一次工作区里留下的对象。
+  let checkouts = 0;
+  const fresh = () => { const dir = join(root, `checkout-${++checkouts}`); git('clone', '-q', origin, dir); return dir; };
+  return { root, work, env, git, run, state, calls, task, decide, remote, advanceLane, delivered, parent, setParent, squash, dropParent, fresh };
 }
 
 async function definition(source = workflow) {
@@ -161,6 +207,7 @@ test('执行者从泳道当前 head 开工；第一次交付开进泳道的 PR�
   assert.ok(created[0].body.includes(f.env.TASK), '正文含任务原文');
   assert.equal(f.state().pr, PR);
   assert.equal(f.run('review').outputs.pr, PR);
+  assert.equal(f.run('review').outputs.stack, '', '没叠放，审查卡不提示');
 
   assert.equal(f.decide('revise', '删除多余封装'), 'revise');
   f.task('one', 'removed wrapper'); f.run('revise');
@@ -476,13 +523,15 @@ test('泳道 PR 流程定义：输入、回路、审查卡答复、结束输出�
   const { process, sub, elements, nodes, values, params, route, next } = await definition();
   assert.equal(process.name, '泳道 PR'); assert.equal(process.kind, undefined, '不是一种开发流程实现');
   const inputs = Object.fromEntries(values(process).map(v => [v.name, v]));
-  assert.deepEqual(Object.keys(inputs), ['lane', 'title', 'task', 'sync', 'executor', 'executor2', 'reviewer', 'reviewer2']);
+  assert.deepEqual(Object.keys(inputs), ['lane', 'title', 'task', 'sync', 'dependsOn', 'executor', 'executor2', 'reviewer', 'reviewer2', 'autoLandMinor']);
   for (const name of ['lane', 'title', 'task']) assert.equal(inputs[name].required, true, name);
   assert.deepEqual([inputs.sync.type, inputs.sync.default], ['boolean', 'false']);
+  assert.deepEqual([inputs.dependsOn.type, inputs.dependsOn.default, inputs.dependsOn.label], ['string', '', '前置泳道 PR']);
+  assert.deepEqual([inputs.autoLandMinor.type, inputs.autoLandMinor.default, inputs.autoLandMinor.label], ['boolean', 'false', '小改动免主控审查']);
   // 必填且没有默认值：引擎 resolveInputs 对没给、又无默认的 required 输入在启动时报「需要参数 executor」，不再落到发起会话。
   assert.deepEqual([inputs.executor.type, inputs.executor.required, inputs.executor.default, inputs.executor.defaultFrom], ['agent', true, undefined, undefined]);
   for (const name of ['executor2', 'reviewer', 'reviewer2']) assert.deepEqual([inputs[name].type, inputs[name].default, inputs[name].required], ['agent', undefined, undefined], name);
-  assert.deepEqual(Object.fromEntries(Object.entries(params('execute')).filter(([k]) => k !== 'EXECUTOR')), { LANE: '=inputs.lane', TITLE: '=inputs.title', TASK: '=inputs.task', SYNC: '=inputs.sync' });
+  assert.deepEqual(Object.fromEntries(Object.entries(params('execute')).filter(([k]) => k !== 'EXECUTOR')), { LANE: '=inputs.lane', TITLE: '=inputs.title', TASK: '=inputs.task', SYNC: '=inputs.sync', DEPENDS_ON: '=inputs.dependsOn' });
   // 执行者只来自 inputs.executor，没有取发起会话的回退；引擎把 env 里的对象转成 JSON 文本，脚本再解析。
   assert.equal(params('execute').EXECUTOR, '=inputs.executor');
   const executor = { agent: 'codex', model: 'gpt-6' };
@@ -493,10 +542,12 @@ test('泳道 PR 流程定义：输入、回路、审查卡答复、结束输出�
   assert.deepEqual(elements.filter(e => e.action === 'run-workflows').map(e => [e.id, params(e.id).hook, params(e.id).commit]), [['checks', 'check', '=gate.head']]);
   assert.ok(!elements.some(e => ['hold-group', 'tell-session', 'workflow-kinds'].includes(e.action)));
   assert.deepEqual(values(nodes.review).map(v => [v.id, v.name]), [['revise', '退回修改'], ['sync', '让执行者合并泳道'], ['swap', '换备用执行者重做'], ['land', '合进泳道'], ['abandon', '放弃']]);
-  for (const [value, target] of [['review', 'rounds'], ['revise', 'revise'], ['swap', 'swap'], ['abandon', 'abandon'], ['land', 'land']]) assert.equal(route('how', { decide: { route: value } }), target);
+  for (const [value, target] of [['review', 'rounds'], ['revise', 'revise'], ['swap', 'swap'], ['abandon', 'abandon'], ['land', 'land'], ['stack', 'stack-status']]) assert.equal(route('how', { decide: { route: value } }), target);
   assert.equal(next('rounds'), 'report', '每次出审查卡前先整理收敛经过');
   for (const id of ['execute', 'revise', 'swap']) assert.equal(next(id), 'gate');
-  assert.equal(next('gate'), 'checks');
+  assert.equal(next('gate'), 'gate-next');
+  // 旧版脚本不给 route（null）也照常检查。
+  for (const [value, target] of [[undefined, 'checks'], ['checks', 'checks'], ['restack', 'restack'], ['review', 'rounds']]) assert.equal(route('gate-next', { gate: { head: 'h', route: value } }), target, value);
   assert.equal(next('checks'), 'gate-passed');
   assert.equal(next('gate-passed'), 'review-round');
   assert.equal(next('review-round'), 'reviews-choice');
@@ -506,7 +557,10 @@ test('泳道 PR 流程定义：输入、回路、审查卡答复、结束输出�
   assert.equal(route('after-land', { land: { route: 'sync' } }), 'revise', '冲突交回同一个执行会话');
   assert.equal(route('after-land', { land: { route: 'landed' } }), 'landed');
   for (const id of ['landed', 'abandoned']) assert.equal(nodes[id].notify, 'true', `${id} 结果回发起会话`);
-  assert.deepEqual(values(nodes.landed).map(v => [v.name, v.value]), [['pr', '=land.pr'], ['commit', '=land.commit']]);
+  assert.deepEqual(values(nodes.landed).map(v => [v.name, v.value]), [['pr', '=land.pr'], ['commit', '=land.commit'], ['autoLanded', '=land.auto = true'], ['summary', '=land.summary']]);
+  // 引擎把步骤输出的 "true" 转为真假值：免审合入时 land.auto 是 true，不免审时没有这个输出。
+  const autoLanded = values(nodes.landed).find(v => v.name === 'autoLanded').value.slice(1);
+  for (const [auto, expected] of [[true, true], [undefined, false]]) assert.equal(evaluate(autoLanded, { land: { pr: PR, ...(auto && { auto }) } }).value, expected);
   assert.deepEqual(values(nodes.abandoned).map(v => [v.name, v.value]), [['pr', '=abandon.pr']]);
   for (const [sync, text] of [[false, 'squash 合进泳道并删除分支'], [true, '把泳道快进到这次交付']]) {
     const expression = [...nodes.review.documentation[0].text.matchAll(/{{(.*?)}}/g)].find(m => m[1].includes('inputs.sync'))[1];
@@ -517,7 +571,7 @@ test('泳道 PR 流程定义：输入、回路、审查卡答复、结束输出�
   assert.equal(sub.optional, true);
   assert.equal(nodes['review-call'].calledElement, 'review-commit');
   assert.deepEqual(params('review-call'), { base: '=review-round.base', head: '=review-round.head', task: '=review-round.task', reviewer: '=slot.who', evidence: '=review-round.checks', previous: '=slot.previous' });
-  for (const [reviewers, target] of [[{ reviewer: { agent: 'a1' } }, 'reviews'], [{ reviewer2: { agent: 'a2' } }, 'reviews'], [{}, 'rounds']]) {
+  for (const [reviewers, target] of [[{ reviewer: { agent: 'a1' } }, 'reviews'], [{ reviewer2: { agent: 'a2' } }, 'reviews'], [{}, 'stack-status']]) {
     assert.equal(route('reviews-choice', { inputs: { reviewer: null, reviewer2: null, ...reviewers } }), target);
   }
   const slots = evaluate(sub.loopCharacteristics.inputCollection.slice(1), { inputs: { reviewer: { agent: 'a1' }, reviewer2: null }, 'review-round': { previous: '[]', previous2: '' } }).value;
@@ -565,7 +619,7 @@ test('评审有阻塞级发现：同一执行会话逐条处理，有新提交�
   assert.deepEqual(JSON.parse(again.previous), [{ ...BUG, id: 'reviewer:1', response: { disposition: 'fixed', commit: 'c1', reason: '加了退出码', evidence: '' } }]);
 
   const resolutions = JSON.stringify([{ id: 'reviewer:1', status: 'resolved', reason: '修好了' }]);
-  assert.equal(f.run('triage', { REVIEWS: JSON.stringify([reviewed('reviewer', second, [], { decision: 'APPROVE', resolutions })]) }).outputs.route, 'review');
+  assert.equal(f.run('triage', { REVIEWS: JSON.stringify([reviewed('reviewer', second, [], { decision: 'APPROVE', resolutions })]) }).outputs.route, 'pass');
   const text = f.run('rounds').outputs.text;
   for (const part of [`评审（head ${first.slice(0, 12)}）：`, '结论：交执行者逐条修复或反驳', '- reviewer:1：fixed c1，加了退出码', `复评（head ${second.slice(0, 12)}）：`,
     '- reviewer:1 → resolved：修好了', '结论：没有阻塞级发现，交主 Agent 审查', `全文：${join(f.env.CODA_ARTIFACTS, 'converge.md')}`]) assert.ok(text.includes(part), part);
@@ -586,7 +640,7 @@ test('只反驳、没有新提交：不重跑检查，直接交原评审者确�
   assert.deepEqual(JSON.parse(again.previous2).map(p => [p.id, p.response]), [['reviewer2:1', undefined]], '没回应的那条也交复评');
   const upheld = JSON.stringify([{ id: 'reviewer:1', status: 'upheld', reason: '还是没有' }]);
   assert.equal(f.run('triage', { REVIEWS: JSON.stringify([reviewed('reviewer', head, [], { resolutions: upheld }),
-    reviewed('reviewer2', head, [], { decision: 'APPROVE', resolutions: JSON.stringify([{ id: 'reviewer2:1', status: 'resolved' }]) })]) }).outputs.route, 'review');
+    reviewed('reviewer2', head, [], { decision: 'APPROVE', resolutions: JSON.stringify([{ id: 'reviewer2:1', status: 'resolved' }]) })]) }).outputs.route, 'escalate');
   assert.equal(f.calls('gh').length, pushes, '没有推送、没有开 PR');
   assert.match(f.run('rounds').outputs.text, /升级给主 Agent：reviewer:1：执行者反驳了，评审者仍坚持/);
 
@@ -617,7 +671,8 @@ test('新流程定义：评审之后分流，交执行者的回路与升级都�
   assert.deepEqual(params('triage'), { REVIEWS: '=reviews', route: undefined });
   assert.equal(next('reviews'), 'triage');
   assert.equal(route('triage-route', { triage: { route: 'fix' } }), 'address');
-  assert.equal(route('triage-route', { triage: { route: 'review' } }), 'rounds');
+  assert.equal(route('triage-route', { triage: { route: 'escalate' } }), 'rounds', '升级直接交主 Agent，不等前置、不判免审');
+  assert.equal(route('triage-route', { triage: { route: 'pass' } }), 'stack-status');
   for (const [value, target] of [['gate', 'gate'], ['again', 'review-round'], ['review', 'rounds']]) assert.equal(route('address-route', { address: { route: value } }), target, value);
   assert.equal(nodes.address.checkout, undefined, '和 revise 一样在执行会话里改');
   assert.deepEqual(Object.fromEntries(values(nodes['review-done']).map(v => [v.name, v.value])), {
@@ -632,17 +687,27 @@ test('新流程定义：评审之后分流，交执行者的回路与升级都�
 
 function oldSource() { return old; }
 
+test('10.3.0 的流程定义：分流只认 fix 交执行者，pass 与 escalate 都走默认分支交主 Agent 审查', async () => {
+  const { route } = await definition(olds.find(o => o.version === '10.3.0').source);
+  assert.equal(route('triage-route', { triage: { route: 'fix' } }), 'address');
+  for (const value of ['pass', 'escalate']) assert.equal(route('triage-route', { triage: { route: value } }), 'rounds', value);
+});
+
 // 旧定义里每个脚本步骤：动作名、env 与输出。
 const steps = source => [...source.matchAll(/<scriptTask id="([^"]+)"[\s\S]*?<\/scriptTask>/g)].map(([text, id]) => ({ id,
   action: /lane-pr\.mjs" ([\w-]+)</.exec(text)[1], env: [...text.matchAll(/<coda:env name="(\w+)"/g)].map(m => m[1]), outputs: [...text.matchAll(/<coda:output name="(\w+)"/g)].map(m => m[1]) }));
 
 for (const { version, source: old } of olds) test(`${version} 的流程定义：它引用的每个动作新脚本都还有，env 与输出不变，照它的顺序走得通`, t => {
   const before = steps(old), now = steps(workflow), source = readFileSync(script, 'utf8');
-  assert.deepEqual(before.map(s => s.action), ['execute', 'gate', 'gate-failed', 'gate-passed', 'review', 'decide', 'revise', 'swap', 'land', 'abandon']);
+  assert.deepEqual(before.map(s => s.action), version === '10.3.0'
+    ? ['execute', 'gate', 'gate-failed', 'gate-passed', 'review-round', 'triage', 'address', 'rounds', 'review', 'decide', 'revise', 'swap', 'land', 'abandon']
+    : ['execute', 'gate', 'gate-failed', 'gate-passed', 'review', 'decide', 'revise', 'swap', 'land', 'abandon']);
   for (const step of before) {
     assert.ok(source.includes(`case '${step.action}':`), step.action);
+    // 新定义同一步骤可以多收 env、多给输出（旧定义不传、不收），旧的一个都不能少。
     const same = now.find(s => s.id === step.id);
-    assert.deepEqual([same.action, same.env, same.outputs], [step.action, step.env, step.outputs], step.id);
+    assert.equal(same.action, step.action, step.id);
+    for (const key of ['env', 'outputs']) assert.deepEqual(same[key].filter(name => step[key].includes(name)), step[key], `${step.id} ${key}`);
   }
   // 旧定义调用 review-commit 用的参数，新能力都还收，新加的都不必填。
   const capability = readFileSync(new URL('../../../plugins/review/.coda/capabilities/review-commit.bpmn', import.meta.url), 'utf8');
@@ -652,9 +717,13 @@ for (const { version, source: old } of olds) test(`${version} 的流程定义：
   for (const name of given) assert.ok(name in inputs, name);
   assert.deepEqual(Object.keys(inputs).filter(name => inputs[name] && !given.includes(name)), []);
 
-  // 照旧定义的路径跑一遍：每步给出的输出正是旧定义声明的。
+  // 照旧定义的路径跑一遍：旧定义声明的输出每步都给出；多给的只能是新定义同一步骤声明的（旧定义不收）。
   const f = fixture(t), declared = Object.fromEntries(before.map(s => [s.action, s.outputs]));
-  const check = (action, extra, expected) => assert.deepEqual(Object.keys(f.run(action, extra, expected).outputs).sort(), [...declared[action]].sort(), action);
+  const check = (action, extra, expected) => {
+    const keys = Object.keys(f.run(action, extra, expected).outputs);
+    assert.deepEqual(keys.filter(key => declared[action].includes(key)).sort(), [...declared[action]].sort(), action);
+    for (const key of keys.filter(key => !declared[action].includes(key))) assert.ok(now.some(s => s.action === action && s.outputs.includes(key)), `${action} ${key}`);
+  };
   f.task('one', 'first'); check('execute');
   check('gate'); check('gate-failed'); f.task('one', 'second'); check('revise');
   check('gate'); check('gate-passed', { RUNS: '[]' });
@@ -806,4 +875,635 @@ test('退回修改中断后运行从头重跑：execute 以上一次的完整状
   assert.deepEqual({ ...after, executor: undefined, feedback: undefined, opening: undefined }, { ...before, executor: undefined, feedback: undefined, opening: undefined });
   f.run('gate'); assert.equal(f.run('gate-failed').outputs.route, 'review');
   assert.equal(f.state().failures.length, 4);
+});
+
+// 叠放：评审通过的一份（APPROVE、没有发现）；叠放与免审都在分流 pass 之后。
+const approved = head => reviewed('reviewer', head, [], { decision: 'APPROVE', line: '可以合' });
+const ancestorOf = (f, older, newer) => spawnSync('git', ['merge-base', '--is-ancestor', older, newer], { cwd: f.work }).status === 0;
+
+test('叠放：前置开着时从它的 head 开工、草稿 PR 开进它的分支、只评增量；前置 squash 合进泳道后 rebase --onto 只重接自己的提交，切回泳道、仍是草稿，重新检查并以泳道为 base 完整评审，通过后才转正', t => {
+  const f = fixture(t);
+  const parent = f.parent();
+  f.task('child', 'child work'); f.run('execute', { DEPENDS_ON: PARENT });
+  assert.deepEqual(f.calls('agent')[0].args.slice(0, 2), ['--commit', parent.head], '从前置的 head 开工');
+  assert.deepEqual(f.calls('gh')[0].args, ['repo', 'view', '--json', 'url', '--jq', '.url'], '先认当前仓库');
+  assert.deepEqual(f.calls('gh')[1].args, ['pr', 'view', PARENT, '--repo', 'github.com/example/fixture', '--json', 'url,state,headRefName,headRefOid,baseRefName']);
+  assert.deepEqual(f.state().stack, { pr: PARENT, branch: 'lane-pr/parent-run', head: parent.head, restacked: false });
+  const first = f.state().executor.head;
+
+  f.run('gate', { OPEN_PR: '' });
+  assert.deepEqual(f.calls('gh').find(c => c.args[1] === 'list').args, ['pr', 'list', '--repo', 'github.com/example/fixture', '--head', 'lane-pr/pr-run-1', '--state', 'open', '--limit', '1', '--json', 'url', '--jq', '.[].url'], '只按分支找');
+  const created = f.calls('gh').find(c => c.args[1] === 'create');
+  assert.deepEqual(created.args.slice(0, 9), ['pr', 'create', '--base', 'lane-pr/parent-run', '--head', 'lane-pr/pr-run-1', '--draft', '--title', '输入框可以输入']);
+  assert.ok(created.body.includes(PARENT));
+  assert.equal(f.run('gate-passed', { RUNS: '[]' }).outputs.base, parent.head);
+  assert.deepEqual([f.run('review-round').outputs.base, f.state().converge.full], [parent.head, true], '评审只评这个 PR 自己的增量');
+  assert.equal(f.run('triage', { REVIEWS: JSON.stringify([approved(first)]) }).outputs.route, 'pass');
+  assert.equal(f.run('review').outputs.stack, PARENT, '仍叠放、还没重接，审查卡提示');
+  assert.equal(f.run('stack-status').outputs.route, 'wait', '前置还开着就等');
+  assert.equal(f.calls('gh').at(-1).args.join(' '), `pr view ${PARENT} --repo github.com/example/fixture --json state,baseRefName`);
+
+  const lane = f.squash(parent.head);
+  assert.equal(f.run('stack-status').outputs.route, 'restack');
+  assert.equal(f.run('restack').outputs.route, 'gate');
+  const head = f.state().executor.head;
+  assert.equal(f.remote('lane-pr/pr-run-1'), head, '推送了重接后的 head');
+  assert.deepEqual(f.git('rev-list', '--parents', '-n', '1', head).split(' '), [head, lane], '只有一个父提交：接在 squash 后的泳道上，没有双亲合并');
+  assert.deepEqual(f.git('rev-list', `${lane}..${head}`).split('\n'), [head], '只重接了自己的一个提交');
+  for (const commit of parent.commits) assert.ok(!ancestorOf(f, commit, head), `前置 squash 前的散提交 ${commit} 没有带进来`);
+  assert.equal(f.git('show', `${head}:child`), 'child work');
+  assert.deepEqual(f.calls('gh').at(-1).args, ['pr', 'edit', PR, '--repo', 'github.com/example/fixture', '--base', 'lane/req-1'], '切回泳道');
+  const readies = () => f.calls('gh').filter(c => c.args[1] === 'ready');
+  assert.equal(readies().length, 0, '新 head 还没检查、评审，仍是草稿');
+  assert.deepEqual({ ...f.state().stack, note: undefined }, { pr: PARENT, branch: 'lane-pr/parent-run', head: parent.head, restacked: true, draft: true, note: undefined });
+  assert.match(f.state().stack.note, /reset --hard/);
+
+  // 回到推送、检查、评审：base 是泳道最新 head，不是变基前评过的 head。新 head 检查失败、评审有阻塞发现交执行者修时都还是草稿。
+  f.run('gate');
+  assert.equal(f.run('gate-failed').outputs.route, 'revise');
+  assert.equal(readies().length, 0, '检查失败仍是草稿');
+  f.delivered();
+  assert.equal(f.run('review').outputs.stack, '', '重接之后审查卡不再提示');
+  assert.equal(f.calls('gh').filter(c => c.args[1] === 'create').length, 1);
+  assert.deepEqual(f.run('review-round').outputs.base, lane);
+  assert.equal(f.run('triage', { REVIEWS: JSON.stringify([reviewed('reviewer', head, [BUG]), { state: 'skipped' }]) }).outputs.route, 'fix');
+  assert.equal(readies().length, 0, '评审修错中仍是草稿');
+  assert.equal(f.state().stack.draft, true);
+  // 执行者修好后复评通过：这里直接以一次完整评审通过代替。
+  writeFileSync(join(f.env.CODA_ARTIFACTS, 'lane-pr.json'), JSON.stringify({ ...f.state(), converge: undefined }));
+  f.run('review-round');
+  assert.equal(f.run('triage', { REVIEWS: JSON.stringify([approved(head)]) }).outputs.route, 'pass');
+  assert.equal(f.run('stack-status').outputs.route, 'ready');
+  assert.deepEqual(readies().map(c => c.args), [['pr', 'ready', PR, '--repo', 'github.com/example/fixture']], '检查与评审通过后才转正');
+  assert.equal(f.state().stack.draft, undefined);
+  assert.equal(f.run('stack-status').outputs.route, 'ready');
+  assert.equal(readies().length, 1, '只转正一次');
+  assert.equal(f.decide('land'), 'land', '重接之后可以合进泳道');
+  assert.equal(f.run('land').outputs.route, 'landed');
+  // 之后交给同一执行会话的修改先说明分支已被重接，说过一次就不再说。
+  f.decide('revise', '再改一下'); f.task('child', 'more'); f.run('revise');
+  assert.match(f.calls('agent').at(-1).prompt, /重接到了泳道[\s\S]*再改一下/);
+  assert.equal(f.state().stack.note, undefined);
+});
+
+test('叠放：重接推送用 --force-with-lease，远端分支被别人改过时不覆盖、状态不动；重试在新检出的工作区重新变基并推送', t => {
+  const f = fixture(t);
+  const parent = f.parent();
+  f.task('child', 'child work'); f.run('execute', { DEPENDS_ON: PARENT }); f.delivered();
+  const first = f.state().executor.head, lane = f.squash(parent.head);
+  const moved = f.advanceLane('other', 'other');
+  f.git('push', '-q', '--force', 'origin', `${moved}:refs/heads/lane-pr/pr-run-1`);
+  const before = f.state();
+  f.run('restack', {}, 1);
+  assert.equal(f.remote('lane-pr/pr-run-1'), moved, '租约不符，远端不动');
+  const { pushing, ...stack } = f.state().stack;
+  assert.deepEqual({ ...f.state(), stack }, before, '推之前失败，除了这次推送的记录，状态没动');
+  assert.deepEqual([pushing.lane, pushing.from], [moved, first], '重接到泳道最新 head');
+  assert.equal(f.calls('gh').filter(c => ['edit', 'ready'].includes(c.args[1])).length, 0);
+
+  f.git('push', '-q', '--force', 'origin', `${first}:refs/heads/lane-pr/pr-run-1`);
+  const lanes = f.remote('lane/req-1');
+  assert.equal(f.run('restack', {}, 0, f.fresh()).outputs.route, 'gate');
+  const head = f.state().executor.head;
+  assert.notEqual(head, first);
+  assert.equal(f.remote('lane-pr/pr-run-1'), head);
+  f.git('fetch', '-q', 'origin', 'lane-pr/pr-run-1');
+  assert.deepEqual(f.git('rev-list', '--parents', '-n', '1', head).split(' '), [head, lanes], '重新变基到泳道最新 head');
+  assert.ok(!ancestorOf(f, parent.head, head) && ancestorOf(f, lane, head));
+  assert.deepEqual([f.state().stack.restacked, f.state().stack.pushed, f.state().base], [true, undefined, lanes]);
+  assert.deepEqual(f.calls('gh').slice(-2).map(c => c.args[1]), ['view', 'edit'], '切回泳道，仍是草稿');
+});
+
+test('叠放：推送成功但没来得及记下结果（或响应丢了），重试在新检出的工作区按记下的推送收尾，不再变基、推送', t => {
+  const f = fixture(t);
+  const parent = f.parent();
+  f.task('child', 'child work'); f.run('execute', { DEPENDS_ON: PARENT }); f.delivered();
+  const first = f.state().executor.head, lane = f.squash(parent.head), path = join(f.env.CODA_ARTIFACTS, 'lane-pr.json');
+  const before = readFileSync(path, 'utf8');
+  f.run('restack', { EDIT_EXIT: '1' }, 1);
+  const head = f.remote('lane-pr/pr-run-1');
+  // 回到推送前那一刻落盘的状态：只有这次推送的记录，远端却已是新 head。
+  const crashed = JSON.parse(before);
+  crashed.stack.pushing = { lane, from: first, head };
+  writeFileSync(path, JSON.stringify(crashed));
+  const noPush = { GIT_CONFIG_COUNT: '3', GIT_CONFIG_KEY_2: 'remote.origin.pushurl', GIT_CONFIG_VALUE_2: join(f.root, 'no-such-remote') };
+  assert.equal(f.run('restack', noPush, 0, f.fresh()).outputs.route, 'gate');
+  assert.equal(f.state().executor.head, head, '用记下的新 head，不再变基');
+  assert.equal(f.remote('lane-pr/pr-run-1'), head);
+  assert.deepEqual([f.state().stack.restacked, f.state().stack.pushing, f.state().stack.pushed, f.state().base], [true, undefined, undefined, lane]);
+  assert.match(f.state().stack.note, new RegExp(`远端分支 lane-pr/pr-run-1 现在是 ${head}`));
+  assert.deepEqual(f.calls('gh').slice(-2).map(c => c.args[1]), ['view', 'edit'], '切回泳道，仍是草稿');
+});
+
+test('叠放：重接推送成功、改 PR 失败后，重试在新检出的工作区不再变基、推送，只切 base、转正', t => {
+  const f = fixture(t);
+  const parent = f.parent();
+  f.task('child', 'child work'); f.run('execute', { DEPENDS_ON: PARENT }); f.delivered();
+  const lane = f.squash(parent.head);
+  f.run('restack', { EDIT_EXIT: '1' }, 1);
+  const head = f.state().executor.head;
+  assert.equal(f.remote('lane-pr/pr-run-1'), head, '推送成功');
+  assert.deepEqual([f.state().stack.pushed, f.state().stack.restacked], [lane, false]);
+  assert.match(f.state().stack.note, /reset --hard/);
+
+  // 重试时推送一律失败：成功就说明没有再推。
+  const noPush = { GIT_CONFIG_COUNT: '3', GIT_CONFIG_KEY_2: 'remote.origin.pushurl', GIT_CONFIG_VALUE_2: join(f.root, 'no-such-remote') };
+  assert.equal(f.run('restack', noPush, 0, f.fresh()).outputs.route, 'gate');
+  assert.equal(f.state().executor.head, head, '不再变基');
+  assert.equal(f.remote('lane-pr/pr-run-1'), head);
+  assert.deepEqual([f.state().stack.restacked, f.state().stack.pushed, f.state().base], [true, undefined, lane]);
+  assert.deepEqual(f.calls('gh').slice(-2).map(c => c.args.slice(1)), [['view', PR, '--repo', 'github.com/example/fixture', '--json', 'state'], ['edit', PR, '--repo', 'github.com/example/fixture', '--base', 'lane/req-1']]);
+  assert.equal(f.calls('gh').filter(c => c.args[1] === 'ready').length, 0, '仍是草稿');
+});
+
+test('叠放：重接冲突交原执行会话变基解冲突，回来核对后收尾', t => {
+  const f = fixture(t);
+  const parent = f.parent();
+  f.task('shared', 'child version'); f.run('execute', { DEPENDS_ON: PARENT }); f.delivered();
+  const first = f.state().executor.head;
+  f.squash(parent.head);
+  const lane = f.advanceLane('shared', 'lane version');
+  assert.equal(f.run('restack').outputs.route, 'revise');
+  assert.equal(f.remote('lane-pr/pr-run-1'), first, '冲突时远端不动');
+  assert.deepEqual([f.state().executor.head, f.state().stack.restacked], [first, false]);
+  for (const text of ['- shared', `git rebase --onto ${lane} ${parent.head}`, '不要 merge', '已 squash 合进泳道 lane/req-1']) assert.ok(f.state().feedback.includes(text), text);
+
+  f.task('shared', 'resolved', undefined, { rebase: [lane, parent.head] }); f.run('revise');
+  assert.deepEqual(f.calls('agent').at(-1).args.slice(0, 2), ['--continue', 'worker-1'], '同一执行会话');
+  const head = f.state().executor.head;
+  assert.ok(ancestorOf(f, lane, head) && !ancestorOf(f, parent.head, head));
+  assert.equal(f.run('restack').outputs.route, 'gate');
+  assert.equal(f.remote('lane-pr/pr-run-1'), head);
+  assert.equal(f.state().stack.restacked, true);
+  assert.equal(f.state().stack.note, undefined, '执行者自己重接的不用再提醒');
+  assert.deepEqual(f.calls('gh').slice(-2).map(c => c.args[1]), ['view', 'edit'], '切回泳道，仍是草稿');
+});
+
+// 叠放升级后，执行者已直接变基到泳道上：gate 解绑叠放之后照常检查、以泳道为 base 评审，合进泳道。
+function landsAfterRecovery(f, lane) {
+  assert.equal(f.state().stack.restacked, true);
+  assert.deepEqual([f.state().stack.recover, f.state().stack.pending], [undefined, undefined]);
+  assert.equal(f.run('gate-passed', { RUNS: '[]' }).outputs.base, lane, '以泳道为 base');
+  assert.equal(f.run('review-round').outputs.base, lane);
+  assert.equal(f.calls('gh').filter(c => c.args[1] === 'ready').length, 0, '解绑后检查、评审通过前仍是草稿');
+  assert.equal(f.run('stack-status').outputs.route, 'ready');
+  assert.deepEqual(f.calls('gh').at(-1).args, ['pr', 'ready', PR, '--repo', 'github.com/example/fixture'], '检查与评审通过后转正');
+  assert.equal(f.decide('land'), 'land');
+  assert.equal(f.run('land').outputs.route, 'landed');
+  assert.equal(f.calls('gh').filter(c => c.args[1] === 'merge').at(-1).args[2], PR);
+}
+
+test('叠放：执行者解冲突后没变基到泳道上交主 Agent；退回修改变基到泳道后，推送时切回泳道、转正，照常合进泳道', t => {
+  const f = fixture(t);
+  const parent = f.parent();
+  f.task('shared', 'child version'); f.run('execute', { DEPENDS_ON: PARENT }); f.delivered();
+  const first = f.state().executor.head;
+  f.squash(parent.head);
+  const lane = f.advanceLane('shared', 'lane version');
+  assert.equal(f.run('restack').outputs.route, 'revise');
+  f.task('more', 'still on parent'); f.run('revise');
+  assert.equal(f.run('restack').outputs.route, 'review');
+  assert.match(f.state().feedback, /没有变基到泳道上/);
+  assert.equal(f.remote('lane-pr/pr-run-1'), first);
+  assert.deepEqual([f.state().stack.recover, f.state().stack.pending, f.state().stack.restacked], [true, undefined, false]);
+
+  f.decide('revise', '变基到泳道'); f.task('shared', 'resolved', undefined, { rebase: [lane, parent.head] }); f.run('revise');
+  const head = f.run('gate').outputs.head;
+  assert.equal(f.remote('lane-pr/pr-run-1'), head);
+  assert.deepEqual(f.calls('gh').filter(c => ['view', 'edit', 'ready'].includes(c.args[1])).slice(-2).map(c => c.args.slice(1)),
+    [['view', PR, '--repo', 'github.com/example/fixture', '--json', 'state'], ['edit', PR, '--repo', 'github.com/example/fixture', '--base', 'lane/req-1']]);
+  assert.equal(f.state().stack.draft, true, '解绑后仍是草稿');
+  landsAfterRecovery(f, lane);
+});
+
+test('叠放：执行者解冲突后推送已更新远端、命令却非零退出（响应丢了），重试识别远端已是新 head 直接收尾，不再推送', t => {
+  const f = fixture(t);
+  const parent = f.parent();
+  f.task('shared', 'child version'); f.run('execute', { DEPENDS_ON: PARENT }); f.delivered();
+  const first = f.state().executor.head;
+  f.squash(parent.head);
+  const lane = f.advanceLane('shared', 'lane version');
+  assert.equal(f.run('restack').outputs.route, 'revise');
+  f.task('shared', 'resolved', undefined, { rebase: [lane, parent.head] }); f.run('revise');
+  const head = f.state().executor.head;
+  // 服务端接受了推送、响应却丢了：包一层 git，推送照做后以非零退出。
+  const lost = join(f.root, 'lost'), real = join(f.git('--exec-path'), 'git');
+  mkdirSync(lost);
+  writeFileSync(join(lost, 'git'), `#!/bin/sh\n"${real}" "$@" || exit $?\n[ "$1" = push ] && exit 1\nexit 0\n`); chmodSync(join(lost, 'git'), 0o755);
+  f.run('restack', { PATH: `${lost}:${f.env.PATH}` }, 1);
+  assert.equal(f.remote('lane-pr/pr-run-1'), head, '远端已是新 head');
+  assert.deepEqual([f.state().stack.pushing, f.state().stack.pending], [{ lane, from: first, head, resolved: true }, undefined], '推之前记下了这次推送');
+
+  const noPush = { GIT_CONFIG_COUNT: '3', GIT_CONFIG_KEY_2: 'remote.origin.pushurl', GIT_CONFIG_VALUE_2: join(f.root, 'no-such-remote') };
+  assert.equal(f.run('restack', noPush, 0, f.fresh()).outputs.route, 'gate');
+  assert.deepEqual([f.state().executor.head, f.state().stack.restacked, f.state().stack.pushing, f.state().stack.pushed, f.state().base], [head, true, undefined, undefined, lane]);
+  assert.equal(f.state().stack.note, undefined, '执行者自己重接的不用再提醒');
+  assert.deepEqual(f.calls('gh').slice(-2).map(c => c.args[1]), ['view', 'edit'], '切回泳道，仍是草稿');
+});
+
+test('叠放：执行期间前置已 squash 合进泳道并删了分支，gate 不往前置分支开 PR，先重接再回到 gate 以草稿开进泳道，检查与评审通过后转正', t => {
+  const f = fixture(t);
+  const parent = f.parent();
+  f.task('child', 'child work'); f.run('execute', { DEPENDS_ON: PARENT });
+  const lane = f.squash(parent.head);
+  f.dropParent();
+  const gate = f.run('gate').outputs;
+  assert.deepEqual([gate.route, gate.head, f.state().pr], ['restack', f.state().executor.head, '']);
+  assert.equal(f.calls('gh').filter(c => c.args[1] === 'create').length, 0, '不往已删的前置分支开');
+
+  assert.equal(f.run('restack').outputs.route, 'gate');
+  const head = f.state().executor.head;
+  assert.deepEqual(f.git('rev-list', '--parents', '-n', '1', head).split(' '), [head, lane], '重接到 squash 后的泳道');
+  assert.equal(f.remote('lane-pr/pr-run-1'), head);
+  assert.equal(f.calls('gh').filter(c => ['edit', 'ready'].includes(c.args[1])).length, 0, '还没有 PR，不改');
+  assert.equal(f.run('gate').outputs.route, 'checks');
+  const created = f.calls('gh').filter(c => c.args[1] === 'create');
+  assert.equal(created.length, 1);
+  assert.deepEqual(created[0].args.slice(0, 9), ['pr', 'create', '--base', 'lane/req-1', '--head', 'lane-pr/pr-run-1', '--draft', '--title', '输入框可以输入'], '以草稿开进泳道');
+  assert.ok(!created[0].body.includes(PARENT));
+  assert.equal(f.state().pr, PR);
+  assert.equal(f.run('gate-passed', { RUNS: '[]' }).outputs.base, lane, '以泳道为 base 检查与评审');
+  assert.equal(f.calls('gh').filter(c => c.args[1] === 'ready').length, 0);
+  assert.equal(f.run('stack-status').outputs.route, 'ready');
+  assert.deepEqual(f.calls('gh').at(-1).args, ['pr', 'ready', PR, '--repo', 'github.com/example/fixture'], '检查与评审通过后转正');
+});
+
+test('叠放：执行期间前置被 force-push 改写后合进泳道，gate 直接去重接、重接升级前先以草稿开进泳道，主 Agent 放弃能关掉 PR、删掉分支', t => {
+  const f = fixture(t);
+  const parent = f.parent(), old = f.remote('lane/req-1');
+  f.task('child', 'child work'); f.run('execute', { DEPENDS_ON: PARENT });
+  f.git('switch', '-q', '--detach', old); writeFileSync(join(f.work, 'p1'), 'parent redo'); f.git('add', 'p1'); f.git('commit', '-qm', 'parent redo');
+  const rewritten = f.git('rev-parse', 'HEAD');
+  f.git('push', '-q', '--force', 'origin', `${rewritten}:refs/heads/lane-pr/parent-run`);
+  f.setParent({ headRefOid: rewritten });
+  f.squash(rewritten);
+  f.dropParent();
+  assert.equal(f.run('gate').outputs.route, 'restack');
+  assert.equal(f.state().pr, '');
+  // 第一次开草稿的响应丢了：这一步失败、没记下 PR；重试先按分支找到已开的 PR，不再开。
+  f.run('restack', { CREATE_LOST: '1' }, 1);
+  assert.deepEqual([f.state().pr, f.state().stack.recover], ['', undefined]);
+  assert.equal(f.run('restack', { OPEN_PR: PR }).outputs.route, 'review');
+  assert.deepEqual(f.calls('gh').filter(c => c.args[1] === 'list').at(-1).args.slice(0, 6), ['pr', 'list', '--repo', 'github.com/example/fixture', '--head', 'lane-pr/pr-run-1']);
+  const created = f.calls('gh').filter(c => c.args[1] === 'create');
+  assert.equal(created.length, 1, '重试没有再开');
+  assert.deepEqual(created[0].args.slice(0, 9), ['pr', 'create', '--repo', 'github.com/example/fixture', '--base', 'lane/req-1', '--head', 'lane-pr/pr-run-1', '--draft'], '升级前以草稿开进泳道');
+  assert.ok(created[0].body.includes(PARENT));
+  assert.deepEqual([f.state().pr, f.state().stack.recover], [PR, true]);
+  assert.equal(f.run('review').outputs.pr, PR, '审查卡上有 PR');
+  assert.equal(f.decide('abandon'), 'abandon');
+  assert.deepEqual(f.run('abandon').outputs, { pr: PR });
+  assert.deepEqual(f.calls('gh').find(c => c.args[1] === 'close').args.slice(0, 3), ['pr', 'close', PR]);
+  assert.equal(f.remote('lane-pr/pr-run-1'), '', '分支已删');
+});
+
+test('叠放：执行期间前置关了没合并、删了分支，gate 以草稿开进泳道后直接交主 Agent；退回修改变基到泳道后检查与评审通过才转正，照常合进泳道', t => {
+  const f = fixture(t);
+  const parent = f.parent();
+  f.task('child', 'child work'); f.run('execute', { DEPENDS_ON: PARENT });
+  f.setParent({ state: 'CLOSED' });
+  f.dropParent();
+  assert.equal(f.run('gate').outputs.route, 'review');
+  const created = f.calls('gh').filter(c => c.args[1] === 'create');
+  assert.equal(created.length, 1);
+  assert.deepEqual(created[0].args.slice(0, 9), ['pr', 'create', '--repo', 'github.com/example/fixture', '--base', 'lane/req-1', '--head', 'lane-pr/pr-run-1', '--draft']);
+  assert.equal(f.state().stack.recover, true);
+  assert.equal(f.state().feedback, `前置泳道 PR ${PARENT} 已关闭、没有合并。这个泳道 PR 叠在它上面（从 ${parent.head} 开工），不能合进泳道：请选择放弃，或退回修改让执行者把自己的提交改为直接基于泳道 lane/req-1（需要的前置改动一并带上）。`);
+  assert.equal(f.run('review').outputs.pr, PR, '审查卡上有 PR');
+
+  const lane = f.remote('lane/req-1');
+  f.decide('revise', '改为直接基于泳道'); f.task('child', 'moved', undefined, { rebase: [lane, parent.head] }); f.run('revise');
+  assert.equal(f.run('gate').outputs.route, 'checks');
+  assert.deepEqual(f.calls('gh').slice(-2).map(c => c.args[1]), ['view', 'edit'], '解绑：切回泳道，仍是草稿');
+  assert.equal(f.calls('gh').filter(c => c.args[1] === 'create').length, 1);
+  landsAfterRecovery(f, lane);
+});
+
+test('叠放：草稿 PR 开在前置分支上、前置合并删分支时被 GitHub 关掉，重接后不改它，回到 gate 重新以草稿开进泳道', t => {
+  const f = fixture(t);
+  const parent = f.parent();
+  f.task('child', 'child work'); f.run('execute', { DEPENDS_ON: PARENT }); f.delivered();
+  const lane = f.squash(parent.head);
+  f.dropParent();
+  assert.equal(f.run('stack-status').outputs.route, 'restack');
+  assert.equal(f.run('restack', { OWN_STATE: 'CLOSED' }).outputs.route, 'gate');
+  assert.equal(f.state().pr, '');
+  assert.equal(f.calls('gh').filter(c => ['edit', 'ready'].includes(c.args[1])).length, 0, '关掉的 PR 不改');
+  assert.equal(f.run('gate').outputs.route, 'checks');
+  const created = f.calls('gh').filter(c => c.args[1] === 'create');
+  assert.equal(created.length, 2);
+  assert.deepEqual(created[1].args.slice(0, 9), ['pr', 'create', '--base', 'lane/req-1', '--head', 'lane-pr/pr-run-1', '--draft', '--title', '输入框可以输入'], '重新以草稿开进泳道');
+  assert.equal(f.run('gate-passed', { RUNS: '[]' }).outputs.base, lane);
+});
+
+test('叠放：草稿 PR 已随前置关闭删分支被 GitHub 关掉，「查看前置泳道 PR」在没有检出的空目录里升级前先用 --repo 找已开的、没有才重开进泳道的草稿；开 PR 的响应丢了重试不再开', t => {
+  const f = fixture(t);
+  f.parent();
+  f.task('child', 'child work'); f.run('execute', { DEPENDS_ON: PARENT }); f.delivered();
+  assert.equal(f.state().pr, PR);
+  f.setParent({ state: 'CLOSED' });
+  f.dropParent();
+  const repo = ['--repo', 'github.com/example/fixture'];
+  // 第一次开草稿的响应丢了：这一步失败、状态不动；重试先按分支找到已开的 PR，不再开。
+  f.run('stack-status', { OWN_STATE: 'CLOSED', CREATE_LOST: '1' }, 1);
+  assert.deepEqual([f.state().pr, f.state().stack.recover, f.state().stack.draft], [PR, undefined, undefined]);
+  const create = f.calls('gh').filter(c => c.args[1] === 'create').at(-1).args;
+  assert.deepEqual(create.slice(0, 9), ['pr', 'create', ...repo, '--base', 'lane/req-1', '--head', 'lane-pr/pr-run-1', '--draft'], '以草稿开进泳道，带 --repo');
+  const reopened = 'https://github.com/example/fixture/pull/8';
+  assert.equal(f.run('stack-status', { OWN_STATE: 'CLOSED', OPEN_PR: reopened }).outputs.route, 'review');
+  const calls = f.calls('gh').slice(-3).map(c => c.args);
+  assert.deepEqual(calls[1], ['pr', 'view', PR, ...repo, '--json', 'state'], '先认原 PR 的状态');
+  assert.deepEqual(calls[2].slice(0, 6), ['pr', 'list', ...repo, '--head', 'lane-pr/pr-run-1']);
+  assert.equal(f.calls('gh').filter(c => c.args[1] === 'create').length, 2, '重试没有再开');
+  assert.deepEqual([f.state().pr, f.state().stack.recover, f.state().stack.draft], [reopened, true, true]);
+  const report = f.run('review').outputs;
+  assert.deepEqual([report.pr, report.stack], [reopened, ''], '审查卡上是开着的新草稿 PR，不再提示回去等前置');
+  assert.match(report.feedback, /已关闭、没有合并/);
+});
+
+test('叠放：重接后新 head 的评审升级交主 Agent（没经过「查看前置泳道 PR」），选合进泳道时先转正再合并', t => {
+  const f = fixture(t);
+  const parent = f.parent();
+  f.task('child', 'child work'); f.run('execute', { DEPENDS_ON: PARENT }); f.delivered();
+  f.squash(parent.head);
+  assert.equal(f.run('restack').outputs.route, 'gate');
+  f.delivered(); f.run('review-round');
+  assert.equal(f.run('triage', { REVIEWS: JSON.stringify([{ state: 'lost', slot: 'reviewer', who: JSON.stringify({ agent: 'reviewer' }), head: f.state().executor.head }, { state: 'skipped' }]) }).outputs.route, 'escalate');
+  assert.equal(f.calls('gh').filter(c => c.args[1] === 'ready').length, 0, '升级时仍是草稿');
+  assert.equal(f.decide('land'), 'land');
+  assert.equal(f.run('land').outputs.route, 'landed');
+  const tail = f.calls('gh').filter(c => ['ready', 'merge'].includes(c.args[1])).map(c => c.args.slice(0, 3));
+  assert.deepEqual(tail, [['pr', 'ready', PR], ['pr', 'merge', PR]], '合并前先转正');
+  assert.equal(f.state().stack.draft, undefined);
+});
+
+test('叠放：前置在开工时的 head 之上追加提交后 squash 合进泳道（分支已删，只剩 refs/pull），取回前置最终 head 核对后照常重接', t => {
+  const f = fixture(t);
+  const parent = f.parent();
+  f.task('child', 'child work'); f.run('execute', { DEPENDS_ON: PARENT }); f.delivered();
+  // 前置退回修改，在原 head 上再推一个提交，以它 squash 合进泳道；合并后前置分支被删，只有 refs/pull/6/head 还指着它。
+  f.git('switch', '-q', '--detach', parent.head); writeFileSync(join(f.work, 'p3'), 'parent three'); f.git('add', 'p3'); f.git('commit', '-qm', 'parent p3');
+  const final = f.git('rev-parse', 'HEAD');
+  f.setParent({ headRefOid: final });
+  const lane = f.squash(final);
+  f.git('push', '-q', 'origin', `${final}:refs/pull/6/head`, ':refs/heads/lane-pr/parent-run');
+  assert.equal(f.run('stack-status').outputs.route, 'restack');
+  // 新检出的工作区（--no-local：不拷对象库，只取分支能到的提交），本来没有前置最终 head。
+  const checkout = join(f.root, 'checkout-pull'); f.git('clone', '-q', '--no-local', join(f.root, 'origin.git'), checkout);
+  assert.notEqual(spawnSync('git', ['cat-file', '-e', final], { cwd: checkout }).status, 0, '新检出的工作区里本来没有前置最终 head');
+  assert.equal(f.run('restack', {}, 0, checkout).outputs.route, 'gate');
+  assert.deepEqual(f.calls('gh').find(c => c.args.at(-1) === 'headRefOid').args, ['pr', 'view', PARENT, '--repo', 'github.com/example/fixture', '--json', 'headRefOid']);
+  const head = f.state().executor.head;
+  f.git('fetch', '-q', 'origin', 'lane-pr/pr-run-1');
+  assert.deepEqual(f.git('rev-list', '--parents', '-n', '1', head).split(' '), [head, lane], '只重接了自己的提交');
+  assert.equal(f.git('show', `${head}:p3`), 'parent three', '追加的前置提交随 squash 在泳道里');
+  assert.deepEqual([f.state().stack.restacked, f.state().stack.recover], [true, undefined]);
+});
+
+test('叠放：前置被 force-push 改写成不含开工时 head 的提交后 squash 合进泳道，不自动重接，交主 Agent 判断依赖', t => {
+  const f = fixture(t);
+  const parent = f.parent(), old = f.remote('lane/req-1');
+  f.task('child', 'child work'); f.run('execute', { DEPENDS_ON: PARENT }); f.delivered();
+  const first = f.state().executor.head;
+  // 前置换人重做：从泳道重新提交、force-push，历史里不再有开工时的 head。
+  f.git('switch', '-q', '--detach', old); writeFileSync(join(f.work, 'p1'), 'parent redo'); f.git('add', 'p1'); f.git('commit', '-qm', 'parent redo');
+  const rewritten = f.git('rev-parse', 'HEAD');
+  f.git('push', '-q', '--force', 'origin', `${rewritten}:refs/heads/lane-pr/parent-run`);
+  f.setParent({ headRefOid: rewritten });
+  f.squash(rewritten);
+  assert.equal(f.run('stack-status').outputs.route, 'restack');
+  assert.equal(f.run('restack').outputs.route, 'review');
+  assert.match(f.state().feedback, new RegExp(`合并时的 head ${rewritten} 不再以这个 PR 开工时的前置 head ${parent.head} 为祖先[\\s\\S]*核对依赖是否仍成立`));
+  assert.deepEqual([f.state().stack.restacked, f.state().stack.recover, f.state().stack.pushing], [false, true, undefined]);
+  assert.equal(f.remote('lane-pr/pr-run-1'), first, '分支不动');
+  assert.equal(f.calls('gh').filter(c => ['edit', 'ready'].includes(c.args[1])).length, 0);
+  assert.equal(f.run('review').outputs.stack, '', '已升级：审查卡不再提示回去等前置');
+  assert.equal(f.decide('land'), 'review', '没解绑前拦回审查卡，不再回去等前置');
+  assert.match(f.state().feedback, /前置已不能自动重接到泳道[\s\S]*「退回修改」[\s\S]*「换备用执行者重做」[\s\S]*「放弃」/);
+});
+
+test('叠放：等待期间前置被改为合进别的分支，开着或已合并都不重接，交主 Agent', t => {
+  const f = fixture(t);
+  const parent = f.parent();
+  f.task('child', 'child work'); f.run('execute', { DEPENDS_ON: PARENT }); f.delivered();
+  assert.equal(f.run('stack-status').outputs.route, 'wait');
+  for (const state of ['OPEN', 'MERGED']) {
+    f.setParent({ state, baseRefName: 'main' });
+    assert.equal(f.run('stack-status').outputs.route, 'review', state);
+    assert.match(f.state().feedback, /改为合进 main，不再合进泳道 lane\/req-1/);
+    assert.deepEqual([f.state().stack.recover, f.state().stack.restacked, f.state().stack.head], [true, false, parent.head]);
+  }
+  assert.equal(f.remote('lane-pr/pr-run-1'), f.state().executor.head, '没有重接');
+});
+
+test('叠放：重接后运行从头重跑接回原执行会话，也带上重接提示，交出去且成功后才清；换人新开的会话不带', t => {
+  const f = fixture(t);
+  const parent = f.parent();
+  f.task('child', 'child work'); f.run('execute', { DEPENDS_ON: PARENT }); f.delivered();
+  f.squash(parent.head);
+  assert.equal(f.run('restack').outputs.route, 'gate');
+  const note = f.state().stack.note;
+  f.task('child', 'half', undefined, { exit: 1 }); f.run('execute', {}, 1);
+  assert.deepEqual(f.calls('agent').at(-1).args.slice(0, 2), ['--continue', 'worker-1']);
+  assert.ok(f.calls('agent').at(-1).prompt.includes(note), '接回原会话带上重接提示');
+  assert.equal(f.state().stack.note, note, '没成功不清');
+  f.task('child', 'done'); f.run('execute');
+  assert.ok(f.calls('agent').at(-1).prompt.includes(note));
+  assert.equal(f.state().stack.note, undefined, '交出去且成功后才清');
+  f.task('child', 'more'); f.run('execute');
+  assert.ok(!f.calls('agent').at(-1).prompt.includes('重接到了泳道'), '只说一次');
+
+  const g = fixture(t);
+  const p2 = g.parent();
+  g.task('child', 'child work'); g.run('execute', { DEPENDS_ON: PARENT }); g.delivered();
+  g.squash(p2.head); g.run('restack');
+  assert.equal(g.decide('swap', '换人', 'true'), 'swap');
+  g.task('redo', 'redo'); g.run('swap', { EXECUTOR: JSON.stringify({ agent: 'backup' }) });
+  assert.ok(!g.calls('agent').at(-1).prompt.includes('重接到了泳道'), '换人新开的会话不带');
+  assert.equal(g.state().stack.note, undefined, '新会话不在重接前的分支上，提示作废');
+});
+
+test('叠放：前置关了没合并交主 Agent，重接前选合进泳道被拦下；退回修改变基到泳道后 PR 已被关掉就重新开进泳道，照常合进泳道', t => {
+  const f = fixture(t);
+  const parent = f.parent();
+  f.task('child', 'child work'); f.run('execute', { DEPENDS_ON: PARENT }); f.delivered();
+  assert.equal(f.decide('land'), 'stack');
+  assert.match(f.state().feedback, /前置还没合进泳道、没有重接，现在不能合进泳道/);
+  assert.equal(f.calls('gh').filter(c => c.args[1] === 'merge').length, 0);
+  f.setParent({ state: 'CLOSED' });
+  assert.equal(f.run('stack-status').outputs.route, 'review');
+  assert.match(f.run('review').outputs.feedback, /已关闭、没有合并/);
+  assert.equal(f.state().stack.recover, true);
+  assert.equal(f.decide('land'), 'review', '没解绑前拦回审查卡');
+
+  const lane = f.remote('lane/req-1');
+  f.decide('revise', '改为直接基于泳道'); f.task('child', 'moved', undefined, { rebase: [lane, parent.head] }); f.run('revise');
+  f.run('gate', { OWN_STATE: 'CLOSED' });
+  const created = f.calls('gh').filter(c => c.args[1] === 'create');
+  assert.equal(created.length, 2);
+  assert.deepEqual(created[1].args.slice(0, 9), ['pr', 'create', '--base', 'lane/req-1', '--head', 'lane-pr/pr-run-1', '--draft', '--title', '输入框可以输入'], '重新以草稿开进泳道');
+  assert.equal(f.calls('gh').filter(c => c.args[1] === 'edit').length, 0);
+  landsAfterRecovery(f, lane);
+});
+
+test('叠放：执行者改写了祖先时不自动重接、交主 Agent；没变基到最新泳道仍拦住，退回修改变基到泳道后切回泳道，照常合进泳道', t => {
+  const f = fixture(t);
+  const parent = f.parent(), old = f.remote('lane/req-1');
+  f.task('child', 'child work'); f.run('execute', { DEPENDS_ON: PARENT }); f.delivered();
+  // 执行者自己把提交挪到了泳道上（前置的 head 不再是祖先）：前置合进泳道后不自动重接。
+  f.decide('revise', '改'); f.task('child', 'moved', undefined, { rebase: [old, parent.head] }); f.run('revise'); f.delivered();
+  const lane = f.squash(parent.head);
+  assert.equal(f.run('stack-status').outputs.route, 'restack');
+  assert.equal(f.run('restack').outputs.route, 'review');
+  assert.match(f.state().feedback, /不再以前置的 head .* 为祖先/);
+  assert.deepEqual([f.state().stack.restacked, f.state().stack.recover], [false, true]);
+
+  // 还在旧泳道上：不解绑，评审仍对前置的 head，合进泳道仍拦住。
+  f.decide('revise', '再改'); f.task('child', 'again'); f.run('revise');
+  f.run('gate');
+  assert.deepEqual([f.state().stack.restacked, f.state().stack.recover, f.state().base], [false, true, parent.head]);
+  assert.equal(f.decide('land'), 'review');
+
+  f.decide('revise', '变基到泳道最新 head'); f.task('child', 'rebased', undefined, { rebase: [lane, old] }); f.run('revise');
+  f.run('gate');
+  assert.deepEqual(f.calls('gh').slice(-2).map(c => c.args[1]), ['view', 'edit']);
+  landsAfterRecovery(f, lane);
+});
+
+test('叠放：升级后换备用执行者从泳道开工，推送时解绑叠放', t => {
+  const f = fixture(t);
+  const parent = f.parent();
+  f.task('child', 'child work'); f.run('execute', { DEPENDS_ON: PARENT }); f.delivered();
+  f.setParent({ state: 'CLOSED' });
+  assert.equal(f.run('stack-status').outputs.route, 'review');
+  const lane = f.remote('lane/req-1');
+  assert.equal(f.decide('swap', '前置关了，从泳道重做', 'true'), 'swap');
+  f.task('child', 'redo'); f.run('swap', { EXECUTOR: JSON.stringify({ agent: 'backup' }) });
+  assert.deepEqual(f.calls('agent').at(-1).args.slice(0, 2), ['--commit', lane], '不从已失效的前置 head 开工');
+  assert.ok(!ancestorOf(f, parent.head, f.state().executor.head));
+  f.run('gate');
+  assert.equal(f.state().stack.restacked, true);
+  assert.equal(f.state().base, lane);
+});
+
+test('叠放开工的校验：sync 不能叠放，地址不合法、不在当前仓库、前置关了、多级叠放、叠在自己上都拒绝；前置已合进泳道就不叠放', t => {
+  const f = fixture(t, { sync: true });
+  f.parent();
+  f.task('child', 'work');
+  assert.match(f.run('execute', { DEPENDS_ON: PARENT }, 2).stderr, /sync/);
+  const g = fixture(t);
+  g.parent(); g.task('child', 'work');
+  for (const [fields, text] of [[{ state: 'CLOSED' }, /已关闭、没有合并/], [{ baseRefName: 'lane-pr/grand-run' }, /单前置线性叠放，不支持多级/],
+    [{ baseRefName: 'lane/other' }, /不是泳道 lane\/req-1/], [{ headRefName: 'lane-pr/pr-run-1' }, /不能叠在自己上/]]) {
+    const saved = readFileSync(join(g.root, 'parent'), 'utf8');
+    g.setParent(fields);
+    assert.match(g.run('execute', { DEPENDS_ON: PARENT }, 2).stderr, text);
+    writeFileSync(join(g.root, 'parent'), saved);
+  }
+  for (const url of ['example/fixture#6', 'https://github.com/example/fixture/issues/6', `${PARENT}/files`]) {
+    assert.match(g.run('execute', { DEPENDS_ON: url }, 2).stderr, /不是 PR 的完整地址/, url);
+  }
+  // 别的仓库（含 fork）的 PR：开着且分支、提交都一样，或已合进同名泳道，都不放行。
+  const other = 'https://github.com/someone/fixture/pull/6';
+  for (const state of ['OPEN', 'MERGED']) {
+    const saved = readFileSync(join(g.root, 'parent'), 'utf8');
+    g.setParent({ state, url: other });
+    assert.match(g.run('execute', { DEPENDS_ON: other }, 2).stderr, /不在当前仓库 github\.com\/example\/fixture/, state);
+    assert.match(g.run('execute', { DEPENDS_ON: PARENT }, 2).stderr, /不在当前仓库/, `${state}：gh 给的 PR 地址也要在当前仓库`);
+    writeFileSync(join(g.root, 'parent'), saved);
+  }
+  assert.equal(g.calls('gh').filter(c => c.args[2] === other).length, 0, '地址不在当前仓库，不再查 PR');
+  assert.equal(g.calls('agent').length, 0, '都没开工');
+  g.setParent({ state: 'MERGED' });
+  g.run('execute', { DEPENDS_ON: PARENT.replace('example/fixture', 'Example/Fixture') });
+  assert.deepEqual(g.calls('agent')[0].args.slice(0, 2), ['--commit', g.remote('lane/req-1')], '前置已合进泳道，照常从泳道开工');
+  assert.equal(g.state().stack, undefined);
+});
+
+test('叠放与免审的流程定义：分流升级直接交主 Agent；通过后先看前置，等一分钟再看；重接回到推送；免审只在开了开关、填了评审者时判定', async () => {
+  const { nodes, route, next, params, values } = await definition();
+  for (const [value, target] of [['wait', 'stack-wait'], ['restack', 'restack'], ['review', 'rounds'], ['ready', 'minor-choice']]) assert.equal(route('stack-route', { 'stack-status': { route: value } }), target, value);
+  assert.equal(nodes['stack-wait'].$type, 'bpmn:IntermediateCatchEvent');
+  assert.equal(nodes['stack-wait'].eventDefinitions[0].timeDuration.body, 'PT1M');
+  assert.equal(next('stack-wait'), 'stack-status');
+  assert.equal(nodes['stack-status'].checkout, 'false', '只用 gh，不检出');
+  for (const [value, target] of [['gate', 'gate'], ['revise', 'restack-revise'], ['review', 'rounds']]) assert.equal(route('restack-route', { restack: { route: value } }), target, value);
+  assert.equal(next('restack-revise'), 'restack');
+  const reviewer = { agent: 'a1' };
+  for (const [inputs, target] of [[{ autoLandMinor: true, sync: false, reviewer }, 'minor'], [{ autoLandMinor: false, sync: false, reviewer }, 'rounds'],
+    [{ autoLandMinor: true, sync: true, reviewer }, 'rounds'], [{ autoLandMinor: true, sync: false }, 'rounds']]) {
+    assert.equal(route('minor-choice', { inputs: { reviewer: null, reviewer2: null, ...inputs } }), target, JSON.stringify(inputs));
+  }
+  assert.deepEqual(params('minor'), { REVIEWS: '=reviews', AUTO: '=inputs.autoLandMinor', route: undefined });
+  for (const [value, target] of [['land', 'land'], ['review', 'rounds']]) assert.equal(route('minor-route', { minor: { route: value } }), target);
+  assert.deepEqual(values(nodes.land).map(v => v.name), ['route', 'pr', 'commit', 'auto', 'summary']);
+  // 审查卡的叠放提示按「整理审查材料」的 stack：没叠放、已重接（空）和旧版脚本没有这个输出（null）都不提示。
+  assert.deepEqual(values(nodes.report).filter(v => v.$type === 'coda:Output').map(v => v.name).at(-1), 'stack');
+  const card = nodes.review.documentation[0].text, expression = [...card.matchAll(/{{(.*?)}}/g)].find(m => m[1].includes('report.stack'))[1];
+  assert.ok(!card.includes('inputs.dependsOn'), '不按开工输入判断');
+  for (const report of [{}, { stack: '' }]) assert.equal(evaluate(expression, { report }).value, '', JSON.stringify(report));
+  assert.match(evaluate(expression, { report: { stack: PARENT } }).value, /叠在前置泳道 PR .*pull\/6.*不会合并/);
+});
+
+// 免审：交付 files 后走到判定；reviews 缺省是一位评审者 APPROVE、没有发现。
+function minorAfter(t, files, { seed, reviews, auto = 'true' } = {}) {
+  const f = fixture(t);
+  if (seed) for (const [file, text] of Object.entries(seed)) f.advanceLane(file, text);
+  writeFileSync(join(f.root, 'agent-task'), JSON.stringify({ files, answer: 'minor change' }));
+  f.run('execute'); f.delivered(); f.run('review-round');
+  const head = f.state().executor.head, given = JSON.stringify(reviews?.(head) ?? [approved(head), { state: 'skipped' }]);
+  f.run('triage', { REVIEWS: given });
+  assert.equal(f.run('stack-status').outputs.route, 'ready');
+  return { f, route: f.run('minor', { REVIEWS: given, AUTO: auto }).outputs.route };
+}
+
+test('小改动免主控审查：只加带断言的测试、评审全 APPROVE 时直接合进泳道，步骤摘要与结束输出带完整审计', t => {
+  const { f, route } = minorAfter(t, { 'test/plugins/x/new.test.mjs': "test('x', () => { assert.equal(1, 1); });\n" });
+  assert.equal(route, 'land');
+  const landed = f.run('land').outputs;
+  assert.deepEqual({ ...landed, summary: undefined }, { route: 'landed', pr: PR, commit: 'f'.repeat(40), auto: 'true', summary: undefined });
+  for (const text of ['小改动免主控审查，已自动合进泳道', 'autoLandMinor', `PR：${PR}`, `合入提交：${'f'.repeat(40)}`, '- A test/plugins/x/new.test.mjs',
+    '项目检查：\n此提交未声明项目检查流程。', '- 评审者（reviewer）：APPROVE 可以合']) assert.ok(landed.summary.includes(text), text);
+  assert.ok(readFileSync(f.env.GITHUB_STEP_SUMMARY, 'utf8').includes(landed.summary));
+  // 出过审查卡（rounds）之后再合进泳道就不是免审。
+  f.run('rounds');
+  assert.equal(f.run('land', { PR_STATE: 'MERGED' }).outputs.auto, undefined);
+});
+
+test('小改动免主控审查：只改仓库根 README 也免审；插件 README 记载流程契约，不免审', t => {
+  assert.equal(minorAfter(t, { 'README.md': '说明\n' }).route, 'land');
+  assert.equal(minorAfter(t, { 'plugins/composer/README.md': '说明\n' }).route, 'review');
+});
+
+test('小改动免主控审查：删测试文件、新增 skip、只删断言、改了源码都回到审查卡，并在步骤摘要写明原因', t => {
+  const seed = { 'test/a.test.mjs': "test('a', () => {\n  assert.equal(1, 1);\n});\n" };
+  for (const [files, text] of [[{ 'test/a.test.mjs': null }, /删了测试文件 test\/a\.test\.mjs/],
+    [{ 'test/b.test.mjs': "test.skip('b', () => { assert.ok(1); });\n" }, /test\/b\.test\.mjs 新增了 skip、todo 或 only/],
+    [{ 'test/a.test.mjs': "test('a', () => {\n  console.log(1);\n});\n" }, /test\/a\.test\.mjs 删了断言、没有新增断言/],
+    [{ 'test/c.test.mjs': "assert.ok(1);\n", 'plugins/composer/scripts/x.mjs': 'x\n' }, /改了测试与说明文档以外的文件：plugins\/composer\/scripts\/x\.mjs/]]) {
+    const { f, route } = minorAfter(t, files, { seed });
+    assert.equal(route, 'review', String(text));
+    assert.match(readFileSync(f.env.GITHUB_STEP_SUMMARY, 'utf8'), text);
+    assert.equal(f.state().auto, undefined);
+  }
+});
+
+test('小改动免主控审查：重命名测试文件并删掉唯一的断言，按重命名比对、不免审', t => {
+  const { f, route } = minorAfter(t, { 'test/a.test.mjs': null, 'test/b.test.mjs': "test('a', () => {\n  console.log(1);\n  const x = 1;\n  const y = 2;\n});\n" },
+    { seed: { 'test/a.test.mjs': "test('a', () => {\n  assert.equal(1, 1);\n  const x = 1;\n  const y = 2;\n});\n" } });
+  assert.match(f.git('diff', '--name-status', '-M', `${f.state().base}...${f.state().executor.head}`), /^R\d+\ttest\/a\.test\.mjs\ttest\/b\.test\.mjs$/, '确实是重命名');
+  assert.equal(route, 'review');
+  assert.match(readFileSync(f.env.GITHUB_STEP_SUMMARY, 'utf8'), /test\/b\.test\.mjs 删了断言、没有新增断言/);
+});
+
+test('小改动免主控审查：评审没评成或有发现、没有评审者、没开开关都回到审查卡', t => {
+  for (const [reviews, auto, text] of [
+    [head => [reviewed('reviewer', head, [], { decision: 'INCOMPLETE', line: '超时' })], 'true', /评审者的结论是 INCOMPLETE/],
+    [head => [approved(head), reviewed('reviewer2', head, [{ ...BUG, severity: 'P3', kind: 'style' }], { decision: 'COMMENT' })], 'true', /第二评审者的结论是 COMMENT/],
+    [() => [{ state: 'skipped' }, { state: 'skipped' }], 'true', /没有评审者/],
+    [undefined, 'false', /没开小改动免主控审查/]]) {
+    const { f, route } = minorAfter(t, { 'test/a.test.mjs': 'assert.ok(1);\n' }, { reviews, auto });
+    assert.equal(route, 'review', String(text));
+    assert.match(readFileSync(f.env.GITHUB_STEP_SUMMARY, 'utf8'), text);
+  }
 });

@@ -2,6 +2,7 @@
 <!-- 泳道 PR（README.md「泳道 PR」）：需求运行（develop）的主 Agent 用 workflow_run 发起，一项改动一个。执行者从泳道 head 开工，
      交付推到 lane-pr/<运行 ID>、开进泳道的 PR，项目检查、评审后由主 Agent 审查，合进泳道后把结果交回发起的会话。
      评审有阻塞级发现时先交执行者逐条修复或反驳、原评审者增量复评，收敛了或判断不了才给主 Agent（README.md「评审回路」）。
+     可叠在同一泳道的一个前置泳道 PR 上（dependsOn），前置合进泳道后自动重接；开了 autoLandMinor 时，只动测试与说明文档、检查与评审全过的小改动不出审查卡直接合进泳道。
      不出用户卡、不装机、不部署、不跑合并前检查。BPMN 2.0，由 Coda 执行（docs/workflows.md）。 -->
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="lane-pr-definitions" targetNamespace="https://coda.pub/plugins/composer">
@@ -11,10 +12,12 @@
       <coda:input name="title" label="标题" type="string" required="true" description="也是泳道 PR 的标题" />
       <coda:input name="task" label="任务" type="string" required="true" description="自足的任务书：背景、范围与验收要求" />
       <coda:input name="sync" label="跟上目标分支" type="boolean" default="false" description="把目标分支合进泳道的泳道 PR：合进泳道时快进，不 squash" />
+      <coda:input name="dependsOn" label="前置泳道 PR" type="string" default="" description="同仓库、同一条泳道的前置泳道 PR 完整地址；只支持单前置线性叠放。从它的 head 开工、开草稿 PR 进它的分支，它合进泳道后自动重接到泳道" />
       <coda:input name="executor" label="执行者" type="agent" required="true" description="必填，做这一项的 Agent；通常是所属监督开发的开工执行者" />
       <coda:input name="executor2" label="备用执行者" type="agent" description="主 Agent 在审查卡上选「换备用执行者重做」时接手；不填不能换" />
       <coda:input name="reviewer" label="评审者" type="agent" description="项目检查通过后评每一次交付；不填不评" />
       <coda:input name="reviewer2" label="第二评审者" type="agent" description="与评审者同时评每一次交付；不填不评" />
+      <coda:input name="autoLandMinor" label="小改动免主控审查" type="boolean" default="false" description="只动测试与说明文档、项目检查通过、评审者全部 APPROVE 且没有发现时不出审查卡，直接合进泳道；没填评审者时照常出审查卡" />
     </extensionElements>
     <startEvent id="start" />
     <sequenceFlow id="start-execute" sourceRef="start" targetRef="execute" />
@@ -24,16 +27,22 @@
         <coda:env name="TITLE" value="=inputs.title" />
         <coda:env name="TASK" value="=inputs.task" />
         <coda:env name="SYNC" value="=inputs.sync" />
+        <coda:env name="DEPENDS_ON" value="=inputs.dependsOn" />
         <coda:env name="EXECUTOR" value="=inputs.executor" />
       </extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/lane-pr.mjs" execute</script>
     </scriptTask>
     <sequenceFlow id="execute-report" sourceRef="execute" targetRef="gate" />
     <scriptTask id="gate" name="推送并开 PR" scriptFormat="bash" coda:timeout="5" coda:retry="3">
-      <extensionElements><coda:output name="head" /></extensionElements>
+      <extensionElements><coda:output name="head" /><coda:output name="route" /></extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/lane-pr.mjs" gate</script>
     </scriptTask>
-    <sequenceFlow id="gate-checks" sourceRef="gate" targetRef="checks" />
+    <!-- 还叠放、还没开 PR 时 gate 先看前置：执行期间已合进泳道（分支已删）先重接，再回到 gate 开进泳道；关了没合并或改为合进别处，草稿开进泳道后交主 Agent。 -->
+    <sequenceFlow id="gate-how" sourceRef="gate" targetRef="gate-next" />
+    <exclusiveGateway id="gate-next" name="前置是否还能叠放" default="gate-checks" />
+    <sequenceFlow id="gate-checks" sourceRef="gate-next" targetRef="checks" />
+    <sequenceFlow id="gate-restack" sourceRef="gate-next" targetRef="restack"><conditionExpression xsi:type="tFormalExpression">=gate.route = "restack"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="gate-review" sourceRef="gate-next" targetRef="rounds"><conditionExpression xsi:type="tFormalExpression">=gate.route = "review"</conditionExpression></sequenceFlow>
     <serviceTask id="checks" name="项目检查" coda:action="run-workflows">
       <extensionElements><coda:param name="hook" value="check" /><coda:param name="commit" value="=gate.head" /></extensionElements>
     </serviceTask>
@@ -66,7 +75,7 @@
          不算这一步失败；出错边界只接调用本身没成，记下来照常结束。各份都结束才往下走，交「分流评审意见」。 -->
     <exclusiveGateway id="reviews-choice" name="是否有人评审" default="reviews-skip" />
     <sequenceFlow id="reviews-needed" sourceRef="reviews-choice" targetRef="reviews"><conditionExpression xsi:type="tFormalExpression">=inputs.reviewer != null or inputs.reviewer2 != null</conditionExpression></sequenceFlow>
-    <sequenceFlow id="reviews-skip" sourceRef="reviews-choice" targetRef="rounds" />
+    <sequenceFlow id="reviews-skip" sourceRef="reviews-choice" targetRef="stack-status" />
     <subProcess id="reviews" name="评审" coda:optional="true">
       <multiInstanceLoopCharacteristics coda:inputCollection='=[{slot: "reviewer", who: inputs.reviewer, previous: review-round.previous}, {slot: "reviewer2", who: inputs.reviewer2, previous: review-round.previous2}]' coda:inputElement="slot" />
       <startEvent id="reviews-start" />
@@ -105,9 +114,52 @@
       <script>node "${CODA_PLUGIN_PATH}/scripts/lane-pr.mjs" triage</script>
     </scriptTask>
     <sequenceFlow id="triage-how" sourceRef="triage" targetRef="triage-route" />
-    <exclusiveGateway id="triage-route" name="交执行者还是主 Agent" default="triage-review" />
+    <exclusiveGateway id="triage-route" name="交执行者还是主 Agent" default="triage-pass" />
     <sequenceFlow id="triage-fix" sourceRef="triage-route" targetRef="address"><conditionExpression xsi:type="tFormalExpression">=triage.route = "fix"</conditionExpression></sequenceFlow>
-    <sequenceFlow id="triage-review" sourceRef="triage-route" targetRef="rounds" />
+    <sequenceFlow id="triage-review" sourceRef="triage-route" targetRef="rounds"><conditionExpression xsi:type="tFormalExpression">=triage.route = "escalate"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="triage-pass" sourceRef="triage-route" targetRef="stack-status" />
+    <!-- 叠放（README.md「叠放」）：评审通过（或没有评审者）之后，叠放还没重接就看前置泳道 PR：还开着每分钟再看一次，关了没合并交主 Agent，
+         合进泳道了就重接（rebase --onto 只重放自己的提交），再回到推送、项目检查并以泳道为 base 完整评审。只用 gh，不检出、不占名额。 -->
+    <scriptTask id="stack-status" name="查看前置泳道 PR" scriptFormat="bash" coda:checkout="false" coda:timeout="5" coda:retry="3">
+      <extensionElements><coda:output name="route" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/lane-pr.mjs" stack-status</script>
+    </scriptTask>
+    <sequenceFlow id="stack-status-how" sourceRef="stack-status" targetRef="stack-route" />
+    <exclusiveGateway id="stack-route" name="前置是否已合进泳道" default="stack-ready" />
+    <sequenceFlow id="stack-wait-needed" sourceRef="stack-route" targetRef="stack-wait"><conditionExpression xsi:type="tFormalExpression">=stack-status.route = "wait"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="stack-restack" sourceRef="stack-route" targetRef="restack"><conditionExpression xsi:type="tFormalExpression">=stack-status.route = "restack"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="stack-review" sourceRef="stack-route" targetRef="rounds"><conditionExpression xsi:type="tFormalExpression">=stack-status.route = "review"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="stack-ready" sourceRef="stack-route" targetRef="minor-choice" />
+    <intermediateCatchEvent id="stack-wait" name="等前置泳道 PR 合进泳道">
+      <timerEventDefinition><timeDuration xsi:type="tFormalExpression">PT1M</timeDuration></timerEventDefinition>
+    </intermediateCatchEvent>
+    <sequenceFlow id="stack-wait-again" sourceRef="stack-wait" targetRef="stack-status" />
+    <scriptTask id="restack" name="重接到泳道" scriptFormat="bash" coda:timeout="10" coda:retry="3">
+      <extensionElements><coda:output name="route" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/lane-pr.mjs" restack</script>
+    </scriptTask>
+    <sequenceFlow id="restack-how" sourceRef="restack" targetRef="restack-route" />
+    <exclusiveGateway id="restack-route" name="重接是否干净" default="restack-gate" />
+    <sequenceFlow id="restack-conflict" sourceRef="restack-route" targetRef="restack-revise"><conditionExpression xsi:type="tFormalExpression">=restack.route = "revise"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="restack-review" sourceRef="restack-route" targetRef="rounds"><conditionExpression xsi:type="tFormalExpression">=restack.route = "review"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="restack-gate" sourceRef="restack-route" targetRef="gate" />
+    <!-- 重接冲突：同一执行会话自己变基重接、解冲突，回到「重接到泳道」核对后收尾。 -->
+    <scriptTask id="restack-revise" name="执行者重接解冲突" scriptFormat="bash">
+      <script>node "${CODA_PLUGIN_PATH}/scripts/lane-pr.mjs" revise</script>
+    </scriptTask>
+    <sequenceFlow id="restack-revised" sourceRef="restack-revise" targetRef="restack" />
+    <!-- 小改动免主控审查（README.md「小改动免主控审查」）：开了 autoLandMinor、填了评审者时判定，条件全满足才直接合进泳道，否则照常出审查卡。 -->
+    <exclusiveGateway id="minor-choice" name="是否判定免审" default="minor-skip" />
+    <sequenceFlow id="minor-needed" sourceRef="minor-choice" targetRef="minor"><conditionExpression xsi:type="tFormalExpression">=inputs.autoLandMinor = true and inputs.sync = false and (inputs.reviewer != null or inputs.reviewer2 != null)</conditionExpression></sequenceFlow>
+    <sequenceFlow id="minor-skip" sourceRef="minor-choice" targetRef="rounds" />
+    <scriptTask id="minor" name="判定小改动免审" scriptFormat="bash" coda:timeout="5">
+      <extensionElements><coda:env name="REVIEWS" value="=reviews" /><coda:env name="AUTO" value="=inputs.autoLandMinor" /><coda:output name="route" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/lane-pr.mjs" minor</script>
+    </scriptTask>
+    <sequenceFlow id="minor-how" sourceRef="minor" targetRef="minor-route" />
+    <exclusiveGateway id="minor-route" name="是否免审" default="minor-review" />
+    <sequenceFlow id="minor-land" sourceRef="minor-route" targetRef="land"><conditionExpression xsi:type="tFormalExpression">=minor.route = "land"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="minor-review" sourceRef="minor-route" targetRef="rounds" />
     <!-- 同一执行会话逐条处理：有新提交就推送、检查后复评；只反驳、没有新提交就不重跑检查，直接复评；都没有就交主 Agent。 -->
     <scriptTask id="address" name="执行者处理评审意见" scriptFormat="bash">
       <extensionElements><coda:output name="route" /></extensionElements>
@@ -127,7 +179,7 @@
       <extensionElements>
         <coda:env name="REVIEWS" value="=reviews" />
         <coda:output name="session" /><coda:output name="branch" /><coda:output name="head" /><coda:output name="pr" />
-        <coda:output name="checks" /><coda:output name="answer" /><coda:output name="lane" /><coda:output name="feedback" /><coda:output name="reviews" /><coda:output name="returns" />
+        <coda:output name="checks" /><coda:output name="answer" /><coda:output name="lane" /><coda:output name="feedback" /><coda:output name="reviews" /><coda:output name="returns" /><coda:output name="stack" />
       </extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/lane-pr.mjs" review</script>
     </scriptTask>
@@ -140,7 +192,7 @@
 head：{{report.head}}
 泳道：{{report.lane}}
 在仓库中看改动：git fetch origin {{report.lane}}，再 git diff FETCH_HEAD...{{report.head}}
-这一项已退回 {{report.returns}} 次（只数你选的「退回修改」）。
+{{if report.stack = null or report.stack = "" then "" else "叠放：这一项叠在前置泳道 PR " + report.stack + " 上，还没重接到泳道。前置合进泳道、流程重接之前，上面的 diff 带着前置的改动，只看这一项的增量要对照前置分支；这时选「合进泳道」不会合并，流程回去等前置合进泳道、重接后重新检查与评审，再回到这张卡。\n"}}这一项已退回 {{report.returns}} 次（只数你选的「退回修改」）。
 备用执行者：{{if inputs.executor2 = null then "未指定，不能换人" else string join([inputs.executor2.agent, inputs.executor2.model, inputs.executor2.effort][item != null], " · ")}}
 
 项目检查结果：
@@ -181,6 +233,7 @@ head：{{report.head}}
     <sequenceFlow id="how-revise" sourceRef="how" targetRef="revise"><conditionExpression xsi:type="tFormalExpression">=decide.route = "revise"</conditionExpression></sequenceFlow>
     <sequenceFlow id="how-swap" sourceRef="how" targetRef="swap"><conditionExpression xsi:type="tFormalExpression">=decide.route = "swap"</conditionExpression></sequenceFlow>
     <sequenceFlow id="how-abandon" sourceRef="how" targetRef="abandon"><conditionExpression xsi:type="tFormalExpression">=decide.route = "abandon"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="how-stack" sourceRef="how" targetRef="stack-status"><conditionExpression xsi:type="tFormalExpression">=decide.route = "stack"</conditionExpression></sequenceFlow>
     <sequenceFlow id="how-land" sourceRef="how" targetRef="land" />
     <scriptTask id="revise" name="同一执行会话修改" scriptFormat="bash">
       <script>node "${CODA_PLUGIN_PATH}/scripts/lane-pr.mjs" revise</script>
@@ -193,7 +246,7 @@ head：{{report.head}}
     </scriptTask>
     <sequenceFlow id="swap-report" sourceRef="swap" targetRef="gate" />
     <scriptTask id="land" name="试合并并合进泳道" scriptFormat="bash" coda:timeout="10" coda:retry="3">
-      <extensionElements><coda:output name="route" /><coda:output name="pr" /><coda:output name="commit" /></extensionElements>
+      <extensionElements><coda:output name="route" /><coda:output name="pr" /><coda:output name="commit" /><coda:output name="auto" /><coda:output name="summary" /></extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/lane-pr.mjs" land</script>
     </scriptTask>
     <sequenceFlow id="land-route" sourceRef="land" targetRef="after-land" />
@@ -201,7 +254,10 @@ head：{{report.head}}
     <sequenceFlow id="land-sync" sourceRef="after-land" targetRef="revise"><conditionExpression xsi:type="tFormalExpression">=land.route = "sync"</conditionExpression></sequenceFlow>
     <sequenceFlow id="land-done" sourceRef="after-land" targetRef="landed" />
     <endEvent id="landed" name="已合进泳道" coda:notify="true">
-      <extensionElements><coda:output name="pr" value="=land.pr" /><coda:output name="commit" value="=land.commit" /></extensionElements>
+      <extensionElements>
+        <coda:output name="pr" value="=land.pr" /><coda:output name="commit" value="=land.commit" />
+        <coda:output name="autoLanded" value="=land.auto = true" /><coda:output name="summary" value="=land.summary" />
+      </extensionElements>
     </endEvent>
     <scriptTask id="abandon" name="关闭 PR" scriptFormat="bash" coda:checkout="false" coda:timeout="5" coda:retry="3">
       <extensionElements><coda:output name="pr" /></extensionElements>

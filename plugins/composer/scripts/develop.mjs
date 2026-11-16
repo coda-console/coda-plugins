@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { waitForGitHubChecks } from './github-checks.mjs';
-import { agentArgs, checksText, command, gh, git, instructions, mergedCommit, mergePr, openPr, output, outputFilled, outputPicked, reviewsText } from './shared.mjs';
+import { agentArgs, checksText, fail, gh, git, mergedCommit, mergePr, openPr, output, outputFilled, outputPicked, resumeText, reviewsText, talk } from './shared.mjs';
 import { findingLine, fixText, historyText, previousFor, readResponses, triageOverall } from './triage.mjs';
 
 const env = process.env, action = process.argv[2];
@@ -237,16 +237,33 @@ switch (action) {
     break;
   }
   // 冲突交开工执行者：从同步时固定的泳道 head 开会话合并、解冲突、提交；它的 head 同时包含两端才普通推送到泳道。
+  // 上次失败留下了会话就接回它、先核对现场；接不回（回复里没有会话 ID）才从泳道 head 新开一次。
   case 'sync-resolve': {
-    const { base, lane } = state.sync, prompt = join(env.RUNNER_TEMP, 'task.md');
-    writeFileSync(prompt, `${instructions}\n\n${mergeText(state.sync)}\n`);
-    const executor = JSON.parse(command('coda-agent', ['--commit', lane, '--title', `${state.title}：跟上 ${state.base}`, ...agentArgs(JSON.parse(env.EXECUTOR)), '--json', '--prompt-file', prompt]));
+    const { base, lane } = state.sync, task = mergeText(state.sync);
+    const fresh = () => talk(['--commit', lane, '--title', `${state.title}：跟上 ${state.base}`, ...agentArgs(JSON.parse(env.EXECUTOR))], task);
+    let attempt = state.sync.session ? talk(['--continue', state.sync.session], `${resumeText}\n\n原任务：\n${task}`) : fresh();
+    if (!attempt.reply?.session && state.sync.session) {
+      console.error(`接回会话 ${state.sync.session} 失败（没有会话 ID），改为从泳道 ${lane} 新开会话。`);
+      delete state.sync.session;
+      save();
+      attempt = fresh();
+    }
+    if (attempt.failed) {
+      if (attempt.reply?.session) { state.sync.session = attempt.reply.session; save(); }
+      fail(attempt);
+    }
+    const executor = attempt.reply;
+    // 先落盘会话：随后推送泳道因网络失败退出时，再跑接回这个会话，不另开；推送成功后清掉。
+    state.sync.session = executor.session;
+    save();
     let route = 'pr';
     if (!ancestor(base, executor.head) || !ancestor(lane, executor.head)) {
       back(`跟上目标分支：执行者没有把 ${state.base} ${base} 合并进泳道 ${lane}（执行会话 ${executor.session}，head ${executor.head}）。执行者的回答：\n${executor.answer}\n请发起 sync=true 的泳道 PR 处理冲突，合进泳道后再提交验收。`);
       route = 'progress';
-    } else if (pushLane(executor.head, lane)) pushed(lane, executor.head, `跟上 ${state.base}，执行者解冲突`);
-    else route = 'progress';
+    } else if (pushLane(executor.head, lane)) {
+      pushed(lane, executor.head, `跟上 ${state.base}，执行者解冲突`);
+      delete state.sync.session;
+    } else route = 'progress';
     save();
     output('route', route);
     break;
@@ -262,6 +279,7 @@ switch (action) {
     break;
   }
   // 分流（triage.mjs 的 triageOverall）：accept 直接进验收，没修的 P3 写进汇报（更新 PR 描述，批准卡用输出的 summary）；fix 交执行者；escalate 交主 Agent 的「整体评审结论」。
+  // auto 是自动合并的唯一判定：开了 autoMerge、accept 且没有任何没关的发现（含 P3）；带 P3 的 accept 照常出批准卡。
   case 'overall-triage': {
     const c = state.converge, head = state.head;
     if (c.full) c.rounds = 0;
@@ -278,18 +296,35 @@ switch (action) {
     save();
     output('route', result.route);
     output('summary', summary);
+    output('auto', String(env.AUTO === 'true' && result.route === 'accept' && !minor.length));
     break;
   }
   // 没关的 P2 交开工执行者在泳道上逐条修复或反驳：第一轮从泳道 head 开会话，之后续同一会话；它只提交，这里普通推送到泳道。
+  // fixing 标记这一轮已开工、还没成功结束：再跑就是续这一轮，接回会话先核对现场。第一轮接不回会话（回复里没有会话 ID）从泳道 head 新开一次；
+  // 之后几轮的会话里有前几轮的上下文，接不回按失败退出。
   // 有新提交回到开 PR（汇总列出这些提交）、重跑全部检查后增量复评（pr）；只反驳、没有新提交就不重跑检查，直接复评（again）；
   // 都没有交主 Agent（review）；推送被拒带着原因回到进行中（progress）。
   case 'overall-fix': {
     const c = state.converge, from = state.head, open = c.findings.filter(f => f.status === 'open' && f.severity === 'P2');
-    const prompt = join(env.RUNNER_TEMP, 'task.md');
-    writeFileSync(prompt, `${instructions}\n\n${fixText(from, open)}\n`);
-    const args = c.session ? ['--continue', c.session] : ['--commit', from, '--title', `${state.title}：整体评审修复`, ...agentArgs(JSON.parse(env.EXECUTOR))];
-    const executor = JSON.parse(command('coda-agent', [...args, '--json', '--prompt-file', prompt]));
+    const task = fixText(from, open), resumed = c.fixing;
+    const fresh = () => talk(['--commit', from, '--title', `${state.title}：整体评审修复`, ...agentArgs(JSON.parse(env.EXECUTOR))], task);
+    c.fixing = true;
+    save();
+    let attempt = c.session ? talk(['--continue', c.session], resumed ? `${resumeText}\n\n原任务：\n${task}` : task) : fresh();
+    if (!attempt.reply?.session && c.session && c.rounds === 0) {
+      console.error(`接回会话 ${c.session} 失败（没有会话 ID），第一轮改为从泳道 ${from} 新开会话。`);
+      delete c.session;
+      save();
+      attempt = fresh();
+    }
+    if (attempt.failed) {
+      if (attempt.reply?.session) { c.session = attempt.reply.session; save(); }
+      fail(attempt);
+    }
+    const executor = attempt.reply;
     c.session = executor.session;
+    delete c.fixing;
+    save();
     const responses = readResponses(executor.answer, open.map(f => f.id));
     for (const f of open) f.response = responses[f.id];
     const moved = executor.head !== from, disputed = Object.values(responses).some(r => r.disposition === 'disputed');
