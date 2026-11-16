@@ -12,14 +12,14 @@ import { pluginDir } from '../plugin.mjs';
 
 const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
 // An `opencode acp` that answers the handshake, then ends when it is prompted: `OPENCODE_EXIT` is an exit code or a signal, or `hold`
-// to go on without answering; with `OPENCODE_SAY` it says something of the session first.
+// to go on without answering; with `OPENCODE_SAY` it says something of the session first (a title update).
 const fake = `
 process.stdin.on('data', chunk => {
   for (const line of String(chunk).split('\\n').filter(Boolean)) {
     const m = JSON.parse(line);
     if (m.method === 'session/prompt') {
       console.error('fake opencode: git: Operation not permitted');
-      if (process.env.OPENCODE_SAY) process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'native', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'working' } } } }) + '\\n');
+      if (process.env.OPENCODE_SAY) process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'native', update: { sessionUpdate: 'session_info_update', title: 'renamed' } } }) + '\\n');
       const exit = process.env.OPENCODE_EXIT;
       if (exit === 'hold') continue;
       if (/^\\d+$/.test(exit)) process.exit(Number(exit)); else process.kill(process.pid, exit);
@@ -43,8 +43,8 @@ async function prompted(t, exit, say = false) {
   return { peer, reply };
 }
 
-for (const [name, exit, how, say, input] of [['a non-zero exit code', '3', /退出码 3[\s\S]*git: Operation not permitted/], ['a signal', 'SIGKILL', /被信号 SIGKILL 终止/],
-  ['exit code 0 with the prompt unanswered', '0', /退出码 0/], ['a signal after the session said something', 'SIGKILL', /被信号 SIGKILL 终止/, true, 'accepted']])
+for (const [name, exit, how, say] of [['a non-zero exit code', '3', /退出码 3[\s\S]*git: Operation not permitted/], ['a signal', 'SIGKILL', /被信号 SIGKILL 终止/],
+  ['exit code 0 with the prompt unanswered', '0', /退出码 0/], ['a signal after the session said something else', 'SIGKILL', /被信号 SIGKILL 终止/, true]])
   test(`the prompt error and the plugin's stderr say how OpenCode ended: ${name}`, async t => {
     const { peer, reply } = await prompted(t, exit, say);
     const { error } = await reply;
@@ -52,7 +52,7 @@ for (const [name, exit, how, say, input] of [['a non-zero exit code', '3', /退�
     assert.match(error.message, how);
     const failure = error.data?._meta?.coda?.failure;
     assert.equal(agentValueProblem('failure.json', failure, 'failure'), null);
-    assert.deepEqual(failure, input ? { kind: 'session_ended', input } : { kind: 'session_ended' });
+    assert.deepEqual(failure, { kind: 'session_ended' });
     await peer.exited;
     assert.match(peer.stderr, how);
   });
