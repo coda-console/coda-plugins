@@ -6,10 +6,11 @@ import { readWorkflow } from '@coda-console/protocol/workflow';
 
 // 声明了 coda:retry 的脚本步骤，重跑都安全：
 // lane-pr 的 gate 同一个提交强推同一个分支、PR 先从 GitHub 找；land、develop 的 merge 先认 PR 终态，已合并直接交出原合并提交；abandon 关已关的 PR 不改结果；
+// stack-status 只读 gh；restack 推送前先记下重接结果，重跑不再变基，同一个提交按原租约再推是 up-to-date、不被拒，改 base 与转正也幂等；
 // develop 的 lane 远端已有同名泳道就沿用、pr 已开着的 PR 只更新正文、github-checks 只读；deliver 的 confirm-result 只读 gh，全部成功后才记下成员。
-const RETRIED = { 'lane-pr': ['gate', 'land', 'abandon'], develop: ['lane', 'pr', 'github-checks', 'merge'], deliver: ['confirm-result'] };
+const RETRIED = { 'lane-pr': ['gate', 'land', 'abandon', 'stack-status', 'restack'], develop: ['lane', 'pr', 'github-checks', 'merge'], deliver: ['confirm-result'] };
 // 会开执行会话、或强推后重跑会撞租约（integrate 的 --force-with-lease 在推送成功但响应丢了时，重跑必然被拒）的步骤：不加。
-const NOT_RETRIED = { 'lane-pr': ['execute', 'swap', 'revise'], deliver: ['integrate'] };
+const NOT_RETRIED = { 'lane-pr': ['execute', 'swap', 'revise', 'restack-revise'], deliver: ['integrate'] };
 
 async function scriptTasks(name) {
   const { root, problem } = await readWorkflow(readFileSync(new URL(`../../../plugins/composer/.coda/workflows/${name}.bpmn`, import.meta.url), 'utf8'), name);
