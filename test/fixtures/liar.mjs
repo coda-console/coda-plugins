@@ -52,6 +52,15 @@ const methods = {
       if (mode === 'probe-refuses') throw new Error('No catalog');
       const sessionId = `probe-${randomUUID()}`, session = { model: 'a', level: 'medium' };
       probes.set(sessionId, session);
+      // Before the answer: what a probe may say (commands, config), and what it may not (work, asking).
+      if (mode === 'probe-quiet-updates') {
+        notify('session/update', { sessionId, update: { sessionUpdate: 'available_commands_update', availableCommands: [{ name: 'help', description: '帮助' }] } });
+        notify('session/update', { sessionId, update: { sessionUpdate: 'config_option_update', configOptions: probeOptions(session) } });
+      }
+      if (mode === 'probe-new-work' || mode === 'probe-signed-out-work') say(sessionId, '正在干活');
+      if (mode === 'probe-signed-out-work') throw Object.assign(new Error('Authentication required'), { code: -32000 });
+      if (mode === 'probe-new-ask') void ask('session/request_permission', { sessionId, toolCall: { toolCallId: 'c1', title: '先问一下' },
+        options: [{ optionId: 'no', name: '拒绝', kind: 'reject_once' }] });
       return { sessionId, configOptions: probeOptions(session) };
     }
     instructed(params);
