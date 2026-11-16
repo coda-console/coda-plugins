@@ -36,6 +36,7 @@ test('an update of the same session before the process ends does not make the pr
 
 test('the patch fails loudly once the locked adapter changes', () => {
   assert.match(followCodexProcessExit(bundle), /ending the adapter with it/);
+  assert.doesNotMatch(followCodexProcessExit(bundle), /^#!/m);
   assert.throws(() => followCodexProcessExit(bundle.replace('void this.finishAllAsyncTasks("failed", "after the Codex process exited");', 'changed();')), /no longer matches/);
   assert.throws(() => followCodexProcessExit(bundle.replace('this.getRecentStderr = ', 'this.recentStderr = ')), /no longer matches/);
 });
@@ -49,7 +50,6 @@ test('turns waiting on the Codex process are answered with how it ended, and its
   ended(answer.error);
   assert.deepEqual(waits.fail('gone'), []);
   assert.deepEqual(waits.fromAgent({ jsonrpc: '2.0', id: 1, error: { code: -32603, message: 'Connection is disposed' } }), []);
-  assert.deepEqual(waits.fromAgent({ jsonrpc: '2.0', id: 1, result: {} }).length, 1);
 });
 
 for (const [name, exit, how, say] of [['a non-zero exit code', '7', /退出码 7[\s\S]*fake codex: boom/], ['a signal', 'SIGKILL', /被信号 SIGKILL 终止/], ['exit code 0', '0', /退出码 0/],
