@@ -26,7 +26,9 @@ const asked = new Map();
 // `probe-any-option` takes an option there is none of, `probe-default-refused` refuses the level it marks its default,
 // `probe-close-error` fails a close and `probe-close-keeps` keeps the session it closed, `probe-load-code` answers a load
 // of a session gone -32603, and `probe-list-pages`, `probe-list-loop` and `probe-list-endless` page session/list (which
-// otherwise has two pages, both empty) to list the session on the second page, or give the same cursor, or always another.
+// otherwise has two pages, both empty) to list the session on the second page, or give the same cursor, or always another;
+// `probe-list-cursor` gives a cursor that is a number and `probe-list-entry` lists an entry with no cwd; `probe-persist-close`
+// keeps its probe sessions where another connection loads them, and lets one go only when it is closed.
 const LEVELS = { a: ['low', 'medium', 'high'], b: ['low', 'medium', 'high', 'xhigh'], c: null }, probes = new Map();
 const DEFAULT_LEVEL = 'low';
 const select = (id, category, currentValue, values) => ({ id, name: id, category, type: 'select', currentValue, options: values.map(value => ({ value, name: value,
@@ -34,7 +36,8 @@ const select = (id, category, currentValue, values) => ({ id, name: id, category
 const probeOptions = ({ model, level }) => [select('model', 'model', model, Object.keys(LEVELS)), ...(LEVELS[model] ? [select('thought_level', 'thought_level', level, LEVELS[model])] : [])];
 // Its processes for one check share a working directory: the probe session opened, and each initialize, are marked there.
 // The probe's own connection is the third (after the handshake's and the one whose input is closed).
-const PROBED = join(process.cwd(), 'liar-probed'), INITS = join(process.cwd(), 'liar-inits');
+const PROBED = join(process.cwd(), 'liar-probed'), INITS = join(process.cwd(), 'liar-inits'), PERSISTED = join(process.cwd(), 'liar-persisted');
+const persisted = () => existsSync(PERSISTED) ? readFileSync(PERSISTED, 'utf8').split('\n').filter(Boolean) : [];
 const thirdInit = () => { appendFileSync(INITS, '.'); return readFileSync(INITS, 'utf8').length === 3; };
 const invalid = message => Object.assign(new Error(message), { code: -32602 });
 const notFound = message => Object.assign(new Error(message), { code: -32002 });
@@ -71,7 +74,8 @@ const methods = {
       if (mode === 'probe-refuses') throw new Error('No catalog');
       const sessionId = mode === 'probe-empty-id' ? '' : `probe-${randomUUID()}`, session = { model: 'a', level: 'medium' };
       probes.set(sessionId, session);
-      if (mode.startsWith('probe-reinit') || mode === 'probe-list-pages') writeFileSync(PROBED, sessionId);
+      if ((mode.startsWith('probe-reinit') || mode === 'probe-list-pages') && !existsSync(PROBED)) writeFileSync(PROBED, sessionId);
+      if (mode === 'probe-persist-close') appendFileSync(PERSISTED, `${sessionId}\n`);
       if (mode === 'probe-models-shapeless') return { sessionId, models: { currentModelId: 'a', availableModels: Object.keys(LEVELS).map(modelId => ({ modelId, name: modelId })) } };
       // Before the answer: what a probe may say (commands, config), and what it may not (work, asking).
       if (mode === 'probe-quiet-updates') {
@@ -94,7 +98,7 @@ const methods = {
   // Says whether the instructions came with it; or answers the load and keeps no session for it (OpenCode before 1.0.151).
   'session/load': ({ systemPrompt, sessionId }) => {
     if (sessionId?.startsWith('probe-')) {
-      if (mode === 'probe-resume') return { configOptions: probeOptions({ model: 'a', level: 'medium' }) };
+      if (mode === 'probe-resume' || persisted().includes(sessionId)) return { configOptions: probeOptions({ model: 'a', level: 'medium' }) };
       if (mode === 'probe-load-code') throw new Error('Internal error');
       throw notFound('Unknown session');
     }
@@ -110,6 +114,8 @@ const methods = {
     if (mode === 'probe-list-shapeless') return {};
     if (!cwd || realpathSync(cwd) !== process.cwd()) throw invalid(`list of ${cwd}`);
     if (mode === 'probe-list-loop') return { sessions: [], nextCursor: 'same' };
+    if (mode === 'probe-list-cursor') return { sessions: [], nextCursor: 42 };
+    if (mode === 'probe-list-entry') return { sessions: [{ sessionId: 'someone' }] };
     if (mode === 'probe-list-endless') return { sessions: [], nextCursor: `p${Number(cursor?.slice(1) ?? 1) + 1}` };
     if (cursor === undefined) return { sessions: [], nextCursor: 'p2' };
     if (cursor !== 'p2') throw invalid(`cursor ${cursor}`);
@@ -119,6 +125,7 @@ const methods = {
   'session/close': ({ sessionId }) => {
     if (mode === 'probe-close-error') throw new Error('Cannot close');
     if (mode !== 'probe-close-keeps') probes.delete(sessionId);
+    if (mode === 'probe-persist-close') writeFileSync(PERSISTED, persisted().filter(id => id !== sessionId).map(id => `${id}\n`).join(''));
     return {};
   },
   // A model switch of a probe that reports models alone: answered with no result.

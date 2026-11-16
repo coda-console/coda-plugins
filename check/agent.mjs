@@ -499,16 +499,24 @@ async function probe({ agent, checked, base, limits, say, instructions }) {
     const turn = await ask('session/prompt', { sessionId, prompt: [{ type: 'text', text: CHECK_QUESTION }] });
     if (turn.error?.code === INVALID_PARAMS) say.pass(rule, `虚拟会话的 session/prompt 回 -32602：${turn.error.message}`);
     else say.fail(rule, `虚拟会话的 session/prompt ${turn.error ? `回了 ${turn.error.code}（${turn.error.message}）` : `被接受了（stopReason ${turn.result?.stopReason}）`}：配置探测会话不执行 prompt，要回 -32602`);
-    // Closed, it is gone: what is asked of it then is of a session it no longer knows (「错误与收尾」).
+    // Closed, it is gone: what is asked of it then is of a session it no longer knows (「错误与收尾」). Another probe session is
+    // closed, so that the first goes only with the connection, as it must without a close.
     if (closes) {
       rule = 'probe.close';
-      const closed = await ask('session/close', { sessionId }), parsed = closed.error ? null : schemas.zCloseSessionResponse.safeParse(closed.result);
-      if (closed.error) say.fail(rule, `虚拟会话的 session/close 回了错误 ${closed.error.code}：${closed.error.message}：声明了 close 就要释放虚拟会话并回 {}`);
-      else if (!parsed.success) say.fail(rule, `虚拟会话的 session/close 的结果不合 ACP schema：${explain(parsed.error)}`);
+      session.loading = true;
+      const other = await ask('session/new', { cwd: session.cwd, mcpServers: [], _meta: { coda: { probe: true } } }), closing = other.result?.sessionId;
+      session.loading = false;
+      if (other.error || !closing) say.fail(rule, `为查 session/close 另开的虚拟会话没开成（${other.error ? `${other.error.code}：${other.error.message}` : '没有 sessionId'}）`);
       else {
-        const after = await ask('session/prompt', { sessionId, prompt: [{ type: 'text', text: CHECK_QUESTION }] });
-        if (after.error?.code === NOT_FOUND) say.pass(rule, 'session/close 回 {}，之后这个虚拟会话的请求回 -32002');
-        else say.fail(rule, `session/close 之后对虚拟会话发 session/prompt ${after.error ? `回了 ${after.error.code}（${after.error.message}）` : '被接受了'}：已失效的 sessionId 要回 -32002`);
+        session.waits.children.add(closing);
+        const closed = await ask('session/close', { sessionId: closing }), parsed = closed.error ? null : schemas.zCloseSessionResponse.safeParse(closed.result);
+        if (closed.error) say.fail(rule, `虚拟会话的 session/close 回了错误 ${closed.error.code}：${closed.error.message}：声明了 close 就要释放虚拟会话并回 {}`);
+        else if (!parsed.success) say.fail(rule, `虚拟会话的 session/close 的结果不合 ACP schema：${explain(parsed.error)}`);
+        else {
+          const after = await ask('session/prompt', { sessionId: closing, prompt: [{ type: 'text', text: CHECK_QUESTION }] });
+          if (after.error?.code === NOT_FOUND) say.pass(rule, `另开的虚拟会话 ${closing} session/close 回 {}，之后它的请求回 -32002`);
+          else say.fail(rule, `session/close 之后对虚拟会话 ${closing} 发 session/prompt ${after.error ? `回了 ${after.error.code}（${after.error.message}）` : '被接受了'}：已失效的 sessionId 要回 -32002`);
+        }
       }
     }
   } catch (e) { return say.fail(rule, `${rule === 'probe.new' ? '带探测标记的 session/new' : '探测'}失败：${e.message}`); }
@@ -539,8 +547,17 @@ async function probe({ agent, checked, base, limits, say, instructions }) {
         const at = page > 1 ? `第 ${page} 页` : '';
         // A list that did not come back says nothing of whether the session was kept.
         if (error) return say.fail('probe.resume', `断线后 session/list ${at}回了错误 ${error.code}：${error.message}：查不了虚拟会话是否留在历史里`);
-        if (!Array.isArray(result?.sessions)) return say.fail('probe.resume', `断线后 session/list ${at}的答复没有 sessions 数组（${JSON.stringify(result?.sessions)}）：查不了虚拟会话是否留在历史里`);
-        if (result.sessions.some(s => s?.sessionId === sessionId)) return say.fail('probe.resume', `断线后 session/list ${at}列出了虚拟会话 ${sessionId}`);
+        // ACP's parser takes a `sessions` that is not a list, or has an entry it cannot read, for none, and drops a `nextCursor`
+        // that is not a string: the page is read as it came.
+        const parsed = schemas.zListSessionsResponse.safeParse(result);
+        if (!parsed.success) return say.fail('probe.resume', `断线后 session/list ${at}的答复不合 ACP schema：${explain(parsed.error)}：查不了虚拟会话是否留在历史里`);
+        if (!Array.isArray(result.sessions)) return say.fail('probe.resume', `断线后 session/list ${at}的答复没有 sessions 数组（${JSON.stringify(result.sessions)}）：查不了虚拟会话是否留在历史里`);
+        for (const [i, entry] of result.sessions.entries()) {
+          const info = schemas.zSessionInfo.safeParse(entry);
+          if (!info.success || !entry.sessionId) return say.fail('probe.resume', `断线后 session/list ${at}的 sessions[${i}] ${info.success ? 'sessionId 是空的' : `不合 ACP schema：${explain(info.error)}`}：查不了虚拟会话是否留在历史里`);
+        }
+        if (result.sessions.some(s => s.sessionId === sessionId)) return say.fail('probe.resume', `断线后 session/list ${at}列出了虚拟会话 ${sessionId}`);
+        if (result.nextCursor != null && typeof result.nextCursor !== 'string') return say.fail('probe.resume', `断线后 session/list ${at}的 nextCursor 不是字符串（${JSON.stringify(result.nextCursor)}）：查不了后面的页`);
         cursor = result.nextCursor ?? undefined;
         if (cursor === undefined) break;
         if (cursors.has(cursor)) return say.fail('probe.resume', `断线后 session/list 第 ${page} 页又给了用过的 nextCursor ${cursor}：翻页不会结束，查不完虚拟会话是否留在历史里`);
