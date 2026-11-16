@@ -33,9 +33,9 @@ function fixture(t, devices = true) {
   const base = commit('base', 'base');
   env.GITHUB_SHA = base;
   git('init', '--bare', '-q', origin); git('remote', 'add', 'origin', origin); git('push', '-q', 'origin', 'main');
-  const members = [{ url: 'https://github.com/example/coda-plugins/pull/1', headRefOid: 'a'.repeat(40), headRefName: 'lane/plugin', baseRefName: 'main' }];
+  const members = [{ url: 'https://github.com/example/coda-plugins/pull/1', headRefOid: 'a'.repeat(40), headRefName: 'req/plugin', baseRefName: 'main' }];
   const member = (id, file, content) => {
-    const branch = `lane/feature-${id}`;
+    const branch = `req/feature-${id}`;
     git('switch', '-C', branch, base);
     const head = commit(file, content);
     git('push', '-q', 'origin', branch);
