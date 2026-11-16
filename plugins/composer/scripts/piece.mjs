@@ -156,15 +156,21 @@ switch (action) {
     output('route', blocked ? 'review' : choice === 'sync' ? 'revise' : choice);
     break;
   }
-  // 先认是否已合入（重跑这一步不合入第二次）：需求分支里有带本运行 trailer 的提交，或跟上目标分支的这次交付已是它的祖先。
+  // 先认是否已合入（重跑不合入第二次）：需求分支里有带本运行 trailer 的提交；跟上目标分支的块看推送前记下的 landing（从头重跑 execute 会换掉
+  // executor.head，记录还在）或这次交付是不是已是它的祖先。
   // 否则试合并需求分支当前 head（别的块可能刚合进去），有冲突交回同一执行会话；普通的块把合并结果 squash 成一个提交、以需求分支 head 为父，
   // 普通推送（只快进）；跟上目标分支的块只能以执行者的合并提交快进，需求分支 head 不是它的祖先时同样交回执行者先合并需求分支。合入后删掉临时分支。
   case 'land': {
     const head = state.executor.head, tip = branchHead();
     const ancestor = (older, newer) => spawnSync('git', ['merge-base', '--is-ancestor', older, newer]).status === 0;
-    let files, commit = state.sync ? ancestor(head, tip) && head : git('log', '-n1', '--format=%H', `--grep=^${trailer}$`, tip);
+    let files, commit = state.sync ? [state.landing, head].find(c => c && ancestor(c, tip)) : git('log', '-n1', '--format=%H', `--grep=^${trailer}$`, tip);
     if (!commit && state.sync) {
-      if (ancestor(tip, head)) { git('push', 'origin', `${head}:refs/heads/${state.branch}`); commit = head; }
+      if (ancestor(tip, head)) {
+        state.landing = head;
+        save();
+        git('push', 'origin', `${head}:refs/heads/${state.branch}`);
+        commit = head;
+      }
       else files = tryMerge(tip).files ?? [];
     } else if (!commit) {
       const merged = tryMerge(tip);

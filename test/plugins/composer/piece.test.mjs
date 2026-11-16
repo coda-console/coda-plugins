@@ -182,6 +182,22 @@ test('重跑不重复合入：合入后需求分支又前进了，再跑 land �
   }
 });
 
+test('跟上目标分支的块合入后运行从头重跑：execute 换了 head，land 仍认出推送前记下的合并提交，不再推送', t => {
+  const f = fixture(t, { sync: true });
+  f.advance('other', 'other');
+  const advanceMain = name => { f.git('switch', '-q', 'main'); writeFileSync(join(f.work, name), name); f.git('add', name); f.git('commit', '-qm', name); f.git('push', '-q', 'origin', 'main'); };
+  advanceMain('main-1');
+  f.task('m1', 'merged main', 'main'); f.run('execute'); f.delivered();
+  const first = f.run('land').outputs;
+  assert.equal(first.route, 'landed');
+  // 从头重跑：执行者又合并了前进了的目标分支，新 head 不是需求分支的祖先。
+  advanceMain('main-2');
+  f.task('m2', 'merged main again', 'main'); f.run('execute'); f.delivered();
+  assert.notEqual(f.state().executor.head, first.commit);
+  assert.deepEqual(f.run('land').outputs, first);
+  assert.equal(f.remote(BRANCH), first.commit, '需求分支没再动');
+});
+
 test('合进需求分支前试合并发现冲突：需求分支不动，同一执行会话收到需求分支与冲突文件，不算退回；合并需求分支后再合进去', t => {
   const f = fixture(t);
   f.task('base', 'worker change'); f.run('execute'); f.delivered();
