@@ -158,9 +158,9 @@ test('authentication rejected (401/403, or refresh failed) says effects none; ot
   const f=await fixture(t); const original=f.native.handler;
   const reply=status=>(method,params)=>method==='SendGrokBotUserMessage'?new Response('{}',{status}):original(method,params);
   f.native.handler=reply(401);
-  await assert.rejects(f.provider.post({text:'a'},call(f,'a')),{code:'unauthorized',effects:'none'});
+  await assert.rejects(f.provider.post({text:'a'},call(f,'a')),{code:'unauthorized',effects:'none',message:/请在资源页重新登录.*HTTP 401/});
   f.native.handler=reply(403);
-  await assert.rejects(f.provider.post({text:'b'},call(f,'b')),{code:'unauthorized',effects:'none'});
+  await assert.rejects(f.provider.post({text:'b'},call(f,'b')),{code:'unauthorized',effects:'none',message:/^(?!.*重新登录)/s});
   for (const status of [400,429,500]) {
     f.native.handler=reply(status);
     await assert.rejects(f.provider.post({text:'c'},call(f,`c${status}`)),{code:'unknown',effects:'unknown'});
@@ -175,7 +175,7 @@ test('renewal failing after a 401 says effects none whether offline or timed out
   const rejected=(method,params)=>method==='SendGrokBotUserMessage'?new Response('{}',{status:401}):original(method,params);
   f.auth.use({accessToken:'fixture',refreshToken:'refresh'});
   f.native.handler=async (method,params)=>{if(method==='token')throw new TypeError('fetch failed');return rejected(method,params);};
-  await assert.rejects(f.provider.post({text:'a'},call(f,'offline')),{code:'unauthorized',effects:'none',message:/续期失败.*fetch failed/});
+  await assert.rejects(f.provider.post({text:'a'},call(f,'offline')),{code:'unauthorized',effects:'none',message:/^(?!.*重新登录).*续期失败.*fetch failed/s});
   f.native.handler=async (method,params)=>{if(method==='token')throw new DOMException('timed out','TimeoutError');return rejected(method,params);};
   await assert.rejects(f.provider.post({text:'b'},call(f,'timeout')),{code:'unauthorized',effects:'none',message:/续期失败/});
   // Renewed: the resend is a new request, so a lost connection is unknown, a rejection is none.
@@ -192,7 +192,7 @@ test('renewal failing after a 401 says effects none whether offline or timed out
   await assert.rejects(f.provider.post({text:'c'},call(f,'lost')),{code:'unknown',effects:'unknown',message:'lost'});
   f.auth.use({accessToken:'fixture',refreshToken:'refresh'});
   f.native.handler=renew(()=>new Response('{}',{status:401}));
-  await assert.rejects(f.provider.post({text:'d'},call(f,'again')),{code:'unauthorized',effects:'none'});
+  await assert.rejects(f.provider.post({text:'d'},call(f,'again')),{code:'unauthorized',effects:'none',message:/请在资源页重新登录/});
 });
 
 test('the Bot list loop shows the original error when renewal fails offline, and asks for login when it is rejected', async t => {

@@ -22,8 +22,8 @@ Provider 每 30 秒重新读取登录及 Bot 名单；每个 Bot 自动建立一
 - 一个条目首次稳定暴露时就是普通消息，ID 为 `<generation>:<entryId>`，cursor 取首次暴露时的 updatedSeq，即使它与原生 seq 不同。只有索引记录的已暴露正文再变化，才追加 `<base>:edit:<updatedSeq>`、带 `about: { message: <base>, change: "edit" }` 的修订。原生历史只保留当前版本，进程重启后不伪造已被覆盖的旧正文。
 - `post` 是 `coda.handle('coda/session@1', 'post', …)` 登记的处理函数，发完才返回，返回值 `{ message: { id, cursor } }` 就是结果；运行记录由宿主维护，插件不写。messageId 是按宿主给这次调用的 `ctx.id` 与记录 ID 派生的 UUID；同一次调用只交给处理函数一次由 Coda 保证，插件不再保存 `posts.json` 或重复去重。发送前 `ctx.progress('正在发送')`；发送、等待流事件更新镜像并确认回显后才返回。
 - 失败分两类：
-  - `effects: 'none'`：用户看到「发送失败」，可以重发。包括发出之前就确定的（会话不可用、会话正在连接、只收文字、回复的消息不存在、选项无效），Grok 明确拒绝认证（HTTP 401 / 403，含无刷新凭据时的 401；发送被 401 拒收后，登录续期这一步失败也算，不论是被拒、断网还是超时，此时重发还没开始），以及 Grok 明确拒收（`RespondGrokBotWidget` 返回 `accepted === false`、`SendGrokBotUserMessage` 返回 `dispatched === false`）。
-  - `coda.error('unknown', …, { effects: 'unknown' })`：用户看到「结果未知」，不重发。指开始发送之后结局说不清的：断线、`accepted` / `dispatched` 字段缺失、接受后没有回显；续期成功后重发的那次请求断线或超时同样未知（再被 401 / 403 拒收则仍是 `none`）。
+  - `effects: 'none'`：用户看到「发送失败」，可以重发。包括发出之前就确定的（会话不可用、会话正在连接、只收文字、回复的消息不存在、选项无效），Grok 明确拒绝认证（HTTP 401 / 403，含无刷新凭据时的 401，401 提示到资源页重新登录；发送被 401 拒收后，登录续期这一步失败也算，不论是被拒、断网还是超时，此时重发还没开始），以及 Grok 明确拒收（`RespondGrokBotWidget` 返回 `accepted === false`、`SendGrokBotUserMessage` 返回 `dispatched === false`）。
+  - `coda.error('unknown', …, { effects: 'unknown' })`：用户看到「结果未知」，不重发。指开始发送之后结局说不清的：断线、`accepted` / `dispatched` 字段缺失、接受后没有回显；续期成功后重发的那次请求断线或超时同样未知（再被 401 / 403 拒收则仍是 `none`）。其他 HTTP 状态码（400、429、5xx 等）也记结果未知：只有认证被拒（401 / 403）和明确拒收（`accepted` / `dispatched` 为 `false`）才算确定没发。
 - 取消：开始发送之前 `ctx.signal` 已触发，以 `ctx.signal.reason` 抛出，运行记为取消；已经开始发送的不再中断，照常等回显后返回（或失败）。
 - 不写 `resume`：插件重启时没有可核验的落盘记录，由宿主默认收尾，记 `interrupted`、`unknown`，用户看到「结果未知」，不会重发。
 - 只收文字。`draft` 答 `{}`，不做别的。
