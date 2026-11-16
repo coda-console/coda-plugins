@@ -40,11 +40,21 @@ const prBody = note => {
   writeFileSync(body, `泳道 PR，由流程 lane-pr 开、合进泳道 ${state.lane}；运行 coda://workflow-runs/${env.GITHUB_RUN_ID}。${note ? `\n\n${note}` : ''}\n\n## 任务\n\n${state.task}\n`);
   return body;
 };
-// 这次运行的分支已开着的 PR（重跑、或上次开 PR 的响应丢了）。叠放的 PR 可能开在前置分支上，只按分支找。
-const openedPr = () => gh('pr', 'list', '--head', state.branch, ...(state.stack ? [] : ['--base', state.lane]), '--state', 'open', '--limit', '1', '--json', 'url', '--jq', '.[].url');
-// 不能再叠在前置上、还没有 PR 时，以草稿开进泳道：审查卡上有 PR，放弃也关得掉；执行者把提交改为直接基于泳道后由 gate 解绑转正。
-const laneDraft = () => openPr('--base', state.lane, '--head', state.branch, '--draft', '--title', state.title, '--body-file',
-  prBody(`原叠在前置泳道 PR ${state.stack.pr} 上，没能重接到泳道：先以草稿开进泳道，执行者把提交改为直接基于泳道后转为正式 PR。`));
+// 这次运行的分支已开着的 PR（重跑、或上次开 PR 的响应丢了）。叠放的 PR 可能开在前置分支上，只按分支找；
+// 叠放的还可能在没有检出的空目录里找（stack-status），带上 --repo（前置与本运行同仓库，开工时已核对）。
+const openedPr = () => gh('pr', 'list', ...(state.stack ? ['--repo', repoOf(state.stack.pr), '--head', state.branch] : ['--head', state.branch, '--base', state.lane]),
+  '--state', 'open', '--limit', '1', '--json', 'url', '--jq', '.[].url');
+// 不能再叠在前置上、还没有 PR 时，以草稿开进泳道：审查卡上有 PR，放弃也关得掉；执行者把提交改为直接基于泳道后由 gate 解绑，检查与评审通过后转正。
+const laneDraft = () => openPr('--repo', repoOf(state.stack.pr), '--base', state.lane, '--head', state.branch, '--draft', '--title', state.title, '--body-file',
+  prBody(`原叠在前置泳道 PR ${state.stack.pr} 上，没能重接到泳道：先以草稿开进泳道，执行者把提交改为直接基于泳道、检查与评审通过后转为正式 PR。`));
+// 叠放不能再等前置、要交主 Agent 时，审查卡上要有一个开着的 PR：原草稿开在前置分支上、随前置删分支被 GitHub 关掉的不算，
+// 先找这次运行分支已开着的（上次开了、响应丢了），没有才以草稿开进泳道。有检出（gate、restack）和没有检出（stack-status）的步骤都用它，gh 都带 --repo。
+const ensureOpenDraft = () => {
+  if (state.pr && JSON.parse(gh('pr', 'view', state.pr, '--repo', repoOf(state.pr), '--json', 'state')).state !== 'OPEN') state.pr = '';
+  if (state.pr) return;
+  state.pr = openedPr() || laneDraft();
+  state.stack.draft = true;
+};
 // 前置泳道 PR 最新的状态与合进的分支。
 const parentNow = () => JSON.parse(gh('pr', 'view', state.stack.pr, '--repo', repoOf(state.stack.pr), '--json', 'state,baseRefName'));
 // 前置关了没合并，或改为合进别的分支：合到别处再重接会把还没进泳道的前置改动剥掉，不能再叠在它上面。记下原因交主 Agent，
@@ -152,18 +162,18 @@ switch (action) {
     console.error(`推送执行者提交 ${state.executor.head} 到 ${state.branch}`);
     git('push', '--no-follow-tags', '--force', 'origin', `${state.executor.head}:refs/heads/${state.branch}`);
     // 叠放升级给主 Agent 之后（recover：前置关了没合并，或流程分不清自己的提交），执行者按退回意见直接变基到泳道上、不再含前置旧提交，
-    // 就在这里解绑叠放：PR 还开着就切回泳道、转正；前置分支被删、GitHub 已把它关掉的，下面重新开进泳道。没做到就保持叠放，后面照旧拦住。
+    // 就在这里解绑叠放：PR 还开着就切回泳道，前置分支被删、GitHub 已把它关掉的，下面重新以草稿开进泳道；都先保留草稿（stack.draft），
+    // 新 head 的检查与评审通过、到「查看前置泳道 PR」时才转正。没做到就保持叠放，后面照旧拦住。
     if (stacked() && state.stack.recover) {
       const lane = laneHead(), head = state.executor.head;
       if (ancestor(lane, head) && !ancestor(state.stack.head, head)) {
         if (state.pr) {
           const repo = repoOf(state.pr);
-          if (JSON.parse(gh('pr', 'view', state.pr, '--repo', repo, '--json', 'state')).state === 'OPEN') {
-            gh('pr', 'edit', state.pr, '--repo', repo, '--base', state.lane);
-            gh('pr', 'ready', state.pr, '--repo', repo);
-          } else state.pr = '';
+          if (JSON.parse(gh('pr', 'view', state.pr, '--repo', repo, '--json', 'state')).state === 'OPEN') gh('pr', 'edit', state.pr, '--repo', repo, '--base', state.lane);
+          else state.pr = '';
         }
         state.stack.restacked = true;
+        state.stack.draft = true;
         delete state.stack.recover;
         delete state.stack.pending;
         delete state.stack.pushed;
@@ -180,12 +190,12 @@ switch (action) {
       const parent = stacked() ? parentNow() : undefined;
       if (parent && unstack(parent)) route = 'review';
       else if (parent?.state === 'MERGED') route = 'restack';
-      // 叠在还开着的前置上，草稿开进它的分支；不能再叠的以草稿开进泳道。
-      if (route === 'review') state.pr = laneDraft();
+      // 叠在还开着的前置上，草稿开进它的分支；不能再叠的以草稿开进泳道。重接或解绑之后（stack.draft）也以草稿开进泳道，检查与评审通过后才转正。
+      if (route === 'review') ensureOpenDraft();
       else if (route === 'checks') state.pr = stacked()
         ? openPr('--base', state.stack.branch, '--head', state.branch, '--draft', '--title', state.title, '--body-file',
-          prBody(`叠在前置泳道 PR ${state.stack.pr} 上：先以草稿开进它的分支，前置合进泳道后由流程重接到泳道、转为正式 PR。`))
-        : openPr('--base', state.lane, '--head', state.branch, '--title', state.title, '--body-file', prBody(''));
+          prBody(`叠在前置泳道 PR ${state.stack.pr} 上：先以草稿开进它的分支，前置合进泳道后由流程重接到泳道、检查与评审通过后转为正式 PR。`))
+        : openPr('--base', state.lane, '--head', state.branch, ...(state.stack?.draft ? ['--draft'] : []), '--title', state.title, '--body-file', prBody(''));
     }
     save();
     output('head', state.executor.head);
@@ -214,14 +224,16 @@ switch (action) {
     output('checks', checksText(state.checks, state.executor.head));
     for (const [name, value] of Object.entries({ ...state.executor, lane: state.lane, pr: state.pr, feedback: state.feedback, returns: state.returns })) output(name, value);
     output('reviews', reviewsText(env.REVIEWS, state.executor.head, '评审这次交付'));
-    // 审查卡只在仍叠放、还没重接时提示「合进泳道不会合并」。
-    output('stack', stacked() ? state.stack.pr : '');
+    // 审查卡只在仍叠放、还没重接、还能等前置自动重接时提示「合进泳道不会合并」；升级（recover）的原因与怎么办已写在 feedback 里。
+    output('stack', stacked() && !state.stack.recover ? state.stack.pr : '');
     break;
   case 'decide': {
     const { choice, note = '' } = JSON.parse(env.REVIEW);
     // 引擎不能按条件隐藏答复：没填备用执行者时「换备用执行者重做」照样能选，选了回到审查卡说明。
-    const blocked = !note.trim() ? { revise: '退回修改必须在备注中写具体意见。', swap: '换备用执行者重做必须在备注中写为什么换、接手的人要注意什么。' }[choice]
-      : choice === 'swap' && env.BACKUP !== 'true' ? '没有填备用执行者，不能换人重做；请改选别的答复。' : '';
+    // 叠放已升级（recover）：前置不能再自动重接，回去等前置没有意义，合进泳道直接拦回审查卡。
+    const blocked = (!note.trim() && { revise: '退回修改必须在备注中写具体意见。', swap: '换备用执行者重做必须在备注中写为什么换、接手的人要注意什么。' }[choice])
+      || (choice === 'swap' && env.BACKUP !== 'true' ? '没有填备用执行者，不能换人重做；请改选别的答复。' : '')
+      || (choice === 'land' && state.stack?.recover ? `这个泳道 PR 叠在前置泳道 PR ${state.stack.pr} 上，前置已不能自动重接到泳道（关了没合并、改为合进别处，或历史被改写），现在不能合进泳道。请选「退回修改」让执行者把自己的提交改为直接基于泳道 ${state.lane}（需要的前置改动一并带上），或「换备用执行者重做」，或「放弃」。` : '');
     if (blocked) state.feedback = blocked;
     // 叠放还没重接时 PR 开在前置分支上，这时合并会合进前置分支：不合，回去等前置合进泳道、重接后重新检查与评审，再回到审查卡。
     else if (choice === 'land' && stacked()) {
@@ -250,7 +262,11 @@ switch (action) {
       if (state.sync && ancestor(head, lane)) commit = head;
       else if (state.sync && ancestor(lane, head)) { git('push', 'origin', `${head}:refs/heads/${state.lane}`); commit = head; }
       else if (state.sync) files = conflicts(lane) ?? [];
-      else if (!(files = conflicts(lane))) commit = mergePr(state.pr, head, 'squash');
+      else if (!(files = conflicts(lane))) {
+        // 叠放重接或解绑后还是草稿（新 head 的评审升级、没经过「查看前置泳道 PR」转正）：草稿合并不了，先转正。
+        if (state.stack?.draft) { gh('pr', 'ready', state.pr, '--repo', repoOf(state.pr)); delete state.stack.draft; save(); }
+        commit = mergePr(state.pr, head, 'squash');
+      }
     }
     if (!commit) {
       state.feedback = syncText(state.lane, files);
@@ -341,18 +357,22 @@ switch (action) {
     output('text', !text ? '' : text.length <= 4000 ? `${text}\n全文：${path}` : `前面的轮次见 ${path}。\n\n${historyText(history.slice(-1))}`);
     break;
   }
-  // 叠放（README.md「叠放」）：评审收敛、不升级之后看前置泳道 PR。没叠放或已重接（ready）往下走；前置还开着（wait）等一分钟再看；
-  // 已合并（restack）去重接；关了没合并（review）交主 Agent。这一步在没有检出的空目录里跑，只用 gh。
+  // 叠放（README.md「叠放」）：评审收敛、不升级之后看前置泳道 PR。没叠放或已重接（ready）往下走，重接或解绑后还是草稿的，新 head 的检查与评审都过了，这时转正；
+  // 前置还开着（wait）等一分钟再看；已合并（restack）去重接；关了没合并（review）交主 Agent。这一步在没有检出的空目录里跑，只用 gh、都带 --repo。
   case 'stack-status': {
-    if (!stacked()) { output('route', 'ready'); break; }
-    // 等待期间前置可能被改为合进别的分支，同样交主 Agent。
+    if (!stacked()) {
+      if (state.stack?.draft) { gh('pr', 'ready', state.pr, '--repo', repoOf(state.pr)); delete state.stack.draft; save(); }
+      output('route', 'ready');
+      break;
+    }
+    // 等待期间前置可能被改为合进别的分支，同样交主 Agent；草稿 PR 随前置删分支被关掉的，先重新开一个进泳道的草稿。
     const parent = parentNow(), wrong = unstack(parent);
-    if (wrong) save();
+    if (wrong) { ensureOpenDraft(); save(); }
     output('route', wrong ? 'review' : parent.state === 'OPEN' ? 'wait' : 'restack');
     break;
   }
   // 前置已 squash 合进泳道：只把这个 PR 自己的提交（stack.head..executor.head）用 rebase --onto 重放到泳道最新 head 上，不 merge，
-  // 免得把前置 squash 前的散提交带进来；--force-with-lease 更新分支，PR 改开进泳道、转为正式 PR，之后回到推送、检查并以泳道为 base 完整评审（gate）。
+  // 免得把前置 squash 前的散提交带进来；--force-with-lease 更新分支，PR 改开进泳道、仍是草稿，之后回到推送、检查并以泳道为 base 完整评审（gate），通过后才转正。
   // 重接冲突交同一执行会话（revise）自己变基重接，回来再到这一步收尾；祖先关系不对、或执行者没变基到泳道上，交主 Agent（review）。
   // 每次重试都是新检出的工作区：推送前先记下这次推送（stack.pushing：重接到的泳道 head、原 head、新 head），推成功再记下结果
   // （stack.pushed 是重接到的泳道 head）。重试时远端已是记下的新 head（推成功了、没来得及记下，或响应丢了）就直接记下结果；
@@ -362,8 +382,9 @@ switch (action) {
     const s = state.stack, lane = laneHead();
     git('fetch', 'origin', state.branch);
     const remote = git('rev-parse', 'FETCH_HEAD');
-    // 升级后等主 Agent 退回、执行者直接变基到泳道上，由 gate 解绑叠放（recover）。从 gate 直接来重接、还没有 PR 的，先找已开的（上次开了、响应丢了），没有才以草稿开进泳道。
-    const escalate = text => { if (!state.pr) state.pr = openedPr() || laneDraft(); state.feedback = text; s.recover = true; delete s.pending; delete s.pushing; delete s.pushed; save(); output('route', 'review'); };
+    // 升级后等主 Agent 退回、执行者直接变基到泳道上，由 gate 解绑叠放（recover）。从 gate 直接来重接、还没有 PR 的，或草稿随前置删分支被关掉的，
+    // 先找已开的（上次开了、响应丢了），没有才以草稿开进泳道。
+    const escalate = text => { ensureOpenDraft(); state.feedback = text; s.recover = true; delete s.pending; delete s.pushing; delete s.pushed; save(); output('route', 'review'); };
     const push = (head, from) => git('push', '--no-follow-tags', `--force-with-lease=refs/heads/${state.branch}:${from}`, 'origin', `${head}:refs/heads/${state.branch}`);
     // 执行者解冲突交回：核对它变基到了泳道上，再按同样的推送记录推送、收尾；它本地已在新 head 上，不用提醒重置。
     if (!s.pushed && s.pending) {
@@ -421,16 +442,14 @@ ${files.map(file => `- ${file}`).join('\n')}
       delete s.pushing;
       save();
     }
-    // 还没开 PR（gate 发现前置已合并、分支已删，直接来重接）就不改，回到 gate 开进泳道；草稿 PR 开在前置分支上、随前置合并删分支被 GitHub 关掉的，
-    // 也回到 gate 重新开进泳道。还开着的切到泳道、转正。
+    // 还没开 PR（gate 发现前置已合并、分支已删，直接来重接）就不改，回到 gate 以草稿开进泳道；草稿 PR 开在前置分支上、随前置合并删分支被 GitHub 关掉的，
+    // 也回到 gate 重新以草稿开进泳道。还开着的切到泳道。都先保留草稿（stack.draft），新 head 的检查与评审通过、到「查看前置泳道 PR」时才转正。
     const repo = state.pr && repoOf(state.pr);
     if (state.pr && JSON.parse(gh('pr', 'view', state.pr, '--repo', repo, '--json', 'state')).state !== 'OPEN') state.pr = '';
-    if (state.pr) {
-      gh('pr', 'edit', state.pr, '--repo', repo, '--base', state.lane);
-      gh('pr', 'ready', state.pr, '--repo', repo);
-    }
+    if (state.pr) gh('pr', 'edit', state.pr, '--repo', repo, '--base', state.lane);
     state.base = s.pushed;
     s.restacked = true;
+    s.draft = true;
     delete s.pushed;
     save();
     output('route', 'gate');

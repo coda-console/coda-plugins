@@ -881,7 +881,7 @@ test('退回修改中断后运行从头重跑：execute 以上一次的完整状
 const approved = head => reviewed('reviewer', head, [], { decision: 'APPROVE', line: '可以合' });
 const ancestorOf = (f, older, newer) => spawnSync('git', ['merge-base', '--is-ancestor', older, newer], { cwd: f.work }).status === 0;
 
-test('叠放：前置开着时从它的 head 开工、草稿 PR 开进它的分支、只评增量；前置 squash 合进泳道后 rebase --onto 只重接自己的提交，切回泳道、转正，重新检查并以泳道为 base 完整评审', t => {
+test('叠放：前置开着时从它的 head 开工、草稿 PR 开进它的分支、只评增量；前置 squash 合进泳道后 rebase --onto 只重接自己的提交，切回泳道、仍是草稿，重新检查并以泳道为 base 完整评审，通过后才转正', t => {
   const f = fixture(t);
   const parent = f.parent();
   f.task('child', 'child work'); f.run('execute', { DEPENDS_ON: PARENT });
@@ -892,7 +892,7 @@ test('叠放：前置开着时从它的 head 开工、草稿 PR 开进它的分�
   const first = f.state().executor.head;
 
   f.run('gate', { OPEN_PR: '' });
-  assert.deepEqual(f.calls('gh').find(c => c.args[1] === 'list').args, ['pr', 'list', '--head', 'lane-pr/pr-run-1', '--state', 'open', '--limit', '1', '--json', 'url', '--jq', '.[].url'], '只按分支找');
+  assert.deepEqual(f.calls('gh').find(c => c.args[1] === 'list').args, ['pr', 'list', '--repo', 'github.com/example/fixture', '--head', 'lane-pr/pr-run-1', '--state', 'open', '--limit', '1', '--json', 'url', '--jq', '.[].url'], '只按分支找');
   const created = f.calls('gh').find(c => c.args[1] === 'create');
   assert.deepEqual(created.args.slice(0, 9), ['pr', 'create', '--base', 'lane-pr/parent-run', '--head', 'lane-pr/pr-run-1', '--draft', '--title', '输入框可以输入']);
   assert.ok(created.body.includes(PARENT));
@@ -912,19 +912,32 @@ test('叠放：前置开着时从它的 head 开工、草稿 PR 开进它的分�
   assert.deepEqual(f.git('rev-list', `${lane}..${head}`).split('\n'), [head], '只重接了自己的一个提交');
   for (const commit of parent.commits) assert.ok(!ancestorOf(f, commit, head), `前置 squash 前的散提交 ${commit} 没有带进来`);
   assert.equal(f.git('show', `${head}:child`), 'child work');
-  const [edit, ready] = f.calls('gh').slice(-2).map(c => c.args);
-  assert.deepEqual(edit, ['pr', 'edit', PR, '--repo', 'github.com/example/fixture', '--base', 'lane/req-1']);
-  assert.deepEqual(ready, ['pr', 'ready', PR, '--repo', 'github.com/example/fixture']);
-  assert.deepEqual({ ...f.state().stack, note: undefined }, { pr: PARENT, branch: 'lane-pr/parent-run', head: parent.head, restacked: true, note: undefined });
+  assert.deepEqual(f.calls('gh').at(-1).args, ['pr', 'edit', PR, '--repo', 'github.com/example/fixture', '--base', 'lane/req-1'], '切回泳道');
+  const readies = () => f.calls('gh').filter(c => c.args[1] === 'ready');
+  assert.equal(readies().length, 0, '新 head 还没检查、评审，仍是草稿');
+  assert.deepEqual({ ...f.state().stack, note: undefined }, { pr: PARENT, branch: 'lane-pr/parent-run', head: parent.head, restacked: true, draft: true, note: undefined });
   assert.match(f.state().stack.note, /reset --hard/);
 
-  // 回到推送、检查、评审：base 是泳道最新 head，不是变基前评过的 head。
+  // 回到推送、检查、评审：base 是泳道最新 head，不是变基前评过的 head。新 head 检查失败、评审有阻塞发现交执行者修时都还是草稿。
+  f.run('gate');
+  assert.equal(f.run('gate-failed').outputs.route, 'revise');
+  assert.equal(readies().length, 0, '检查失败仍是草稿');
   f.delivered();
   assert.equal(f.run('review').outputs.stack, '', '重接之后审查卡不再提示');
   assert.equal(f.calls('gh').filter(c => c.args[1] === 'create').length, 1);
   assert.deepEqual(f.run('review-round').outputs.base, lane);
+  assert.equal(f.run('triage', { REVIEWS: JSON.stringify([reviewed('reviewer', head, [BUG]), { state: 'skipped' }]) }).outputs.route, 'fix');
+  assert.equal(readies().length, 0, '评审修错中仍是草稿');
+  assert.equal(f.state().stack.draft, true);
+  // 执行者修好后复评通过：这里直接以一次完整评审通过代替。
+  writeFileSync(join(f.env.CODA_ARTIFACTS, 'lane-pr.json'), JSON.stringify({ ...f.state(), converge: undefined }));
+  f.run('review-round');
   assert.equal(f.run('triage', { REVIEWS: JSON.stringify([approved(head)]) }).outputs.route, 'pass');
   assert.equal(f.run('stack-status').outputs.route, 'ready');
+  assert.deepEqual(readies().map(c => c.args), [['pr', 'ready', PR, '--repo', 'github.com/example/fixture']], '检查与评审通过后才转正');
+  assert.equal(f.state().stack.draft, undefined);
+  assert.equal(f.run('stack-status').outputs.route, 'ready');
+  assert.equal(readies().length, 1, '只转正一次');
   assert.equal(f.decide('land'), 'land', '重接之后可以合进泳道');
   assert.equal(f.run('land').outputs.route, 'landed');
   // 之后交给同一执行会话的修改先说明分支已被重接，说过一次就不再说。
@@ -958,7 +971,7 @@ test('叠放：重接推送用 --force-with-lease，远端分支被别人改过�
   assert.deepEqual(f.git('rev-list', '--parents', '-n', '1', head).split(' '), [head, lanes], '重新变基到泳道最新 head');
   assert.ok(!ancestorOf(f, parent.head, head) && ancestorOf(f, lane, head));
   assert.deepEqual([f.state().stack.restacked, f.state().stack.pushed, f.state().base], [true, undefined, lanes]);
-  assert.deepEqual(f.calls('gh').slice(-2).map(c => c.args[1]), ['edit', 'ready']);
+  assert.deepEqual(f.calls('gh').slice(-2).map(c => c.args[1]), ['view', 'edit'], '切回泳道，仍是草稿');
 });
 
 test('叠放：推送成功但没来得及记下结果（或响应丢了），重试在新检出的工作区按记下的推送收尾，不再变基、推送', t => {
@@ -979,7 +992,7 @@ test('叠放：推送成功但没来得及记下结果（或响应丢了），�
   assert.equal(f.remote('lane-pr/pr-run-1'), head);
   assert.deepEqual([f.state().stack.restacked, f.state().stack.pushing, f.state().stack.pushed, f.state().base], [true, undefined, undefined, lane]);
   assert.match(f.state().stack.note, new RegExp(`远端分支 lane-pr/pr-run-1 现在是 ${head}`));
-  assert.deepEqual(f.calls('gh').slice(-2).map(c => c.args[1]), ['edit', 'ready']);
+  assert.deepEqual(f.calls('gh').slice(-2).map(c => c.args[1]), ['view', 'edit'], '切回泳道，仍是草稿');
 });
 
 test('叠放：重接推送成功、改 PR 失败后，重试在新检出的工作区不再变基、推送，只切 base、转正', t => {
@@ -999,7 +1012,8 @@ test('叠放：重接推送成功、改 PR 失败后，重试在新检出的工�
   assert.equal(f.state().executor.head, head, '不再变基');
   assert.equal(f.remote('lane-pr/pr-run-1'), head);
   assert.deepEqual([f.state().stack.restacked, f.state().stack.pushed, f.state().base], [true, undefined, lane]);
-  assert.deepEqual(f.calls('gh').slice(-2).map(c => c.args.slice(1)), [['edit', PR, '--repo', 'github.com/example/fixture', '--base', 'lane/req-1'], ['ready', PR, '--repo', 'github.com/example/fixture']]);
+  assert.deepEqual(f.calls('gh').slice(-2).map(c => c.args.slice(1)), [['view', PR, '--repo', 'github.com/example/fixture', '--json', 'state'], ['edit', PR, '--repo', 'github.com/example/fixture', '--base', 'lane/req-1']]);
+  assert.equal(f.calls('gh').filter(c => c.args[1] === 'ready').length, 0, '仍是草稿');
 });
 
 test('叠放：重接冲突交原执行会话变基解冲突，回来核对后收尾', t => {
@@ -1022,7 +1036,7 @@ test('叠放：重接冲突交原执行会话变基解冲突，回来核对后�
   assert.equal(f.remote('lane-pr/pr-run-1'), head);
   assert.equal(f.state().stack.restacked, true);
   assert.equal(f.state().stack.note, undefined, '执行者自己重接的不用再提醒');
-  assert.deepEqual(f.calls('gh').slice(-2).map(c => c.args[1]), ['edit', 'ready']);
+  assert.deepEqual(f.calls('gh').slice(-2).map(c => c.args[1]), ['view', 'edit'], '切回泳道，仍是草稿');
 });
 
 // 叠放升级后，执行者已直接变基到泳道上：gate 解绑叠放之后照常检查、以泳道为 base 评审，合进泳道。
@@ -1031,7 +1045,9 @@ function landsAfterRecovery(f, lane) {
   assert.deepEqual([f.state().stack.recover, f.state().stack.pending], [undefined, undefined]);
   assert.equal(f.run('gate-passed', { RUNS: '[]' }).outputs.base, lane, '以泳道为 base');
   assert.equal(f.run('review-round').outputs.base, lane);
+  assert.equal(f.calls('gh').filter(c => c.args[1] === 'ready').length, 0, '解绑后检查、评审通过前仍是草稿');
   assert.equal(f.run('stack-status').outputs.route, 'ready');
+  assert.deepEqual(f.calls('gh').at(-1).args, ['pr', 'ready', PR, '--repo', 'github.com/example/fixture'], '检查与评审通过后转正');
   assert.equal(f.decide('land'), 'land');
   assert.equal(f.run('land').outputs.route, 'landed');
   assert.equal(f.calls('gh').filter(c => c.args[1] === 'merge').at(-1).args[2], PR);
@@ -1054,9 +1070,9 @@ test('叠放：执行者解冲突后没变基到泳道上交主 Agent；退回�
   f.decide('revise', '变基到泳道'); f.task('shared', 'resolved', undefined, { rebase: [lane, parent.head] }); f.run('revise');
   const head = f.run('gate').outputs.head;
   assert.equal(f.remote('lane-pr/pr-run-1'), head);
-  assert.deepEqual(f.calls('gh').filter(c => ['view', 'edit', 'ready'].includes(c.args[1])).slice(-3).map(c => c.args.slice(1)),
-    [['view', PR, '--repo', 'github.com/example/fixture', '--json', 'state'], ['edit', PR, '--repo', 'github.com/example/fixture', '--base', 'lane/req-1'],
-      ['ready', PR, '--repo', 'github.com/example/fixture']]);
+  assert.deepEqual(f.calls('gh').filter(c => ['view', 'edit', 'ready'].includes(c.args[1])).slice(-2).map(c => c.args.slice(1)),
+    [['view', PR, '--repo', 'github.com/example/fixture', '--json', 'state'], ['edit', PR, '--repo', 'github.com/example/fixture', '--base', 'lane/req-1']]);
+  assert.equal(f.state().stack.draft, true, '解绑后仍是草稿');
   landsAfterRecovery(f, lane);
 });
 
@@ -1082,10 +1098,10 @@ test('叠放：执行者解冲突后推送已更新远端、命令却非零退�
   assert.equal(f.run('restack', noPush, 0, f.fresh()).outputs.route, 'gate');
   assert.deepEqual([f.state().executor.head, f.state().stack.restacked, f.state().stack.pushing, f.state().stack.pushed, f.state().base], [head, true, undefined, undefined, lane]);
   assert.equal(f.state().stack.note, undefined, '执行者自己重接的不用再提醒');
-  assert.deepEqual(f.calls('gh').slice(-2).map(c => c.args[1]), ['edit', 'ready']);
+  assert.deepEqual(f.calls('gh').slice(-2).map(c => c.args[1]), ['view', 'edit'], '切回泳道，仍是草稿');
 });
 
-test('叠放：执行期间前置已 squash 合进泳道并删了分支，gate 不往前置分支开 PR，先重接再回到 gate 开进泳道的正式 PR', t => {
+test('叠放：执行期间前置已 squash 合进泳道并删了分支，gate 不往前置分支开 PR，先重接再回到 gate 以草稿开进泳道，检查与评审通过后转正', t => {
   const f = fixture(t);
   const parent = f.parent();
   f.task('child', 'child work'); f.run('execute', { DEPENDS_ON: PARENT });
@@ -1103,11 +1119,13 @@ test('叠放：执行期间前置已 squash 合进泳道并删了分支，gate �
   assert.equal(f.run('gate').outputs.route, 'checks');
   const created = f.calls('gh').filter(c => c.args[1] === 'create');
   assert.equal(created.length, 1);
-  assert.deepEqual(created[0].args.slice(0, 8), ['pr', 'create', '--base', 'lane/req-1', '--head', 'lane-pr/pr-run-1', '--title', '输入框可以输入'], '开进泳道的正式 PR');
+  assert.deepEqual(created[0].args.slice(0, 9), ['pr', 'create', '--base', 'lane/req-1', '--head', 'lane-pr/pr-run-1', '--draft', '--title', '输入框可以输入'], '以草稿开进泳道');
   assert.ok(!created[0].body.includes(PARENT));
   assert.equal(f.state().pr, PR);
   assert.equal(f.run('gate-passed', { RUNS: '[]' }).outputs.base, lane, '以泳道为 base 检查与评审');
+  assert.equal(f.calls('gh').filter(c => c.args[1] === 'ready').length, 0);
   assert.equal(f.run('stack-status').outputs.route, 'ready');
+  assert.deepEqual(f.calls('gh').at(-1).args, ['pr', 'ready', PR, '--repo', 'github.com/example/fixture'], '检查与评审通过后转正');
 });
 
 test('叠放：执行期间前置被 force-push 改写后合进泳道，gate 直接去重接、重接升级前先以草稿开进泳道，主 Agent 放弃能关掉 PR、删掉分支', t => {
@@ -1126,10 +1144,10 @@ test('叠放：执行期间前置被 force-push 改写后合进泳道，gate 直
   f.run('restack', { CREATE_LOST: '1' }, 1);
   assert.deepEqual([f.state().pr, f.state().stack.recover], ['', undefined]);
   assert.equal(f.run('restack', { OPEN_PR: PR }).outputs.route, 'review');
-  assert.deepEqual(f.calls('gh').filter(c => c.args[1] === 'list').at(-1).args.slice(0, 4), ['pr', 'list', '--head', 'lane-pr/pr-run-1']);
+  assert.deepEqual(f.calls('gh').filter(c => c.args[1] === 'list').at(-1).args.slice(0, 6), ['pr', 'list', '--repo', 'github.com/example/fixture', '--head', 'lane-pr/pr-run-1']);
   const created = f.calls('gh').filter(c => c.args[1] === 'create');
   assert.equal(created.length, 1, '重试没有再开');
-  assert.deepEqual(created[0].args.slice(0, 7), ['pr', 'create', '--base', 'lane/req-1', '--head', 'lane-pr/pr-run-1', '--draft'], '升级前以草稿开进泳道');
+  assert.deepEqual(created[0].args.slice(0, 9), ['pr', 'create', '--repo', 'github.com/example/fixture', '--base', 'lane/req-1', '--head', 'lane-pr/pr-run-1', '--draft'], '升级前以草稿开进泳道');
   assert.ok(created[0].body.includes(PARENT));
   assert.deepEqual([f.state().pr, f.state().stack.recover], [PR, true]);
   assert.equal(f.run('review').outputs.pr, PR, '审查卡上有 PR');
@@ -1139,7 +1157,7 @@ test('叠放：执行期间前置被 force-push 改写后合进泳道，gate 直
   assert.equal(f.remote('lane-pr/pr-run-1'), '', '分支已删');
 });
 
-test('叠放：执行期间前置关了没合并、删了分支，gate 以草稿开进泳道后直接交主 Agent；退回修改变基到泳道后转正，照常合进泳道', t => {
+test('叠放：执行期间前置关了没合并、删了分支，gate 以草稿开进泳道后直接交主 Agent；退回修改变基到泳道后检查与评审通过才转正，照常合进泳道', t => {
   const f = fixture(t);
   const parent = f.parent();
   f.task('child', 'child work'); f.run('execute', { DEPENDS_ON: PARENT });
@@ -1148,7 +1166,7 @@ test('叠放：执行期间前置关了没合并、删了分支，gate 以草稿
   assert.equal(f.run('gate').outputs.route, 'review');
   const created = f.calls('gh').filter(c => c.args[1] === 'create');
   assert.equal(created.length, 1);
-  assert.deepEqual(created[0].args.slice(0, 7), ['pr', 'create', '--base', 'lane/req-1', '--head', 'lane-pr/pr-run-1', '--draft']);
+  assert.deepEqual(created[0].args.slice(0, 9), ['pr', 'create', '--repo', 'github.com/example/fixture', '--base', 'lane/req-1', '--head', 'lane-pr/pr-run-1', '--draft']);
   assert.equal(f.state().stack.recover, true);
   assert.equal(f.state().feedback, `前置泳道 PR ${PARENT} 已关闭、没有合并。这个泳道 PR 叠在它上面（从 ${parent.head} 开工），不能合进泳道：请选择放弃，或退回修改让执行者把自己的提交改为直接基于泳道 lane/req-1（需要的前置改动一并带上）。`);
   assert.equal(f.run('review').outputs.pr, PR, '审查卡上有 PR');
@@ -1156,12 +1174,12 @@ test('叠放：执行期间前置关了没合并、删了分支，gate 以草稿
   const lane = f.remote('lane/req-1');
   f.decide('revise', '改为直接基于泳道'); f.task('child', 'moved', undefined, { rebase: [lane, parent.head] }); f.run('revise');
   assert.equal(f.run('gate').outputs.route, 'checks');
-  assert.deepEqual(f.calls('gh').slice(-2).map(c => c.args[1]), ['edit', 'ready'], '草稿转正');
+  assert.deepEqual(f.calls('gh').slice(-2).map(c => c.args[1]), ['view', 'edit'], '解绑：切回泳道，仍是草稿');
   assert.equal(f.calls('gh').filter(c => c.args[1] === 'create').length, 1);
   landsAfterRecovery(f, lane);
 });
 
-test('叠放：草稿 PR 开在前置分支上、前置合并删分支时被 GitHub 关掉，重接后不改它，回到 gate 重新开进泳道的正式 PR', t => {
+test('叠放：草稿 PR 开在前置分支上、前置合并删分支时被 GitHub 关掉，重接后不改它，回到 gate 重新以草稿开进泳道', t => {
   const f = fixture(t);
   const parent = f.parent();
   f.task('child', 'child work'); f.run('execute', { DEPENDS_ON: PARENT }); f.delivered();
@@ -1174,8 +1192,49 @@ test('叠放：草稿 PR 开在前置分支上、前置合并删分支时被 Git
   assert.equal(f.run('gate').outputs.route, 'checks');
   const created = f.calls('gh').filter(c => c.args[1] === 'create');
   assert.equal(created.length, 2);
-  assert.deepEqual(created[1].args.slice(0, 8), ['pr', 'create', '--base', 'lane/req-1', '--head', 'lane-pr/pr-run-1', '--title', '输入框可以输入'], '重新开进泳道的正式 PR');
+  assert.deepEqual(created[1].args.slice(0, 9), ['pr', 'create', '--base', 'lane/req-1', '--head', 'lane-pr/pr-run-1', '--draft', '--title', '输入框可以输入'], '重新以草稿开进泳道');
   assert.equal(f.run('gate-passed', { RUNS: '[]' }).outputs.base, lane);
+});
+
+test('叠放：草稿 PR 已随前置关闭删分支被 GitHub 关掉，「查看前置泳道 PR」在没有检出的空目录里升级前先用 --repo 找已开的、没有才重开进泳道的草稿；开 PR 的响应丢了重试不再开', t => {
+  const f = fixture(t);
+  f.parent();
+  f.task('child', 'child work'); f.run('execute', { DEPENDS_ON: PARENT }); f.delivered();
+  assert.equal(f.state().pr, PR);
+  f.setParent({ state: 'CLOSED' });
+  f.dropParent();
+  const repo = ['--repo', 'github.com/example/fixture'];
+  // 第一次开草稿的响应丢了：这一步失败、状态不动；重试先按分支找到已开的 PR，不再开。
+  f.run('stack-status', { OWN_STATE: 'CLOSED', CREATE_LOST: '1' }, 1);
+  assert.deepEqual([f.state().pr, f.state().stack.recover, f.state().stack.draft], [PR, undefined, undefined]);
+  const create = f.calls('gh').filter(c => c.args[1] === 'create').at(-1).args;
+  assert.deepEqual(create.slice(0, 9), ['pr', 'create', ...repo, '--base', 'lane/req-1', '--head', 'lane-pr/pr-run-1', '--draft'], '以草稿开进泳道，带 --repo');
+  const reopened = 'https://github.com/example/fixture/pull/8';
+  assert.equal(f.run('stack-status', { OWN_STATE: 'CLOSED', OPEN_PR: reopened }).outputs.route, 'review');
+  const calls = f.calls('gh').slice(-3).map(c => c.args);
+  assert.deepEqual(calls[1], ['pr', 'view', PR, ...repo, '--json', 'state'], '先认原 PR 的状态');
+  assert.deepEqual(calls[2].slice(0, 6), ['pr', 'list', ...repo, '--head', 'lane-pr/pr-run-1']);
+  assert.equal(f.calls('gh').filter(c => c.args[1] === 'create').length, 2, '重试没有再开');
+  assert.deepEqual([f.state().pr, f.state().stack.recover, f.state().stack.draft], [reopened, true, true]);
+  const report = f.run('review').outputs;
+  assert.deepEqual([report.pr, report.stack], [reopened, ''], '审查卡上是开着的新草稿 PR，不再提示回去等前置');
+  assert.match(report.feedback, /已关闭、没有合并/);
+});
+
+test('叠放：重接后新 head 的评审升级交主 Agent（没经过「查看前置泳道 PR」），选合进泳道时先转正再合并', t => {
+  const f = fixture(t);
+  const parent = f.parent();
+  f.task('child', 'child work'); f.run('execute', { DEPENDS_ON: PARENT }); f.delivered();
+  f.squash(parent.head);
+  assert.equal(f.run('restack').outputs.route, 'gate');
+  f.delivered(); f.run('review-round');
+  assert.equal(f.run('triage', { REVIEWS: JSON.stringify([{ state: 'lost', slot: 'reviewer', who: JSON.stringify({ agent: 'reviewer' }), head: f.state().executor.head }, { state: 'skipped' }]) }).outputs.route, 'escalate');
+  assert.equal(f.calls('gh').filter(c => c.args[1] === 'ready').length, 0, '升级时仍是草稿');
+  assert.equal(f.decide('land'), 'land');
+  assert.equal(f.run('land').outputs.route, 'landed');
+  const tail = f.calls('gh').filter(c => ['ready', 'merge'].includes(c.args[1])).map(c => c.args.slice(0, 3));
+  assert.deepEqual(tail, [['pr', 'ready', PR], ['pr', 'merge', PR]], '合并前先转正');
+  assert.equal(f.state().stack.draft, undefined);
 });
 
 test('叠放：前置在开工时的 head 之上追加提交后 squash 合进泳道（分支已删，只剩 refs/pull），取回前置最终 head 核对后照常重接', t => {
@@ -1218,7 +1277,9 @@ test('叠放：前置被 force-push 改写成不含开工时 head 的提交后 s
   assert.deepEqual([f.state().stack.restacked, f.state().stack.recover, f.state().stack.pushing], [false, true, undefined]);
   assert.equal(f.remote('lane-pr/pr-run-1'), first, '分支不动');
   assert.equal(f.calls('gh').filter(c => ['edit', 'ready'].includes(c.args[1])).length, 0);
-  assert.equal(f.decide('land'), 'stack', '没解绑前照旧拦住');
+  assert.equal(f.run('review').outputs.stack, '', '已升级：审查卡不再提示回去等前置');
+  assert.equal(f.decide('land'), 'review', '没解绑前拦回审查卡，不再回去等前置');
+  assert.match(f.state().feedback, /前置已不能自动重接到泳道[\s\S]*「退回修改」[\s\S]*「换备用执行者重做」[\s\S]*「放弃」/);
 });
 
 test('叠放：等待期间前置被改为合进别的分支，开着或已合并都不重接，交主 Agent', t => {
@@ -1273,14 +1334,14 @@ test('叠放：前置关了没合并交主 Agent，重接前选合进泳道被�
   assert.equal(f.run('stack-status').outputs.route, 'review');
   assert.match(f.run('review').outputs.feedback, /已关闭、没有合并/);
   assert.equal(f.state().stack.recover, true);
-  assert.equal(f.decide('land'), 'stack', '没解绑前照旧拦住');
+  assert.equal(f.decide('land'), 'review', '没解绑前拦回审查卡');
 
   const lane = f.remote('lane/req-1');
   f.decide('revise', '改为直接基于泳道'); f.task('child', 'moved', undefined, { rebase: [lane, parent.head] }); f.run('revise');
   f.run('gate', { OWN_STATE: 'CLOSED' });
   const created = f.calls('gh').filter(c => c.args[1] === 'create');
   assert.equal(created.length, 2);
-  assert.deepEqual(created[1].args.slice(0, 8), ['pr', 'create', '--base', 'lane/req-1', '--head', 'lane-pr/pr-run-1', '--title', '输入框可以输入'], '重新开进泳道的正式 PR');
+  assert.deepEqual(created[1].args.slice(0, 9), ['pr', 'create', '--base', 'lane/req-1', '--head', 'lane-pr/pr-run-1', '--draft', '--title', '输入框可以输入'], '重新以草稿开进泳道');
   assert.equal(f.calls('gh').filter(c => c.args[1] === 'edit').length, 0);
   landsAfterRecovery(f, lane);
 });
@@ -1301,11 +1362,11 @@ test('叠放：执行者改写了祖先时不自动重接、交主 Agent；没�
   f.decide('revise', '再改'); f.task('child', 'again'); f.run('revise');
   f.run('gate');
   assert.deepEqual([f.state().stack.restacked, f.state().stack.recover, f.state().base], [false, true, parent.head]);
-  assert.equal(f.decide('land'), 'stack');
+  assert.equal(f.decide('land'), 'review');
 
   f.decide('revise', '变基到泳道最新 head'); f.task('child', 'rebased', undefined, { rebase: [lane, old] }); f.run('revise');
   f.run('gate');
-  assert.deepEqual(f.calls('gh').slice(-2).map(c => c.args[1]), ['edit', 'ready']);
+  assert.deepEqual(f.calls('gh').slice(-2).map(c => c.args[1]), ['view', 'edit']);
   landsAfterRecovery(f, lane);
 });
 
@@ -1409,8 +1470,9 @@ test('小改动免主控审查：只加带断言的测试、评审全 APPROVE �
   assert.equal(f.run('land', { PR_STATE: 'MERGED' }).outputs.auto, undefined);
 });
 
-test('小改动免主控审查：只改插件 README 也免审', t => {
-  assert.equal(minorAfter(t, { 'plugins/composer/README.md': '说明\n' }).route, 'land');
+test('小改动免主控审查：只改仓库根 README 也免审；插件 README 记载流程契约，不免审', t => {
+  assert.equal(minorAfter(t, { 'README.md': '说明\n' }).route, 'land');
+  assert.equal(minorAfter(t, { 'plugins/composer/README.md': '说明\n' }).route, 'review');
 });
 
 test('小改动免主控审查：删测试文件、新增 skip、只删断言、改了源码都回到审查卡，并在步骤摘要写明原因', t => {
