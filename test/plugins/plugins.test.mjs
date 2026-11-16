@@ -32,9 +32,10 @@ function argumentsAt(source, open) {
 // name bound to a createRequire) — multi-line, conditional and fallback forms included. A name built at run time (a
 // template with ${…}) is the business of the package it is resolved beside, and is left out. Comments are left out too
 // (a `#require(` in one would otherwise take the strings after it for names); strings, templates and regular expressions
-// are matched alongside them only so the `//` in a URL or a pattern is not taken for one.
+// are matched alongside them only so the `//` in a URL or a pattern is not taken for one — a `/` begins a pattern only
+// where a value may begin (at the start, after an operator, an opening bracket, a comment or a keyword like return), else it divides.
 export function packagesUsed(source) {
-  source = source.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*|(['"])(?:\\.|(?!\1)[^\\\n])*\1|`(?:\\.|[^\\`])*`|\/(?:\\.|\[(?:\\.|[^\]\n])*\]|[^/\\\n])+\//g,
+  source = source.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*|(['"])(?:\\.|(?!\1)[^\\\n])*\1|`(?:\\.|[^\\`])*`|(?<=(?:^|[(,=:[!&|?{};+\-*/%<>~^]|\b(?:return|typeof|case|do|else|in|of|void|yield|await|delete|throw|new))\s*)\/(?:\\.|\[(?:\\.|[^\]\n])*\]|[^/\\\n])+\//g,
     m => /^\/[/*]/.test(m) ? ' ' : m);
   const names = [], requires = [...source.matchAll(/\b([\w$]+)\s*=\s*createRequire\s*\(/g)].map(m => m[1]);
   const calls = new RegExp(String.raw`\b(?:import|require)\s*\(|(?:\bimport\.meta|\brequire|\)${requires.map(r => `|\\b${r}`).join('')})\.resolve\s*\(`, 'g');
@@ -50,8 +51,10 @@ test('a package is found however a plugin asks for it, and only a package', () =
     createRequire(env.Y || createRequire(import.meta.url).resolve('three/sub/file.js')); new URL(import.meta.resolve('@x/four/bin/x.js'));
     import('./local.mjs'); import { join } from 'node:path'; require('fs'); sdk.resolve(\`@x/five-\${arch}/bin\`); spawn('kimi', ['acp']);
     // Swift #require(
+    const ratio = total / count; // require('ghost')
+    x = done / total; /* require('phantom') */ /\\/\\//.test(u) && require('eight');
     /* require('seven') */ fetch('https://example.com'); Promise.resolve({ action: 'cancel' }); const req = createRequire(here); req.resolve('six');`),
-  ['@x/one', '@x/two', 'three', '@x/four', 'six']);
+  ['@x/one', '@x/two', 'three', '@x/four', 'eight', 'six']);
 });
 
 describe('the plugins here', () => {
