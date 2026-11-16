@@ -18,7 +18,7 @@ const after = `.once("exit", (code, signal) => {
       });`;
 export function followCodexProcessExit(source) {
   if (source.split(before).length !== 2 || !source.includes('this.getRecentStderr = ')) throw new Error('codex-acp process exit patch no longer matches the locked adapter');
-  return `import * as codaProcessExit from ${JSON.stringify(import.meta.url)};\n${source.replace(before, after)}`;
+  return `import * as codaProcessExit from ${JSON.stringify(import.meta.url)};\n${source.replace(/^#![^\n]*\n/, '').replace(before, after)}`;
 }
 
 let heard = () => {};
