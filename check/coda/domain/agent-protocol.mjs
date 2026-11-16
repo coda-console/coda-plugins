@@ -19,6 +19,14 @@ export const clientCapabilities = () => ({
 export const REMOTE = '_coda/remote', REMOTE_CODE = '_coda/remote/code';
 export const supportsRemote = init => init?.agentCapabilities?._meta?.coda?.remote != null
   && typeof init.agentCapabilities._meta.coda.remote === 'object';
+// The probe (「配置探测」): an agent that declares it answers a `session/new` marked as one with a session of this connection only,
+// no native session behind it, so a probe has nothing to delete. The declaration is strictly an object (not the array remote
+// historically also accepts); the mark keeps whatever else the request's `_meta` and its `coda` hold.
+export const supportsProbe = init => {
+  const probe = init?.agentCapabilities?._meta?.coda?.probe;
+  return probe !== null && typeof probe === 'object' && !Array.isArray(probe);
+};
+export const probeMeta = meta => ({ ...meta, coda: { ...meta?.coda, probe: true } });
 // The agent refuses until it is signed in (ACP's auth_required).
 export const SIGNED_OUT = -32000;
 // Session instructions (「会话指令」): ACP's `systemPrompt`, only to an agent that declares it, the same on every open of
