@@ -1386,6 +1386,21 @@ test('asked by Coda, a session compacts in a turn of no one\'s that says nothing
   assert.deepEqual(c.said(), ['hello', 'again', 'after']);
 });
 
+test('when the session ends during a compaction, the prompt waiting behind it is not accepted: the turn going is the compaction\'s', async t => {
+  const write = process.stderr.write;
+  process.stderr.write = () => true;
+  t.after(() => { process.stderr.write = write; });
+  const c = await compactable(t);
+  await c.prompt('hello');
+  c.query.compactHeld = true;
+  // The prompt comes before the compaction's init is read, so that init does not open a turn of Claude's own.
+  const asked = c.session.compact({ sessionId: c.sessionId }), waiting = c.session.prompt({ prompt: [{ type: 'text', text: 'manual' }] }).catch(error => error);
+  await until(() => c.query.received.length === 3 && c.compactions().length === 1);
+  c.query.queue.push(() => { throw new Error('killed'); }); c.query.wake?.();
+  assert.deepEqual(marked(await waiting), { kind: 'session_ended', input: 'not_accepted' });
+  assert.equal((await asked).compacted, false);
+});
+
 test('compaction status and boundary finish one entry in either order; the next compaction gets its own', async t => {
   for (const compactBoundaryFirst of [false, true]) await t.test(compactBoundaryFirst ? 'boundary first' : 'status first', async t => {
     const c = await compactable(t);

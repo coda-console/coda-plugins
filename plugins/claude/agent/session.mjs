@@ -459,17 +459,18 @@ export class ClaudeSession {
     // What ended it, kept for the turns that go on asking and written to the log: a query that ends without an error says so.
     this.endReason = intended ? 'Coda 关闭了会话' : error?.message || 'Claude SDK 查询结束，没有给出错误';
     if (!intended) process.stderr.write(`Claude 会话结束：${this.endReason}\n`);
-    const held = this.held;
+    const held = this.held, compacting = this.compacting;
     this.phase = 'ended'; this.input.close(); this.steering.clear(); this.held = null; this.ending = null;
     this.compacting?.answer({ compacted: false, reason: error?.message ?? 'Claude 会话已结束' }); this.compacting = null;
     for (const withdrawn of this.withdrawals) withdrawn.abort();
     // Each prompt says whether the native session had its input, where that is known: the one a native turn of Coda's is running
     // (or whose turn ended with messages left to take) was taken, those queued behind it never ran. With no such turn going, an
-    // input may or may not have been read before the session ended: not said.
-    const running = this.turning && !this.opening && !this.waits.handling && !this.waits.unclaimed;
+    // input may or may not have been read before the session ended: not said. A compaction Coda asked for came before any prompt
+    // that waits (compact), and the turn going is its: those prompts have not run.
+    const running = !compacting && this.turning && !this.opening && !this.waits.handling && !this.waits.unclaimed;
     let first = true;
     for (const [id, { reject }] of this.prompts) {
-      const input = id === held || running && first ? 'accepted' : running || held ? 'not_accepted' : undefined;
+      const input = id === held || running && first ? 'accepted' : running || held || compacting ? 'not_accepted' : undefined;
       first = false;
       reject(new RequestError(-32603, `Claude 会话已结束：${this.endReason}`, { _meta: { coda: { failure: { kind: 'session_ended', ...(input && { input }) } } } }));
     }
