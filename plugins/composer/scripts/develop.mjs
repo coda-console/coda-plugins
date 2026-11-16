@@ -270,12 +270,17 @@ switch (action) {
       fail(attempt);
     }
     const executor = attempt.reply;
+    // 先落盘会话：随后推送泳道因网络失败退出时，再跑接回这个会话，不另开；推送成功后清掉。
+    state.sync.session = executor.session;
+    save();
     let route = 'pr';
     if (!ancestor(base, executor.head) || !ancestor(lane, executor.head)) {
       back(`跟上目标分支：执行者没有把 ${state.base} ${base} 合并进泳道 ${lane}（执行会话 ${executor.session}，head ${executor.head}）。执行者的回答：\n${executor.answer}\n请发起 sync=true 的泳道 PR 处理冲突，合进泳道后再提交验收。`);
       route = 'progress';
-    } else if (pushLane(executor.head, lane)) pushed(lane, executor.head, `跟上 ${state.base}，执行者解冲突`);
-    else route = 'progress';
+    } else if (pushLane(executor.head, lane)) {
+      pushed(lane, executor.head, `跟上 ${state.base}，执行者解冲突`);
+      delete state.sync.session;
+    } else route = 'progress';
     save();
     output('route', route);
     break;
@@ -291,6 +296,7 @@ switch (action) {
     break;
   }
   // 分流（triage.mjs 的 triageOverall）：accept 直接进验收，没修的 P3 写进汇报（更新 PR 描述，批准卡用输出的 summary）；fix 交执行者；escalate 交主 Agent 的「整体评审结论」。
+  // auto 是自动合并的唯一判定：开了 autoMerge、accept 且没有任何没关的发现（含 P3）；带 P3 的 accept 照常出批准卡。
   case 'overall-triage': {
     const c = state.converge, head = state.head;
     if (c.full) c.rounds = 0;
@@ -307,6 +313,7 @@ switch (action) {
     save();
     output('route', result.route);
     output('summary', summary);
+    output('auto', String(env.AUTO === 'true' && result.route === 'accept' && !minor.length));
     break;
   }
   // 没关的 P2 交开工执行者在泳道上逐条修复或反驳：第一轮从泳道 head 开会话，之后续同一会话；它只提交，这里普通推送到泳道。
@@ -334,6 +341,7 @@ switch (action) {
     const executor = attempt.reply;
     c.session = executor.session;
     delete c.fixing;
+    save();
     const responses = readResponses(executor.answer, open.map(f => f.id));
     for (const f of open) f.response = responses[f.id];
     const moved = executor.head !== from, disputed = Object.values(responses).some(r => r.disposition === 'disputed');

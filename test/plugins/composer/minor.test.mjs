@@ -43,12 +43,15 @@ test('路径：只放行测试与非契约说明文档；源码、package.json�
   for (const mode of ['120000', '160000']) assert.match(reasons({ changes: [change('test/link', 'A', ['000000', mode])], patches: {} }).join('\n'), /符号链接或子模块/);
 });
 
-test('防删测与防跳过：删测试文件、新增 skip 或 todo、只删断言都不免审', () => {
+test('防删测与防跳过：删测试文件、新增 skip、todo 或 only、只删断言都不免审', () => {
   assert.match(reasons({ changes: [change('test/a.test.mjs', 'D', ['100644', '000000'])], patches: {} }).join('\n'), /删了测试文件/);
-  for (const line of ["+test.skip('x', () => {});", "+it.todo('x');", "+test('x', { skip: true }, () => {});", "+test('x', {todo: 'later'}, () => {});"]) {
-    assert.match(reasons({ patches: { 'test/a.test.mjs': { added: [line, '+assert.ok(1);'], removed: [] } } }).join('\n'), /skip 或 todo/, line);
+  for (const line of ["+test.skip('x', () => {});", "+it.todo('x');", "+test('x', { skip: true }, () => {});", "+test('x', {todo: 'later'}, () => {});",
+    '+  skip: true,', "+  timeout: 5, todo: 'later',", "+test.only('x', () => {});", "+describe.only('x', () => {});", "+test('x', { only: true }, () => {});", '+  only: true,']) {
+    assert.match(reasons({ patches: { 'test/a.test.mjs': { added: [line, '+assert.ok(1);'], removed: [] } } }).join('\n'), /新增了 skip、todo 或 only/, line);
   }
-  assert.deepEqual(reasons({ patches: { 'test/a.test.mjs': { added: ["+{ state: 'skipped' }"], removed: [] } } }), [], 'skipped 不是 skip');
+  for (const line of ["+{ state: 'skipped' }", "+  assert.deepEqual(outputs, { only: '[]' });"]) {
+    assert.deepEqual(reasons({ patches: { 'test/a.test.mjs': { added: [line, '+assert.ok(1);'], removed: [] } } }), [], `${line} 不算`);
+  }
   assert.match(reasons({ patches: { 'test/a.test.mjs': { added: ['+console.log(1);'], removed: ['-  assert.equal(1, 1);'] } } }).join('\n'), /删了断言/);
   assert.deepEqual(reasons({ patches: { 'test/a.test.mjs': { added: ['+  assert.equal(2, 2);'], removed: ['-  assert.equal(1, 1);'] } } }), [], '改写断言可以');
 });

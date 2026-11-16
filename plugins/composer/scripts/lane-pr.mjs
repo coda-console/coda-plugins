@@ -195,6 +195,8 @@ switch (action) {
     output('checks', checksText(state.checks, state.executor.head));
     for (const [name, value] of Object.entries({ ...state.executor, lane: state.lane, pr: state.pr, feedback: state.feedback, returns: state.returns })) output(name, value);
     output('reviews', reviewsText(env.REVIEWS, state.executor.head, '评审这次交付'));
+    // 审查卡只在仍叠放、还没重接时提示「合进泳道不会合并」。
+    output('stack', stacked() ? state.stack.pr : '');
     break;
   case 'decide': {
     const { choice, note = '' } = JSON.parse(env.REVIEW);
@@ -243,7 +245,7 @@ switch (action) {
     // 免主控审查合入的（state.auto 由 minor 写下）：审计摘要写进步骤摘要，也作为结束事件的输出。
     if (state.auto) {
       const summary = ['## 小改动免主控审查，已自动合进泳道', '',
-        '原因：开了小改动免主控审查（autoLandMinor）；当前 head 项目检查通过；评审者全部 APPROVE、没有发现、账本没有没关的发现；改动只涉及测试与说明文档，没有删测试、没有新增 skip 或 todo、没有只删断言。',
+        '原因：开了小改动免主控审查（autoLandMinor）；当前 head 项目检查通过；评审者全部 APPROVE、没有发现、账本没有没关的发现；改动只涉及测试与说明文档，没有删测试、没有新增 skip、todo 或 only、没有只删断言。',
         `PR：${state.pr}`, `合入提交：${commit}`, `泳道：${state.lane}`, `head：${head}`,
         '', '改动文件：', ...state.auto.files.map(file => `- ${file}`),
         '', '项目检查：', checksText(state.checks, head), '', '评审：', ...state.auto.reviews.map(line => `- ${line}`)].join('\n');
@@ -350,6 +352,16 @@ switch (action) {
     const push = (head, from) => git('push', '--no-follow-tags', `--force-with-lease=refs/heads/${state.branch}:${from}`, 'origin', `${head}:refs/heads/${state.branch}`);
     if (!s.pushed && !s.pending && s.pushing?.head !== remote) {
       const from = state.executor.head;
+      // 前置合并时的最终 head 不是开工时记下的：只是在它上面追加了提交才照常重接；取不回或不是它的后代（前置历史被 force-push 改写），
+      // 这一块依赖的前置改动可能已不在泳道里，交主 Agent 判断。
+      const { headRefOid } = JSON.parse(gh('pr', 'view', s.pr, '--repo', repoOf(s.pr), '--json', 'headRefOid'));
+      if (headRefOid !== s.head) {
+        if (spawnSync('git', ['fetch', 'origin', headRefOid]).status !== 0) spawnSync('git', ['fetch', 'origin', `refs/pull/${s.pr.split('/').at(-1)}/head`]);
+        if (!ancestor(s.head, headRefOid)) {
+          escalate(`前置泳道 PR ${s.pr} 已合进泳道，但它合并时的 head ${headRefOid} 不再以这个 PR 开工时的前置 head ${s.head} 为祖先（前置退回修改或换人后改写了历史，或取不回这个提交），这个 PR 依赖的前置改动可能已不在泳道里，流程没有自动重接。请核对依赖是否仍成立：仍成立就退回修改，让执行者把自己的改动重接到泳道 ${state.lane} 最新 head 上，按泳道里前置的最终实现调整；不再需要就放弃。`);
+          break;
+        }
+      }
       if (!ancestor(s.head, from)) {
         escalate(`前置泳道 PR ${s.pr} 已合进泳道，但这个 PR 的 head ${from} 不再以前置的 head ${s.head} 为祖先，流程分不清哪些是它自己的提交，没有自动重接。请退回修改，让执行者把自己的改动重接到泳道 ${state.lane} 最新 head 上；或放弃。`);
         break;
