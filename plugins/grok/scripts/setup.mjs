@@ -1,6 +1,7 @@
 // The plugin's setup (`contributes.setup`), which Coda runs on each machine when the user installs or updates the plugin: it
-// ends well once the machine can run the agent. Without a Grok CLI that runs, or with one older than MINIMUM (the CLI whose
-// `agent --no-leader stdio`, `_x.ai/yolo_mode_changed` and `sessions delete` the agent entry was checked against), Grok's own installer puts
+// ends well once the machine can run the agent. Without a Grok CLI that runs, or with one older than MINIMUM (the CLI the entry's
+// `sessions delete` was checked against: 1.0.77; `agent --no-leader stdio` and the `_x.ai/yolo_mode_changed`
+// notification were checked on 1.0.52, not rechecked on 1.0.77), Grok's own installer puts
 // the latest in ~/.grok/bin, where the agent looks first, as the「Grok」type's install does; a newer one is kept. Why the
 // machine is not ready is said in one line on standard error.
 import { spawnSync } from 'node:child_process';

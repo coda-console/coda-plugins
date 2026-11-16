@@ -52,8 +52,11 @@ test('Grok declares session/delete and answers it with `grok sessions delete`, n
   }
   assert.equal((await p.request('session/delete', {}, { timeout: 5000 })).error.code, -32602);
   assert.equal(calls().length, 6, 'the invalid request never starts the command');
+  // A CLI that never answers, stood in for by one that only sleeps.
+  const slow = join(dir, 'slow-grok');
+  writeFileSync(slow, '#!/bin/sh\nexec sleep 30\n', { mode: 0o755 });
   const started = Date.now();
-  assert.deepEqual(await deleteSession(join(dir, '.grok/bin/grok'), 'hang', 300), { code: -32603, message: '删除 Grok 会话超时' });
+  assert.deepEqual(await deleteSession(slow, 'abc', 300), { code: -32603, message: '删除 Grok 会话超时' });
   assert.ok(Date.now() - started < 3000);
   // The native fixture answers session/delete with Method not found: none of those errors came from it, and the rest passes through.
   assert.equal((await p.request('session/nope', {}, { timeout: 5000 })).error.message, 'Method not found');

@@ -3,12 +3,11 @@
 import { appendFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 // `grok sessions delete <id>`, as the CLI prints it (exit 0 also for a session it does not have); logs how it was called, and the
-// id says how it ends.
+// id says how it ends (HOME is the test's temporary directory).
 if (process.argv[2] === 'sessions') {
   const id = process.argv.at(-1);
   appendFileSync(`${process.env.HOME}/sessions-calls.jsonl`, `${JSON.stringify(process.argv.slice(2))}\n`);
-  if (id === 'hang') setInterval(() => {}, 1000);
-  else if (id === 'gone') { process.stdout.write(`No session found with id ${id}.\n`); process.exit(0); }
+  if (id === 'gone') { process.stdout.write(`No session found with id ${id}.\n`); process.exit(0); }
   else if (id === 'odd') { process.stdout.write('\nsomething else\n'); process.exit(0); }
   else if (id === 'mute') process.exit(0);
   else if (id === 'broken') { process.stderr.write('\nstorage is locked\nmore\n'); process.exit(1); }

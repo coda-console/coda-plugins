@@ -1,9 +1,9 @@
-// Grok 1.0.52 reports no ACP modes. Translate set_mode to the notification its own UI sends; everything else passes
+// Grok (checked on 1.0.52) reports no ACP modes. Translate set_mode to the notification its own UI sends; everything else passes
 // through. No selected mode (the empty currentModeId) leaves the machine's configuration in charge, as before.
 // Grok's questions are asked of Coda as ACP forms (questions.mjs). Grok gives one up (its timeout, a cancelled turn)
 // by ending the tool call alone, so that end withdraws the form.
-// Grok's ACP has no session/delete, so the entry declares it and answers it with `grok sessions delete` (delete.mjs): Coda's
-// probes (session/new, then gone) leave no empty sessions in Grok's history.
+// Grok's ACP has no session/delete, so the entry declares it and answers it with `grok sessions delete`
+// (delete.mjs; checked on 1.0.77): Coda's probes (session/new, then gone) leave no empty sessions in Grok's history.
 import { spawn } from 'node:child_process';
 import { grokBinary } from '../scripts/ask.mjs';
 import { deleteSession } from './delete.mjs';

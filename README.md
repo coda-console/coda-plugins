@@ -65,7 +65,7 @@ Coda 插件页的「商店」列出 Coda 自带的插件，以及 npm 上 `@coda
 | `claude` | `@agentclientprotocol/sdk` 1.4.0、`@anthropic-ai/claude-agent-sdk` 0.3.312（平台二进制是 SDK 自己的可选依赖） | — |
 | `codex-accounts` | `proper-lockfile` 4.1.2；用依赖插件 `codex` 的 Codex CLI | 无；依赖 `codex` 插件 |
 | `kimi` | 无 | Kimi CLI 2.1.1 及以上（缺失或更旧时设置动作装入口核对过的 2.1.1，更新的不动；资源页上可从 Coda 安装、登录） |
-| `grok` | 无 | Grok CLI 1.0.77 及以上（设置动作安装或升级；资源页上可从 Coda 安装、登录） |
+| `grok` | 无 | Grok CLI 1.0.77 及以上（`sessions delete` 核对过的版本；设置动作安装或升级；资源页上可从 Coda 安装、登录） |
 | `opencode` | `jsonc-parser` 3.3.1 | 已登录的 OpenCode CLI 2.1.4 及以上（设置动作安装或升级，OpenCode 1 升到 2） |
 
 带依赖的插件各有自己的 `package-lock.json`（`node_modules` 不提交）；Coda 在插件的版本目录里 `npm ci` 装它们，
