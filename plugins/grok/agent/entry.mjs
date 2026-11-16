@@ -16,6 +16,9 @@ const grok = spawn(binary, ['agent', '--no-leader', 'stdio'], { stdio: ['pipe', 
 const send = (stream, message) => stream.write(`${JSON.stringify(message)}\n`);
 const say = message => send(process.stdout, { jsonrpc: '2.0', ...message });
 const pending = new Map();
+// The deletes under way, by session: Coda closes a probe's session once its delete has had its few seconds, and a close
+// reaching Grok while `sessions delete` still runs could write the session back.
+const deleting = new Map();
 // The forms asked of Coda, by their id: Grok's request they answer, its tool call, and how the answer is given back.
 const questions = new Map();
 let sessionId, mode = '', stopping = false, asked = 0;
@@ -36,8 +39,13 @@ read(process.stdin, message => {
   if (message.method === 'session/delete' && 'id' in message) {
     const id = message.params?.sessionId;
     if (typeof id !== 'string' || !id) { say({ id: message.id, error: { code: -32602, message: '缺少 sessionId' } }); return; }
-    deleteSession(binary, id).then(error => say(error ? { id: message.id, error } : { id: message.id, result: {} }));
+    deleting.set(id, deleteSession(binary, id).then(error => {
+      deleting.delete(id); say(error ? { id: message.id, error } : { id: message.id, result: {} });
+    }));
     return;
+  }
+  if (message.method === 'session/close' && deleting.has(message.params?.sessionId)) {
+    deleting.get(message.params.sessionId).then(() => send(grok.stdin, message)); return;
   }
   const question = !message.method && questions.get(message.id);
   if (question) {

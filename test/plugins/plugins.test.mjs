@@ -109,7 +109,7 @@ describe('the plugins here', () => {
     assert.ok(binary && relative(join(pluginDir('claude'), 'node_modules', '@anthropic-ai'), binary).split(sep)[0].startsWith('claude-agent-sdk-'), binary);
   });
   // Where each plugin's setup finds its CLI first, and what a recent enough one says to `--version`.
-  const ready = { kimi: ['.kimi-code/bin/kimi', 'kimi 2.1.1', 'Kimi CLI 2.1.1'], grok: ['.grok/bin/grok', 'grok 1.0.77', 'Grok CLI 1.0.77'],
+  const ready = { kimi: ['.kimi-code/bin/kimi', 'kimi 2.1.1', 'Kimi CLI 2.1.1'], grok: ['.grok/bin/grok', 'grok 1.0.52', 'Grok CLI 1.0.52'],
     opencode: ['.opencode/bin/opencode', 'opencode v2.1.4', 'OpenCode CLI 2.1.4'], cursor: ['.local/bin/cursor-agent', '2026.05.09-0afadcc', 'Cursor CLI 2026.05.09-0afadcc'],
     antigravity: ['.local/bin/agy', '1.5.9', 'Antigravity CLI 1.5.9'] };
   test('a setup, run as Coda runs it, ends well and installs nothing when the machine\'s CLI is recent enough', async t => {

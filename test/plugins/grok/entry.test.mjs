@@ -44,14 +44,20 @@ test('Grok declares session/delete and answers it with `grok sessions delete`, n
   assert.deepEqual(await request('session/delete', { sessionId: 'abc' }), {});
   assert.deepEqual(calls(), [['sessions', 'delete', '--', 'abc']]);
   for (const [sessionId, code, message] of [['gone', -32002, 'No session found with id gone.'], ['odd', -32603, '没有确认删除：something else'],
-    ['mute', -32603, '没有确认删除：没有输出'], ['broken', -32603, 'storage is locked'], ['quiet', -32603, '退出码 3']]) {
+    ['mute', -32603, '没有确认删除：没有输出'], ['broken', -32603, 'storage is locked'], ['quiet', -32603, '退出码 3'], ['killed', -32603, '被信号 SIGKILL 结束']]) {
     const r = await p.request('session/delete', { sessionId }, { timeout: 5000 });
     assert.equal(r.result, undefined);
     assert.equal(r.error.code, code);
     assert.ok(r.error.message.endsWith(message), r.error.message);
   }
   assert.equal((await p.request('session/delete', {}, { timeout: 5000 })).error.code, -32602);
-  assert.equal(calls().length, 6, 'the invalid request never starts the command');
+  assert.equal(calls().length, 7, 'the invalid request never starts the command');
+  // A close that comes while a delete is still running waits for it: the agent hears of it after the session is gone.
+  const order = () => readFileSync(join(dir, 'order.log'), 'utf8').trim().split('\n');
+  const [deleted, closed] = await Promise.all([p.request('session/delete', { sessionId: 'slow' }, { timeout: 5000 }),
+    p.request('session/close', { sessionId: 'slow' }, { timeout: 5000 })]);
+  assert.deepEqual([deleted.result, closed.result], [{}, {}]);
+  assert.deepEqual(order(), ['delete-done', 'close']);
   // A CLI that never answers, stood in for by one that only sleeps.
   const slow = join(dir, 'slow-grok');
   writeFileSync(slow, '#!/bin/sh\nexec sleep 30\n', { mode: 0o755 });
@@ -122,11 +128,11 @@ test('the entry forwards Coda instructions to Grok unchanged', t =>
 
 test('setup installs a missing or broken Grok CLI, upgrades one older than the entry was checked against, and keeps a newer one', () => {
   const run = (status, stdout = '') => () => ({ status, stdout, stderr: '' });
-  assert.equal(MINIMUM, '1.0.77');
+  assert.equal(MINIMUM, '1.0.52');
   assert.equal(needed(null).action, 'install');
   assert.equal(needed('/bin/grok', run(1)).action, 'install');
-  assert.deepEqual(needed('/bin/grok', run(0, 'grok 1.0.76\n')), { action: 'upgrade', reason: 'Grok CLI 1.0.76 低于所需的 1.0.77' });
-  assert.deepEqual(needed('/bin/grok', run(0, 'grok 1.0.77\n')), { action: 'none', version: '1.0.77' });
+  assert.deepEqual(needed('/bin/grok', run(0, 'grok 1.0.51\n')), { action: 'upgrade', reason: 'Grok CLI 1.0.51 低于所需的 1.0.52' });
+  assert.deepEqual(needed('/bin/grok', run(0, 'grok 1.0.52\n')), { action: 'none', version: '1.0.52' });
   assert.deepEqual(needed('/bin/grok', run(0, 'grok 1.1.0 (abc)\n')), { action: 'none', version: '1.1.0' });
-  assert.ok(older('1.0.9', '1.0.77') && !older('1.0.77', '1.0.77') && !older('2.0.0', '1.9.99'));
+  assert.ok(older('1.0.9', '1.0.52') && !older('1.0.52', '1.0.52') && !older('2.0.0', '1.9.99'));
 });

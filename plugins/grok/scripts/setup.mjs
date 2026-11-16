@@ -1,7 +1,7 @@
 // The plugin's setup (`contributes.setup`), which Coda runs on each machine when the user installs or updates the plugin: it
-// ends well once the machine can run the agent. Without a Grok CLI that runs, or with one older than MINIMUM (the CLI the entry's
-// `sessions delete` was checked against: 1.0.77; `agent --no-leader stdio` and the `_x.ai/yolo_mode_changed`
-// notification were checked on 1.0.52, not rechecked on 1.0.77), Grok's own installer puts
+// ends well once the machine can run the agent. Without a Grok CLI that runs, or with one older than MINIMUM (the CLI whose
+// `agent --no-leader stdio` and `_x.ai/yolo_mode_changed` the agent entry was checked against: 1.0.52). `sessions delete`
+// was checked on 1.0.77; on an older CLI that does not have it, the entry answers session/delete with its error. Grok's own installer puts
 // the latest in ~/.grok/bin, where the agent looks first, as the「Grok」type's install does; a newer one is kept. Why the
 // machine is not ready is said in one line on standard error.
 import { spawnSync } from 'node:child_process';
@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { grokBinary } from './ask.mjs';
 
-export const MINIMUM = '1.0.77';
+export const MINIMUM = '1.0.52';
 // The first x.y.z a version command prints; whether one is older than another.
 export const versionIn = text => /(\d+)\.(\d+)\.(\d+)/.exec(text ?? '')?.slice(1).join('.') ?? null;
 export function older(version, than) {

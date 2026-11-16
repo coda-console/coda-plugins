@@ -7,10 +7,12 @@ import { createInterface } from 'node:readline';
 if (process.argv[2] === 'sessions') {
   const id = process.argv.at(-1);
   appendFileSync(`${process.env.HOME}/sessions-calls.jsonl`, `${JSON.stringify(process.argv.slice(2))}\n`);
-  if (id === 'gone') { process.stdout.write(`No session found with id ${id}.\n`); process.exit(0); }
+  if (id === 'slow') setTimeout(() => { appendFileSync(`${process.env.HOME}/order.log`, 'delete-done\n'); process.stdout.write(`Deleted session ${id}\n`); }, 600);
+  else if (id === 'gone') { process.stdout.write(`No session found with id ${id}.\n`); process.exit(0); }
   else if (id === 'odd') { process.stdout.write('\nsomething else\n'); process.exit(0); }
   else if (id === 'mute') process.exit(0);
   else if (id === 'broken') { process.stderr.write('\nstorage is locked\nmore\n'); process.exit(1); }
+  else if (id === 'killed') process.kill(process.pid, 'SIGKILL');
   else if (id === 'quiet') process.exit(3);
   else { process.stdout.write(`Deleted session ${id}\n`); process.exit(0); }
 } else {
@@ -30,6 +32,7 @@ createInterface({ input: process.stdin }).on('line', m => {
   const result = m.method === 'initialize' ? { protocolVersion: 1, agentCapabilities: { loadSession: true } }
     : m.method === 'session/new' ? { sessionId: 'native', configOptions: options() }
     : m.method === 'session/load' ? { configOptions: options() }
+    : m.method === 'session/close' ? (appendFileSync(`${process.env.HOME}/order.log`, 'close\n'), {})
     : m.method === 'session/set_config_option' ? (effort = m.params.value, { configOptions: options() }) : null;
   if (result) { send({ id: m.id, result }); return; }
   if (m.method === 'session/prompt') {
