@@ -459,6 +459,7 @@ export class ClaudeSession {
     // What ended it, kept for the turns that go on asking and written to the log: a query that ends without an error says so.
     this.endReason = intended ? 'Coda 关闭了会话' : error?.message || 'Claude SDK 查询结束，没有给出错误';
     if (!intended) process.stderr.write(`Claude 会话结束：${this.endReason}\n`);
+    const held = this.held;
     this.phase = 'ended'; this.input.close(); this.steering.clear(); this.held = null; this.ending = null;
     this.compacting?.answer({ compacted: false, reason: error?.message ?? 'Claude 会话已结束' }); this.compacting = null;
     for (const withdrawn of this.withdrawals) withdrawn.abort();
@@ -468,7 +469,7 @@ export class ClaudeSession {
     const running = this.turning && !this.opening && !this.waits.handling && !this.waits.unclaimed;
     let first = true;
     for (const [id, { reject }] of this.prompts) {
-      const input = id === this.held || running && first ? 'accepted' : running || this.held ? 'not_accepted' : undefined;
+      const input = id === held || running && first ? 'accepted' : running || held ? 'not_accepted' : undefined;
       first = false;
       reject(new RequestError(-32603, `Claude 会话已结束：${this.endReason}`, { _meta: { coda: { failure: { kind: 'session_ended', ...(input && { input }) } } } }));
     }
