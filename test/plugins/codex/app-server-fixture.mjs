@@ -18,7 +18,7 @@
 // notification and request) beside what it has (an agent message streamed, another not). What a turn is steered with goes
 // to steers.ndjson, the answers to its requests to answers.ndjson. One that names `compaction` compacts the thread as the locked
 // Codex does (a `contextCompaction` item, started and completed), with the deprecated `thread/compacted` too before it
-// (`legacy-first`), after it (`legacy-last`), or alone (`legacy-only`).
+// (`legacy-first`), after it (`legacy-last`), or alone (`legacy-only`); `compaction-failed` starts it and ends the turn failed.
 import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -133,6 +133,11 @@ process.stdin.on('data', chunk => {
     if (input.includes('compaction') && !message.params.outputSchema) {
       const item = { type: 'contextCompaction', id: `compaction-${turn.id}` };
       const legacy = () => send({ method: 'thread/compacted', params: { threadId: thread.id, turnId: turn.id } });
+      if (input.includes('compaction-failed')) {
+        send({ method: 'item/started', params: { threadId: thread.id, turnId: turn.id, item } });
+        send({ method: 'turn/completed', params: { threadId: thread.id, turn: { ...turn, status: 'failed', error: { message: 'compaction failed', codexErrorInfo: null, additionalDetails: null } } } });
+        continue;
+      }
       if (input.includes('legacy-first') || input.includes('legacy-only')) legacy();
       if (!input.includes('legacy-only')) {
         send({ method: 'item/started', params: { threadId: thread.id, turnId: turn.id, item } });
