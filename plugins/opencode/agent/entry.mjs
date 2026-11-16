@@ -1,8 +1,7 @@
 // The OpenCode agent as Coda starts it (the plugin's `contributes.agents`): `opencode acp` as a child in this process's group,
 // its ACP passed on a message at a time both ways, but for its models, which it groups by provider (groups.mjs), and a
 // model service's long wait, which ends the turn instead (retries.mjs), the category of its failures (errors.mjs), native
-// child sessions (children.mjs), its compactions of a session's context (compaction.mjs), and native background shell
-// lifecycle facts supplied by the per-process observer (shells.mjs, runtime/server.mjs).
+// child sessions (children.mjs), and native background shell lifecycle facts supplied by the per-process observer (shells.mjs, runtime/server.mjs).
 // It ends as OpenCode ends, once what it said has reached Coda.
 import { spawn } from 'node:child_process';
 import { readLines } from './lines.mjs';
@@ -12,7 +11,6 @@ import { chosenServices, providerEnvironment, serviceNames } from './providers.m
 import { LongRetries } from './retries.mjs';
 import { classifyOpenCodeError } from './errors.mjs';
 import { OpenCodeChildren } from './children.mjs';
-import { OpenCodeCompactions } from './compaction.mjs';
 import { OpenCodeShells } from './shells.mjs';
 import { shellChannel, shellEnvironment } from './shell-channel.mjs';
 
@@ -20,7 +18,6 @@ const services = chosenServices(), names = serviceNames(services);
 const parse = line => { try { const value = JSON.parse(line); return value && typeof value === 'object' && !Array.isArray(value) ? value : null; } catch { return null; } };
 const say = message => process.stdout.write(`${JSON.stringify(message)}\n`), tell = message => cli.stdin.write(`${JSON.stringify(message)}\n`);
 const children = new OpenCodeChildren();
-const compactions = new OpenCodeCompactions({ owns: id => children.roots.has(id) });
 const shells = new OpenCodeShells({ owns: id => children.roots.has(id) || children.children.has(id), say,
   interrupt: (source, sessionId) => channel.interrupt(source, sessionId) });
 const channel = await shellChannel({
@@ -60,8 +57,6 @@ readLines(cli.stdout).on('line', line => {
   if (message) for (const next of children.fromAgent(classifyOpenCodeError(retries.fromAgent(message)))) {
     shells.fromAgent(next);
     say(groupedModels(next, names));
-    const compaction = compactions.fromAgent(next);
-    if (compaction) say(compaction);
   }
 });
 let ended = false;
