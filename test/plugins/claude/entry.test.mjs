@@ -8,9 +8,9 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
-import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { RequestError } from '@agentclientprotocol/sdk';
 import { ClaudeSession } from '../../../plugins/claude/agent/session.mjs';
 import { describeChange } from '../../../plugins/claude/agent/permissions.mjs';
 import { OTHER } from '../../../plugins/claude/agent/questions.mjs';
@@ -25,6 +25,9 @@ import { agentValueProblem } from '@coda-console/protocol/agent';
 import { fixtureSdk, queries } from './fixture-sdk.mjs';
 import { substituted } from '../substitute.mjs';
 
+// The plugin's own copy of the ACP SDK (it installs its dependencies apart from the checker's): an error is its RequestError, as
+// the session tests it, only when made by that copy.
+const { RequestError } = await import(pathToFileURL(createRequire(new URL('../../../plugins/claude/package.json', import.meta.url)).resolve('@agentclientprotocol/sdk')));
 // The Claude entry on its own (agents/claude/), Coda's side played here: what it is asked over ACP, and what it says.
 const entry = fileURLToPath(new URL('../../../plugins/claude/agent/entry.mjs', import.meta.url));
 const fixture = fileURLToPath(new URL('./fixture-sdk.mjs', import.meta.url));
