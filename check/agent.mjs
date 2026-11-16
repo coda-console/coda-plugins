@@ -461,9 +461,12 @@ async function probe({ agent, checked, base, limits, say, instructions }) {
     if (!turn.error) say.fail(rule, `虚拟会话接受了 session/prompt（stopReason ${turn.result?.stopReason}）：配置探测会话不执行 prompt，要回 -32602`);
     else if (turn.error.code !== -32602) say.warn(rule, `虚拟会话的 session/prompt 回了 ${turn.error.code}（${turn.error.message}）：约定是 -32602`);
     else say.pass(rule, `虚拟会话的 session/prompt 回 -32602：${turn.error.message}`);
-    if (session.idleWork.length) say.fail('probe.quiet', `探测期间 Agent 发了干活的 session/update 或审批、提问（${[...new Set(session.idleWork)].join('、')}）：探测不执行任何东西`);
   } catch (e) { return say.fail(rule, `${rule === 'probe.new' ? '带探测标记的 session/new' : '探测'}失败：${e.message}`); }
-  finally { await session.proc.terminate(limits.exit); session.proc.kill(); }
+  finally {
+    await session.proc.terminate(limits.exit); session.proc.kill();
+    // Whichever way the probe ended (a signed-out answer too), what was done while it ran counts.
+    if (session.idleWork.length) say.fail('probe.quiet', `探测期间 Agent 发了干活的 session/update 或审批、提问（${[...new Set(session.idleWork)].join('、')}）：探测不执行任何东西`);
+  }
   // The connection is gone: another one has nothing of the session.
   const again = new Session({ agent, checked, base, say: scopes, limits, instructions }), asked = [];
   try {

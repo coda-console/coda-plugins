@@ -124,6 +124,7 @@ describe('a liar fails on the rule it breaks', () => {
     ['probe-prompt', 'probe.prompt', {}],
     ['probe-resume', 'probe.resume', {}],
     ['probe-new-work', 'probe.quiet', {}],
+    ['probe-signed-out-work', 'probe.quiet', {}],
   ];
   for (const [mode, rule, options] of cases) test(mode, async () => {
     const { report } = await checkPlugin(plugin({ mode }), { ...options, limits });
