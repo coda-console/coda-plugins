@@ -148,7 +148,7 @@ test('整体评审：最多自动修两轮；反驳被坚持交主 Agent；修�
   assert.deepEqual([done2.route, done2.findings.filter(f => f.status === 'open').map(f => f.id)], ['accept', ['reviewer:2']], '只剩 P3：轮数用完也直接验收');
 });
 
-test('整体评审与泳道 PR 同样的发现、不同的路由：同一本账，编号与结论一致', () => {
+test('整体评审与块同样的发现、不同的路由：同一本账，编号与结论一致', () => {
   const results = [done('reviewer', [finding('P2', 'correctness'), finding('P3', 'style')]), done('reviewer2', [finding('P2', 'style')])];
   const lane = triage(results, { head: HEAD, full: true }), whole = overall(results);
   assert.deepEqual([lane.route, whole.route], ['fix', 'escalate']);

@@ -1,5 +1,5 @@
-// 需求运行（README.md「监督开发」）：一个需求一条泳道 lane/<运行 ID>，主 Agent 用泳道 PR（lane-pr）往里提改动，提交验收后泳道开 PR 进目标分支。
-// 每步的工作区都会回收；反馈与汇报暂存在本次运行的产物里。进度以 GitHub 为准：泳道分支、已合并的泳道 PR 和泳道进目标分支的 PR，从头重跑也接得上。
+// 需求运行（README.md「监督开发」）：一个需求一条需求分支 lane/<运行 ID>，主 Agent 用块（piece）往里提改动，提交验收后需求分支开 PR 进目标分支。
+// 每步的工作区都会回收；反馈与汇报暂存在本次运行的产物里。进度以 GitHub 为准：需求分支、已合并的块和需求分支进目标分支的 PR，从头重跑也接得上。
 import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -21,11 +21,11 @@ if (action === 'brief') {
   process.exit(0);
 }
 
-// 从目标分支最新提交建泳道；远端已有同名泳道时沿用（运行从头重跑）。
+// 从目标分支最新提交建需求分支；远端已有同名需求分支时沿用（运行从头重跑）。
 if (action === 'lane') {
   const base = env.BASE || gh('repo', 'view', '--json', 'defaultBranchRef', '--jq', '.defaultBranchRef.name');
   const lane = `lane/${env.GITHUB_RUN_ID}`;
-  if (git('ls-remote', '--heads', 'origin', lane)) console.error(`远端已有泳道 ${lane}，沿用`);
+  if (git('ls-remote', '--heads', 'origin', lane)) console.error(`远端已有需求分支 ${lane}，沿用`);
   else {
     git('fetch', 'origin', base);
     git('push', 'origin', `FETCH_HEAD:refs/heads/${lane}`);
@@ -40,7 +40,7 @@ const save = () => writeFileSync(statePath, JSON.stringify(state));
 // 回到「需求进行中」的原因，主 Agent 答复后清掉。
 const back = reason => { state.feedback = reason; save(); };
 
-// 与 PR 的 Files changed 一致：目标分支最新提交到泳道 head 的三点 diff，按 .coda/areas.json 的最长前缀归区域。
+// 与 PR 的 Files changed 一致：目标分支最新提交到需求分支 head 的三点 diff，按 .coda/areas.json 的最长前缀归区域。
 const changes = base => {
   const declared = git('ls-tree', '--name-only', state.head, '.coda/areas.json') ? JSON.parse(git('show', `${state.head}:.coda/areas.json`)) : {};
   const prefixes = Object.entries(declared).flatMap(([area, list]) => list.map(prefix => [prefix, area])).sort((a, b) => b[0].length - a[0].length);
@@ -61,35 +61,35 @@ const changes = base => {
   return [`改动：${line(total)}`, ...Object.entries(areas).sort(([, a], [, b]) => b.added + b.deleted - a.added - a.deleted).map(([area, group]) => `- ${area}：${line(group)}`)].join('\n');
 };
 
-// 合进泳道的泳道 PR，从 GitHub 读，按编号先后。
+// 合进需求分支的块，从 GitHub 读，按编号先后。
 const lanePrs = () => {
   const merged = JSON.parse(gh('pr', 'list', '--base', state.lane, '--state', 'merged', '--limit', '200', '--json', 'number,title,url'));
-  return merged.sort((a, b) => a.number - b.number).map(pr => `- ${pr.title}（${pr.url}）`).join('\n') || '（还没有合进泳道的泳道 PR）';
+  return merged.sort((a, b) => a.number - b.number).map(pr => `- ${pr.title}（${pr.url}）`).join('\n') || '（还没有合进需求分支的块）';
 };
 
 const ancestor = (older, newer) => spawnSync('git', ['merge-base', '--is-ancestor', older, newer]).status === 0;
 const fetched = ref => { git('fetch', 'origin', ref); return git('rev-parse', 'FETCH_HEAD'); };
-// 流程自己往泳道推（跟上目标分支、整体评审的修复）：普通推送，不 force。被拒且泳道已不是 from（别人推进了泳道）时返回 false，
+// 流程自己往需求分支推（跟上目标分支、整体评审的修复）：普通推送，不 force。被拒且需求分支已不是 from（别人推进了需求分支）时返回 false，
 // 不重试、不覆盖，由调用方带着原因回到进行中；其余失败保留原退出码。
 const pushLane = (commit, from) => {
   const result = spawnSync('git', ['push', '--no-follow-tags', 'origin', `${commit}:refs/heads/${state.lane}`], { stdio: 'inherit' });
   if (result.error) throw result.error;
   if (result.status === 0) return true;
   if (fetched(state.lane) === from) process.exit(result.status ?? 1);
-  back(`推送 ${commit} 到泳道 ${state.lane} 被拒：泳道已不是 ${from}，有别的提交推进了它，流程没有覆盖。\n运行：coda://workflow-runs/${env.GITHUB_RUN_ID}\n请看泳道最新的提交，处理好后重新提交验收。`);
+  back(`推送 ${commit} 到需求分支 ${state.lane} 被拒：需求分支已不是 ${from}，有别的提交推进了它，流程没有覆盖。\n运行：coda://workflow-runs/${env.GITHUB_RUN_ID}\n请看需求分支最新的提交，处理好后重新提交验收。`);
   return false;
 };
-// 不经泳道 PR、由流程直接推到泳道的提交，PR 汇总里单独列出（已合并的泳道 PR 列表里没有它们）：只数 first-parent，合并进来的目标分支提交不算。
+// 不经块、由流程直接推到需求分支的提交，PR 汇总里单独列出（已合并的块列表里没有它们）：只数 first-parent，合并进来的目标分支提交不算。
 const pushed = (from, to, why) => {
   const lines = git('log', '--first-parent', '--reverse', '--format=%H%x09%s', `${from}..${to}`).split('\n').filter(Boolean);
   state.pushed = [...state.pushed ?? [], ...lines.map(line => { const [commit, subject] = line.split('\t'); return { commit, subject, why }; })];
 };
-// 跟上目标分支有冲突时交开工执行者：只合并不变基（同 lane-pr.mjs 的 syncText）。
-const mergeText = ({ base, files }) => `把目标分支 ${state.base} 合并进泳道 ${state.lane}，让泳道跟上它，只做这件事。当前分支是泳道 head，目标分支固定在提交 ${base}。
+// 跟上目标分支有冲突时交开工执行者：只合并不变基（同 piece.mjs 的 syncText）。
+const mergeText = ({ base, files }) => `把目标分支 ${state.base} 合并进需求分支 ${state.lane}，让需求分支跟上它，只做这件事。当前分支是需求分支 head，目标分支固定在提交 ${base}。
 试合并发现冲突的文件：
 ${files.map(file => `- ${file}`).join('\n')}
-先 git fetch origin ${state.base}，再 git merge ${base} 合并（merge）进当前分支，不要变基、不要压成一个提交：变基会改写已经审查过的泳道提交，合并才保住泳道与目标分支的祖先关系。
-解决冲突；数据库迁移等版本号和目标分支撞号时，顺延泳道这边的。
+先 git fetch origin ${state.base}，再 git merge ${base} 合并（merge）进当前分支，不要变基、不要压成一个提交：变基会改写已经审查过的需求分支提交，合并才保住需求分支与目标分支的祖先关系。
+解决冲突；数据库迁移等版本号和目标分支撞号时，顺延需求分支这边的。
 跑和冲突相关的测试后提交合并提交。回报冲突了哪些文件、各自怎么解决的、跑了什么。`;
 
 switch (action) {
@@ -114,14 +114,14 @@ switch (action) {
     output('route', choice);
     break;
   }
-  // 开或更新泳道进目标分支的 PR：汇报、合进泳道的泳道 PR、改动区域。已开着的 PR 从 GitHub 找，不靠运行暂存。
+  // 开或更新需求分支进目标分支的 PR：汇报、合进需求分支的块、改动区域。已开着的 PR 从 GitHub 找，不靠运行暂存。
   case 'pr': {
     git('fetch', 'origin', state.base);
     const base = git('rev-parse', 'FETCH_HEAD');
     git('fetch', 'origin', state.lane);
     state.head = git('rev-parse', 'FETCH_HEAD');
-    const direct = state.pushed?.length ? `\n\n流程直接推到泳道的提交：\n${state.pushed.map(p => `- ${p.commit.slice(0, 12)} ${p.subject}（${p.why}）`).join('\n')}` : '';
-    const summary = `${state.report}\n\n泳道 PR：\n${lanePrs()}${direct}\n\n${changes(base)}`;
+    const direct = state.pushed?.length ? `\n\n流程直接推到需求分支的提交：\n${state.pushed.map(p => `- ${p.commit.slice(0, 12)} ${p.subject}（${p.why}）`).join('\n')}` : '';
+    const summary = `${state.report}\n\n块：\n${lanePrs()}${direct}\n\n${changes(base)}`;
     const path = join(env.RUNNER_TEMP, 'pr.md');
     writeFileSync(path, summary);
     state.pr = gh('pr', 'list', '--head', state.lane, '--base', state.base, '--state', 'open', '--limit', '1', '--json', 'url', '--jq', '.[].url');
@@ -148,10 +148,10 @@ switch (action) {
     break;
   }
   case 'check-failed':
-    back(`${env.STEP}未通过，泳道 head ${state.head}。\n运行：coda://workflow-runs/${env.GITHUB_RUN_ID}\n请用 workflow_status 查看本运行「${env.STEP}」及其调用的失败流程，读取错误和日志；提泳道 PR 修好后再提交验收。`);
+    back(`${env.STEP}未通过，需求分支 head ${state.head}。\n运行：coda://workflow-runs/${env.GITHUB_RUN_ID}\n请用 workflow_status 查看本运行「${env.STEP}」及其调用的失败流程，读取错误和日志；派一块修好后再提交验收。`);
     break;
   case 'reviewed':
-    output('reviews', reviewsText(env.REVIEWS, state.head, '评审整条泳道'));
+    output('reviews', reviewsText(env.REVIEWS, state.head, '评审整条需求分支'));
     break;
   case 'review': {
     const { choice, note = '' } = JSON.parse(env.REVIEW);
@@ -196,11 +196,11 @@ switch (action) {
   case 'inputs':
     outputFilled();
     break;
-  // 用合并提交进目标分支：目标分支的 first-parent 历史里一个需求一个提交，泳道里每个泳道 PR 一个提交。
+  // 用合并提交进目标分支：目标分支的 first-parent 历史里一个需求一个提交，需求分支里每个块一个提交。
   case 'merge': {
     const commit = mergedCommit(state.pr, state.head) ?? mergePr(state.pr, state.head, 'merge');
     if (!commit) {
-      back(`PR ${state.pr} 与目标分支 ${state.base} 存在合并冲突，泳道 head ${state.head}。\n请发起 sync=true 的泳道 PR，让执行者把最新目标分支合进来、解冲突、顺延撞号的迁移版本；合进泳道后再提交验收，重新跑检查、批准合并及合并后的流程。`);
+      back(`PR ${state.pr} 与目标分支 ${state.base} 存在合并冲突，需求分支 head ${state.head}。\n请发起 sync=true 的块，让执行者把最新目标分支合进来、解冲突、顺延撞号的迁移版本；合进需求分支后再提交验收，重新跑检查、批准合并及合并后的流程。`);
       output('route', 'conflict');
       break;
     }
@@ -208,14 +208,14 @@ switch (action) {
     output('commit', commit);
     break;
   }
-  // 提交验收先跟上目标分支（README.md「跟上目标分支」），两端 SHA 在这里固定：泳道已包含目标分支不动；泳道是它的祖先就快进；
-  // 分叉但能干净合并，就在步骤工作区做保留双亲的合并提交（泳道在前）；有冲突交开工执行者（sync-resolve），没填就带着冲突文件回到进行中。
+  // 提交验收先跟上目标分支（README.md「跟上目标分支」），两端 SHA 在这里固定：需求分支已包含目标分支不动；需求分支是它的祖先就快进；
+  // 分叉但能干净合并，就在步骤工作区做保留双亲的合并提交（需求分支在前）；有冲突交开工执行者（sync-resolve），没填就带着冲突文件回到进行中。
   // 每次提交验收都从这里进来，整体评审的收敛从头开始。
   case 'sync-base': {
     state.converge = { findings: [], rounds: 0, history: [], waiting: false };
     const base = fetched(state.base), lane = fetched(state.lane);
     let route = 'pr';
-    if (ancestor(base, lane)) console.error(`泳道 ${lane} 已包含 ${state.base} ${base}`);
+    if (ancestor(base, lane)) console.error(`需求分支 ${lane} 已包含 ${state.base} ${base}`);
     else if (ancestor(lane, base)) { if (!pushLane(base, lane)) route = 'progress'; }
     else {
       const merge = spawnSync('git', ['merge-tree', '--write-tree', '--name-only', '--no-messages', '-z', lane, base], { encoding: 'utf8' });
@@ -229,21 +229,21 @@ switch (action) {
       } else {
         state.sync = { base, lane, files: [...new Set(files.filter(Boolean))] };
         route = env.FIXER === 'true' ? 'resolve' : 'progress';
-        if (route === 'progress') back(`泳道 ${lane} 与目标分支 ${state.base} ${base} 有冲突，冲突的文件：\n${state.sync.files.map(file => `- ${file}`).join('\n')}\n没填开工执行者，流程不能自己合并。请发起 sync=true 的泳道 PR，让执行者把最新目标分支合进来、解冲突、顺延撞号的迁移版本；合进泳道后再提交验收。`);
+        if (route === 'progress') back(`需求分支 ${lane} 与目标分支 ${state.base} ${base} 有冲突，冲突的文件：\n${state.sync.files.map(file => `- ${file}`).join('\n')}\n没填开工执行者，流程不能自己合并。请发起 sync=true 的块，让执行者把最新目标分支合进来、解冲突、顺延撞号的迁移版本；合进需求分支后再提交验收。`);
       }
     }
     save();
     output('route', route);
     break;
   }
-  // 冲突交开工执行者：从同步时固定的泳道 head 开会话合并、解冲突、提交；它的 head 同时包含两端才普通推送到泳道。
+  // 冲突交开工执行者：从同步时固定的需求分支 head 开会话合并、解冲突、提交；它的 head 同时包含两端才普通推送到需求分支。
   case 'sync-resolve': {
     const { base, lane } = state.sync, prompt = join(env.RUNNER_TEMP, 'task.md');
     writeFileSync(prompt, `${instructions}\n\n${mergeText(state.sync)}\n`);
     const executor = JSON.parse(command('coda-agent', ['--commit', lane, '--title', `${state.title}：跟上 ${state.base}`, ...agentArgs(JSON.parse(env.EXECUTOR)), '--json', '--prompt-file', prompt]));
     let route = 'pr';
     if (!ancestor(base, executor.head) || !ancestor(lane, executor.head)) {
-      back(`跟上目标分支：执行者没有把 ${state.base} ${base} 合并进泳道 ${lane}（执行会话 ${executor.session}，head ${executor.head}）。执行者的回答：\n${executor.answer}\n请发起 sync=true 的泳道 PR 处理冲突，合进泳道后再提交验收。`);
+      back(`跟上目标分支：执行者没有把 ${state.base} ${base} 合并进需求分支 ${lane}（执行会话 ${executor.session}，head ${executor.head}）。执行者的回答：\n${executor.answer}\n请发起 sync=true 的块处理冲突，合进需求分支后再提交验收。`);
       route = 'progress';
     } else if (pushLane(executor.head, lane)) pushed(lane, executor.head, `跟上 ${state.base}，执行者解冲突`);
     else route = 'progress';
@@ -251,8 +251,8 @@ switch (action) {
     output('route', route);
     break;
   }
-  // 整体评审的收敛（README.md「整体评审」），状态在 state.converge，记法同泳道 PR 的评审回路，另有 session：修复用的执行会话。
-  // 定这一次怎么评：交执行者修过、等复评时增量复评（base 是上次评过的 head，带各位置上次的发现与回应）；否则对整条泳道完整评审（base 是目标分支最新提交）。
+  // 整体评审的收敛（README.md「整体评审」），状态在 state.converge，记法同块的评审回路，另有 session：修复用的执行会话。
+  // 定这一次怎么评：交执行者修过、等复评时增量复评（base 是上次评过的 head，带各位置上次的发现与回应）；否则对整条需求分支完整评审（base 是目标分支最新提交）。
   case 'overall-round': {
     const c = state.converge;
     c.full = !c.waiting;
@@ -280,7 +280,7 @@ switch (action) {
     output('summary', summary);
     break;
   }
-  // 没关的 P2 交开工执行者在泳道上逐条修复或反驳：第一轮从泳道 head 开会话，之后续同一会话；它只提交，这里普通推送到泳道。
+  // 没关的 P2 交开工执行者在需求分支上逐条修复或反驳：第一轮从需求分支 head 开会话，之后续同一会话；它只提交，这里普通推送到需求分支。
   // 有新提交回到开 PR（汇总列出这些提交）、重跑全部检查后增量复评（pr）；只反驳、没有新提交就不重跑检查，直接复评（again）；
   // 都没有交主 Agent（review）；推送被拒带着原因回到进行中（progress）。
   case 'overall-fix': {
