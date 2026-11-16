@@ -8,7 +8,8 @@
 没给 Cwd 的命令默认跑在**字典序最前的附加根**，而不是会话的工作副本（实测规律，不是上游的保证；数组顺序、`session/load` 都不改变它）；
 不传附加目录时命令就在工作副本里跑。
 
-第二处是虚拟模式 `full`（「全部放行」），见下面「全部放行」一节。
+第二处是虚拟模式 `full`（「全部放行」），见下面「全部放行」一节。第三处是配置探测：入口在 `initialize` 声明 `_meta.coda.probe`，
+带探测标记的 `session/new` 由入口用本机的目录缓存应答，不转给 agy，见「已知限制」的「配置探测」。
 
 需要带会话指令兜底的 Coda（2026-11-13 部署版，coda#2500）或更新版本；旧版 Coda 不会给 Antigravity 送入会话指令。
 
@@ -83,6 +84,7 @@
 | 额度耗尽 | 没有真实样本，不做失败分类，Coda 只看到 Antigravity 给的错误文字 |
 | 没有桌面会话的 Linux 登录 | 未实测：Linux 用 Secret Service（D-Bus），二进制里有「keyring 失败就落文件」的回退，但文件路径与触发条件没查清。资源页在 Linux 上用 `secret-tool lookup service gemini username antigravity` 查条目（属性名按 go-keyring 的写法，未在真机上试过），没有 `secret-tool`、查不到条目，或登录落在文件里时，资源页当作未登录（只是仍在「添加资源」里出现，会话不受影响）。装了 `secret-tool` 却联系不上 Secret Service（典型是没有会话 D-Bus 的无桌面机器，它带错误信息退出）时，资源页读数失败、保留上次的显示，首次读取就没有可保留的，也就无法从资源页添加：这样的机器在终端里运行 `agy acp --login` 登录 |
 | 第三方模型 | 账号里的 Claude、GPT-OSS 未实测 |
+| 配置探测 | Coda 读模型、思考档位与模式的目录时，入口用插件状态目录里的缓存（`$CODA_PLUGIN_STATE/catalog-v1.json`）答一个只在当前连接有效的虚拟会话（`coda-probe:` 开头，不接受 prompt、不能恢复、断线即释放）：**缓存命中时不建 Antigravity 会话**。缓存维护大约每天一次，以及 agy 的路径或版本、`~/.gemini/antigravity-cli/settings.json` 变化、真实会话报的配置与缓存对不上时，用一个独立的 `agy acp` 建一条空会话逐个模型读一遍（agy 1.5.9 删不了会话，这条会留在 `~/.gemini/antigravity-cli/conversations/`，会话 ID 记在 `catalog-v1.log`）。读失败时这次探测报错、不改用普通会话，同样的 agy 与设置 5 分钟内不再重读（未登录除外）。要支持配置探测的新版 Coda 才生效；旧版 Coda 每次探测仍各建一条空会话 |
 | 并发进程 | 不加 `--process-per-session`：Coda 交给 Agent 的 MCP 服务器都是 stdio，官方只对 HTTP MCP 要求这个参数 |
 
 ## 验收

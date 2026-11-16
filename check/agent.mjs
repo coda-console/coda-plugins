@@ -390,6 +390,97 @@ async function inputEnd({ agent, checked, base, limits, say }) {
   } finally { proc.kill(); }
 }
 
+// docs/agent-protocol.md「配置探测」: an agent that declares `_meta.coda.probe` is asked, as Coda's catalog probe asks, for
+// `session/new` marked `_meta.coda.probe: true`, and opens a session of that connection alone: each model through the
+// `category: model` option (`session/set_model` for an agent with `models` alone), every answer that model's whole options,
+// its thinking level set back as Coda sets the default; a bad model refused; no prompt; nothing done or asked of the user;
+// and, the connection gone, nothing to load, resume or list. Its own process, apart from the handshake's real session.
+// Coda's own `supportsProbe` is not in the copy of its contract yet: the declaration is read here as the protocol says.
+const supportsProbe = init => { const probe = init?.agentCapabilities?._meta?.coda?.probe; return !!probe && typeof probe === 'object' && !Array.isArray(probe); };
+const choices = option => (Array.isArray(option?.options) ? option.options : []).flatMap(o => Array.isArray(o?.options) ? o.options : [o]).map(o => o?.value);
+
+async function probeModels(ask, sessionId, opened, say) {
+  const model = opened.configOptions?.find?.(o => o?.category === 'model' && o.type === 'select');
+  if (!model) {
+    const models = opened.models?.availableModels;
+    if (!Array.isArray(models) || !models.length) return say.fail('probe.config', '探测会话既没有 category 为 model 的配置项，也没有 models：Coda 读不到模型目录');
+    for (const { modelId } of models) {
+      const m = await ask('session/set_model', { sessionId, modelId });
+      if (m.error) return say.fail('probe.config', `session/set_model ${modelId} 回了错误 ${m.error.code}：${m.error.message}：只报 models 却不能切换，不满足配置探测`);
+    }
+    return say.pass('probe.config', `逐个模型 session/set_model ${models.length} 个`);
+  }
+  const seen = [];
+  for (const value of choices(model)) {
+    const m = await ask('session/set_config_option', { sessionId, configId: model.id, value });
+    if (m.error) return say.fail('probe.config', `切到模型 ${value}（session/set_config_option ${model.id}）回了错误 ${m.error.code}：${m.error.message}`);
+    const parsed = schemas.zSetSessionConfigOptionResponse.safeParse(m.result);
+    if (!parsed.success) return say.fail('probe.config', `切到模型 ${value} 的结果不合 ACP schema：${explain(parsed.error)}`);
+    const problems = configProblems(m.result.configOptions, 'session/set_config_option result.configOptions');
+    if (problems.length) return say.fail('probe.config', problems[0]);
+    const options = m.result.configOptions, now = options.find(o => o?.id === model.id), level = options.find(o => o?.category === 'thought_level' && o.type === 'select');
+    if (now?.currentValue !== value) return say.fail('probe.config', `切到模型 ${value} 后返回的配置里当前模型是 ${now?.currentValue}：要返回这个模型完整的配置`);
+    if (level && !choices(level).includes(level.currentValue)) return say.fail('probe.config', `模型 ${value} 的思考档位 ${level.currentValue} 不在它自己的选项里：不能留着上一个模型的档位`);
+    if (level) {
+      const back = await ask('session/set_config_option', { sessionId, configId: level.id, value: level.currentValue });
+      if (back.error) return say.fail('probe.config', `模型 ${value} 设思考档位 ${level.currentValue} 回了错误 ${back.error.code}：${back.error.message}：Coda 读完一个模型会把档位设回默认`);
+    }
+    seen.push(`${value}（${level ? choices(level).join('/') : '无档位'}）`);
+  }
+  const bad = await ask('session/set_config_option', { sessionId, configId: model.id, value: 'coda-check-no-such-model' });
+  if (!bad.error) return say.fail('probe.config', '切到不存在的模型也成功了：不合法的值要回错误');
+  say.pass('probe.config', `逐个模型切换 ${seen.length} 个，每次返回该模型完整的配置：${seen.join('，')}`);
+}
+
+async function probe({ agent, checked, base, limits, say, instructions }) {
+  const scopes = { handshake: say, live: say }, init = { protocolVersion: ACP_PROTOCOL_VERSION, clientCapabilities: clientCapabilities() };
+  const session = new Session({ agent, checked, base, say: scopes, limits, instructions });
+  const ask = (method, params, proc = session.proc) => proc.request(method, params, { timeout: limits.open });
+  let sessionId, rule = 'probe.new';
+  try {
+    let reply = await ask('initialize', init);
+    if (reply.error) return say.fail(rule, `initialize 回了错误 ${reply.error.code}：${reply.error.message}`);
+    reply = await ask('session/new', { cwd: session.cwd, mcpServers: [], _meta: { coda: { probe: true } } });
+    if (reply.error?.code === SIGNED_OUT) return say.skip('probe.signed-out', '带探测标记的 session/new 回了 -32000（未登录）：配置探测跳过');
+    if (reply.error) return say.fail(rule, `带探测标记的 session/new 回了错误 ${reply.error.code}：${reply.error.message}（Coda 不改发普通 session/new，这次读不到目录）`);
+    const parsed = schemas.zNewSessionResponse.safeParse(reply.result);
+    if (!parsed.success) return say.fail(rule, `带探测标记的 session/new 的结果不合 ACP schema：${explain(parsed.error)}`);
+    const problems = configProblems(reply.result.configOptions, 'session/new result.configOptions'), model = currentModel(reply.result);
+    if (problems.length) return say.fail(rule, problems[0]);
+    if (typeof model !== 'string') return say.fail(rule, '带探测标记的 session/new 没报当前模型：Coda 读不到目录');
+    sessionId = reply.result.sessionId;
+    session.sessionId = session.waits.sessionId = sessionId; session.loading = false;
+    say.pass(rule, `带探测标记的 session/new：虚拟会话 ${sessionId}，当前模型 ${model}`);
+    rule = 'probe.config';
+    await probeModels(ask, sessionId, reply.result, say);
+    rule = 'probe.prompt';
+    const turn = await ask('session/prompt', { sessionId, prompt: [{ type: 'text', text: CHECK_QUESTION }] });
+    if (!turn.error) say.fail(rule, `虚拟会话接受了 session/prompt（stopReason ${turn.result?.stopReason}）：配置探测会话不执行 prompt，要回 -32602`);
+    else if (turn.error.code !== -32602) say.warn(rule, `虚拟会话的 session/prompt 回了 ${turn.error.code}（${turn.error.message}）：约定是 -32602`);
+    else say.pass(rule, `虚拟会话的 session/prompt 回 -32602：${turn.error.message}`);
+    if (session.idleWork.length) say.fail('probe.quiet', `探测期间 Agent 发了干活的 session/update（${[...new Set(session.idleWork)].join('、')}）：探测不执行任何东西`);
+  } catch (e) { return say.fail(rule, `${rule === 'probe.new' ? '带探测标记的 session/new' : '探测'}失败：${e.message}`); }
+  finally { await session.proc.terminate(limits.exit); session.proc.kill(); }
+  // The connection is gone: another one has nothing of the session.
+  const again = new Session({ agent, checked, base, say: scopes, limits, instructions }), asked = [];
+  try {
+    const caps = (await ask('initialize', init, again.proc)).result?.agentCapabilities ?? {};
+    const tries = [caps.loadSession === true && 'session/load', caps.sessionCapabilities?.resume != null && 'session/resume'].filter(Boolean);
+    for (const method of tries) {
+      asked.push(method);
+      if (!(await ask(method, { sessionId, cwd: again.cwd, mcpServers: [] }, again.proc)).error) return say.fail('probe.resume', `断线后新进程 ${method} 接上了虚拟会话 ${sessionId}：虚拟会话不能恢复`);
+    }
+    if (caps.sessionCapabilities?.list != null) {
+      asked.push('session/list');
+      const { result } = await ask('session/list', {}, again.proc);
+      if (result?.sessions?.some?.(s => s?.sessionId === sessionId)) return say.fail('probe.resume', `断线后 session/list 列出了虚拟会话 ${sessionId}`);
+    }
+    if (asked.length) say.pass('probe.resume', `断线后 ${asked.join('、')} 都不接受、不列出虚拟会话`);
+    else say.skip('probe.resume', '没声明 loadSession、resume、list：没有恢复的路');
+  } catch (e) { say.fail('probe.resume', `断线后再连失败：${e.message}`); }
+  finally { again.proc.kill(); }
+}
+
 // The first turn asks for the word in the session instructions (docs/agent-protocol.md「会话指令」): they are to be in the
 // agent's context before it, whether its own system prompt took them or they went in front of the user's input.
 async function instructions(session, word, limits, say) {
@@ -465,6 +556,8 @@ export async function checkAgent({ agent, checked, live: running = false, prompt
     else scopes.live.skip('live.skipped', '一轮要 --live（会真的发一条提示词，可能要登录、花额度）');
     await session.finish(scopes.handshake);
     if (opened !== 'failed') await inputEnd({ agent, checked, base, limits, say: scopes.handshake });
+    if (opened === 'ok' && supportsProbe(session.init)) await probe({ agent, checked, base, limits, say: scopes.handshake, instructions });
+    else if (opened === 'ok') scopes.handshake.skip('probe.skipped', '没声明配置探测（_meta.coda.probe）：Coda 读模型目录时开普通会话');
     if (opened !== 'ok' || !running) return;
     if (!session.canLoad) { scopes.live.skip('live.load', '没声明 loadSession：Coda 不会要求恢复，session/load 不查'); return; }
     const again = new Session({ agent, checked, base, say: scopes, limits, instructions });
