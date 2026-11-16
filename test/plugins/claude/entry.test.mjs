@@ -1578,6 +1578,49 @@ test('MCP servers go to Claude in a file only this user reads, by path: the same
   assert.equal(existsSync(dir), false);
 });
 
+test('a query that ends with an error tells the turn going and the log why, and later prompts are refused as not accepted with that reason', async t => {
+  const logged = [], write = process.stderr.write;
+  process.stderr.write = chunk => { logged.push(String(chunk)); return true; };
+  t.after(() => { process.stderr.write = write; });
+  let ended = 0;
+  const c = await setup(t, { onEnded: () => { ended++; } });
+  await c.open();
+  const reason = 'Claude Code process exited with code 1\nstderr: TCC denied';
+  const pending = c.prompt('manual'); await until(() => c.query.inputId);
+  c.query.queue.push(() => { throw new Error(reason); }); c.query.wake?.();
+  const failed = await pending;
+  assert.equal(failed.error.message, `Claude 会话已结束：${reason}`);
+  assert.equal(ended, 1);
+  assert.ok(logged.includes(`Claude 会话结束：${reason}\n`));
+  const refused = await c.prompt('again');
+  assert.deepEqual([refused.error.code, refused.error.message], [-32001, `Claude 会话未在运行：${reason}`]);
+  assert.deepEqual(refused.error.data._meta.coda.failure, { kind: 'service_unavailable', input: 'not_accepted' });
+  assert.equal(c.query.received.length, 1, 'the refused input never went into the query');
+  // A setting is refused with the reason too, without a mark: it has no input.
+  const config = await c.request('session/set_config_option', { sessionId: c.sessionId, configId: 'mode', value: 'plan' });
+  assert.equal(config.error.message, `Claude 会话未在运行：${reason}`);
+  assert.equal(config.error.data, undefined);
+});
+
+test('a query that ends without an error says so, and a session Coda closes is not logged as an end', async t => {
+  const logged = [], write = process.stderr.write;
+  process.stderr.write = chunk => { logged.push(String(chunk)); return true; };
+  t.after(() => { process.stderr.write = write; });
+  const c = await setup(t);
+  await c.open();
+  c.query.closed = true; c.query.wake?.();
+  await until(() => c.session.phase === 'ended');
+  const refused = await c.prompt('again');
+  assert.equal(refused.error.message, 'Claude 会话未在运行：Claude SDK 查询结束，没有给出错误');
+  assert.deepEqual(refused.error.data._meta.coda.failure, { kind: 'service_unavailable', input: 'not_accepted' });
+  assert.deepEqual(logged, ['Claude 会话结束：Claude SDK 查询结束，没有给出错误\n']);
+  const d = await setup(t);
+  await d.open(); logged.length = 0;
+  await d.session.close();
+  assert.deepEqual(logged, []);
+  assert.equal((await d.prompt('again')).error.message, 'Claude 会话未在运行：Coda 关闭了会话');
+});
+
 test('the MCP servers\' file is deleted when the session ends of itself, and when it fails to start', async t => {
   const service = await modelService(t);
   const sdk = fixtureSdk(), make = sdk.query;
