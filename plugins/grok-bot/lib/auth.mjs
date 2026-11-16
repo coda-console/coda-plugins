@@ -38,7 +38,9 @@ export class NativeAuth {
       // Only a rejected authentication is retried. Never retry an ambiguous
       // transport failure for a message or widget response.
       if (error.status !== 401 || !auth.refreshToken) throw error;
-      if (this.credentials === auth) await this.refresh(auth);
+      // The send was already rejected, so a renewal failure (rejected, offline, timed out,
+      // unwritable) is marked for callers; its status and message stay as they are.
+      if (this.credentials === auth) await this.refresh(auth).catch(e => { throw Object.assign(e, { renewalFailed: true }); });
       return this.transport.request(method, value, options);
     }
   }

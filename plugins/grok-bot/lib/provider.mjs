@@ -227,35 +227,39 @@ export class Provider {
     const option = widget && widget.options.find(o => String(o.label ?? o.value) === input.text || String(o.value) === input.text);
     if (widget && (!option || body.respondedValue !== undefined || body.widgetSkipped)) throw none('选项无效或此问题已回答');
     progress('正在发送');
-    try {
-      if (widget) {
-        const answer = await this.auth.client.request('RespondGrokBotWidget', { agentId: target.bot, sessionId: '', entryId: entry.entryId, value: option.value });
-        if (answer.accepted === false) throw none('Grok 拒绝了这个选项', 'refused');
-        if (!answer.accepted) throw new Error('Grok 未确认接受选项');
-      } else {
-        const answer = await this.auth.client.request('SendGrokBotUserMessage', { agentId: target.bot, sessionId: '', messageId: key, text: input.text,
-          ...(entry ? { replyToId: entry.entryId } : {}), sentAtMs: String(Date.now()), source: 1, initiator: 1, sendSource: 1 });
-        if (answer.dispatched === false) throw none('Grok 拒绝发送这条消息', 'refused');
-        if (!answer.dispatched) throw new Error('Grok 未确认发送');
+    const unknown = e => this.coda.error('unknown', e.message, { effects: 'unknown' });
+    // Only the two send requests are classified here: authentication rejected (401/403, or the
+    // renewal after a 401 failed) means nothing was accepted; any other failure is unknown.
+    const send = async (method, value) => {
+      try { return await this.auth.client.request(method, value); }
+      catch (e) {
+        if (e.renewalFailed && !e.status) throw none(`Grok 登录续期失败：${e.message}`, 'unauthorized');
+        if (e.renewalFailed || e.status === 401 || e.status === 403) throw none(e.message, 'unauthorized');
+        throw unknown(e);
       }
-      // Confirm in the native transcript, never invent a successful message cursor.
-      const found = await this.echo(record.id, current => {
-        const row = [...current.entries.values()].find(r => {
-          if (!conversation(r)) return false;
-          const b = decode(r);
-          return widget ? r.entryId === entry.entryId && b.respondedValue === option.value : b.clientNonce === key;
-        });
-        if (!row || current.pending.has(row.entryId)) return;
-        const base = `${current.generation}:${row.entryId}`;
-        return this.visible(record.id).find(m => widget ? m.replyTo === base && m.sender === target.self : m.id === base);
-      });
-      return { message: { id: found.id, cursor: found.cursor } };
-    } catch (e) {
-      if (e.effects) throw e;
-      // The server rejected authentication, so the request was never accepted.
-      if (e.status === 401 || e.status === 403) throw none(e.message, 'unauthorized');
-      throw this.coda.error('unknown', e.message, { effects: 'unknown' });
+    };
+    if (widget) {
+      const answer = await send('RespondGrokBotWidget', { agentId: target.bot, sessionId: '', entryId: entry.entryId, value: option.value });
+      if (answer.accepted === false) throw none('Grok 拒绝了这个选项', 'refused');
+      if (!answer.accepted) throw unknown(new Error('Grok 未确认接受选项'));
+    } else {
+      const answer = await send('SendGrokBotUserMessage', { agentId: target.bot, sessionId: '', messageId: key, text: input.text,
+        ...(entry ? { replyToId: entry.entryId } : {}), sentAtMs: String(Date.now()), source: 1, initiator: 1, sendSource: 1 });
+      if (answer.dispatched === false) throw none('Grok 拒绝发送这条消息', 'refused');
+      if (!answer.dispatched) throw unknown(new Error('Grok 未确认发送'));
     }
+    // Confirm in the native transcript, never invent a successful message cursor.
+    const found = await this.echo(record.id, current => {
+      const row = [...current.entries.values()].find(r => {
+        if (!conversation(r)) return false;
+        const b = decode(r);
+        return widget ? r.entryId === entry.entryId && b.respondedValue === option.value : b.clientNonce === key;
+      });
+      if (!row || current.pending.has(row.entryId)) return;
+      const base = `${current.generation}:${row.entryId}`;
+      return this.visible(record.id).find(m => widget ? m.replyTo === base && m.sender === target.self : m.id === base);
+    }).catch(e => { throw unknown(e); });
+    return { message: { id: found.id, cursor: found.cursor } };
   }
   echo(id, find) {
     return new Promise((resolve, reject) => {
