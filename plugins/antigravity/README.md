@@ -81,6 +81,7 @@
 | 删除会话 | 不支持：agy 1.5.9 的 ACP 没有 `session/delete`（回 -32601），`session/close` 也不删除，所以 Coda 探测模型和模式时会在 agy 历史里留下零步的空会话。插件不自己删文件：那会绕过 agy 的取消、摘要缓存和搜索索引，agy 运行中删也不安全；等上游提供删除接口再接 |
 | 附加目录 | 不交给 Antigravity：读工作副本外的附件、会话临时目录、skill 真实文件可能要审批；`.agents/skills` 的链接照旧 |
 | Coda 的 MCP 工具在 auto 下也要审批 | 无人值守的子会话、流程步骤调用它们会停下；「全部放行」下不会。要在 auto 下放行，写法是在运行机的 `~/.gemini/antigravity-cli/settings.json` 里加 `{"permissions": {"allow": ["mcp(coda/*)"]}}`，出处是官方[权限文档](https://antigravity.google/docs/permissions/)；插件不替你改这个文件 |
+| 压缩上下文不上报 Coda | Antigravity 会压缩上下文：`/compact` 在 `agy acp` 1.5.9 上实测会跑一次摘要，对话库里留下摘要步骤；二进制里也有按 token 阈值触发的压缩配置，自动压缩没有实测触发。但 ACP 流和 `acp-server` 日志都不报压缩（没有 `compaction_update`，也没有专门的通知或工具调用），唯一的痕迹在它私有的对话库里，入口不读它，也不从文本或用量反推。所以依赖压缩的功能（如 Ultra 压缩后重发说明）在它上面压缩后不生效 |
 | 额度耗尽 | 没有真实样本，不做失败分类，Coda 只看到 Antigravity 给的错误文字 |
 | 没有桌面会话的 Linux 登录 | 未实测：Linux 用 Secret Service（D-Bus），二进制里有「keyring 失败就落文件」的回退，但文件路径与触发条件没查清。资源页在 Linux 上用 `secret-tool lookup service gemini username antigravity` 查条目（属性名按 go-keyring 的写法，未在真机上试过），没有 `secret-tool`、查不到条目，或登录落在文件里时，资源页当作未登录（只是仍在「添加资源」里出现，会话不受影响）。装了 `secret-tool` 却联系不上 Secret Service（典型是没有会话 D-Bus 的无桌面机器，它带错误信息退出）时，资源页读数失败、保留上次的显示，首次读取就没有可保留的，也就无法从资源页添加：这样的机器在终端里运行 `agy acp --login` 登录 |
 | 第三方模型 | 账号里的 Claude、GPT-OSS 未实测 |
