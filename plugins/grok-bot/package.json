@@ -3,7 +3,7 @@
   "id": "grok-bot",
   "displayName": "Grok Bot",
   "description": "把 Grok Bot 主会话接进 Coda",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "coda": {
     "channels": [
       "preview"
@@ -33,8 +33,7 @@
   ],
   "contributes": {
     "protocolImplementations": [
-      "coda/session@1",
-      "coda/run@1"
+      "coda/session@1"
     ],
     "resources": [
       {
