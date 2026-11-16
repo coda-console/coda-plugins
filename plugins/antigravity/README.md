@@ -3,12 +3,13 @@
 把 [Google Antigravity](https://antigravity.google/cli) 的 Agent 接进 Coda。清单经一个薄转发入口（`agent/entry.mjs`）启动运行机上的 `agy acp`（Antigravity CLI 的 ACP 服务），
 先找 `~/.local/bin/agy`，没有再用 PATH。每个会话一个进程，不登记等待项。
 
-入口只改两处，其余消息原样双向转发。第一处：把 `initialize` 答复里的 `additionalDirectories` 能力去掉，Coda 就不再给它传附加目录；
+入口改三处，其余消息原样双向转发。第一处：把 `initialize` 答复里的 `additionalDirectories` 能力去掉，Coda 就不再给它传附加目录；
 `session/new`、`session/load`、`session/resume` 里若仍带 `additionalDirectories` 也删掉。原因：agy 1.5.9 收到附加目录后，
 没给 Cwd 的命令默认跑在**字典序最前的附加根**，而不是会话的工作副本（实测规律，不是上游的保证；数组顺序、`session/load` 都不改变它）；
 不传附加目录时命令就在工作副本里跑。
 
-第二处是虚拟模式 `full`（「全部放行」），见下面「全部放行」一节。
+第二处是虚拟模式 `full`（「全部放行」），见下面「全部放行」一节。第三处是配置探测：入口在 `initialize` 声明 `_meta.coda.probe`，
+带探测标记的 `session/new` 由入口用本机的目录缓存应答，不转给 agy，见「已知限制」的「配置探测」。
 
 需要带会话指令兜底的 Coda（2026-11-13 部署版，coda#2500）或更新版本；旧版 Coda 不会给 Antigravity 送入会话指令。
 
@@ -78,13 +79,14 @@
 | 额度的口径 | 报告按模型组给额度：同组模型共享每周与 5 小时限额，不是每个模型各算一份；报告里没有套餐名。第一次在某个目录运行 `/usage` 时，CLI 会在 `implicit/` 下留一个小文件；插件固定在系统临时目录运行，之后复用，不新增会话与项目记录 |
 | 等待项登记 `_coda/wait` | 不登记，会话底部不列它在等什么 |
 | Plan 模式 | 产出计划文件并要求审阅，审阅前不动手；plan 下只读的 shell 命令也按权限规则请求审批，这是 agy 的设计 |
-| 删除会话 | 不支持：agy 1.5.9 的 ACP 没有 `session/delete`（回 -32601），`session/close` 也不删除，所以 Coda 探测模型和模式时会在 agy 历史里留下零步的空会话。插件不自己删文件：那会绕过 agy 的取消、摘要缓存和搜索索引，agy 运行中删也不安全；等上游提供删除接口再接 |
+| 删除会话 | 不支持：agy 1.5.9 的 ACP 没有 `session/delete`（回 -32601），`session/close` 也不删除。在 agy 历史里留下零步空会话的只有两种：不支持配置探测的旧版 Coda 每次普通探测建的会话，和插件缓存采集目录时自己建的那条，见「配置探测」。插件不自己删文件：那会绕过 agy 的取消、摘要缓存和搜索索引，agy 运行中删也不安全；等上游提供删除接口再接 |
 | 附加目录 | 不交给 Antigravity：读工作副本外的附件、会话临时目录、skill 真实文件可能要审批；`.agents/skills` 的链接照旧 |
 | Coda 的 MCP 工具在 auto 下也要审批 | 无人值守的子会话、流程步骤调用它们会停下；「全部放行」下不会。要在 auto 下放行，写法是在运行机的 `~/.gemini/antigravity-cli/settings.json` 里加 `{"permissions": {"allow": ["mcp(coda/*)"]}}`，出处是官方[权限文档](https://antigravity.google/docs/permissions/)；插件不替你改这个文件 |
 | 压缩上下文不上报 Coda | Antigravity 会压缩上下文：`/compact` 在 `agy acp` 1.5.9 上实测会跑一次摘要，对话库里留下摘要步骤；二进制里也有按 token 阈值触发的压缩配置，自动压缩没有实测触发。但 ACP 流和 `acp-server` 日志都不报压缩（没有 `compaction_update`，也没有专门的通知或工具调用），唯一的痕迹在它私有的对话库里，入口不读它，也不从文本或用量反推。所以依赖压缩的功能（如 Ultra 压缩后重发说明）在它上面压缩后不生效 |
 | 额度耗尽 | 没有真实样本，不做失败分类，Coda 只看到 Antigravity 给的错误文字 |
 | 没有桌面会话的 Linux 登录 | 未实测：Linux 用 Secret Service（D-Bus），二进制里有「keyring 失败就落文件」的回退，但文件路径与触发条件没查清。资源页在 Linux 上用 `secret-tool lookup service gemini username antigravity` 查条目（属性名按 go-keyring 的写法，未在真机上试过），没有 `secret-tool`、查不到条目，或登录落在文件里时，资源页当作未登录（只是仍在「添加资源」里出现，会话不受影响）。装了 `secret-tool` 却联系不上 Secret Service（典型是没有会话 D-Bus 的无桌面机器，它带错误信息退出）时，资源页读数失败、保留上次的显示，首次读取就没有可保留的，也就无法从资源页添加：这样的机器在终端里运行 `agy acp --login` 登录 |
 | 第三方模型 | 账号里的 Claude、GPT-OSS 未实测 |
+| 配置探测 | Coda 读模型、思考档位与模式的目录时，入口用插件状态目录里的缓存（`$CODA_PLUGIN_STATE/catalog-v1.json`）答一个只在当前连接有效的虚拟会话（`coda-probe:` 开头，不接受 prompt、不能恢复、断线即释放）：**缓存命中时不建 Antigravity 会话**。缓存维护大约每天一次，以及 agy 的路径或版本、`~/.gemini/antigravity-cli/settings.json` 变化、真实会话报的配置与缓存对不上时，用一个独立的 `agy acp` 建一条空会话逐个模型读一遍（agy 1.5.9 删不了会话，这条会留在 `~/.gemini/antigravity-cli/conversations/`，会话 ID 记在 `catalog-v1.log`）。读失败时这次探测报错、不改用普通会话，同样的 agy 与设置 5 分钟内不再重读（未登录除外）。要支持配置探测的新版 Coda 才生效；旧版 Coda 每次探测仍各建一条空会话 |
 | 并发进程 | 不加 `--process-per-session`：Coda 交给 Agent 的 MCP 服务器都是 stdio，官方只对 HTTP MCP 要求这个参数 |
 
 ## 验收

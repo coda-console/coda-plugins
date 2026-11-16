@@ -119,16 +119,68 @@ describe('a liar fails on the rule it breaks', () => {
     ['ignore-system-prompt', 'live.instructions', { live: true }],
     ['steer-own-turn', 'live.steering', { live: true }],
     ['steer-started', 'live.steering', { live: true }],
+    ['probe-refuses', 'probe.new', {}],
+    ['probe-stuck', 'probe.config', {}],
+    ['probe-prompt', 'probe.prompt', {}],
+    ['probe-prompt-internal', 'probe.prompt', {}],
+    ['probe-mark-ignored', 'probe.mark', {}],
+    ['probe-empty-id', 'probe.new', {}],
+    ['probe-any-option', 'probe.config', {}],
+    ['probe-default-refused', 'probe.config', {}],
+    ['probe-default-ignored', 'probe.config', {}, /设思考档位 low 后返回的档位是 medium/],
+    ['probe-close-error', 'probe.close', {}],
+    ['probe-close-keeps', 'probe.close', {}],
+    ['probe-load-code', 'probe.resume', {}],
+    ['probe-list-pages', 'probe.resume', {}, /第 2 页列出了虚拟会话/],
+    ['probe-list-loop', 'probe.resume', {}, /又给了用过的 nextCursor/],
+    ['probe-list-endless', 'probe.resume', {}, /翻了 100 页/],
+    ['probe-list-cursor', 'probe.resume', {}, /nextCursor 不是字符串（42）/],
+    ['probe-list-entry', 'probe.resume', {}, /sessions\[0\] 不合 ACP schema：cwd/],
+    ['probe-persist-close', 'probe.resume', {}, /session\/load 接上了虚拟会话/],
+    ['probe-resume', 'probe.resume', {}],
+    ['probe-list-error', 'probe.resume', {}],
+    ['probe-list-shapeless', 'probe.resume', {}],
+    ['probe-reinit-error', 'probe.resume', {}],
+    ['probe-reinit-shapeless', 'probe.resume', {}],
+    ['probe-init-shapeless', 'probe.new', {}],
+    ['probe-models-shapeless', 'probe.config', {}],
+    ['probe-level-shapeless', 'probe.config', {}],
+    ['probe-new-work', 'probe.quiet', {}],
+    ['probe-signed-out-work', 'probe.quiet', {}],
+    ['probe-wait-work', 'probe.quiet', {}],
+    ['probe-wait-ask', 'probe.quiet', {}],
+    ['probe-wait-only', 'probe.quiet', {}],
   ];
-  for (const [mode, rule, options] of cases) test(mode, async () => {
+  for (const [mode, rule, options, message] of cases) test(mode, async () => {
     const { report } = await checkPlugin(plugin({ mode }), { ...options, limits });
     assert.deepEqual([...new Set(failed(report))], [rule], JSON.stringify(report.failures, null, 1));
+    if (message) assert.match(report.failures.map(item => item.message).join('\n'), message);
   });
   test('an honest one passes', async () => {
     const { report } = await checkPlugin(plugin(), { live: true, limits });
     assertPasses(report, ['handshake.system-prompt', 'live.instructions', 'live.turn', 'live.cancel']);
     assert.match(report.items.find(item => item.rule === 'live.cancel').message, /stopReason cancelled/);
     assert.ok(rules(report, 'skip').includes('live.steering'), 'steering is optional');
+  });
+  test('one that declares configuration probes opens a session of its connection alone for them', async () => {
+    const { report } = await checkPlugin(plugin({ mode: 'probe' }), { limits });
+    assertPasses(report, ['handshake.new', 'probe.new', 'probe.mark', 'probe.config', 'probe.prompt', 'probe.close', 'probe.resume']);
+    assert.match(report.items.find(item => item.rule === 'probe.resume').message, /session\/list（2 页）/, 'every page of the probe\'s cwd');
+    assert.match(report.items.find(item => item.rule === 'probe.config').message, /3 个.*a（low\/medium\/high），b（low\/medium\/high\/xhigh），c（无档位）/);
+    assert.ok(rules(await checkPlugin(plugin(), { limits }).then(r => r.report), 'skip').includes('probe.skipped'), 'one that does not is not asked');
+  });
+  test('a probe may say its commands and config while its session/new is answered, but not work or ask', async () => {
+    assertPasses((await checkPlugin(plugin({ mode: 'probe-quiet-updates' }), { limits })).report, ['probe.new']);
+    const work = (await checkPlugin(plugin({ mode: 'probe-new-work' }), { limits })).report;
+    assert.match(work.items.find(item => item.rule === 'probe.quiet').message, /agent_message_chunk/);
+    const ask = (await checkPlugin(plugin({ mode: 'probe-new-ask' }), { limits })).report;
+    assert.match(ask.items.find(item => item.rule === 'probe.quiet').message, /审批/);
+  });
+  test('a probe that registers activity fails however the rest of it is taken as a turn', async () => {
+    const quiet = async mode => (await checkPlugin(plugin({ mode }), { limits })).report.items.find(item => item.rule === 'probe.quiet').message;
+    assert.match(await quiet('probe-wait-work'), /_coda\/wait.*agent_message_chunk/);
+    assert.match(await quiet('probe-wait-ask'), /_coda\/wait.*审批/);
+    assert.match(await quiet('probe-wait-only'), /_coda\/wait/);
   });
   test('an agent without systemPrompt follows the instructions in the first prompt', async () => {
     const { report } = await checkPlugin(plugin({ mode: 'no-system-prompt' }), { live: true, limits });
