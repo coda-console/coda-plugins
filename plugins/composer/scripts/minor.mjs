@@ -1,9 +1,15 @@
 // 泳道 PR 的小改动免主控审查（README.md「小改动免主控审查」）：资格判定。纯函数，不读写文件、不跑命令；改动与 diff 由调用方用 git 取来。
 import { SLOTS } from './shared.mjs';
 
-// 测试文件：test/ 下的任何文件（含测试夹具），或别处的 *.test.mjs、*.test.js、*Tests.swift（不在 .coda、.github、scripts、check、bin、docs 下）。
-export const isTest = path => path.startsWith('test/')
-  || /\.test\.m?js$|Tests\.swift$/.test(path) && !path.split('/').some(part => ['.coda', '.github', 'scripts', 'check', 'bin', 'docs'].includes(part));
+// 测试文件：先排除 AGENTS.md、CLAUDE.md、package.json、package-lock.json 与 .coda、.github、scripts、check、bin、docs 下的路径（test/ 下也一样），
+// .bpmn 只认 test/ 下 fixtures 里的测试夹具；其余 test/ 下的文件，或别处的 *.test.mjs、*.test.js、*Tests.swift。
+export const isTest = path => {
+  const parts = path.split('/');
+  if (['AGENTS.md', 'CLAUDE.md', 'package.json', 'package-lock.json'].includes(parts.at(-1))
+    || parts.some(part => ['.coda', '.github', 'scripts', 'check', 'bin', 'docs'].includes(part))) return false;
+  if (path.endsWith('.bpmn')) return path.startsWith('test/') && parts.includes('fixtures');
+  return path.startsWith('test/') || /\.test\.m?js$|Tests\.swift$/.test(path);
+};
 // 非契约说明文档：仓库根或插件目录下的 README.md、THIRD_PARTY_NOTICES.md。其余一律不免审。
 export const isMinorPath = path => isTest(path) || /^(plugins\/[^/]+\/)?(README|THIRD_PARTY_NOTICES)\.md$/.test(path);
 

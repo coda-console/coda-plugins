@@ -87,7 +87,8 @@ switch (action) {
     const kind = opening.action, resumed = opening.session;
     const talk = (session, text) => {
       writeFileSync(prompt, `${instructions}\n\n${text}\n`);
-      const args = session ? ['--continue', session] : ['--commit', stacked() ? state.stack.head : laneHead(), '--title', state.title];
+      // 叠放升级（recover）之后前置 head 已不能作为起点，新开的会话从泳道开工。
+      const args = session ? ['--continue', session] : ['--commit', stacked() && !state.stack.recover ? state.stack.head : laneHead(), '--title', state.title];
       // 执行者是一组 Agent 选择（流程参数的 agent 类型）：没选的模型、强度、模式用 Agent 的默认值。
       if (!session) args.push(...agentArgs(opening.agent));
       // 会话失败时 coda-agent 仍在标准输出给出会话 ID；记下它，这一步再跑才接得回。
@@ -131,6 +132,23 @@ switch (action) {
   case 'gate': {
     console.error(`推送执行者提交 ${state.executor.head} 到 ${state.branch}`);
     git('push', '--no-follow-tags', '--force', 'origin', `${state.executor.head}:refs/heads/${state.branch}`);
+    // 叠放升级给主 Agent 之后（recover：前置关了没合并，或流程分不清自己的提交），执行者按退回意见直接变基到泳道上、不再含前置旧提交，
+    // 就在这里解绑叠放：PR 还开着就切回泳道、转正；前置分支被删、GitHub 已把它关掉的，下面重新开进泳道。没做到就保持叠放，后面照旧拦住。
+    if (stacked() && state.stack.recover) {
+      const lane = laneHead(), head = state.executor.head;
+      if (ancestor(lane, head) && !ancestor(state.stack.head, head)) {
+        if (state.pr) {
+          const repo = repoOf(state.pr);
+          if (JSON.parse(gh('pr', 'view', state.pr, '--repo', repo, '--json', 'state')).state === 'OPEN') {
+            gh('pr', 'edit', state.pr, '--repo', repo, '--base', state.lane);
+            gh('pr', 'ready', state.pr, '--repo', repo);
+          } else state.pr = '';
+        }
+        state.stack.restacked = true;
+        delete state.stack.recover;
+        delete state.stack.pending;
+      }
+    }
     // 叠放还没重接时检查与评审只对前置的 head，评的是这个 PR 自己的增量。
     state.base = stacked() ? state.stack.head : laneHead();
     // 从头重跑时 PR 可能已经开着：先从 GitHub 找，找不到才开。叠放的 PR 可能开在前置分支上，只按分支找。
@@ -300,6 +318,7 @@ switch (action) {
     const parent = JSON.parse(gh('pr', 'view', state.stack.pr, '--repo', repoOf(state.stack.pr), '--json', 'state'));
     if (parent.state === 'CLOSED') {
       state.feedback = `前置泳道 PR ${state.stack.pr} 已关闭、没有合并。这个泳道 PR 叠在它上面（从 ${state.stack.head} 开工），不能合进泳道：请选择放弃，或退回修改让执行者把自己的提交改为直接基于泳道 ${state.lane}。`;
+      state.stack.recover = true;
       save();
     }
     output('route', { OPEN: 'wait', MERGED: 'restack' }[parent.state] ?? 'review');
@@ -311,7 +330,8 @@ switch (action) {
   case 'restack': {
     const s = state.stack, lane = laneHead();
     git('fetch', 'origin', state.branch);
-    const escalate = text => { state.feedback = text; save(); output('route', 'review'); };
+    // 升级后等主 Agent 退回、执行者直接变基到泳道上，由 gate 解绑叠放（recover）。
+    const escalate = text => { state.feedback = text; s.recover = true; delete s.pending; save(); output('route', 'review'); };
     if (!s.pending) {
       const from = state.executor.head;
       if (!ancestor(s.head, from)) {
@@ -359,10 +379,10 @@ ${files.map(file => `- ${file}`).join('\n')}
     const head = state.executor.head, range = `${state.base}...${head}`;
     git('fetch', 'origin', state.lane, state.branch);
     const changes = parseRaw(git('diff', '--raw', '-z', '-M', '--no-abbrev', range));
-    const tests = [...new Set(changes.flatMap(c => c.status === 'D' ? [] : c.paths.slice(-1)).filter(isTest))];
-    const patches = Object.fromEntries(tests.map(path => {
-      const lines = git('diff', '-U0', '--no-color', range, '--', path).split('\n');
-      return [path, { added: lines.filter(l => l.startsWith('+') && !l.startsWith('+++')), removed: lines.filter(l => l.startsWith('-') && !l.startsWith('---')) }];
+    // 重命名、复制的测试文件带上旧路径和 -M，删掉的断言才算在里面。
+    const patches = Object.fromEntries(changes.filter(c => c.status !== 'D' && c.paths.some(isTest)).map(c => {
+      const lines = git('diff', '-U0', '-M', '--no-color', range, '--', ...c.paths).split('\n');
+      return [c.paths.at(-1), { added: lines.filter(l => l.startsWith('+') && !l.startsWith('+++')), removed: lines.filter(l => l.startsWith('-') && !l.startsWith('---')) }];
     }));
     const reviews = JSON.parse(env.REVIEWS);
     const reasons = autoLandReasons({ auto: env.AUTO === 'true', sync: state.sync, stack: state.stack, head, checks: state.checks, reviews,

@@ -333,6 +333,7 @@ PR 汇总的改动块统计目标分支最新提交与泳道 head 的三点 diff
 - **等前置**：评审分流 `pass`（或没有评审者）之后「查看前置泳道 PR」（`stack-status`，只用 gh，不检出、不占名额）：前置还开着就经计时器等 1 分钟再看；关了没合并就写明原因交主 Agent 审查卡；合进泳道了就重接。分流 `escalate` 直接交主 Agent，不等前置。
 - **重接**（`restack`）：fetch 泳道最新 head 与本运行分支，确认前置的 head 仍是执行者 head 的祖先（不是就写明原因交主 Agent），再 `git rebase --onto <泳道 head> <前置 head>`，只把这一块自己的提交重放到 squash 后的泳道上；不 merge，否则前置 squash 前的散提交会带回来。干净时先记下重接结果，再 `git push --force-with-lease=refs/heads/<分支>:<原 head>` 更新分支（远端被别人改过就不覆盖、这一步失败，重跑从记下的结果接着收尾）、`gh pr edit --base <泳道>`、`gh pr ready`，标 `restacked: true`，回到推送、项目检查，并以泳道最新 head 为 base 完整评审（不用变基前评过的 head 当 base：前置是 squash 进来的，那样会把前置的改动混进 diff）。之后第一次交给同一执行会话的任务前面先说明分支已被重接、先重置到远端分支。
   冲突时 `git rebase --abort`，泳道和分支都不动，把冲突的文件和重接说明（前置已 squash 进泳道的哪个 head，把 `<前置 head>..<执行者 head>` 变基重接上去、不要 merge、不要混入前置旧提交）交同一执行会话，回来再到「重接到泳道」核对：泳道是新 head 的祖先、前置 head 不是，才推送、切 base、转正；否则写明原因交主 Agent。
+- **升级后的恢复**：前置关了没合并，或重接时流程分不清这一块自己的提交（含执行者解冲突后没变基到泳道上），都写明原因交主 Agent，并在 `stack` 上记 `recover`（丢掉没收尾的重接）。主 Agent 退回修改、让执行者直接变基到泳道最新 head 上之后（换备用执行者也从泳道开工），「推送并开 PR」核对：泳道 head 是新 head 的祖先、前置 head 不是，就解绑叠放：PR 还开着就 `gh pr edit --base <泳道>`、`gh pr ready`；前置分支被删、GitHub 已把它关掉的，重新开一个进泳道的正式 PR；标 `restacked: true`，之后照常以泳道为 base 检查、完整评审、合进泳道（或免审合入）。没做到就保持叠放，照旧拦在等前置、重接和「合进泳道」上。
 - **兜底**：叠放还没重接时主 Agent 在审查卡上选「合进泳道」不会合并（那会合进前置分支），流程回去等前置合进泳道、重接，重新检查与评审后再回到审查卡。审查卡上也写着这一项叠在哪个前置上。
 
 ### 小改动免主控审查
@@ -343,7 +344,7 @@ PR 汇总的改动块统计目标分支最新提交与泳道 head 的三点 diff
 2. 叠放的已重接，并在重接后的新 head 上经过了项目检查和评审；
 3. 当前 head 的项目检查已通过；
 4. 至少一位评审者，所有没跳过的位置都评完了当前 head、结论 `APPROVE`、这次没有发现，收敛账本里也没有没关的发现（没评成、`INCOMPLETE`、`COMMENT`、`REQUEST_CHANGES` 都不免审）；
-5. `git diff --raw -z -M <base>...<head>` 至少一个文件，每个路径（重命名的新旧路径都算）都是测试文件（`test/` 下的任何文件，或别处的 `*.test.mjs`、`*.test.js`、`*Tests.swift`，但不在 `.coda`、`.github`、`scripts`、`check`、`bin`、`docs` 下）或仓库根、插件目录下的 `README.md`、`THIRD_PARTY_NOTICES.md`；没有符号链接（`120000`）、子模块（`160000`）。业务与脚本源码、`package.json`、`package-lock.json`、schema、`.coda/`、`.github/`、`scripts/`、`check/`、`bin/`、`AGENTS.md`、`CLAUDE.md`、`docs/` 下的文档、插件里的 `.bpmn` 一律不免审；
+5. `git diff --raw -z -M <base>...<head>` 至少一个文件，每个路径（重命名的新旧路径都算）都是测试文件或仓库根、插件目录下的 `README.md`、`THIRD_PARTY_NOTICES.md`；没有符号链接（`120000`）、子模块（`160000`）。测试文件先排除：文件名是 `AGENTS.md`、`CLAUDE.md`、`package.json`、`package-lock.json` 的，路径段里有 `.coda`、`.github`、`scripts`、`check`、`bin`、`docs` 的（`test/` 下也一样）；`.bpmn` 只认 `test/` 下路径段有 `fixtures` 的测试夹具；排除之后才是 `test/` 下的文件，或别处的 `*.test.mjs`、`*.test.js`、`*Tests.swift`。业务与脚本源码、schema 等其余文件一律不免审；
 6. 没删测试文件；测试文件新增的行里没有 `.skip`、`.todo`、`{ skip:`、`{ todo:`；没有删了含 `assert.` 的行却一行 `assert.` 都没加。
 
 不免审时把原因写进这一步的步骤摘要，照常出主 Agent 审查卡。免审合入时「合进泳道」在步骤摘要写出审计摘要：原因、PR、合入提交、泳道与 head、改动文件清单、项目检查结果、每位评审者的结论；结束事件另输出 `autoLanded`、`summary`。出过审查卡之后再合进泳道的不算免审。

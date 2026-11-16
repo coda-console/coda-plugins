@@ -104,8 +104,9 @@ else if (args[1] === 'create') console.log('${PR}');
 else if (args[1] === 'list') { if (process.env.OPEN_PR) console.log(process.env.OPEN_PR); }
 else if (args[1] === 'merge') { if (process.env.MERGE_EXIT) process.exit(Number(process.env.MERGE_EXIT)); }
 else if (args[1] === 'view' && args.includes('state,headRefOid,mergeCommit')) console.log(JSON.stringify({ state: process.env.PR_STATE || 'OPEN', headRefOid: state().executor.head, mergeCommit: { oid: 'f'.repeat(40) } }));
-// 前置泳道 PR：开工时取全部字段，「查看前置泳道 PR」只取 state；内容在 FIXTURE/parent。
+// 前置泳道 PR：开工时取全部字段，「查看前置泳道 PR」只取 state；内容在 FIXTURE/parent。本运行的 PR 只取 state 时看 OWN_STATE（默认开着）。
 else if (args[1] === 'view' && args.includes('url,state,headRefName,headRefOid,baseRefName')) console.log(readFileSync(join(root, 'parent'), 'utf8'));
+else if (args[1] === 'view' && args.at(-1) === 'state' && args[2] === '${PR}') console.log(JSON.stringify({ state: process.env.OWN_STATE || 'OPEN' }));
 else if (args[1] === 'view' && args.at(-1) === 'state') console.log(JSON.stringify({ state: JSON.parse(readFileSync(join(root, 'parent'), 'utf8')).state }));
 else if (args[1] === 'view' && args.includes('state,mergeable')) console.log(JSON.stringify({ state: 'OPEN', mergeable: process.env.PR_MERGEABLE || 'MERGEABLE' }));
 else if (args[1] === 'view') console.log('f'.repeat(40));
@@ -913,7 +914,7 @@ test('叠放：重接推送用 --force-with-lease，远端分支被别人改过�
   assert.equal(f.remote('lane-pr/pr-run-1'), head);
 });
 
-test('叠放：重接冲突交原执行会话变基解冲突，回来核对后收尾；没变基到泳道上就交主 Agent', t => {
+test('叠放：重接冲突交原执行会话变基解冲突，回来核对后收尾', t => {
   const f = fixture(t);
   const parent = f.parent();
   f.task('shared', 'child version'); f.run('execute', { DEPENDS_ON: PARENT }); f.delivered();
@@ -925,27 +926,53 @@ test('叠放：重接冲突交原执行会话变基解冲突，回来核对后�
   assert.deepEqual([f.state().executor.head, f.state().stack.restacked], [first, false]);
   for (const text of ['- shared', `git rebase --onto ${lane} ${parent.head}`, '不要 merge', '已 squash 合进泳道 lane/req-1']) assert.ok(f.state().feedback.includes(text), text);
 
-  // 执行者没变基，只在原来的分支上再提交：交主 Agent。
-  f.task('more', 'still on parent'); f.run('revise');
-  assert.equal(f.run('restack').outputs.route, 'review');
-  assert.match(f.state().feedback, /没有变基到泳道上/);
-  assert.equal(f.remote('lane-pr/pr-run-1'), first);
-
-  // 退回修改后执行者变基重接、解了冲突：收尾、转正。
-  const before = f.state().executor.head;
   f.task('shared', 'resolved', undefined, { rebase: [lane, parent.head] }); f.run('revise');
   assert.deepEqual(f.calls('agent').at(-1).args.slice(0, 2), ['--continue', 'worker-1'], '同一执行会话');
   const head = f.state().executor.head;
   assert.ok(ancestorOf(f, lane, head) && !ancestorOf(f, parent.head, head));
   assert.equal(f.run('restack').outputs.route, 'gate');
   assert.equal(f.remote('lane-pr/pr-run-1'), head);
-  assert.notEqual(head, before);
   assert.equal(f.state().stack.restacked, true);
   assert.equal(f.state().stack.note, undefined, '执行者自己重接的不用再提醒');
   assert.deepEqual(f.calls('gh').slice(-2).map(c => c.args[1]), ['edit', 'ready']);
 });
 
-test('叠放：前置关了没合并交主 Agent；执行者改写了祖先时不自动重接；主 Agent 在重接前选合进泳道被拦下，不合进前置分支', t => {
+// 叠放升级后，执行者已直接变基到泳道上：gate 解绑叠放之后照常检查、以泳道为 base 评审，合进泳道。
+function landsAfterRecovery(f, lane) {
+  assert.equal(f.state().stack.restacked, true);
+  assert.deepEqual([f.state().stack.recover, f.state().stack.pending], [undefined, undefined]);
+  assert.equal(f.run('gate-passed', { RUNS: '[]' }).outputs.base, lane, '以泳道为 base');
+  assert.equal(f.run('review-round').outputs.base, lane);
+  assert.equal(f.run('stack-status').outputs.route, 'ready');
+  assert.equal(f.decide('land'), 'land');
+  assert.equal(f.run('land').outputs.route, 'landed');
+  assert.equal(f.calls('gh').filter(c => c.args[1] === 'merge').at(-1).args[2], PR);
+}
+
+test('叠放：执行者解冲突后没变基到泳道上交主 Agent；退回修改变基到泳道后，推送时切回泳道、转正，照常合进泳道', t => {
+  const f = fixture(t);
+  const parent = f.parent();
+  f.task('shared', 'child version'); f.run('execute', { DEPENDS_ON: PARENT }); f.delivered();
+  const first = f.state().executor.head;
+  f.squash(parent.head);
+  const lane = f.advanceLane('shared', 'lane version');
+  assert.equal(f.run('restack').outputs.route, 'revise');
+  f.task('more', 'still on parent'); f.run('revise');
+  assert.equal(f.run('restack').outputs.route, 'review');
+  assert.match(f.state().feedback, /没有变基到泳道上/);
+  assert.equal(f.remote('lane-pr/pr-run-1'), first);
+  assert.deepEqual([f.state().stack.recover, f.state().stack.pending, f.state().stack.restacked], [true, undefined, false]);
+
+  f.decide('revise', '变基到泳道'); f.task('shared', 'resolved', undefined, { rebase: [lane, parent.head] }); f.run('revise');
+  const head = f.run('gate').outputs.head;
+  assert.equal(f.remote('lane-pr/pr-run-1'), head);
+  assert.deepEqual(f.calls('gh').filter(c => ['view', 'edit', 'ready'].includes(c.args[1])).slice(-3).map(c => c.args.slice(1)),
+    [['view', PR, '--repo', 'github.com/example/fixture', '--json', 'state'], ['edit', PR, '--repo', 'github.com/example/fixture', '--base', 'lane/req-1'],
+      ['ready', PR, '--repo', 'github.com/example/fixture']]);
+  landsAfterRecovery(f, lane);
+});
+
+test('叠放：前置关了没合并交主 Agent，重接前选合进泳道被拦下；退回修改变基到泳道后 PR 已被关掉就重新开进泳道，照常合进泳道', t => {
   const f = fixture(t);
   const parent = f.parent();
   f.task('child', 'child work'); f.run('execute', { DEPENDS_ON: PARENT }); f.delivered();
@@ -955,15 +982,57 @@ test('叠放：前置关了没合并交主 Agent；执行者改写了祖先时�
   f.setParent({ state: 'CLOSED' });
   assert.equal(f.run('stack-status').outputs.route, 'review');
   assert.match(f.run('review').outputs.feedback, /已关闭、没有合并/);
+  assert.equal(f.state().stack.recover, true);
+  assert.equal(f.decide('land'), 'stack', '没解绑前照旧拦住');
 
-  // 执行者自己把提交挪到了泳道上（前置的 head 不再是祖先）：前置合进泳道后不自动重接。
   const lane = f.remote('lane/req-1');
-  f.decide('revise', '改'); f.task('child', 'moved', undefined, { rebase: [lane, parent.head] }); f.run('revise'); f.delivered();
-  f.squash(parent.head);
+  f.decide('revise', '改为直接基于泳道'); f.task('child', 'moved', undefined, { rebase: [lane, parent.head] }); f.run('revise');
+  f.run('gate', { OWN_STATE: 'CLOSED' });
+  const created = f.calls('gh').filter(c => c.args[1] === 'create');
+  assert.equal(created.length, 2);
+  assert.deepEqual(created[1].args.slice(0, 8), ['pr', 'create', '--base', 'lane/req-1', '--head', 'lane-pr/pr-run-1', '--title', '输入框可以输入'], '重新开进泳道的正式 PR');
+  assert.equal(f.calls('gh').filter(c => c.args[1] === 'edit').length, 0);
+  landsAfterRecovery(f, lane);
+});
+
+test('叠放：执行者改写了祖先时不自动重接、交主 Agent；没变基到最新泳道仍拦住，退回修改变基到泳道后切回泳道，照常合进泳道', t => {
+  const f = fixture(t);
+  const parent = f.parent(), old = f.remote('lane/req-1');
+  f.task('child', 'child work'); f.run('execute', { DEPENDS_ON: PARENT }); f.delivered();
+  // 执行者自己把提交挪到了泳道上（前置的 head 不再是祖先）：前置合进泳道后不自动重接。
+  f.decide('revise', '改'); f.task('child', 'moved', undefined, { rebase: [old, parent.head] }); f.run('revise'); f.delivered();
+  const lane = f.squash(parent.head);
   assert.equal(f.run('stack-status').outputs.route, 'restack');
   assert.equal(f.run('restack').outputs.route, 'review');
   assert.match(f.state().feedback, /不再以前置的 head .* 为祖先/);
-  assert.equal(f.state().stack.restacked, false);
+  assert.deepEqual([f.state().stack.restacked, f.state().stack.recover], [false, true]);
+
+  // 还在旧泳道上：不解绑，评审仍对前置的 head，合进泳道仍拦住。
+  f.decide('revise', '再改'); f.task('child', 'again'); f.run('revise');
+  f.run('gate');
+  assert.deepEqual([f.state().stack.restacked, f.state().stack.recover, f.state().base], [false, true, parent.head]);
+  assert.equal(f.decide('land'), 'stack');
+
+  f.decide('revise', '变基到泳道最新 head'); f.task('child', 'rebased', undefined, { rebase: [lane, old] }); f.run('revise');
+  f.run('gate');
+  assert.deepEqual(f.calls('gh').slice(-2).map(c => c.args[1]), ['edit', 'ready']);
+  landsAfterRecovery(f, lane);
+});
+
+test('叠放：升级后换备用执行者从泳道开工，推送时解绑叠放', t => {
+  const f = fixture(t);
+  const parent = f.parent();
+  f.task('child', 'child work'); f.run('execute', { DEPENDS_ON: PARENT }); f.delivered();
+  f.setParent({ state: 'CLOSED' });
+  assert.equal(f.run('stack-status').outputs.route, 'review');
+  const lane = f.remote('lane/req-1');
+  assert.equal(f.decide('swap', '前置关了，从泳道重做', 'true'), 'swap');
+  f.task('child', 'redo'); f.run('swap', { EXECUTOR: JSON.stringify({ agent: 'backup' }) });
+  assert.deepEqual(f.calls('agent').at(-1).args.slice(0, 2), ['--commit', lane], '不从已失效的前置 head 开工');
+  assert.ok(!ancestorOf(f, parent.head, f.state().executor.head));
+  f.run('gate');
+  assert.equal(f.state().stack.restacked, true);
+  assert.equal(f.state().base, lane);
 });
 
 test('叠放开工的校验：sync 不能叠放，前置关了、多级叠放、叠在自己上都拒绝；前置已合进泳道就不叠放', t => {
@@ -1049,6 +1118,14 @@ test('小改动免主控审查：删测试文件、新增 skip、只删断言、
     assert.match(readFileSync(f.env.GITHUB_STEP_SUMMARY, 'utf8'), text);
     assert.equal(f.state().auto, undefined);
   }
+});
+
+test('小改动免主控审查：重命名测试文件并删掉唯一的断言，按重命名比对、不免审', t => {
+  const { f, route } = minorAfter(t, { 'test/a.test.mjs': null, 'test/b.test.mjs': "test('a', () => {\n  console.log(1);\n  const x = 1;\n  const y = 2;\n});\n" },
+    { seed: { 'test/a.test.mjs': "test('a', () => {\n  assert.equal(1, 1);\n  const x = 1;\n  const y = 2;\n});\n" } });
+  assert.match(f.git('diff', '--name-status', '-M', `${f.state().base}...${f.state().executor.head}`), /^R\d+\ttest\/a\.test\.mjs\ttest\/b\.test\.mjs$/, '确实是重命名');
+  assert.equal(route, 'review');
+  assert.match(readFileSync(f.env.GITHUB_STEP_SUMMARY, 'utf8'), /test\/b\.test\.mjs 删了断言、没有新增断言/);
 });
 
 test('小改动免主控审查：评审没评成或有发现、没有评审者、没开开关都回到审查卡', t => {

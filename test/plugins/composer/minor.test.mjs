@@ -35,7 +35,9 @@ test('路径：只放行测试与非契约说明文档；源码、package.json�
     'README.md', 'plugins/composer/README.md', 'THIRD_PARTY_NOTICES.md']) assert.ok(isMinorPath(path), path);
   for (const path of ['plugins/composer/scripts/lane-pr.mjs', 'plugins/composer/package.json', 'package-lock.json', 'plugins/x/schema.json',
     'plugins/composer/.coda/workflows/lane-pr.bpmn', '.github/workflows/ci.yml', 'scripts/a.test.mjs', 'check/agent.mjs', 'bin/check.mjs',
-    'docs/workflows.md', 'docs/README.md', 'AGENTS.md', 'CLAUDE.md', 'plugins/x/docs/README.md', 'plugins/x/.coda/a.test.mjs']) assert.ok(!isMinorPath(path), path);
+    'docs/workflows.md', 'docs/README.md', 'AGENTS.md', 'CLAUDE.md', 'plugins/x/docs/README.md', 'plugins/x/.coda/a.test.mjs',
+    'test/AGENTS.md', 'test/CLAUDE.md', 'test/package.json', 'test/package-lock.json', 'test/.coda/live.bpmn', 'test/live.bpmn', 'test/.github/ci.yml',
+    'test/scripts/a.test.mjs', 'test/plugins/x/docs/a.md']) assert.ok(!isMinorPath(path), path);
   assert.match(reasons({ changes: [{ status: 'R', modes: ['100644', '100644'], paths: ['plugins/x/a.mjs', 'test/a.test.mjs'] }], patches: {} }).join('\n'), /plugins\/x\/a\.mjs/, '重命名的旧路径也算');
   assert.match(reasons({ changes: [], patches: {} }).join('\n'), /没有改动的文件/);
   for (const mode of ['120000', '160000']) assert.match(reasons({ changes: [change('test/link', 'A', ['000000', mode])], patches: {} }).join('\n'), /符号链接或子模块/);
