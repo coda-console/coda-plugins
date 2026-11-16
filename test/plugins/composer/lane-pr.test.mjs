@@ -104,6 +104,8 @@ else if (args[0] === 'repo' && args[1] === 'view') console.log('https://github.c
 // 开 PR 的 base 分支不在 origin 上（如前置合并时已删）时，GitHub 拒绝。
 else if (args[1] === 'create') {
   const base = args[args.indexOf('--base') + 1];
+  // CREATE_LOST：GitHub 已开出 PR，响应却丢了，命令非零退出。
+  if (process.env.CREATE_LOST) process.exit(1);
   if (require('node:child_process').spawnSync('git', ['--git-dir', join(root, 'origin.git'), 'rev-parse', '--verify', '-q', 'refs/heads/' + base]).status !== 0) { console.error('base ' + base + ' 不存在'); process.exit(1); }
   console.log('${PR}');
 }
@@ -1120,9 +1122,13 @@ test('叠放：执行期间前置被 force-push 改写后合进泳道，gate 直
   f.dropParent();
   assert.equal(f.run('gate').outputs.route, 'restack');
   assert.equal(f.state().pr, '');
-  assert.equal(f.run('restack').outputs.route, 'review');
+  // 第一次开草稿的响应丢了：这一步失败、没记下 PR；重试先按分支找到已开的 PR，不再开。
+  f.run('restack', { CREATE_LOST: '1' }, 1);
+  assert.deepEqual([f.state().pr, f.state().stack.recover], ['', undefined]);
+  assert.equal(f.run('restack', { OPEN_PR: PR }).outputs.route, 'review');
+  assert.deepEqual(f.calls('gh').filter(c => c.args[1] === 'list').at(-1).args.slice(0, 4), ['pr', 'list', '--head', 'lane-pr/pr-run-1']);
   const created = f.calls('gh').filter(c => c.args[1] === 'create');
-  assert.equal(created.length, 1);
+  assert.equal(created.length, 1, '重试没有再开');
   assert.deepEqual(created[0].args.slice(0, 7), ['pr', 'create', '--base', 'lane/req-1', '--head', 'lane-pr/pr-run-1', '--draft'], '升级前以草稿开进泳道');
   assert.ok(created[0].body.includes(PARENT));
   assert.deepEqual([f.state().pr, f.state().stack.recover], [PR, true]);

@@ -40,6 +40,8 @@ const prBody = note => {
   writeFileSync(body, `泳道 PR，由流程 lane-pr 开、合进泳道 ${state.lane}；运行 coda://workflow-runs/${env.GITHUB_RUN_ID}。${note ? `\n\n${note}` : ''}\n\n## 任务\n\n${state.task}\n`);
   return body;
 };
+// 这次运行的分支已开着的 PR（重跑、或上次开 PR 的响应丢了）。叠放的 PR 可能开在前置分支上，只按分支找。
+const openedPr = () => gh('pr', 'list', '--head', state.branch, ...(state.stack ? [] : ['--base', state.lane]), '--state', 'open', '--limit', '1', '--json', 'url', '--jq', '.[].url');
 // 不能再叠在前置上、还没有 PR 时，以草稿开进泳道：审查卡上有 PR，放弃也关得掉；执行者把提交改为直接基于泳道后由 gate 解绑转正。
 const laneDraft = () => openPr('--base', state.lane, '--head', state.branch, '--draft', '--title', state.title, '--body-file',
   prBody(`原叠在前置泳道 PR ${state.stack.pr} 上，没能重接到泳道：先以草稿开进泳道，执行者把提交改为直接基于泳道后转为正式 PR。`));
@@ -170,7 +172,7 @@ switch (action) {
     // 叠放还没重接时检查与评审只对前置的 head，评的是这个 PR 自己的增量。
     state.base = stacked() ? state.stack.head : laneHead();
     // 从头重跑时 PR 可能已经开着：先从 GitHub 找，找不到才开。叠放的 PR 可能开在前置分支上，只按分支找。
-    if (!state.pr) state.pr = gh('pr', 'list', '--head', state.branch, ...(state.stack ? [] : ['--base', state.lane]), '--state', 'open', '--limit', '1', '--json', 'url', '--jq', '.[].url');
+    if (!state.pr) state.pr = openedPr();
     // 往下怎么走：checks 照常检查与评审；restack 先重接到泳道，再回到这里开进泳道；review 交主 Agent。
     let route = 'checks';
     if (!state.pr) {
@@ -360,8 +362,8 @@ switch (action) {
     const s = state.stack, lane = laneHead();
     git('fetch', 'origin', state.branch);
     const remote = git('rev-parse', 'FETCH_HEAD');
-    // 升级后等主 Agent 退回、执行者直接变基到泳道上，由 gate 解绑叠放（recover）。从 gate 直接来重接、还没有 PR 的，先以草稿开进泳道。
-    const escalate = text => { if (!state.pr) state.pr = laneDraft(); state.feedback = text; s.recover = true; delete s.pending; delete s.pushing; delete s.pushed; save(); output('route', 'review'); };
+    // 升级后等主 Agent 退回、执行者直接变基到泳道上，由 gate 解绑叠放（recover）。从 gate 直接来重接、还没有 PR 的，先找已开的（上次开了、响应丢了），没有才以草稿开进泳道。
+    const escalate = text => { if (!state.pr) state.pr = openedPr() || laneDraft(); state.feedback = text; s.recover = true; delete s.pending; delete s.pushing; delete s.pushed; save(); output('route', 'review'); };
     const push = (head, from) => git('push', '--no-follow-tags', `--force-with-lease=refs/heads/${state.branch}:${from}`, 'origin', `${head}:refs/heads/${state.branch}`);
     // 执行者解冲突交回：核对它变基到了泳道上，再按同样的推送记录推送、收尾；它本地已在新 head 上，不用提醒重置。
     if (!s.pushed && s.pending) {
