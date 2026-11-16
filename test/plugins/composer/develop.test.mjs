@@ -437,7 +437,7 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   assert.deepEqual(values(nodes.progress).map(v => [v.id, v.name, v.note]), [['submit', '提交验收', 'required'], ['pause', '暂停', 'required'], ['abandon', '放弃', undefined]]);
   for (const [value, target] of [['progress', 'progress'], ['pause', 'paused'], ['abandon', 'abandoned'], ['submit', 'sync']]) assert.equal(route('after-progress', { 'progress-result': { route: value } }), target);
   const doc = nodes.progress.documentation[0].text;
-  for (const text of ['workflow_run 发起一个泳道 PR（lane-pr）', 'lane="{{run.id}}"', 'title', 'task', 'executor、executor2、reviewer、reviewer2。executor 必传', '没理由另定的块传下面的开工执行者', '按你手上的执行者名单（有的话）另定', '开工值有就默认传它', '开工没填的，每块自己定', 'reviewer、reviewer2 仍由你按这一块的性质逐个定',
+  for (const text of ['workflow_run 发起一个泳道 PR（lane-pr）', 'lane="{{run.id}}"', 'title', 'task', 'executor、executor2、reviewer、reviewer2。executor 必传', '没理由另定的块传下面的开工执行者', '按你手上的执行者名单（有的话）另定', '开工值有就默认传它', '开工没填的，每块自己定', 'reviewer、reviewer2 仍由你按这一块的性质逐个定，有执行者名单就从名单选',
     '可以同时发起', 'sync=true', '快进进泳道', 'mac-preview-install', '加入挂点 premerge 的流程', '{{lane.lane}}', '{{lane.goal}}']) assert.ok(doc.includes(text), text);
   assert.ok(!doc.includes('reviewerOnce'), '泳道 PR 没有只评第一次交付的位置');
   assert.ok(!doc.includes('不传 executor 用你的 Agent'), '不再悄悄落到主会话');

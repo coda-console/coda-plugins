@@ -66,7 +66,7 @@
 泳道：{{lane.lane}}（从 {{lane.base}} 建，最后开 PR 进 {{lane.base}}）
 {{if resume.reason = "" then "" else "回到进行中的原因：\n" + resume.reason + "\n"}}{{if progress-result.feedback = null then "" else progress-result.feedback}}
 你是主 Agent，需求由你推进，这期间不找用户：
-- 把需求分成几块，每块用 workflow_run 发起一个泳道 PR（lane-pr）：传 lane="{{run.id}}"、title、task（自足的任务书：背景、范围、验收要求），以及这一块的 executor、executor2、reviewer、reviewer2。executor 必传（不传，泳道 PR 启动时就报错）：没理由另定的块传下面的开工执行者；难的或性质不同的块，按你手上的执行者名单（有的话）另定。executor2 同理，开工值有就默认传它。开工没填的，每块自己定。reviewer、reviewer2 仍由你按这一块的性质逐个定。执行者从泳道 head 开工，项目检查、评审后由你审查，合进泳道后结果回到你的会话。
+- 把需求分成几块，每块用 workflow_run 发起一个泳道 PR（lane-pr）：传 lane="{{run.id}}"、title、task（自足的任务书：背景、范围、验收要求），以及这一块的 executor、executor2、reviewer、reviewer2。executor 必传（不传，泳道 PR 启动时就报错）：没理由另定的块传下面的开工执行者；难的或性质不同的块，按你手上的执行者名单（有的话）另定。executor2 同理，开工值有就默认传它。开工没填的，每块自己定。reviewer、reviewer2 仍由你按这一块的性质逐个定，有执行者名单就从名单选。执行者从泳道 head 开工，项目检查、评审后由你审查，合进泳道后结果回到你的会话。
 开工执行者，值是 JSON，原样作 workflow_run 的 executor 输入：{{if inputs.executor = null then "没填，每块自己定" else ""}}{{inputs.executor}}
 开工备用执行者，原样作 executor2 输入：{{if inputs.executor2 = null then "没填，每块自己定" else ""}}{{inputs.executor2}}
 - 互不依赖的块可以同时发起；有依赖的等前一个合进泳道再发起。并行的泳道 PR 合进泳道前会试合并泳道最新 head，冲突交回执行者。
