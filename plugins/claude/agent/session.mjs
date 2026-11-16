@@ -54,8 +54,13 @@ const failure = (message, code = -32603) => new RequestError(code, message);
 // A request for a session not running, with why (what ended it, `endReason`).
 const notRunning = reason => failure(`Claude 会话未在运行${reason ? `：${reason}` : ''}`, -32001);
 // An input refused before it went into the native session: nothing ran it, so Coda may send it again (docs/agent-protocol.md
-// 「服务暂不可用」: the protocol's one `not_accepted`, as for the prompts still queued when the session fails, `result`).
-const refused = error => new RequestError(error.code ?? -32603, error.message, { _meta: { coda: { failure: { kind: 'service_unavailable', input: 'not_accepted' } } } });
+// 「原生会话已结束」: `session_ended`, `not_accepted`). A failure the error already names (a quota, a service) keeps its kind,
+// with `not_accepted` where the kind takes an input (not `auth_required`).
+const refused = error => {
+  const own = error.data?._meta?.coda?.failure;
+  const failure = !own ? { kind: 'session_ended', input: 'not_accepted' } : own.kind === 'auth_required' ? own : { ...own, input: 'not_accepted' };
+  return new RequestError(error.code ?? -32603, error.message, { _meta: { coda: { failure } } });
+};
 const denied = { behavior: 'deny', message: 'Coda 没有在请求结束前给出审批' };
 // A child session's output that comes before its task, kept until the task names that session: all of it, since what streamed
 // counts as said, a message's streamed pieces as one.
@@ -457,7 +462,16 @@ export class ClaudeSession {
     this.phase = 'ended'; this.input.close(); this.steering.clear(); this.held = null; this.ending = null;
     this.compacting?.answer({ compacted: false, reason: error?.message ?? 'Claude 会话已结束' }); this.compacting = null;
     for (const withdrawn of this.withdrawals) withdrawn.abort();
-    for (const { reject } of this.prompts.values()) reject(failure(`Claude 会话已结束：${this.endReason}`));
+    // Each prompt says whether the native session had its input, where that is known: the one a native turn of Coda's is running
+    // (or whose turn ended with messages left to take) was taken, those queued behind it never ran. With no such turn going, an
+    // input may or may not have been read before the session ended: not said.
+    const running = this.turning && !this.opening && !this.waits.handling && !this.waits.unclaimed;
+    let first = true;
+    for (const [id, { reject }] of this.prompts) {
+      const input = id === this.held || running && first ? 'accepted' : running || this.held ? 'not_accepted' : undefined;
+      first = false;
+      reject(new RequestError(-32603, `Claude 会话已结束：${this.endReason}`, { _meta: { coda: { failure: { kind: 'session_ended', ...(input && { input }) } } } }));
+    }
     this.prompts.clear();
     try { query?.close(); } catch {}
     this.dropMcpConfig();
