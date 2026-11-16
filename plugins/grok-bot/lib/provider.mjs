@@ -5,21 +5,20 @@ import { join } from 'node:path';
 import { NativeAuth, pause, writePrivate } from './auth.mjs';
 import { account } from './account.mjs';
 import { history, messages, decode, signature, position, conversation } from './transcript.mjs';
-export const SESSION = 'coda/session@1', RUN = 'coda/run@1';
+export const SESSION = 'coda/session@1';
 export const recordId = (account, bot) => `grok-bot:${account}:${encodeURIComponent(bot)}`;
-export function messageId(requestId, record, parent) {
-  const b = createHash('sha256').update(JSON.stringify([parent?.kind, parent?.id, record, requestId])).digest().subarray(0, 16);
+export function messageId(callId, record) {
+  const b = createHash('sha256').update(JSON.stringify([record, callId])).digest().subarray(0, 16);
   b[6] = (b[6] & 15) | 128; b[8] = (b[8] & 63) | 128;
   const h = b.toString('hex');
   return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
 }
-const terminal = run => ['completed', 'failed', 'canceled'].includes(run.status.state);
 export class Provider {
   constructor(coda, { auth, clock = { setTimeout, clearTimeout }, stableMs = 1000 } = {}) {
     Object.assign(this, { coda, clock, stableMs });
     this.auth = auth ?? new NativeAuth({ root: coda.plugin.state });
-    this.records = new Map(); this.bots = new Map(); this.runs = new Map(); this.waiting = new Map(); this.watches = new Map(); this.mirrors = new Map(); this.changes = new EventEmitter();
-    this.controller = new AbortController(); this.queue = Promise.resolve(); this.jobs = new Set();
+    this.records = new Map(); this.bots = new Map(); this.watches = new Map(); this.mirrors = new Map(); this.changes = new EventEmitter();
+    this.controller = new AbortController(); this.queue = Promise.resolve();
     this.indexFile = join(coda.plugin.state, 'transcript-index.json');
     try { this.index = JSON.parse(readFileSync(this.indexFile, 'utf8')); } catch (e) { if (e.code !== 'ENOENT') throw e; this.index = {}; }
   }
@@ -29,21 +28,14 @@ export class Provider {
     return next;
   }
   async start() {
-    this.observers = [];
-    for (const [kind, map] of [[SESSION, this.records], [RUN, this.runs]]) this.observers.push(await this.coda.protocols.observe(kind, ({ type, id, object }) => {
+    this.observer = await this.coda.protocols.observe(SESSION, ({ type, id, object }) => {
       if (object.provider !== this.coda.plugin.id) return;
-      if (type === 'DELETED') map.delete(id);
-      else if (kind === SESSION || !map.has(id)) map.set(id, object);
-      this.waiting.get(id)?.(); this.waiting.delete(id);
-    }, 'local'));
-    for (const [id, run] of this.runs) if (!terminal(run)) await this.setRun(id, { state: 'failed', result: { code: 'unknown', message: '插件重启，发送结果未知；不会重发' } });
+      if (type === 'DELETED') this.records.delete(id); else this.records.set(id, object);
+    }, 'local');
     this.handlers = [
-      this.coda.protocols.handle(SESSION, 'read', (input, { record }) => this.read(record.id, input)),
-      this.coda.protocols.handle(SESSION, 'draft', () => ({})),
-      this.coda.protocols.handle(SESSION, 'post', (input, context) => {
-        const job = this.post(input, context).catch(e => console.error('[grok-bot]', e.message));
-        this.jobs.add(job); job.finally(() => this.jobs.delete(job));
-      }),
+      this.coda.handle(SESSION, 'read', (input, { record }) => this.read(record.id, input)),
+      this.coda.handle(SESSION, 'draft', () => ({})),
+      this.coda.handle(SESSION, 'post', (input, ctx) => this.post(input, ctx)),
     ];
     await this.schedule(() => this.sync());
     this.polling = this.poll();
@@ -219,28 +211,23 @@ export class Provider {
     const page = after ? rows.slice(0, limit) : rows.slice(-limit);
     return { messages: page, cursor: page.at(-1)?.cursor ?? null, more: rows.length > page.length };
   }
-  async setRun(id, status) {
-    if (!this.runs.has(id)) await new Promise(resolve => this.waiting.set(id, resolve));
-    if (terminal(this.runs.get(id))) return;
-    this.runs.set(id, await this.coda.protocols.setStatus(RUN, id, status, this.runs.get(id).revision));
-  }
-  async post(input, { record, requestId, parent, run }) {
-    const key = messageId(requestId, record.id, parent);
-    let attempted = false, status;
+  async post(input, { id, record, signal, progress }) {
+    const key = messageId(id, record.id), none = (message, code = 'invalid') => this.coda.error(code, message, { effects: 'none' });
+    signal.throwIfAborted();
+    const target = this.bots.get(record.id);
+    if (!target) throw none('会话不可用');
+    if (input.parts?.length) throw none('只支持文字', 'unsupported');
+    const h = this.mirrors.get(record.id);
+    if (!h) throw none('会话正在连接');
+    const all = this.visible(record.id);
+    const reply = input.replyTo && all.find(m => m.id === input.replyTo);
+    if (input.replyTo && !reply) throw none('回复的消息不存在');
+    const entry = reply && [...h.entries.values()].find(r => `${h.generation}:${r.entryId}` === (reply.about?.message ?? reply.id));
+    const body = entry && decode(entry), widget = body?.message?.type === 'widget' && body.message.widget;
+    const option = widget && widget.options.find(o => String(o.label ?? o.value) === input.text || String(o.value) === input.text);
+    if (widget && (!option || body.respondedValue !== undefined || body.widgetSkipped)) throw none('选项无效或此问题已回答');
+    progress('正在发送');
     try {
-      const target = this.bots.get(record.id);
-      if (!target) throw new Error('会话不可用');
-      if (input.parts?.length) throw Object.assign(new Error('只支持文字'), { code: 'unsupported' });
-      const h = this.mirrors.get(record.id);
-      if (!h) throw new Error('会话正在连接');
-      const all = this.visible(record.id);
-      const reply = input.replyTo && all.find(m => m.id === input.replyTo);
-      if (input.replyTo && !reply) throw new Error('回复的消息不存在');
-      const entry = reply && [...h.entries.values()].find(r => `${h.generation}:${r.entryId}` === (reply.about?.message ?? reply.id));
-      const body = entry && decode(entry), widget = body?.message?.type === 'widget' && body.message.widget;
-      const option = widget && widget.options.find(o => String(o.label ?? o.value) === input.text || String(o.value) === input.text);
-      if (widget && (!option || body.respondedValue !== undefined || body.widgetSkipped)) throw new Error('选项无效或此问题已回答');
-      attempted = true;
       if (widget) {
         const answer = await this.auth.client.request('RespondGrokBotWidget', { agentId: target.bot, sessionId: '', entryId: entry.entryId, value: option.value });
         if (!answer.accepted) throw new Error('Grok 未确认接受选项');
@@ -260,9 +247,8 @@ export class Provider {
         const base = `${current.generation}:${row.entryId}`;
         return this.visible(record.id).find(m => widget ? m.replyTo === base && m.sender === target.self : m.id === base);
       });
-      status = { state: 'completed', result: { message: { id: found.id, cursor: found.cursor } } };
-    } catch (e) { status = { state: 'failed', result: { code: attempted ? 'unknown' : e.code ?? 'invalid', message: e.message } }; }
-    await this.setRun(run.id, status);
+      return { message: { id: found.id, cursor: found.cursor } };
+    } catch (e) { throw this.coda.error('unknown', e.message, { effects: 'unknown' }); }
   }
   echo(id, find) {
     return new Promise((resolve, reject) => {
@@ -286,8 +272,8 @@ export class Provider {
     this.controller.abort(); this.auth.close();
     for (const [id, w] of this.watches) { w.controller.abort(); this.clearMirror(id); }
     for (const h of this.handlers ?? []) h.dispose();
-    await Promise.allSettled([this.polling, ...[...this.watches.values()].map(w => w.running), ...this.jobs]);
+    await Promise.allSettled([this.polling, ...[...this.watches.values()].map(w => w.running)]);
     await this.queue;
-    for (const o of this.observers ?? []) await o.dispose();
+    await this.observer?.dispose();
   }
 }
