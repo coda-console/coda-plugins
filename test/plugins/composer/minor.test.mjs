@@ -12,13 +12,12 @@ const reasons = extra => autoLandReasons({ ...eligible, ...extra });
 
 test('全部满足时可以免审', () => {
   assert.deepEqual(reasons({}), []);
-  assert.deepEqual(reasons({ stack: { restacked: true } }), [], '叠放已重接');
   assert.deepEqual(reasons({ changes: [change('README.md'), change('plugins/composer/THIRD_PARTY_NOTICES.md', 'M')], patches: {} }), []);
 });
 
-test('开关、跟上目标分支、叠放未重接、检查、评审与账本：缺一条就不免审', () => {
+test('开关、跟上目标分支、检查、评审与账本：缺一条就不免审', () => {
   for (const [extra, text] of [
-    [{ auto: false }, /没开/], [{ sync: true }, /跟上目标分支/], [{ stack: { restacked: false } }, /没有重接/],
+    [{ auto: false }, /没开/], [{ sync: true }, /跟上目标分支的块不免审/],
     [{ checks: undefined }, /项目检查没有通过/], [{ checks: { head: 'b'.repeat(40) } }, /项目检查没有通过/],
     [{ reviews: [{ state: 'skipped' }, { state: 'skipped' }] }, /没有评审者/],
     [{ reviews: [approve(), { state: 'lost', slot: 'reviewer2' }] }, /第二评审者没评成/],

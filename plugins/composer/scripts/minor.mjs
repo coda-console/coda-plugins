@@ -1,4 +1,4 @@
-// 泳道 PR 的小改动免主控审查（README.md「小改动免主控审查」）：资格判定。纯函数，不读写文件、不跑命令；改动与 diff 由调用方用 git 取来。
+// 块的小改动免主控审查（README.md「小改动免主控审查」）：资格判定。纯函数，不读写文件、不跑命令；改动与 diff 由调用方（piece.mjs 的 minor）用 git 取来。
 import { SLOTS } from './shared.mjs';
 
 // 测试文件：先排除 AGENTS.md、CLAUDE.md、package.json、package-lock.json 与 .coda、.github、scripts、check、bin、docs 下的路径（test/ 下也一样），
@@ -36,13 +36,12 @@ const skips = (line, swift) => SKIP.some(pattern => pattern.test(line.slice(1)))
 // 断言：JS 的 assert.，XCTest 的 XCTAssert…，Swift Testing 的 #expect、#require。
 const asserts = line => line.includes('assert.') || /\bXCTAssert|#(?:expect|require)\s*\(/.test(line);
 
-// 不能免审的原因，空数组就是可以免审。reviews 是评审子流程各份的输出，findings 是收敛账本，
-// changes 是 parseRaw 的结果，patches 是每个测试文件 diff 的新增行与删除行：{ [路径]: { added: [], removed: [] } }。
-export function autoLandReasons({ auto, sync, stack, head, checks, reviews, findings = [], changes, patches }) {
+// 不能免审的原因，空数组就是可以免审。head 是执行者当前 head（推在临时分支上），checks 是 piece.json 记下的通过检查，reviews 是评审子流程各份的输出，findings 是收敛账本，
+// changes 是 parseRaw 读需求分支 head（state.tip）...head 的结果，patches 是每个测试文件 diff 的新增行与删除行：{ [路径]: { added: [], removed: [] } }。
+export function autoLandReasons({ auto, sync, head, checks, reviews, findings = [], changes, patches }) {
   const reasons = [];
   if (!auto) reasons.push('没开小改动免主控审查（autoLandMinor）');
-  if (sync) reasons.push('跟上目标分支的泳道 PR 不免审');
-  if (stack && !stack.restacked) reasons.push('叠放的前置泳道 PR 还没合进泳道、没有重接');
+  if (sync) reasons.push('跟上目标分支的块不免审');
   if (checks?.head !== head) reasons.push('当前 head 的项目检查没有通过');
   const slots = reviews.filter(r => r.state !== 'skipped');
   if (!slots.length) reasons.push('没有评审者');

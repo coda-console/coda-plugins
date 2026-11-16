@@ -19,6 +19,7 @@
       <coda:input name="reviewer2" label="第二评审者" type="agent" description="与评审者同时评每一块和整条需求分支；不填不评" />
       <coda:input name="reviewer3" label="第三整体评审者" type="agent" description="只评整条需求分支，与前两位同时；不填不评" />
       <coda:input name="autoMerge" label="检查和评审通过后自动合并" type="boolean" default="false" description="整体评审直接通过、没有任何未关闭的发现（含 P3；开了设备验收的也已通过、不是需求交付的成员）时不出批准卡，直接合并；合并后的流程不自动跑。没填评审者、第二评审者、第三整体评审者时照常出批准卡" />
+      <coda:input name="autoLandMinor" label="小改动免主控审查" type="boolean" default="false" description="派出的每一块：只动测试与说明文档、项目检查通过、评审者全部 APPROVE 且没有发现时不出审查卡，直接合进需求分支；没填评审者时照常出审查卡" />
       <coda:input name="base" label="目标分支" default="" description="留空用仓库默认分支" />
     </extensionElements>
     <startEvent id="start" />
@@ -124,6 +125,7 @@
           <coda:param name="executor2" value='=if progress-result.executor2 = "" then inputs.executor2 else if progress-result.executor2 = "无" then null else context merge([{agent: progress-result.executor2}, if progress-result.executor2Model = "" then {} else {model: progress-result.executor2Model}, if progress-result.executor2Effort = "" then {} else {effort: progress-result.executor2Effort}, if progress-result.executor2Mode = "" then {} else {mode: progress-result.executor2Mode}])' />
           <coda:param name="reviewer" value='=if progress-result.reviewer = "" then inputs.reviewer else if progress-result.reviewer = "无" then null else context merge([{agent: progress-result.reviewer}, if progress-result.reviewerModel = "" then {} else {model: progress-result.reviewerModel}, if progress-result.reviewerEffort = "" then {} else {effort: progress-result.reviewerEffort}, if progress-result.reviewerMode = "" then {} else {mode: progress-result.reviewerMode}])' />
           <coda:param name="reviewer2" value='=if progress-result.reviewer2 = "" then inputs.reviewer2 else if progress-result.reviewer2 = "无" then null else context merge([{agent: progress-result.reviewer2}, if progress-result.reviewer2Model = "" then {} else {model: progress-result.reviewer2Model}, if progress-result.reviewer2Effort = "" then {} else {effort: progress-result.reviewer2Effort}, if progress-result.reviewer2Mode = "" then {} else {mode: progress-result.reviewer2Mode}])' />
+          <coda:param name="autoLandMinor" value="=inputs.autoLandMinor" />
       </extensionElements>
     </callActivity>
     <boundaryEvent id="piece-failed" attachedToRef="piece"><errorEventDefinition /></boundaryEvent>
@@ -137,6 +139,7 @@
     <scriptTask id="piece-landed" name="记下合进的块" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
       <extensionElements>
         <coda:env name="TITLE" value="=progress-result.title" /><coda:env name="COMMIT" value="=piece.commit" /><coda:env name="PIECE_RUN" value="=piece.run" />
+        <coda:env name="AUTO" value="=piece.autoLanded" /><coda:env name="SUMMARY" value="=piece.summary" />
       </extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" piece-landed</script>
     </scriptTask>

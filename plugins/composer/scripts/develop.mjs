@@ -162,9 +162,10 @@ switch (action) {
     }
     break;
   }
-  // 块合进了需求分支：下一次「需求进行中」写上合入的提交和块的运行。
+  // 块合进了需求分支：下一次「需求进行中」写上合入的提交和块的运行；小改动免主控审查合入的写明没出审查卡，附上块给的摘要。
   case 'piece-landed':
-    back(`块「${env.TITLE}」已合进需求分支 ${state.branch}：提交 ${env.COMMIT}，运行 coda://workflow-runs/${env.PIECE_RUN}。`);
+    back(`块「${env.TITLE}」已合进需求分支 ${state.branch}：提交 ${env.COMMIT}，运行 coda://workflow-runs/${env.PIECE_RUN}。${env.AUTO === 'true'
+      ? `\n这一块是小改动免主控审查合入的，没出你的审查卡；需要时自己看这个提交。\n${env.SUMMARY}` : ''}`);
     break;
   // 块没正常结束（失败、被取消，或主 Agent 在块里选了放弃）：引擎只把调用失败交给出错边界，不带被调运行的原因，所以指向本运行里调用的块。
   // 合入状态不能断言：piece.mjs 的 land 先推需求分支再删临时分支，删除失败时块失败但提交已经合进去了。

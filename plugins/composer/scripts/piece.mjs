@@ -4,7 +4,8 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { agentArgs, checksText, command, git, instructions, output, resumeText, reviewsText } from './shared.mjs';
+import { SLOTS, agentArgs, checksText, command, git, instructions, output, resumeText, reviewsText } from './shared.mjs';
+import { autoLandReasons, isTest, parseRaw } from './minor.mjs';
 import { fixText, historyText, previousFor, readResponses, triage } from './triage.mjs';
 
 const env = process.env, action = process.argv[2];
@@ -139,6 +140,8 @@ switch (action) {
     output('checks', checksText(state.checks, state.executor.head));
     for (const [name, value] of Object.entries({ session: state.executor.session, head: state.executor.head, answer: state.executor.answer,
       branch: state.branch, temp: state.temp, feedback: state.feedback, returns: state.returns })) output(name, value);
+    // 开了小改动免主控审查、判定没过（minor 记下的原因）才有这一段。
+    output('minor', (state.minor ?? []).map(r => `- ${r}`).join('\n'));
     output('reviews', reviewsText(env.REVIEWS, state.executor.head, '评审这次交付'));
     break;
   case 'decide': {
@@ -196,6 +199,11 @@ switch (action) {
     removeTemp();
     output('route', 'landed');
     output('commit', commit);
+    // 免主控审查合入的（state.auto 由 minor 写下）另给标记和摘要，结束事件带出去，需求运行写进「需求进行中」。
+    output('auto', String(Boolean(state.auto)));
+    output('summary', !state.auto ? '' : ['小改动免主控审查，没出审查卡直接合进需求分支：开了 autoLandMinor；当前 head 项目检查通过；评审者全部 APPROVE、没有发现，账本没有没关的发现；只改了测试与说明文档，没有删测试、没有新增 skip、todo 或 only、没有只删断言。',
+      `合入提交：${commit}`, `需求分支：${state.branch}`, `head：${head}`, '改动文件：', ...state.auto.files.map(file => `- ${file}`),
+      '项目检查：', checksText(state.checks, head), '评审：', ...state.auto.reviews.map(line => `- ${line}`)].join('\n'));
     break;
   }
   // 主 Agent 放弃：删掉临时分支，需求分支不动；之后流程走到出错结束，调用方的出错边界接得到。临时分支已不在（重跑）就跳过。
@@ -253,6 +261,37 @@ switch (action) {
     if (state.converge) { state.converge.waiting = false; save(); }
     if (text) writeFileSync(path, text);
     output('text', !text ? '' : text.length <= 4000 ? `${text}\n全文：${path}` : `前面的轮次见 ${path}。\n\n${historyText(history.slice(-1))}`);
+    break;
+  }
+  // 小改动免主控审查（README.md「小改动免主控审查」）：开了 autoLandMinor 时每次出审查卡之前判定，条件全满足（land）才不出卡、直接合进需求分支；
+  // 否则把原因记在 minor，审查卡写出来。改动取需求分支 head（推送时记下的 tip）到这次交付的三点 diff，和评审看的是同一份。
+  case 'minor': {
+    const head = state.executor.head, range = `${state.tip}...${head}`;
+    git('fetch', 'origin', state.branch, state.temp);
+    const changes = parseRaw(git('diff', '--raw', '-z', '-M', '--no-abbrev', range));
+    // 重命名、复制的测试文件带上旧路径和 -M，删掉的断言才算在里面。
+    const patches = Object.fromEntries(changes.filter(c => c.status !== 'D' && c.paths.some(isTest)).map(c => {
+      const lines = git('diff', '-U0', '-M', '--no-color', range, '--', ...c.paths).split('\n');
+      return [c.paths.at(-1), { added: lines.filter(l => l.startsWith('+') && !l.startsWith('+++')), removed: lines.filter(l => l.startsWith('-') && !l.startsWith('---')) }];
+    }));
+    // 没填评审者时没有评审结果，REVIEWS 为空。
+    const reviews = env.REVIEWS ? JSON.parse(env.REVIEWS) : [];
+    const reasons = autoLandReasons({ auto: env.AUTO === 'true', sync: state.sync, head, checks: state.checks, reviews, findings: state.converge?.findings, changes, patches });
+    if (reasons.length) {
+      state.minor = reasons;
+      delete state.auto;
+    } else {
+      delete state.minor;
+      state.auto = {
+        files: changes.map(c => `${c.status} ${c.paths.join(' → ')}`),
+        reviews: reviews.filter(r => r.state === 'done').map(r => {
+          const { agent, model, effort } = JSON.parse(r.who);
+          return `${SLOTS[r.slot]}（${[agent, model, effort].filter(Boolean).join(' · ')}）：${r.decision} ${r.line}`;
+        }),
+      };
+    }
+    save();
+    output('route', reasons.length ? 'review' : 'land');
     break;
   }
   default: throw new Error(`未知的块步骤：${action}`);
