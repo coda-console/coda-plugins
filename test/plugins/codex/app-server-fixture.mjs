@@ -1,6 +1,7 @@
 // Coda's backend/test/codex-app-server-fixture.mjs at ef1d2311, for the Codex entry's contract check here.
 // A minimal Codex app-server for driving the real codex-acp. The first turn of a state
-// directory dies mid-turn with exit code 0, as a terminated app-server does; later turns complete.
+// directory dies mid-turn with exit code 0, as a terminated app-server does; later turns complete. FAKE_CODEX_EXIT makes it
+// die with that exit code (after a line on stderr) or by that signal (`SIGKILL`) instead.
 // FAKE_CODEX_MODEL_ERROR instead returns a model-service error of that kind (`codexErrorInfo`) on that first turn.
 // FAKE_CODEX_RPC_ERROR_METHOD fails that native method before it starts, with FAKE_CODEX_RPC_ERROR as its explanation;
 // FAKE_CODEX_FAIL_ONCE (`<method>` or `<method>#<n>`) fails that method the first (or n-th) time it is asked in the state
@@ -104,7 +105,11 @@ process.stdin.on('data', chunk => {
         codexErrorInfo: process.env.FAKE_CODEX_MODEL_ERROR.startsWith('{') ? JSON.parse(process.env.FAKE_CODEX_MODEL_ERROR) : process.env.FAKE_CODEX_MODEL_ERROR, additionalDetails: null };
         if (!process.env.FAKE_CODEX_TERMINAL_ONLY) send({ method: 'error', params: { threadId: thread.id, turnId: turn.id, willRetry: false, error } });
         send({ method: 'turn/completed', params: { threadId: thread.id, turn: { ...turn, status: 'failed', error } } });
-      } else setTimeout(() => process.exit(0), 100);
+      } else setTimeout(() => {
+        const exit = process.env.FAKE_CODEX_EXIT ?? '0';
+        if (!/^\d+$/.test(exit)) process.kill(process.pid, exit);
+        else { if (exit !== '0') console.error('fake codex: boom'); process.exit(Number(exit)); }
+      }, 100);
       continue;
     }
     const input = JSON.stringify(message.params.input ?? '');
