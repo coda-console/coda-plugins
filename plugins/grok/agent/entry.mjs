@@ -2,15 +2,13 @@
 // through. No selected mode (the empty currentModeId) leaves the machine's configuration in charge, as before.
 // Grok's questions are asked of Coda as ACP forms (questions.mjs). Grok gives one up (its timeout, a cancelled turn)
 // by ending the tool call alone, so that end withdraws the form.
-// Grok's ACP has no session/delete, but `grok sessions delete <id>` removes a session from its history: the entry declares
-// the capability and answers it with that command, so Coda's probes (session/new, then gone) leave no empty sessions behind.
-// Checked on 1.0.77 with a session that was never resident (new failed unauthenticated): the command deletes it with the
-// agent still running, and a session/close before it changes nothing (`notResident`). Deleting a resident session is not checked.
+// Grok's ACP has no session/delete, so the entry declares it and answers it with `grok sessions delete` (delete.mjs): Coda's
+// probes (session/new, then gone) leave no empty sessions in Grok's history.
 import { spawn } from 'node:child_process';
 import { grokBinary } from '../scripts/ask.mjs';
+import { deleteSession } from './delete.mjs';
 import { ASK, questionForm } from './questions.mjs';
 
-const DELETE_TIMEOUT_MS = Number(process.env.CODA_GROK_DELETE_TIMEOUT_MS) || 15000;
 const modes = [{ id: 'auto', name: '自动审批', _meta: { coda: { shortName: '自动审批' } } },
   { id: 'always-approve', name: '全部放行', _meta: { coda: { shortName: '全部放行' } } }];
 const binary = grokBinary() ?? 'grok';
@@ -34,24 +32,11 @@ function read(stream, receive) {
   };
   stream.setEncoding('utf8').on('data', take).on('end', () => take('\n'));
 }
-// `grok sessions delete <id>`: the error message says why it did not, or null once the session is gone.
-function deleteSession(id) {
-  return new Promise(resolve => {
-    const child = spawn(binary, ['sessions', 'delete', '--', id], { stdio: ['ignore', 'ignore', 'pipe'] });
-    let stderr = '', done = false;
-    const finish = error => { if (done) return; done = true; clearTimeout(timer); resolve(error); };
-    const timer = setTimeout(() => { child.kill('SIGKILL'); finish('删除 Grok 会话超时'); }, DELETE_TIMEOUT_MS);
-    child.stderr.setEncoding('utf8').on('data', text => { stderr += text; });
-    child.on('error', error => finish(`无法运行 Grok CLI：${error.message}`));
-    child.on('close', code => finish(code === 0 ? null
-      : stderr.split('\n').find(line => line.trim()) ?? `grok sessions delete 退出码 ${code}`));
-  });
-}
 read(process.stdin, message => {
   if (message.method === 'session/delete' && 'id' in message) {
     const id = message.params?.sessionId;
     if (typeof id !== 'string' || !id) { say({ id: message.id, error: { code: -32602, message: '缺少 sessionId' } }); return; }
-    deleteSession(id).then(error => say(error ? { id: message.id, error: { code: -32603, message: error } } : { id: message.id, result: {} }));
+    deleteSession(binary, id).then(error => say(error ? { id: message.id, error } : { id: message.id, result: {} }));
     return;
   }
   const question = !message.method && questions.get(message.id);

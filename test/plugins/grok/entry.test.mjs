@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { AgentProcess } from '../../../check/process.mjs';
 import { pluginDir } from '../plugin.mjs';
 import { MINIMUM, needed, older } from '../../../plugins/grok/scripts/setup.mjs';
+import { deleteSession } from '../../../plugins/grok/agent/delete.mjs';
 import { OTHER } from '../../../plugins/grok/agent/questions.mjs';
 import { relaysInstructions } from '../relay.mjs';
 
@@ -19,7 +20,7 @@ function start(t) {
   mkdirSync(join(dir, '.grok/bin'), { recursive: true });
   writeFileSync(join(dir, '.grok/bin/grok'), `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(fileURLToPath(new URL('./fixture.mjs', import.meta.url)))} "$@"\n`, { mode: 0o755 });
   const p = new AgentProcess({ command: manifest.contributes.agents[0].command, cwd: dir, env: { ...process.env, HOME: dir,
-    CODA_GROK_DELETE_TIMEOUT_MS: '600', CODA_NODE: process.execPath, CODA_PLUGIN_PATH: pluginDir('grok') }, onMessage: m => {
+    CODA_NODE: process.execPath, CODA_PLUGIN_PATH: pluginDir('grok') }, onMessage: m => {
     messages.push(m);
     const i = waiting.findIndex(w => w.method === m.method); if (i >= 0) waiting.splice(i, 1)[0].resolve(m);
   } });
@@ -42,14 +43,18 @@ test('Grok declares session/delete and answers it with `grok sessions delete`, n
   await request('session/new', { cwd: dir, mcpServers: [] });
   assert.deepEqual(await request('session/delete', { sessionId: 'abc' }), {});
   assert.deepEqual(calls(), [['sessions', 'delete', '--', 'abc']]);
-  for (const [sessionId, message] of [['gone', 'Session not found: gone'], ['quiet', '退出码 3'], ['hang', '超时']]) {
+  for (const [sessionId, code, message] of [['gone', -32002, 'No session found with id gone.'], ['odd', -32603, '没有确认删除：something else'],
+    ['mute', -32603, '没有确认删除：没有输出'], ['broken', -32603, 'storage is locked'], ['quiet', -32603, '退出码 3']]) {
     const r = await p.request('session/delete', { sessionId }, { timeout: 5000 });
     assert.equal(r.result, undefined);
-    assert.equal(r.error.code, -32603);
-    assert.ok(r.error.message.includes(message), r.error.message);
+    assert.equal(r.error.code, code);
+    assert.ok(r.error.message.endsWith(message), r.error.message);
   }
   assert.equal((await p.request('session/delete', {}, { timeout: 5000 })).error.code, -32602);
-  assert.equal(calls().length, 4, 'the invalid request never starts the command');
+  assert.equal(calls().length, 6, 'the invalid request never starts the command');
+  const started = Date.now();
+  assert.deepEqual(await deleteSession(join(dir, '.grok/bin/grok'), 'hang', 300), { code: -32603, message: '删除 Grok 会话超时' });
+  assert.ok(Date.now() - started < 3000);
   // The native fixture answers session/delete with Method not found: none of those errors came from it, and the rest passes through.
   assert.equal((await p.request('session/nope', {}, { timeout: 5000 })).error.message, 'Method not found');
   assert.equal((await request('session/set_config_option', { sessionId: 'native', configId: 'reasoning_effort', value: 'high' })).configOptions[0].id, 'model');
@@ -114,11 +119,11 @@ test('the entry forwards Coda instructions to Grok unchanged', t =>
 
 test('setup installs a missing or broken Grok CLI, upgrades one older than the entry was checked against, and keeps a newer one', () => {
   const run = (status, stdout = '') => () => ({ status, stdout, stderr: '' });
-  assert.equal(MINIMUM, '1.0.52');
+  assert.equal(MINIMUM, '1.0.77');
   assert.equal(needed(null).action, 'install');
   assert.equal(needed('/bin/grok', run(1)).action, 'install');
-  assert.deepEqual(needed('/bin/grok', run(0, 'grok 1.0.51\n')), { action: 'upgrade', reason: 'Grok CLI 1.0.51 低于所需的 1.0.52' });
-  assert.deepEqual(needed('/bin/grok', run(0, 'grok 1.0.52\n')), { action: 'none', version: '1.0.52' });
+  assert.deepEqual(needed('/bin/grok', run(0, 'grok 1.0.76\n')), { action: 'upgrade', reason: 'Grok CLI 1.0.76 低于所需的 1.0.77' });
+  assert.deepEqual(needed('/bin/grok', run(0, 'grok 1.0.77\n')), { action: 'none', version: '1.0.77' });
   assert.deepEqual(needed('/bin/grok', run(0, 'grok 1.1.0 (abc)\n')), { action: 'none', version: '1.1.0' });
-  assert.ok(older('1.0.9', '1.0.52') && !older('1.0.52', '1.0.52') && !older('2.0.0', '1.9.99'));
+  assert.ok(older('1.0.9', '1.0.77') && !older('1.0.77', '1.0.77') && !older('2.0.0', '1.9.99'));
 });
