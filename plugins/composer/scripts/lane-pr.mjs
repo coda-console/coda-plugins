@@ -82,8 +82,10 @@ switch (action) {
     const created = !opening;
     if (created) {
       const task = state.sync ? `${state.task}\n\n${syncTask}` : state.task;
-      opening = state.opening = { action,
-        text: action === 'revise' ? `${restackNote()}${state.feedback}` : action === 'execute' ? task
+      // 接回原执行会话（退回修改、从头重跑）时带上还没交出去的重接提示，记在 opening.note 上，成功后才清；换人新开的不用。
+      const note = action === 'swap' ? '' : restackNote();
+      opening = state.opening = { action, ...(note && { note: true }),
+        text: action === 'revise' ? `${note}${state.feedback}` : action === 'execute' ? `${note}${task}`
           : `${task}\n\n主 Agent 把这一项换给你重做：\n${state.feedback}\n\n上一位执行者的分支 ${state.executor.branch}、提交 ${state.executor.head} 在本机仓库可读，可以参考，也可以不用。`,
         // 从头重跑沿用当前执行者（换过备用执行者后 state.agent 是备用的）；只有首次执行还没有 executor，才读流程参数。
         agent: action === 'revise' || (action === 'execute' && state.executor) ? state.agent : JSON.parse(env.EXECUTOR), session: action === 'swap' ? undefined : state.executor?.session };
@@ -128,7 +130,8 @@ switch (action) {
     state.executor = reply;
     state.agent = opening.agent;
     delete state.opening;
-    delete state.stack?.note;
+    // 重接提示交给了原执行会话，或换人新开（新会话不在重接前的分支上），才清。
+    if (opening.note || opening.action === 'swap') delete state.stack?.note;
     state.feedback = '';
     save();
     break;
@@ -321,27 +324,31 @@ switch (action) {
   // 已合并（restack）去重接；关了没合并（review）交主 Agent。这一步在没有检出的空目录里跑，只用 gh。
   case 'stack-status': {
     if (!stacked()) { output('route', 'ready'); break; }
-    const parent = JSON.parse(gh('pr', 'view', state.stack.pr, '--repo', repoOf(state.stack.pr), '--json', 'state'));
-    if (parent.state === 'CLOSED') {
-      state.feedback = `前置泳道 PR ${state.stack.pr} 已关闭、没有合并。这个泳道 PR 叠在它上面（从 ${state.stack.head} 开工），不能合进泳道：请选择放弃，或退回修改让执行者把自己的提交改为直接基于泳道 ${state.lane}。`;
+    // 等待期间前置可能被改为合进别的分支：合到别处再重接会把还没进泳道的前置改动剥掉，同样交主 Agent。
+    const parent = JSON.parse(gh('pr', 'view', state.stack.pr, '--repo', repoOf(state.stack.pr), '--json', 'state,baseRefName'));
+    const wrong = parent.state === 'CLOSED' ? '已关闭、没有合并' : parent.baseRefName !== state.lane ? `改为合进 ${parent.baseRefName}，不再合进泳道 ${state.lane}` : '';
+    if (wrong) {
+      state.feedback = `前置泳道 PR ${state.stack.pr} ${wrong}。这个泳道 PR 叠在它上面（从 ${state.stack.head} 开工），不能合进泳道：请选择放弃，或退回修改让执行者把自己的提交改为直接基于泳道 ${state.lane}（需要的前置改动一并带上）。`;
       state.stack.recover = true;
       save();
     }
-    output('route', { OPEN: 'wait', MERGED: 'restack' }[parent.state] ?? 'review');
+    output('route', wrong ? 'review' : parent.state === 'OPEN' ? 'wait' : 'restack');
     break;
   }
   // 前置已 squash 合进泳道：只把这个 PR 自己的提交（stack.head..executor.head）用 rebase --onto 重放到泳道最新 head 上，不 merge，
   // 免得把前置 squash 前的散提交带进来；--force-with-lease 更新分支，PR 改开进泳道、转为正式 PR，之后回到推送、检查并以泳道为 base 完整评审（gate）。
   // 重接冲突交同一执行会话（revise）自己变基重接，回来再到这一步收尾；祖先关系不对、或执行者没变基到泳道上，交主 Agent（review）。
-  // 每次重试都是新检出的工作区：推送远端分支是分界，推成功才记下结果（stack.pushed 是重接到的泳道 head）。推之前失败，状态没动，
-  // 重试从头变基、推送；推之后失败（改 PR），重试不再变基、推送，只改 PR 收尾。
+  // 每次重试都是新检出的工作区：推送前先记下这次推送（stack.pushing：重接到的泳道 head、原 head、新 head），推成功再记下结果
+  // （stack.pushed 是重接到的泳道 head）。重试时远端已是记下的新 head（推成功了、没来得及记下，或响应丢了）就直接记下结果；
+  // 否则新 head 随旧工作区没了，从头变基、推送，远端被别人改过时租约拒绝。推之后失败（改 PR），重试不再变基、推送，只改 PR 收尾。
   case 'restack': {
     const s = state.stack, lane = laneHead();
     git('fetch', 'origin', state.branch);
+    const remote = git('rev-parse', 'FETCH_HEAD');
     // 升级后等主 Agent 退回、执行者直接变基到泳道上，由 gate 解绑叠放（recover）。
-    const escalate = text => { state.feedback = text; s.recover = true; delete s.pending; delete s.pushed; save(); output('route', 'review'); };
+    const escalate = text => { state.feedback = text; s.recover = true; delete s.pending; delete s.pushing; delete s.pushed; save(); output('route', 'review'); };
     const push = (head, from) => git('push', '--no-follow-tags', `--force-with-lease=refs/heads/${state.branch}:${from}`, 'origin', `${head}:refs/heads/${state.branch}`);
-    if (!s.pushed && !s.pending) {
+    if (!s.pushed && !s.pending && s.pushing?.head !== remote) {
       const from = state.executor.head;
       if (!ancestor(s.head, from)) {
         escalate(`前置泳道 PR ${s.pr} 已合进泳道，但这个 PR 的 head ${from} 不再以前置的 head ${s.head} 为祖先，流程分不清哪些是它自己的提交，没有自动重接。请退回修改，让执行者把自己的改动重接到泳道 ${state.lane} 最新 head 上；或放弃。`);
@@ -355,6 +362,7 @@ switch (action) {
         if (!files.length) { process.stderr.write(rebase.stdout + rebase.stderr); process.exit(rebase.status ?? 1); }
         git('rebase', '--abort');
         s.pending = { lane, from };
+        delete s.pushing;
         state.feedback = `前置泳道 PR ${s.pr} 已 squash 合进泳道 ${state.lane}（现在是 ${lane}）。流程要把这个 PR 自己的提交 ${s.head}..${from} 重接到 ${lane} 上，有冲突：
 ${files.map(file => `- ${file}`).join('\n')}
 先 git fetch origin ${state.lane}，再在当前分支上 git rebase --onto ${lane} ${s.head}，解决冲突；只重放自己的提交，不要 merge，也不要把前置 squash 前的旧提交混进来。跑和冲突相关的测试后回报冲突了哪些文件、各自怎么解决的、跑了什么。`;
@@ -362,11 +370,15 @@ ${files.map(file => `- ${file}`).join('\n')}
         output('route', 'revise');
         break;
       }
-      const head = git('rev-parse', 'HEAD');
-      push(head, from);
-      state.executor.head = head;
-      s.pushed = lane;
-      s.note = `前置泳道 PR 已 squash 合进泳道，流程把你的提交用 rebase --onto 重接到了泳道 ${lane} 上，远端分支 ${state.branch} 现在是 ${head}。先 git fetch origin ${state.branch}，把当前分支重置到它（git reset --hard FETCH_HEAD），再接着做；不要把重接前的旧提交带回来。`;
+      s.pushing = { lane, from, head: git('rev-parse', 'HEAD') };
+      save();
+      push(s.pushing.head, from);
+    }
+    if (!s.pushed && s.pushing) {
+      state.executor.head = s.pushing.head;
+      s.pushed = s.pushing.lane;
+      s.note = `前置泳道 PR 已 squash 合进泳道，流程把你的提交用 rebase --onto 重接到了泳道 ${s.pushed} 上，远端分支 ${state.branch} 现在是 ${s.pushing.head}。先 git fetch origin ${state.branch}，把当前分支重置到它（git reset --hard FETCH_HEAD），再接着做；不要把重接前的旧提交带回来。`;
+      delete s.pushing;
       save();
     } else if (!s.pushed) {
       const head = state.executor.head;
