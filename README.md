@@ -517,7 +517,7 @@ gh workflow run publish.yml --repo coda-console/coda-plugins --ref main
 逐包配置 GitHub 仓库 `coda-console/coda-plugins`、流程文件 `publish.yml`、允许 `npm publish`、不指定 environment。
 已有可信发布配置会显示出来供维护者核对，不自动覆盖。首次 2FA 验证可选择五分钟内不再询问，包与包之间停两秒以免限流。
 配置后立即发起上述 GitHub 工作流：npm 要求新配置在两天内完成第一次成功发布，由 CI 发布仓库里的实际版本并验证信任关系。
-确认 OIDC 发布成功后，在 npm 包设置的 Publishing access 中选择 Require two-factor authentication and disallow tokens。
+npm 包设置里的 Publishing access 保持 npm 的默认设置，不另行收紧；CI 经 OIDC 发布，不配置 npm 写令牌。
 
 ## 契约检查
 
