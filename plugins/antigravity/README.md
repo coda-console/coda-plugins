@@ -19,7 +19,9 @@
    ```
 
    装到 `~/.local/bin/agy`（`--dir` 可改位置）。官方安装程序在 `~/.local/bin/agy` 已存在时什么都不做，所以升级用 `agy update`；二进制自己也会在后台更新。
-   安装程序最后会运行 `agy install`，把 `~/.local/bin` 写进已有的 shell 配置（`.bashrc`、`.zshrc`）的 PATH；它没有留给调用者的开关，设置动作无法避开。
+   自己用上面那行装，安装程序最后运行的 `agy install` 会把 `~/.local/bin` 写进已有的 shell 配置（`.bashrc`、`.zshrc`）的 PATH。
+   设置动作不改你的 shell 配置：它在一个临时目录当 `HOME` 的环境里运行安装程序，并用 `--dir` 把二进制装进真正的 `~/.local/bin`，
+   安装程序的暂存文件与 shell 配置改动都落在临时目录，装完即删；要让 `agy` 进终端的 PATH，自己加。
    启动命令先找 `~/.local/bin/agy`，找不到再用 `PATH` 上的 `agy`：Coda 后端服务的 `PATH` 不一定有 `~/.local/bin`。
 
 2. **登录**，三选一：

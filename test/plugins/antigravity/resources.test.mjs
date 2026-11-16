@@ -1,6 +1,7 @@
 // The antigravity plugin's「Antigravity」resource: whether a login is there (the keychain entry, asked without its secret) and
 // the CLI's version (scripts/agy.mjs, resources.mjs); its login as Coda drives the panel's `signIn` command (Coda's
 // check/coda/resources/plugins/resources/panels/sign-in.mjs reads the link and passes the code on).
+import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, writeFile, readFile } from 'node:fs/promises';
@@ -22,6 +23,12 @@ test('a login is the keychain entry being there; a keychain that cannot be asked
   assert.throws(() => signedIn('darwin', answer(36)), /读不了钥匙串：SecKeychainSearchCopyNext: boom/);
   assert.equal(signedIn('linux', answer(0)), true);
   assert.equal(signedIn('linux', answer(1)), false);
+  // No `secret-tool` is not signed in; one that cannot answer (killed, timed out, failing to start) is no answer.
+  assert.equal(signedIn('linux', () => ({ status: null, error: Object.assign(new Error('spawn secret-tool ENOENT'), { code: 'ENOENT' }) })), false);
+  assert.throws(() => signedIn('linux', () => ({ status: null, signal: 'SIGKILL' })), /读不了 Secret Service：SIGKILL/);
+  assert.throws(() => signedIn('linux', () => ({ status: null, error: Object.assign(new Error('spawn secret-tool EACCES'), { code: 'EACCES' }) })), /读不了 Secret Service：EACCES/);
+  // A timeout as spawnSync reports it, from a real process that outlasts it.
+  assert.throws(() => signedIn('linux', (command, args, options) => spawnSync('sleep', ['5'], { ...options, timeout: 100 })), /读不了 Secret Service：ETIMEDOUT/);
   assert.equal(signedIn('win32', answer(0)), false);
   // The entry alone is asked for: no `-w` or `-g` (which print the secret), and the output goes nowhere.
   assert.deepEqual(asked[0], ['security', ['find-generic-password', '-s', 'gemini', '-a', 'antigravity'], ['ignore', 'ignore', 'pipe']]);

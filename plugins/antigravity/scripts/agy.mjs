@@ -10,8 +10,11 @@ export function agyBinary(env = process.env) {
   if (existsSync(installed)) return installed;
   return (env.PATH ?? '').split(':').filter(Boolean).map(dir => join(dir, 'agy')).find(path => existsSync(path)) ?? null;
 }
-// The first x.y.z a version command prints; whether one is older than another.
-export const versionIn = text => /(\d+)\.(\d+)\.(\d+)/.exec(text ?? '')?.slice(1).join('.') ?? null;
+// `agy --version` run once, and the first x.y.z it printed on either output (null for none): the one reading of the version,
+// which the setup and the resources share.
+export const asked = binary => spawnSync(binary, ['--version'], { encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] });
+export const versionOf = ran => /(\d+)\.(\d+)\.(\d+)/.exec(`${ran.stdout ?? ''}\n${ran.stderr ?? ''}`)?.slice(1).join('.') ?? null;
+// Whether one version is older than another.
 export function older(version, than) {
   const a = version.split('.').map(Number), b = than.split('.').map(Number), i = a.findIndex((n, k) => n !== b[k]);
   return i >= 0 && a[i] < b[i];
@@ -19,18 +22,23 @@ export function older(version, than) {
 
 // Whether the Antigravity CLI has a login on this machine: its credentials entry (service `gemini`, account `antigravity`)
 // is in the keychain, asked for the entry alone, never its secret. macOS: `security`; Linux: the Secret Service through
-// `secret-tool` (the entry's attributes are what go-keyring writes: not tried on a real machine), where its file
-// fallback for a machine without one is not looked for. True, false, or an error for a keychain that cannot be asked.
+// `secret-tool` (the entry's attributes are what go-keyring writes: not tried on a real machine), where the CLI's file
+// fallback for a machine without one is not looked for. True or false for what the keychain answers: on Linux, no
+// `secret-tool` or no entry is not signed in. An error for a keychain that cannot be asked (macOS: any other answer than
+// found or not found; Linux: `secret-tool` timing out, killed or failing to start), which fails the reading rather than
+// showing a sign-out.
 export function signedIn(platform = process.platform, run = spawnSync) {
   if (platform === 'darwin') {
     const ran = run('security', ['find-generic-password', '-s', 'gemini', '-a', 'antigravity'], { encoding: 'utf8', stdio: ['ignore', 'ignore', 'pipe'], timeout: 10_000 });
     // 44 is `security`'s errSecItemNotFound.
     if (ran.status === 0) return true;
     if (ran.status === 44) return false;
-    throw new Error(`读不了钥匙串：${`${ran.stderr ?? ''}`.trim().split('\n')[0] || ran.error?.code || ran.status}`);
+    throw new Error(`读不了钥匙串：${`${ran.stderr ?? ''}`.trim().split('\n')[0] || ran.error?.code || ran.signal || ran.status}`);
   }
   if (platform === 'linux') {
     const ran = run('secret-tool', ['lookup', 'service', 'gemini', 'username', 'antigravity'], { stdio: 'ignore', timeout: 10_000 });
+    if (ran.error?.code === 'ENOENT') return false;
+    if (ran.error || ran.signal) throw new Error(`读不了 Secret Service：${ran.error?.code ?? ran.signal}`);
     return ran.status === 0;
   }
   return false;
