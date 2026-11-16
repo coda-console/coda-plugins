@@ -1047,13 +1047,15 @@ test('执行者做完、推需求分支因网络失败退出：会话 ID 已落�
   unblock = block(f2);
   f2.task({ file: 'README.md', text: '补了', answer: responded('补了', [{ id: 'reviewer:1', disposition: 'fixed' }]) });
   f2.run('overall-fix', executor, 1);
-  assert.deepEqual([f2.state().converge.session, f2.state().converge.fixing, f2.state().converge.rounds], ['worker-1', undefined, 0], '推送前已记下会话');
+  assert.deepEqual([f2.state().converge.session, f2.state().converge.fixing, f2.state().converge.rounds], ['worker-1', true, 0], '推送前已记下会话，这一轮还没做完');
   assert.equal(f2.remote('req/run-1'), pr.head);
   unblock();
   f2.task({ noCommit: true, answer: responded('已经补了', [{ id: 'reviewer:1', disposition: 'fixed' }]) });
   assert.equal(f2.run('overall-fix', executor).outputs.route, 'pr');
   assert.deepEqual(f2.agentCalls().map(c => c.args.slice(0, 2)), [['--commit', pr.head], ['--continue', 'worker-1']]);
   assert.deepEqual(parents(f2, f2.remote('req/run-1')), [pr.head]);
+  for (const part of ['上一次没有正常结束', 'git status', '原任务：']) assert.ok(f2.agentCalls()[1].prompt.includes(part), part);
+  assert.deepEqual([f2.state().converge.fixing, f2.state().converge.rounds], [undefined, 1], '推送成功、本轮记下后才清');
 });
 
 test('自动合并：开了 autoMerge、填了整体评审者、这次整体评审直接通过且没有任何未关闭的发现（含 P3；开了设备验收的已通过、不是成员运行）才不出批准卡直接合并；不跑合并后的流程，照常通知', async () => {

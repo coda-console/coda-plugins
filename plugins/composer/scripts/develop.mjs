@@ -385,8 +385,8 @@ switch (action) {
       fail(attempt);
     }
     const executor = attempt.reply;
+    // 先落盘会话、留着 fixing：随后推送需求分支失败退出时，再跑接回这个会话并先核对现场；推送处理完、本轮记下后才清。
     c.session = executor.session;
-    delete c.fixing;
     save();
     const responses = readResponses(executor.answer, open.map(f => f.id));
     for (const f of open) f.response = responses[f.id];
@@ -394,6 +394,7 @@ switch (action) {
     let route = moved ? 'pr' : disputed ? 'again' : 'review';
     if (moved && pushBranch(executor.head, from)) pushed(from, executor.head, '整体评审修复');
     else if (moved) route = 'progress';
+    delete c.fixing;
     c.rounds++;
     c.waiting = route === 'pr' || route === 'again';
     c.history.push({ kind: 'fix', round: c.rounds, from, head: executor.head, ids: open.map(f => f.id), responses,
