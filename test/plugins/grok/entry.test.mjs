@@ -51,6 +51,19 @@ for (const [text, how] of [['crash', /退出码 3[\s\S]*fake grok: Operation not
     assert.match(p.stderr, how);
   });
 
+// Coda's session host stops the entry with SIGTERM to its whole process group, so Grok gets the signal too: that is not Grok ending on its own.
+test('stopping Grok on purpose, as Coda\'s session host does with SIGTERM to the process group, is not an unexpected end', async t => {
+  const { p, messages, request } = start(t);
+  await request('initialize', { protocolVersion: 1, clientCapabilities: {} });
+  await request('session/new', { cwd: '/', mcpServers: [] });
+  const held = p.request('session/prompt', { sessionId: 'native', prompt: [{ type: 'text', text: 'hold' }] }, { timeout: 10_000 }).then(() => 'answered', () => 'unanswered');
+  for (let i = 0; i < 500 && messages.at(-1)?.params?.update?.content?.text !== 'holding'; i++) await new Promise(r => setTimeout(r, 10));
+  assert.equal(messages.at(-1)?.params?.update?.content?.text, 'holding');
+  assert.notEqual(await p.terminate(3000), null, 'the entry ends with the signal');
+  assert.equal(await held, 'unanswered', p.stderr);
+  assert.doesNotMatch(p.stderr, /意外退出/);
+});
+
 test('Grok declares session/delete and answers it with `grok sessions delete`, never passing it to the agent', async t => {
   const { dir, p, request } = start(t);
   const calls = () => { try { return readFileSync(join(dir, 'sessions-calls.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l)); } catch { return []; } };

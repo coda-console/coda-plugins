@@ -145,5 +145,7 @@ export class KimiRelay {
   }
   // Everything Kimi said has been passed on.
   drained() { return this.queue; }
+  // Kimi has ended: the prompts it never answered, no longer waited for here.
+  abandon() { const ids = [...this.prompts]; this.prompts.clear(); this.sent.clear(); return ids; }
   close() { this.closed = true; this.unfollow(); clearTimeout(this.timer); this.timer = null; }
 }

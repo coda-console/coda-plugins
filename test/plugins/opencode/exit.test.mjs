@@ -58,7 +58,7 @@ for (const [name, exit, how, say] of [['a non-zero exit code', '3', /退出码 3
   });
 
 // Coda closing its side, or a signal to the entry, stops OpenCode on purpose: no error for the prompt, nothing in the log.
-for (const [name, stop] of [['its input closing', peer => peer.child.stdin.end()], ['SIGTERM to the entry', peer => process.kill(peer.pid, 'SIGTERM')]])
+for (const [name, stop] of [['its input closing', peer => peer.child.stdin.end()], ['SIGTERM to the entry\'s process group, as Coda\'s session host stops it', peer => { void peer.terminate(2000); }]])
   test(`stopping OpenCode on purpose is not an unexpected end: ${name}`, async t => {
     const { peer, reply } = await prompted(t, 'hold');
     const settled = reply.then(() => 'answered', () => 'unanswered');
