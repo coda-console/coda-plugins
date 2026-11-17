@@ -59,11 +59,11 @@ export async function activate(coda) {
   });
   // watch 返回前收到的 ADDED 是重放（插件重启）。
   let replayed = false;
-  const composers = await coda.watch('coda/composer@1', async ({ type, id, object }) => {
+  const composers = await coda.watch('coda/composer@1', async ({ type, id, entry }) => {
     if (type === 'DELETED') { states.delete(id); return; }
-    const thread = object.spec.thread;
+    const thread = entry.spec.thread;
     if (!thread) return; // 新任务输入框不提醒，它创建的会话各自处理。
-    const mode = object.spec.modes.find(mode => mode.mode === 'composer/ultra');
+    const mode = entry.spec.modes.find(mode => mode.mode === 'composer/ultra');
     const state = states.get(id);
     if (!mode) {
       states.delete(id);
@@ -71,8 +71,8 @@ export async function activate(coda) {
       if (state && (state.told || state.sent > 0)) await coda.tell(thread, OFF);
       return;
     }
-    const sent = object.status.modes.find(mode => mode.mode === 'composer/ultra')?.sent ?? 0, list = listOf(mode.values);
-    const compactions = object.status.compactions ?? 0;
+    const sent = entry.status.modes.find(mode => mode.mode === 'composer/ultra')?.sent ?? 0, list = listOf(mode.values);
+    const compactions = entry.status.compactions ?? 0;
     if (!state) {
       // 带着 Ultra 新建的会话，输入框与第一条同时写成 sent=1，第一条已带完整说明；刚进入 Ultra 时 sent=0。
       const carried = replayed && sent > 0;

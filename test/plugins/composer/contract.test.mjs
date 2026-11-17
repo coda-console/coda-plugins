@@ -28,17 +28,17 @@ test('真实清单被识别为启动激活：恢复已有 Ultra 不发送，压�
       if (kind === 'threads') return { dispose() {} };
       assert.equal(kind, 'coda/composer@1');
       changed = handler;
-      await handler({ type: 'ADDED', id: restored.id, object: restored });
+      await handler({ type: 'ADDED', id: restored.id, entry: restored });
       return { dispose() {} };
     },
     tell: async (thread, text) => { told.push([thread, text]); },
   });
   assert.deepEqual(told, [], '恢复仍开启的输入框不能误发关闭，也不在此时发说明，压缩次数只记基线');
-  await changed({ type: 'MODIFIED', id: restored.id, object: { ...restored, revision: 6,
+  await changed({ type: 'MODIFIED', id: restored.id, entry: { ...restored, revision: 6,
     status: { compactions: 3, modes: [{ mode: 'composer/ultra', sent: 0, changedSinceSent: false, presets: {} }] } } });
   assert.deepEqual(told, [['restored', on([])]], 'compactions 变大立即给完整说明');
   told.length = 0;
-  await changed({ type: 'MODIFIED', id: restored.id, object: { ...restored, revision: 7,
+  await changed({ type: 'MODIFIED', id: restored.id, entry: { ...restored, revision: 7,
     spec: { thread: restored.id, modes: [] }, status: { modes: [] } } });
   assert.deepEqual(told, [['restored', OFF]]);
 });
