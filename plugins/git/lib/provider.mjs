@@ -43,14 +43,15 @@ export class GitProvider {
     const entries = await this.coda.replace(SOURCE, [...this.sources].map(([key, { spec }]) => ({ key, spec })));
     for (const { key, id } of entries) this.sources.get(key).id = id;
   }
-  // The sources of the file are given, then checked: the one registered, every time (the same spec included: a source that
-  // failed, its repository mended, is ready again), and those a refused `replace` left unchecked, which this one has now given.
+  // After the host has been given the sources, they are checked: the one registered, every time (the same spec included: a
+  // source that failed, its repository mended, is ready again), and those left without a status, by a refused `put` or a new spec.
   async publish(name) {
-    await this.replace();
     await Promise.all([...this.sources].filter(([key, { status }]) => key === name || !status).map(([key]) => this.reconcile(key)));
   }
+  // The status is the source's only once the host has it: a refused `put` leaves none, and the next `publish` checks it again.
   async reconcile(name) {
     const source = this.sources.get(name);
+    let status;
     try {
       const repo = await repository(source.spec.path, await this.coda.environment());
       if (source.identity && !sameRepository(source.identity, repo)) throw new Error('源路径已指向另一仓库，请删除源后重新登记');
@@ -60,12 +61,13 @@ export class GitProvider {
         source.identity = identity;
       }
       this.repositories.set(source.id, { ...repo, pathSpec: source.spec.path });
-      source.status = { ready: true, url: url(source.id) };
+      status = { ready: true, url: url(source.id) };
     } catch (error) {
       this.repositories.delete(source.id);
-      source.status = { ready: false, reason: error.message };
+      status = { ready: false, reason: error.message };
     }
-    await this.coda.put({ kind: SOURCE, key: name }, { spec: source.spec, status: source.status });
+    await this.coda.put({ kind: SOURCE, key: name }, { spec: source.spec, status });
+    source.status = status;
   }
   async lookup(id) {
     const source = [...this.sources.values()].find(source => source.id === id), repo = this.repositories.get(id);
@@ -93,19 +95,25 @@ export class GitProvider {
       reply(res, 200, { kind: SOURCE, id: await turn });
     } catch (error) { reply(res, error.status ?? 400, { error: error.message }); }
   }
-  // The file first, then the host's records.
+  // The file first, then the host's records. A `replace` the host refuses leaves nothing changed: the file and the sources are
+  // back as they were. Once it is accepted the change stays, whatever a later `put` does.
   async change(name, action, data) {
+    const before = this.sources, source = before.get(name), next = new Map(before);
     if (action === 'delete') {
-      const source = this.sources.get(name);
       if (!source) throw Object.assign(new Error('对象不存在'), { status: 404 });
-      const next = new Map(this.sources); next.delete(name); this.save(next);
-      this.sources = next; this.repositories.delete(source.id);
+      next.delete(name);
+    } else {
+      await repository(data.spec?.path ?? '', await this.coda.environment());
+      // The new spec is not checked yet: no status, so the next `publish` that succeeds checks it.
+      next.set(name, { ...source, spec: { path: data.spec.path, name }, status: undefined });
+    }
+    this.save(next); this.sources = next;
+    try { await this.replace(); } catch (error) { this.save(before); this.sources = before; throw error; }
+    if (action === 'delete') {
+      this.repositories.delete(source.id);
       await this.publish();
       return source.id;
     }
-    await repository(data.spec?.path ?? '', await this.coda.environment());
-    const next = new Map(this.sources).set(name, { ...this.sources.get(name), spec: { path: data.spec.path, name } });
-    this.save(next); this.sources = next;
     await this.publish(name);
     return this.sources.get(name).id;
   }

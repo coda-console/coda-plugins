@@ -58,7 +58,7 @@ git -c protocol.version=2 fetch "$AUTHENTICATED_GIT_URL" refs/heads/main:refs/he
 
 ## 检查与发布
 
-脚本级测试在 `test/plugins/git/`，使用真实临时 Git 仓库与 Node HTTP；provider 测试使用同步的宿主 API／schema，显式送事件，不启动 Coda 后端。运行：
+脚本级测试在 `test/plugins/git/`，使用真实临时 Git 仓库与 Node HTTP；provider 测试使用同步的宿主 API／schema，登记、删除、启动都在调用返回时完成，不启动 Coda 后端。运行：
 
 ```sh
 node --test 'test/plugins/git/*.test.mjs'

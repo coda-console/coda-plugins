@@ -244,16 +244,44 @@ test('写文件失败时登记、删除都报错，内存、文件、宿主记�
   assert.deepEqual([...h.objects.keys()].sort(), [`${SOURCE}/${id}`, `${SOURCE}/${second}`].sort());
 });
 
-test('replace 被拒后留在文件里的源，由之后成功的发布一并核对：不停在空 status', async t => {
+test('删除时 replace 被拒：报错，文件和内存里源还在；重试删除成功，宿主记录撤下', async t => {
+  const { dir, h, provider, id } = await setup(t);
+  const file = join(dir, '.git', 'coda-state', 'sources.json'), before = readFileSync(file, 'utf8'), replace = h.coda.replace;
+  h.coda.replace = async () => { h.coda.replace = replace; throw new Error('宿主拒绝写入'); };
+  const refused = await request(provider, '/sources/source/delete');
+  assert.equal(refused.code, 400); assert.equal(refused.value.error.message, '宿主拒绝写入');
+  assert.equal(readFileSync(file, 'utf8'), before); assert.deepEqual([...provider.sources.keys()], ['source']);
+  assert.ok(await provider.lookup(id)); assert.equal(get(h, id).status.ready, true);
+  await remove(provider, 'source');
+  assert.equal(get(h, id), undefined); assert.equal(h.objects.size, 0);
+  assert.equal(await provider.lookup(id), null);
+});
+
+test('登记时 put 被拒：报错，宿主记录没有 status；再登记另一个源时补写', async t => {
   const dir = await fixture(t), h = host(join(dir, '.git', 'coda-state'));
   const provider = new GitProvider(h.coda); t.after(() => provider.stop()); await provider.start();
-  const replace = h.coda.replace;
-  h.coda.replace = async () => { h.coda.replace = replace; throw new Error('宿主拒绝写入'); };
-  const refused = await request(provider, '/sources/first', { spec: { path: dir } });
-  assert.equal(refused.code, 400); assert.equal(h.objects.size, 0);
-  const second = await register(provider, 'second', { path: dir }), first = h.id('first');
+  const put = h.coda.put;
+  h.coda.put = async () => { h.coda.put = put; throw new Error('宿主拒绝写入'); };
+  const refused = await request(provider, '/sources/first', { spec: { path: dir } }), first = h.id('first');
+  assert.equal(refused.code, 400);
+  assert.deepEqual(get(h, first).status, {});
+  const second = await register(provider, 'second', { path: dir });
   assert.equal(get(h, first).status.ready, true); assert.equal(get(h, second).status.ready, true);
   assert.ok(await provider.lookup(first));
+});
+
+test('已就绪的源改路径时 replace 被拒：文件和内存不变，之后成功的发布使宿主 status 与 lookup 一致', async t => {
+  const { dir, h, provider, id } = await setup(t);
+  const other = await fixture(t), file = join(dir, '.git', 'coda-state', 'sources.json'), before = readFileSync(file, 'utf8');
+  const replace = h.coda.replace;
+  h.coda.replace = async () => { h.coda.replace = replace; throw new Error('宿主拒绝写入'); };
+  assert.equal((await request(provider, '/sources/source', { spec: { path: other } })).code, 400);
+  assert.equal(readFileSync(file, 'utf8'), before); assert.equal(provider.sources.get('source').spec.path, dir);
+  await register(provider, 'second', { path: dir });
+  const expected = await repository(dir, env);
+  assert.deepEqual(get(h, id).spec, { name: 'source', path: dir });
+  assert.equal(get(h, id).status.ready, true);
+  assert.equal((await provider.lookup(id)).path, expected.path);
 });
 
 test('start 完就能取上次留下的源：首次核对都做完才开服务', async t => {
