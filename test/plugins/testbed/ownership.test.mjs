@@ -44,7 +44,7 @@ test('declarations follow atomic replacements; invalid/missing registration pres
   writeFileSync(file, JSON.stringify([phone]));
   await activated(coda, state, file);
   assert.deepEqual(groups(), [{ owner: 'testbed', kind: 'coda/group@1', id: recordId('testbed', 'coda/group@1', phone.udid), key: phone.udid, status: {},
-    spec: { name: 'device:phone', plugin: 'testbed', unique: ['udid'], attributes: { name: phone.name, udid: phone.udid, note: phone.note, personal: 'false', platform: 'ios' } } }]);
+    spec: { name: 'device:phone', unique: ['udid'], attributes: { name: phone.name, udid: phone.udid, note: phone.note, personal: 'false', platform: 'ios' } } }]);
   writeFileSync(join(state, 'next'), JSON.stringify([{ ...phone, name: 'Changed', personal: true }]));
   renameSync(join(state, 'next'), file);
   await until(() => groups()[0]?.spec.attributes.name === 'Changed');
@@ -67,8 +67,8 @@ test('the set replaces only this plugin\'s groups; a refused set is logged', asy
   console.error = message => errors.push(message);
   t.after(async () => { await deactivate(); console.error = original; });
   const { coda, records } = recordsHost('testbed');
-  const other = { owner: 'other', kind: 'coda/group@1', id: recordId('other', 'coda/group@1', phone.udid), key: phone.udid, status: {}, spec: { name: 'device:other', plugin: 'other', attributes: {}, unique: [] } };
-  const entity = { owner: 'coda', kind: 'coda/group@1', id: '03acc3f8-6a6c-4f65-a90e-48f3af5aa3e5', status: {}, spec: { name: 'entity:03acc3f8-6a6c-4f65-a90e-48f3af5aa3e5', plugin: 'android', attributes: {}, unique: [] } };
+  const other = { owner: 'other', kind: 'coda/group@1', id: recordId('other', 'coda/group@1', phone.udid), key: phone.udid, status: {}, spec: { name: 'device:other', attributes: {}, unique: [] } };
+  const entity = { owner: 'coda', kind: 'coda/group@1', id: '03acc3f8-6a6c-4f65-a90e-48f3af5aa3e5', status: {}, spec: { name: 'entity:03acc3f8-6a6c-4f65-a90e-48f3af5aa3e5', attributes: {}, unique: [] } };
   for (const row of [other, entity]) records.set(`${row.kind}/${row.id}`, row);
   writeFileSync(file, JSON.stringify([phone]));
   await activated(coda, state, file);

@@ -141,20 +141,20 @@ test('地址设置为空且 wlan0 没有 IPv4 时拒绝声明链路', async () =
   }, async lines => lines[0].startsWith('getprop ') ? properties(lines) : '\n'), /android.address 为空，且 wlan0 没有 IPv4 地址/);
 });
 
-test('本体与链路按插件整份替换：先写本体，链路指向宿主给本体的 ID；补上插件，不写 status，借出的状态与别的插件的记录原样留着', async () => {
+test('本体与链路按插件整份替换：先写本体，链路指向宿主给本体的 ID；不写 status，借出的状态与别的插件的记录原样留着', async () => {
   const machine = 'f9bf79a1-61c3-40ce-b656-aec1bc7c60b8';
   const { coda, records } = recordsHost('android');
   const declared = await declarations({ 'android.machines': [{ id: machine }] }, properties);
   const foreign = { owner: 'other', kind: 'coda/entity@1', id: 'b1d3f2a0-0000-4000-8000-000000000001', status: { state: 'free' },
-    spec: { name: '别的', category: 'x', plugin: 'other', attributes: {}, capacity: 1 } };
+    spec: { name: '别的', category: 'x', attributes: {}, capacity: 1 } };
   records.set(`${foreign.kind}/${foreign.id}`, foreign);
   const declareAgain = () => declare(coda, {}, async () => structuredClone(declared));
   await declareAgain();
   const entity = recordId('android', 'coda/entity@1', 'device');
   assert.deepEqual(held(records, 'coda/entity@1').find(row => row.owner === 'android'), { owner: 'android', kind: 'coda/entity@1', id: entity, key: 'device', status: {},
-    spec: { name: 'Mi 10 Pro', category: 'android', capacity: 1, attributes: { model: 'Mi 10 Pro', android: '13', serial: 'serial' }, plugin: 'android' } });
+    spec: { name: 'Mi 10 Pro', category: 'android', capacity: 1, attributes: { model: 'Mi 10 Pro', android: '13', serial: 'serial' } } });
   assert.deepEqual(held(records, 'coda/link@1').map(({ id, key, spec }) => ({ id, key, spec })), [{ id: recordId('android', 'coda/link@1', 'adb'), key: 'adb',
-    spec: { entity, protocol: 'adb', endpoint: '192.168.1.7:5555', reach: { scope: 'machines', machines: [machine] }, plugin: 'android' } }]);
+    spec: { entity, protocol: 'adb', endpoint: '192.168.1.7:5555', reach: { scope: 'machines', machines: [machine] } } }]);
   // Lent out, and declared again at the next start: the state stays, so the return still to do is retried.
   records.get(`coda/entity@1/${entity}`).status = { state: 'returning' };
   await declareAgain();
@@ -164,6 +164,6 @@ test('本体与链路按插件整份替换：先写本体，链路指向宿主�
   await declareAgain();
   assert.deepEqual(held(records, 'coda/link@1'), []);
   assert.equal(records.get(`coda/entity@1/${foreign.id}`), foreign);
-  await assert.rejects(() => coda.replace('coda/entity@1', [{ ...record('android', declared.entities[0]), shared: true }]), { code: 'invalid_input' });
-  await assert.rejects(() => coda.replace('coda/entity@1', [{ ...record('android', declared.entities[0]), id: entity }]), { code: 'invalid_input' });
+  await assert.rejects(() => coda.replace('coda/entity@1', [{ ...record(declared.entities[0]), shared: true }]), { code: 'invalid_input' });
+  await assert.rejects(() => coda.replace('coda/entity@1', [{ ...record(declared.entities[0]), id: entity }]), { code: 'invalid_input' });
 });

@@ -63,9 +63,9 @@ export function device(state, run = nsenter) {
   };
 }
 
-// The record a declaration is: its key, the rest as the spec with the plugin that holds it.
+// The record a declaration is: its key, the rest as the spec.
 // No status: the host keeps the one it has (an entity lent out stays so), or gives a new one its first.
-export const record = (plugin, { key, ...spec }) => ({ key, spec: { ...spec, plugin } });
+export const record = ({ key, ...spec }) => ({ key, spec });
 
 // The links, without the entity: its ID is the host's, given when the entity is written.
 export function links({ address, port, machines }) {

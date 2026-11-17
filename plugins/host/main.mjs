@@ -1,8 +1,7 @@
-import { HostProvider } from './lib/provider.mjs';
+import { runFinished } from './lib/simulator-status.mjs';
 
-let provider;
+let handler;
 export async function activate(coda) {
-  provider = new HostProvider(coda);
-  try { await provider.start(); } catch (error) { await provider.stop(); throw error; }
+  handler = await coda.self.handle('run-finished', async ({ run } = {}) => ({ finished: await runFinished(coda, run) }));
 }
-export async function deactivate() { await provider?.stop(); provider = null; }
+export async function deactivate() { await handler?.dispose(); handler = null; }

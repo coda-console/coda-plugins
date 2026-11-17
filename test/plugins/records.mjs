@@ -6,15 +6,15 @@ import { ProtocolTypes, validate } from '../../check/coda/components/protocols/t
 // Coda's concurrency groups (components/concurrency-groups/schemas.mjs, entities.mjs).
 const text = { type: 'string', minLength: 1 };
 const definitions = {
-  'coda/group@1': { spec: { type: 'object', additionalProperties: false, required: ['name', 'plugin', 'attributes', 'unique'],
-    properties: { name: text, plugin: text, attributes: { type: 'object', additionalProperties: { type: 'string' } }, unique: { type: 'array', items: text } } },
+  'coda/group@1': { spec: { type: 'object', additionalProperties: false, required: ['name', 'attributes', 'unique'],
+    properties: { name: text, attributes: { type: 'object', additionalProperties: { type: 'string' } }, unique: { type: 'array', items: text } } },
   status: { type: 'object', additionalProperties: false }, first: {} },
-  'coda/entity@1': { spec: { type: 'object', additionalProperties: false, required: ['name', 'category', 'plugin', 'attributes', 'capacity'],
-    properties: { name: text, category: text, plugin: text, attributes: { type: 'object', additionalProperties: { type: 'string' } }, capacity: { type: 'integer', minimum: 1 } } },
+  'coda/entity@1': { spec: { type: 'object', additionalProperties: false, required: ['name', 'category', 'attributes', 'capacity'],
+    properties: { name: text, category: text, attributes: { type: 'object', additionalProperties: { type: 'string' } }, capacity: { type: 'integer', minimum: 1 } } },
   status: { type: 'object', additionalProperties: false, properties: { state: { enum: ['free', 'held', 'returning', 'failed'] }, message: { type: 'string' } } },
   first: {} },
-  'coda/link@1': { spec: { type: 'object', additionalProperties: false, required: ['entity', 'protocol', 'endpoint', 'reach', 'plugin'],
-    properties: { entity: text, protocol: text, endpoint: text, plugin: text, reach: { type: 'object', required: ['scope'], properties: { scope: { enum: ['machine', 'machines', 'space'] }, machines: { type: 'array', items: text } } } } },
+  'coda/link@1': { spec: { type: 'object', additionalProperties: false, required: ['entity', 'protocol', 'endpoint', 'reach'],
+    properties: { entity: text, protocol: text, endpoint: text, reach: { type: 'object', required: ['scope'], properties: { scope: { enum: ['machine', 'machines', 'space'] }, machines: { type: 'array', items: text } } } } },
   status: { type: 'object', additionalProperties: false }, first: {} },
 };
 const types = new ProtocolTypes();

@@ -14,8 +14,8 @@ export async function activate(coda) {
 // The entity first: a link names it by the ID the host gave it.
 export async function declare(coda, settings, source = declarations) {
   const declared = await source(settings);
-  const [entity] = await coda.replace('coda/entity@1', declared.entities.map(item => record(coda.plugin.id, item)));
-  await coda.replace('coda/link@1', declared.links.map(item => record(coda.plugin.id, { ...item, entity: entity.id })));
+  const [entity] = await coda.replace('coda/entity@1', declared.entities.map(item => record(item)));
+  await coda.replace('coda/link@1', declared.links.map(item => record({ ...item, entity: entity.id })));
 }
 
 export function deactivate() {
