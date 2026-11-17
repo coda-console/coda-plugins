@@ -10,13 +10,20 @@
 //    `_meta.coda.probe: true` opens a session of this connection alone, answered from the catalog and never sent to agy; so
 //    does every request about a session of the `coda-probe:` namespace. What real sessions say of their options is held to
 //    the catalog, which one that differs marks to be collected again.
+// 4. When agy ends on its own (not as Coda's input closing or a signal to this process stops it) with a non-zero exit code, a
+//    signal or a prompt unanswered, the log and the prompts still waiting say how (exit.mjs).
 import { spawn } from 'node:child_process';
 import { agyBinary } from '../scripts/agy.mjs';
 import { createCatalog } from './catalog.mjs';
 import { PREFIX, Probes, probeMark } from './probe.mjs';
+import { describeExit, endedError } from './exit.mjs';
 
 const binary = agyBinary() ?? 'agy';
-const agy = spawn(binary, ['acp'], { stdio: ['pipe', 'pipe', 'inherit'] });
+const agy = spawn(binary, ['acp'], { stdio: ['pipe', 'pipe', 'pipe'] });
+let stderr = '';
+agy.stderr.on('data', chunk => { process.stderr.write(chunk); stderr = (stderr + chunk).slice(-2048); });
+// The ids of the prompts Coda has asked and agy has not answered yet.
+const prompts = new Set();
 const initializing = new Set();
 const sessionRequests = new Set();
 const configRequests = new Map(); // request id -> { sessionId, was }: a set_config_option, whose answer lists the options; `was` for a mode switch, undone if agy refuses it
@@ -76,6 +83,7 @@ relay(process.stdin, agy.stdin, message => {
     if ('id' in message) answer(id, probes.handle(method, params));
     return false;
   }
+  if (method === 'session/prompt' && 'id' in message) prompts.add(id);
   if (method === 'initialize' && 'id' in message) initializing.add(id);
   if (['session/new', 'session/load', 'session/resume'].includes(method)) { delete params?.additionalDirectories; sessionRequests.add(id); }
   if (method === 'session/set_mode' && typeof params?.sessionId === 'string') {
@@ -93,6 +101,7 @@ relay(process.stdin, agy.stdin, message => {
 relay(agy.stdout, process.stdout, message => {
   const { method, params, id } = message;
   if (!method) {
+    prompts.delete(id);
     if (initializing.delete(id) && message.result?.agentCapabilities) {
       const capabilities = message.result.agentCapabilities;
       for (const key of ['sessionCapabilities', 'session_capabilities']) delete capabilities[key]?.additionalDirectories;
@@ -133,6 +142,13 @@ const stop = () => {
 };
 agy.stdin.on('error', () => {});
 agy.on('error', () => process.exit(1));
-agy.on('close', code => process.exit(stopping ? 0 : code ?? 1));
+agy.on('close', (code, signal) => {
+  if (!stopping && (code !== 0 || prompts.size)) {
+    const message = describeExit({ code, signal, stderr });
+    process.stderr.write(`${message}\n`);
+    for (const id of prompts) answer(id, { error: endedError(message) });
+  }
+  process.stdout.write('', () => process.exit(stopping ? 0 : code ?? 1));
+});
 process.stdin.on('end', stop);
 for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.once(signal, stop);
