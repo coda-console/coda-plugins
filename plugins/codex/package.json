@@ -3,13 +3,13 @@
   "id": "codex",
   "displayName": "Codex",
   "description": "用 OpenAI Codex 跑会话",
-  "version": "1.14.2",
+  "version": "1.14.3",
   "categories": [
     "Agent"
   ],
   "dependencies": {
     "@agentclientprotocol/codex-acp": "1.12.0",
-    "@openai/codex": "0.165.0"
+    "@openai/codex": "0.169.0"
   },
   "overrides": {
     "@agentclientprotocol/codex-acp": {
