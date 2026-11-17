@@ -24,12 +24,15 @@ export class AppServer {
       if (message.error) waiter.reject(new Error(oneLine(message.error.message) || 'Codex 拒绝了请求'));
       else waiter.resolve(message.result);
     });
+    // Resolves how it ended: `{ code, signal }` as the process exited, or, if it could not be started at all (no such
+    // command), `{ code: 1, signal: null, error }`.
     this.exited = new Promise(resolve => {
-      const done = () => {
+      const done = result => {
         for (const waiter of this.pending.values()) { clearTimeout(waiter.timer); waiter.reject(new Error('Codex 提前退出了')); }
-        this.pending.clear(); resolve();
+        this.pending.clear(); resolve(result);
       };
-      this.child.once('error', done); this.child.once('exit', done);
+      this.child.once('error', error => done({ code: 1, signal: null, error }));
+      this.child.once('exit', (code, signal) => done({ code, signal }));
     });
   }
   send(message) { this.child.stdin.write(`${JSON.stringify(message)}\n`); }

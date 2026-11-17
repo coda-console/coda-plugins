@@ -110,10 +110,30 @@ export function startAccountBridge({ source = new AccountSource(accountSource())
   });
   async function close() { if (closing) return; closing = true; reader.close(); source.close(); await server.close(); }
   reader.on('close', () => void close());
-  void server.exited.then(() => reader.close());
-  return { close, server, settled: () => queue };
+  // `exit` is how the app-server ended, `{ code, signal, error? }`, when nothing here closed it: its process died. When the
+  // bridge was closed first (its client went away, or it was told to stop), the server ending is the close, and it is null.
+  let settleExit;
+  const exit = new Promise(resolve => { settleExit = resolve; });
+  void server.exited.then(result => { settleExit(closing ? null : result ?? { code: 0, signal: null }); void close(); });
+  return { close, server, settled: () => queue, exit };
 }
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const bridge = startAccountBridge();
-  for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => void bridge.close());
+
+// The bridge as a process: it ends as the app-server under it ended, by the same signal or with the same exit code, so what
+// runs it (codex-acp, and Coda's exit patch there) sees how the Codex died rather than a clean exit.
+export function runAccountBridge(options) {
+  const bridge = startAccountBridge(options);
+  const signals = ['SIGTERM', 'SIGINT'], stop = () => void bridge.close();
+  for (const signal of signals) process.on(signal, stop);
+  void bridge.exit.then(async result => {
+    if (!result) return;
+    await bridge.close();
+    if (result.error) process.stderr.write(`Codex 无法启动：${result.error.code || result.error.message}\n`);
+    if (result.signal) {
+      for (const signal of signals) process.off(signal, stop);
+      process.exitCode = 1;
+      process.kill(process.pid, result.signal);
+    } else process.exit(result.code ?? 1);
+  });
+  return bridge;
 }
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) runAccountBridge();
