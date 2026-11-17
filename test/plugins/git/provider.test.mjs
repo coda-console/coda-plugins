@@ -145,3 +145,33 @@ test('删除后以同 ID、同 spec 重建，旧源迟到的结果不改新源',
   assert.ok(await provider.lookup('source'));
   await h.flush();
 });
+
+for (const id of ['constructor', '__proto__']) test(`源 ID 为 ${id} 也是普通 ID：登记、删后重登、重启都认得`, async t => {
+  const dir = await fixture(t), h = host(join(dir, '.git', 'coda-state'));
+  const provider = new GitProvider(h.coda); t.after(() => provider.stop()); await provider.start();
+  await put(h, id, { path: dir }); await h.flush();
+  assert.equal(get(h, id).status.ready, true);
+  await h.coda.delete({ kind: SOURCE, id }); await put(h, id, { path: dir }); await h.flush();
+  assert.equal(get(h, id).status.ready, true);
+  await provider.stop();
+  const restarted = new GitProvider(h.coda); t.after(() => restarted.stop()); await restarted.start(); await h.flush();
+  assert.equal(get(h, id).status.ready, true);
+  assert.equal((await restarted.lookup(id)).path, (await repository(dir, env)).path);
+  assert.deepEqual(h.failures, []);
+});
+
+test('首次登记的 reconcile 还在等时再写相同 spec，不作废它，源照常就绪', async t => {
+  const dir = await fixture(t), h = host(join(dir, '.git', 'coda-state'));
+  const provider = new GitProvider(h.coda); t.after(() => provider.stop()); await provider.start();
+  const environment = h.coda.environment; let entered, release;
+  const waiting = new Promise(resolve => { entered = resolve; }), gate = new Promise(resolve => { release = resolve; });
+  h.coda.environment = async () => { h.coda.environment = environment; entered(); await gate; return env; };
+  await put(h, 'source', { path: dir }); await waiting;
+  const req = Readable.from([Buffer.from(JSON.stringify({ spec: { path: dir } }))]); req.url = '/sources/source'; req.method = 'POST';
+  let code; await provider.manage(req, { writeHead(status) { code = status; }, end() {} }, { local: true });
+  assert.equal(code, 200);
+  release(); await h.flush();
+  assert.equal(get(h, 'source').status.ready, true);
+  assert.ok(await provider.lookup('source'));
+  assert.deepEqual(h.failures, []);
+});

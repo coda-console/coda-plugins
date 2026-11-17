@@ -12,14 +12,14 @@ const sameSpec = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 export class GitProvider {
   constructor(coda) {
     this.coda = coda;
-    this.sources = new Map(); this.lives = new Map(); this.identities = {}; this.repositories = new Map();
+    this.sources = new Map(); this.lives = new Map(); this.identities = new Map(); this.repositories = new Map();
     this.subscriptions = [];
     this.identitiesFile = join(coda.plugin.state, 'sources.json');
     this.http = smartHTTP({ lookup: id => this.lookup(id), environment: () => coda.environment() });
   }
   async start() {
     await mkdir(this.coda.plugin.state, { recursive: true });
-    try { this.identities = JSON.parse(await readFile(this.identitiesFile, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    try { this.identities = new Map(Object.entries(JSON.parse(await readFile(this.identitiesFile, 'utf8')))); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     this.subscriptions.push(await this.coda.watch(SOURCE, event => this.observe(event), { scope: 'local' }));
     this.service = await this.coda.services.register('repository', (req, res, caller) =>
       req.url.startsWith('/repos/') ? this.http(req, res, caller) : this.manage(req, res, caller));
@@ -29,7 +29,7 @@ export class GitProvider {
     if (type === 'DELETED') {
       // Revoke HTTP access at once. A source made again under this ID is a new one, which must not inherit the pinned repository.
       this.sources.delete(id); this.lives.delete(id); this.repositories.delete(id);
-      if (id in this.identities) this.saveIdentities(Object.fromEntries(Object.entries(this.identities).filter(([key]) => key !== id)));
+      if (this.identities.has(id)) this.saveIdentities(new Map([...this.identities].filter(([key]) => key !== id)));
       return;
     }
     this.sources.set(id, entry);
@@ -40,7 +40,7 @@ export class GitProvider {
   }
   // Written in one step so that no other write of the file interleaves with it.
   saveIdentities(next) {
-    writeFileSync(`${this.identitiesFile}.tmp`, `${JSON.stringify(next)}\n`, { mode: 0o600 });
+    writeFileSync(`${this.identitiesFile}.tmp`, `${JSON.stringify(Object.fromEntries(next))}\n`, { mode: 0o600 });
     renameSync(`${this.identitiesFile}.tmp`, this.identitiesFile);
     this.identities = next; // Only a durable binding may authorize reads.
   }
@@ -56,9 +56,9 @@ export class GitProvider {
     try {
       const repo = await repository(source.spec.path, await this.coda.environment());
       if (this.stale(source, life)) return;
-      const identity = this.identities[source.id];
+      const identity = this.identities.get(source.id);
       if (identity && !sameRepository(identity, repo)) throw new Error('源路径已指向另一仓库，请删除源后重新登记');
-      if (!identity) this.saveIdentities({ ...this.identities, [source.id]: { path: repo.path, gitDir: repo.gitDir, commonDir: repo.commonDir } });
+      if (!identity) this.saveIdentities(new Map(this.identities).set(source.id, { path: repo.path, gitDir: repo.gitDir, commonDir: repo.commonDir }));
       this.repositories.set(source.id, { ...repo, pathSpec: source.spec.path });
       await this.status(source, { ready: true, url: url(source.id) });
     } catch (error) {
@@ -84,9 +84,12 @@ export class GitProvider {
       if (req.method === 'GET' && !action) return reply(res, this.sources.has(id) ? 200 : 404, this.sources.get(id) ?? { error: '对象不存在' });
       if (req.method !== 'POST') return reply(res, 405, { error: '需要 GET 或 POST' });
       const data = JSON.parse((await readBody(req, 65536)).toString() || '{}');
-      if (action === 'delete') await this.coda.delete({ kind: SOURCE, id });
+      // The plugin's state follows its own write, not its echo: a reconcile still waiting must not write back over it.
+      if (action === 'delete') { this.lives.set(id, Symbol(id)); await this.coda.delete({ kind: SOURCE, id }); }
       else {
         await repository(data.spec?.path ?? '', await this.coda.environment());
+        // The same spec writes nothing and echoes nothing: nothing would reconcile again, so the one in flight stays.
+        if (!sameSpec(this.sources.get(id)?.spec, data.spec)) this.lives.set(id, Symbol(id));
         // A record is written whole: the status it has now is carried over, until the spec's new result replaces it.
         await this.coda.put({ kind: SOURCE, id }, { spec: data.spec, status: this.sources.get(id)?.status ?? {} });
       }
