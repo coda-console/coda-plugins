@@ -27,7 +27,7 @@ test('Ultra 留派活规则：主 Agent 定任务、做决定、审查，spawn �
   assert.ok(full.length < 2000, '默认说明给执行者名单留下空间');
 });
 
-const composerEvent = (id, { sent = 0, compactions, subagents = list, ultra = true, type = 'MODIFIED' } = {}) => ({ type, id, object: {
+const composerEvent = (id, { sent = 0, compactions, subagents = list, ultra = true, type = 'MODIFIED' } = {}) => ({ type, id, entry: {
   kind: 'coda/composer@1', id, revision: 1,
   spec: { ...(id.startsWith('new:') ? { project: id.slice(4) } : { thread: id }),
     modes: [...(ultra ? [{ mode: 'composer/ultra', values: { subagents } }] : []), { mode: 'composer/loop', values: { every: 'PT30M' } }] },
