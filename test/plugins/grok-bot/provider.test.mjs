@@ -7,13 +7,15 @@ import { test } from 'node:test';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { Provider, SESSION, recordId, messageId } from '../../../plugins/grok-bot/lib/provider.mjs';
+import { createHash } from 'node:crypto';
+import { Provider, SESSION, recordKey, messageId } from '../../../plugins/grok-bot/lib/provider.mjs';
 import { NativeAuth } from '../../../plugins/grok-bot/lib/auth.mjs';
 import { decode } from '../../../plugins/grok-bot/lib/transcript.mjs';
 import { FakeNative } from './native-fixture.mjs';
 import { temporary } from './helpers.mjs';
 import { ProtocolTypes, validate } from '../../../check/coda/components/protocols/types.mjs';
 import { SESSION_PROTOCOL } from '@coda-console/protocol/protocol';
+import { recordId, validKey } from '../records.mjs';
 const types = new ProtocolTypes();
 // Test the 5.7.0 activity contract while Coda's synced checker still pins 5.6.0.
 // coda-protocol 5114657bff89056ffe94fd8988478b0a8b2f37b4, session.json status.activity.
@@ -29,27 +31,35 @@ sessionProtocol.status.properties.activity = {
 };
 for (const d of [sessionProtocol]) types.register({ ...d, kind: d.name, participants: () => [] });
 const until = async fn => { for (let i=0; i<200; i++) { if (fn()) return; await delay(5); } assert.fail('condition timed out'); };
+// The records of the new interface (`put`, `delete`, `replace`), kept whole as a plugin writes them. A plugin gives only its
+// key; the host derives the ID from the plugin, the kind and the key, so a record has the plugin that holds it and `replace`
+// only clears the caller's own, those without a key (an earlier version's) among them.
 function host(root) {
-  const records = new Map(), watchers = [], handlers = new Map(); let revision = 0;
-  const key = (kind, id) => `${kind}/${id}`;
-  const save = object => {
-    validate(types.get(object.kind).spec, object.spec, object.kind);
-    validate(types.get(object.kind).status, object.status, object.kind);
-    object = { ...object, provider: 'grok-bot', revision: String(++revision) }; records.set(key(object.kind, object.id), object);
-    for (const w of watchers) if (w.kind === object.kind) w.fn({ type: 'MODIFIED', id: object.id, object });
-    return object;
+  const records = new Map(), handlers = new Map(), writes = [], self = 'grok-bot'; let version = 0, failing = null;
+  const fails = op => { if (failing === op) { failing = null; throw new Error('宿主没有收'); } };
+  const at = (kind, id) => `${kind}/${id}`;
+  const check = (kind, key, { spec, status = {} }) => {
+    assert.ok(validKey(key), `key ${key}`); validate(types.get(kind).spec, spec, 'spec'); validate(types.get(kind).status, status, 'status');
   };
-  const coda = { plugin: { id: 'grok-bot', state: root },
+  const save = (kind, key, { spec, status = {} }) => {
+    const id = recordId(self, kind, key);
+    writes.push(id); records.set(at(kind, id), { owner: self, kind, id, key, spec, status, version: String(++version) });
+    return { id, key, spec, status };
+  };
+  const coda = { plugin: { id: self, state: root },
     handle: (kind, op, fn) => { handlers.set(`${kind}/${op}`, fn); return { dispose() {} }; },
     error: (code, message, { effects } = {}) => Object.assign(new Error(message), { code, effects: effects ?? 'unknown' }),
-    protocols: {
-      observe: async (kind, fn) => { const w = { kind, fn }; watchers.push(w); for (const o of records.values()) if (o.kind === kind) fn({ type: 'ADDED', id: o.id, object: o }); return { dispose() { watchers.splice(watchers.indexOf(w), 1); } }; },
-      put: async o => save(o), publish: async () => {},
-      update: async (kind, id, spec, rev) => { const o=records.get(key(kind,id)); assert.equal(rev,o.revision); return save({...o,spec}); },
-      setStatus: async (kind,id,status,rev) => { const o=records.get(key(kind,id)); assert.equal(rev,o.revision); return save({...o,status}); },
-      delete: async (kind,id) => records.delete(key(kind,id)),
+    put: async ({ kind, key, ...rest }, body) => { fails('put'); assert.deepEqual(rest, {}); check(kind, key, body); return save(kind, key, body); },
+    delete: async ({ kind, key }) => { const id = recordId(self, kind, key); writes.push(id); records.delete(at(kind, id)); },
+    replace: async (kind, items) => {
+      fails('replace');
+      for (const { key, ...body } of items) check(kind, key, body);
+      for (const [k, held] of records) if (held.kind === kind && held.owner === self) records.delete(k);
+      return items.map(({ key, ...body }) => save(kind, key, body));
     } };
-  return { coda, handlers };
+  // What another plugin, or Coda itself, holds on this machine; or what an earlier version of this one left, without a key.
+  const foreign = (owner, kind, id, spec, status = {}) => records.set(at(kind, id), { owner, kind, id, spec, status, version: String(++version) });
+  return { coda, handlers, records, writes, foreign, fail: op => { failing = op; } };
 }
 async function fixture(t, loggedIn = true, setup = () => {}) {
   const root = temporary(t), native = new FakeNative(), h = host(root);
@@ -63,17 +73,19 @@ async function fixture(t, loggedIn = true, setup = () => {}) {
       event.rows.entries[0].seq = row.seq; native.emit(event);
     }
   };
-  setup(native);
+  setup(native, h);
   const auth = new NativeAuth({ root, fetcher: native.fetch });
   const provider = new Provider(h.coda, { auth, stableMs: 10 });
   await provider.start(); t.after(() => provider.stop());
   if (loggedIn) await until(() => native.connections.length);
-  return { ...h, provider, native, auth, root, id: () => [...provider.bots.keys()][0] };
+  // `key` is the record's key, by which the plugin keeps it; `id` the ID the host derives from it.
+  const key = () => [...provider.bots.keys()][0];
+  return { ...h, provider, native, auth, root, key, id: () => recordId('grok-bot', SESSION, key()) };
 }
 // What the plugin host hands a doing handler; `progress` collects what it reports.
 function call(f, id = 'call', controller = new AbortController()) {
   const progress = [];
-  return { id, record: { kind: SESSION, id: f.id() }, signal: controller.signal, deadline: null, progress: text => progress.push(text), controller, reports: progress };
+  return { id, record: { kind: SESSION, id: f.id(), key: f.key() }, signal: controller.signal, deadline: null, progress: text => progress.push(text), controller, reports: progress };
 }
 
 test('resource login followed by refresh lists stable per-bot records and person/agent participants', async t => {
@@ -81,32 +93,118 @@ test('resource login followed by refresh lists stable per-bot records and person
   f.native.pollAnswers=[{accessToken:'fixture'}];
   const login=f.auth.login(); assert.equal(new URL(login.url).hostname,'cursor.com'); await login.promise;
   await f.provider.sync(); assert.equal(f.provider.records.size,1);
-  const record=f.provider.records.get(f.id());
-  assert.equal(record.id,recordId(record.spec.container.id,'inspector'));
+  const record=f.provider.records.get(f.key());
+  assert.equal(f.key(),recordKey(record.spec.container.id,'inspector'));
+  assert.equal(f.key(),`${createHash('sha256').update('stable-account').digest('hex')}:inspector`);
   assert.deepEqual(record.status.participants.map(p=>[p.kind,!!p.self]),[['person',true],['agent',false]]);
-  await f.provider.sync(); assert.equal(f.id(),record.id);
+  assert.deepEqual(f.records.get(`${SESSION}/${f.id()}`),{owner:'grok-bot',kind:SESSION,id:f.id(),key:f.key(),spec:record.spec,status:record.status,version:f.records.get(`${SESSION}/${f.id()}`).version});
+  await f.provider.sync(); assert.equal(f.key(),recordKey(record.spec.container.id,'inspector'));
+});
+
+test('sessions of Coda and of other plugins on this machine are never written or deleted; a leftover of an earlier run is dropped', async t => {
+  const session = { title: '别人的会话', container: { id: 'someone', title: '别人' } }, status = { participants: [], state: 'active' };
+  const f = await fixture(t, true, (native, h) => {
+    h.foreign('coda', SESSION, '2b8e4f61-9c3a-4d07-b5e2-7a1f0c6d93e8', session, status);
+    h.foreign('wechat', SESSION, 'e47a0d39-1f6b-4c82-9a5d-3b8c2e7f0164', session, status);
+    h.foreign('grok-bot', SESSION, '9a3c5e70-6d1b-4f28-8e94-0c7b2a5d1f83', session, status);
+  });
+  const others = () => [...f.records.values()].filter(r => r.owner !== 'grok-bot');
+  const before = structuredClone(others());
+  assert.equal(before.length, 2);
+  assert.deepEqual([...f.records.values()].filter(r => r.owner === 'grok-bot').map(r => r.id), [f.id()]);
+  // A message moves the head and a later sync finds the Bot gone: both only touch the plugin's own record.
+  f.native.emit(f.native.row('a', { kind: 'send-message', message: { type: 'text', content: 'first' } }, 1));
+  await until(() => f.provider.records.get(f.key()).status.head === '0:1');
+  assert.equal(f.records.get(`${SESSION}/${f.id()}`).status.head, '0:1');
+  const original = f.native.handler;
+  f.native.handler = async (method, params) => method === 'ListGrokBotAgents' ? Response.json({ agents: [] }) : original(method, params);
+  const id = f.id();
+  await f.provider.sync();
+  assert.equal(f.records.has(`${SESSION}/${id}`), false);
+  assert.deepEqual(others(), before);
+  assert.ok(f.writes.every(written => written === id), `wrote ${f.writes}`);
+});
+
+test('a write the host did not take is made again, not skipped as the same', async t => {
+  const f = await fixture(t), at = `${SESSION}/${f.id()}`, key = f.key();
+  const status = { ...f.provider.records.get(key).status, state: 'unreachable', reason: 'x' };
+  f.fail('put');
+  await assert.rejects(f.provider.write(key, status), /宿主没有收/);
+  assert.equal(f.records.get(at).status.state, 'active');
+  await f.provider.write(key, status);
+  assert.equal(f.records.get(at).status.reason, 'x');
+  // The same when the failed put is found by the next sync, not by a second write of it.
+  const next = { ...status, reason: 'y' };
+  f.fail('put');
+  await assert.rejects(f.provider.write(key, next), /宿主没有收/);
+  await f.provider.sync();
+  assert.equal(f.records.get(at).status.state, 'active');
+  assert.equal(f.records.get(at).status.reason, undefined);
+});
+
+test('a Bot whose status write failed and which then leaves the list is dropped from the host by the next sync', async t => {
+  const f = await fixture(t), at = `${SESSION}/${f.id()}`, key = f.key(), original = f.native.handler;
+  f.fail('put');
+  await assert.rejects(f.provider.write(key, { ...f.provider.records.get(key).status, state: 'unreachable', reason: 'x' }), /宿主没有收/);
+  f.native.handler = async (method, params) => method === 'ListGrokBotAgents' ? Response.json({ agents: [] }) : original(method, params);
+  await f.provider.sync();
+  assert.equal(f.records.has(at), false);
+});
+
+test('a restart keeps the head: the first replace carries it, and the session reads at once', async t => {
+  const f = await fixture(t), id = f.id(), key = f.key();
+  f.native.emit(f.native.row('a', { kind: 'send-message', message: { type: 'text', content: 'first' } }, 1));
+  f.native.emit(f.native.row('b', { kind: 'message', role: 'user', content: 'second' }, 2));
+  await until(() => f.provider.records.get(key).status.head === '0:2');
+  await f.provider.stop();
+  const replaced = [], replace = f.coda.replace;
+  f.coda.replace = async (kind, items) => { replaced.push(...items); return replace(kind, items); };
+  const again = new Provider(f.coda, { auth: new NativeAuth({ root: f.root, fetcher: f.native.fetch }), stableMs: 10 });
+  await again.start(); t.after(() => again.stop());
+  assert.equal(replaced.find(item => item.key === key).status.head, '0:2');
+  assert.equal(f.records.get(`${SESSION}/${id}`).status.head, '0:2');
+  await until(() => again.mirrors.get(key)?.messages.size === 2);
+  assert.deepEqual((await again.read(key)).messages.map(m => m.text), ['first', 'second']);
+});
+
+test('an index kept under the record IDs of an earlier version is not read: its head is not carried over', async t => {
+  const account = createHash('sha256').update('stable-account').digest('hex');
+  const f = await fixture(t, true, (native, h) => writeFileSync(join(h.coda.plugin.state, 'transcript-index.json'),
+    JSON.stringify({ [`head:grok-bot:${account}:inspector`]: '0:9' })));
+  assert.equal(f.provider.records.get(f.key()).status.head, undefined);
+  assert.equal(f.records.get(`${SESSION}/${f.id()}`).status.head, undefined);
+});
+
+test('the last Bot going away is dropped from the host on a later sync even when the first replace was refused', async t => {
+  const f = await fixture(t), key = `${SESSION}/${f.id()}`, original = f.native.handler;
+  f.native.handler = async (method, params) => method === 'ListGrokBotAgents' ? Response.json({ agents: [] }) : original(method, params);
+  f.fail('replace');
+  await f.provider.sync();
+  assert.ok(f.records.has(key));
+  await f.provider.sync();
+  assert.equal(f.records.has(key), false);
 });
 
 test('read latest/before/after, edits, stable head and no Routine mirror', async t => {
   const f=await fixture(t); await until(()=>f.native.connections.length);
   f.native.emit(f.native.row('a',{kind:'send-message',message:{type:'text',content:'first'}},1));
-  await until(()=>f.provider.records.get(f.id()).status.head==='0:1');
+  await until(()=>f.provider.records.get(f.key()).status.head==='0:1');
   f.native.emit(f.native.row('b',{kind:'message',role:'user',content:'second'},2));
-  await until(()=>f.provider.records.get(f.id()).status.head==='0:2');
-  let page=await f.provider.read(f.id(),{limit:1}); assert.equal(page.messages[0].text,'second'); assert.equal(page.more,true);
-  assert.equal((await f.provider.read(f.id(),{before:'0:2'})).messages[0].text,'first');
+  await until(()=>f.provider.records.get(f.key()).status.head==='0:2');
+  let page=await f.provider.read(f.key(),{limit:1}); assert.equal(page.messages[0].text,'second'); assert.equal(page.more,true);
+  assert.equal((await f.provider.read(f.key(),{before:'0:2'})).messages[0].text,'first');
   const edit=f.native.row('a',{kind:'send-message',message:{type:'text',content:'edited'}},3); edit.rows.entries[0].seq='1';
   f.native.emit(edit);
-  assert.equal(f.provider.records.get(f.id()).status.head,'0:2');
-  assert.equal((await f.provider.read(f.id(),{after:'0:2'})).messages.length,0);
-  await until(()=>f.provider.records.get(f.id()).status.head==='0:3');
-  page=await f.provider.read(f.id(),{after:'0:2'});
+  assert.equal(f.provider.records.get(f.key()).status.head,'0:2');
+  assert.equal((await f.provider.read(f.key(),{after:'0:2'})).messages.length,0);
+  await until(()=>f.provider.records.get(f.key()).status.head==='0:3');
+  page=await f.provider.read(f.key(),{after:'0:2'});
   assert.deepEqual(page.messages[0].about,{message:'0:a',change:'edit'});
   assert.equal(page.messages[0].text,'edited');
   validate(types.get(SESSION).operations.get('read').result,page,'read');
   f.native.emit({agentStateChanged:{agentId:'inspector',families:['automations','subagents']}});
   f.native.emit(f.native.row('routine',{kind:'routine',text:'done'},4)); await delay(30);
-  assert.equal(f.provider.records.get(f.id()).status.head,'0:3');
+  assert.equal(f.provider.records.get(f.key()).status.head,'0:3');
   assert.ok(!f.native.requests.some(r=>/Subagents|Automations/.test(r.method)));
 });
 
@@ -124,14 +222,14 @@ test('post uses call-derived UUID, reports progress and confirms the stream echo
 test('widget is text options; reply responds once and returns the self reply', async t => {
   const f=await fixture(t); await until(()=>f.native.connections.length);
   f.native.emit(f.native.row('widget',{kind:'send-message',message:{type:'widget',widget:{prompt:'Choose',options:[{label:'Yes',value:'yes'}]}}},1));
-  await until(()=>f.provider.records.get(f.id()).status.head==='0:1');
-  assert.equal((await f.provider.read(f.id())).messages[0].text,'Choose\nYes');
+  await until(()=>f.provider.records.get(f.key()).status.head==='0:1');
+  assert.equal((await f.provider.read(f.key())).messages[0].text,'Choose\nYes');
   const result=await f.provider.post({text:'Yes',replyTo:'0:widget'},call(f,'widget-answer'));
   assert.equal(f.native.requests.filter(r=>r.method==='RespondGrokBotWidget').length,1);
   assert.equal(f.native.requests.filter(r=>r.method==='SendGrokBotUserMessage').length,0);
-  const reply=(await f.provider.read(f.id(),{after:'0:1'})).messages[0];
+  const reply=(await f.provider.read(f.key(),{after:'0:1'})).messages[0];
   assert.equal(result.message.id,reply.id);
-  assert.equal(reply.sender,f.provider.bots.get(f.id()).self); assert.equal(reply.replyTo,'0:widget');
+  assert.equal(reply.sender,f.provider.bots.get(f.key()).self); assert.equal(reply.replyTo,'0:widget');
   assert.deepEqual(reply.mentions,['inspector']);
 });
 
@@ -197,27 +295,27 @@ test('renewal failing after a 401 says effects none whether offline or timed out
 
 test('the Bot list loop shows the original error when renewal fails offline, and asks for login when it is rejected', async t => {
   const f=await fixture(t); const original=f.native.handler;
-  const reason=()=>f.provider.records.get(f.id()).status.reason;
+  const reason=()=>f.provider.records.get(f.key()).status.reason;
   // sync reloads the credentials file, so the refresh token must be on disk.
   writeFileSync(join(f.root,'native-auth.json'),JSON.stringify({accessToken:'fixture',refreshToken:'refresh'}));
   f.native.handler=async (method,params)=>{
     if(method==='token')throw new TypeError('fetch failed');
     return method==='GetMe'?new Response('{}',{status:401}):original(method,params);
   };
-  await f.provider.schedule(()=>f.provider.sync());
+  await f.provider.sync();
   assert.equal(reason(),'fetch failed');
   f.native.handler=async (method,params)=>{
     if(method==='token')return Response.json({},{status:400});
     return method==='GetMe'?new Response('{}',{status:401}):original(method,params);
   };
-  await f.provider.schedule(()=>f.provider.sync());
+  await f.provider.sync();
   assert.equal(reason(),'请在资源页重新登录');
 });
 
 test('widget answer refused (false) says effects none; a missing field stays unknown', async t => {
   const f=await fixture(t); await until(()=>f.native.connections.length); const original=f.native.handler;
   f.native.emit(f.native.row('widget',{kind:'send-message',message:{type:'widget',widget:{prompt:'Choose',options:[{label:'Yes',value:'yes'}]}}},1));
-  await until(()=>f.provider.records.get(f.id()).status.head==='0:1');
+  await until(()=>f.provider.records.get(f.key()).status.head==='0:1');
   f.native.handler=async (method,params)=>method==='RespondGrokBotWidget'?Response.json({accepted:false}):original(method,params);
   await assert.rejects(f.provider.post({text:'Yes',replyTo:'0:widget'},call(f,'refused')),{code:'refused',effects:'none'});
   f.native.handler=async (method,params)=>method==='RespondGrokBotWidget'?Response.json({}):original(method,params);
@@ -244,11 +342,11 @@ test('only changed stream rows wait for stability; reads and settling never fetc
     const event=f.native.row('stream',{kind:'send-message',message:{type:'text',content:`part ${seq}`}},seq);
     event.rows.entries[0].seq='1'; f.native.emit(event);
     await delay(3);
-    assert.equal(f.provider.records.get(f.id()).status.head,undefined);
-    assert.equal((await f.provider.read(f.id())).messages.length,0);
+    assert.equal(f.provider.records.get(f.key()).status.head,undefined);
+    assert.equal((await f.provider.read(f.key())).messages.length,0);
   }
-  await until(()=>f.provider.records.get(f.id()).status.head==='0:5');
-  const page=await f.provider.read(f.id());
+  await until(()=>f.provider.records.get(f.key()).status.head==='0:5');
+  const page=await f.provider.read(f.key());
   assert.equal(page.messages[0].id,'0:stream'); assert.equal(page.messages[0].about,undefined);
   assert.equal(f.native.requests.filter(r=>r.method==='ListGrokBotTranscriptEntries').length,reads);
 });
@@ -256,11 +354,11 @@ test('only changed stream rows wait for stability; reads and settling never fetc
 test('updatedSeq without a body change does not manufacture an edit', async t => {
   const f=await fixture(t); await until(()=>f.native.connections.length);
   f.native.emit(f.native.row('a',{kind:'send-message',message:{type:'text',content:'same'}},1));
-  await until(()=>f.provider.records.get(f.id()).status.head==='0:1');
+  await until(()=>f.provider.records.get(f.key()).status.head==='0:1');
   const row={...f.native.entries[0],updatedSeq:'2'}; f.native.entries=[row];
   f.native.emit({rows:{agentId:'inspector',entries:[row]}}); await delay(30);
-  assert.equal((await f.provider.read(f.id(),{after:'0:1'})).messages.length,0);
-  assert.equal(f.provider.records.get(f.id()).status.head,'0:1');
+  assert.equal((await f.provider.read(f.key(),{after:'0:1'})).messages.length,0);
+  assert.equal(f.provider.records.get(f.key()).status.head,'0:1');
 });
 
 test('a completed stream in the baseline is ordinary; only changes after exposure become edits', async t => {
@@ -268,21 +366,21 @@ test('a completed stream in the baseline is ordinary; only changes after exposur
     const event=native.row('finished',{kind:'send-message',message:{type:'text',content:'finished before startup'}},9);
     event.rows.entries[0].seq='5';
   });
-  await until(()=>f.provider.records.get(f.id()).status.head==='0:9');
-  let page=await f.provider.read(f.id());
+  await until(()=>f.provider.records.get(f.key()).status.head==='0:9');
+  let page=await f.provider.read(f.key());
   assert.equal(page.messages.length,1);
   assert.equal(page.messages[0].id,'0:finished');
   assert.equal(page.messages[0].cursor,'0:9');
   assert.equal(page.messages[0].about,undefined);
   const event=f.native.row('finished',{kind:'send-message',message:{type:'text',content:'changed after exposure'}},10);
   event.rows.entries[0].seq='5'; f.native.emit(event);
-  await until(()=>f.provider.records.get(f.id()).status.head==='0:10');
-  page=await f.provider.read(f.id());
+  await until(()=>f.provider.records.get(f.key()).status.head==='0:10');
+  page=await f.provider.read(f.key());
   assert.equal(page.messages.length,2);
   assert.equal(page.messages[0].text,'finished before startup');
   assert.deepEqual(page.messages[1].about,{message:'0:finished',change:'edit'});
   assert.equal(page.messages[1].id,'0:finished:edit:10');
-  assert.equal((await f.provider.read(f.id(),{after:'0:9'})).messages.length,1);
+  assert.equal((await f.provider.read(f.key(),{after:'0:9'})).messages.length,1);
 });
 
 test('reconnect and cursor resets rebuild once, then resume incremental rows', async t => {
@@ -294,19 +392,19 @@ test('reconnect and cursor resets rebuild once, then resume incremental rows', a
   assert.equal(reads(),1);
   f.native.row('offline',{kind:'send-message',message:{type:'text',content:'during disconnect'}},1);
   f.native.drop();
-  await until(()=>f.native.connections.length===2 && f.provider.records.get(f.id()).status.head==='0:1');
+  await until(()=>f.native.connections.length===2 && f.provider.records.get(f.key()).status.head==='0:1');
   assert.equal(reads(),2);
   f.native.emit({cursorTooOld:{agentId:'inspector',sessionId:''}});
   await until(()=>f.native.connections.length===3); assert.equal(reads(),3);
   f.native.generation=1; f.native.entries=[];
   f.native.emit({cleared:{agentId:'inspector',sessionId:''}});
   await until(()=>f.native.connections.length===4); assert.equal(reads(),4);
-  assert.equal(f.provider.records.get(f.id()).status.head,undefined);
-  assert.deepEqual((await f.provider.read(f.id())).messages,[]);
-  await assert.rejects(f.provider.read(f.id(),{after:'0:1'}),/重置/);
+  assert.equal(f.provider.records.get(f.key()).status.head,undefined);
+  assert.deepEqual((await f.provider.read(f.key())).messages,[]);
+  await assert.rejects(f.provider.read(f.key(),{after:'0:1'}),/重置/);
   f.native.emit(f.native.row('new',{kind:'send-message',message:{type:'text',content:'new generation'}},1));
-  await until(()=>f.provider.records.get(f.id()).status.head==='1:1');
-  assert.equal((await f.provider.read(f.id())).messages[0].id,'1:new');
+  await until(()=>f.provider.records.get(f.key()).status.head==='1:1');
+  assert.equal((await f.provider.read(f.key())).messages[0].id,'1:new');
   assert.equal(reads(),4);
 });
 
@@ -314,30 +412,30 @@ const liveEvent = live => ({ agentState: { live: [{ agentId: 'inspector', sessio
 const settlement = { turnId: 'turn', outcome: 'success', settledAtMs: '100' };
 
 test('Watch live activity changes status only; busy work ignores old settlement and idle settlement clears it', async t => {
-  const f = await fixture(t), status = () => f.provider.records.get(f.id()).status;
+  const f = await fixture(t), status = () => f.provider.records.get(f.key()).status;
   f.native.emit(f.native.row('reply', { kind: 'send-message', message: { type: 'text', content: 'hello' } }, 1));
   await until(() => status().head === '0:1');
-  const page = await f.provider.read(f.id()), requests = f.native.requests.length;
+  const page = await f.provider.read(f.key()), requests = f.native.requests.length;
   f.native.emit(liveEvent({ isRunning: true, activity: { kind: 'thinking' } }));
   await until(() => status().activity?.text === 'Grok 正在思考');
   assert.equal(status().activity.participant, status().participants.find(p => p.kind === 'agent').id);
   f.native.emit(liveEvent({ isRunning: true, activity: { kind: 'tool', tool: 'SetStatus', detail: '检查机器' }, lastTurnSettlement: settlement }));
   await until(() => status().activity?.text === '检查机器');
   assert.equal(status().head, '0:1');
-  assert.deepEqual(await f.provider.read(f.id()), page);
+  assert.deepEqual(await f.provider.read(f.key()), page);
   assert.equal(f.native.requests.length, requests);
   // Neither transcript flush nor the periodic Bot list refresh loses activity.
-  await f.provider.schedule(() => f.provider.flush(f.id()));
-  await f.provider.schedule(() => f.provider.sync());
+  await f.provider.flush(f.key());
+  await f.provider.sync();
   assert.equal(status().activity.text, '检查机器');
   f.native.emit(liveEvent({ hasRunningSubagents: true, lastTurnSettlement: settlement }));
   await until(() => !Object.hasOwn(status(), 'activity'));
   assert.equal(status().head, '0:1');
-  assert.deepEqual(await f.provider.read(f.id()), page);
+  assert.deepEqual(await f.provider.read(f.key()), page);
 });
 
 test('activity uses a readable first line bounded to 200 characters and ignores other sessions', async t => {
-  const f = await fixture(t), status = () => f.provider.records.get(f.id()).status;
+  const f = await fixture(t), status = () => f.provider.records.get(f.key()).status;
   f.native.emit(liveEvent({ activity: { kind: 'tool', tool: 'ReadFile\r\nignored' } }));
   await until(() => status().activity?.text === 'ReadFile');
   const text = '思😀'.repeat(150);
@@ -346,7 +444,7 @@ test('activity uses a readable first line bounded to 200 characters and ignores 
   assert.equal([...status().activity.text].length, 200);
   assert.doesNotMatch(status().activity.text, /[\r\n\u2028\u2029]/u);
   assert.equal(status().head, undefined);
-  assert.deepEqual((await f.provider.read(f.id())).messages, []);
+  assert.deepEqual((await f.provider.read(f.key())).messages, []);
   f.native.emit(liveEvent({ agentId: 'other', lastTurnSettlement: settlement }));
   f.native.emit(liveEvent({ sessionId: 'subagent', lastTurnSettlement: settlement }));
   // A following main-session update is a barrier for the ignored events.
@@ -357,7 +455,7 @@ test('activity uses a readable first line bounded to 200 characters and ignores 
 });
 
 test('rebuilding the transcript mirror also rebuilds live state', async t => {
-  const f = await fixture(t), status = () => f.provider.records.get(f.id()).status;
+  const f = await fixture(t), status = () => f.provider.records.get(f.key()).status;
   const realTimeout = f.provider.clock.setTimeout;
   f.provider.clock.setTimeout = (fn, ms) => realTimeout(fn, ms === 2000 ? 1 : ms);
   f.native.emit(liveEvent({ activity: { kind: 'tool', tool: 'Before reconnect' } }));
@@ -365,7 +463,7 @@ test('rebuilding the transcript mirror also rebuilds live state', async t => {
   f.native.drop();
   await until(() => f.native.connections.length === 2);
   assert.equal(status().activity, undefined);
-  assert.equal(f.provider.mirrors.get(f.id()).live, undefined);
+  assert.equal(f.provider.mirrors.get(f.key()).live, undefined);
   f.native.emit({ agentState: { ...liveEvent({ activity: { kind: 'tool', tool: 'After reconnect' } }).agentState, snapshot: true } });
   await until(() => status().activity?.text === 'After reconnect');
   f.native.generation = 1; f.native.entries = [];
@@ -394,7 +492,7 @@ test('session read, draft and post answer through the registered handlers and th
     globalThis.fetch = native.fetch;`);
   const resource = await promisify(execFile)(process.execPath, ['--import', preload, new URL('../../../plugins/grok-bot/scripts/resources.mjs', import.meta.url).pathname], { env: { ...process.env, CODA_PLUGIN_STATE: f.root } });
   const rows = readResources(resource.stdout, manifest.contributes.resources[0], []);
-  assert.equal(rows[0].identity, f.id());
+  assert.equal(rows[0].identity, f.key());
   assert.deepEqual(rows[0].actions, []);
   assert.deepEqual(manifest.coda, { channels: ['preview'] });
   assert.equal(manifest.contributes.views, undefined);
