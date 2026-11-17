@@ -6,8 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import { setTimeout } from 'node:timers/promises';
 import { activate, deactivate } from '../../../plugins/testbed/main.mjs';
-import { derivedId } from '../../../plugins/testbed/scripts/registry.mjs';
-import { recordsHost, held } from '../records.mjs';
+import { recordsHost, recordId, held } from '../records.mjs';
 
 const phone = { id: 'phone', name: 'Phone', udid: 'UDID', note: 'local runner required' };
 function fixture(t) {
@@ -44,7 +43,7 @@ test('declarations follow atomic replacements; invalid/missing registration pres
   const groups = () => held(records, 'coda/group@1');
   writeFileSync(file, JSON.stringify([phone]));
   await activated(coda, state, file);
-  assert.deepEqual(groups(), [{ owner: 'testbed', kind: 'coda/group@1', id: derivedId(phone.udid), status: {},
+  assert.deepEqual(groups(), [{ owner: 'testbed', kind: 'coda/group@1', id: recordId('testbed', 'coda/group@1', phone.udid), key: phone.udid, status: {},
     spec: { name: 'device:phone', plugin: 'testbed', unique: ['udid'], attributes: { name: phone.name, udid: phone.udid, note: phone.note, personal: 'false', platform: 'ios' } } }]);
   writeFileSync(join(state, 'next'), JSON.stringify([{ ...phone, name: 'Changed', personal: true }]));
   renameSync(join(state, 'next'), file);
@@ -62,26 +61,28 @@ test('declarations follow atomic replacements; invalid/missing registration pres
   await until(() => groups().length === 0);
 });
 
-test('the set replaces only this plugin\'s groups; an ID another plugin holds is refused and logged', async t => {
+test('the set replaces only this plugin\'s groups, those an earlier version left without a key among them; a refused set is logged', async t => {
   const state = fixture(t), file = join(state, 'devices.json'), errors = [];
   const original = console.error;
   console.error = message => errors.push(message);
   t.after(async () => { await deactivate(); console.error = original; });
   const { coda, records } = recordsHost('testbed');
-  // Another plugin's record under the ID this plugin derives for a device with the udid OTHER.
-  const other = { owner: 'other', kind: 'coda/group@1', id: derivedId('OTHER'), status: {}, spec: { name: 'device:other', plugin: 'other', attributes: {}, unique: [] } };
+  const other = { owner: 'other', kind: 'coda/group@1', id: recordId('other', 'coda/group@1', phone.udid), key: phone.udid, status: {}, spec: { name: 'device:other', plugin: 'other', attributes: {}, unique: [] } };
   const entity = { owner: 'coda', kind: 'coda/group@1', id: '03acc3f8-6a6c-4f65-a90e-48f3af5aa3e5', status: {}, spec: { name: 'entity:03acc3f8-6a6c-4f65-a90e-48f3af5aa3e5', plugin: 'android', attributes: {}, unique: [] } };
-  const old = { ...other, owner: 'testbed', id: '5e0b7c1d-2f4a-4b68-9d3e-a1c7f0e28b46', spec: { ...other.spec, name: 'device:gone', plugin: 'testbed' } };
+  // What 1.x left: its own record, under the ID it made, without a key.
+  const old = { owner: 'testbed', kind: 'coda/group@1', id: '5e0b7c1d-2f4a-4b68-9d3e-a1c7f0e28b46', status: {}, spec: { name: 'device:gone', plugin: 'testbed', attributes: {}, unique: [] } };
   for (const row of [other, entity, old]) records.set(`${row.kind}/${row.id}`, row);
   writeFileSync(file, JSON.stringify([phone]));
   await activated(coda, state, file);
-  assert.deepEqual(held(records, 'coda/group@1').map(row => row.id).sort(), [other.id, derivedId(phone.udid), entity.id].sort());
+  const mine = recordId('testbed', 'coda/group@1', phone.udid);
+  assert.deepEqual(held(records, 'coda/group@1').map(row => row.id).sort(), [other.id, mine, entity.id].sort());
   assert.deepEqual([records.get(`coda/group@1/${other.id}`), records.get(`coda/group@1/${entity.id}`)], [other, entity]);
-  writeFileSync(file, JSON.stringify([{ ...phone, udid: 'OTHER' }]));
+  // A key the host refuses (longer than 256): nothing changes, the refusal is logged.
+  writeFileSync(file, JSON.stringify([{ ...phone, udid: 'U'.repeat(257) }]));
   await until(() => errors.length > 0);
-  assert.equal(errors[0], `测试机归属声明失败：${other.id} is held by other`);
+  assert.match(errors[0], /^测试机归属声明失败：bad or repeated key/);
   assert.equal(records.get(`coda/group@1/${other.id}`), other);
-  assert.ok(records.has(`coda/group@1/${derivedId(phone.udid)}`));
+  assert.ok(records.has(`coda/group@1/${mine}`));
 });
 
 test('find resolves remote devices and propagates missing/conflict errors', t => {

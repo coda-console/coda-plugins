@@ -1,4 +1,4 @@
-import { recordId } from '../lib/provider.mjs';
+import { recordKey } from '../lib/provider.mjs';
 import { NativeAuth } from '../lib/auth.mjs';
 import { account } from '../lib/account.mjs';
 const auth = new NativeAuth({ root: process.env.CODA_PLUGIN_STATE });
@@ -8,7 +8,7 @@ try {
     const who = await account(auth);
     const { agents = [] } = await auth.client.request('ListGrokBotAgents', {});
     console.log(JSON.stringify({ resources: agents.map(bot => ({
-      name: bot.name || bot.agentId, identity: recordId(who.id, bot.agentId), values: [],
+      name: bot.name || bot.agentId, identity: recordKey(who.id, bot.agentId), values: [],
     })) }));
   }
 } catch (error) {

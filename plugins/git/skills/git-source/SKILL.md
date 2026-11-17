@@ -7,8 +7,8 @@ description: 使用 Coda git 插件登记本机 Git 源，并通过只读 smart 
 
 插件只认识本机路径与对象 ID。完整接口与示例见 [插件说明](../../README.md)。需要 Coda 的 provider 和流式服务接口；本机管理通过 Coda API 发起，不能从别的插件直接 `coda.put` 创建本插件的对象。
 
-- 在本机 `plugins/git/services/repository/sources/<名字>` POST `{ spec: { path } }`；path 是工作副本根目录或裸仓库的绝对路径。名字仅用字母、数字、`_`、`-`，至多 100 字符。回的 `id` 是插件给这个源生成的 UUID，记录 ID 就是它，名字在 `spec.name`。源固定解析后的仓库身份；路径改指另一仓库时须删除源后重新登记。
-- 观察本机 `git/source@1`（`coda.watch(kind, fn, { scope: 'local' })`，事件是 `{ type, id, entry }`，`id` 是 UUID），收到 `entry.status.ready` 才使用 `status.url`（`…/repos/<UUID>`）。失败读 `reason`；修改时 POST 完整 spec。
+- 在本机 `plugins/git/services/repository/sources/<名字>` POST `{ spec: { path } }`；path 是工作副本根目录或裸仓库的绝对路径。名字仅用字母、数字、`_`、`-`，至多 100 字符。回的 `id` 是宿主由名字派生的记录 ID（名字是记录的 key，也在 `spec.name`），同名再登记 ID 不变。源固定解析后的仓库身份；路径改指另一仓库时须删除源后重新登记。
+- 观察本机 `git/source@1`（`coda.watch(kind, fn, { scope: 'local' })`，事件是 `{ type, id, entry }`，`id` 是记录 ID），收到 `entry.status.ready` 才使用 `status.url`（`…/repos/<记录 ID>`）。失败读 `reason`；修改时 POST 完整 spec。
 - 用 protocol v2 经已有 Coda 鉴权代理 fetch 分支。只读，只暴露 `refs/heads/*`。空间 Provider 负责把服务入口映射到持有端，不向 git 插件传机器 ID 或空间设置。
 - 撤下源可 POST `…/sources/<名字>/delete`。不要自行改真实 index、reset/clean 工作区或删除别的 ref。
 

@@ -1,6 +1,6 @@
 import { watchFile, unwatchFile } from 'node:fs';
 import { join } from 'node:path';
-import { devices, derivedId } from './scripts/registry.mjs';
+import { devices } from './scripts/registry.mjs';
 
 let stopWatching;
 export async function activate(coda) {
@@ -9,7 +9,7 @@ export async function activate(coda) {
   const publish = async () => {
     try {
       await coda.replace('coda/group@1', devices(file, { missingIsEmpty: false }).map(device => ({
-        id: derivedId(device.udid),
+        key: device.udid,
         spec: { name: `device:${device.id}`, plugin: coda.plugin.id, unique: ['udid'],
           attributes: { name: device.name ?? device.id, udid: device.udid, note: device.note ?? '', personal: device.personal === true ? 'true' : 'false',
             platform: 'ios' } },

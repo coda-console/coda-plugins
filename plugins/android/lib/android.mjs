@@ -1,6 +1,5 @@
 import { execFile } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { NAMESPACES, parseList, changes, command, notDone } from './settings.mjs';
 
@@ -19,25 +18,6 @@ export async function nsenter(lines) {
     child.stdin.on('error', reject);
     child.stdin.end(`set -e\n${lines.join('\n')}\n`);
   });
-}
-
-// A UUID derived from a natural key, the same at every start: SHA-256 of this plugin's namespace and the key,
-// its first 16 bytes with the version set to 5 and the variant to 10xx.
-const NAMESPACE = '@coda-console/android:';
-export function derivedId(key) {
-  const b = createHash('sha256').update(NAMESPACE + key).digest().subarray(0, 16);
-  b[6] = (b[6] & 0x0f) | 0x50; b[8] = (b[8] & 0x3f) | 0x80;
-  const h = b.toString('hex');
-  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
-}
-
-export function entityId(state, generate = randomUUID) {
-  mkdirSync(state, { recursive: true });
-  const file = join(state, 'entity-id');
-  if (existsSync(file)) return readFileSync(file, 'utf8').trim();
-  const id = generate();
-  writeFileSync(file, id);
-  return id;
 }
 
 export const HOME_AND_SLEEP = [
@@ -83,26 +63,27 @@ export function device(state, run = nsenter) {
   };
 }
 
-// The record a declaration is: its ID, the rest as the spec with the plugin that holds it.
+// The record a declaration is: its key, the rest as the spec with the plugin that holds it.
 // No status: the host keeps the one it has (an entity lent out stays so), or gives a new one its first.
-export const record = (plugin, { id, ...spec }) => ({ id, spec: { ...spec, plugin } });
+export const record = (plugin, { key, ...spec }) => ({ key, spec: { ...spec, plugin } });
 
-export function links(id, { address, port, machines }) {
+// The links, without the entity: its ID is the host's, given when the entity is written.
+export function links({ address, port, machines }) {
   if (!machines.length) return [];
-  return [{ id: derivedId(`${id}adb`), entity: id, protocol: 'adb', endpoint: `${address}:${port}`, reach: { scope: 'machines', machines } }];
+  return [{ key: 'adb', protocol: 'adb', endpoint: `${address}:${port}`, reach: { scope: 'machines', machines } }];
 }
 
-export async function declarations(id, settings, run = nsenter) {
+export async function declarations(settings, run = nsenter) {
   const getprop = async key => (await run([`getprop ${key}`])).trim();
   const model = await getprop('ro.product.model');
-  const entities = [{ id, name: settings['android.name'] || model, category: 'android',
+  const entities = [{ key: 'device', name: settings['android.name'] || model, category: 'android',
     attributes: { model, android: await getprop('ro.build.version.release'), serial: await getprop('ro.serialno') }, capacity: 1 }];
   const machines = (settings['android.machines'] ?? []).map(row => row.id);
   let connections = [];
   if (machines.length) {
     const address = settings['android.address']?.trim() || (await run(["ip -4 -o addr show dev wlan0 | awk '{print $4}' | cut -d/ -f1"])).trim();
     if (!address) throw new Error('无法声明 adb 链路：android.address 为空，且 wlan0 没有 IPv4 地址');
-    connections = links(id, { machines, address, port: await getprop('persist.adb.tcp.port') });
+    connections = links({ machines, address, port: await getprop('persist.adb.tcp.port') });
   }
   return { entities, links: connections };
 }

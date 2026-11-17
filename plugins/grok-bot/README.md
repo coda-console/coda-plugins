@@ -14,7 +14,7 @@
 
 Provider 每 30 秒重新读取登录及 Bot 名单；每个 Bot 自动建立一条记录，无选择下拉或会话命令。容器是登录账号，账号本人为 `self: true, kind: person`，Bot 为 `kind: agent`。
 
-账号 ID 是 `GetMe.userId`（没有时用 `authId`）的 SHA-256；记录 ID 是由 `<账号摘要>:<agentId>` 派生的 UUID（`lib/provider.mjs` 的 `derivedId`：本插件命名空间加键的 SHA-256 取前 16 字节，版本位 5、变体位 10xx）。不含本机 ID、插件目录或随机数，重装不变。`transcript-index.json` 以记录 ID 为键（`head:<ID>`、`<ID>:<generation>:<entryId>`）；记录 ID 从 `grok-bot:…` 改成 UUID 后旧索引作废，不迁移，已暴露的条目重新按首次暴露处理。启动后第一次成功读到 Bot 名单时，用 `coda.replace` 把全集一次给出，宿主删掉本插件上次留下、现在已经没有的记录，不碰别的插件和 Coda 自己的会话；之后名单有变（新增、删除、换账号）再整份给一次，状态变化逐条 `coda.put`。还没登录或名单读不到时不写记录，上次留下的原样留在宿主里，直到第一次成功。
+账号 ID 是 `GetMe.userId`（没有时用 `authId`）的 SHA-256；插件给记录的 key 是 `<账号摘要>:<agentId>`，记录 ID 由宿主按后端、插件、种类和 key 派生，插件不生成。不含本机 ID、插件目录或随机数，重装不变。处理函数从 `ctx.record.key` 认出账号和 Bot；资源列表的 identity 也是这个 key。`transcript-index.json` 以 key 为键（`head:<key>`、`<key>:<generation>:<entryId>`）；旧版以记录 ID 为键的索引作废，不迁移，已暴露的条目重新按首次暴露处理。启动后第一次成功读到 Bot 名单时，用 `coda.replace` 把全集一次给出，宿主删掉本插件上次留下、现在已经没有的记录（旧版留下、不带 key 的也删），不碰别的插件和 Coda 自己的会话；之后名单有变（新增、删除、换账号）再整份给一次，状态变化逐条 `coda.put`；某次 `put` 失败后，下一次同步不论名单变没变都整份给一次。还没登录或名单读不到时不写记录，上次留下的原样留在宿主里，直到第一次成功。
 
 ## 读取与发送
 

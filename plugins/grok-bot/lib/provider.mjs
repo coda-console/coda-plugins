@@ -8,17 +8,9 @@ import { history, messages, decode, signature, position, conversation } from './
 export const SESSION = 'coda/session@1';
 const sameSent = (a, b) => JSON.stringify([...a]) === JSON.stringify([...b]);
 const headKey = id => `head:${id}`;
-// A UUID derived from a natural key, so a record keeps its ID across restarts and reinstalls: SHA-256 of this plugin's
-// namespace and the key, its first 16 bytes with the version set to 5 and the variant to 10xx.
-const NAMESPACE = '@coda-console/grok-bot:';
-export function derivedId(key) {
-  const b = createHash('sha256').update(NAMESPACE + key).digest().subarray(0, 16);
-  b[6] = (b[6] & 0x0f) | 0x50; b[8] = (b[8] & 0x3f) | 0x80;
-  const h = b.toString('hex');
-  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
-}
+// The record's key, the host deriving its ID from it; also the key of this plugin's tables and of the transcript index.
 // The account is a SHA-256 in hex, so the key cannot be read as another account and bot.
-export const recordId = (account, bot) => derivedId(`${account}:${bot}`);
+export const recordKey = (account, bot) => `${account}:${bot}`;
 export function messageId(callId, record) {
   const b = createHash('sha256').update(JSON.stringify([record, callId])).digest().subarray(0, 16);
   b[6] = (b[6] & 15) | 128; b[8] = (b[8] & 63) | 128;
@@ -29,10 +21,10 @@ export class Provider {
   constructor(coda, { auth, clock = { setTimeout, clearTimeout }, stableMs = 1000 } = {}) {
     Object.assign(this, { coda, clock, stableMs });
     this.auth = auth ?? new NativeAuth({ root: coda.plugin.state });
-    // The records this plugin holds, as it means them to be: `{ spec, status }` by ID. Nothing is read back from the host,
+    // The records this plugin holds, as it means them to be: `{ spec, status }` by key. Nothing is read back from the host,
     // where this machine's sessions of Coda itself and of other plugins are mixed in with these.
     // `sent` is what the host was last given for each (as JSON) and `given` whether the host's set is known to be `sent`:
-    // a write that fails is taken out of them, so it is made again, not skipped as the same.
+    // a write that fails is taken out of them, so it is made again, not skipped as the same. The other tables are by key too.
     this.records = new Map(); this.sent = new Map(); this.given = false; this.bots = new Map(); this.watches = new Map(); this.mirrors = new Map(); this.changes = new EventEmitter();
     this.controller = new AbortController();
     this.indexFile = join(coda.plugin.state, 'transcript-index.json');
@@ -40,7 +32,7 @@ export class Provider {
   }
   async start() {
     this.handlers = [
-      this.coda.handle(SESSION, 'read', (input, { record }) => this.read(record.id, input)),
+      this.coda.handle(SESSION, 'read', (input, { record }) => this.read(record.key, input)),
       this.coda.handle(SESSION, 'draft', () => ({})),
       this.coda.handle(SESSION, 'post', (input, ctx) => this.post(input, ctx)),
     ];
@@ -65,7 +57,7 @@ export class Provider {
       const { agents = [] } = await this.auth.client.request('ListGrokBotAgents', {});
       const next = new Map();
       for (const bot of agents) {
-        const id = recordId(who.id, bot.agentId);
+        const id = recordKey(who.id, bot.agentId);
         this.bots.set(id, { bot: bot.agentId, self: who.id });
         const spec = { title: bot.name || bot.agentId, container: who };
         const status = { participants: [{ id: who.id, name: who.title, self: true, kind: 'person' }, { id: bot.agentId, name: spec.title, kind: 'agent' }], state: 'active' };
@@ -86,7 +78,7 @@ export class Provider {
       const sent = new Map([...next].map(([id, record]) => [id, JSON.stringify(record)]));
       if (!this.given || !sameSent(this.sent, sent)) {
         this.sent = sent;
-        try { await this.coda.replace(SESSION, [...next].map(([id, record]) => ({ id, ...record }))); }
+        try { await this.coda.replace(SESSION, [...next].map(([key, record]) => ({ key, ...record }))); }
         catch (e) { this.given = false; throw e; }
         this.given = true;
       }
@@ -102,8 +94,13 @@ export class Provider {
     this.records.set(id, record);
     if (this.sent.get(id) === json) return;
     this.sent.set(id, json);
-    try { await this.coda.put({ kind: SESSION, id }, record); }
-    catch (e) { if (this.sent.get(id) === json) this.sent.delete(id); throw e; }
+    try { await this.coda.put({ kind: SESSION, key: id }, record); }
+    catch (e) {
+      // The host's set is no longer known: the next sync gives it whole, even when the list is the same as what was sent less
+      // this record, its Bot gone meanwhile.
+      if (this.sent.get(id) === json) this.sent.delete(id);
+      this.given = false; throw e;
+    }
   }
   activityStatus(id) {
     const activity = this.mirrors.get(id)?.activity;
@@ -230,12 +227,12 @@ export class Provider {
   async post(input, { id, record, signal, progress }) {
     const key = messageId(id, record.id), none = (message, code = 'invalid') => this.coda.error(code, message, { effects: 'none' });
     signal.throwIfAborted();
-    const target = this.bots.get(record.id);
+    const target = this.bots.get(record.key);
     if (!target) throw none('会话不可用');
     if (input.parts?.length) throw none('只支持文字', 'unsupported');
-    const h = this.mirrors.get(record.id);
+    const h = this.mirrors.get(record.key);
     if (!h) throw none('会话正在连接');
-    const all = this.visible(record.id);
+    const all = this.visible(record.key);
     const reply = input.replyTo && all.find(m => m.id === input.replyTo);
     if (input.replyTo && !reply) throw none('回复的消息不存在');
     const entry = reply && [...h.entries.values()].find(r => `${h.generation}:${r.entryId}` === (reply.about?.message ?? reply.id));
@@ -266,7 +263,7 @@ export class Provider {
       if (!answer.dispatched) throw unknown(new Error('Grok 未确认发送'));
     }
     // Confirm in the native transcript, never invent a successful message cursor.
-    const found = await this.echo(record.id, current => {
+    const found = await this.echo(record.key, current => {
       const row = [...current.entries.values()].find(r => {
         if (!conversation(r)) return false;
         const b = decode(r);
@@ -274,7 +271,7 @@ export class Provider {
       });
       if (!row || current.pending.has(row.entryId)) return;
       const base = `${current.generation}:${row.entryId}`;
-      return this.visible(record.id).find(m => widget ? m.replyTo === base && m.sender === target.self : m.id === base);
+      return this.visible(record.key).find(m => widget ? m.replyTo === base && m.sender === target.self : m.id === base);
     }).catch(e => { throw unknown(e); });
     return { message: { id: found.id, cursor: found.cursor } };
   }
