@@ -12,11 +12,14 @@
 //    the catalog, which one that differs marks to be collected again.
 // 4. When agy ends on its own (not as Coda's input closing or a signal to this process stops it) with a non-zero exit code, a
 //    signal or a prompt unanswered, the log and the prompts still waiting say how (exit.mjs).
+// 5. agy's notice that it retries a model request ("⚠ API error (attempt N): ...", an agent_message_chunk) is not passed on: Coda
+//    would keep it as the reply's text, while the turn goes on. The entry writes it to its own stderr instead (retry.mjs).
 import { spawn } from 'node:child_process';
 import { agyBinary } from '../scripts/agy.mjs';
 import { createCatalog } from './catalog.mjs';
 import { PREFIX, Probes, probeMark } from './probe.mjs';
 import { describeExit, endedError } from './exit.mjs';
+import { retryNotice } from './retry.mjs';
 
 const binary = agyBinary() ?? 'agy';
 const agy = spawn(binary, ['acp'], { stdio: ['pipe', 'pipe', 'pipe'] });
@@ -123,6 +126,11 @@ relay(agy.stdout, process.stdout, message => {
     return;
   }
   const update = params?.update;
+  const notice = retryNotice(message);
+  if (notice !== null) {
+    process.stderr.write(`agy 重试模型请求，提示不转给 Coda：${notice.trim()}\n`);
+    return false;
+  }
   if (method === 'session/update' && update?.sessionUpdate === 'current_mode_update') {
     if (!full.has(params.sessionId)) return;
     if (update.currentModeId === 'default') update.currentModeId = 'full'; else full.delete(params.sessionId);

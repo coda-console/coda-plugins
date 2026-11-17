@@ -171,3 +171,14 @@ test('the entry ends on SIGTERM', async t => {
   assert.equal((await p.exited).code, 0);
   assert.ok(Date.now() - started < 2000);
 });
+
+test('the retry notice of agy does not reach Coda, the answer around it does, and the entry says it on its stderr', async t => {
+  const { p, request, messages, sessionId } = await session(t);
+  const text = update => ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: update } });
+  const notice = '\n⚠ API error (attempt 1): request failed: stream idle timeout (5m0s): context deadline exceeded\n';
+  const updates = [text(notice), { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: notice } }, text(`答案\n${notice}`), text('后续正文')];
+  await request('fake/updates', { sessionId, updates });
+  const arrived = messages.filter(message => message.method === 'session/update').map(message => message.params.update);
+  assert.deepEqual(arrived.filter(update => update.sessionUpdate !== 'current_mode_update'), updates.slice(1));
+  assert.ok(p.stderr.includes(`agy 重试模型请求，提示不转给 Coda：${notice.trim()}`), p.stderr);
+});
