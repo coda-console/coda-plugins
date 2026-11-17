@@ -2,6 +2,8 @@
 
 ## 运行器与执行环境
 
+3.1.0：清理脚本改用 `coda self run-finished` 问本插件模块，模块用 `coda.self.handle` 登记，不再开本机端口、不再写状态文件。需要先带 H5（命令的绑定）的 Coda。只给预览渠道。
+
 3.0.0（接口破坏性变更）：记录的读写换成 Coda 的新接口（`coda.put`、`coda.watch`），不再用 `protocols.observe`、`put`、`setStatus`、`publish`，也不再自己串行写。执行器记录整份写（spec 与 status 一起），只在内容变了或 status 满 55 秒时写；status 里的 `observedRevision` 改为 spec 内容的摘要（执行器协议的 status 非空时必须带这个字段，只是 `required` 里没列、写在 `anyOf` 的第二支；Coda 里没有读它的地方，所以只求合乎协议）。只给预览渠道。
 
 2.4.0：删掉外派执行（Coda 已不再把步骤交给别台执行）：`execute` 的处理函数、源码获取与工作副本、独立 worker 与 hook，以及设置 `host.enabled`、`host.labels`；`run-held` 只在本机排队，不再收 `local`，也不再去空间里别的 Mac 跑。只给预览渠道。
@@ -62,7 +64,7 @@ host 在清单里声明实现 `coda/executor@1`，把自己这台机器的执行
 还把 UDID 和登记运行 ID 写进本实例插件状态的 `simulator-registrations/`，每条登记独立保存，清理不会覆盖同时新增的登记。
 持锁命令通过 `HOST_SIM_RUN_ID` 传递运行 ID；普通流程步骤读 `GITHUB_RUN_ID`。
 按设置 `host.cleanSchedule` 的周期清点（整个实例只跑一次，`coda:scope="machine"`），**不申请名额、不进入 host 队列**。
-清理脚本用 `coda call self run-finished` 问本插件模块（宿主按令牌认出是这个插件）；模块每次经公开 `coda.api("workflow-runs/<id>")` 读取运行终态，不缓存清理资格。
+清理脚本用 `coda self run-finished` 问本插件模块（宿主按令牌认出是这个插件）；模块每次经公开 `coda.api("workflow-runs/<id>")` 读取运行终态，不缓存清理资格。
 运行须为成功、失败或已取消才删除；运行与子运行是否收尾完成、何时发布终态，由 Coda 运行模块判断。插件不读取宿主数据库或复刻名额收尾逻辑。
 运行中、取消收尾中、查不到运行、宿主接口不可用的都跳过。旧版 `simulators` 纯 UDID 登记没有归属，保留并记录原因，待人工确认闲置后处理。
 删除直接交给 `simctl delete`，不强制关机；使用中或删不掉的跳过、记日志并保留登记，下次再试，已经不在的算删完。不为删除与其他进程使用的罕见交错加锁。

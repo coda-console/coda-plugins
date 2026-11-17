@@ -44,7 +44,7 @@ async function fixture(t) {
   };
   const coda = { plugin: { id: PLUGIN, state: root }, environment: async () => ({ PATH: process.env.PATH, CODA_PLUGIN_SETTINGS: JSON.stringify(settings) }),
     put, replace, api: async path => ({ state: path === 'workflow-runs/done' ? 'succeeded' : 'running' }),
-    handle: async (kind, operation, handler) => { operations.set(`${kind}/${operation}`, handler); return { dispose: () => operations.delete(`${kind}/${operation}`) }; },
+    self: { handle: async (name, handler) => { operations.set(`self/${name}`, handler); return { dispose: () => operations.delete(`self/${name}`) }; } },
     watch: async (kind, fn) => { assert.equal(kind, 'concurrency-groups'); group = fn; fn({ type: 'ADDED', id: 'host', object: { capacity: 2, occupied: 1, available: 1 } }); return { dispose() {} }; },
   };
   return { coda, objects, writes, operations, settings: value => { settings = value; }, group: event => group(event),

@@ -21,7 +21,7 @@ export class HostProvider {
       if (event.id === 'host') { this.group = event.type === 'DELETED' ? null : event.object; void this.refresh().catch(console.error); }
     }));
     await this.refresh();
-    this.runFinished = await this.coda.handle('self', 'run-finished', async ({ run } = {}) => ({ finished: await runFinished(this.coda, run) }));
+    this.runFinished = await this.coda.self.handle('run-finished', async ({ run } = {}) => ({ finished: await runFinished(this.coda, run) }));
     this.probes = this.interval(() => {
       void this.discover().then(discovered => { this.discovered = discovered; return this.refresh(); }).catch(console.error);
     }, 60_000); this.probes?.unref?.();

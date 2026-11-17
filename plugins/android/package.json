@@ -3,7 +3,7 @@
   "id": "android",
   "displayName": "安卓手机",
   "description": "由安卓手机自己保管本体，借出记录设置，归还复原并熄屏",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "coda": {
     "channels": [
       "preview"

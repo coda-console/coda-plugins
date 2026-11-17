@@ -1,4 +1,4 @@
-// Periodic cleanup without holding host slots. Coda supplies the run's final state through our module (`coda call self`).
+// Periodic cleanup without holding host slots. Coda supplies the run's final state through our module (`coda self`).
 import { execFile } from 'node:child_process';
 import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
@@ -6,8 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { registrations } from '../lib/simulators.mjs';
 const exec = promisify(execFile);
-// The module answers within 30 seconds (`coda call`'s default).
-const runFinished = async runId => JSON.parse((await exec('coda', ['call', 'self', 'run-finished', JSON.stringify({ run: runId })], { timeout: 35000 })).stdout).finished === true;
+// The module answers within 30 seconds (`coda self`'s default).
+const runFinished = async runId => JSON.parse((await exec('coda', ['self', 'run-finished', JSON.stringify({ run: runId })], { timeout: 35000 })).stdout).finished === true;
 
 // `set: null` is the user's default device set, where `simctl` works without --set.
 const stand = process.env.HOST_SIM_SIMCTL;

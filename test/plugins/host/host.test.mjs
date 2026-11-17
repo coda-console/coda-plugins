@@ -173,7 +173,7 @@ test('持锁执行 retains cancellation when child exit is observed before TERM 
   assert.deepEqual(sims.devices(), []);
 });
 
-// A `coda` on the PATH standing in for Coda's: it logs what it was asked and answers `call self run-finished` from the
+// A `coda` on the PATH standing in for Coda's: it logs what it was asked and answers `self run-finished` from the
 // run states given, as the provider would from the public workflow endpoint; a run it does not know fails.
 function hostStatus(t) {
   const state = temporary(t), tools = temporary(t), runs = join(tools, 'runs.json'), log = join(tools, 'coda.log');
@@ -181,8 +181,8 @@ function hostStatus(t) {
   writeFileSync(join(tools, 'coda'), `#!${process.execPath}
 const fs = require('node:fs'), args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
-if (args[0] !== 'call' || args[1] !== 'self' || args[2] !== 'run-finished') process.exit(9);
-const status = JSON.parse(fs.readFileSync(${JSON.stringify(runs)}, 'utf8'))[JSON.parse(args[3]).run];
+if (args[0] !== 'self' || args[1] !== 'run-finished') process.exit(9);
+const status = JSON.parse(fs.readFileSync(${JSON.stringify(runs)}, 'utf8'))[JSON.parse(args[2]).run];
 if (!status) { console.error('运行不存在或宿主暂不可用'); process.exit(1); }
 console.log(JSON.stringify({ finished: ['succeeded', 'failed', 'cancelled'].includes(status) }));
 `, { mode: 0o755 });
@@ -204,7 +204,7 @@ test('清点模拟器 deletes only finished owners; live, cancelling, unknown an
   const own = await clean({ CODA_ARBITER: '1' });
   assert.equal(own.code, 1, own.stderr);
   assert.match(own.stderr, /运行不存在或宿主暂不可用/);
-  assert.ok(asked().length && asked().every(args => args.length === 4 && args.slice(0, 3).join(' ') === 'call self run-finished' && typeof JSON.parse(args[3]).run === 'string'));
+  assert.ok(asked().length && asked().every(args => args.length === 3 && args.slice(0, 2).join(' ') === 'self run-finished' && typeof JSON.parse(args[2]).run === 'string'));
   assert.deepEqual(sims.devices(), ['LIVE', 'STOPPING', 'DRAIN', 'HELD', 'UNKNOWN', 'LEGACY', 'SHARED', 'OTHER']);
   assert.deepEqual(registrations(state).map(r => r.udid).sort(), ['DRAIN', 'HELD', 'LIVE', 'SHARED', 'SHARED', 'STOPPING', 'UNKNOWN']);
   assert.doesNotMatch(sims.log(), /shutdown|delete (LIVE|STOPPING|DRAIN|HELD|UNKNOWN|LEGACY|SHARED|OTHER)/);
