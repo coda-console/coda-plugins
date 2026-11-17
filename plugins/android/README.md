@@ -2,6 +2,8 @@
 
 0.2.0（接口破坏性变更）：本体与链路改用 Coda 的新接口 `coda.replace('coda/entity@1', …)`、`coda.replace('coda/link@1', …)`，不再用 `resources.declareEntities`、`declareLinks`；清单声明实现这两种。记录的 `spec` 带 `plugin`（本插件），不写 `status`（借出、归还的状态由宿主保管，重新声明时原样留着）。需要先带这套接口的 Coda（coda#2749）。只给预览渠道。
 
+升级注意：0.1.0 的本体 ID 是插件随机生成、存在 `entity-id` 里的 UUID，0.2.0 改为宿主按 key 派生，旧 UUID 作废，升级后本体一定是新 ID。部署后要做：把 testbed 设置 `testbed.entities` 里安卓设备的每一行改成新本体的记录 ID（从 Coda 的本体列表或 `coda-resources list` 读到）；没改前 use-testbed、resolve-testbed 对这台设备会报「本体 … 不存在」。
+
 版本 0.2.0。只装在 xiaomi（Mi 10 Pro）的 Debian chroot 后端，插件宿主须为 root，能用 `nsenter -t 1 -m -- sh` 执行 Android 命令。不依赖 host 插件，也不把手机登记为构建执行环境；无运行时依赖。
 
 启动时以 `android` 类别、容量 1 声明本体，保管方就是 xiaomi；属性包含型号、Android 版本、序列号。插件只给记录的 key：本体是 `device`，adb 链路是 `adb`；记录 ID 由宿主按后端、插件、种类和 key 派生，每次启动相同，插件不生成也不保存。先写本体，链路的 `spec.entity` 取宿主为本体给的 ID。勿在两个实例同时声明。
