@@ -21,6 +21,10 @@ export class GitProvider {
     await mkdir(this.coda.plugin.state, { recursive: true });
     try { this.identities = new Map(Object.entries(JSON.parse(await readFile(this.identitiesFile, 'utf8')))); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     this.subscriptions.push(await this.coda.watch(SOURCE, event => this.observe(event), { scope: 'local' }));
+    // Every record there is has been given by now (as `ADDED`): an identity of a source that is gone, deleted while this plugin
+    // was not running, would otherwise stay and make another repository under the same ID look like a change of this one.
+    const kept = new Map([...this.identities].filter(([id]) => this.sources.has(id)));
+    if (kept.size !== this.identities.size) this.saveIdentities(kept);
     this.service = await this.coda.services.register('repository', (req, res, caller) =>
       req.url.startsWith('/repos/') ? this.http(req, res, caller) : this.manage(req, res, caller));
   }
@@ -88,10 +92,13 @@ export class GitProvider {
       if (action === 'delete') { this.lives.set(id, Symbol(id)); await this.coda.delete({ kind: SOURCE, id }); }
       else {
         await repository(data.spec?.path ?? '', await this.coda.environment());
-        // The same spec writes nothing and echoes nothing: nothing would reconcile again, so the one in flight stays.
-        if (!sameSpec(this.sources.get(id)?.spec, data.spec)) this.lives.set(id, Symbol(id));
+        const same = sameSpec(this.sources.get(id)?.spec, data.spec);
+        if (!same) this.lives.set(id, Symbol(id));
         // A record is written whole: the status it has now is carried over, until the spec's new result replaces it.
         await this.coda.put({ kind: SOURCE, id }, { spec: data.spec, status: this.sources.get(id)?.status ?? {} });
+        // The same spec writes nothing and echoes nothing, so nothing would reconcile it again: a source that failed, its
+        // repository mended, is checked here. One already under way is not cancelled; `stale` keeps either from writing over a newer.
+        if (same) await this.reconcile(this.sources.get(id));
       }
       reply(res, 200, { kind: SOURCE, id });
     } catch (error) { reply(res, error.status ?? 400, { error: error.message }); }

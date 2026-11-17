@@ -7,6 +7,7 @@ import { account } from './account.mjs';
 import { history, messages, decode, signature, position, conversation } from './transcript.mjs';
 export const SESSION = 'coda/session@1';
 const sameSent = (a, b) => JSON.stringify([...a]) === JSON.stringify([...b]);
+const headKey = id => `head:${id}`;
 export const recordId = (account, bot) => `grok-bot:${account}:${encodeURIComponent(bot)}`;
 export function messageId(callId, record) {
   const b = createHash('sha256').update(JSON.stringify([record, callId])).digest().subarray(0, 16);
@@ -58,8 +59,9 @@ export class Provider {
         this.bots.set(id, { bot: bot.agentId, self: who.id });
         const spec = { title: bot.name || bot.agentId, container: who };
         const status = { participants: [{ id: who.id, name: who.title, self: true, kind: 'person' }, { id: bot.agentId, name: spec.title, kind: 'agent' }], state: 'active' };
-        const held = this.records.get(id);
-        next.set(id, { spec, status: held ? { ...status, ...this.activityStatus(id), ...(held.status.head ? { head: held.status.head } : {}) } : status });
+        // The head is this plugin's own: kept in the transcript index with what it has exposed, so a restart does not lose it.
+        const head = this.index[headKey(id)];
+        next.set(id, { spec, status: { ...status, ...this.activityStatus(id), ...(head ? { head } : {}) } });
         if (!this.watches.has(id)) {
           const controller = new AbortController();
           const running = this.watch(id, controller.signal);
@@ -157,8 +159,9 @@ export class Provider {
       for (const message of rendered) mirror.messages.set(message.id, message);
       mirror.pending.delete(row.entryId);
     }
-    writePrivate(this.coda.plugin.state, this.indexFile, this.index);
     const head = this.visible(id).at(-1)?.cursor;
+    if (head) this.index[headKey(id)] = head; else delete this.index[headKey(id)];
+    writePrivate(this.coda.plugin.state, this.indexFile, this.index);
     await this.write(id, { participants: this.records.get(id).status.participants, state: 'active', ...this.activityStatus(id), ...(head ? { head } : {}) });
     this.changes.emit(id);
   }

@@ -33,7 +33,7 @@ export class HostProvider {
     const spec = { enabled: true, capacity: { slots: settings['host.capacity'] ?? 1 }, labels: [], title: '本机运行器' };
     const facts = capacityStatus(spec, this.group, this.discovered), { observedAt, observedRevision: _, ...before } = this.written?.status ?? {};
     if (canonical(this.written?.spec) === canonical(spec) && canonical(before) === canonical(facts) && observedAt && Date.now() - Date.parse(observedAt) < 55_000) return;
-    // The executor schema still requires `observedRevision`: which spec these facts were observed for, named by its content.
+    // A status that is not empty must carry `observedRevision` (the executor protocol's `status.anyOf`, though `required` is empty); nothing in Coda reads it, so it is only the content of the spec, as a digest.
     const observedRevision = createHash('sha256').update(canonical(spec)).digest('hex');
     const written = { spec, status: { ...facts, observedAt: new Date().toISOString(), observedRevision } };
     // Taken as written only once the write is done; `stop` waits for the last one under way, to write over it.

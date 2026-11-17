@@ -133,6 +133,22 @@ test('a write the host did not take is made again, not skipped as the same', asy
   assert.equal(f.records.get(key).status.reason, undefined);
 });
 
+test('a restart keeps the head: the first replace carries it, and the session reads at once', async t => {
+  const f = await fixture(t), id = f.id();
+  f.native.emit(f.native.row('a', { kind: 'send-message', message: { type: 'text', content: 'first' } }, 1));
+  f.native.emit(f.native.row('b', { kind: 'message', role: 'user', content: 'second' }, 2));
+  await until(() => f.provider.records.get(id).status.head === '0:2');
+  await f.provider.stop();
+  const replaced = [], replace = f.coda.replace;
+  f.coda.replace = async (kind, items) => { replaced.push(...items); return replace(kind, items); };
+  const again = new Provider(f.coda, { auth: new NativeAuth({ root: f.root, fetcher: f.native.fetch }), stableMs: 10 });
+  await again.start(); t.after(() => again.stop());
+  assert.equal(replaced.find(item => item.id === id).status.head, '0:2');
+  assert.equal(f.records.get(`${SESSION}/${id}`).status.head, '0:2');
+  await until(() => again.mirrors.get(id)?.messages.size === 2);
+  assert.deepEqual((await again.read(id)).messages.map(m => m.text), ['first', 'second']);
+});
+
 test('the last Bot going away is dropped from the host on a later sync even when the first replace was refused', async t => {
   const f = await fixture(t), key = `${SESSION}/${f.id()}`, original = f.native.handler;
   f.native.handler = async (method, params) => method === 'ListGrokBotAgents' ? Response.json({ agents: [] }) : original(method, params);

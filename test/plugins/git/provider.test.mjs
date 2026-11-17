@@ -5,7 +5,8 @@ import { once } from 'node:events';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
-import { mkdir, symlink, unlink } from 'node:fs/promises';
+import { mkdir, mkdtemp, rename, rm, symlink, unlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { Readable } from 'node:stream';
 import { fixture, command, env, host } from './helpers.mjs';
 import { GitProvider } from '../../../plugins/git/lib/provider.mjs';
@@ -173,5 +174,39 @@ test('首次登记的 reconcile 还在等时再写相同 spec，不作废它，�
   release(); await h.flush();
   assert.equal(get(h, 'source').status.ready, true);
   assert.ok(await provider.lookup('source'));
+  assert.deepEqual(h.failures, []);
+});
+
+test('启动时仓库不可用的源，修好后以相同 spec 再登记即重新核对为就绪', async t => {
+  const dir = await fixture(t), state = await mkdtemp(join(tmpdir(), 'coda-git-state-')), h = host(state);
+  t.after(() => rm(state, { recursive: true, force: true }));
+  const first = new GitProvider(h.coda); await first.start();
+  await put(h, 'source', { path: dir }); await h.flush();
+  assert.equal(get(h, 'source').status.ready, true);
+  await first.stop();
+  await rename(join(dir, '.git'), join(dir, '.git-away'));
+  const provider = new GitProvider(h.coda); t.after(() => provider.stop()); await provider.start(); await h.flush();
+  assert.equal(get(h, 'source').status.ready, false);
+  assert.equal(await provider.lookup('source'), null);
+  await rename(join(dir, '.git-away'), join(dir, '.git'));
+  const req = Readable.from([Buffer.from(JSON.stringify({ spec: { path: dir } }))]); req.url = '/sources/source'; req.method = 'POST';
+  let code; await provider.manage(req, { writeHead(status) { code = status; }, end() {} }, { local: true });
+  await h.flush();
+  assert.equal(code, 200);
+  assert.equal(get(h, 'source').status.ready, true);
+  assert.ok(await provider.lookup('source'));
+  assert.deepEqual(h.failures, []);
+});
+
+test('启动时按现有的源裁剪身份表：没有记录的身份被清掉，同 ID 可登记另一仓库', async t => {
+  const a = await fixture(t), b = await fixture(t), state = await mkdtemp(join(tmpdir(), 'coda-git-state-')), h = host(state);
+  t.after(() => rm(state, { recursive: true, force: true }));
+  const file = join(state, 'sources.json'), identity = await repository(a, env);
+  await writeFile(file, JSON.stringify({ gone: { path: identity.path, gitDir: identity.gitDir, commonDir: identity.commonDir } }));
+  const provider = new GitProvider(h.coda); t.after(() => provider.stop()); await provider.start();
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), {});
+  await put(h, 'gone', { path: b }); await h.flush();
+  assert.equal(get(h, 'gone').status.ready, true);
+  assert.equal((await provider.lookup('gone')).path, (await repository(b, env)).path);
   assert.deepEqual(h.failures, []);
 });

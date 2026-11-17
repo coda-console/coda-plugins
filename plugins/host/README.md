@@ -2,7 +2,7 @@
 
 ## 运行器与执行环境
 
-3.0.0（接口破坏性变更）：记录的读写换成 Coda 的新接口（`coda.put`、`coda.watch`），不再用 `protocols.observe`、`put`、`setStatus`、`publish`，也不再自己串行写。执行器记录整份写（spec 与 status 一起），只在内容变了或 status 满 55 秒时写；status 里的 `observedRevision`（执行器协议的 status 仍要求这个字段）改为 spec 内容的摘要。只给预览渠道。
+3.0.0（接口破坏性变更）：记录的读写换成 Coda 的新接口（`coda.put`、`coda.watch`），不再用 `protocols.observe`、`put`、`setStatus`、`publish`，也不再自己串行写。执行器记录整份写（spec 与 status 一起），只在内容变了或 status 满 55 秒时写；status 里的 `observedRevision` 改为 spec 内容的摘要（执行器协议的 status 非空时必须带这个字段，只是 `required` 里没列、写在 `anyOf` 的第二支；Coda 里没有读它的地方，所以只求合乎协议）。只给预览渠道。
 
 2.4.0：删掉外派执行（Coda 已不再把步骤交给别台执行）：`execute` 的处理函数、源码获取与工作副本、独立 worker 与 hook，以及设置 `host.enabled`、`host.labels`；`run-held` 只在本机排队，不再收 `local`，也不再去空间里别的 Mac 跑。只给预览渠道。
 
