@@ -257,7 +257,7 @@ test('删除时 replace 被拒：报错，文件和内存里源还在；重试�
   assert.equal(await provider.lookup(id), null);
 });
 
-test('登记时 put 被拒：报错，宿主记录没有 status；再登记另一个源时补写', async t => {
+test('登记时 put 被拒：报错，宿主记录没有 status；重试同一个登记后补上', async t => {
   const dir = await fixture(t), h = host(join(dir, '.git', 'coda-state'));
   const provider = new GitProvider(h.coda); t.after(() => provider.stop()); await provider.start();
   const put = h.coda.put;
@@ -265,23 +265,21 @@ test('登记时 put 被拒：报错，宿主记录没有 status；再登记另�
   const refused = await request(provider, '/sources/first', { spec: { path: dir } }), first = h.id('first');
   assert.equal(refused.code, 400);
   assert.deepEqual(get(h, first).status, {});
-  const second = await register(provider, 'second', { path: dir });
-  assert.equal(get(h, first).status.ready, true); assert.equal(get(h, second).status.ready, true);
+  assert.equal(await register(provider, 'first', { path: dir }), first);
+  assert.equal(get(h, first).status.ready, true);
   assert.ok(await provider.lookup(first));
 });
 
-test('已就绪的源改路径时 replace 被拒：文件和内存不变，之后成功的发布使宿主 status 与 lookup 一致', async t => {
+test('已就绪的源改路径时 replace 被拒：文件、内存不变，宿主上仍是旧 spec 和旧 status', async t => {
   const { dir, h, provider, id } = await setup(t);
   const other = await fixture(t), file = join(dir, '.git', 'coda-state', 'sources.json'), before = readFileSync(file, 'utf8');
-  const replace = h.coda.replace;
+  const status = get(h, id).status, replace = h.coda.replace;
   h.coda.replace = async () => { h.coda.replace = replace; throw new Error('宿主拒绝写入'); };
   assert.equal((await request(provider, '/sources/source', { spec: { path: other } })).code, 400);
   assert.equal(readFileSync(file, 'utf8'), before); assert.equal(provider.sources.get('source').spec.path, dir);
-  await register(provider, 'second', { path: dir });
-  const expected = await repository(dir, env);
   assert.deepEqual(get(h, id).spec, { name: 'source', path: dir });
-  assert.equal(get(h, id).status.ready, true);
-  assert.equal((await provider.lookup(id)).path, expected.path);
+  assert.equal(get(h, id).status.ready, true); assert.equal(get(h, id).status.url, status.url);
+  assert.equal((await provider.lookup(id)).path, (await repository(dir, env)).path);
 });
 
 test('start 完就能取上次留下的源：首次核对都做完才开服务', async t => {

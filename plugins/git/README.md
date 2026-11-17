@@ -38,7 +38,7 @@ const subscription = await coda.watch('git/source@1', event => {
 }, { scope: 'local' });
 ```
 
-创建成功回的是 `{ kind, id }`，`id` 是宿主给的记录 ID，此时已核对过一次，等 status.ready 再 fetch。GET `…/sources/<名字>` 读 `{ id, key, spec, status }`（`key` 即名字）。修改用同一路径 POST `{ spec }`，spec 只取 `path`；每次登记都重新核对，状态失败后先修正原因再登记同一路径即可。
+创建成功回的是 `{ kind, id }`，`id` 是宿主给的记录 ID，此时已核对过一次，等 status.ready 再 fetch。GET `…/sources/<名字>` 读 `{ id, key, spec, status }`（`key` 即名字）。修改用同一路径 POST `{ spec }`，spec 只取 `path`；每次登记都重新核对，状态失败后先修正原因再登记同一路径即可。登记只核对这一个源，别的源不顺带重核。核对出的 status 写进宿主时被拒（`put` 失败），登记报错；首次登记的记录这时还没有 status，更新已有的源时宿主上留着旧的 status；重试同一个登记，或插件重启（启动时全部源重新核对）后补上。
 
 POST `…/sources/<名字>/delete` 撤下源。源在空间里都看得到（记录不再有「只在本机」一说）；spec 里是本机路径，读取仍只经本机的鉴权入口。跨机引用与入口由空间 Provider 映射，调用方不往本插件传机器参数。
 

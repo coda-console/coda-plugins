@@ -43,12 +43,8 @@ export class GitProvider {
     const entries = await this.coda.replace(SOURCE, [...this.sources].map(([key, { spec }]) => ({ key, spec })));
     for (const { key, id } of entries) this.sources.get(key).id = id;
   }
-  // After the host has been given the sources, they are checked: the one registered, every time (the same spec included: a
-  // source that failed, its repository mended, is ready again), and those left without a status, by a refused `put` or a new spec.
-  async publish(name) {
-    await Promise.all([...this.sources].filter(([key, { status }]) => key === name || !status).map(([key]) => this.reconcile(key)));
-  }
-  // The status is the source's only once the host has it: a refused `put` leaves none, and the next `publish` checks it again.
+  // The status is the source's only once the host has it. A refused `put` throws: a first registration's record has no status
+  // yet, an updated source keeps the old one on the host, until the registration is retried or `start()` checks every source again.
   async reconcile(name) {
     const source = this.sources.get(name);
     let status;
@@ -104,17 +100,18 @@ export class GitProvider {
       next.delete(name);
     } else {
       await repository(data.spec?.path ?? '', await this.coda.environment());
-      // The new spec is not checked yet: no status, so the next `publish` that succeeds checks it.
+      // The new spec is not checked yet: no status until `reconcile` has put it.
       next.set(name, { ...source, spec: { path: data.spec.path, name }, status: undefined });
     }
     this.save(next); this.sources = next;
     try { await this.replace(); } catch (error) { this.save(before); this.sources = before; throw error; }
     if (action === 'delete') {
       this.repositories.delete(source.id);
-      await this.publish();
       return source.id;
     }
-    await this.publish(name);
+    // The registration alone is checked, every time (the same spec included: a source that failed, its repository mended, is
+    // ready again). No other source is: each one's own request or `start()` does that.
+    await this.reconcile(name);
     return this.sources.get(name).id;
   }
   async stop() {
