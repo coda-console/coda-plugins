@@ -69,7 +69,7 @@ test('找测试机 gives the registered device\'s name, UDID and note; one not r
   assert.equal(personal.code, 0, personal.stderr);
   assert.equal(personal.outputs, found.outputs.replace('personal=false', 'personal=true'));
   const tools = temporary(t);
-  writeFileSync(join(tools, 'coda-resources'), '#!/bin/sh\n[ "$1" = group-owner ] || exit 9\nprintf \'null\\n\'\n', { mode: 0o755 });
+  writeFileSync(join(tools, 'coda'), '#!/bin/sh\n[ "$1" = resources ] && [ "$2" = group-owner ] || exit 9\nprintf \'null\\n\'\n', { mode: 0o755 });
   const queryPath = `${tools}:${process.env.PATH}`;
   const missing = await step(t, 'device', { CODA_PLUGIN_STATE: state, DEVICE: 'ipad-testbed', PATH: queryPath });
   assert.equal(missing.code, 1); assert.match(missing.stderr, /没有这台测试机 ipad-testbed.*本地可用：iphone-testbed/);
@@ -123,22 +123,22 @@ const hostSim = (args, extra) => run(`${hostCommand} ${args}`, env({ ...extra, C
 
 test('a session\'s host-sim for a device hands the command to run-on-device with what to run, where and with what', async t => {
   const state = registered(t, [phone]);
-  const tools = temporary(t), log = join(tools, 'coda-run.log');
-  // coda-run, standing in for Coda's: what it was asked, and the command the spec says, as run-on-device would read it.
-  writeFileSync(join(tools, 'coda-run'), `#!/bin/sh\nprintf '%s\\n' "$@" > "${log}"\ncp "\${2#spec=}" "${tools}/spec.json"\nexit "\${STATUS:-6}"\n`, { mode: 0o755 });
+  const tools = temporary(t), log = join(tools, 'coda.log');
+  // coda, standing in for Coda's: what it was asked, and the command the spec says, as run-on-device would read it.
+  writeFileSync(join(tools, 'coda'), `#!/bin/sh\nprintf '%s\\n' "$@" > "${log}"\ncp "\${3#spec=}" "${tools}/spec.json"\nexit "\${STATUS:-6}"\n`, { mode: 0o755 });
   const temp = join(tools, 'tmp');
   mkdirSync(temp);
   const asked = await hostSim(`run --kind ${phone.id} -- xcrun devicectl list`, { CODA_PLUGIN_STATE: state, CODA_THREAD_ID: 'thread', HOST_SIM_DEVICES: 'stale', TMPDIR: temp, PATH: `${tools}:${process.env.PATH}` });
-  // What coda-run says is what host-sim says.
+  // What coda run says is what host-sim says.
   assert.equal(asked.code, 6, asked.stderr);
-  const [name, spec, device, label] = readFileSync(log, 'utf8').trim().split('\n');
-  assert.deepEqual([name, device, label], ['run-on-device', `device=${phone.id}`, 'label=xcrun devicectl list']);
+  const [command, name, spec, device, label] = readFileSync(log, 'utf8').trim().split('\n');
+  assert.deepEqual([command, name, device, label], ['run', 'run-on-device', `device=${phone.id}`, 'label=xcrun devicectl list']);
   assert.match(spec, new RegExp(`^spec=${join(temp, 'coda-host-sim')}/`));
   const handed = JSON.parse(readFileSync(join(tools, 'spec.json'), 'utf8'));
   assert.deepEqual([handed.argv, handed.kind, handed.env.HOST_SIM_DEVICES, handed.env.CODA_PLUGIN_PATH], [['xcrun', 'devicectl', 'list'], phone.id, undefined, undefined]);
   assert.equal(handed.env.CODA_THREAD_ID, 'thread');
   // The spec, the session's environment in it, goes once the run is over or never started (the device not lent: 1);
-  // coda-run letting go (75) leaves the run going on, to read it later.
+  // coda run letting go (75) leaves the run going on, to read it later.
   const left = async status => {
     const ended = await hostSim(`run --kind ${phone.id} -- true`, { CODA_PLUGIN_STATE: state, CODA_THREAD_ID: 'thread', STATUS: String(status), TMPDIR: temp, PATH: `${tools}:${process.env.PATH}` });
     assert.equal(ended.code, status);

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { capacityStatus, probe } from './capabilities.mjs';
-import { serveSimulatorStatus } from './simulator-status.mjs';
+import { runFinished } from './simulator-status.mjs';
 
 export const EXECUTOR = 'coda/executor@1';
 // The executor record's key: the host derives its ID from it.
@@ -21,7 +21,7 @@ export class HostProvider {
       if (event.id === 'host') { this.group = event.type === 'DELETED' ? null : event.object; void this.refresh().catch(console.error); }
     }));
     await this.refresh();
-    this.simulatorStatus = await serveSimulatorStatus(this.coda);
+    this.runFinished = await this.coda.self.handle('run-finished', async ({ run } = {}) => ({ finished: await runFinished(this.coda, run) }));
     this.probes = this.interval(() => {
       void this.discover().then(discovered => { this.discovered = discovered; return this.refresh(); }).catch(console.error);
     }, 60_000); this.probes?.unref?.();
@@ -50,7 +50,7 @@ export class HostProvider {
   }
   async stop() {
     this.closed = true; clearInterval(this.probes);
-    await this.simulatorStatus?.dispose();
+    await this.runFinished?.dispose();
     for (const subscription of this.subscriptions) await subscription.dispose();
     await this.writing?.catch(() => {});
     if (this.last) await this.coda.put({ kind: EXECUTOR, key: KEY },

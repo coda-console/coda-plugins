@@ -8,7 +8,7 @@ description: 测试机插件怎么用：会话或流程里用 use-testbed 排到
 测试机（`iphone-testbed`、`ipad-testbed` 这类设备，以及安卓设备）需要会话操作时经能力 `use-testbed` 使用：它排进解析后的并发组（iOS 为 `device:<设备名>`，安卓为 `entity:<UUID>`），
 按需装 App，把任务交给发起的会话；答复、出错、拒绝或运行被取消后，先等会话借设备还在跑的命令停下，常驻 iOS 测试机再切黑屏、交出设备；个人 iOS 设备直接交出，不切黑屏，也不出切黑屏失败卡片。
 
-iOS 设备登记每项可加 `"personal": true` 标记维护者的个人设备；缺省为常驻测试机。该字段随 `name`、`udid`、`note` 发布到空间，其他 Mac 经 `coda-resources group-owner` 也能读到。只有常驻 iOS 测试机需要安装黑屏 App。
+iOS 设备登记每项可加 `"personal": true` 标记维护者的个人设备；缺省为常驻测试机。该字段随 `name`、`udid`、`note` 发布到空间，其他 Mac 经 `coda resources group-owner` 也能读到。只有常驻 iOS 测试机需要安装黑屏 App。
 常驻测试机给 Agent 自助使用；个人设备在维护者手里，排到后先出卡片问维护者借不借。选「现在不行」时这次调用以拒绝结束（理由在备注里），别反复重试，改用常驻测试机或按备注约的时间再借。
 
 iOS 登记在哪个实例就归哪个实例，`devices.json` 是 iOS 归属的唯一事实来源；安卓别名从空间共享设置 `testbed.entities` 读取，每行填名字（name）和保管方已登记的本体 UUID（entity）。空间里同一设备只能登记一次，同名或相同 UDID 的重复登记会使占用失败并报冲突。任何实例的会话都能用，在归属实例排队。

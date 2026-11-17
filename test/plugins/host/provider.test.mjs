@@ -15,7 +15,7 @@ const { EXECUTOR_PROTOCOL } = await import('@coda-console/protocol/protocol');
 const PLUGIN = 'host', ID = recordId(PLUGIN, EXECUTOR, 'host'), RECORD = `${EXECUTOR}/${ID}`;
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'host-provider-')); t.after(() => rm(root, { recursive: true, force: true }));
-  const objects = new Map(), writes = [];
+  const objects = new Map(), writes = [], operations = new Map();
   let version = 0, settings = { 'host.capacity': 2 }, group;
   const types = new ProtocolTypes();
   for (const definition of [EXECUTOR_PROTOCOL]) types.register({ ...definition, kind: definition.name, participants: () => [] });
@@ -43,10 +43,11 @@ async function fixture(t) {
     return items.map(({ key, ...value }) => write(kind, key, value));
   };
   const coda = { plugin: { id: PLUGIN, state: root }, environment: async () => ({ PATH: process.env.PATH, CODA_PLUGIN_SETTINGS: JSON.stringify(settings) }),
-    put, replace,
+    put, replace, api: async path => ({ state: path === 'workflow-runs/done' ? 'succeeded' : 'running' }),
+    self: { handle: async (name, handler) => { operations.set(`self/${name}`, handler); return { dispose: () => operations.delete(`self/${name}`) }; } },
     watch: async (kind, fn) => { assert.equal(kind, 'concurrency-groups'); group = fn; fn({ type: 'ADDED', id: 'host', object: { capacity: 2, occupied: 1, available: 1 } }); return { dispose() {} }; },
   };
-  return { coda, objects, writes, settings: value => { settings = value; }, group: event => group(event),
+  return { coda, objects, writes, operations, settings: value => { settings = value; }, group: event => group(event),
     flush: () => new Promise(resolve => setImmediate(resolve)) };
 }
 const hostOf = f => new HostProvider(f.coda, { interval: () => null,
@@ -142,11 +143,15 @@ test('a restarted provider writes over the executor record its previous run left
   await host.stop();
 });
 
-test('the provider writes the one executor record and handles no execute and no run', async t => {
+test('the provider writes the one executor record, handles no execute and no run, and answers its own run-finished', async t => {
   const f = await fixture(t), host = hostOf(f);
   await host.start(); await f.flush();
   assert.deepEqual([...f.objects.keys()], [RECORD]);
+  assert.deepEqual([...f.operations.keys()], ['self/run-finished']);
+  const finished = f.operations.get('self/run-finished');
+  assert.deepEqual([await finished({ run: 'done' }), await finished({ run: 'live' }), await finished()], [{ finished: true }, { finished: false }, { finished: false }]);
   await host.stop();
+  assert.deepEqual([...f.operations.keys()], []);
 });
 
 test('the manifest implements only the executor record, with neither the dropped settings nor an execute handler', () => {

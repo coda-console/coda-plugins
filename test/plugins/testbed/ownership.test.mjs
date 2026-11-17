@@ -86,7 +86,7 @@ test('the set replaces only this plugin\'s groups; a refused set is logged', asy
 test('find resolves remote devices and propagates missing/conflict errors', t => {
   const state = fixture(t), output = join(state, 'output');
   writeFileSync(join(state, 'devices.json'), '[]');
-  writeFileSync(join(state, 'coda-resources'), `#!${process.execPath}\nif(process.argv[2] !== 'group-owner' || process.argv[3] !== 'device:phone') process.exit(9);\nif(process.env.CONFLICT) {console.error('conflict owner-a owner-b'); process.exit(1);}\nconsole.log(process.env.OWNER);\n`, { mode: 0o755 });
+  writeFileSync(join(state, 'coda'), `#!${process.execPath}\nif(process.argv[2] !== 'resources' || process.argv[3] !== 'group-owner' || process.argv[4] !== 'device:phone') process.exit(9);\nif(process.env.CONFLICT) {console.error('conflict owner-a owner-b'); process.exit(1);}\nconsole.log(process.env.OWNER);\n`, { mode: 0o755 });
   const env = { ...process.env, CODA_PLUGIN_STATE: state, PATH: `${state}:${process.env.PATH}`, DEVICE: phone.id,
     GITHUB_OUTPUT: output, OWNER: JSON.stringify({ attributes: phone }), CODA_GROUPS: 'device:phone' };
   const run = (script, args = [], extra = {}) => spawnSync(process.execPath, [resolve('plugins/testbed/scripts', `${script}.mjs`), ...args], { env: { ...env, ...extra }, encoding: 'utf8', cwd: process.cwd() });

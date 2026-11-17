@@ -2,7 +2,7 @@
 import { execFileSync } from 'node:child_process';
 import { devices } from './registry.mjs';
 
-const query = (...args) => JSON.parse(execFileSync('coda-resources', args, { encoding: 'utf8' }));
+const query = (...args) => JSON.parse(execFileSync('coda', ['resources', ...args], { encoding: 'utf8' }));
 export const aliases = () => JSON.parse(process.env.CODA_PLUGIN_SETTINGS || '{}')['testbed.entities'] ?? [];
 export function selectAdbLink(links) {
   return links.find(link => link.protocol === 'adb');
