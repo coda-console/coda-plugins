@@ -26,7 +26,10 @@ const failed = report => rules(report, 'fail');
 function assertPasses(report, expected) {
   assert.deepEqual(report.failures, [], 'no failures');
   const passed = rules(report, 'pass');
-  for (const rule of expected) assert.ok(passed.includes(rule), `${rule} passed: ${passed.join(', ')}`);
+  for (const rule of expected) {
+    const item = report.items.find(entry => entry.rule === rule);
+    assert.ok(passed.includes(rule), `${rule} passed: ${passed.join(', ')}; ${item ? `${item.status}: ${item.message}` : '没有这一项'}`);
+  }
 }
 // A plugin in a directory of its own outside Git: `agent` is merged into a declared agent that runs the liar in `mode`.
 function plugin({ mode = 'honest', agent = {}, manifest = {}, files = {}, extension } = {}) {

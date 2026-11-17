@@ -3,13 +3,16 @@
 把 [Google Antigravity](https://antigravity.google/cli) 的 Agent 接进 Coda。清单经一个薄转发入口（`agent/entry.mjs`）启动运行机上的 `agy acp`（Antigravity CLI 的 ACP 服务），
 先找 `~/.local/bin/agy`，没有再用 PATH。每个会话一个进程，不登记等待项。
 
-入口改三处，其余消息原样双向转发。第一处：把 `initialize` 答复里的 `additionalDirectories` 能力去掉，Coda 就不再给它传附加目录；
+入口改四处，其余消息原样双向转发。第一处：把 `initialize` 答复里的 `additionalDirectories` 能力去掉，Coda 就不再给它传附加目录；
 `session/new`、`session/load`、`session/resume` 里若仍带 `additionalDirectories` 也删掉。原因：agy 1.5.9 收到附加目录后，
 没给 Cwd 的命令默认跑在**字典序最前的附加根**，而不是会话的工作副本（实测规律，不是上游的保证；数组顺序、`session/load` 都不改变它）；
 不传附加目录时命令就在工作副本里跑。
 
 第二处是虚拟模式 `full`（「全部放行」），见下面「全部放行」一节。第三处是配置探测：入口在 `initialize` 声明 `_meta.coda.probe`，
 带探测标记的 `session/new` 由入口用本机的目录缓存应答，不转给 agy，见「已知限制」的「配置探测」。
+第四处：agy 内部重试模型请求时会发一条 `agent_message_chunk`，整段文本形如 `⚠ API error (attempt 1): request failed: stream idle timeout (5m0s): context deadline exceeded`，
+Coda 会把它存成回复正文，像答到一半出错，其实这一轮还在跑。入口不转发这一种（整段去掉首尾空白后恰为单行此格式），原文写到插件自己的 stderr；
+多行或夹在正文里的同样字样照常转发。最终失败怎样结束这一轮未查到实例，入口不改它（不改报 `session/prompt` 错误）。
 
 需要带会话指令兜底的 Coda（2026-11-13 部署版，coda#2500）或更新版本；旧版 Coda 不会给 Antigravity 送入会话指令。
 
