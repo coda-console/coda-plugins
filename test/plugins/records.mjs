@@ -26,7 +26,8 @@ export function recordsHost(plugin, records = new Map()) {
     const type = types.get(kind), ids = new Set();
     for (const { id, spec, status, labels, ...rest } of items) {
       if (Object.keys(rest).length) throw Object.assign(new Error(`unknown keys ${Object.keys(rest)}`), { code: 'invalid_input' });
-      assert(typeof id === 'string' && id && !ids.has(id), `bad or repeated id ${id}`); ids.add(id);
+      // The host takes only a lowercase standard UUID as a record's ID.
+      assert(UUID.test(id) && !ids.has(id), `bad or repeated id ${id}`); ids.add(id);
       validate(type.spec, spec, 'spec');
       if (status !== undefined) validate(type.status, status, 'status');
       const held = records.get(`${kind}/${id}`);
@@ -44,5 +45,6 @@ export function recordsHost(plugin, records = new Map()) {
   };
   return { records, coda: { plugin: { id: plugin }, replace } };
 }
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const assert = (ok, message) => { if (!ok) throw new Error(message); };
 export const held = (records, kind) => [...records.values()].filter(row => row.kind === kind);

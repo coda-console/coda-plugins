@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { entityId, device, declarations, links, record, CLEAN_UP, HOME_AND_SLEEP } from '../../../plugins/android/lib/android.mjs';
+import { entityId, derivedId, device, declarations, links, record, CLEAN_UP, HOME_AND_SLEEP } from '../../../plugins/android/lib/android.mjs';
 import { declare } from '../../../plugins/android/main.mjs';
 import { recordsHost, held } from '../records.mjs';
 import { NAMESPACES, changes, command, notDone, parseList } from '../../../plugins/android/lib/settings.mjs';
@@ -102,12 +102,18 @@ test('无变化不写设置、不多核对；无快照只回桌面和熄屏', as
   assert.equal(existsSync(file), false);
 });
 
-test('链路使用机器 ID 名单；空名单不声明', () => {
+// The entity's ID, as `entityId` made and kept it.
+const ENTITY = 'a50fa7ca-b420-40bd-bbef-39ce25bfd3aa';
+
+test('链路 ID 是由本体 UUID 加 adb 派生的 UUID，每次相同；链路使用机器 ID 名单；空名单不声明', () => {
   const machine = 'f9bf79a1-61c3-40ce-b656-aec1bc7c60b8';
-  assert.deepEqual(links('entity', { address: '192.168.1.7', port: '5555', machines: [machine] }), [
-    { id: 'adb', entity: 'entity', protocol: 'adb', endpoint: '192.168.1.7:5555', reach: { scope: 'machines', machines: [machine] } },
+  const id = derivedId(`${ENTITY}adb`);
+  assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.notEqual(derivedId('f9bf79a1-61c3-40ce-b656-aec1bc7c60b8adb'), id);
+  assert.deepEqual(links(ENTITY, { address: '192.168.1.7', port: '5555', machines: [machine] }), [
+    { id, entity: ENTITY, protocol: 'adb', endpoint: '192.168.1.7:5555', reach: { scope: 'machines', machines: [machine] } },
   ]);
-  assert.deepEqual(links('entity', { machines: [] }), []);
+  assert.deepEqual(links(ENTITY, { machines: [] }), []);
 });
 
 async function properties(lines) {
@@ -119,17 +125,17 @@ async function properties(lines) {
 test('本体默认名称与属性，链路地址读取或覆盖；空名单不读取网络属性', async () => {
   const machine = 'f9bf79a1-61c3-40ce-b656-aec1bc7c60b8';
   const settings = { 'android.machines': [{ id: machine }] };
-  const declared = await declarations('entity', settings, properties);
-  assert.deepEqual(declared.entities, [{ id: 'entity', name: 'Mi 10 Pro', category: 'android', capacity: 1,
+  const declared = await declarations(ENTITY, settings, properties);
+  assert.deepEqual(declared.entities, [{ id: ENTITY, name: 'Mi 10 Pro', category: 'android', capacity: 1,
     attributes: { model: 'Mi 10 Pro', android: '13', serial: 'serial' } }]);
-  assert.deepEqual(declared.links, links('entity', { address: '192.168.1.7', port: '5555', machines: [machine] }));
-  const override = await declarations('entity', { ...settings, 'android.name': '手机', 'android.address': 'phone' }, async lines => {
+  assert.deepEqual(declared.links, links(ENTITY, { address: '192.168.1.7', port: '5555', machines: [machine] }));
+  const override = await declarations(ENTITY, { ...settings, 'android.name': '手机', 'android.address': 'phone' }, async lines => {
     assert.ok(lines[0].startsWith('getprop '));
     return properties(lines);
   });
   assert.equal(override.entities[0].name, '手机');
   assert.equal(override.links[0].endpoint, 'phone:5555');
-  assert.deepEqual((await declarations('entity', {}, async lines => {
+  assert.deepEqual((await declarations(ENTITY, {}, async lines => {
     assert.ok(['getprop ro.product.model', 'getprop ro.build.version.release', 'getprop ro.serialno'].includes(lines[0]));
     return properties(lines);
   })).links, []);
@@ -145,7 +151,7 @@ test('复制的解析、比较、核对和引号逻辑保留多行、null、删�
   assert.equal(command({ name: 'secure', key: "k'", value: "it's\n$(anything)" }), "settings put secure 'k'\\''' 'it'\\''s\n$(anything)'");
 });
 test('地址设置为空且 wlan0 没有 IPv4 时拒绝声明链路', async () => {
-  await assert.rejects(() => declarations('entity', {
+  await assert.rejects(() => declarations(ENTITY, {
     'android.address': '', 'android.machines': [{ id: 'f9bf79a1-61c3-40ce-b656-aec1bc7c60b8' }],
   }, async lines => lines[0].startsWith('getprop ') ? properties(lines) : '\n'), /android.address 为空，且 wlan0 没有 IPv4 地址/);
 });
@@ -161,7 +167,7 @@ test('本体与链路按插件整份替换：补上插件，不写 status，借�
   await declareAgain();
   assert.deepEqual(held(records, 'coda/entity@1').find(row => row.owner === 'android'), { owner: 'android', kind: 'coda/entity@1', id: entity, status: {},
     spec: { name: 'Mi 10 Pro', category: 'android', capacity: 1, attributes: { model: 'Mi 10 Pro', android: '13', serial: 'serial' }, plugin: 'android' } });
-  assert.deepEqual(held(records, 'coda/link@1').map(({ id, spec }) => ({ id, spec })), [{ id: 'adb',
+  assert.deepEqual(held(records, 'coda/link@1').map(({ id, spec }) => ({ id, spec })), [{ id: derivedId(`${entity}adb`),
     spec: { entity, protocol: 'adb', endpoint: '192.168.1.7:5555', reach: { scope: 'machines', machines: [machine] }, plugin: 'android' } }]);
   // Lent out, and declared again at the next start: the state stays, so the return still to do is retried.
   records.get(`coda/entity@1/${entity}`).status = { state: 'returning' };

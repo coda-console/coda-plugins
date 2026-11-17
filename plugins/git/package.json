@@ -15,11 +15,14 @@
       {
         "name": "git/source@1",
         "title": "Git 源",
-        "description": "本机 Git 仓库：工作副本根目录或裸仓库的绝对路径。",
+        "description": "本机 Git 仓库：登记名与工作副本根目录或裸仓库的绝对路径。",
         "spec": {
           "type": "object",
-          "properties": { "path": { "type": "string", "minLength": 1 } },
-          "required": ["path"],
+          "properties": {
+            "name": { "type": "string", "pattern": "^[a-zA-Z0-9_-]{1,100}$" },
+            "path": { "type": "string", "minLength": 1 }
+          },
+          "required": ["name", "path"],
           "additionalProperties": false
         },
         "status": {

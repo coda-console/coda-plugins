@@ -6,7 +6,7 @@
 
 2.4.0：删掉外派执行（Coda 已不再把步骤交给别台执行）：`execute` 的处理函数、源码获取与工作副本、独立 worker 与 hook，以及设置 `host.enabled`、`host.labels`；`run-held` 只在本机排队，不再收 `local`，也不再去空间里别的 Mac 跑。只给预览渠道。
 
-host 在清单里声明实现 `coda/executor@1`，把自己这台机器的执行环境发布为一条 `coda/executor@1` 记录（ID `host`），Coda 的执行环境页读它；不接 `execute`，也不再开 `coda/run@1` 运行。
+host 在清单里声明实现 `coda/executor@1`，把自己这台机器的执行环境发布为一条 `coda/executor@1` 记录（ID 是首次启动时生成、存在插件状态目录 `executor-id` 里的 UUID，之后沿用）；Coda 的执行环境页显示的是 Coda 自己算的执行器，不读这条记录。不接 `execute`，也不再开 `coda/run@1` 运行。
 
 启动时直接整份写这条记录，盖掉上次运行留下的（停止时写的 `accepting: false` 随之换掉）；插件不观察自己的记录，所以不会被自己写的 status 再触发。
 

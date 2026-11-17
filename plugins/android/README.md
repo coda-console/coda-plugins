@@ -4,7 +4,7 @@
 
 版本 0.2.0。只装在 xiaomi（Mi 10 Pro）的 Debian chroot 后端，插件宿主须为 root，能用 `nsenter -t 1 -m -- sh` 执行 Android 命令。不依赖 host 插件，也不把手机登记为构建执行环境；无运行时依赖。
 
-首次启动在插件状态目录生成并保存 `entity-id`，之后沿用这个 UUID。启动时以 `android` 类别、容量 1 声明本体，保管方就是 xiaomi；属性包含型号、Android 版本、序列号。迁移保管方时须保留 `entity-id`，勿在两个实例同时声明。
+首次启动在插件状态目录生成并保存 `entity-id`，之后沿用这个 UUID。启动时以 `android` 类别、容量 1 声明本体，保管方就是 xiaomi；属性包含型号、Android 版本、序列号。adb 链路的 ID 由本体 UUID 加 `adb` 派生（`lib/android.mjs` 的 `derivedId`：本插件命名空间加键的 SHA-256 取前 16 字节，版本位 5、变体位 10xx），每次启动相同。迁移保管方时须保留 `entity-id`，勿在两个实例同时声明。
 
 ## 设置
 

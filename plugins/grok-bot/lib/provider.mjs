@@ -8,7 +8,17 @@ import { history, messages, decode, signature, position, conversation } from './
 export const SESSION = 'coda/session@1';
 const sameSent = (a, b) => JSON.stringify([...a]) === JSON.stringify([...b]);
 const headKey = id => `head:${id}`;
-export const recordId = (account, bot) => `grok-bot:${account}:${encodeURIComponent(bot)}`;
+// A UUID derived from a natural key, so a record keeps its ID across restarts and reinstalls: SHA-256 of this plugin's
+// namespace and the key, its first 16 bytes with the version set to 5 and the variant to 10xx.
+const NAMESPACE = '@coda-console/grok-bot:';
+export function derivedId(key) {
+  const b = createHash('sha256').update(NAMESPACE + key).digest().subarray(0, 16);
+  b[6] = (b[6] & 0x0f) | 0x50; b[8] = (b[8] & 0x3f) | 0x80;
+  const h = b.toString('hex');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+}
+// The account is a SHA-256 in hex, so the key cannot be read as another account and bot.
+export const recordId = (account, bot) => derivedId(`${account}:${bot}`);
 export function messageId(callId, record) {
   const b = createHash('sha256').update(JSON.stringify([record, callId])).digest().subarray(0, 16);
   b[6] = (b[6] & 15) | 128; b[8] = (b[8] & 63) | 128;

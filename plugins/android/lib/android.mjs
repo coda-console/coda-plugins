@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { NAMESPACES, parseList, changes, command, notDone } from './settings.mjs';
@@ -19,6 +19,16 @@ export async function nsenter(lines) {
     child.stdin.on('error', reject);
     child.stdin.end(`set -e\n${lines.join('\n')}\n`);
   });
+}
+
+// A UUID derived from a natural key, the same at every start: SHA-256 of this plugin's namespace and the key,
+// its first 16 bytes with the version set to 5 and the variant to 10xx.
+const NAMESPACE = '@coda-console/android:';
+export function derivedId(key) {
+  const b = createHash('sha256').update(NAMESPACE + key).digest().subarray(0, 16);
+  b[6] = (b[6] & 0x0f) | 0x50; b[8] = (b[8] & 0x3f) | 0x80;
+  const h = b.toString('hex');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
 }
 
 export function entityId(state, generate = randomUUID) {
@@ -79,7 +89,7 @@ export const record = (plugin, { id, ...spec }) => ({ id, spec: { ...spec, plugi
 
 export function links(id, { address, port, machines }) {
   if (!machines.length) return [];
-  return [{ id: 'adb', entity: id, protocol: 'adb', endpoint: `${address}:${port}`, reach: { scope: 'machines', machines } }];
+  return [{ id: derivedId(`${id}adb`), entity: id, protocol: 'adb', endpoint: `${address}:${port}`, reach: { scope: 'machines', machines } }];
 }
 
 export async function declarations(id, settings, run = nsenter) {

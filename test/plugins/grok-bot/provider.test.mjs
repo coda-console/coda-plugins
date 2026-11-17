@@ -7,7 +7,8 @@ import { test } from 'node:test';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { Provider, SESSION, recordId, messageId } from '../../../plugins/grok-bot/lib/provider.mjs';
+import { createHash } from 'node:crypto';
+import { Provider, SESSION, recordId, derivedId, messageId } from '../../../plugins/grok-bot/lib/provider.mjs';
 import { NativeAuth } from '../../../plugins/grok-bot/lib/auth.mjs';
 import { decode } from '../../../plugins/grok-bot/lib/transcript.mjs';
 import { FakeNative } from './native-fixture.mjs';
@@ -87,6 +88,8 @@ test('resource login followed by refresh lists stable per-bot records and person
   await f.provider.sync(); assert.equal(f.provider.records.size,1);
   const record=f.provider.records.get(f.id());
   assert.equal(f.id(),recordId(record.spec.container.id,'inspector'));
+  assert.equal(f.id(),derivedId(`${createHash('sha256').update('stable-account').digest('hex')}:inspector`));
+  assert.match(f.id(),/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
   assert.deepEqual(record.status.participants.map(p=>[p.kind,!!p.self]),[['person',true],['agent',false]]);
   assert.deepEqual(f.records.get(`${SESSION}/${f.id()}`),{owner:'grok-bot',kind:SESSION,id:f.id(),spec:record.spec,status:record.status,version:f.records.get(`${SESSION}/${f.id()}`).version});
   await f.provider.sync(); assert.equal(f.id(),recordId(record.spec.container.id,'inspector'));
@@ -95,9 +98,9 @@ test('resource login followed by refresh lists stable per-bot records and person
 test('sessions of Coda and of other plugins on this machine are never written or deleted; a leftover of an earlier run is dropped', async t => {
   const session = { title: '别人的会话', container: { id: 'someone', title: '别人' } }, status = { participants: [], state: 'active' };
   const f = await fixture(t, true, (native, h) => {
-    h.foreign('coda', SESSION, 'thread-1', session, status);
-    h.foreign('wechat', SESSION, 'wechat:friend', session, status);
-    h.foreign('grok-bot', SESSION, 'grok-bot:old:gone', session, status);
+    h.foreign('coda', SESSION, '2b8e4f61-9c3a-4d07-b5e2-7a1f0c6d93e8', session, status);
+    h.foreign('wechat', SESSION, 'e47a0d39-1f6b-4c82-9a5d-3b8c2e7f0164', session, status);
+    h.foreign('grok-bot', SESSION, '9a3c5e70-6d1b-4f28-8e94-0c7b2a5d1f83', session, status);
   });
   const others = () => [...f.records.values()].filter(r => r.owner !== 'grok-bot');
   const before = structuredClone(others());
@@ -147,6 +150,14 @@ test('a restart keeps the head: the first replace carries it, and the session re
   assert.equal(f.records.get(`${SESSION}/${id}`).status.head, '0:2');
   await until(() => again.mirrors.get(id)?.messages.size === 2);
   assert.deepEqual((await again.read(id)).messages.map(m => m.text), ['first', 'second']);
+});
+
+test('an index kept under the record IDs of an earlier version is not read: its head is not carried over', async t => {
+  const account = createHash('sha256').update('stable-account').digest('hex');
+  const f = await fixture(t, true, (native, h) => writeFileSync(join(h.coda.plugin.state, 'transcript-index.json'),
+    JSON.stringify({ [`head:grok-bot:${account}:inspector`]: '0:9' })));
+  assert.equal(f.provider.records.get(f.id()).status.head, undefined);
+  assert.equal(f.records.get(`${SESSION}/${f.id()}`).status.head, undefined);
 });
 
 test('the last Bot going away is dropped from the host on a later sync even when the first replace was refused', async t => {
