@@ -5,6 +5,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { PassThrough } from 'node:stream';
+import { spawn } from 'node:child_process';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { startAccountBridge } from '../../../plugins/codex/agent/accounts.mjs';
 
@@ -220,3 +225,50 @@ for (const outcome of ['release', 'fail']) {
     assert.equal(f.sent.some(m => m.id === 'renew'), false);
   });
 }
+
+// The bridge as a process, over a real child standing in for Codex's native program (`fake`, a script of its own): how it
+// ends is how the child ended. `ready` on stderr says the bridge has started and its signal handlers are in place.
+const bridgeDir = mkdtempSync(join(tmpdir(), 'codex-bridge-'));
+process.on('exit', () => rmSync(bridgeDir, { recursive: true, force: true }));
+const bridgeScript = join(bridgeDir, 'bridge.mjs');
+writeFileSync(bridgeScript, `
+import { runAccountBridge } from ${JSON.stringify(pathToFileURL(new URL('../../../plugins/codex/agent/accounts.mjs', import.meta.url).pathname).href)};
+import { AppServer } from ${JSON.stringify(pathToFileURL(new URL('../../../plugins/codex/scripts/app-server.mjs', import.meta.url).pathname).href)};
+const command = JSON.parse(process.argv[2]);
+runAccountBridge({ source: { close() {} }, makeServer: options => new AppServer({ ...options, command }) });
+process.stderr.write('ready\\n');
+`);
+const node = code => [process.execPath, '-e', code];
+const waiting = 'setInterval(() => {}, 1000)';
+function runBridge(command) {
+  const child = spawn(process.execPath, [bridgeScript, JSON.stringify(command)], { stdio: ['pipe', 'pipe', 'pipe'] });
+  let stderr = '';
+  const ready = new Promise(resolve => child.stderr.on('data', chunk => { stderr += chunk; if (stderr.includes('ready')) resolve(); }));
+  const ended = new Promise(resolve => child.on('exit', (code, signal) => resolve({ code, signal })));
+  return { child, ready, ended, stderr: () => stderr };
+}
+
+for (const [name, command, expected] of [
+  ['killed by SIGKILL', node("process.kill(process.pid, 'SIGKILL')"), { code: null, signal: 'SIGKILL' }],
+  ['terminated by SIGTERM', node("process.kill(process.pid, 'SIGTERM')"), { code: null, signal: 'SIGTERM' }],
+  ['exiting with code 7', node('process.exit(7)'), { code: 7, signal: null }],
+  ['exiting with code 0', node('process.exit(0)'), { code: 0, signal: null }],
+  ['not starting at all', [join(bridgeDir, 'missing-codex')], { code: 1, signal: null }],
+]) {
+  test(`the bridge process ends as its app-server did: ${name}`, async () => {
+    const bridge = runBridge(command);
+    assert.deepEqual(await bridge.ended, expected);
+    if (name === 'not starting at all') assert.match(bridge.stderr(), /Codex 无法启动：ENOENT/);
+  });
+}
+
+test('the bridge process closing on its client going away or being told to stop is a normal end, not its app-server failing', async () => {
+  const closed = runBridge(node(waiting));
+  await closed.ready; closed.child.stdin.end();
+  assert.deepEqual(await closed.ended, { code: 0, signal: null });
+  for (const signal of ['SIGTERM', 'SIGINT']) {
+    const stopped = runBridge(node(waiting));
+    await stopped.ready; stopped.child.kill(signal);
+    assert.deepEqual(await stopped.ended, { code: 0, signal: null }, signal);
+  }
+});
