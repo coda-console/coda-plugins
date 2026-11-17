@@ -7,7 +7,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { hostname, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { test } from 'node:test';
-import { serveSimulatorStatus, runFinished } from '../../../plugins/host/lib/simulator-status.mjs';
+import { runFinished } from '../../../plugins/host/lib/simulator-status.mjs';
 import { registerSimulator, registrations } from '../../../plugins/host/lib/simulators.mjs';
 import { pluginDir } from '../plugin.mjs';
 import { declaredPanel, manifest, pluginEnv, run } from '../command.mjs';
@@ -173,31 +173,38 @@ test('持锁执行 retains cancellation when child exit is observed before TERM 
   assert.deepEqual(sims.devices(), []);
 });
 
-// Exercise the script with the real module bridge, public workflow responses and a fake simctl.
-async function hostStatus(t) {
-  const state = temporary(t), runs = new Map();
-  const bridge = await serveSimulatorStatus({ plugin: { state }, api: async path => {
-    assert.match(path, /^workflow-runs\//);
-    const id = decodeURIComponent(path.slice('workflow-runs/'.length));
-    if (!runs.has(id)) throw new Error('运行不存在或宿主暂不可用');
-    return { runId: id, state: runs.get(id) };
-  } });
-  t.after(() => bridge.dispose());
-  return { state, owner: (id, status) => runs.set(id, status) };
+// A `coda` on the PATH standing in for Coda's: it logs what it was asked and answers `call self run-finished` from the
+// run states given, as the provider would from the public workflow endpoint; a run it does not know fails.
+function hostStatus(t) {
+  const state = temporary(t), tools = temporary(t), runs = join(tools, 'runs.json'), log = join(tools, 'coda.log');
+  writeFileSync(runs, '{}');
+  writeFileSync(join(tools, 'coda'), `#!${process.execPath}
+const fs = require('node:fs'), args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
+if (args[0] !== 'call' || args[1] !== 'self' || args[2] !== 'run-finished') process.exit(9);
+const status = JSON.parse(fs.readFileSync(${JSON.stringify(runs)}, 'utf8'))[JSON.parse(args[3]).run];
+if (!status) { console.error('运行不存在或宿主暂不可用'); process.exit(1); }
+console.log(JSON.stringify({ finished: ['succeeded', 'failed', 'cancelled'].includes(status) }));
+`, { mode: 0o755 });
+  const known = new Map();
+  return { state, tools, path: `${tools}:${process.env.PATH}`, asked: () => existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line)) : [],
+    owner: (id, status) => { known.set(id, status); writeFileSync(runs, JSON.stringify(Object.fromEntries(known))); } };
 }
 
 test('清点模拟器 deletes only finished owners; live, cancelling, unknown and legacy registrations stay', async t => {
-  const { state, owner } = await hostStatus(t);
+  const { state, owner, path, asked } = hostStatus(t);
   const sims = simctl(t, ['LEFT', 'FAILED', 'CANCELLED', 'LIVE', 'STOPPING', 'DRAIN', 'HELD', 'UNKNOWN', 'LEGACY', 'SHARED', 'OTHER']);
   for (const [id, status] of Object.entries({ done: 'succeeded', failed: 'failed', cancelled: 'cancelled', live: 'running', stopping: 'cancelling', drain: 'running', held: 'cancelling' })) owner(id, status);
   for (const [udid, runId] of [['LEFT', 'done'], ['GONE', 'done'], ['FAILED', 'failed'], ['CANCELLED', 'cancelled'], ['LIVE', 'live'], ['STOPPING', 'stopping'], ['DRAIN', 'drain'], ['HELD', 'held'], ['UNKNOWN', 'missing'], ['SHARED', 'done'], ['SHARED', 'live']]) registerSimulator(state, udid, runId);
   writeFileSync(join(state, 'simulators'), 'LEGACY\n');
-  const clean = extra => run('node "$CODA_PLUGIN_PATH/scripts/clean-simulators.mjs"', env({ CODA_PLUGIN_STATE: state, HOST_SIM_SIMCTL: sims.tool, ...extra }));
+  const clean = extra => run('node "$CODA_PLUGIN_PATH/scripts/clean-simulators.mjs"', env({ CODA_PLUGIN_STATE: state, HOST_SIM_SIMCTL: sims.tool, PATH: path, ...extra }));
   assert.equal((await clean({})).code, 0);
   assert.equal(sims.log(), '');
+  assert.deepEqual(asked(), []);
   const own = await clean({ CODA_ARBITER: '1' });
   assert.equal(own.code, 1, own.stderr);
   assert.match(own.stderr, /运行不存在或宿主暂不可用/);
+  assert.ok(asked().length && asked().every(args => args.length === 4 && args.slice(0, 3).join(' ') === 'call self run-finished' && typeof JSON.parse(args[3]).run === 'string'));
   assert.deepEqual(sims.devices(), ['LIVE', 'STOPPING', 'DRAIN', 'HELD', 'UNKNOWN', 'LEGACY', 'SHARED', 'OTHER']);
   assert.deepEqual(registrations(state).map(r => r.udid).sort(), ['DRAIN', 'HELD', 'LIVE', 'SHARED', 'SHARED', 'STOPPING', 'UNKNOWN']);
   assert.doesNotMatch(sims.log(), /shutdown|delete (LIVE|STOPPING|DRAIN|HELD|UNKNOWN|LEGACY|SHARED|OTHER)/);
@@ -205,7 +212,7 @@ test('清点模拟器 deletes only finished owners; live, cancelling, unknown an
 });
 
 test('清点模拟器 skips in-use failures and preserves registrations made during deletion', async t => {
-  const { state, owner } = await hostStatus(t); owner('done', 'succeeded'); owner('live', 'running');
+  const { state, owner, path } = hostStatus(t); owner('done', 'succeeded'); owner('live', 'running');
   registerSimulator(state, 'BUSY', 'done'); registerSimulator(state, 'LEFT', 'done');
   const tool = join(temporary(t), 'simctl'), calls = join(temporary(t), 'calls');
   writeFileSync(tool, `#!${process.execPath}
@@ -220,7 +227,7 @@ if (args[1] === 'list') {
   fs.writeFileSync(state + '/simulator-registrations/concurrent.json', JSON.stringify({ udid: 'NEW', runId: 'live' }));
 } else process.exit(9);
 `, { mode: 0o755 });
-  const result = await run('node "$CODA_PLUGIN_PATH/scripts/clean-simulators.mjs"', env({ CODA_PLUGIN_STATE: state, CODA_ARBITER: '1', HOST_SIM_SIMCTL: tool }));
+  const result = await run('node "$CODA_PLUGIN_PATH/scripts/clean-simulators.mjs"', env({ CODA_PLUGIN_STATE: state, CODA_ARBITER: '1', HOST_SIM_SIMCTL: tool, PATH: path }));
   assert.equal(result.code, 1);
   assert.match(result.stderr, /跳过模拟器 BUSY.*使用中/);
   assert.match(result.stderr, /device is in use/);
@@ -228,29 +235,33 @@ if (args[1] === 'list') {
 });
 
 test('清点模拟器 never deletes when the plugin module is unavailable', async t => {
-  const state = join(temporary(t), 'plugins', 'host');
+  const { path } = hostStatus(t), state = join(temporary(t), 'plugins', 'host');
   registerSimulator(state, 'KEEP', 'missing');
   const sims = simctl(t, ['KEEP']);
-  const result = await run('node "$CODA_PLUGIN_PATH/scripts/clean-simulators.mjs"', env({ CODA_PLUGIN_STATE: state, CODA_ARBITER: '1', HOST_SIM_SIMCTL: sims.tool }));
+  const result = await run('node "$CODA_PLUGIN_PATH/scripts/clean-simulators.mjs"', env({ CODA_PLUGIN_STATE: state, CODA_ARBITER: '1', HOST_SIM_SIMCTL: sims.tool, PATH: path }));
   assert.equal(result.code, 1);
   assert.equal(sims.log(), '');
   assert.equal(registrations(state).length, 1);
 });
 
-test('cleanup eligibility follows a fresh public run state, including reruns, and never guesses unknown states', async t => {
-  const { state, owner } = await hostStatus(t);
-  owner('run', 'succeeded');
-  assert.equal(await runFinished(state, 'run'), true);
-  owner('run', 'running');
-  assert.equal(await runFinished(state, 'run'), false);
-  owner('run', 'cancelling');
-  assert.equal(await runFinished(state, 'run'), false);
-  owner('run', 'future-state');
-  assert.equal(await runFinished(state, 'run'), false);
-  assert.equal(await runFinished(state, null), false);
-  await assert.rejects(runFinished(state, 'missing'), /运行不存在/);
+test('cleanup eligibility follows a fresh public run state, including reruns, and never guesses unknown states', async () => {
+  const runs = new Map(), coda = { api: async path => {
+    assert.match(path, /^workflow-runs\//);
+    const id = decodeURIComponent(path.slice('workflow-runs/'.length));
+    if (!runs.has(id)) throw new Error('运行不存在或宿主暂不可用');
+    return { runId: id, state: runs.get(id) };
+  } };
+  runs.set('run', 'succeeded');
+  assert.equal(await runFinished(coda, 'run'), true);
+  runs.set('run', 'running');
+  assert.equal(await runFinished(coda, 'run'), false);
+  runs.set('run', 'cancelling');
+  assert.equal(await runFinished(coda, 'run'), false);
+  runs.set('run', 'future-state');
+  assert.equal(await runFinished(coda, 'run'), false);
+  assert.equal(await runFinished(coda, null), false);
+  await assert.rejects(runFinished(coda, 'missing'), /运行不存在/);
 });
-
 
 test('持锁执行 fails a hung command with its idle reason once at the end', { timeout: 5000 }, async t => {
   const result = await held(t, { command: 'echo before-hang >&2; sleep 60' }, { HELD_IDLE_MINUTES: '0.005' }).ended;

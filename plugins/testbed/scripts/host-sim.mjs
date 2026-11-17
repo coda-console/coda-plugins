@@ -1,6 +1,6 @@
 // What this plugin plugs into the host plugin's `host-sim` (its point `kinds`, README.md):
 // `host-sim run|check --kind <设备名> …` for a test device, handed over whole. In a session doing that device's task, a
-// command is handed to the capability 在测试机上执行 and followed with `coda-run`: Coda lends it the device the task holds
+// command is handed to the capability 在测试机上执行 and followed with `coda run`: Coda lends it the device the task holds
 // and runs it in the session's directory, with its environment. Inside that command (`HOST_SIM_LEASE=coda-run:<设备名>`),
 // or in a step whose run holds the device's group (`CODA_GROUPS` names device:<设备名>), it runs at once.
 import { resolveDevice } from './resolve-device.mjs';
@@ -35,7 +35,7 @@ if (command === 'run' && (held || thread)) {
     }
     follow(argv, { ...session(), HOST_SIM_LEASE: lease || `coda-group:${group}` });
   } else {
-    // What to run, where and with what, for 在测试机上执行 to read: kept while the run may still read it. coda-run ending
+    // What to run, where and with what, for 在测试机上执行 to read: kept while the run may still read it. coda run ending
     // with any status but 75 (Coda's docs/workflows.md「从命令行调用」) says the run is over or never started — the device
     // not lent, say —, so it goes then; let go of (75, or a signal), the run goes on and reads it however late that is.
     const env = session();
@@ -44,7 +44,7 @@ if (command === 'run' && (held || thread)) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     const spec = join(dir, `${randomUUID()}.json`);
     writeFileSync(spec, JSON.stringify({ argv, cwd: process.cwd(), env, kind }), { mode: 0o600 });
-    follow(['coda-run', 'run-on-device', `spec=${spec}`, `device=${kind}`, `label=${argv.join(' ').slice(0, 200)}`], session(),
+    follow(['coda', 'run', 'run-on-device', `spec=${spec}`, `device=${kind}`, `label=${argv.join(' ').slice(0, 200)}`], session(),
       code => { if (code !== null && code !== 75) rmSync(spec, { force: true }); });
   }
 } else if (command === 'check' && held) {
@@ -59,7 +59,7 @@ if (command === 'run' && (held || thread)) {
   fail('只能在 Coda 的会话或流程步骤里用：测试机由 Coda 借出，终端里直接运行不借，也不执行', 1);
 }
 
-// Runs it in the foreground, ending as it ends; a signal to this process goes on to it (coda-run then lets the run go on).
+// Runs it in the foreground, ending as it ends; a signal to this process goes on to it (coda run then lets the run go on).
 // `ended` is told its exit code first: 127 when it could not be started, null when a signal ended it.
 function follow([program, ...rest], env, ended = () => {}) {
   const child = spawn(program, rest, { stdio: 'inherit', env });

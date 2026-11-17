@@ -5,7 +5,7 @@
 // Its actions are not run: a button may change things (switch an account, spend a reset), and only a person presses it.
 import { dirname } from 'node:path';
 import { cleared } from './coda/components/plugins/plugin-rules.mjs';
-import { ended, runCommand } from './coda/resources/plugins/resources/panels/command.mjs';
+import { ended, runCommand } from './command.mjs';
 import { Panels } from './coda/resources/plugins/resources/panels/panels.mjs';
 import { OUTPUT_LIMIT, panelItems, resourceItems } from './coda/resources/plugins/resources/panels/rules.mjs';
 import { closing, temporary } from './leftovers.mjs';

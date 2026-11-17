@@ -28,7 +28,7 @@ host 在清单里声明实现 `coda/executor@1`，把自己这台机器的执行
 `cwd`（在哪个目录执行，绝对路径），用模拟器时 `what` 为 `模拟器`（默认 `构建`）。命令一律在这台排队、在这台跑。
 能力写了 `coda:inline` 与 `coda:subagents="false"`：
 结束得快就随这次调用返回结果，否则结果之后送回会话（见 [Agent 工具](https://github.com/coda-console/coda/blob/main/docs/workflows.md#agent-工具)）；原生子 Agent 发起时拒绝，
-提示把这一步交回主 Agent 或用 `spawn` 派 Coda 子会话（见[流程属性](https://github.com/coda-console/coda/blob/main/docs/workflows.md#流程属性)）。从命令行（`coda-run`）发起同样拒绝：命令行说不出是会话里谁在要。
+提示把这一步交回主 Agent 或用 `spawn` 派 Coda 子会话（见[流程属性](https://github.com/coda-console/coda/blob/main/docs/workflows.md#流程属性)）。从命令行（`coda run`）发起同样拒绝：命令行说不出是会话里谁在要。
 
 `host-sim` 是这个插件放在会话 `PATH` 上的[命令](https://github.com/coda-console/coda/blob/main/docs/plugins.md#命令)（`scripts/host-sim.mjs`），只在已占着的名额里用：持锁执行的命令里（`HOST_SIM_LEASE`），
 或占着组 `host` 的流程步骤里（`CODA_GROUPS`）。在会话里不在名额中调用 `host-sim run --kind build|simulator -- <命令>` 时拒绝（退出码 2），
@@ -60,7 +60,7 @@ host 在清单里声明实现 `coda/executor@1`，把自己这台机器的执行
 还把 UDID 和登记运行 ID 写进本实例插件状态的 `simulator-registrations/`，每条登记独立保存，清理不会覆盖同时新增的登记。
 持锁命令通过 `HOST_SIM_RUN_ID` 传递运行 ID；普通流程步骤读 `GITHUB_RUN_ID`。
 按设置 `host.cleanSchedule` 的周期清点（整个实例只跑一次，`coda:scope="machine"`），**不申请名额、不进入 host 队列**。
-清理脚本通过本插件模块的带进程令牌的本机只读通道查询；模块每次经公开 `coda.api("workflow-runs/<id>")` 读取运行终态，不缓存清理资格。
+清理脚本用 `coda call self run-finished` 问本插件模块（宿主按令牌认出是这个插件）；模块每次经公开 `coda.api("workflow-runs/<id>")` 读取运行终态，不缓存清理资格。
 运行须为成功、失败或已取消才删除；运行与子运行是否收尾完成、何时发布终态，由 Coda 运行模块判断。插件不读取宿主数据库或复刻名额收尾逻辑。
 运行中、取消收尾中、查不到运行、宿主接口不可用的都跳过。旧版 `simulators` 纯 UDID 登记没有归属，保留并记录原因，待人工确认闲置后处理。
 删除直接交给 `simctl delete`，不强制关机；使用中或删不掉的跳过、记日志并保留登记，下次再试，已经不在的算删完。不为删除与其他进程使用的罕见交错加锁。

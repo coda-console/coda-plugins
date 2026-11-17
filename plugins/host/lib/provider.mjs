@@ -1,5 +1,5 @@
 import { capacityStatus, probe } from './capabilities.mjs';
-import { serveSimulatorStatus } from './simulator-status.mjs';
+import { runFinished } from './simulator-status.mjs';
 
 export const EXECUTOR = 'coda/executor@1';
 
@@ -22,7 +22,7 @@ export class HostProvider {
     }));
     await this.refresh();
     await this.coda.protocols.publish(EXECUTOR, this.executorId);
-    this.simulatorStatus = await serveSimulatorStatus(this.coda);
+    this.runFinished = await this.coda.handle('self', 'run-finished', async ({ run } = {}) => ({ finished: await runFinished(this.coda, run) }));
     this.probes = this.interval(() => {
       void this.discover().then(discovered => { this.discovered = discovered; return this.refresh(); }).catch(console.error);
     }, 60_000); this.probes?.unref?.();
@@ -48,7 +48,7 @@ export class HostProvider {
   }
   async stop() {
     this.closed = true; clearInterval(this.probes);
-    await this.simulatorStatus?.dispose();
+    await this.runFinished?.dispose();
     for (const subscription of this.subscriptions) await subscription.dispose();
     await this.queue.catch(() => {});
     if (this.offered) this.offered = await this.coda.protocols.setStatus(EXECUTOR, this.offered.id,

@@ -48,6 +48,8 @@ async function fixture(t) {
       publish: async () => {}, resolve: async () => {},
       handle: async (kind, operation, handler) => { operations.set(`${kind}/${operation}`, handler); return { dispose: () => operations.delete(`${kind}/${operation}`) }; },
     },
+    handle: async (kind, operation, handler) => { operations.set(`${kind}/${operation}`, handler); return { dispose: () => operations.delete(`${kind}/${operation}`) }; },
+    api: async path => ({ state: path === 'workflow-runs/done' ? 'succeeded' : 'running' }),
     watch: async (kind, fn) => { assert.equal(kind, 'concurrency-groups'); group = fn; fn({ type: 'ADDED', id: 'host', object: { capacity: 2, occupied: 1, available: 1 } }); return { dispose() {} }; },
   };
   const handlers = coda.protocols;
@@ -105,12 +107,15 @@ test('a restarted provider takes over the executor record its previous run left'
   await host.stop();
 });
 
-test('the provider publishes the record but handles no execute and no run', async t => {
+test('the provider publishes the record, handles no execute and no run, and answers its own run-finished', async t => {
   const f = await fixture(t), host = hostOf(f);
   await host.start(); await f.flush();
   assert.ok(f.objects.has(`${EXECUTOR}/host`));
-  assert.deepEqual([...f.operations.keys()], []);
+  assert.deepEqual([...f.operations.keys()], ['self/run-finished']);
+  const finished = f.operations.get('self/run-finished');
+  assert.deepEqual([await finished({ run: 'done' }), await finished({ run: 'live' }), await finished()], [{ finished: true }, { finished: false }, { finished: false }]);
   await host.stop();
+  assert.deepEqual([...f.operations.keys()], []);
 });
 
 test('the manifest implements only the executor record, with neither the dropped settings nor an execute handler', () => {

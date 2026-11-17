@@ -28,15 +28,15 @@ iPhone、iPad 测试机由这个插件登记归属；安卓只引用保管方已
 - 其他流程：`<callActivity calledElement="use-testbed">`，参数用 `coda:param`；项目流程先在自己的步骤构建、签名，把 App 路径传给它。
 
 **过程**：
-1. 「找测试机」：统一按设备名解析。iOS 先查本地登记；没有这个 id 就用 `coda-resources group-owner device:<id>` 读取归属实例声明的显示名、UDID、说明、`personal` 和平台。两边都没有则报「没有这台测试机」，列出本地可用设备，不排队。
-   安卓从共享表查本体 UUID，先用 `group-owner entity:<UUID>` 确认本体存在，再从 `coda-resources links <UUID>` 返回的本机可达链路里选第一条 protocol 为 adb 的链路，保留 Coda 的优先顺序；没有本体或可达 adb 链路时明确报错，不排队。
+1. 「找测试机」：统一按设备名解析。iOS 先查本地登记；没有这个 id 就用 `coda resources group-owner device:<id>` 读取归属实例声明的显示名、UDID、说明、`personal` 和平台。两边都没有则报「没有这台测试机」，列出本地可用设备，不排队。
+   安卓从共享表查本体 UUID，先用 `group-owner entity:<UUID>` 确认本体存在，再从 `coda resources links <UUID>` 返回的本机可达链路里选第一条 protocol 为 adb 的链路，保留 Coda 的优先顺序；没有本体或可达 adb 链路时明确报错，不排队。
    安卓设备在这里先 `adb connect`：连不上，或设备没授权这台的公钥，就此失败并说明，不排队。
 2. 「等测试机」：`hold-group` 为「占用测试机」这一段排进解析得到的组（iOS 为 `device:<设备名>`，安卓为 `entity:<UUID>`）（`capacity` 1、`borrow="no"`：每次使用都排队，做着上一次任务的会话再发起一次也排在后面），由引擎到归属实例排队，排到才往下走；之后到这一段结束都占着它。
 3. 「连接测试机」：安卓本体排到后由核心调用保管方借出，调用机器再用链路 endpoint 做 `adb connect`；iPhone、iPad 没有要连的。
    个人设备（`personal: true`）排到后先给用户一张卡片「借用 <显示名>」，写明哪个任务、要不要先装 App 和 `instructions`：选「借给它」才往下走；
    选「现在不行」（备注可写什么时候方便）按拒绝结束，设备直接放开，调用者收到拒绝的理由。常驻测试机不出这张卡片。
    有 `app` 就装上（`xcrun devicectl device install app`，安卓设备 `adb install -r`），再把任务交给调用的会话：要求是 `instructions`，加上设备名、UDID、借用方法和登记里的说明。
-   做任务期间，这个会话（含子 Agent）用 `host-sim run --kind <设备名> -- <命令>` 操作设备：`host-sim` 经 `coda-run` 把命令交给能力 `run-on-device`，
+   做任务期间，这个会话（含子 Agent）用 `host-sim run --kind <设备名> -- <命令>` 操作设备：`host-sim` 经 `coda run` 把命令交给能力 `run-on-device`，
    它用 `hold-group borrow="only"` 借这个组——只借给正在做这台设备任务的会话，别的情况立刻拒绝、不排队——借到后在会话的目录里、带会话的环境执行，
    附上 `HOST_SIM_LEASE=coda-run:<设备名>`，安卓设备另附 `ANDROID_SERIAL=<adb 地址>`（命令里再调用 `host-sim run --kind <设备名>` 直接执行，`host-sim check` 通过），退出码交回 `host-sim`。
    任务答复、撤回或运行被取消时，还在执行的这些命令随之停下（[并发组](https://github.com/coda-console/coda/blob/main/docs/workflows.md#并发组)「借用跟着任务走」），下一步等它们停完才开始。
