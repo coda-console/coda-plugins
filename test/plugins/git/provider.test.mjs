@@ -307,3 +307,41 @@ test('删除被宿主拒绝时，记录还在，进行中被作废的核对由�
   assert.ok(await provider.lookup(id));
   assert.deepEqual(h.failures, []);
 });
+
+test('登记时写入被宿主拒绝，记录还在，进行中被作废的核对由登记重新做：源不停在空 status', async t => {
+  const dir = await fixture(t), other = await fixture(t), h = host(join(dir, '.git', 'coda-state'));
+  const provider = new GitProvider(h.coda); t.after(() => provider.stop()); await provider.start();
+  const environment = h.coda.environment, put = h.coda.put; let entered, release, calls = 0;
+  const waiting = new Promise(resolve => { entered = resolve; }), gate = new Promise(resolve => { release = resolve; });
+  // The first call is the registration's own check of the path; the second, the reconcile its record sets off.
+  h.coda.environment = async () => { if (++calls === 1) return env; h.coda.environment = environment; entered(); await gate; return env; };
+  const id = await register(provider, 'source', { path: dir }); await waiting;
+  assert.deepEqual(get(h, id).status, {});
+  h.coda.put = async () => { h.coda.put = put; throw new Error('宿主拒绝写入'); };
+  const refused = await request(provider, '/sources/source', { spec: { path: other } });
+  assert.equal(refused.code, 400); assert.equal(refused.value.error.message, '宿主拒绝写入');
+  release(); await h.flush();
+  assert.equal(get(h, id).spec.path, dir);
+  assert.equal(get(h, id).status.ready, true);
+  assert.ok(await provider.lookup(id));
+  assert.deepEqual(h.failures, []);
+});
+
+test('同一 spec 只是键的顺序不同，也算没变：失败的源以它重新登记即重新核对', async t => {
+  const dir = await fixture(t), state = await mkdtemp(join(tmpdir(), 'coda-git-state-')), h = host(state);
+  t.after(() => rm(state, { recursive: true, force: true }));
+  const first = new GitProvider(h.coda); await first.start();
+  const id = await register(first, 'source', { path: dir }); await h.flush();
+  await first.stop();
+  await rename(join(dir, '.git'), join(dir, '.git-away'));
+  const provider = new GitProvider(h.coda); t.after(() => provider.stop()); await provider.start(); await h.flush();
+  assert.equal(get(h, id).status.ready, false);
+  assert.deepEqual(Object.keys(get(h, id).spec), ['path', 'name']);
+  await rename(join(dir, '.git-away'), join(dir, '.git'));
+  // The host sorts the keys to compare: this changes nothing there, writes nothing and sends nothing.
+  assert.equal(await register(provider, 'source', { name: 'source', path: dir }), id);
+  await h.flush();
+  assert.equal(get(h, id).status.ready, true);
+  assert.ok(await provider.lookup(id));
+  assert.deepEqual(h.failures, []);
+});

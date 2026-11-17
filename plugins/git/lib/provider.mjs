@@ -7,7 +7,10 @@ import { smartHTTP, readBody, reply } from './http.mjs';
 
 const url = id => `/v1/plugins/git/services/repository/repos/${id}`;
 const sameRepository = (a, b) => a.path === b.path && a.gitDir === b.gitDir && a.commonDir === b.commonDir;
-const sameSpec = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+// As the host compares: by the keys sorted, at every depth; an array keeps its order.
+const sorted = value => Array.isArray(value) ? value.map(sorted)
+  : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, sorted(value[key])])) : value;
+const sameSpec = (a, b) => JSON.stringify(sorted(a)) === JSON.stringify(sorted(b));
 
 export class GitProvider {
   constructor(coda) {
@@ -113,28 +116,31 @@ export class GitProvider {
       reply(res, 200, { kind: SOURCE, id: await turn });
     } catch (error) { reply(res, error.status ?? 400, { error: error.message }); }
   }
+  // The plugin's state follows its own write, not its echo: a reconcile still waiting must not write back over it, so it is
+  // made stale first. Refused, the record stays and no event will check it: it is reconciled again, then the refusal is thrown.
+  async write(id, write) {
+    this.lives.set(id, Symbol(id));
+    try { return await write(); }
+    catch (error) {
+      const source = this.sources.get(id);
+      if (source) await this.reconcile(source);
+      throw error;
+    }
+  }
   async change(name, action, data) {
     const id = this.idOf(name);
-    // The plugin's state follows its own write, not its echo: a reconcile still waiting must not write back over it.
     if (action === 'delete') {
       if (id === undefined) throw Object.assign(new Error('对象不存在'), { status: 404 });
-      this.lives.set(id, Symbol(id));
-      try { await this.coda.delete({ kind: SOURCE, key: name }); }
-      catch (error) {
-        // Refused, the record stays, and no event will check it: a reconcile made stale above would leave it as it was.
-        const source = this.sources.get(id);
-        if (source) await this.reconcile(source);
-        throw error;
-      }
+      await this.write(id, () => this.coda.delete({ kind: SOURCE, key: name }));
       // The name is free at once: registered again, even before the deletion's echo, it is pinned anew.
       if (this.identities.has(name)) this.forget(name);
       return id;
     }
     await repository(data.spec?.path ?? '', await this.coda.environment());
     const spec = { ...data.spec, name }, same = sameSpec(this.sources.get(id)?.spec, spec);
-    if (id !== undefined && !same) this.lives.set(id, Symbol(id));
     // A record is written whole: the status it has now is carried over, until the spec's new result replaces it.
-    const written = await this.coda.put({ kind: SOURCE, key: name }, { spec, status: this.sources.get(id)?.status ?? {} });
+    const put = () => this.coda.put({ kind: SOURCE, key: name }, { spec, status: this.sources.get(id)?.status ?? {} });
+    const written = await (id !== undefined && !same ? this.write(id, put) : put());
     // The same spec writes nothing and echoes nothing, so nothing would reconcile it again: a source that failed, its
     // repository mended, is checked here. One already under way is not cancelled; `stale` keeps either from writing over a newer.
     if (same) await this.reconcile(this.sources.get(id));

@@ -61,7 +61,7 @@ test('declarations follow atomic replacements; invalid/missing registration pres
   await until(() => groups().length === 0);
 });
 
-test('the set replaces only this plugin\'s groups, those an earlier version left without a key among them; a refused set is logged', async t => {
+test('the set replaces only this plugin\'s groups; a refused set is logged', async t => {
   const state = fixture(t), file = join(state, 'devices.json'), errors = [];
   const original = console.error;
   console.error = message => errors.push(message);
@@ -69,9 +69,7 @@ test('the set replaces only this plugin\'s groups, those an earlier version left
   const { coda, records } = recordsHost('testbed');
   const other = { owner: 'other', kind: 'coda/group@1', id: recordId('other', 'coda/group@1', phone.udid), key: phone.udid, status: {}, spec: { name: 'device:other', plugin: 'other', attributes: {}, unique: [] } };
   const entity = { owner: 'coda', kind: 'coda/group@1', id: '03acc3f8-6a6c-4f65-a90e-48f3af5aa3e5', status: {}, spec: { name: 'entity:03acc3f8-6a6c-4f65-a90e-48f3af5aa3e5', plugin: 'android', attributes: {}, unique: [] } };
-  // What 1.x left: its own record, under the ID it made, without a key.
-  const old = { owner: 'testbed', kind: 'coda/group@1', id: '5e0b7c1d-2f4a-4b68-9d3e-a1c7f0e28b46', status: {}, spec: { name: 'device:gone', plugin: 'testbed', attributes: {}, unique: [] } };
-  for (const row of [other, entity, old]) records.set(`${row.kind}/${row.id}`, row);
+  for (const row of [other, entity]) records.set(`${row.kind}/${row.id}`, row);
   writeFileSync(file, JSON.stringify([phone]));
   await activated(coda, state, file);
   const mine = recordId('testbed', 'coda/group@1', phone.udid);

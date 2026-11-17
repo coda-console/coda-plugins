@@ -25,6 +25,10 @@ export async function fixture(t) {
   await command(dir, ['add', '.']); await command(dir, ['commit', '-m', 'base']);
   return dir;
 }
+// As the host compares: by the keys sorted, at every depth; an array keeps its order.
+const sorted = value => Array.isArray(value) ? value.map(sorted)
+  : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, sorted(value[key])])) : value;
+const same = (a, b) => JSON.stringify(sorted(a)) === JSON.stringify(sorted(b));
 export const packet = line => Buffer.from((Buffer.byteLength(line) + 4).toString(16).padStart(4, '0') + line);
 
 // The plugin's reconciliation runs against the synchronized host API and real Git. Storage/transport belong
@@ -55,7 +59,7 @@ export function host(state) {
   };
   const write = (kind, key, value) => {
     const id = recordId(plugin, kind, key), at = `${kind}/${id}`, old = objects.get(at), status = value.status ?? {};
-    if (!old || JSON.stringify(old.spec) !== JSON.stringify(value.spec) || JSON.stringify(old.status) !== JSON.stringify(status)) {
+    if (!old || !same(old.spec, value.spec) || !same(old.status, status)) {
       const object = { kind, id, key, spec: value.spec, status, labels: null, version: String(++version) };
       objects.set(at, object); emit(kind, old ? 'MODIFIED' : 'ADDED', object);
     }

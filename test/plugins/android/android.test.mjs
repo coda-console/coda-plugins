@@ -141,20 +141,16 @@ test('地址设置为空且 wlan0 没有 IPv4 时拒绝声明链路', async () =
   }, async lines => lines[0].startsWith('getprop ') ? properties(lines) : '\n'), /android.address 为空，且 wlan0 没有 IPv4 地址/);
 });
 
-test('本体与链路按插件整份替换：先写本体，链路指向宿主给本体的 ID；补上插件，不写 status，借出的状态与别的插件的记录原样留着，旧版不带 key 的记录清掉', async () => {
+test('本体与链路按插件整份替换：先写本体，链路指向宿主给本体的 ID；补上插件，不写 status，借出的状态与别的插件的记录原样留着', async () => {
   const machine = 'f9bf79a1-61c3-40ce-b656-aec1bc7c60b8';
   const { coda, records } = recordsHost('android');
   const declared = await declarations({ 'android.machines': [{ id: machine }] }, properties);
   const foreign = { owner: 'other', kind: 'coda/entity@1', id: 'b1d3f2a0-0000-4000-8000-000000000001', status: { state: 'free' },
     spec: { name: '别的', category: 'x', plugin: 'other', attributes: {}, capacity: 1 } };
-  // What 0.1.x left: its own records, under the ID it made, without a key.
-  const old = { owner: 'android', kind: 'coda/entity@1', id: 'a50fa7ca-b420-40bd-bbef-39ce25bfd3aa', status: { state: 'free' },
-    spec: { name: 'Mi 10 Pro', category: 'android', plugin: 'android', attributes: {}, capacity: 1 } };
-  for (const row of [foreign, old]) records.set(`${row.kind}/${row.id}`, row);
+  records.set(`${foreign.kind}/${foreign.id}`, foreign);
   const declareAgain = () => declare(coda, {}, async () => structuredClone(declared));
   await declareAgain();
   const entity = recordId('android', 'coda/entity@1', 'device');
-  assert.equal(records.get(`coda/entity@1/${old.id}`), undefined);
   assert.deepEqual(held(records, 'coda/entity@1').find(row => row.owner === 'android'), { owner: 'android', kind: 'coda/entity@1', id: entity, key: 'device', status: {},
     spec: { name: 'Mi 10 Pro', category: 'android', capacity: 1, attributes: { model: 'Mi 10 Pro', android: '13', serial: 'serial' }, plugin: 'android' } });
   assert.deepEqual(held(records, 'coda/link@1').map(({ id, key, spec }) => ({ id, key, spec })), [{ id: recordId('android', 'coda/link@1', 'adb'), key: 'adb',

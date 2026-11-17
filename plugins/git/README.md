@@ -28,7 +28,7 @@ const subscription = await coda.watch('git/source@1', event => {
 }, { scope: 'local' });
 ```
 
-创建成功表示对象已接收，回的是 `{ kind, id }`，`id` 是宿主给的记录 ID；等 status.ready 再 fetch。GET `…/sources/<名字>` 读记录条目（条目带 `id` 和 `key`，`key` 即名字）。修改用同一路径 POST `{ spec }`（完整 spec）。状态失败后先修正原因再更新。
+创建成功表示对象已接收，回的是 `{ kind, id }`，`id` 是宿主给的记录 ID；等 status.ready 再 fetch。GET `…/sources/<名字>` 读记录条目（条目带 `id` 和 `key`，`key` 即名字）。修改用同一路径 POST `{ spec }`（完整 spec）。状态失败后先修正原因再更新；spec 与现有的相同（键的顺序不计）也会重新核对。宿主拒绝写入时记录不变，插件重新核对它。
 
 POST `…/sources/<名字>/delete` 撤下源；宿主拒绝删除时源留着，插件重新核对它。源在空间里都看得到（记录不再有「只在本机」一说）；spec 里是本机路径，读取仍只经本机的鉴权入口。跨机引用与入口由空间 Provider 映射，调用方不往本插件传机器参数。
 
