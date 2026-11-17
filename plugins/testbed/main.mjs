@@ -3,20 +3,18 @@ import { join } from 'node:path';
 import { devices } from './scripts/registry.mjs';
 
 let stopWatching;
-let pending = Promise.resolve();
 export async function activate(coda) {
   const file = join(coda.plugin.state, 'devices.json');
-  const publish = () => {
-    pending = pending.then(async () => {
-      const list = devices(file, { missingIsEmpty: false });
-      await coda.resources.declareGroups(list.map(device => ({
-        name: `device:${device.id}`,
-        attributes: { name: device.name ?? device.id, udid: device.udid, note: device.note ?? '', personal: device.personal === true ? 'true' : 'false',
-          platform: 'ios' },
-        unique: ['udid'],
+  // The whole set each time: the host takes it in order and drops the groups of this plugin that are not in it.
+  const publish = async () => {
+    try {
+      await coda.replace('coda/group@1', devices(file, { missingIsEmpty: false }).map(device => ({
+        id: `device:${device.id}`,
+        spec: { name: `device:${device.id}`, plugin: coda.plugin.id, unique: ['udid'],
+          attributes: { name: device.name ?? device.id, udid: device.udid, note: device.note ?? '', personal: device.personal === true ? 'true' : 'false',
+            platform: 'ios' } },
       })));
-    }).catch(error => console.error(`测试机归属声明失败：${error.message}`));
-    return pending;
+    } catch (error) { console.error(`测试机归属声明失败：${error.message}`); }
   };
   // Stat-based watching also observes atomic replacements and a deleted/recreated file.
   watchFile(file, { interval: 500 }, publish);
@@ -24,8 +22,7 @@ export async function activate(coda) {
   await publish();
 }
 
-export async function deactivate() {
+export function deactivate() {
   stopWatching?.();
   stopWatching = undefined;
-  await pending;
 }

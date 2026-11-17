@@ -1,6 +1,8 @@
 # 安卓手机
 
-版本 0.1.0。只装在 xiaomi（Mi 10 Pro）的 Debian chroot 后端，插件宿主须为 root，能用 `nsenter -t 1 -m -- sh` 执行 Android 命令。不依赖 host 插件，也不把手机登记为构建执行环境；无运行时依赖。
+0.2.0（接口破坏性变更）：本体与链路改用 Coda 的新接口 `coda.replace('coda/entity@1', …)`、`coda.replace('coda/link@1', …)`，不再用 `resources.declareEntities`、`declareLinks`；清单声明实现这两种。记录的 `spec` 带 `plugin`（本插件），不写 `status`（借出、归还的状态由宿主保管，重新声明时原样留着）。需要先带这套接口的 Coda（coda#2749）。只给预览渠道。
+
+版本 0.2.0。只装在 xiaomi（Mi 10 Pro）的 Debian chroot 后端，插件宿主须为 root，能用 `nsenter -t 1 -m -- sh` 执行 Android 命令。不依赖 host 插件，也不把手机登记为构建执行环境；无运行时依赖。
 
 首次启动在插件状态目录生成并保存 `entity-id`，之后沿用这个 UUID。启动时以 `android` 类别、容量 1 声明本体，保管方就是 xiaomi；属性包含型号、Android 版本、序列号。迁移保管方时须保留 `entity-id`，勿在两个实例同时声明。
 

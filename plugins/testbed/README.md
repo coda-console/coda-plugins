@@ -1,5 +1,7 @@
 # 测试机
 
+2.0.0（接口破坏性变更）：设备归属改用 Coda 的新接口 `coda.replace('coda/group@1', …)`，不再用 `resources.declareGroups`，也不再自己串行声明（宿主按插件依次写）；清单声明实现 `coda/group@1`。每台设备一条记录：ID 与 `spec.name` 是 `device:<设备名>`，`spec` 另有 `plugin`（本插件）、`attributes`、`unique`，内容与原来的声明一致。需要先带这套接口的 Coda（coda#2749）。只给预览渠道。
+
 iPhone、iPad 测试机由这个插件登记归属；安卓只引用保管方已登记的本体。每台设备是一个[并发组](https://github.com/coda-console/coda/blob/main/docs/workflows.md#并发组)，iOS 为 `device:<设备名>`，安卓为 `entity:<UUID>`，容量 1；
 排到、装 App、交给会话写在它的能力 `use-testbed`（`.coda/capabilities/use-testbed.bpmn`）里，会话借用设备的命令走它的另一个能力 `run-on-device`。
 它依赖[宿主资源](../host/README.md)插件（`extensionDependencies`），接在那边的扩展点 `kinds` 上：会话里 `host-sim --kind <设备名>` 由它的 `scripts/host-sim.mjs` 处理。

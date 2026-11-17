@@ -1,4 +1,4 @@
-import { entityId, device, declarations } from './lib/android.mjs';
+import { entityId, device, declarations, record } from './lib/android.mjs';
 
 const handlers = [];
 export async function activate(coda) {
@@ -9,8 +9,8 @@ export async function activate(coda) {
   handlers.push(coda.resources.handle('return', () => phone.return()));
   const settings = JSON.parse((await coda.environment()).CODA_PLUGIN_SETTINGS || '{}');
   const declared = await declarations(id, settings);
-  await coda.resources.declareEntities(declared.entities);
-  await coda.resources.declareLinks(declared.links);
+  await coda.replace('coda/entity@1', declared.entities.map(item => record(coda.plugin.id, item)));
+  await coda.replace('coda/link@1', declared.links.map(item => record(coda.plugin.id, item)));
 }
 
 export function deactivate() {

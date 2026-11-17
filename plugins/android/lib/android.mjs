@@ -73,6 +73,10 @@ export function device(state, run = nsenter) {
   };
 }
 
+// The record a declaration is: its ID, the rest as the spec with the plugin that holds it.
+// No status: the host keeps the one it has (an entity lent out stays so), or gives a new one its first.
+export const record = (plugin, { id, ...spec }) => ({ id, spec: { ...spec, plugin } });
+
 export function links(id, { address, port, machines }) {
   if (!machines.length) return [];
   return [{ id: 'adb', entity: id, protocol: 'adb', endpoint: `${address}:${port}`, reach: { scope: 'machines', machines } }];
