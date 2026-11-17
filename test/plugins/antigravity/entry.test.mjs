@@ -172,6 +172,16 @@ test('the entry ends on SIGTERM', async t => {
   assert.ok(Date.now() - started < 2000);
 });
 
+// The entry's answer comes on its stdout and its log on its stderr: which of the two reaches the test first is not fixed.
+function stderrHas(p, line) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { p.child.stderr.off('data', look); reject(new Error(`stderr never had ${line}: ${p.stderr}`)); }, 3000);
+    const look = () => { if (p.stderr.includes(line)) { clearTimeout(timer); p.child.stderr.off('data', look); resolve(); } };
+    p.child.stderr.on('data', look);
+    look();
+  });
+}
+
 test('the retry notice of agy does not reach Coda, the answer around it does, and the entry says it on its stderr', async t => {
   const { p, request, messages, sessionId } = await session(t);
   const text = update => ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: update } });
@@ -180,5 +190,5 @@ test('the retry notice of agy does not reach Coda, the answer around it does, an
   await request('fake/updates', { sessionId, updates });
   const arrived = messages.filter(message => message.method === 'session/update').map(message => message.params.update);
   assert.deepEqual(arrived.filter(update => update.sessionUpdate !== 'current_mode_update'), updates.slice(1));
-  assert.ok(p.stderr.includes(`agy 重试模型请求，提示不转给 Coda：${notice.trim()}`), p.stderr);
+  await stderrHas(p, `agy 重试模型请求，提示不转给 Coda：${notice.trim()}`);
 });
