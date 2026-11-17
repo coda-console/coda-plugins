@@ -2,11 +2,13 @@
 
 ## 运行器与执行环境
 
+3.0.0（接口破坏性变更）：记录的读写换成 Coda 的新接口（`coda.put`、`coda.watch`），不再用 `protocols.observe`、`put`、`setStatus`、`publish`，也不再自己串行写。执行器记录整份写（spec 与 status 一起），只在内容变了或 status 满 55 秒时写；status 里的 `observedRevision` 改为 spec 内容的摘要（执行器协议的 status 非空时必须带这个字段，只是 `required` 里没列、写在 `anyOf` 的第二支；Coda 里没有读它的地方，所以只求合乎协议）。只给预览渠道。
+
 2.4.0：删掉外派执行（Coda 已不再把步骤交给别台执行）：`execute` 的处理函数、源码获取与工作副本、独立 worker 与 hook，以及设置 `host.enabled`、`host.labels`；`run-held` 只在本机排队，不再收 `local`，也不再去空间里别的 Mac 跑。只给预览渠道。
 
-host 在清单里声明实现 `coda/executor@1`，把自己这台机器的执行环境发布为一条 `coda/executor@1` 记录（ID `host`），Coda 的执行环境页读它；不接 `execute`，也不再开 `coda/run@1` 运行。
+host 在清单里声明实现 `coda/executor@1`，把自己这台机器的执行环境发布为一条 `coda/executor@1` 记录（插件给的 key 是 `host`，记录 ID 由宿主按后端、插件、种类和 key 派生，插件不生成也不保存）；Coda 的执行环境页显示的是 Coda 自己算的执行器，不读这条记录。不接 `execute`，也不再开 `coda/run@1` 运行。
 
-启动时先读上次运行留下的 `coda/executor@1` 记录，按它的 revision 接管，否则 Coda 会以 conflict 拒绝写这条记录。
+启动后第一次写用 `coda.replace` 把本插件的执行器记录整份给出：上次运行留下的同一条被盖掉（停止时写的 `accepting: false` 随之换掉），2.4.0 留下的 ID 为 `host`、不带 key 的旧记录被删掉；之后照常 `coda.put`。插件不观察自己的记录，所以不会被自己写的 status 再触发。
 
 配置意图、能力和名额在本机持有。`host.capacity` 配置名额数；系统／CPU、Node、Xcode、可用模拟器 runtime 与图形会话由本机探测，每分钟刷新，不启动模拟器。容量和占用订阅 `concurrency-groups`，包括流程里写 `coda:group="host"` 的步骤与 run-held，公布值不构成预留；没有组 `host` 或容量为 0 时记录写 `accepting: false`。协议的执行器配置仍要求 `enabled` 与 `labels`，记录里固定写 `true` 与空数组。
 

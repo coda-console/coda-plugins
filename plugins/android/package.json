@@ -3,7 +3,12 @@
   "id": "android",
   "displayName": "安卓手机",
   "description": "由安卓手机自己保管本体，借出记录设置，归还复原并熄屏",
-  "version": "0.1.0",
+  "version": "0.2.0",
+  "coda": {
+    "channels": [
+      "preview"
+    ]
+  },
   "icon": {
     "symbol": "smartphone",
     "color": "green"
@@ -16,6 +21,10 @@
     "onStartupFinished"
   ],
   "contributes": {
+    "protocolImplementations": [
+      "coda/entity@1",
+      "coda/link@1"
+    ],
     "configuration": {
       "title": "安卓手机",
       "properties": {

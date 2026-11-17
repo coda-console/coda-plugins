@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, renameSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, renameSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import { setTimeout } from 'node:timers/promises';
 import { activate, deactivate } from '../../../plugins/testbed/main.mjs';
+import { recordsHost, recordId, held } from '../records.mjs';
 
 const phone = { id: 'phone', name: 'Phone', udid: 'UDID', note: 'local runner required' };
 function fixture(t) {
@@ -13,36 +14,73 @@ function fixture(t) {
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   return dir;
 }
-async function until(check) {
-  for (let i = 0; i < 300; i++) {
+async function until(check, tries = 300) {
+  for (let i = 0; i < tries; i++) {
     if (check()) return;
     await setTimeout(10);
   }
   assert.fail('file change not observed');
 }
+// The plugin activated with a count of its publishes. fs.watchFile's first stat is only its baseline and sets nothing off, so a
+// change made before that stat is done is lost: the watcher is ready once a change of the file has been seen to publish.
+async function activated(coda, state, file) {
+  let published = 0;
+  await activate({ ...coda, plugin: { ...coda.plugin, state }, replace: (...args) => { published++; return coda.replace(...args); } });
+  for (let probe = 1; probe <= 5; probe++) {
+    const seen = published, time = new Date(Date.now() + probe * 1000);
+    utimesSync(file, time, time);
+    try { await until(() => published > seen, 100); return; } catch {}
+  }
+  assert.fail('devices.json is not watched');
+}
 
 test('declarations follow atomic replacements; invalid/missing registration preserves ownership; [] revokes', async t => {
-  const state = fixture(t), file = join(state, 'devices.json'), calls = [], errors = [];
+  const state = fixture(t), file = join(state, 'devices.json'), errors = [];
   const original = console.error;
   console.error = message => errors.push(message);
   t.after(async () => { await deactivate(); console.error = original; });
+  const { coda, records } = recordsHost('testbed');
+  const groups = () => held(records, 'coda/group@1');
   writeFileSync(file, JSON.stringify([phone]));
-  await activate({ plugin: { state }, resources: { declareGroups: async groups => calls.push(groups) } });
-  assert.deepEqual(calls[0], [{ name: 'device:phone', attributes: { name: phone.name, udid: phone.udid, note: phone.note, personal: 'false', platform: 'ios' }, unique: ['udid'] }]);
+  await activated(coda, state, file);
+  assert.deepEqual(groups(), [{ owner: 'testbed', kind: 'coda/group@1', id: recordId('testbed', 'coda/group@1', phone.udid), key: phone.udid, status: {},
+    spec: { name: 'device:phone', plugin: 'testbed', unique: ['udid'], attributes: { name: phone.name, udid: phone.udid, note: phone.note, personal: 'false', platform: 'ios' } } }]);
   writeFileSync(join(state, 'next'), JSON.stringify([{ ...phone, name: 'Changed', personal: true }]));
   renameSync(join(state, 'next'), file);
-  await until(() => calls.at(-1)[0]?.attributes.name === 'Changed');
-  assert.equal(calls.at(-1)[0].attributes.personal, 'true');
-  let count = calls.length;
+  await until(() => groups()[0]?.spec.attributes.name === 'Changed');
+  assert.equal(groups()[0].spec.attributes.personal, 'true');
+  const before = structuredClone(groups());
   writeFileSync(file, '{broken');
   await until(() => errors.length > 0);
-  assert.equal(calls.length, count);
+  assert.deepEqual(groups(), before);
   const logged = errors.length;
   rmSync(file);
   await until(() => errors.length > logged);
-  assert.equal(calls.length, count);
+  assert.deepEqual(groups(), before);
   writeFileSync(file, '[]');
-  await until(() => calls.at(-1).length === 0);
+  await until(() => groups().length === 0);
+});
+
+test('the set replaces only this plugin\'s groups; a refused set is logged', async t => {
+  const state = fixture(t), file = join(state, 'devices.json'), errors = [];
+  const original = console.error;
+  console.error = message => errors.push(message);
+  t.after(async () => { await deactivate(); console.error = original; });
+  const { coda, records } = recordsHost('testbed');
+  const other = { owner: 'other', kind: 'coda/group@1', id: recordId('other', 'coda/group@1', phone.udid), key: phone.udid, status: {}, spec: { name: 'device:other', plugin: 'other', attributes: {}, unique: [] } };
+  const entity = { owner: 'coda', kind: 'coda/group@1', id: '03acc3f8-6a6c-4f65-a90e-48f3af5aa3e5', status: {}, spec: { name: 'entity:03acc3f8-6a6c-4f65-a90e-48f3af5aa3e5', plugin: 'android', attributes: {}, unique: [] } };
+  for (const row of [other, entity]) records.set(`${row.kind}/${row.id}`, row);
+  writeFileSync(file, JSON.stringify([phone]));
+  await activated(coda, state, file);
+  const mine = recordId('testbed', 'coda/group@1', phone.udid);
+  assert.deepEqual(held(records, 'coda/group@1').map(row => row.id).sort(), [other.id, mine, entity.id].sort());
+  assert.deepEqual([records.get(`coda/group@1/${other.id}`), records.get(`coda/group@1/${entity.id}`)], [other, entity]);
+  // A key the host refuses (longer than 256): nothing changes, the refusal is logged.
+  writeFileSync(file, JSON.stringify([{ ...phone, udid: 'U'.repeat(257) }]));
+  await until(() => errors.length > 0);
+  assert.match(errors[0], /^测试机归属声明失败：bad or repeated key/);
+  assert.equal(records.get(`coda/group@1/${other.id}`), other);
+  assert.ok(records.has(`coda/group@1/${mine}`));
 });
 
 test('find resolves remote devices and propagates missing/conflict errors', t => {

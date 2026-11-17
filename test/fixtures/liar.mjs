@@ -229,9 +229,10 @@ async function act(sessionId, me, first) {
   // The second turn, the one the checker stops, never ends.
   if (mode === 'ignore-cancel' && !first) await new Promise(() => {});
   say(sessionId, 'ok');
-  // Keep the honest second turn alive until it reads the cancel and the checker's barrier. A fast echo can otherwise
-  // finish before the checker sends the cancel, which is valid but does not exercise cancellation.
-  if (mode === 'honest' && !first) await new Promise(resolve => { afterCancel = resolve; });
+  // Keep the honest second turn (with or without a system prompt) alive until it reads the cancel and the checker's
+  // barrier. A fast echo can otherwise finish before the checker sends the cancel, which is valid but does not exercise
+  // cancellation.
+  if (['honest', 'no-system-prompt'].includes(mode) && !first) await new Promise(resolve => { afterCancel = resolve; });
   // The steering turn has finished its work, but its reply is still pending when the steering message arrives. Hold that
   // reply until the message is read so this ordering does not depend on how stdout chunks are delivered.
   if (mode === 'steer' && turns === 2) {
