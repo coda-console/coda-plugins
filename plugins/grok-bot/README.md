@@ -1,5 +1,7 @@
 # Grok Bot
 
+0.8.0（接口破坏性变更）：记录的读写换成 Coda 的新接口（`coda.replace`、`coda.put`），不再用 `protocols.observe`、`put`、`update`、`setStatus`、`delete`、`publish`，也不再有 `revision` 条件写和插件自己的串行队列（宿主按插件依次写）。插件不再读回自己的记录：本机的 `coda/session@1` 里混着 Coda 自己和别的插件的会话，条目上也没有提供者，所以持有哪些由插件自己知道（登录账号与 Bot 名单），只对这些写和删。需要先带这套接口的 Coda（coda#2749）。只给预览渠道。
+
 0.7.0 `read`、`draft`、`post` 改用 `coda.handle` 登记，对应 Coda 宿主代管「做事的操作」（coda#2749）：`post` 发完才返回，不再写 `coda/run@1`，清单不再声明它，启动时也不再改写遗留运行。需要 Coda 先合并该改动；本版不再兼容旧写法。
 
 0.6.0 删掉远端入口、绑定和工单回传（`remote/`、绑定页与资源页「绑定」按钮、`remoteCode` 调用）；会话收发照旧。Coda 已删除对应的外部会话绑定与 `coda:reportTo`，旧绑定不再可用。
@@ -12,7 +14,7 @@
 
 Provider 每 30 秒重新读取登录及 Bot 名单；每个 Bot 自动建立一条记录，无选择下拉或会话命令。容器是登录账号，账号本人为 `self: true, kind: person`，Bot 为 `kind: agent`。
 
-账号 ID 是 `GetMe.userId`（没有时用 `authId`）的 SHA-256；记录 ID 为 `grok-bot:<账号摘要>:<URI 编码的 agentId>`。不含本机 ID、插件目录或随机数，重装不变。服务端删除 Bot 或切换账号后撤下旧记录。
+账号 ID 是 `GetMe.userId`（没有时用 `authId`）的 SHA-256；记录 ID 为 `grok-bot:<账号摘要>:<URI 编码的 agentId>`。不含本机 ID、插件目录或随机数，重装不变。启动后第一次成功读到 Bot 名单时，用 `coda.replace` 把全集一次给出，宿主删掉本插件上次留下、现在已经没有的记录，不碰别的插件和 Coda 自己的会话；之后名单有变（新增、删除、换账号）再整份给一次，状态变化逐条 `coda.put`。还没登录或名单读不到时不写记录，上次留下的原样留在宿主里，直到第一次成功。
 
 ## 读取与发送
 

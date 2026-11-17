@@ -6,6 +6,7 @@ import { NativeAuth, pause, writePrivate } from './auth.mjs';
 import { account } from './account.mjs';
 import { history, messages, decode, signature, position, conversation } from './transcript.mjs';
 export const SESSION = 'coda/session@1';
+const sameSent = (a, b) => JSON.stringify([...a]) === JSON.stringify([...b]);
 export const recordId = (account, bot) => `grok-bot:${account}:${encodeURIComponent(bot)}`;
 export function messageId(callId, record) {
   const b = createHash('sha256').update(JSON.stringify([record, callId])).digest().subarray(0, 16);
@@ -17,32 +18,27 @@ export class Provider {
   constructor(coda, { auth, clock = { setTimeout, clearTimeout }, stableMs = 1000 } = {}) {
     Object.assign(this, { coda, clock, stableMs });
     this.auth = auth ?? new NativeAuth({ root: coda.plugin.state });
-    this.records = new Map(); this.bots = new Map(); this.watches = new Map(); this.mirrors = new Map(); this.changes = new EventEmitter();
-    this.controller = new AbortController(); this.queue = Promise.resolve();
+    // The records this plugin holds, as it means them to be: `{ spec, status }` by ID. Nothing is read back from the host,
+    // where this machine's sessions of Coda itself and of other plugins are mixed in with these.
+    // `sent` is what the host was last given for each (as JSON) and `given` whether the host's set is known to be `sent`:
+    // a write that fails is taken out of them, so it is made again, not skipped as the same.
+    this.records = new Map(); this.sent = new Map(); this.given = false; this.bots = new Map(); this.watches = new Map(); this.mirrors = new Map(); this.changes = new EventEmitter();
+    this.controller = new AbortController();
     this.indexFile = join(coda.plugin.state, 'transcript-index.json');
     try { this.index = JSON.parse(readFileSync(this.indexFile, 'utf8')); } catch (e) { if (e.code !== 'ENOENT') throw e; this.index = {}; }
   }
-  schedule(fn) {
-    const next = this.queue.then(fn);
-    this.queue = next.catch(e => console.error('[grok-bot]', e.message));
-    return next;
-  }
   async start() {
-    this.observer = await this.coda.protocols.observe(SESSION, ({ type, id, object }) => {
-      if (object.provider !== this.coda.plugin.id) return;
-      if (type === 'DELETED') this.records.delete(id); else this.records.set(id, object);
-    }, 'local');
     this.handlers = [
       this.coda.handle(SESSION, 'read', (input, { record }) => this.read(record.id, input)),
       this.coda.handle(SESSION, 'draft', () => ({})),
       this.coda.handle(SESSION, 'post', (input, ctx) => this.post(input, ctx)),
     ];
-    await this.schedule(() => this.sync());
+    await this.sync();
     this.polling = this.poll();
   }
   async poll() {
     while (!this.controller.signal.aborted) {
-      try { await pause(this.clock, 30_000, this.controller.signal); await this.schedule(() => this.sync()); }
+      try { await pause(this.clock, 30_000, this.controller.signal); await this.sync(); }
       catch (e) { if (!this.controller.signal.aborted) console.error('[grok-bot]', e.message); }
     }
   }
@@ -56,27 +52,31 @@ export class Provider {
     try {
       const who = await account(this.auth);
       const { agents = [] } = await this.auth.client.request('ListGrokBotAgents', {});
-      const listed = new Set();
+      const next = new Map();
       for (const bot of agents) {
-        const id = recordId(who.id, bot.agentId); listed.add(id);
+        const id = recordId(who.id, bot.agentId);
         this.bots.set(id, { bot: bot.agentId, self: who.id });
         const spec = { title: bot.name || bot.agentId, container: who };
         const status = { participants: [{ id: who.id, name: who.title, self: true, kind: 'person' }, { id: bot.agentId, name: spec.title, kind: 'agent' }], state: 'active' };
         const held = this.records.get(id);
-        if (!held) { this.records.set(id, await this.coda.protocols.put({ kind: SESSION, id, spec, status })); await this.coda.protocols.publish(SESSION, id); }
-        else {
-          if (JSON.stringify(held.spec) !== JSON.stringify(spec)) this.records.set(id, await this.coda.protocols.update(SESSION, id, spec, held.revision));
-          await this.write(id, { ...status, ...this.activityStatus(id), ...(held.status.head ? { head: held.status.head } : {}) });
-        }
+        next.set(id, { spec, status: held ? { ...status, ...this.activityStatus(id), ...(held.status.head ? { head: held.status.head } : {}) } : status });
         if (!this.watches.has(id)) {
           const controller = new AbortController();
           const running = this.watch(id, controller.signal);
           this.watches.set(id, { controller, running });
         }
       }
-      for (const id of this.records.keys()) if (!listed.has(id)) {
+      for (const id of this.records.keys()) if (!next.has(id)) {
         this.watches.get(id)?.controller.abort(); this.watches.delete(id); this.bots.delete(id); this.clearMirror(id);
-        await this.coda.protocols.delete(SESSION, id); this.records.delete(id);
+      }
+      // The whole set, once the first one is out: the host drops what an earlier run left that is not in it, and only this plugin's.
+      this.records = next;
+      const sent = new Map([...next].map(([id, record]) => [id, JSON.stringify(record)]));
+      if (!this.given || !sameSent(this.sent, sent)) {
+        this.sent = sent;
+        try { await this.coda.replace(SESSION, [...next].map(([id, record]) => ({ id, ...record }))); }
+        catch (e) { this.given = false; throw e; }
+        this.given = true;
       }
       return true;
     } catch (e) {
@@ -85,8 +85,13 @@ export class Provider {
   }
   async write(id, status) {
     const held = this.records.get(id);
-    if (!held || JSON.stringify(held.status) === JSON.stringify(status)) return;
-    this.records.set(id, await this.coda.protocols.setStatus(SESSION, id, status, held.revision));
+    if (!held) return;
+    const record = { spec: held.spec, status }, json = JSON.stringify(record);
+    this.records.set(id, record);
+    if (this.sent.get(id) === json) return;
+    this.sent.set(id, json);
+    try { await this.coda.put({ kind: SESSION, id }, record); }
+    catch (e) { if (this.sent.get(id) === json) this.sent.delete(id); throw e; }
   }
   activityStatus(id) {
     const activity = this.mirrors.get(id)?.activity;
@@ -129,7 +134,7 @@ export class Provider {
       mirror.pending.set(row.entryId, next);
       next.timer = this.clock.setTimeout(() => {
         next.ready = true;
-        void this.schedule(() => this.flush(id)).catch(() => {});
+        void this.flush(id).catch(e => console.error('[grok-bot]', e.message));
       }, this.stableMs);
     }
   }
@@ -173,25 +178,23 @@ export class Provider {
         this.clearMirror(id);
         this.mirrors.set(id, { generation: baseline.generation, entries: new Map(), pending: new Map(),
           messages: previous?.generation === baseline.generation ? previous.messages : new Map() });
-        await this.schedule(async () => {
-          const { activity, ...status } = this.records.get(id).status;
-          await this.write(id, status);
-        });
+        const { activity, ...status } = this.records.get(id).status;
+        await this.write(id, status);
         this.updateRows(id, baseline.entries);
-        if (!this.mirrors.get(id).pending.size) await this.schedule(() => this.flush(id));
+        if (!this.mirrors.get(id).pending.size) await this.flush(id);
         const seq = baseline.entries.reduce((n, r) => BigInt(r.updatedSeq ?? r.seq) > BigInt(n) ? String(r.updatedSeq ?? r.seq) : n, '0');
         const stream = await this.auth.client.request('WatchGrokBotTranscripts', { cursors: [{ agentId: bot, sessionId: '', generation: baseline.generation, afterUpdatedSeq: seq }], includeUnlistedAgents: true, inlineBodyMaxBytes: 262144 }, { stream: true, signal });
         for await (const event of stream) {
           if (event.rows?.agentId === bot && !(event.rows.sessionId ?? '')) this.updateRows(id, event.rows.entries ?? []);
           if (event.agentState) for (const live of event.agentState.live ?? [])
             if (live.agentId === bot && !(live.sessionId ?? ''))
-              await this.schedule(() => this.updateLive(id, live));
+              await this.updateLive(id, live);
           const reset = event.cleared ?? event.cursorTooOld;
           if (reset && (!reset.agentId || reset.agentId === bot) && !(reset.sessionId ?? '')) break;
         }
       } catch (e) {
         if (signal.aborted) break;
-        await this.schedule(() => this.write(id, { ...this.records.get(id)?.status, state: 'unreachable', reason: e.message }));
+        await this.write(id, { ...this.records.get(id)?.status, state: 'unreachable', reason: e.message });
       }
       // A disconnected stream cannot establish stability. Rebuild before exposing pending rows.
       const mirror = this.mirrors.get(id);
@@ -285,7 +288,5 @@ export class Provider {
     for (const [id, w] of this.watches) { w.controller.abort(); this.clearMirror(id); }
     for (const h of this.handlers ?? []) h.dispose();
     await Promise.allSettled([this.polling, ...[...this.watches.values()].map(w => w.running)]);
-    await this.queue;
-    await this.observer?.dispose();
   }
 }

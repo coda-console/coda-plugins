@@ -29,27 +29,31 @@ sessionProtocol.status.properties.activity = {
 };
 for (const d of [sessionProtocol]) types.register({ ...d, kind: d.name, participants: () => [] });
 const until = async fn => { for (let i=0; i<200; i++) { if (fn()) return; await delay(5); } assert.fail('condition timed out'); };
+// The records of the new interface (`put`, `delete`, `replace`), kept whole as a plugin writes them. A record has the plugin
+// that holds it: writing or deleting another plugin's is refused, and `replace` only clears the caller's own.
 function host(root) {
-  const records = new Map(), watchers = [], handlers = new Map(); let revision = 0;
+  const records = new Map(), handlers = new Map(), writes = [], self = 'grok-bot'; let version = 0, failing = null;
+  const fails = op => { if (failing === op) { failing = null; throw new Error('宿主没有收'); } };
   const key = (kind, id) => `${kind}/${id}`;
-  const save = object => {
-    validate(types.get(object.kind).spec, object.spec, object.kind);
-    validate(types.get(object.kind).status, object.status, object.kind);
-    object = { ...object, provider: 'grok-bot', revision: String(++revision) }; records.set(key(object.kind, object.id), object);
-    for (const w of watchers) if (w.kind === object.kind) w.fn({ type: 'MODIFIED', id: object.id, object });
-    return object;
+  const own = (kind, id) => { const held = records.get(key(kind, id)); if (held && held.owner !== self) throw new Error(`${held.owner} holds ${id}`); };
+  const save = (kind, id, { spec, status = {} }) => {
+    validate(types.get(kind).spec, spec, 'spec'); validate(types.get(kind).status, status, 'status');
+    own(kind, id); writes.push(id); records.set(key(kind, id), { owner: self, kind, id, spec, status, version: String(++version) });
   };
-  const coda = { plugin: { id: 'grok-bot', state: root },
+  const coda = { plugin: { id: self, state: root },
     handle: (kind, op, fn) => { handlers.set(`${kind}/${op}`, fn); return { dispose() {} }; },
     error: (code, message, { effects } = {}) => Object.assign(new Error(message), { code, effects: effects ?? 'unknown' }),
-    protocols: {
-      observe: async (kind, fn) => { const w = { kind, fn }; watchers.push(w); for (const o of records.values()) if (o.kind === kind) fn({ type: 'ADDED', id: o.id, object: o }); return { dispose() { watchers.splice(watchers.indexOf(w), 1); } }; },
-      put: async o => save(o), publish: async () => {},
-      update: async (kind, id, spec, rev) => { const o=records.get(key(kind,id)); assert.equal(rev,o.revision); return save({...o,spec}); },
-      setStatus: async (kind,id,status,rev) => { const o=records.get(key(kind,id)); assert.equal(rev,o.revision); return save({...o,status}); },
-      delete: async (kind,id) => records.delete(key(kind,id)),
+    put: async ({ kind, id }, body) => { fails('put'); save(kind, id, body); },
+    delete: async ({ kind, id }) => { own(kind, id); writes.push(id); records.delete(key(kind, id)); },
+    replace: async (kind, items) => {
+      fails('replace');
+      for (const item of items) own(kind, item.id);
+      for (const [k, held] of records) if (held.kind === kind && held.owner === self) records.delete(k);
+      for (const { id, ...body } of items) save(kind, id, body);
     } };
-  return { coda, handlers };
+  // What another plugin, or Coda itself, holds on this machine.
+  const foreign = (owner, kind, id, spec, status = {}) => records.set(key(kind, id), { owner, kind, id, spec, status, version: String(++version) });
+  return { coda, handlers, records, writes, foreign, fail: op => { failing = op; } };
 }
 async function fixture(t, loggedIn = true, setup = () => {}) {
   const root = temporary(t), native = new FakeNative(), h = host(root);
@@ -63,7 +67,7 @@ async function fixture(t, loggedIn = true, setup = () => {}) {
       event.rows.entries[0].seq = row.seq; native.emit(event);
     }
   };
-  setup(native);
+  setup(native, h);
   const auth = new NativeAuth({ root, fetcher: native.fetch });
   const provider = new Provider(h.coda, { auth, stableMs: 10 });
   await provider.start(); t.after(() => provider.stop());
@@ -82,9 +86,61 @@ test('resource login followed by refresh lists stable per-bot records and person
   const login=f.auth.login(); assert.equal(new URL(login.url).hostname,'cursor.com'); await login.promise;
   await f.provider.sync(); assert.equal(f.provider.records.size,1);
   const record=f.provider.records.get(f.id());
-  assert.equal(record.id,recordId(record.spec.container.id,'inspector'));
+  assert.equal(f.id(),recordId(record.spec.container.id,'inspector'));
   assert.deepEqual(record.status.participants.map(p=>[p.kind,!!p.self]),[['person',true],['agent',false]]);
-  await f.provider.sync(); assert.equal(f.id(),record.id);
+  assert.deepEqual(f.records.get(`${SESSION}/${f.id()}`),{owner:'grok-bot',kind:SESSION,id:f.id(),spec:record.spec,status:record.status,version:f.records.get(`${SESSION}/${f.id()}`).version});
+  await f.provider.sync(); assert.equal(f.id(),recordId(record.spec.container.id,'inspector'));
+});
+
+test('sessions of Coda and of other plugins on this machine are never written or deleted; a leftover of an earlier run is dropped', async t => {
+  const session = { title: '别人的会话', container: { id: 'someone', title: '别人' } }, status = { participants: [], state: 'active' };
+  const f = await fixture(t, true, (native, h) => {
+    h.foreign('coda', SESSION, 'thread-1', session, status);
+    h.foreign('wechat', SESSION, 'wechat:friend', session, status);
+    h.foreign('grok-bot', SESSION, 'grok-bot:old:gone', session, status);
+  });
+  const others = () => [...f.records.values()].filter(r => r.owner !== 'grok-bot');
+  const before = structuredClone(others());
+  assert.equal(before.length, 2);
+  assert.deepEqual([...f.records.values()].filter(r => r.owner === 'grok-bot').map(r => r.id), [f.id()]);
+  // A message moves the head and a later sync finds the Bot gone: both only touch the plugin's own record.
+  f.native.emit(f.native.row('a', { kind: 'send-message', message: { type: 'text', content: 'first' } }, 1));
+  await until(() => f.provider.records.get(f.id()).status.head === '0:1');
+  assert.equal(f.records.get(`${SESSION}/${f.id()}`).status.head, '0:1');
+  const original = f.native.handler;
+  f.native.handler = async (method, params) => method === 'ListGrokBotAgents' ? Response.json({ agents: [] }) : original(method, params);
+  const id = f.id();
+  await f.provider.sync();
+  assert.equal(f.records.has(`${SESSION}/${id}`), false);
+  assert.deepEqual(others(), before);
+  assert.ok(f.writes.every(written => written === id), `wrote ${f.writes}`);
+});
+
+test('a write the host did not take is made again, not skipped as the same', async t => {
+  const f = await fixture(t), key = `${SESSION}/${f.id()}`, id = f.id();
+  const status = { ...f.provider.records.get(id).status, state: 'unreachable', reason: 'x' };
+  f.fail('put');
+  await assert.rejects(f.provider.write(id, status), /宿主没有收/);
+  assert.equal(f.records.get(key).status.state, 'active');
+  await f.provider.write(id, status);
+  assert.equal(f.records.get(key).status.reason, 'x');
+  // The same when the failed put is found by the next sync, not by a second write of it.
+  const next = { ...status, reason: 'y' };
+  f.fail('put');
+  await assert.rejects(f.provider.write(id, next), /宿主没有收/);
+  await f.provider.sync();
+  assert.equal(f.records.get(key).status.state, 'active');
+  assert.equal(f.records.get(key).status.reason, undefined);
+});
+
+test('the last Bot going away is dropped from the host on a later sync even when the first replace was refused', async t => {
+  const f = await fixture(t), key = `${SESSION}/${f.id()}`, original = f.native.handler;
+  f.native.handler = async (method, params) => method === 'ListGrokBotAgents' ? Response.json({ agents: [] }) : original(method, params);
+  f.fail('replace');
+  await f.provider.sync();
+  assert.ok(f.records.has(key));
+  await f.provider.sync();
+  assert.equal(f.records.has(key), false);
 });
 
 test('read latest/before/after, edits, stable head and no Routine mirror', async t => {
@@ -204,13 +260,13 @@ test('the Bot list loop shows the original error when renewal fails offline, and
     if(method==='token')throw new TypeError('fetch failed');
     return method==='GetMe'?new Response('{}',{status:401}):original(method,params);
   };
-  await f.provider.schedule(()=>f.provider.sync());
+  await f.provider.sync();
   assert.equal(reason(),'fetch failed');
   f.native.handler=async (method,params)=>{
     if(method==='token')return Response.json({},{status:400});
     return method==='GetMe'?new Response('{}',{status:401}):original(method,params);
   };
-  await f.provider.schedule(()=>f.provider.sync());
+  await f.provider.sync();
   assert.equal(reason(),'请在资源页重新登录');
 });
 
@@ -327,8 +383,8 @@ test('Watch live activity changes status only; busy work ignores old settlement 
   assert.deepEqual(await f.provider.read(f.id()), page);
   assert.equal(f.native.requests.length, requests);
   // Neither transcript flush nor the periodic Bot list refresh loses activity.
-  await f.provider.schedule(() => f.provider.flush(f.id()));
-  await f.provider.schedule(() => f.provider.sync());
+  await f.provider.flush(f.id());
+  await f.provider.sync();
   assert.equal(status().activity.text, '检查机器');
   f.native.emit(liveEvent({ hasRunningSubagents: true, lastTurnSettlement: settlement }));
   await until(() => !Object.hasOwn(status(), 'activity'));
