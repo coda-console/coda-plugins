@@ -51,6 +51,16 @@ const takenIn = m => m.user_message_uuids ?? (m.user_message_uuid ? [m.user_mess
 const conversing = m => !m.parent_tool_use_id && (['assistant', 'stream_event'].includes(m.type)
   || (m.type === 'user' && (!!m.origin || (Array.isArray(m.message?.content) && m.message.content.some(block => block?.type === 'tool_result')))));
 const failure = (message, code = -32603) => new RequestError(code, message);
+// A request for a session not running, with why (what ended it, `endReason`).
+const notRunning = reason => failure(`Claude 会话未在运行${reason ? `：${reason}` : ''}`, -32001);
+// An input refused before it went into the native session: nothing ran it, so Coda may send it again (docs/agent-protocol.md
+// 「原生会话已结束」: `session_ended`, `not_accepted`). A failure the error already names (a quota, a service) keeps its kind,
+// with `not_accepted` where the kind takes an input (not `auth_required`).
+const refused = error => {
+  const own = error.data?._meta?.coda?.failure;
+  const failure = !own ? { kind: 'session_ended', input: 'not_accepted' } : own.kind === 'auth_required' ? own : { ...own, input: 'not_accepted' };
+  return new RequestError(error.code ?? -32603, error.message, { _meta: { coda: { failure } } });
+};
 const denied = { behavior: 'deny', message: 'Coda 没有在请求结束前给出审批' };
 // A child session's output that comes before its task, kept until the task names that session: all of it, since what streamed
 // counts as said, a message's streamed pieces as one.
@@ -246,7 +256,7 @@ export class ClaudeSession {
     this.query = null; this.input.close();
     try { previous.close(); } catch {}
     await this.pump;
-    if (this.phase !== 'running') throw failure('Claude 会话未在运行', -32001);
+    if (this.phase !== 'running') throw notRunning(this.endReason);
     // One that cannot be started, or does not start, ends the session, as one that ends of itself does: no later turn waits on it.
     try {
       const said = await this.sdk.getSessionInfo(this.sessionId, { dir: this.cwd });
@@ -270,7 +280,7 @@ export class ClaudeSession {
   // Whether the next turn runs in another query than this one: on another service's model, or back on Claude's own.
   rerouted() { return (this.served(this.current.model)?.id ?? null) !== this.serviceModel; }
   async configure(configId, value) {
-    if (this.phase !== 'running') throw failure('Claude 会话未在运行', -32001);
+    if (this.phase !== 'running') throw notRunning(this.endReason);
     if (configId === 'mode') {
       if (!MODES.some(mode => mode.id === value)) throw failure('审批模式不可用', -32602);
       await this.query.setPermissionMode(value); this.current.mode = value;
@@ -298,10 +308,11 @@ export class ClaudeSession {
   }
   // Answered when the native result that names this input arrives; accepting it into the input says nothing yet.
   async prompt({ prompt }) {
-    if (this.phase !== 'running') throw failure('Claude 会话未在运行', -32001);
+    if (this.phase !== 'running') throw refused(notRunning(this.endReason));
     if (this.rerouted()) {
       if (!this.rerouting) { this.cancelling = false; this.rerouting = this.reroute().finally(() => { this.rerouting = null; }); }
-      await this.rerouting;
+      // A query that cannot be moved to fails here, before the input is pushed.
+      try { await this.rerouting; } catch (error) { throw refused(error); }
       // Stopped while it moved: the input is not given to the new query.
       if (this.cancelling) { this.cancelling = false; return { stopReason: 'cancelled' }; }
     }
@@ -445,10 +456,24 @@ export class ClaudeSession {
   end(query, error) {
     if (this.phase === 'ended') return;
     const intended = this.phase === 'closing';
+    // What ended it, kept for the turns that go on asking and written to the log: a query that ends without an error says so.
+    this.endReason = intended ? 'Coda 关闭了会话' : error?.message || 'Claude SDK 查询结束，没有给出错误';
+    if (!intended) process.stderr.write(`Claude 会话结束：${this.endReason}\n`);
+    const held = this.held, compacting = this.compacting;
     this.phase = 'ended'; this.input.close(); this.steering.clear(); this.held = null; this.ending = null;
     this.compacting?.answer({ compacted: false, reason: error?.message ?? 'Claude 会话已结束' }); this.compacting = null;
     for (const withdrawn of this.withdrawals) withdrawn.abort();
-    for (const { reject } of this.prompts.values()) reject(failure(error?.message ?? 'Claude 会话已结束'));
+    // Each prompt says whether the native session had its input, where that is known: the one a native turn of Coda's is running
+    // (or whose turn ended with messages left to take) was taken, those queued behind it never ran. With no such turn going, an
+    // input may or may not have been read before the session ended: not said. A compaction Coda asked for came before any prompt
+    // that waits (compact), and the turn going is its: those prompts have not run.
+    const running = !compacting && this.turning && !this.opening && !this.waits.handling && !this.waits.unclaimed;
+    let first = true;
+    for (const [id, { reject }] of this.prompts) {
+      const input = id === held || running && first ? 'accepted' : running || held || compacting ? 'not_accepted' : undefined;
+      first = false;
+      reject(new RequestError(-32603, `Claude 会话已结束：${this.endReason}`, { _meta: { coda: { failure: { kind: 'session_ended', ...(input && { input }) } } } }));
+    }
     this.prompts.clear();
     try { query?.close(); } catch {}
     this.dropMcpConfig();

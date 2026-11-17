@@ -36,6 +36,11 @@ createInterface({ input: process.stdin }).on('line', m => {
     : m.method === 'session/set_config_option' ? (effort = m.params.value, { configOptions: options() }) : null;
   if (result) { send({ id: m.id, result }); return; }
   if (m.method === 'session/prompt') {
+    // `crash`, `quit` and `kill` end the whole agent mid-turn: with exit code 3 after a line on stderr, with exit code 0, or by SIGKILL; `speak and kill` updates the session's title first.
+    if (m.params.prompt[0].text === 'quit') process.exit(0);
+    if (m.params.prompt[0].text === 'crash') { console.error('fake grok: Operation not permitted'); process.exit(3); }
+    if (m.params.prompt[0].text === 'speak and kill') { send({ method: 'session/update', params: { sessionId: 'native', update: { sessionUpdate: 'session_info_update', title: 'renamed' } } }); setTimeout(() => process.kill(process.pid, 'SIGKILL'), 50); return; }
+    if (m.params.prompt[0].text === 'kill') process.kill(process.pid, 'SIGKILL');
     if (m.params.prompt[0].text === 'hold') { held = m.id; say('holding'); return; }
     if (['ask', 'give up'].includes(m.params.prompt[0].text)) {
       const toolCallId = `ask-${m.id}`;

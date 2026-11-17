@@ -9,12 +9,15 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { grokBinary } from '../scripts/ask.mjs';
 import { deleteSession } from './delete.mjs';
+import { describeExit, endedError } from './exit.mjs';
 import { ASK, questionForm } from './questions.mjs';
 
 const modes = [{ id: 'auto', name: '自动审批', _meta: { coda: { shortName: '自动审批' } } },
   { id: 'always-approve', name: '全部放行', _meta: { coda: { shortName: '全部放行' } } }];
 const binary = grokBinary() ?? 'grok';
-const grok = spawn(binary, ['agent', '--no-leader', 'stdio'], { stdio: ['pipe', 'pipe', 'inherit'] });
+const grok = spawn(binary, ['agent', '--no-leader', 'stdio'], { stdio: ['pipe', 'pipe', 'pipe'] });
+let stderr = '';
+grok.stderr.on('data', chunk => { process.stderr.write(chunk); stderr = (stderr + chunk).slice(-2048); });
 const send = (stream, message) => stream.write(`${JSON.stringify(message)}\n`);
 const say = message => send(process.stdout, { jsonrpc: '2.0', ...message });
 const pending = new Map();
@@ -112,6 +115,16 @@ const stop = () => {
 };
 grok.stdin.on('error', () => {});
 grok.on('error', () => process.exit(1));
-grok.on('close', code => process.exit(stopping ? 0 : code ?? 1));
+// Grok dying on its own: the log and the prompts still waiting say how (exit.mjs).
+grok.on('close', (code, signal) => {
+  const waiting = [...pending].filter(([, request]) => request.method === 'session/prompt');
+  if (!stopping && (code !== 0 || waiting.length)) {
+    const message = describeExit({ code, signal, stderr });
+    process.stderr.write(`${message}\n`);
+    for (const [id] of waiting) say({ id, error: endedError(message) });
+  }
+  // What was said reaches Coda before this process ends.
+  process.stdout.write('', () => process.exit(stopping ? 0 : code ?? 1));
+});
 process.stdin.on('end', stop);
 for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.once(signal, stop);
