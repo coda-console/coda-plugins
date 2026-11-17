@@ -1,12 +1,11 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { randomUUID } from 'node:crypto';
+import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ProtocolTypes, validate } from '../../../check/coda/components/protocols/types.mjs';
-import { providerAPI } from '../../../check/coda/adapters/provider-api.mjs';
 const exec = promisify(execFile);
 const manifest = JSON.parse(readFileSync(new URL('../../../plugins/git/package.json', import.meta.url), 'utf8'));
 export const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null',
@@ -27,46 +26,42 @@ export async function fixture(t) {
 export const packet = line => Buffer.from((Buffer.byteLength(line) + 4).toString(16).padStart(4, '0') + line);
 
 // The plugin's reconciliation runs against the synchronized host API and real Git. Storage/transport belong
-// to Coda's tests; this fixture supplies events and rejects stale revisions, without starting a backend.
+// to Coda's tests; this fixture keeps the records of the new interface (`put`, `delete`, `watch`, events as
+// `{ type, id, entry }`), whole as a plugin writes them, and hands out each handler's result so a test can wait for it.
 export function host(state) {
-  const types = new ProtocolTypes(), objects = new Map(), listeners = new Map();
-  const published = new Set(), operations = new Map();
+  const types = new ProtocolTypes(), objects = new Map(), watchers = new Set(), pending = [], failures = [];
   for (const definition of manifest.contributes.protocols)
     types.register({ kind: definition.name, spec: definition.spec, status: definition.status, participants: () => [] });
-  const failures = []; let revision = 0;
-  const emit = (collection, event) => { for (const fn of listeners.get(collection) ?? []) fn(structuredClone(event)); };
-  const watch = async (collection, fn) => {
-    const set = listeners.get(collection) ?? new Set(); listeners.set(collection, set); set.add(fn);
-    for (const object of objects.values()) if (object.kind === collection) fn({ type: 'ADDED', id: object.id, object: structuredClone(object) });
-    return { dispose: () => set.delete(fn) };
+  let version = 0;
+  const entry = object => ({ owner: 'self', location: 'test', id: object.id, local: true, spec: object.spec, status: object.status, labels: object.labels, version: object.version });
+  const emit = (kind, type, object) => {
+    for (const watcher of watchers) if (watcher.kind === kind)
+      pending.push(Promise.resolve(watcher.fn(structuredClone({ type, id: object.id, entry: entry(object) }))).catch(error => failures.push(error)));
   };
-  const call = async (method, args) => {
-    const [kind, id] = method === 'put' ? [args[0].kind, args[0].id] : args;
-    const key = `${kind}/${id}`, old = objects.get(key), type = types.get(kind);
-    if (method === 'publish') {
-      if (args[2] === false) published.delete(key); else published.add(key);
-      return;
-    }
-    if (method === 'delete') { objects.delete(key); if (old) emit(kind, { type: 'DELETED', id, object: old }); return; }
-    const expected = method === 'put' ? args[0].revision : args[3];
-    if (old && expected !== old.revision) throw new Error('revision conflict');
-    const spec = method === 'put' ? args[0].spec : old.spec, status = method === 'setStatus' ? args[2] : old?.status ?? {};
-    validate(type.spec, spec, 'spec'); validate(type.status, status, 'status');
-    if (old && JSON.stringify(old.spec) === JSON.stringify(spec) && JSON.stringify(old.status) === JSON.stringify(status)) return old;
-    const object = { kind, id, spec, status, instance: old?.instance ?? randomUUID(), revision: String(++revision) };
-    objects.set(key, object); emit(kind, { type: old ? 'MODIFIED' : 'ADDED', id, object }); return object;
+  const watch = async (kind, fn, filter) => {
+    assert.deepEqual(filter, { scope: 'local' });
+    const watcher = { kind, fn }; watchers.add(watcher);
+    for (const object of objects.values()) if (object.kind === kind) emit(kind, 'ADDED', object);
+    return { dispose: () => watchers.delete(watcher) };
   };
-  const plugin = { id: 'git', protocolImplementations: manifest.contributes.protocolImplementations };
-  const coda = { plugin: { state }, environment: async () => env, watch,
+  const put = async ({ kind, id }, value) => {
+    const key = `${kind}/${id}`, old = objects.get(key), type = types.get(kind), status = value.status ?? {};
+    validate(type.spec, value.spec, 'spec'); validate(type.status, status, 'status');
+    if (old && JSON.stringify(old.spec) === JSON.stringify(value.spec) && JSON.stringify(old.status) === JSON.stringify(status)) return;
+    const object = { kind, id, spec: value.spec, status, labels: null, version: String(++version) };
+    objects.set(key, object); emit(kind, old ? 'MODIFIED' : 'ADDED', object);
+  };
+  const remove = async ({ kind, id }) => {
+    const old = objects.get(`${kind}/${id}`);
+    if (old) { objects.delete(`${kind}/${id}`); emit(kind, 'DELETED', old); }
+  };
+  const coda = { plugin: { state }, environment: async () => env, watch, put, delete: remove,
     services: { register: async (_id, handler) => { coda.handler = handler; return { dispose() {} }; } },
-    protocols: providerAPI({ call, watch, plugin, operations, report: (...error) => failures.push(error) }),
   };
-  return { coda, objects, failures, published, operations };
-}
-export async function idle(provider) {
-  for (let i = 0; i < 100; i++) {
-    const queue = provider.queue; await queue; await new Promise(resolve => setImmediate(resolve));
-    if (queue === provider.queue) return;
-  }
-  throw new Error('controller did not settle');
+  // Waits for every handler, and those the writes of the handlers set off.
+  const flush = async () => {
+    while (pending.length) await Promise.all(pending.splice(0));
+    if (failures.length) throw failures.shift();
+  };
+  return { coda, objects, failures, flush };
 }

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { capacityStatus, probe } from './capabilities.mjs';
 import { serveSimulatorStatus } from './simulator-status.mjs';
 
@@ -10,48 +11,42 @@ const canonical = value => JSON.stringify(value, (_, v) => v && !Array.isArray(v
 export class HostProvider {
   constructor(coda, { discover = probe, interval = setInterval } = {}) {
     Object.assign(this, { coda, discover, interval });
-    this.executorId = 'host'; this.subscriptions = [];
-    this.queue = Promise.resolve(); this.closed = false;
+    this.executorId = 'host'; this.subscriptions = []; this.closed = false;
   }
   async start() {
     this.discovered = await this.discover();
-    // The record a previous run left is written over at its revision, so read it before the first refresh.
-    (await this.coda.protocols.observe(EXECUTOR, event => { if (event.id === this.executorId) this.offered = event.object; }, 'local')).dispose();
     this.subscriptions.push(await this.coda.watch('concurrency-groups', event => {
       if (event.id === 'host') { this.group = event.type === 'DELETED' ? null : event.object; void this.refresh().catch(console.error); }
     }));
     await this.refresh();
-    await this.coda.protocols.publish(EXECUTOR, this.executorId);
     this.simulatorStatus = await serveSimulatorStatus(this.coda);
     this.probes = this.interval(() => {
       void this.discover().then(discovered => { this.discovered = discovered; return this.refresh(); }).catch(console.error);
     }, 60_000); this.probes?.unref?.();
   }
-  refresh() {
-    const next = this.queue.catch(() => {}).then(async () => {
-      if (this.closed) return;
-      const settings = JSON.parse((await this.coda.environment()).CODA_PLUGIN_SETTINGS ?? '{}');
-      // The executor schema still requires enabled and labels.
-      const spec = { enabled: true, capacity: { slots: settings['host.capacity'] ?? 1 }, labels: [], title: '本机运行器' };
-      let object = this.offered;
-      if (!object || canonical(object.spec) !== canonical(spec)) object = await this.coda.protocols.put({ kind: EXECUTOR, id: this.executorId, spec,
-        ...(object ? { revision: object.revision } : { status: {} }) });
-      this.offered = object;
-      const facts = capacityStatus(spec, this.group, this.discovered), old = object.status;
-      const { observedAt, observedRevision, ...before } = old;
-      // Don't chase our own status revisions or create an endless watch-update loop.
-      if (canonical(before) !== canonical(facts) || !observedAt || Date.now() - Date.parse(observedAt) >= 55_000) {
-        object = await this.coda.protocols.setStatus(EXECUTOR, object.id, { ...facts, observedAt: new Date().toISOString(), observedRevision: object.revision }, object.revision);
-        this.offered = object;
-      }
-    }); this.queue = next; return next;
+  // The record is written whole, the spec and the status together, only when its content differs from what was written last
+  // (or the status is a minute old): this plugin does not watch its own record, so what it writes sets nothing off.
+  async refresh() {
+    const settings = JSON.parse((await this.coda.environment()).CODA_PLUGIN_SETTINGS ?? '{}');
+    if (this.closed) return;
+    // The executor schema still requires enabled and labels.
+    const spec = { enabled: true, capacity: { slots: settings['host.capacity'] ?? 1 }, labels: [], title: '本机运行器' };
+    const facts = capacityStatus(spec, this.group, this.discovered), { observedAt, observedRevision: _, ...before } = this.written?.status ?? {};
+    if (canonical(this.written?.spec) === canonical(spec) && canonical(before) === canonical(facts) && observedAt && Date.now() - Date.parse(observedAt) < 55_000) return;
+    // The executor schema still requires `observedRevision`: which spec these facts were observed for, named by its content.
+    const observedRevision = createHash('sha256').update(canonical(spec)).digest('hex');
+    const written = { spec, status: { ...facts, observedAt: new Date().toISOString(), observedRevision } };
+    // Taken as written only once the write is done; `stop` waits for the last one under way, to write over it.
+    const writing = this.writing = this.coda.put({ kind: EXECUTOR, id: this.executorId }, written);
+    await writing;
+    this.written = written;
   }
   async stop() {
     this.closed = true; clearInterval(this.probes);
     await this.simulatorStatus?.dispose();
     for (const subscription of this.subscriptions) await subscription.dispose();
-    await this.queue.catch(() => {});
-    if (this.offered) this.offered = await this.coda.protocols.setStatus(EXECUTOR, this.offered.id,
-      { ...this.offered.status, accepting: false, reason: { code: 'stopped', message: '运行器插件已停止' } }, this.offered.revision);
+    await this.writing?.catch(() => {});
+    if (this.written) await this.coda.put({ kind: EXECUTOR, id: this.executorId },
+      { spec: this.written.spec, status: { ...this.written.status, accepting: false, reason: { code: 'stopped', message: '运行器插件已停止' } } });
   }
 }
