@@ -1,6 +1,16 @@
 # Git 源
 
-`@coda-console/git` 提供本机 Git 源登记和只读 Git smart HTTP。需要系统 Git（支持 protocol v2、`--path-format=absolute`）及包含 provider／流式服务接口、协议定义写在清单里、记录读写用 `coda.put`／`delete`／`get`／`list`／`watch` 的 Coda（coda#2080、#2079、#2176、#2749）。不接收机器 ID、机器列表或空间配置，不依赖 host，不改变执行／部署准入。
+`@coda-console/git` 提供本机 Git 源登记和只读 Git smart HTTP。需要系统 Git（支持 protocol v2、`--path-format=absolute`）及包含 provider／流式服务接口、协议定义写在清单里、记录读写用 `coda.replace`／`put` 的 Coda，且须是 H4 之后的结构减负的那一版（coda#2080、#2079、#2176、#2749）。不接收机器 ID、机器列表或空间配置，不依赖 host，不改变执行／部署准入。
+
+0.7.0（接口破坏性变更）：`sources.json` 改为登记的源的正本，插件是它的唯一写者，不再用 `coda.watch` 读回自己写的记录，也就没有了防回声的那一套（记录 ID 表、同 spec 比较、过时核对、写被拒后的补救）。启动时读文件，直接 `coda.replace` 整份给出；登记、删除都先写文件，再 `coda.replace`；核对出的 status 用 `coda.put` 写。管理入口的 GET 读到的是 `{ id, key, spec, status }`。**升级到 0.7.0 后要重新登记源**：已登记的源原先只在 Coda 的记录里，文件里没有，新版第一次启动是空的，启动时的 `replace` 会把它们全部删掉；文件带 `"version": 2` 才认；不带的（旧格式，名字 → 仓库身份，包括登记名恰好叫 `sources` 的）一律当作没有源，不迁移。须先装带「H4 之后的结构减负」的新 Coda，旧 Coda 不行。只给预览渠道。
+
+`sources.json` 的格式（状态目录里，0600，整份原子写）：
+
+```json
+{ "version": 2, "sources": { "<名字>": { "spec": { "name": "<名字>", "path": "<登记的绝对路径>" }, "identity": { "path": "…", "gitDir": "…", "commonDir": "…" } } } }
+```
+
+`spec` 即记录的 spec；`identity` 是源首次可用时固定的解析后的工作副本、Git 目录及公共目录，还没就绪过的源没有这一项。记录 ID、status 不存文件：ID 由 `replace` 回给插件，status 由每次核对写。
 
 0.6.0（接口破坏性变更）：记录的读写换成 Coda 的新接口（`coda.put`、`delete`、`watch`），不再用 `protocols.put`、`setStatus`、`publish`、`observe`、`control`，也不再有 `revision`、`instance`。管理入口去掉 `/sources/<名字>/publish`，POST 更新不再带 `revision`，GET 读到的是记录条目 `{ owner, location, id, local, spec, status, labels, version }`。插件写记录只给 key（源的名字），记录 ID 由宿主按后端、插件、种类和 key 派生；名字也写进 `spec.name`，读取地址变成 `/repos/<记录 ID>`；状态目录的 `sources.json` 改记「名字 → 固定的仓库身份」。启动时用 `coda.replace` 把现有带 key 的源整份给一次，旧版留下、不带 key 的源记录随之删掉；旧的 `sources.json` 当作没有，不迁移：已登记的源须重新登记。启动时先把现有的源都核对完，再开服务。插件只在新记录或 spec 变了时核对，自己写 status 的回声不再触发核对。只给预览渠道。
 
@@ -8,13 +18,13 @@
 
 ## 对象与本机管理入口
 
-协议名为 `git/source@1`，按 Coda 的协议格式写在插件清单的 `contributes.protocols` 里，并在 `contributes.protocolImplementations` 里声明实现。由插件保存本机正本；status 与 spec 一起整份写（`coda.put`），插件只对内容变了的 status 才写。代码里的协议名见 `lib/definitions.mjs`。
+协议名为 `git/source@1`，按 Coda 的协议格式写在插件清单的 `contributes.protocols` 里，并在 `contributes.protocolImplementations` 里声明实现。由插件保存本机正本（`sources.json`）；核对出的 status 与 spec 一起整份写（`coda.put`）。代码里的协议名见 `lib/definitions.mjs`。
 
 | 协议 | spec | status |
 | --- | --- | --- |
 | `git/source@1` | `name`：登记名；`path`：工作副本根目录或裸仓库的本机绝对路径 | `ready`、`url`，失败时 `reason` |
 
-源的名字使用 1–100 个字母、数字、`_`、`-`，管理入口按名字；名字就是记录的 key，记录 ID 由宿主从它派生，插件按条目上的 key 认源，不另存名字到 ID 的对应。源首次可用时会在 `sources.json` 里持久固定（以名字记；源删除时撤销，同名再登记是新的源，ID 不变，重新固定）解析后的工作副本、Git 目录及公共目录。符号链接改指另一仓库时，源变为不可用，重启也不会自动接管新仓库；须删除源后重新登记。
+源的名字使用 1–100 个字母、数字、`_`、`-`，管理入口按名字；名字就是记录的 key，记录 ID 由宿主从它派生，插件按条目上的 key 认源，不另存名字到 ID 的对应。源首次可用时会在 `sources.json` 里持久固定（随源记；源删除时一并撤销，同名再登记是新的源，ID 不变，重新固定）解析后的工作副本、Git 目录及公共目录。符号链接改指另一仓库时，源变为不可用，重启也不会自动接管新仓库；须删除源后重新登记。
 
 只有 provider 可创建源。其他本机插件用 `coda.api` 调管理入口（JSON，64 KiB 上限）；入口只接受可信 `caller.local === true`，设备和后端身份只能读取 Git 数据，不能提交路径。不要直接用另一个插件的 `coda.put` 创建本插件对象。
 
@@ -28,9 +38,9 @@ const subscription = await coda.watch('git/source@1', event => {
 }, { scope: 'local' });
 ```
 
-创建成功表示对象已接收，回的是 `{ kind, id }`，`id` 是宿主给的记录 ID；等 status.ready 再 fetch。GET `…/sources/<名字>` 读记录条目（条目带 `id` 和 `key`，`key` 即名字）。修改用同一路径 POST `{ spec }`（完整 spec）。状态失败后先修正原因再更新；spec 与现有的相同（键的顺序不计）也会重新核对。宿主拒绝写入时记录不变，插件重新核对它。
+创建成功回的是 `{ kind, id }`，`id` 是宿主给的记录 ID，此时已核对过一次，等 status.ready 再 fetch。GET `…/sources/<名字>` 读 `{ id, key, spec, status }`（`key` 即名字）。修改用同一路径 POST `{ spec }`，spec 只取 `path`；每次登记都重新核对，状态失败后先修正原因再登记同一路径即可。
 
-POST `…/sources/<名字>/delete` 撤下源；宿主拒绝删除时源留着，插件重新核对它。源在空间里都看得到（记录不再有「只在本机」一说）；spec 里是本机路径，读取仍只经本机的鉴权入口。跨机引用与入口由空间 Provider 映射，调用方不往本插件传机器参数。
+POST `…/sources/<名字>/delete` 撤下源。源在空间里都看得到（记录不再有「只在本机」一说）；spec 里是本机路径，读取仍只经本机的鉴权入口。跨机引用与入口由空间 Provider 映射，调用方不往本插件传机器参数。
 
 ## 只读 smart HTTP
 
