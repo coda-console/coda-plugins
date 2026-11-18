@@ -46,6 +46,8 @@
 
 11.0.1 跟上 Coda 宿主 H4 的记录 watch（[Coda #2749](https://github.com/coda-console/coda/issues/2749) 3.7）：监听 `coda/composer@1` 的事件是 `{ type, id, entry }`，处理函数改读 `entry` 的 `spec`、`status`。此前读的是已经没有的 `object`，每个事件都报错，Ultra 不再按输入框状态给说明。监听 `threads` 的事件仍是 `object`，不变。
 
+11.0.2 在清单根上用 `uses` 声明读 `coda/composer@1`、`coda/thread@1` 的记录（权限组 `read`）：监听输入框与 `threads` 集合要它们，没声明的新版 Coda 会以 `forbidden` 拒绝。旧版 Coda 读清单时忽略这个键。
+
 插件只返回补充，不改正文、附件、引用或输入框的执行者。多个模式的补充由 Coda 合并，`tell` 是字符串数组，按列表追加后随这条发送到每个收到它的会话；只要有一项 `divert: true` 就不发给默认去向，各模式追加的去向仍分别执行。
 
 | 模式 | 发出的一条的补充 |
