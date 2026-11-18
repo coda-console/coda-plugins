@@ -11,7 +11,7 @@
       <coda:input name="title" label="需求名" default="" description="也是需求分支进目标分支的 PR 标题；留空时由主 Agent 在第一张任务里写" />
       <coda:input name="devices" label="设备验收" type="boolean" default="false" description="改了客户端、要在 Mac 或 iPhone 上验收时打开" />
       <coda:input name="device" label="验收设备" type="string" default="" description="测试机设备名，如 duo-testbed；验收期间独占它；留空不占设备" />
-      <coda:input name="hold" label="验收时占用" type="string" default="" description="安装与设备验收期间另外占满的整个组，如项目的需求分支专用后端；留空不占。验收时要部署、而部署要占一个会和别的需求共用的组，就把这个组填在这里；只能填一个完整的组名，不要填 host 这类构建名额组（构建只在编译时短占短放，填进来反而会让构建和别的验收互相等住）；填成验收设备的组，等于独占这台设备，本段不再重复占" />
+      <coda:input name="hold" label="验收时占用" type="string" default="" description="安装与设备验收期间另外占满的整个组，如项目的需求分支专用后端；留空不占。验收时要部署、而部署要占一个会和别的需求共用的组，就把这个组填在这里；只能填一个完整的组名，不要填 host 这类构建名额组（构建只在编译时短占短放，填进来反而会让构建和别的验收互相等住）；只填环境组，不能填设备的组（填了开工就报错，设备填在「验收设备」里）；顺序只有「环境组 → 设备」一种" />
       <coda:input name="delivery" label="所属需求交付" type="string" default="" description="需求交付（deliver）运行的 ID；留空为独立交付" />
       <coda:input name="executor" label="执行者" type="agent" description="每一块的默认执行者，主 Agent 派块时可在备注里换；提交验收时的解冲突、整体评审的小问题也交它；不填则每块都要在备注里写" />
       <coda:input name="executor2" label="备用执行者" type="agent" description="每一块审查卡上「换备用执行者重做」的默认接手人，主 Agent 派块时可在备注里换；不填则不能换人" />
@@ -23,7 +23,13 @@
       <coda:input name="base" label="目标分支" default="" description="留空用仓库默认分支" />
     </extensionElements>
     <startEvent id="start" />
-    <sequenceFlow id="start-brief" sourceRef="start" targetRef="brief-choice" />
+    <sequenceFlow id="start-hold-check" sourceRef="start" targetRef="hold-check" />
+    <!-- 开工后第一步：「验收时占用」不能填设备的组（设备的组只能经「验收设备」占），填了在这里失败，不等到验收才发现。 -->
+    <scriptTask id="hold-check" name="检查验收时占用" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements><coda:env name="HOLD" value="=inputs.hold" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/hold.mjs"</script>
+    </scriptTask>
+    <sequenceFlow id="hold-checked" sourceRef="hold-check" targetRef="brief-choice" />
     <!-- 目标是发起时带的需求文字（run.message）。需求名和它都有时直接建需求分支；否则（如用户在会话里开启）第一张任务交给主 Agent，
          不叫醒它，随会话的下一条输入告诉它，由它把聊定的需求写下来。 -->
     <exclusiveGateway id="brief-choice" name="是否已有目标" default="brief-needed" />
@@ -377,11 +383,7 @@ PR：{{pr.url}}
       <callActivity id="device-resolve" name="解析验收设备" calledElement="resolve-testbed">
         <extensionElements><coda:param name="device" value="=inputs.device" /></extensionElements>
       </callActivity>
-      <sequenceFlow id="device-resolved" sourceRef="device-resolve" targetRef="device-group-choice" />
-      <!-- 验收设备解析出的组就是 hold 的组时，本段已经独占了它，等于已经占着设备，不再占第二次（再排同一个组会永远等自己）；宿主取锁前会去掉组名首尾的空白，所以比较前也去掉 hold 的。 -->
-      <exclusiveGateway id="device-group-choice" name="设备组是否已占着" default="device-group-held" />
-      <sequenceFlow id="device-group-free" sourceRef="device-group-choice" targetRef="device-lock"><conditionExpression xsi:type="tFormalExpression">=device-resolve.group != replace(inputs.hold, "^\s+|\s+$", "")</conditionExpression></sequenceFlow>
-      <sequenceFlow id="device-group-held" sourceRef="device-group-choice" targetRef="preview" />
+      <sequenceFlow id="device-resolved" sourceRef="device-resolve" targetRef="device-lock" />
       <serviceTask id="device-lock" name="等验收设备" coda:action="hold-group" coda:status="等验收设备 {{inputs.device}}">
         <extensionElements>
           <coda:param name="group" value="=device-resolve.group" />

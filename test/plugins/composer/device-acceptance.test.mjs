@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { readWorkflow } from '@coda-console/protocol/workflow';
 import { evaluate } from 'feelin';
 
@@ -36,10 +38,7 @@ for (const name of ['develop', 'deliver']) {
         devices && device ? 'device-resolve' : 'preview');
     }
     assert.equal(nodes['device-resolve'].calledElement, 'resolve-testbed');
-    assert.equal(route('device-resolve'), 'device-group-choice');
-    for (const [hold, expected] of [['', 'device-lock'], ['preview-backend', 'device-lock'], ['device:duo-testbed', 'preview']]) {
-      assert.equal(route('device-group-choice', { inputs: { hold }, 'device-resolve': { group: 'device:duo-testbed' } }), expected);
-    }
+    assert.equal(route('device-resolve'), 'device-lock');
     assert.equal(route('device-lock'), 'preview');
     for (const id of ['preview', 'preview-result', 'device', 'device-result', 'device-lock']) {
       assert.ok(segment.flowElements.includes(nodes[id]));
@@ -121,25 +120,20 @@ for (const name of ['develop', 'deliver']) {
     assert.equal(nodes['hold-lock'].status, '等 {{inputs.hold}}');
     assert.equal(route('hold-lock'), 'device-lock-choice');
     // 四种组合各自经过的占用步骤：只填组、只填设备、两者都填、都不填；有组时组一定在设备之前。
-    const walk = (inputs, group) => {
+    const walk = inputs => {
       const visited = [];
-      const context = { inputs, ...(group && { 'device-resolve': { group } }) };
+      const context = { inputs };
       for (let id = 'acceptance-start'; id !== 'preview'; id = route(id, context)) {
         assert.ok(!visited.includes(id), `验收段路径成环：${[...visited, id].join(' → ')}`);
         visited.push(id);
       }
       return visited;
     };
-    const path = (inputs, group) => walk(inputs, group).filter(id => ['hold-lock', 'device-lock'].includes(id));
+    const path = inputs => walk(inputs).filter(id => ['hold-lock', 'device-lock'].includes(id));
     assert.deepEqual(path({ devices: true, hold: 'preview-backend', device: '' }), ['hold-lock']);
     assert.deepEqual(path({ devices: true, hold: '', device: 'duo-testbed' }), ['device-lock']);
     assert.deepEqual(path({ devices: true, hold: 'preview-backend', device: 'duo-testbed' }), ['hold-lock', 'device-lock']);
     assert.deepEqual(path({ devices: true, hold: '', device: '' }), []);
-    // hold 就是设备解析出的组（含首尾空白，宿主取锁前会去掉）：本段已经独占它，不经过 device-lock。
-    for (const hold of ['device:duo-testbed', 'device:duo-testbed ', '  device:duo-testbed']) {
-      assert.deepEqual(walk({ devices: true, hold, device: 'duo-testbed' }, 'device:duo-testbed').filter(id => ['hold-lock', 'device-resolve', 'device-group-choice', 'device-lock'].includes(id)),
-        ['hold-lock', 'device-resolve', 'device-group-choice'], JSON.stringify(hold));
-    }
     for (const [id, text] of [['preview', '本段还占着组 preview-backend：你在这张任务里发起、要用这个组的运行借用它，不另排队；别的要用这个组的运行，按这个组的名额排队。'],
       ['device', '验收期间组 preview-backend 也一直被本段占着。']]) {
       const doc = nodes[id].documentation[0].text;
@@ -149,5 +143,31 @@ for (const name of ['develop', 'deliver']) {
     }
     // composer 不知道项目的组名和流程名。
     assert.doesNotMatch(xml, /preview-backend|backend-preview-deploy/);
+  });
+}
+
+for (const name of ['develop', 'deliver']) {
+  test(`${name}：开工后第一步检查「验收时占用」，设备的组直接失败，环境组照常`, async () => {
+    const xml = readFileSync(new URL(`../../../plugins/composer/.coda/workflows/${name}.bpmn`, import.meta.url), 'utf8');
+    const { root, problem } = await readWorkflow(xml, name);
+    assert.ok(!problem, problem);
+    const process = root.rootElements.find(e => e.$type === 'bpmn:Process');
+    const nodes = Object.fromEntries(process.flowElements.map(e => [e.id, e]));
+    const next = id => process.flowElements.find(e => e.$type === 'bpmn:SequenceFlow' && e.sourceRef === nodes[id]).targetRef.id;
+    assert.equal(next('start'), 'hold-check');
+    assert.equal(next('hold-check'), 'brief-choice');
+    const check = nodes['hold-check'];
+    assert.deepEqual(check.extensionElements.values.map(v => [v.name, v.value]), [['HOLD', '=inputs.hold']]);
+    assert.match(check.script, /scripts\/hold\.mjs/);
+    // 执行 BPMN 里配置的命令本身，步骤的成败就是它的退出码。
+    const plugin = fileURLToPath(new URL('../../../plugins/composer', import.meta.url));
+    const run = hold => spawnSync('bash', ['-c', check.script], { env: { ...globalThis.process.env, HOLD: hold, CODA_PLUGIN_PATH: plugin }, encoding: 'utf8' });
+    for (const hold of ['device:duo-testbed', ' device:duo-testbed\t', 'entity:0f5a1c52-4a3c-4e0e-9d57-6a1d0a1b2c3d']) {
+      const result = run(hold);
+      assert.equal(result.status, 1, JSON.stringify(hold));
+      assert.match(result.stderr, /「验收时占用」不能填设备的组/);
+      assert.match(result.stderr, /「验收设备」/);
+    }
+    for (const hold of ['', '  ', 'preview-backend', ' preview-backend ', 'host']) assert.equal(run(hold).status, 0, JSON.stringify(hold));
   });
 }
