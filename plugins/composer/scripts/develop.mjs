@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { waitForGitHubChecks } from './github-checks.mjs';
-import { agentArgs, checksText, fail, gh, git, mergedCommit, mergePr, openPr, output, outputFilled, outputPicked, resumeText, reviewsText, talk } from './shared.mjs';
+import { agentArgs, changes, checksText, fail, gh, git, mergedCommit, mergePr, openPr, output, outputFilled, outputPicked, resumeText, reviewsText, talk } from './shared.mjs';
 import { findingLine, fixText, historyText, previousFor, readResponses, triageOverall } from './triage.mjs';
 
 const env = process.env, action = process.argv[2];
@@ -40,27 +40,6 @@ const state = JSON.parse(readFileSync(statePath, 'utf8'));
 const save = () => writeFileSync(statePath, JSON.stringify(state));
 // 回到「需求进行中」的原因，主 Agent 答复后清掉。
 const back = reason => { state.feedback = reason; save(); };
-
-// 与 PR 的 Files changed 一致：目标分支最新提交到需求分支 head 的三点 diff，按 .coda/areas.json 的最长前缀归区域。
-const changes = base => {
-  const declared = git('ls-tree', '--name-only', state.head, '.coda/areas.json') ? JSON.parse(git('show', `${state.head}:.coda/areas.json`)) : {};
-  const prefixes = Object.entries(declared).flatMap(([area, list]) => list.map(prefix => [prefix, area])).sort((a, b) => b[0].length - a[0].length);
-  const fields = git('diff', '--numstat', '-z', '-M', `${base}...${state.head}`).split('\0');
-  const areas = {}, total = { files: 0, added: 0, deleted: 0 };
-  for (let i = 0; i < fields.length - 1; i++) {
-    const [added, deleted, name] = fields[i].split('\t');
-    // 改名时 -z 输出旧路径和新路径两个字段，按新路径归类。
-    const file = name || fields[i += 2];
-    const area = prefixes.find(([prefix]) => file.startsWith(prefix))?.[1] ?? (file.includes('/') ? file.split('/')[0] : '根目录');
-    for (const group of [areas[area] ??= { files: 0, added: 0, deleted: 0 }, total]) {
-      group.files++;
-      group.added += added === '-' ? 0 : Number(added);
-      group.deleted += deleted === '-' ? 0 : Number(deleted);
-    }
-  }
-  const line = ({ files, added, deleted }) => `${files} 个文件 +${added} -${deleted}`;
-  return [`改动：${line(total)}`, ...Object.entries(areas).sort(([, a], [, b]) => b.added + b.deleted - a.added - a.deleted).map(([area, group]) => `- ${area}：${line(group)}`)].join('\n');
-};
 
 // 合进需求分支的块，从需求分支的历史读（目标分支最新提交到需求分支 head，按先后）：说明带 Coda-Piece: <运行 ID> 的块合入提交，
 // 不论在哪条父链上（跟上目标分支的块把需求分支合进自己时，别的块在合并提交的第二父链上），附上那次运行；
@@ -162,10 +141,9 @@ switch (action) {
     }
     break;
   }
-  // 块合进了需求分支：下一次「需求进行中」写上合入的提交和块的运行；小改动免主控审查合入的写明没出审查卡，附上块给的摘要。
+  // 块合进了需求分支：下一次「需求进行中」写上合入的提交和块的运行。
   case 'piece-landed':
-    back(`块「${env.TITLE}」已合进需求分支 ${state.branch}：提交 ${env.COMMIT}，运行 coda://workflow-runs/${env.PIECE_RUN}。${env.AUTO === 'true'
-      ? `\n这一块是小改动免主控审查合入的，没出你的审查卡；需要时自己看这个提交。\n${env.SUMMARY}` : ''}`);
+    back(`块「${env.TITLE}」已合进需求分支 ${state.branch}：提交 ${env.COMMIT}，运行 coda://workflow-runs/${env.PIECE_RUN}。`);
     break;
   // 块没正常结束（失败、被取消，或主 Agent 在块里选了放弃）：引擎只把调用失败交给出错边界，不带被调运行的原因，所以指向本运行里调用的块。
   // 合入状态不能断言：piece.mjs 的 land 先推需求分支再删临时分支，删除失败时块失败但提交已经合进去了。
@@ -185,7 +163,7 @@ switch (action) {
     git('fetch', 'origin', state.branch);
     state.head = git('rev-parse', 'FETCH_HEAD');
     const direct = state.pushed?.length ? `\n\n流程直接推到需求分支的提交：\n${state.pushed.map(p => `- ${p.commit.slice(0, 12)} ${p.subject}（${p.why}）`).join('\n')}` : '';
-    const summary = `${state.report}\n\n块：\n${pieces(base, state.head)}${direct}\n\n${changes(base)}`;
+    const summary = `${state.report}\n\n块：\n${pieces(base, state.head)}${direct}\n\n${changes(base, state.head)}`;
     const path = join(env.RUNNER_TEMP, 'pr.md');
     writeFileSync(path, summary);
     state.pr = gh('pr', 'list', '--head', state.branch, '--base', state.base, '--state', 'open', '--limit', '1', '--json', 'url', '--jq', '.[].url');

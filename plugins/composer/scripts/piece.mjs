@@ -1,15 +1,22 @@
 // 块（README.md「块」）：执行者从需求分支 head 开工，交付推到临时分支 piece/<运行 ID> 供检查和评审取用，不开 PR；
-// 主 Agent 审查后 squash 成一个提交快进进需求分支（跟上目标分支的块以合并提交快进），再删掉临时分支。
-// 每步的工作区都会回收；执行会话与反馈留在本次运行的产物里。
+// 项目检查、一位评审者评过后由主 Agent 审查，squash 成一个提交快进进需求分支（跟上目标分支的块以合并提交快进），再删掉临时分支。
+// 每步的工作区都会回收；执行会话、反馈与评审账本留在本次运行的产物里。
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { SLOTS, agentArgs, checksText, command, git, instructions, output, resumeText, reviewsText } from './shared.mjs';
-import { autoLandReasons, isTest, parseRaw } from './minor.mjs';
-import { fixText, historyText, previousFor, readResponses, triage } from './triage.mjs';
+import { agentArgs, changes, checksText, git, instructions, output, resumeText } from './shared.mjs';
 
 const env = process.env, action = process.argv[2];
 const statePath = join(env.CODA_ARTIFACTS, 'piece.json');
+
+// 执行者交块的格式，接在固定说明后面：审查卡上的「执行者回答」从最后一行「交付说明」起取，只放最后一条回复（coda-agent 的 answer 是这一次说过的全部话）。
+const handIn = `回答的最后一条消息以单独一行「交付说明」开头，其下固定给两段：
+1. 任务书的完成标准逐条：做到了，还是没做到及原因。
+2. 怎么把改动跑起来验的：命令或操作与结果；没跑就写「没跑」和原因。`;
+const lastReply = answer => {
+  const at = [...answer.matchAll(/^[#* \t]*交付说明[*：: \t]*$/gm)].at(-1);
+  return at ? answer.slice(at.index) : `（执行者没有以「交付说明」开头给最后一条回复，下面是这一次的全部回答）\n${answer}`;
+};
 
 // 跟上目标分支的块以合并提交快进进需求分支，执行者要知道为什么只能合并、不能变基。
 const syncTask = base => `这一块用来跟上目标分支 ${base}：先 git fetch origin ${base}，把 origin/${base} 合并（merge）进当前分支，不要变基、不要压成一个提交；它以合并提交快进进需求分支，保住需求分支与目标分支的祖先关系。
@@ -43,6 +50,42 @@ const tryMerge = tip => {
 };
 const removeTemp = () => { if (git('ls-remote', '--heads', 'origin', `refs/heads/${state.temp}`)) git('push', 'origin', '--delete', `refs/heads/${state.temp}`); };
 
+// 评审账本（README.md「评审」）：state.findings 只记必须修，编号 #1、#2……，之后几轮沿用；status 为 open、resolved、withdrawn、superseded（完整评审作废）、
+// declined（主 Agent 在退回意见里定了不改，流程自己关掉，不再交评审者）。state.reviewed 是上次评过的 head，state.outcome 是这次交付的评审结果，state.notes 是历次退回意见。
+const FLAG = { contract: '对外契约', scope: '任务范围' };
+const flat = text => String(text ?? '').replace(/\s*[\r\n]+\s*/g, ' ');
+const open = () => (state.findings ?? []).filter(f => f.status === 'open');
+const mustLine = f => `- ${f.id} ${flat(f.title)}${f.location ? `（${flat(f.location)}）` : ''}${FLAG[f.kind] ? `〔评审者认为涉及${FLAG[f.kind]}〕` : ''}`;
+// 交给评审者的任务书：原文后附主 Agent 历次的退回意见，只作参考。
+const reviewTask = () => !state.notes?.length ? state.task : `${state.task}
+
+下面是主 Agent 历次「退回修改」的意见（原文，按先后），其中写明不改的已经关闭，不要再提：
+${state.notes.map((note, i) => `第 ${i + 1} 次：\n${note}`).join('\n\n')}`;
+// 主 Agent 的「退回修改」：同一执行会话按备注修，之后复评。备注里单独一行写的「#编号 不改」就此关掉那条：
+// 行首只允许空白或列表符号 -、*，「不改」后面是行尾，或「：」「:」「，」「,」接理由；句子中间提到的不算。
+const sendBack = note => {
+  state.feedback = note;
+  state.returns++;
+  (state.notes ??= []).push(note);
+  state.rereview = true;
+  for (const [, id] of note.matchAll(/^[^\S\n]*(?:[-*][^\S\n]*)?(#\d+)[^\S\n]*不改[^\S\n]*(?:$|[：:，,])/gm)) {
+    const f = state.findings?.find(f => f.id === id);
+    if (f?.status === 'open') f.status = 'declined';
+  }
+};
+// 审查卡的「评审结论」：必须修逐条（一句加位置），小问题、原有问题只给条数。
+const reviewText = reviewer => {
+  const o = state.outcome;
+  if (!reviewer) return '没填评审者，这一块不评审。';
+  if (state.checks?.head !== state.executor.head) return '项目检查没通过，这次交付没有评审。';
+  if (o.lost) return `没评成：调用 review-commit 没有成功，原因见本运行 coda://workflow-runs/${env.GITHUB_RUN_ID} 的「评审这次交付」（workflow_status）。`;
+  if (!o.report) return `没评成：${o.line}`;
+  const must = open();
+  return [o.line, `必须修 ${must.length} 条${must.length ? '：' : '。'}`, ...must.map(mustLine), `小问题 ${o.nit} 条，原有问题 ${o.existing} 条。`,
+    ...o.flagged.length ? [`其中评审者认为涉及对外契约或任务范围的：${o.flagged.map(t => `「${flat(t)}」`).join('、')}`] : [],
+    `评审原文：${o.report}`].join('\n');
+};
+
 switch (action) {
   // 执行一项（execute）与换备用执行者（swap）都新开会话、从需求分支当前 head 开工；swap 接手的是同一项：上一位没被接受的提交不带过来，只告诉它在哪。
   // 这一步失败后恢复或重试再跑时，这一次开的会话（opening）接着用，不另开：它的上下文和提交都在。
@@ -66,7 +109,7 @@ switch (action) {
     }
     const kind = opening.action, resumed = opening.session;
     const talk = (session, text) => {
-      writeFileSync(prompt, `${instructions}\n\n${text}\n`);
+      writeFileSync(prompt, `${instructions}\n${handIn}\n\n${text}\n`);
       const args = session ? ['--continue', session] : ['--commit', branchHead(), '--title', state.title];
       // 执行者是一组 Agent 选择（流程参数的 agent 类型）：没选的模型、强度、模式用 Agent 的默认值。
       if (!session) args.push(...agentArgs(opening.agent));
@@ -117,13 +160,45 @@ switch (action) {
     output('empty', String(!state.sync && spawnSync('git', ['merge-base', '--is-ancestor', state.executor.head, state.tip]).status === 0));
     break;
   }
-  case 'gate-passed':
+  // 检查通过：记下检查，定这次评审的范围。主 Agent 退回修改之后是复评：base 是上次评过的 head，previous 带还没关的必须修；
+  // 其余（第一次、换人、合并需求分支之后）评需求分支 head 到这次交付的全部改动。
+  case 'gate-passed': {
     state.checks = { head: state.executor.head, runs: JSON.parse(env.RUNS) };
     state.failures = [];
     state.feedback = '';
-    output('base', state.tip);
-    output('task', state.task);
+    const again = Boolean(state.rereview && state.reviewed);
+    state.full = !again;
+    output('base', again ? state.reviewed : state.tip);
+    output('head', state.executor.head);
+    output('task', reviewTask());
     output('checks', checksText(state.checks, state.executor.head));
+    output('previous', again ? JSON.stringify(open().map(({ id, level, kind, title, location, detail }) => ({ id, level, kind, title, location, detail }))) : '');
+    save();
+    break;
+  }
+  // 评审结果入账（review-commit 的输出）：完整评审作废之前没关的；复评对旧条目的结论改它们的状态，坚持的（upheld）仍开着；新的必须修接着编号。
+  // 没评成（INCOMPLETE）不入账，下一次复评仍从上次评过的 head 算起。
+  case 'reviewed': {
+    const head = state.executor.head;
+    if (env.DECISION === 'INCOMPLETE') state.outcome = { head, line: env.LINE };
+    else {
+      const ledger = state.findings ??= [], findings = JSON.parse(env.FINDINGS);
+      if (state.full) for (const f of ledger) if (f.status === 'open') f.status = 'superseded';
+      for (const { id, status } of JSON.parse(env.RESOLUTIONS)) if (status !== 'upheld') ledger.find(f => f.id === id).status = status;
+      for (const { level, kind, title, location, detail } of findings.filter(f => f.level === 'must')) ledger.push({ id: `#${ledger.length + 1}`, level, kind, title, location, detail, status: 'open' });
+      state.round = (state.round ?? 0) + 1;
+      const report = join(env.CODA_ARTIFACTS, `review-${state.round}.md`);
+      writeFileSync(report, env.REPORT);
+      state.reviewed = head;
+      const count = level => findings.filter(f => f.level === level).length;
+      state.outcome = { head, line: env.LINE, report, nit: count('nit'), existing: count('existing'), flagged: findings.filter(f => f.level !== 'must' && FLAG[f.kind]).map(f => f.title) };
+    }
+    save();
+    break;
+  }
+  // 调用 review-commit 本身没成（出错边界）：记为没评成，照常出审查卡。
+  case 'review-lost':
+    state.outcome = { head: state.executor.head, lost: true };
     save();
     break;
   case 'gate-failed': {
@@ -136,27 +211,44 @@ switch (action) {
     output('route', state.failures.length >= 3 ? 'review' : 'revise');
     break;
   }
+  // 主 Agent 审查卡的一页结论：执行者最后一条回复、项目检查、评审结论、改动范围（需求分支 head 到这次交付的三点 diff，与评审看的是同一份）。
   case 'review':
-    output('checks', checksText(state.checks, state.executor.head));
-    for (const [name, value] of Object.entries({ session: state.executor.session, head: state.executor.head, answer: state.executor.answer,
-      branch: state.branch, temp: state.temp, feedback: state.feedback, returns: state.returns })) output(name, value);
-    // 开了小改动免主控审查、判定没过（minor 记下的原因）才有这一段。
-    output('minor', (state.minor ?? []).map(r => `- ${r}`).join('\n'));
-    output('reviews', reviewsText(env.REVIEWS, state.executor.head, '评审这次交付'));
+    git('fetch', 'origin', state.branch, state.temp);
+    for (const [name, value] of Object.entries({ session: state.executor.session, head: state.executor.head, branch: state.branch, temp: state.temp, tip: state.tip,
+      feedback: state.feedback, returns: state.returns, answer: lastReply(state.executor.answer ?? ''), checks: checksText(state.checks, state.executor.head),
+      review: reviewText(env.REVIEWER === 'true'), changes: changes(state.tip, state.executor.head) })) output(name, value);
     break;
   case 'decide': {
     const { choice, note = '' } = JSON.parse(env.REVIEW);
     // 引擎不能按条件隐藏答复：没填备用执行者时「换备用执行者重做」照样能选，选了回到审查卡说明。
     const blocked = !note.trim() ? { revise: '退回修改必须在备注中写具体意见。', swap: '换备用执行者重做必须在备注中写为什么换、接手的人要注意什么。' }[choice]
       : choice === 'swap' && env.BACKUP !== 'true' ? '没有填备用执行者，不能换人重做；请改选别的答复。' : '';
+    // 退回次数只数主 Agent 的「退回修改」；检查失败的自动退回、换人和合并需求分支都不算。满三次后再退回不退，交用户决定（stuck）。
+    const stuck = !blocked && choice === 'revise' && state.returns >= 3;
     if (blocked) state.feedback = blocked;
+    else if (stuck) {
+      state.pending = note;
+      output('stuck', `主 Agent 这次的退回意见：\n${note}\n\n还开着的必须修：\n${open().map(mustLine).join('\n') || '没有'}`);
+    } else if (choice === 'revise') sendBack(note);
     else {
       state.feedback = choice === 'sync' ? `${syncText(state.branch)}${note.trim() ? `\n\n主 Agent 的备注：\n${note}` : ''}` : note;
-      // 退回次数只数主 Agent 的「退回修改」；检查失败的自动退回、换人和合并需求分支都不算。
-      if (choice === 'revise') state.returns++;
+      // 换人从需求分支 head 重做、合并需求分支会带进别的块：之后的评审都是完整评审。
+      if (choice === 'sync' || choice === 'swap') state.rereview = false;
     }
     save();
-    output('route', blocked ? 'review' : choice === 'sync' ? 'revise' : choice);
+    output('route', blocked ? 'review' : stuck ? 'stuck' : choice === 'sync' ? 'revise' : choice);
+    break;
+  }
+  // 用户在「这一块三轮没过」的答复：继续修就把退回次数清零，按主 Agent 这次的意见退回（算新一轮的第一次）；放弃同主 Agent 选放弃。
+  case 'stuck': {
+    const { choice } = JSON.parse(env.STUCK);
+    if (choice === 'continue') {
+      state.returns = 0;
+      sendBack(state.pending);
+    }
+    delete state.pending;
+    save();
+    output('route', choice === 'continue' ? 'revise' : 'abandon');
     break;
   }
   // 先认是否已合入（重跑不合入第二次）：需求分支里有带本运行 trailer 的提交；跟上目标分支的块看推送前记下的 landing（从头重跑 execute 会换掉
@@ -181,6 +273,7 @@ switch (action) {
       // 合并后的树和需求分支 head 的树相同：交付没有可合入的内容，不生成空提交，交回执行者。
       if (merged.tree && merged.tree === git('rev-parse', `${tip}^{tree}`)) {
         state.feedback = `这次交付相对需求分支 ${state.branch} 没有改动，没有可以合入的内容：先对照需求分支确认这一项的改动都已提交到当前分支，补上后再回报。`;
+        state.rereview = false;
         save();
         output('route', 'sync');
         break;
@@ -192,6 +285,7 @@ switch (action) {
     }
     if (!commit) {
       state.feedback = syncText(state.branch, files);
+      state.rereview = false;
       save();
       output('route', 'sync');
       break;
@@ -199,100 +293,11 @@ switch (action) {
     removeTemp();
     output('route', 'landed');
     output('commit', commit);
-    // 免主控审查合入的（state.auto 由 minor 写下）另给标记和摘要，结束事件带出去，需求运行写进「需求进行中」。
-    output('auto', String(Boolean(state.auto)));
-    output('summary', !state.auto ? '' : ['小改动免主控审查，没出审查卡直接合进需求分支：开了 autoLandMinor；当前 head 项目检查通过；评审者全部 APPROVE、没有发现，账本没有没关的发现；只改了测试与说明文档，没有删测试、没有新增 skip、todo 或 only、没有只删断言。',
-      `合入提交：${commit}`, `需求分支：${state.branch}`, `head：${head}`, '改动文件：', ...state.auto.files.map(file => `- ${file}`),
-      '项目检查：', checksText(state.checks, head), '评审：', ...state.auto.reviews.map(line => `- ${line}`)].join('\n'));
     break;
   }
   // 主 Agent 放弃：删掉临时分支，需求分支不动；之后流程走到出错结束，调用方的出错边界接得到。临时分支已不在（重跑）就跳过。
   case 'abandon':
     removeTemp();
     break;
-  // 评审回路（README.md「评审回路」），状态在 state.converge：findings 是各轮带固定编号的发现，rounds 是交执行者修了几轮，
-  // reviewedHead 是上次评过的 head，waiting 表示交执行者修过、等复评，history 是收敛经过。
-  // 检查通过后（以及执行者只反驳、没有新提交时）定这一次怎么评：等复评就对原来每个评审位置增量复评，base 是上次评过的 head，带上次的发现与回应；否则完整评审。
-  case 'review-round': {
-    const c = state.converge ??= { findings: [], rounds: 0, history: [], waiting: false };
-    c.full = !c.waiting;
-    const previous = slot => c.full ? '' : previousFor(c.findings, slot);
-    output('base', c.full ? state.tip : c.reviewedHead);
-    output('head', state.executor.head);
-    output('task', state.task);
-    output('checks', checksText(state.checks, state.executor.head));
-    output('previous', previous('reviewer'));
-    output('previous2', previous('reviewer2'));
-    save();
-    break;
-  }
-  // 评审之后分流（triage.mjs）：交执行者（fix），或交主 Agent 审查（review：没有阻塞级发现，或要升级）。
-  case 'triage': {
-    const c = state.converge, head = state.executor.head;
-    if (c.full) c.rounds = 0;
-    const result = triage(JSON.parse(env.REVIEWS), { head, findings: c.findings, rounds: c.rounds, full: c.full });
-    Object.assign(c, { findings: result.findings, reviewedHead: head, waiting: false });
-    c.history.push({ kind: 'review', full: c.full, head, resolutions: result.resolutions, added: result.findings.filter(f => result.added.includes(f.id)), route: result.route, reasons: result.reasons });
-    save();
-    output('route', result.route === 'fix' ? 'fix' : 'review');
-    break;
-  }
-  // 没关的发现交同一个执行会话逐条处理。有新提交就推送、检查后复评（gate）；只反驳、没有新提交就不重跑检查，直接交原评审者确认（again）；
-  // 既没有新提交也没有反驳，复评不会有变化，交主 Agent（review）。
-  case 'address': {
-    const c = state.converge, from = state.executor.head, open = c.findings.filter(f => f.status === 'open');
-    const prompt = join(env.RUNNER_TEMP, 'task.md');
-    writeFileSync(prompt, `${instructions}\n\n${fixText(from, open)}\n`);
-    state.executor = JSON.parse(command('coda-agent', ['--continue', state.executor.session, '--json', '--prompt-file', prompt]));
-    const responses = readResponses(state.executor.answer, open.map(f => f.id));
-    for (const f of open) f.response = responses[f.id];
-    const moved = state.executor.head !== from, disputed = Object.values(responses).some(r => r.disposition === 'disputed');
-    c.rounds++;
-    c.waiting = moved || disputed;
-    c.history.push({ kind: 'fix', round: c.rounds, from, head: state.executor.head, ids: open.map(f => f.id), responses,
-      note: c.waiting ? '' : '执行者没有新提交，也没有反驳，升级给主 Agent' });
-    save();
-    output('route', moved ? 'gate' : disputed ? 'again' : 'review');
-    break;
-  }
-  // 出主 Agent 审查卡之前：收敛经过放上卡（全文在产物里），不再等复评。
-  case 'rounds': {
-    const history = state.converge?.history ?? [], path = join(env.CODA_ARTIFACTS, 'converge.md'), text = historyText(history);
-    if (state.converge) { state.converge.waiting = false; save(); }
-    if (text) writeFileSync(path, text);
-    output('text', !text ? '' : text.length <= 4000 ? `${text}\n全文：${path}` : `前面的轮次见 ${path}。\n\n${historyText(history.slice(-1))}`);
-    break;
-  }
-  // 小改动免主控审查（README.md「小改动免主控审查」）：开了 autoLandMinor 时每次出审查卡之前判定，条件全满足（land）才不出卡、直接合进需求分支；
-  // 否则把原因记在 minor，审查卡写出来。改动取需求分支 head（推送时记下的 tip）到这次交付的三点 diff，和评审看的是同一份。
-  case 'minor': {
-    const head = state.executor.head, range = `${state.tip}...${head}`;
-    git('fetch', 'origin', state.branch, state.temp);
-    const changes = parseRaw(git('diff', '--raw', '-z', '-M', '--no-abbrev', range));
-    // 重命名、复制的测试文件带上旧路径和 -M，删掉的断言才算在里面。
-    const patches = Object.fromEntries(changes.filter(c => c.status !== 'D' && c.paths.some(isTest)).map(c => {
-      const lines = git('diff', '-U0', '-M', '--no-color', range, '--', ...c.paths).split('\n');
-      return [c.paths.at(-1), { added: lines.filter(l => l.startsWith('+') && !l.startsWith('+++')), removed: lines.filter(l => l.startsWith('-') && !l.startsWith('---')) }];
-    }));
-    // 没填评审者时没有评审结果，REVIEWS 为空。
-    const reviews = env.REVIEWS ? JSON.parse(env.REVIEWS) : [];
-    const reasons = autoLandReasons({ auto: env.AUTO === 'true', sync: state.sync, head, checks: state.checks, reviews, findings: state.converge?.findings, changes, patches });
-    if (reasons.length) {
-      state.minor = reasons;
-      delete state.auto;
-    } else {
-      delete state.minor;
-      state.auto = {
-        files: changes.map(c => `${c.status} ${c.paths.join(' → ')}`),
-        reviews: reviews.filter(r => r.state === 'done').map(r => {
-          const { agent, model, effort } = JSON.parse(r.who);
-          return `${SLOTS[r.slot]}（${[agent, model, effort].filter(Boolean).join(' · ')}）：${r.decision} ${r.line}`;
-        }),
-      };
-    }
-    save();
-    output('route', reasons.length ? 'review' : 'land');
-    break;
-  }
   default: throw new Error(`未知的块步骤：${action}`);
 }

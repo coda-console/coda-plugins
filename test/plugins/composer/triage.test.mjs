@@ -1,30 +1,12 @@
-// 评审意见的分流（plugins/composer/scripts/triage.mjs）：纯函数，输入是评审子流程各份的输出。
+// 监督开发整体评审意见的分流（plugins/composer/scripts/triage.mjs）：纯函数，输入是评审子流程各份的输出。
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { historyText, readResponses, triage, triageOverall } from '../../../plugins/composer/scripts/triage.mjs';
+import { historyText, readResponses, triageOverall } from '../../../plugins/composer/scripts/triage.mjs';
 
 const HEAD = 'a'.repeat(40), OLD = 'b'.repeat(40);
 const done = (slot, findings, extra = {}) => ({ state: 'done', slot, who: '{}', head: HEAD, reviewed: HEAD, decision: findings.length ? 'COMMENT' : 'APPROVE', line: '评审通过',
   findings: JSON.stringify(findings), resolutions: '[]', blocking: 'P2', ...extra });
 const finding = (severity, kind, title = `${severity} ${kind}`) => ({ severity, ...kind === undefined ? {} : { kind }, title, location: 'a.mjs:1', detail: '说明' });
-
-test('没有阻塞级发现照常交主 Agent；有阻塞级的非契约类交执行者；契约或范围类升级', () => {
-  assert.equal(triage([done('reviewer', [finding('P3', 'style')]), { state: 'skipped' }], { head: HEAD, full: true }).route, 'pass');
-  assert.equal(triage([done('reviewer', [])], { head: HEAD, full: true }).route, 'pass');
-  for (const kind of ['correctness', 'test-quality', 'documentation', 'style']) assert.equal(triage([done('reviewer', [finding('P2', kind)])], { head: HEAD, full: true }).route, 'fix', kind);
-  for (const kind of ['contract', 'scope']) {
-    const result = triage([done('reviewer', [finding('P1', 'correctness')]), done('reviewer2', [finding('P3', kind)])], { head: HEAD, full: true });
-    assert.equal(result.route, 'escalate', kind);
-    assert.match(result.reasons.join(), new RegExp(`reviewer2:1 涉及.*（${kind}）`));
-  }
-  // 阻塞级别按评审结果带的设置：P1 时 P2 不阻塞。
-  assert.equal(triage([done('reviewer', [finding('P2', 'correctness')], { blocking: 'P1' })], { head: HEAD, full: true }).route, 'pass');
-});
-
-test('kind 缺失或不认识按 correctness：照样交执行者，不升级', () => {
-  // review-commit 已把缺失、不认识的归成 correctness；分流只认 contract、scope 两类升级，别的一律按正确性处理。
-  for (const kind of [undefined, 'nonsense']) assert.equal(triage([done('reviewer', [finding('P2', kind)])], { head: HEAD, full: true }).route, 'fix', String(kind));
-});
 
 test('没评成（INCOMPLETE，findings 为空）、调用没成、评的不是当前 head：都不当通过，升级', () => {
   const incomplete = done('reviewer', [], { decision: 'INCOMPLETE', line: '评审没有完成：评审方没有按格式给出结论' });
@@ -33,46 +15,29 @@ test('没评成（INCOMPLETE，findings 为空）、调用没成、评的不是�
     [[{ state: 'lost', slot: 'reviewer2', who: '{}', head: HEAD }], /第二评审者没评成：调用 review-commit 没有成功/],
     [[done('reviewer', [], { reviewed: OLD })], new RegExp(`评的是 ${OLD.slice(0, 12)}，不是当前 head ${HEAD.slice(0, 12)}，结果不算数`)],
   ]) {
-    const result = triage(results, { head: HEAD, full: true });
+    const result = overall(results);
     assert.equal(result.route, 'escalate');
     assert.match(result.reasons.join('；'), text);
   }
   // 拒收的结果里的发现不记。
-  assert.deepEqual(triage([done('reviewer', [finding('P1', 'correctness')], { reviewed: OLD })], { head: HEAD, full: true }).findings, []);
+  assert.deepEqual(overall([done('reviewer', [finding('P1', 'correctness')], { reviewed: OLD })]).findings, []);
 });
 
 test('编号固定：各位置从 1 起，复评的新发现接着编，旧编号不变；完整评审作废之前没关的', () => {
-  const first = triage([done('reviewer', [finding('P2', 'correctness', 'x'), finding('P3', 'style', 'y')]), done('reviewer2', [finding('P1', 'correctness', 'z')])], { head: HEAD, full: true });
+  const first = overall([done('reviewer', [finding('P2', 'correctness', 'x'), finding('P3', 'style', 'y')]), done('reviewer2', [finding('P1', 'correctness', 'z')])]);
   assert.deepEqual(first.findings.map(f => [f.id, f.title, f.blocking, f.status]), [['reviewer:1', 'x', true, 'open'], ['reviewer:2', 'y', false, 'open'], ['reviewer2:1', 'z', true, 'open']]);
   assert.deepEqual(first.added, ['reviewer:1', 'reviewer:2', 'reviewer2:1']);
   const resolutions = JSON.stringify([{ id: 'reviewer:1', status: 'resolved', reason: '' }, { id: 'reviewer:2', status: 'withdrawn', reason: '' }]);
-  const again = triage([done('reviewer', [finding('P3', 'style', 'w')], { resolutions }), done('reviewer2', [], { resolutions: JSON.stringify([{ id: 'reviewer2:1', status: 'resolved', reason: 'ok' }]) })],
-    { head: HEAD, findings: first.findings, rounds: 1 });
+  const again = overall([done('reviewer', [finding('P3', 'style', 'w')], { resolutions }), done('reviewer2', [], { resolutions: JSON.stringify([{ id: 'reviewer2:1', status: 'resolved', reason: 'ok' }]) })],
+    { findings: first.findings, rounds: 1, full: false });
   assert.deepEqual(again.findings.map(f => [f.id, f.status]), [['reviewer:1', 'resolved'], ['reviewer:2', 'withdrawn'], ['reviewer2:1', 'resolved'], ['reviewer:3', 'open']]);
-  assert.equal(again.route, 'pass');
+  assert.equal(again.route, 'accept');
   assert.deepEqual(again.resolutions.map(r => r.id), ['reviewer:1', 'reviewer:2', 'reviewer2:1']);
   assert.ok(first.findings.every(f => f.status === 'open'), '不改传进来的');
-  const full = triage([done('reviewer', [])], { head: HEAD, findings: first.findings, full: true });
+  const full = overall([done('reviewer', [])], { findings: first.findings });
   assert.deepEqual(full.findings.map(f => f.status), ['superseded', 'superseded', 'superseded']);
-  assert.equal(full.route, 'pass');
-  assert.deepEqual(triage([done('reviewer', [finding('P2', 'style')])], { head: HEAD, findings: first.findings, full: true }).added, ['reviewer:3']);
-});
-
-test('复评：修过仍被坚持的再交执行者，到两轮升级；执行者反驳后评审者仍坚持的直接升级', () => {
-  const first = triage([done('reviewer', [finding('P2', 'correctness')])], { head: HEAD, full: true });
-  const upheld = JSON.stringify([{ id: 'reviewer:1', status: 'upheld', reason: '没修好' }]);
-  const fixed = first.findings.map(f => ({ ...f, response: { disposition: 'fixed', commit: HEAD } }));
-  assert.equal(triage([done('reviewer', [], { resolutions: upheld })], { head: HEAD, findings: fixed, rounds: 1 }).route, 'fix');
-  const limit = triage([done('reviewer', [], { resolutions: upheld })], { head: HEAD, findings: fixed, rounds: 2 });
-  assert.deepEqual([limit.route, limit.reasons], ['escalate', ['自动修了 2 轮仍有阻塞级发现']]);
-  // 第一次完整评审没有阻塞级发现时，轮数用完也照常通过。
-  assert.equal(triage([done('reviewer', [])], { head: HEAD, rounds: 2, full: true }).route, 'pass');
-  const disputed = first.findings.map(f => ({ ...f, response: { disposition: 'disputed', reason: '不成立' } }));
-  const kept = triage([done('reviewer', [], { resolutions: upheld })], { head: HEAD, findings: disputed, rounds: 1 });
-  assert.deepEqual([kept.route, kept.reasons], ['escalate', ['reviewer:1：执行者反驳了，评审者仍坚持']]);
-  assert.equal(kept.findings[0].status, 'open');
-  // 反驳成立就撤回、关闭。
-  assert.equal(triage([done('reviewer', [], { resolutions: JSON.stringify([{ id: 'reviewer:1', status: 'withdrawn', reason: '' }]) })], { head: HEAD, findings: disputed, rounds: 1 }).route, 'pass');
+  assert.equal(full.route, 'accept');
+  assert.deepEqual(overall([done('reviewer', [finding('P2', 'style')])], { findings: first.findings }).added, ['reviewer:3']);
 });
 
 test('执行者的回应：只收交给它的编号和合法的 disposition，取最后一个 responses 代码块', () => {
@@ -168,13 +133,4 @@ test('整体评审：最多自动修两轮；反驳被坚持交主 Agent；修�
   assert.equal(overall([done('reviewer', [finding('P2', 'correctness')], { resolutions: resolved })], { findings: fixed, rounds: 1, full: false }).route, 'escalate');
   const done2 = overall([done('reviewer', [], { resolutions: resolved })], { findings: fixed, rounds: 2, full: false });
   assert.deepEqual([done2.route, done2.findings.filter(f => f.status === 'open').map(f => f.id)], ['accept', ['reviewer:2']], '只剩 P3：轮数用完也直接验收');
-});
-
-test('整体评审与块同样的发现、不同的路由：同一本账，编号与结论一致', () => {
-  const results = [done('reviewer', [finding('P2', 'correctness'), finding('P3', 'style')]), done('reviewer2', [finding('P2', 'style')])];
-  const pieceRoute = triage(results, { head: HEAD, full: true }), whole = overall(results);
-  assert.deepEqual([pieceRoute.route, whole.route], ['fix', 'escalate']);
-  assert.deepEqual(whole.findings, pieceRoute.findings);
-  assert.deepEqual([whole.added, whole.resolutions], [pieceRoute.added, pieceRoute.resolutions]);
-  assert.match(historyText([{ kind: 'review', full: true, head: HEAD, resolutions: [], added: [], route: 'accept', reasons: [] }]), /结论：只有 P3 或没有发现，直接进验收/);
 });

@@ -90,6 +90,28 @@ export function reviewsText(raw, head, step) {
   return full.length <= 4000 ? `${full}\n评审原文：${path}` : `${render(false)}\n发现较多，这里只列严重程度、标题和位置；每条的说明与评审原文见 ${path}`;
 }
 
+// 改动区域（README.md「改动区域」）：base...head 的三点 diff（与 PR 的 Files changed 一致），按 head 上 .coda/areas.json 的最长前缀归区域。
+// 监督开发的 PR 汇总与块的审查卡用同一份。
+export const changes = (base, head) => {
+  const declared = git('ls-tree', '--name-only', head, '.coda/areas.json') ? JSON.parse(git('show', `${head}:.coda/areas.json`)) : {};
+  const prefixes = Object.entries(declared).flatMap(([area, list]) => list.map(prefix => [prefix, area])).sort((a, b) => b[0].length - a[0].length);
+  const fields = git('diff', '--numstat', '-z', '-M', `${base}...${head}`).split('\0');
+  const areas = {}, total = { files: 0, added: 0, deleted: 0 };
+  for (let i = 0; i < fields.length - 1; i++) {
+    const [added, deleted, name] = fields[i].split('\t');
+    // 改名时 -z 输出旧路径和新路径两个字段，按新路径归类。
+    const file = name || fields[i += 2];
+    const area = prefixes.find(([prefix]) => file.startsWith(prefix))?.[1] ?? (file.includes('/') ? file.split('/')[0] : '根目录');
+    for (const group of [areas[area] ??= { files: 0, added: 0, deleted: 0 }, total]) {
+      group.files++;
+      group.added += added === '-' ? 0 : Number(added);
+      group.deleted += deleted === '-' ? 0 : Number(deleted);
+    }
+  }
+  const line = ({ files, added, deleted }) => `${files} 个文件 +${added} -${deleted}`;
+  return [`改动：${line(total)}`, ...Object.entries(areas).sort(([, a], [, b]) => b.added + b.deleted - a.added - a.deleted).map(([area, group]) => `- ${area}：${line(group)}`)].join('\n');
+};
+
 // PR 地址里的 host/owner/repo：给 gh 显式 --repo，它就只删除远端分支，不碰本地分支，分离 HEAD 也能用。
 export const repoOf = url => { const { host, pathname } = new URL(url); return `${host}/${pathname.split('/').slice(1, 3).join('/')}`; };
 

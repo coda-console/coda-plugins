@@ -1,5 +1,5 @@
-// 评审意见的分流（README.md「评审回路」）：评审之后，发现先交执行者逐条修复或反驳、原评审者复评，收敛了才给主 Agent；
-// 判断不了的升级给主 Agent。纯函数，不读写文件、不跑命令：块用它，监督开发的整体评审也要用。
+// 监督开发整体评审意见的分流（README.md「整体评审」）：评审之后，发现先交执行者逐条修复或反驳、原评审者复评，收敛了才给主 Agent；
+// 判断不了的升级给主 Agent。纯函数，不读写文件、不跑命令。
 import { SLOTS } from './shared.mjs';
 
 export const SEVERITIES = ['P0', 'P1', 'P2', 'P3'];
@@ -9,7 +9,7 @@ export const MAX_ROUNDS = 2;
 
 const short = sha => String(sha ?? '').slice(0, 12) || '（没有）';
 
-// 发现账本，块与整体评审共用：results 是评审子流程各份的输出（review-commit 的结果加 slot、state、reviewed：评的 head）；
+// 发现账本：results 是评审子流程各份的输出（review-commit 的结果加 slot、state、reviewed：评的 head）；
 // findings 是之前各轮记下的发现（每条有固定编号 id = <评审位置>:<序号>、status：open / resolved / withdrawn / superseded，执行者回应过的有 response）；
 // head 是当前 head，full 表示这次是完整评审（不是增量复评）：之前没关的发现作废，由这次的结果代替。
 // 返回更新后的全部发现（新发现接着各位置的序号编号，不改旧编号）、这次新编的编号 added、评审者这次对旧发现的结论 resolutions（坚持的带上原发现 finding），
@@ -40,21 +40,10 @@ function record(results, { head, findings = [], full = false }) {
   return { findings: ledger, reasons, added, resolutions };
 }
 
-// 块的分流（账本见 record），rounds 是已经交执行者修了几轮。
-// 返回 route：pass（没有阻塞级发现，照常交主 Agent 审查）、fix（交执行者）、escalate（升级给主 Agent），reasons 是升级的原因，其余同 record。
-export function triage(results, { head, findings = [], rounds = 0, full = false, maxRounds = MAX_ROUNDS }) {
-  const result = record(results, { head, findings, full }), { reasons } = result;
-  const open = result.findings.filter(f => f.status === 'open');
-  for (const f of open.filter(f => ESCALATE_KINDS[f.kind])) reasons.push(`${f.id} 涉及${ESCALATE_KINDS[f.kind]}（${f.kind}），由主 Agent 判断`);
-  const blocking = open.some(f => f.blocking);
-  if (!reasons.length && blocking && rounds >= maxRounds) reasons.push(`自动修了 ${maxRounds} 轮仍有阻塞级发现`);
-  return { ...result, route: reasons.length ? 'escalate' : blocking ? 'fix' : 'pass' };
-}
-
 // 整体评审只自动修这几类 P2：改了也不动行为和对外契约。
 export const MINOR_KINDS = ['test-quality', 'documentation', 'style'];
 
-// 监督开发整体评审的分流：同一本账（record），路由按严重程度与类别，不看 review 设置的阻塞级别。
+// 监督开发整体评审的分流：账本见 record，路由按严重程度与类别，不看 review 设置的阻塞级别。
 // 没开的 P0、P1，契约或范围类（任何级别），类别不在 MINOR_KINDS 的 P2 都升级；只剩 MINOR_KINDS 的 P2 交执行者（fixer 为 false 即没填执行者、
 // 或已修满 maxRounds 轮时升级）；只有 P3 或没有发现时 accept：直接进验收，P3 写进汇报。返回 route：accept / fix / escalate，其余同 record。
 export function triageOverall(results, { head, findings = [], rounds = 0, full = false, maxRounds = MAX_ROUNDS, fixer = true }) {
@@ -81,7 +70,7 @@ export const findingLine = (f, detailed) => {
 export const previousFor = (findings, slot) => JSON.stringify(findings.filter(f => f.slot === slot && f.status === 'open')
   .map(({ id, severity, kind, title, location, detail, response }) => ({ id, severity, kind, title, location, detail, response })));
 
-// 交给执行者的发现（块与整体评审共用）：编号固定，逐条修复（fixed）或反驳（disputed），结构化交回。
+// 交给执行者的发现：编号固定，逐条修复（fixed）或反驳（disputed），结构化交回。
 export const fixText = (head, findings) => `评审者对这次交付（提交 ${head}）提了下面这些发现，编号固定，之后几轮沿用。逐条处理：
 - 成立的：修好并提交，回 fixed，附修复它的提交号；
 - 不成立的：不要改，回 disputed，写明理由和证据（代码位置、命令与输出、文档出处）。原评审者会复评核实，你说不成立不等于关闭。
@@ -113,7 +102,7 @@ export function historyText(history) {
       ...entry.ids.map(id => { const r = entry.responses[id];
         return `- ${id}：${!r ? '没有按格式回应' : r.disposition === 'fixed' ? `fixed${r.commit ? ` ${short(r.commit)}` : ''}${r.reason ? `，${flat(r.reason)}` : ''}` : `disputed：${flat(r.reason)}${r.evidence ? `；证据：${flat(r.evidence)}` : ''}`}`; }),
       ...entry.note ? [`结论：${entry.note}`] : []].join('\n');
-    const conclusion = { pass: '没有阻塞级发现，交主 Agent 审查', accept: '只有 P3 或没有发现，直接进验收', fix: '交执行者逐条修复或反驳', escalate: `升级给主 Agent：${entry.reasons.join('；')}` }[entry.route];
+    const conclusion = { accept: '只有 P3 或没有发现，直接进验收', fix: '交执行者逐条修复或反驳', escalate: `升级给主 Agent：${entry.reasons.join('；')}` }[entry.route];
     return [`${entry.full ? '评审' : '复评'}（head ${short(entry.head)}）：`,
       ...entry.resolutions.map(r => `- ${r.id} → ${r.status}${r.reason ? `：${flat(r.reason)}` : ''}${r.finding ? `\n  ${findingLine(r.finding, true).replace(/\n/g, '\n  ')}` : ''}`),
       ...entry.added.map(f => findingLine(f, true)), `结论：${conclusion}`].join('\n');

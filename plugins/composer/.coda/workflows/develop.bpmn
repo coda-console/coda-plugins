@@ -124,8 +124,6 @@
           <coda:param name="executor" value='=if progress-result.executor = "" then inputs.executor else context merge([{agent: progress-result.executor}, if progress-result.executorModel = "" then {} else {model: progress-result.executorModel}, if progress-result.executorEffort = "" then {} else {effort: progress-result.executorEffort}, if progress-result.executorMode = "" then {} else {mode: progress-result.executorMode}])' />
           <coda:param name="executor2" value='=if progress-result.executor2 = "" then inputs.executor2 else if progress-result.executor2 = "无" then null else context merge([{agent: progress-result.executor2}, if progress-result.executor2Model = "" then {} else {model: progress-result.executor2Model}, if progress-result.executor2Effort = "" then {} else {effort: progress-result.executor2Effort}, if progress-result.executor2Mode = "" then {} else {mode: progress-result.executor2Mode}])' />
           <coda:param name="reviewer" value='=if progress-result.reviewer = "" then inputs.reviewer else if progress-result.reviewer = "无" then null else context merge([{agent: progress-result.reviewer}, if progress-result.reviewerModel = "" then {} else {model: progress-result.reviewerModel}, if progress-result.reviewerEffort = "" then {} else {effort: progress-result.reviewerEffort}, if progress-result.reviewerMode = "" then {} else {mode: progress-result.reviewerMode}])' />
-          <coda:param name="reviewer2" value='=if progress-result.reviewer2 = "" then inputs.reviewer2 else if progress-result.reviewer2 = "无" then null else context merge([{agent: progress-result.reviewer2}, if progress-result.reviewer2Model = "" then {} else {model: progress-result.reviewer2Model}, if progress-result.reviewer2Effort = "" then {} else {effort: progress-result.reviewer2Effort}, if progress-result.reviewer2Mode = "" then {} else {mode: progress-result.reviewer2Mode}])' />
-          <coda:param name="autoLandMinor" value="=inputs.autoLandMinor" />
       </extensionElements>
     </callActivity>
     <boundaryEvent id="piece-failed" attachedToRef="piece"><errorEventDefinition /></boundaryEvent>
@@ -139,7 +137,6 @@
     <scriptTask id="piece-landed" name="记下合进的块" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
       <extensionElements>
         <coda:env name="TITLE" value="=progress-result.title" /><coda:env name="COMMIT" value="=piece.commit" /><coda:env name="PIECE_RUN" value="=piece.run" />
-        <coda:env name="AUTO" value="=piece.autoLanded" /><coda:env name="SUMMARY" value="=piece.summary" />
       </extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" piece-landed</script>
     </scriptTask>

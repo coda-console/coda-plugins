@@ -201,7 +201,7 @@ test('派一块：第一行标题、其后任务书，人选默认取开工单�
   assert.deepEqual([outputs.route, outputs.feedback, outputs.title, outputs.task, outputs.sync], ['piece', '', '修好登录跳转', '## 背景\n登录后停在空白页\n\n## 验收\n- 跳到首页', 'false']);
   assert.equal(f.reason(), '', '派出去了，回来的原因已处理');
   assert.deepEqual(await pieceInputs(outputs, KICKOFF), { branch: 'req/run-1', base: 'main', title: '修好登录跳转', task: '## 背景\n登录后停在空白页\n\n## 验收\n- 跳到首页', sync: false,
-    executor: KICKOFF.executor, executor2: KICKOFF.executor2, reviewer: KICKOFF.reviewer, reviewer2: null, autoLandMinor: false });
+    executor: KICKOFF.executor, executor2: KICKOFF.executor2, reviewer: KICKOFF.reviewer });
 });
 
 test('派一块：备注最前面换人的行覆盖开工值，「无」表示这一块不用，没写的照旧；开工值渲染出的行原样能读回', async t => {
@@ -210,7 +210,7 @@ test('派一块：备注最前面换人的行覆盖开工值，「无」表示�
   const outputs = f.dispatch('piece', note);
   assert.deepEqual([outputs.route, outputs.title, outputs.task], ['piece', '补测试', '给登录跳转补回归测试']);
   assert.deepEqual(await pieceInputs(outputs, KICKOFF), { branch: 'req/run-1', base: 'main', title: '补测试', task: '给登录跳转补回归测试', sync: false,
-    executor: { agent: 'opencode', model: 'big-1', effort: 'max', mode: 'build' }, executor2: KICKOFF.executor2, reviewer: null, reviewer2: { agent: 'cursor', effort: 'low' }, autoLandMinor: false });
+    executor: { agent: 'opencode', model: 'big-1', effort: 'max', mode: 'build' }, executor2: KICKOFF.executor2, reviewer: null });
   // 开工值在「需求进行中」里写成同样的行：抄过来就是同一组人选（其他选项不在行里）。
   const { nodes } = await definition(), doc = nodes.progress.documentation[0].text;
   const rendered = doc.replace(/{{([\s\S]*?)}}/g, (_, e) => { const v = evaluate(e, { inputs: { ...KICKOFF, delivery: '', devices: false }, req: {}, resume: { reason: '' } }).value; return v ?? ''; });
@@ -250,7 +250,6 @@ test('跟上目标分支：派 sync=true 的块，标题与任务固定，备注
   assert.deepEqual([plain.route, plain.feedback, plain.title, plain.sync], ['piece', '', '跟上 main', 'true']);
   assert.match(plain.task, /^把目标分支 main 最新的提交合并进需求分支 req\/run-1，让需求分支跟上它：解冲突，数据库迁移等版本号和目标分支撞号时顺延需求分支这边的/);
   const inputs = await pieceInputs(plain, KICKOFF);
-  for (const auto of [true, false]) assert.equal((await pieceInputs(plain, { ...KICKOFF, autoLandMinor: auto })).autoLandMinor, auto, '开工单的小改动免主控审查原样传给块');
   assert.deepEqual([inputs.sync, inputs.executor, inputs.reviewer], [true, KICKOFF.executor, KICKOFF.reviewer]);
   const noted = f.dispatch('sync', '执行者：claude-sdk\n注意 migrations 目录');
   assert.equal(noted.task, `${plain.task}\n\n注意 migrations 目录`);
@@ -262,9 +261,7 @@ test('块结束回到需求进行中：合进了写上提交和块的运行；�
   f.run('piece-landed', { TITLE: '修好登录跳转', COMMIT: 'c'.repeat(40), PIECE_RUN: 'piece-7' });
   const landed = f.reason();
   for (const part of ['块「修好登录跳转」已合进需求分支 req/run-1', `提交 ${'c'.repeat(40)}`, 'coda://workflow-runs/piece-7']) assert.ok(landed.includes(part), part);
-  assert.doesNotMatch(landed, /免主控审查/, '出过审查卡合入的不提免审');
-  f.run('piece-landed', { TITLE: '补测试', COMMIT: 'd'.repeat(40), PIECE_RUN: 'piece-9', AUTO: 'true', SUMMARY: '改动文件：\n- A test/a.test.mjs' });
-  assert.equal(f.reason(), `块「补测试」已合进需求分支 req/run-1：提交 ${'d'.repeat(40)}，运行 coda://workflow-runs/piece-9。\n这一块是小改动免主控审查合入的，没出你的审查卡；需要时自己看这个提交。\n改动文件：\n- A test/a.test.mjs`);
+  assert.equal(landed, `块「修好登录跳转」已合进需求分支 req/run-1：提交 ${'c'.repeat(40)}，运行 coda://workflow-runs/piece-7。`);
   f.dispatch('piece', '下一块\n任务');
   assert.equal(f.reason(), '', '下一块派出去就清掉');
   // 块已推进需求分支、随后删临时分支失败（piece.test.mjs「删临时分支失败」）：块失败，但不能说没合进、需求分支没动。
@@ -564,8 +561,10 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   assert.equal(nodes.piece.$type, 'bpmn:CallActivity');
   assert.equal(nodes.piece.calledElement, 'piece');
   const call = params('piece');
-  assert.deepEqual(Object.keys(call), ['branch', 'base', 'title', 'task', 'sync', 'executor', 'executor2', 'reviewer', 'reviewer2', 'autoLandMinor'], '参数正是块的输入');
-  assert.equal(call.autoLandMinor, '=inputs.autoLandMinor', '小改动免主控审查原样传给每一块');
+  assert.deepEqual(Object.keys(call), ['branch', 'base', 'title', 'task', 'sync', 'executor', 'executor2', 'reviewer'], '参数正是块的输入，不再传已删的 reviewer2、autoLandMinor');
+  const { root: pieceRoot } = await readWorkflow(readFileSync(new URL('../../../plugins/composer/.coda/workflows/piece.bpmn', import.meta.url), 'utf8'), 'piece');
+  const pieceProcess = pieceRoot.rootElements.find(e => e.$type === 'bpmn:Process');
+  assert.deepEqual(Object.keys(call), pieceProcess.extensionElements.values.filter(v => v.$type === 'coda:Input').map(v => v.name), '与块声明的输入一一对应');
   assert.deepEqual([call.branch, call.base, call.title, call.task, call.sync], ['=req.branch', '=req.base', '=progress-result.title', '=progress-result.task', '=progress-result.sync']);
   assert.equal(nodes['piece-failed'].attachedToRef.id, 'piece');
   assert.equal(nodes['piece-failed'].eventDefinitions[0].$type, 'bpmn:ErrorEventDefinition');
@@ -573,7 +572,7 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   assert.equal(next('piece-lost'), 'resume', '块失败回到进行中，需求运行不失败');
   assert.equal(next('piece'), 'piece-landed');
   assert.equal(next('piece-landed'), 'resume');
-  assert.deepEqual(params('piece-landed'), { TITLE: '=progress-result.title', COMMIT: '=piece.commit', PIECE_RUN: '=piece.run', AUTO: '=piece.autoLanded', SUMMARY: '=piece.summary' });
+  assert.deepEqual(params('piece-landed'), { TITLE: '=progress-result.title', COMMIT: '=piece.commit', PIECE_RUN: '=piece.run' });
   assert.deepEqual(params('progress-result').FIXER, '=inputs.executor != null');
   // 只填了第三整体评审者也算要整体评审：进行中的说明与批准卡都这样写。
   const reviewed = (text, needle) => [...text.matchAll(/{{(.*?)}}/gs)].find(m => m[1].includes('inputs.reviewer3') && m[1].includes(needle))[1];
