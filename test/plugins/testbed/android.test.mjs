@@ -1,30 +1,30 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { resolveDevice, selectAdbLink } from '../../../plugins/testbed/scripts/resolve-device.mjs';
+import { resolveDevice } from '../../../plugins/testbed/scripts/resolve-device.mjs';
 
-const entity = '03acc3f8-6a6c-4f65-a90e-48f3af5aa3e5';
 const endpoint = '192.168.1.7:5555';
-const options = { list: [], entities: [{ name: 'xiaomi', entity }],
-  groupOwner: group => { assert.equal(group, `entity:${entity}`); return { attributes: {} }; },
-  links: id => { assert.equal(id, entity); return [{ protocol: 'adb', endpoint }]; } };
-test('Android alias resolves to the custodian entity and reachable adb endpoint', () => {
-  const found = resolveDevice('xiaomi', options);
-  assert.deepEqual([found.group, found.platform, found.entity, found.adb], [`entity:${entity}`, 'android', entity, endpoint]);
+const adb = { protocol: 'adb', endpoint, reach: { scope: 'machines', machines: ['mac'] } };
+const asked = [];
+const owner = value => group => { asked.push(group); return value; };
+
+test('a device registered here is iOS and is not asked about', () => {
+  const found = resolveDevice('iphone', { list: [{ id: 'iphone', udid: 'UDID', personal: true }], groupOwner: () => assert.fail('asked') });
+  assert.deepEqual([found.group, found.platform, found.personal, found.udid, found.adb], ['device:iphone', 'ios', true, 'UDID', '']);
 });
-test('iOS registration and remote ownership keep their device group', () => {
-  const phone = { id: 'iphone', udid: 'UDID' };
-  for (const config of [{ list: [phone] }, { list: [], groupOwner: () => ({ attributes: phone }) }]) {
-    const found = resolveDevice('iphone', { entities: [], ...config });
-    assert.deepEqual([found.group, found.platform, found.entity], ['device:iphone', 'ios', '']);
-  }
+test('a group with an adb link this machine reaches is Android, at the first adb endpoint', () => {
+  const found = resolveDevice('xiaomi', { list: [], groupOwner: owner({ attributes: { platform: 'android', model: 'Mi 10 Pro' },
+    links: [{ protocol: 'ssh', endpoint: 'other' }, adb, { protocol: 'adb', endpoint: 'second' }] }) });
+  assert.deepEqual(asked, ['device:xiaomi']);
+  assert.deepEqual([found.id, found.group, found.platform, found.adb, found.personal, found.udid], ['xiaomi', 'device:xiaomi', 'android', endpoint, false, '']);
 });
-test('unknown name, missing entity and no reachable adb link fail resolution', () => {
-  assert.throws(() => resolveDevice('unknown', { list: [], entities: [], groupOwner: () => null }), /没有这台测试机 unknown/);
-  assert.throws(() => resolveDevice('xiaomi', { ...options, groupOwner: () => null }), /本体.*不存在/);
-  assert.throws(() => resolveDevice('xiaomi', { ...options, links: () => [{ protocol: 'ssh', endpoint: 'other' }] }), /没有本机可达的 adb 链路/);
+test('a group of another instance without an adb link is an iOS device, its attributes read as registered', () => {
+  const found = resolveDevice('iphone', { list: [], groupOwner: owner({ attributes: { name: 'iPhone', udid: 'UDID', note: 'n', personal: 'true', platform: 'ios' }, links: [] }) });
+  assert.deepEqual([found.group, found.platform, found.name, found.udid, found.note, found.personal, found.adb], ['device:iphone', 'ios', 'iPhone', 'UDID', 'n', true, '']);
 });
-test('link selection skips other protocols and follows Coda reachable-link order', () => {
-  const adb = { protocol: 'adb', endpoint };
-  assert.equal(selectAdbLink([{ protocol: 'ssh' }, adb, { protocol: 'adb', endpoint: 'second' }]), adb);
-  assert.equal(selectAdbLink([]), undefined);
+test('an Android group this machine reaches no adb link of, and a name nobody has, fail with the reason', () => {
+  const android = { attributes: { platform: 'android' }, links: [] };
+  assert.throws(() => resolveDevice('xiaomi', { list: [], groupOwner: () => android }), /测试机 xiaomi 没有本机可达的 adb 链路/);
+  assert.throws(() => resolveDevice('xiaomi', { list: [], groupOwner: () => ({ ...android, links: [{ protocol: 'ssh', endpoint: 'other' }] }) }), /没有本机可达的 adb 链路/);
+  assert.throws(() => resolveDevice('unknown', { list: [{ id: 'iphone' }], groupOwner: () => null }), /没有这台测试机 unknown；本地可用：iphone/);
+  assert.throws(() => resolveDevice('unknown', { list: [], groupOwner: () => null }), /本地可用：无/);
 });

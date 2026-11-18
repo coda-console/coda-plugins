@@ -242,4 +242,4 @@ PR 生命流程与简易开发声明挂点 `merged`：合并后要做的事由�
   之后按你的仓库更新、回退。改了插件 ID 也要先卸载内置的，否则每个 PR 会跑两条流程。
 - 改这里的 `review` 本身，照本仓库的规矩提 PR、升 `version`；Coda 再同步到合并后的提交（见仓库根的 README）。
 
-设备验收填写设备名时，先调用 testbed 的 `resolve-testbed` 再占用返回的组：iOS 为 device 组，安卓为本体 entity 组。此时须安装 testbed，review 不新增硬依赖。
+设备验收填写设备名时，先调用 testbed 的 `resolve-testbed` 再占用返回的组：iOS、安卓都是 `device:<设备名>` 组。此时须安装 testbed，review 不新增硬依赖。

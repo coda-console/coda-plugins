@@ -10,11 +10,11 @@ async function heldScope() {
   const process = root.rootElements.find(element => element.$type === 'bpmn:Process');
   const held = process.flowElements.find(element => element.id === 'testbed');
   const node = id => held.flowElements.find(element => element.id === id);
-  const next = (id, personal, platform = 'ios') => {
+  const next = (id, personal, platform = 'ios', inputs = { device: 'phone', select: '' }) => {
     const current = node(id);
     const flows = held.flowElements.filter(element => element.sourceRef === current);
     const flow = current.$type === 'bpmn:ExclusiveGateway'
-      ? flows.find(flow => flow.conditionExpression && evaluate(flow.conditionExpression.body.trim().slice(1), { find: { personal, platform } }).value === true) ?? current.default
+      ? flows.find(flow => flow.conditionExpression && evaluate(flow.conditionExpression.body.trim().slice(1), { find: { personal, platform }, inputs }).value === true) ?? current.default
       : flows[0];
     return flow.targetRef.id;
   };
@@ -42,8 +42,8 @@ test('a personal device is lent by the user before anything is installed; a resi
 });
 
 test('personal devices leave the held scope without blackscreen on reply, failure, rejection or cancellation', async () => {
-  const { process, node, next } = await heldScope();
-  const find = process.flowElements.find(element => element.id === 'find');
+  const { node, next } = await heldScope();
+  const find = node('find');
   assert.ok(find.extensionElements.values.some(value => value.name === 'personal'));
   for (const [source, end, black] of [
     ['task', 'done', 'black'],
@@ -68,17 +68,58 @@ test('Android returns through the custodian without iOS blackscreen or manual re
   assert.equal(next('return-stopped', false, 'android'), 'stopped');
 });
 
-test('both capabilities hold the resolved group and resolution exposes platform and entity', async () => {
+test('device and select are exactly one: a named device is found, then held; a pool is held, then found; both or neither stop before any queue', async () => {
+  const { node, next } = await heldScope();
+  const choose = inputs => next('choose', false, 'ios', inputs);
+  assert.equal(next('testbed-start'), 'choose');
+  // As Coda hands them over: an optional text left out is an empty string.
+  assert.equal(choose({ device: 'phone', select: '' }), 'find');
+  assert.equal(choose({ device: '', select: 'platform=android' }), 'hold-select');
+  for (const inputs of [{ device: '', select: '' }, { device: 'phone', select: 'platform=android' }]) assert.equal(node(choose(inputs)).$type, 'bpmn:EndEvent');
+  assert.equal(node('not-chosen').eventDefinitions[0].$type, 'bpmn:ErrorEventDefinition');
+  // Named: found, then held, then connected. Pooled: held, found by the group it got, then connected: it is held already.
+  assert.equal(next('hold-select'), 'find');
+  assert.equal(next('find'), 'found');
+  assert.equal(next('found', false, 'ios', { device: 'phone', select: '' }), 'hold');
+  assert.equal(next('found', false, 'android', { device: '', select: 'platform=android' }), 'connect');
+  assert.equal(next('hold'), 'connect');
+});
+
+test('the group a pool held is what find resolves; a named device leaves it empty', async () => {
+  const { node } = await heldScope();
+  const env = name => node('find').extensionElements.values.find(value => value.name === name).value.slice(1);
+  assert.equal(evaluate(env('HELD'), { inputs: { device: '', select: 'platform=android' }, 'hold-select': { group: 'device:xiaomi' } }).value, 'device:xiaomi');
+  assert.equal(evaluate(env('HELD'), { inputs: { device: 'phone', select: '' } }).value, '');
+  assert.equal(evaluate(env('DEVICE'), { inputs: { device: 'phone', select: '' } }).value, 'phone');
+});
+
+test('hold-group takes group or select, exactly one', async () => {
+  const hold = params => readWorkflow(`<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0" targetNamespace="x" id="d">
+  <process id="p" name="p" isExecutable="true"><startEvent id="s" />
+    <serviceTask id="hold" coda:action="hold-group"><extensionElements>${params}</extensionElements></serviceTask>
+    <sequenceFlow id="f" sourceRef="s" targetRef="hold" />
+  </process>
+</definitions>`, 'p');
+  const param = (name, value) => `<coda:param name="${name}" value="${value}" />`;
+  assert.ok(!(await hold(param('select', 'platform=android'))).problem);
+  assert.ok(!(await hold(param('group', 'device:phone'))).problem);
+  for (const params of [param('group', 'device:phone') + param('select', 'platform=android'), '']) assert.match((await hold(params)).problem, /group、select 须恰写一个/);
+  assert.match((await hold(param('select', 'platform'))).problem, /键=值/);
+});
+
+test('the capabilities hold the resolved group; resolution exposes group, platform and adb', async () => {
   for (const name of ['use-testbed', 'run-on-device', 'resolve-testbed']) {
     const { root, problem } = await readWorkflow(readFileSync(new URL(`../../../plugins/testbed/.coda/capabilities/${name}.bpmn`, import.meta.url), 'utf8'), name);
     assert.ok(!problem, problem);
     const process = root.rootElements.find(element => element.$type === 'bpmn:Process');
     if (name === 'resolve-testbed') {
       const end = process.flowElements.find(element => element.id === 'end');
-      assert.deepEqual(end.extensionElements.values.map(v => v.name), ['group', 'platform', 'entity', 'adb']);
+      assert.deepEqual(end.extensionElements.values.map(v => v.name), ['group', 'platform', 'adb']);
     } else {
       const scope = name === 'use-testbed' ? process.flowElements.find(e => e.id === 'testbed') : process;
-      const hold = scope.flowElements.find(e => e.action === 'hold-group');
+      const hold = scope.flowElements.find(e => e.id === 'hold' || e.id === 'borrow');
+      assert.equal(hold.action, 'hold-group');
       assert.equal(hold.extensionElements.values.find(v => v.name === 'group').value, '=find.group');
     }
   }

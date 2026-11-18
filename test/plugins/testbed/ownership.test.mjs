@@ -39,11 +39,13 @@ test('declarations follow atomic replacements; invalid/missing registration pres
   const original = console.error;
   console.error = message => errors.push(message);
   t.after(async () => { await deactivate(); console.error = original; });
-  const { coda, records } = recordsHost('testbed');
+  const { coda: host, records } = recordsHost('testbed'), sent = [];
+  const coda = { ...host, replace: (kind, items) => { sent.push(structuredClone(items)); return host.replace(kind, items); } };
   const groups = () => held(records, 'coda/group@1');
   writeFileSync(file, JSON.stringify([phone]));
   await activated(coda, state, file);
-  // The default of the definition is filled in, as Coda does: capacity 1 until the plugin writes it.
+  // The capacity is the plugin's to write, not left to the definition's default.
+  assert.equal(sent[0][0].spec.capacity, 1);
   assert.deepEqual(groups(), [{ owner: 'testbed', kind: 'coda/group@1', id: recordId('testbed', 'coda/group@1', phone.udid), key: phone.udid, status: {},
     spec: { name: 'device:phone', capacity: 1, unique: ['udid'], attributes: { name: phone.name, udid: phone.udid, note: phone.note, personal: 'false', platform: 'ios' } } }]);
   writeFileSync(join(state, 'next'), JSON.stringify([{ ...phone, name: 'Changed', personal: true }]));
@@ -69,13 +71,13 @@ test('the set replaces only this plugin\'s groups; a refused set is logged', asy
   t.after(async () => { await deactivate(); console.error = original; });
   const { coda, records } = recordsHost('testbed');
   const other = { owner: 'other', kind: 'coda/group@1', id: recordId('other', 'coda/group@1', phone.udid), key: phone.udid, status: {}, spec: { name: 'device:other', attributes: {}, unique: [] } };
-  const entity = { owner: 'coda', kind: 'coda/group@1', id: '03acc3f8-6a6c-4f65-a90e-48f3af5aa3e5', status: {}, spec: { name: 'entity:03acc3f8-6a6c-4f65-a90e-48f3af5aa3e5', attributes: {}, unique: [] } };
-  for (const row of [other, entity]) records.set(`${row.kind}/${row.id}`, row);
+  const xiaomi = { owner: 'android', kind: 'coda/group@1', id: recordId('android', 'coda/group@1', 'SERIAL'), key: 'SERIAL', status: {}, spec: { name: 'device:xiaomi', attributes: {}, unique: [] } };
+  for (const row of [other, xiaomi]) records.set(`${row.kind}/${row.id}`, row);
   writeFileSync(file, JSON.stringify([phone]));
   await activated(coda, state, file);
   const mine = recordId('testbed', 'coda/group@1', phone.udid);
-  assert.deepEqual(held(records, 'coda/group@1').map(row => row.id).sort(), [other.id, mine, entity.id].sort());
-  assert.deepEqual([records.get(`coda/group@1/${other.id}`), records.get(`coda/group@1/${entity.id}`)], [other, entity]);
+  assert.deepEqual(held(records, 'coda/group@1').map(row => row.id).sort(), [other.id, mine, xiaomi.id].sort());
+  assert.deepEqual([records.get(`coda/group@1/${other.id}`), records.get(`coda/group@1/${xiaomi.id}`)], [other, xiaomi]);
   // A key the host refuses (longer than 256): nothing changes, the refusal is logged.
   writeFileSync(file, JSON.stringify([{ ...phone, udid: 'U'.repeat(257) }]));
   await until(() => errors.length > 0);
