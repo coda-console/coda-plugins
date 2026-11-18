@@ -10,7 +10,7 @@ export async function activate(coda) {
     try {
       await coda.replace('coda/group@1', devices(file, { missingIsEmpty: false }).map(device => ({
         key: device.udid,
-        spec: { name: `device:${device.id}`, plugin: coda.plugin.id, unique: ['udid'],
+        spec: { name: `device:${device.id}`, unique: ['udid'],
           attributes: { name: device.name ?? device.id, udid: device.udid, note: device.note ?? '', personal: device.personal === true ? 'true' : 'false',
             platform: 'ios' } },
       })));

@@ -37,7 +37,7 @@ const remove = async (provider, name) => assert.equal((await request(provider, `
 async function setup(t) {
   const dir = await fixture(t), h = host(join(dir, '.git', 'coda-state'));
   const provider = new GitProvider(h.coda); t.after(() => provider.stop()); await provider.start();
-  const id = await register(provider, 'source', { path: dir }); await h.flush();
+  const id = await register(provider, 'source', { path: dir });
   return { dir, h, provider, id };
 }
 
@@ -67,12 +67,11 @@ test('登记的源以名字为 key，ID 是宿主由它派生的，名字也写�
   const repo = await provider.lookup(id), expected = await repository(dir, env);
   assert.deepEqual([repo.path, repo.gitDir, repo.commonDir], [expected.path, expected.gitDir, expected.commonDir]);
   assert.deepEqual(JSON.parse(readFileSync(join(dir, '.git', 'coda-state', 'sources.json'), 'utf8')),
-    { source: { path: expected.path, gitDir: expected.gitDir, commonDir: expected.commonDir } });
-  await remove(provider, 'source'); await h.flush();
+    { version: 2, sources: { source: { spec: { path: dir, name: 'source' }, identity: { path: expected.path, gitDir: expected.gitDir, commonDir: expected.commonDir } } } });
+  await remove(provider, 'source');
   assert.equal(get(h, id), undefined);
   assert.equal(await provider.lookup(id), null);
-  assert.deepEqual(JSON.parse(readFileSync(join(dir, '.git', 'coda-state', 'sources.json'), 'utf8')), {});
-  assert.deepEqual(h.failures, []);
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, '.git', 'coda-state', 'sources.json'), 'utf8')), { version: 2, sources: {} });
 });
 
 test('登记的源经只读 smart HTTP 可 fetch 分支，快照 ref 不可取', async t => {
@@ -89,7 +88,6 @@ test('登记的源经只读 smart HTTP 可 fetch 分支，快照 ref 不可取',
   assert.equal(await command(target, ['rev-parse', 'main']), await command(dir, ['rev-parse', 'main']));
   assert.ok(!(await command(target, ['-c', 'protocol.version=2', 'ls-remote', url])).includes('refs/coda/'));
   await assert.rejects(command(target, ['-c', 'protocol.version=2', 'fetch', url, `${ref}:refs/heads/hidden`]));
-  assert.deepEqual(h.failures, []);
 });
 
 test('管理接口按名字、仅接受本机身份，更新整份 spec 并保留 status，错误符合 coda.api 信封，不再有 /snapshots、/publish', async t => {
@@ -103,7 +101,7 @@ test('管理接口按名字、仅接受本机身份，更新整份 spec 并保�
   const refused = await request(provider, '/sources/source', { spec: { path: join(dir, 'missing') } });
   assert.equal(refused.code, 400); assert.deepEqual(get(h, id), old);
   const second = await register(provider, 'second', { path: dir });
-  await h.flush();
+
   assert.match(second, UUID); assert.notEqual(second, id);
   assert.deepEqual(get(h, second).spec, { path: dir, name: 'second' }); assert.equal(get(h, second).status.ready, true);
   const read = await request(provider, '/sources/second', {}, { method: 'GET' });
@@ -122,13 +120,12 @@ test('同名的两个首次登记同时到达，只有一条记录', async t => 
   const dir = await fixture(t), h = host(join(dir, '.git', 'coda-state'));
   const provider = new GitProvider(h.coda); t.after(() => provider.stop()); await provider.start();
   const [first, second] = await Promise.all([register(provider, 'source', { path: dir }), register(provider, 'source', { path: dir })]);
-  await h.flush();
+
   assert.equal(second, first);
   assert.deepEqual([...h.objects.keys()], [`${SOURCE}/${first}`]);
   assert.equal(get(h, first).status.ready, true);
-  await remove(provider, 'source'); await h.flush();
+  await remove(provider, 'source');
   assert.equal(h.objects.size, 0);
-  assert.deepEqual(h.failures, []);
 });
 
 test('源路径暂时失效时不可读，恢复后复用原身份重新就绪', async t => {
@@ -136,12 +133,12 @@ test('源路径暂时失效时不可读，恢复后复用原身份重新就绪',
   await symlink(dir, path);
   const h = host(join(dir, '.git', 'state'));
   const provider = new GitProvider(h.coda); t.after(() => provider.stop()); await provider.start();
-  const id = await register(provider, 'source', { path }); await h.flush();
+  const id = await register(provider, 'source', { path });
   assert.equal(get(h, id).status.ready, true);
-  await unlink(path); await provider.reconcile(provider.sources.get(id)); await h.flush();
+  await unlink(path); await provider.reconcile('source');
   assert.equal(get(h, id).status.ready, false);
   assert.equal(await provider.lookup(id), null);
-  await symlink(dir, path); await provider.reconcile(provider.sources.get(id)); await h.flush();
+  await symlink(dir, path); await provider.reconcile('source');
   assert.equal(get(h, id).status.ready, true);
   assert.ok(await provider.lookup(id));
 });
@@ -151,130 +148,145 @@ test('源符号链接换仓库后拒绝读取，重启仍须重新登记', async
   await symlink(a, path);
   const h = host(join(a, '.git', 'state'));
   const provider = new GitProvider(h.coda); t.after(() => provider.stop()); await provider.start();
-  const id = await register(provider, 'source', { path }); await h.flush();
+  const id = await register(provider, 'source', { path });
   assert.equal(get(h, id).status.ready, true);
   await unlink(path); await symlink(b, path);
   assert.equal(await provider.lookup(id), null);
-  await provider.reconcile(provider.sources.get(id)); await h.flush();
+  await provider.reconcile('source');
   assert.equal(get(h, id).status.ready, false);
   assert.match(get(h, id).status.reason, /重新登记/);
   assert.equal(await provider.lookup(id), null);
   await provider.stop();
-  const restarted = new GitProvider(h.coda); t.after(() => restarted.stop()); await restarted.start(); await h.flush();
+  const restarted = new GitProvider(h.coda); t.after(() => restarted.stop()); await restarted.start();
   assert.equal(get(h, id).status.ready, false);
   assert.equal(await restarted.lookup(id), null);
   await remove(restarted, 'source');
-  const again = await register(restarted, 'source', { path }); await h.flush();
+  const again = await register(restarted, 'source', { path });
   assert.equal(again, id);
   assert.equal(get(h, again).status.ready, true);
   assert.equal((await restarted.lookup(again)).path, (await repository(b, env)).path);
-  assert.deepEqual(h.failures, []);
-});
-
-test('删除后同名、同 spec 重新登记是新的源（ID 相同），旧源迟到的结果不改新源', async t => {
-  const { dir, h, provider, id } = await setup(t);
-  const old = provider.sources.get(id), environment = h.coda.environment;
-  let fail; h.coda.environment = () => new Promise((_, reject) => { fail = reject; });
-  const late = provider.reconcile(old);
-  h.coda.environment = environment;
-  await remove(provider, 'source');
-  const again = await register(provider, 'source', { path: dir }); await h.flush();
-  assert.equal(again, id);
-  assert.equal(get(h, again).status.ready, true);
-  fail(new Error('late')); await late;
-  assert.equal(get(h, again).status.ready, true);
-  assert.ok(await provider.lookup(again));
-  await h.flush();
 });
 
 for (const name of ['constructor', '__proto__']) test(`源名为 ${name} 也是普通名字：登记、删后重登、重启都认得`, async t => {
   const dir = await fixture(t), h = host(join(dir, '.git', 'coda-state'));
   const provider = new GitProvider(h.coda); t.after(() => provider.stop()); await provider.start();
-  const id = await register(provider, name, { path: dir }); await h.flush();
+  const id = await register(provider, name, { path: dir });
   assert.equal(get(h, id).status.ready, true);
   await remove(provider, name);
-  const again = await register(provider, name, { path: dir }); await h.flush();
+  const again = await register(provider, name, { path: dir });
   assert.equal(get(h, again).status.ready, true);
   await provider.stop();
-  const restarted = new GitProvider(h.coda); t.after(() => restarted.stop()); await restarted.start(); await h.flush();
+  const restarted = new GitProvider(h.coda); t.after(() => restarted.stop()); await restarted.start();
   assert.equal(get(h, again).status.ready, true);
   assert.equal((await restarted.lookup(again)).path, (await repository(dir, env)).path);
   assert.equal((await request(restarted, `/sources/${name}`, {}, { method: 'GET' })).value.id, again);
-  assert.deepEqual(h.failures, []);
-});
-
-test('首次登记的 reconcile 还在等时再写相同 spec，不作废它，源照常就绪', async t => {
-  const dir = await fixture(t), h = host(join(dir, '.git', 'coda-state'));
-  const provider = new GitProvider(h.coda); t.after(() => provider.stop()); await provider.start();
-  const environment = h.coda.environment; let entered, release, calls = 0;
-  const waiting = new Promise(resolve => { entered = resolve; }), gate = new Promise(resolve => { release = resolve; });
-  // The first call is the registration's own check of the path; the second, the reconcile its record sets off.
-  h.coda.environment = async () => { if (++calls === 1) return env; h.coda.environment = environment; entered(); await gate; return env; };
-  const id = await register(provider, 'source', { path: dir }); await waiting;
-  assert.equal(await register(provider, 'source', { path: dir }), id);
-  release(); await h.flush();
-  assert.equal(get(h, id).status.ready, true);
-  assert.ok(await provider.lookup(id));
-  assert.deepEqual(h.failures, []);
 });
 
 test('启动时仓库不可用的源，修好后以相同 spec 再登记即重新核对为就绪', async t => {
   const dir = await fixture(t), state = await mkdtemp(join(tmpdir(), 'coda-git-state-')), h = host(state);
   t.after(() => rm(state, { recursive: true, force: true }));
   const first = new GitProvider(h.coda); await first.start();
-  const id = await register(first, 'source', { path: dir }); await h.flush();
+  const id = await register(first, 'source', { path: dir });
   assert.equal(get(h, id).status.ready, true);
   await first.stop();
   await rename(join(dir, '.git'), join(dir, '.git-away'));
-  const provider = new GitProvider(h.coda); t.after(() => provider.stop()); await provider.start(); await h.flush();
+  const provider = new GitProvider(h.coda); t.after(() => provider.stop()); await provider.start();
   assert.equal(get(h, id).status.ready, false);
   assert.equal(await provider.lookup(id), null);
   await rename(join(dir, '.git-away'), join(dir, '.git'));
   assert.equal(await register(provider, 'source', { path: dir }), id);
-  await h.flush();
+
   assert.equal(get(h, id).status.ready, true);
   assert.ok(await provider.lookup(id));
-  assert.deepEqual(h.failures, []);
 });
 
-test('收到自己写 status 的回声不再核对：只有新记录或 spec 变了才核对', async t => {
-  const dir = await fixture(t), h = host(join(dir, '.git', 'coda-state'));
-  const provider = new GitProvider(h.coda); t.after(() => provider.stop()); await provider.start();
-  const environment = h.coda.environment; let calls = 0;
-  h.coda.environment = () => { calls++; return environment(); };
-  const id = await register(provider, 'source', { path: dir }); await h.flush();
-  // The registration's check of the path and the reconcile of the new record; the echo of the ready status sets off none.
-  assert.equal(calls, 2);
-  assert.equal(get(h, id).status.ready, true);
-  const status = { ready: false, reason: 'written elsewhere' };
-  await h.coda.put({ kind: SOURCE, key: 'source' }, { spec: get(h, id).spec, status }); await h.flush();
-  assert.equal(calls, 2);
-  assert.deepEqual(get(h, id).status, status);
-  assert.deepEqual(h.failures, []);
-});
-
-test('启动时整份给出现有的源：旧版留下、不带 key 的记录被删；按现有的源裁剪身份，同名可登记另一仓库', async t => {
-  const a = await fixture(t), b = await fixture(t), state = await mkdtemp(join(tmpdir(), 'coda-git-state-')), h = host(state);
+test('启动时按 sources.json 整份给出登记的源：旧版留下、不带 key 的记录被删；旧格式的文件当作没有源', async t => {
+  const a = await fixture(t), state = await mkdtemp(join(tmpdir(), 'coda-git-state-')), h = host(state);
   t.after(() => rm(state, { recursive: true, force: true }));
   const file = join(state, 'sources.json'), identity = await repository(a, env);
   const left = '7d2e9a14-3c5b-4f86-a1d0-c94b2e6f8a37';
   await writeFile(file, JSON.stringify({ gone: { path: identity.path, gitDir: identity.gitDir, commonDir: identity.commonDir } }));
   h.seed(SOURCE, left, { spec: { name: 'left', path: a }, status: { ready: true, url: `/v1/plugins/git/services/repository/repos/${left}` } });
-  const provider = new GitProvider(h.coda); t.after(() => provider.stop()); await provider.start(); await h.flush();
-  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), {});
+  const first = new GitProvider(h.coda); await first.start();
   assert.equal(get(h, left), undefined);
-  assert.equal(await provider.lookup(left), null);
-  const id = await register(provider, 'gone', { path: b }); await h.flush();
+  assert.equal(h.objects.size, 0);
+  const id = await register(first, 'gone', { path: a });
   assert.equal(get(h, id).status.ready, true);
-  assert.equal((await provider.lookup(id)).path, (await repository(b, env)).path);
-  assert.deepEqual(h.failures, []);
+  await first.stop();
+  // Replaced from the file alone: what the host holds is not read.
+  h.objects.clear();
+  const provider = new GitProvider(h.coda); t.after(() => provider.stop()); await provider.start();
+  assert.equal(get(h, id).status.ready, true);
+  assert.equal((await provider.lookup(id)).path, identity.path);
+});
+
+test('旧格式的文件按空处理，登记名恰好叫 sources 的也是：不崩，不迁移', async t => {
+  const a = await fixture(t), state = await mkdtemp(join(tmpdir(), 'coda-git-state-')), h = host(state);
+  t.after(() => rm(state, { recursive: true, force: true }));
+  const identity = await repository(a, env);
+  await writeFile(join(state, 'sources.json'), JSON.stringify({ sources: { path: identity.path, gitDir: identity.gitDir, commonDir: identity.commonDir } }));
+  const provider = new GitProvider(h.coda); t.after(() => provider.stop()); await provider.start();
+  assert.equal(provider.sources.size, 0); assert.equal(h.objects.size, 0);
+});
+
+test('写文件失败时登记、删除都报错，内存、文件、宿主记录不变；之后别的登记不带上失败的改动', async t => {
+  const { dir, h, provider, id } = await setup(t);
+  const file = join(dir, '.git', 'coda-state', 'sources.json'), before = readFileSync(file, 'utf8'), records = structuredClone([...h.objects]);
+  await mkdir(`${file}.tmp`);
+  assert.equal((await request(provider, '/sources/source/delete')).code, 400);
+  assert.equal((await request(provider, '/sources/second', { spec: { path: dir } })).code, 400);
+  assert.deepEqual([...provider.sources.keys()], ['source']); assert.ok(await provider.lookup(id));
+  assert.equal(readFileSync(file, 'utf8'), before); assert.deepEqual([...h.objects], records);
+  await rm(`${file}.tmp`, { recursive: true });
+  const second = await register(provider, 'second', { path: dir });
+  assert.deepEqual([...provider.sources.keys()], ['source', 'second']);
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(file, 'utf8')).sources), ['source', 'second']);
+  assert.deepEqual([...h.objects.keys()].sort(), [`${SOURCE}/${id}`, `${SOURCE}/${second}`].sort());
+});
+
+test('删除时 replace 被拒：报错，文件和内存里源还在；重试删除成功，宿主记录撤下', async t => {
+  const { dir, h, provider, id } = await setup(t);
+  const file = join(dir, '.git', 'coda-state', 'sources.json'), before = readFileSync(file, 'utf8'), replace = h.coda.replace;
+  h.coda.replace = async () => { h.coda.replace = replace; throw new Error('宿主拒绝写入'); };
+  const refused = await request(provider, '/sources/source/delete');
+  assert.equal(refused.code, 400); assert.equal(refused.value.error.message, '宿主拒绝写入');
+  assert.equal(readFileSync(file, 'utf8'), before); assert.deepEqual([...provider.sources.keys()], ['source']);
+  assert.ok(await provider.lookup(id)); assert.equal(get(h, id).status.ready, true);
+  await remove(provider, 'source');
+  assert.equal(get(h, id), undefined); assert.equal(h.objects.size, 0);
+  assert.equal(await provider.lookup(id), null);
+});
+
+test('登记时 put 被拒：报错，宿主记录没有 status；重试同一个登记后补上', async t => {
+  const dir = await fixture(t), h = host(join(dir, '.git', 'coda-state'));
+  const provider = new GitProvider(h.coda); t.after(() => provider.stop()); await provider.start();
+  const put = h.coda.put;
+  h.coda.put = async () => { h.coda.put = put; throw new Error('宿主拒绝写入'); };
+  const refused = await request(provider, '/sources/first', { spec: { path: dir } }), first = h.id('first');
+  assert.equal(refused.code, 400);
+  assert.deepEqual(get(h, first).status, {});
+  assert.equal(await register(provider, 'first', { path: dir }), first);
+  assert.equal(get(h, first).status.ready, true);
+  assert.ok(await provider.lookup(first));
+});
+
+test('已就绪的源改路径时 replace 被拒：文件、内存不变，宿主上仍是旧 spec 和旧 status', async t => {
+  const { dir, h, provider, id } = await setup(t);
+  const other = await fixture(t), file = join(dir, '.git', 'coda-state', 'sources.json'), before = readFileSync(file, 'utf8');
+  const status = get(h, id).status, replace = h.coda.replace;
+  h.coda.replace = async () => { h.coda.replace = replace; throw new Error('宿主拒绝写入'); };
+  assert.equal((await request(provider, '/sources/source', { spec: { path: other } })).code, 400);
+  assert.equal(readFileSync(file, 'utf8'), before); assert.equal(provider.sources.get('source').spec.path, dir);
+  assert.deepEqual(get(h, id).spec, { name: 'source', path: dir });
+  assert.equal(get(h, id).status.ready, true); assert.equal(get(h, id).status.url, status.url);
+  assert.equal((await provider.lookup(id)).path, (await repository(dir, env)).path);
 });
 
 test('start 完就能取上次留下的源：首次核对都做完才开服务', async t => {
   const dir = await fixture(t), state = await mkdtemp(join(tmpdir(), 'coda-git-state-')), h = host(state);
   t.after(() => rm(state, { recursive: true, force: true }));
   const first = new GitProvider(h.coda); await first.start();
-  const id = await register(first, 'source', { path: dir }); await h.flush();
+  const id = await register(first, 'source', { path: dir });
   await first.stop();
   const provider = new GitProvider(h.coda); t.after(() => provider.stop());
   await provider.start();
@@ -285,63 +297,6 @@ test('start 完就能取上次留下的源：首次核对都做完才开服务',
   const target = join(dir, 'client'); await mkdir(target); await command(target, ['init']);
   await command(target, ['-c', 'protocol.version=2', 'fetch', `http://127.0.0.1:${server.address().port}/repos/${id}`, 'refs/heads/main:refs/heads/main']);
   assert.equal(await command(target, ['rev-parse', 'main']), await command(dir, ['rev-parse', 'main']));
-  await h.flush();
-  assert.deepEqual(h.failures, []);
+
 });
 
-test('删除被宿主拒绝时，记录还在，进行中被作废的核对由删除重新做：源不停在空 status', async t => {
-  const dir = await fixture(t), h = host(join(dir, '.git', 'coda-state'));
-  const provider = new GitProvider(h.coda); t.after(() => provider.stop()); await provider.start();
-  const environment = h.coda.environment, remove_ = h.coda.delete; let entered, release, calls = 0;
-  const waiting = new Promise(resolve => { entered = resolve; }), gate = new Promise(resolve => { release = resolve; });
-  // The first call is the registration's own check of the path; the second, the reconcile its record sets off.
-  h.coda.environment = async () => { if (++calls === 1) return env; h.coda.environment = environment; entered(); await gate; return env; };
-  const id = await register(provider, 'source', { path: dir }); await waiting;
-  assert.deepEqual(get(h, id).status, {});
-  h.coda.delete = async () => { throw new Error('宿主拒绝删除'); };
-  const refused = await request(provider, '/sources/source/delete');
-  assert.equal(refused.code, 400); assert.equal(refused.value.error.message, '宿主拒绝删除');
-  h.coda.delete = remove_;
-  release(); await h.flush();
-  assert.equal(get(h, id).status.ready, true);
-  assert.ok(await provider.lookup(id));
-  assert.deepEqual(h.failures, []);
-});
-
-test('登记时写入被宿主拒绝，记录还在，进行中被作废的核对由登记重新做：源不停在空 status', async t => {
-  const dir = await fixture(t), other = await fixture(t), h = host(join(dir, '.git', 'coda-state'));
-  const provider = new GitProvider(h.coda); t.after(() => provider.stop()); await provider.start();
-  const environment = h.coda.environment, put = h.coda.put; let entered, release, calls = 0;
-  const waiting = new Promise(resolve => { entered = resolve; }), gate = new Promise(resolve => { release = resolve; });
-  // The first call is the registration's own check of the path; the second, the reconcile its record sets off.
-  h.coda.environment = async () => { if (++calls === 1) return env; h.coda.environment = environment; entered(); await gate; return env; };
-  const id = await register(provider, 'source', { path: dir }); await waiting;
-  assert.deepEqual(get(h, id).status, {});
-  h.coda.put = async () => { h.coda.put = put; throw new Error('宿主拒绝写入'); };
-  const refused = await request(provider, '/sources/source', { spec: { path: other } });
-  assert.equal(refused.code, 400); assert.equal(refused.value.error.message, '宿主拒绝写入');
-  release(); await h.flush();
-  assert.equal(get(h, id).spec.path, dir);
-  assert.equal(get(h, id).status.ready, true);
-  assert.ok(await provider.lookup(id));
-  assert.deepEqual(h.failures, []);
-});
-
-test('同一 spec 只是键的顺序不同，也算没变：失败的源以它重新登记即重新核对', async t => {
-  const dir = await fixture(t), state = await mkdtemp(join(tmpdir(), 'coda-git-state-')), h = host(state);
-  t.after(() => rm(state, { recursive: true, force: true }));
-  const first = new GitProvider(h.coda); await first.start();
-  const id = await register(first, 'source', { path: dir }); await h.flush();
-  await first.stop();
-  await rename(join(dir, '.git'), join(dir, '.git-away'));
-  const provider = new GitProvider(h.coda); t.after(() => provider.stop()); await provider.start(); await h.flush();
-  assert.equal(get(h, id).status.ready, false);
-  assert.deepEqual(Object.keys(get(h, id).spec), ['path', 'name']);
-  await rename(join(dir, '.git-away'), join(dir, '.git'));
-  // The host sorts the keys to compare: this changes nothing there, writes nothing and sends nothing.
-  assert.equal(await register(provider, 'source', { name: 'source', path: dir }), id);
-  await h.flush();
-  assert.equal(get(h, id).status.ready, true);
-  assert.ok(await provider.lookup(id));
-  assert.deepEqual(h.failures, []);
-});

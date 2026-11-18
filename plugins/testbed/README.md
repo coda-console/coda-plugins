@@ -1,5 +1,7 @@
 # 测试机
 
+2.1.0：写 `coda/group@1` 记录时，`spec` 里不再带 `plugin`（持有插件由 Coda 记在条目上）。需要先带 H4 之后结构减负的 Coda。只给预览渠道。
+
 2.0.1：脚本、README、Skill 改用 `coda` 一个命令的子命令（`coda run`、`coda resources`），不再用 `coda-run`、`coda-resources`。需要先带 H5 的 Coda。只给预览渠道。
 
 2.0.0（接口破坏性变更）：设备归属改用 Coda 的新接口 `coda.replace('coda/group@1', …)`，不再用 `resources.declareGroups`，也不再自己串行声明（宿主按插件依次写）；清单声明实现 `coda/group@1`。每台设备一条记录：插件给的 key 是 udid，记录 ID 由宿主按后端、插件、种类和 key 派生；`spec.name` 是 `device:<设备名>`，`spec` 另有 `plugin`（本插件）、`attributes`、`unique`，内容与原来的声明一致。需要先带这套接口的 Coda（coda#2749）。只给预览渠道。

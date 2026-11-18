@@ -1,6 +1,8 @@
 # 宿主资源
 
-## 运行器与执行环境
+## 名额与模拟器清点
+
+4.0.0（接口破坏性变更）：不再发布 `coda/executor@1` 执行器记录：清单里的 `protocolImplementations`、每分钟的本机探测与容量计算一并删掉。名额（组 `host`、`run-held`、`host-sim`）与模拟器清点不变，插件模块只剩 `coda self run-finished` 的处理。需要先带 H4 之后结构减负的 Coda。只给预览渠道。
 
 3.1.0：清理脚本改用 `coda self run-finished` 问本插件模块，模块用 `coda.self.handle` 登记，不再开本机端口、不再写状态文件。需要先带 H5（命令的绑定）的 Coda。只给预览渠道。
 
@@ -8,18 +10,12 @@
 
 2.4.0：删掉外派执行（Coda 已不再把步骤交给别台执行）：`execute` 的处理函数、源码获取与工作副本、独立 worker 与 hook，以及设置 `host.enabled`、`host.labels`；`run-held` 只在本机排队，不再收 `local`，也不再去空间里别的 Mac 跑。只给预览渠道。
 
-host 在清单里声明实现 `coda/executor@1`，把自己这台机器的执行环境发布为一条 `coda/executor@1` 记录（插件给的 key 是 `host`，记录 ID 由宿主按后端、插件、种类和 key 派生，插件不生成也不保存）；Coda 的执行环境页显示的是 Coda 自己算的执行器，不读这条记录。不接 `execute`，也不再开 `coda/run@1` 运行。
-
-启动后第一次写用 `coda.replace` 把本插件的执行器记录整份给出：上次运行留下的同一条被盖掉（停止时写的 `accepting: false` 随之换掉），2.4.0 留下的 ID 为 `host`、不带 key 的旧记录被删掉；之后照常 `coda.put`。插件不观察自己的记录，所以不会被自己写的 status 再触发。
-
-配置意图、能力和名额在本机持有。`host.capacity` 配置名额数；系统／CPU、Node、Xcode、可用模拟器 runtime 与图形会话由本机探测，每分钟刷新，不启动模拟器。容量和占用订阅 `concurrency-groups`，包括流程里写 `coda:group="host"` 的步骤与 run-held，公布值不构成预留；没有组 `host` 或容量为 0 时记录写 `accepting: false`。协议的执行器配置仍要求 `enabled` 与 `labels`，记录里固定写 `true` 与空数组。
-
-**验证**：纯规则、模拟器登记与清点、run-held 脚本、超时、取消与流程形状在 `test/plugins/host/`；执行器记录用 host 安装的协议包校验器测试。真实 Coda 存储／资源账本装配留 Coda 仓库验证。包含 host-sim 的完整插件测试经会话的 `workflow_run` → `run-held` 运行，不启动真实模拟器。
+**验证**：纯规则、模拟器登记与清点、run-held 脚本、超时、取消与流程形状在 `test/plugins/host/`。真实 Coda 存储／资源账本装配留 Coda 仓库验证。包含 host-sim 的完整插件测试经会话的 `workflow_run` → `run-held` 运行，不启动真实模拟器。
 
 ## 现有持锁执行与模拟器工具
 
 这个后端实例的 Apple 模拟器、Xcode 构建和项目要求排队的命令共用一组名额，会话里的这类命令经这个插件排队与执行。名额是流程引擎的[并发组](https://github.com/coda-console/coda/blob/main/docs/workflows.md#并发组) `host`，
-每个[后端实例](https://github.com/coda-console/coda/blob/main/docs/deployment.md#后端实例)各有一组，同一台 Mac 上的两个实例互不相干；插件只说它装的是什么、能同时进几个，Coda 内核不认识它。
+每个[后端实例](https://github.com/coda-console/coda/blob/main/docs/deployment.md#后端实例)各有一组，同一台 Mac 上的两个实例互不相干；插件只声明名额，也就是组 `host` 的容量，Coda 内核不认识它。
 
 从 Coda 的商店安装（npm 包 `@coda-console/host`，分类「机器与资源」），不随 Coda 默认装上；没装时流程步骤写 `coda:group="host"` 照样排队，容量按 1，
 会话里也没有 `host-sim`。用法给 Agent 的部分在 Skill `host-slots`（`skills/host-slots/SKILL.md`）。

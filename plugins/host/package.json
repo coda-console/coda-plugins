@@ -2,9 +2,9 @@
   "name": "@coda-console/host",
   "id": "host",
   "displayName": "宿主资源",
-  "description": "本机运行器与 Xcode、模拟器的排队名额",
+  "description": "Xcode、模拟器的排队名额",
   "icon": { "symbol": "hammer.fill", "color": "gray" },
-  "version": "3.1.0",
+  "version": "4.0.0",
   "coda": {
     "channels": [
       "preview"
@@ -87,9 +87,6 @@
     },
     "skills": [
       "skills/host-slots"
-    ],
-    "protocolImplementations": [
-      "coda/executor@1"
     ]
   },
   "license": "MIT",
