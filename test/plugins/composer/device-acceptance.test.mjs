@@ -25,20 +25,19 @@ for (const name of ['develop', 'deliver']) {
     assert.equal(device.default, '');
     assert.ok(!device.required);
     const params = Object.fromEntries(values(nodes['device-lock']).map(v => [v.name, v.value]));
-    assert.deepEqual(params, { group: '=device-resolve.group', capacity: '1' });
+    assert.deepEqual(params, name === 'develop' ? { group: '=device-resolve.group', capacity: '1', borrow: 'no' } : { group: '=device-resolve.group', capacity: '1' });
     assert.equal(nodes['device-lock'].action, 'hold-group');
     assert.equal(nodes['device-lock'].status, '等验收设备 {{inputs.device}}');
     assert.equal(process.concurrency, undefined);
-    assert.equal(route('acceptance-start'), 'device-lock-choice');
-    // 只有监督开发能另占一个组（hold）：占完设备再占它，没有就直接去安装。
-    const afterDevice = name === 'develop' ? 'hold-choice' : 'preview';
+    // 只有监督开发能另占一个组（hold）：先占它再占设备（先组后设备），没有就直接去安装；需求交付直接占设备。
+    assert.equal(route('acceptance-start'), name === 'develop' ? 'hold-choice' : 'device-lock-choice');
     for (const devices of [false, true]) for (const device of ['', 'duo-testbed']) {
       assert.equal(route('device-lock-choice', { inputs: { devices, device } }),
-        devices && device ? 'device-resolve' : afterDevice);
+        devices && device ? 'device-resolve' : 'preview');
     }
     assert.equal(nodes['device-resolve'].calledElement, 'resolve-testbed');
-    assert.equal(route('device-resolve'), 'device-lock');
-    assert.equal(route('device-lock'), afterDevice);
+    assert.equal(route('device-resolve'), name === 'develop' ? 'device-group-choice' : 'device-lock');
+    assert.equal(route('device-lock'), 'preview');
     for (const id of ['preview', 'preview-result', 'device', 'device-result', 'device-lock']) {
       assert.ok(segment.flowElements.includes(nodes[id]));
       assert.equal(elements.filter(e => e.id === id).length, 1);
@@ -73,8 +72,16 @@ for (const name of ['develop', 'deliver']) {
     for (const device of ['', 'duo-testbed']) {
       const context = { inputs: { device } };
       const instructions = nodes.preview.documentation[0].text;
-      const expression = [...instructions.matchAll(/{{(.*?)}}/g)].find(m => m[1].includes('inputs.device'))[1];
+      const expression = [...instructions.matchAll(/{{(.*?)}}/g)].find(m => m[1].includes('ios-preview-install'))[1];
       const rendered = evaluate(expression, context).value;
+      // 填了设备时才出现的提醒：依赖 inputs.device、且不是上面已单独验证的安装指令的模板；只断言填了设备时渲染非空、留空时为空串，不绑定具体文案。
+      const templates = [...instructions.matchAll(/{{(.*?)}}/g)].map(m => m[1]);
+      const reminders = templates.filter(t => t.includes('inputs.device') && t !== expression);
+      assert.equal(reminders.length, name === 'develop' ? 1 : 0);
+      if (name === 'develop') {
+        const queuedText = evaluate(reminders[0], context).value;
+        assert.ok(device ? queuedText : queuedText === '');
+      }
       assert.equal(rendered, device ? '发起 ios-preview-install 时还要传 device="duo-testbed"。安装运行会借本段占着的设备，不另排队。' : '');
       const acceptance = nodes.device.documentation[0].text;
       const note = [...acceptance.matchAll(/{{(.*?)}}/g)].find(m => m[1].includes('inputs.device'))[1];
@@ -83,7 +90,7 @@ for (const name of ['develop', 'deliver']) {
   });
 }
 
-test('develop：填了「验收时占用」时，安装与验收段在设备之后再占这个组，不填不占', async () => {
+test('develop：填了「验收时占用」时，安装与验收段先占这个组再占设备，不填不占', async () => {
   const xml = readFileSync(new URL('../../../plugins/composer/.coda/workflows/develop.bpmn', import.meta.url), 'utf8');
   const { root, problem } = await readWorkflow(xml, 'develop');
   assert.ok(!problem, problem);
@@ -100,13 +107,39 @@ test('develop：填了「验收时占用」时，安装与验收段在设备之�
   const hold = values(process).find(v => v.name === 'hold');
   assert.deepEqual([hold.type, hold.label, hold.default, hold.required], ['string', '验收时占用', '', undefined]);
   for (const id of ['hold-choice', 'hold-lock']) assert.ok(segment.flowElements.includes(nodes[id]), `${id} 在段内，离开段就放开`);
-  assert.equal(route('hold-choice', { inputs: { hold: '' } }), 'preview');
+  assert.equal(route('acceptance-start'), 'hold-choice');
+  assert.equal(route('hold-choice', { inputs: { hold: '' } }), 'device-lock-choice');
   assert.equal(route('hold-choice', { inputs: { hold: 'preview-backend' } }), 'hold-lock');
   assert.equal(nodes['hold-lock'].action, 'hold-group');
-  assert.deepEqual(Object.fromEntries(values(nodes['hold-lock']).map(v => [v.name, v.value])), { group: '=inputs.hold', capacity: '1' });
+  assert.deepEqual(Object.fromEntries(values(nodes['hold-lock']).map(v => [v.name, v.value])), { group: '=inputs.hold', capacity: '1', borrow: 'no' });
   assert.equal(nodes['hold-lock'].status, '等 {{inputs.hold}}');
-  assert.equal(route('hold-lock'), 'preview');
-  for (const [id, text] of [['preview', '本段还占着组 preview-backend：你在这张任务里发起、要用这个组的运行借用它，不另排队；别的运行排在本段之后。'],
+  assert.equal(route('hold-lock'), 'device-lock-choice');
+  // 四种组合各自经过的占用步骤：只填组、只填设备、两者都填、都不填；有组时组一定在设备之前。
+  const walk = (inputs, group = 'testbed-duo') => {
+    const visited = [];
+    const context = { inputs, 'device-resolve': { group } };
+    for (let id = 'acceptance-start'; id !== 'preview'; id = route(id, context)) {
+      assert.ok(!visited.includes(id), `验收段路径成环：${[...visited, id].join(' → ')}`);
+      visited.push(id);
+    }
+    return visited;
+  };
+  const path = (inputs, group) => walk(inputs, group).filter(id => ['hold-lock', 'device-lock'].includes(id));
+  assert.deepEqual(path({ devices: true, hold: 'preview-backend', device: '' }), ['hold-lock']);
+  assert.deepEqual(path({ devices: true, hold: '', device: 'duo-testbed' }), ['device-lock']);
+  assert.deepEqual(path({ devices: true, hold: 'preview-backend', device: 'duo-testbed' }), ['hold-lock', 'device-lock']);
+  assert.deepEqual(path({ devices: true, hold: '', device: '' }), []);
+  // hold 正好是设备解析出的组（含首尾空白的写法）：本段已占着它，不再占第二次，也不经过 device-lock。
+  for (const hold of ['testbed-duo', '  testbed-duo\n']) {
+    assert.deepEqual(walk({ devices: true, hold, device: 'duo-testbed' }),
+      ['acceptance-start', 'hold-choice', 'hold-lock', 'device-lock-choice', 'device-resolve', 'device-group-choice']);
+    assert.equal(route('device-group-choice', { inputs: { hold }, 'device-resolve': { group: 'testbed-duo' } }), 'preview');
+  }
+  assert.equal(route('device-group-choice', { inputs: { hold: 'other-group' }, 'device-resolve': { group: 'testbed-duo' } }), 'device-lock');
+  assert.equal(route('device-group-choice', { inputs: { hold: '' }, 'device-resolve': { group: 'testbed-duo' } }), 'device-lock');
+  // 设备组解析成空串、hold 也留空：不能当作已占着，仍要经过 device-lock。
+  assert.deepEqual(path({ devices: true, hold: '', device: 'duo-testbed' }, ''), ['device-lock']);
+  for (const [id, text] of [['preview', '本段还占着组 preview-backend：你在这张任务里发起、要用这个组的运行借用它，不另排队；别的要用这个组的运行，按这个组的名额排队。'],
     ['device', '验收期间组 preview-backend 也一直被本段占着。']]) {
     const doc = nodes[id].documentation[0].text;
     const expression = [...doc.matchAll(/{{(.*?)}}/g)].find(m => m[1].includes('inputs.hold'))[1];

@@ -11,7 +11,7 @@
       <coda:input name="title" label="需求名" default="" description="也是需求分支进目标分支的 PR 标题；留空时由主 Agent 在第一张任务里写" />
       <coda:input name="devices" label="设备验收" type="boolean" default="false" description="改了客户端、要在 Mac 或 iPhone 上验收时打开" />
       <coda:input name="device" label="验收设备" type="string" default="" description="测试机设备名，如 duo-testbed；验收期间独占它；留空不占设备" />
-      <coda:input name="hold" label="验收时占用" type="string" default="" description="安装与设备验收期间另外占着的组（容量 1），如项目的需求分支专用后端；留空不占" />
+      <coda:input name="hold" label="验收时占用" type="string" default="" description="安装与设备验收期间另外占着的组（容量 1），如项目给需求分支专用的后端部署组；留空不占。只填一个环境组：不要填别的设备的组（设备填在「验收设备」里），也不要填 host 这类构建名额组，填错了可能卡住。安装要用的、会和别的需求共用的环境组要填进这里，先组后设备的顺序以此为前提，composer 无法强制" />
       <coda:input name="delivery" label="所属需求交付" type="string" default="" description="需求交付（deliver）运行的 ID；留空为独立交付" />
       <coda:input name="executor" label="执行者" type="agent" description="每一块的默认执行者，主 Agent 派块时可在备注里换；提交验收时的解冲突、整体评审的小问题也交它；不填则每块都要在备注里写" />
       <coda:input name="executor2" label="备用执行者" type="agent" description="每一块审查卡上「换备用执行者重做」的默认接手人，主 Agent 派块时可在备注里换；不填则不能换人" />
@@ -87,7 +87,7 @@
 - …（3～5 条）
 需要你知道：…（风险、没做的、顺带改的；没有写「无」）
 「暂停」备注必填，写为什么停、等什么；这张任务转成用户手上的「需求已暂停」，由用户选继续或放弃。
-「放弃」结束这次需求运行，需求分支保留。</documentation>
+「放弃」结束这次需求运行：会先运行项目加入「放弃后」挂点的收尾流程，收尾失败时这次需求运行会以失败结束；需求分支保留。</documentation>
       <extensionElements>
         <coda:choice id="submit" name="提交验收" primary="true" note="required" />
         <coda:choice id="piece" name="派一块" note="required" />
@@ -110,7 +110,7 @@
     <sequenceFlow id="progress-note" sourceRef="after-progress" targetRef="progress"><conditionExpression xsi:type="tFormalExpression">=progress-result.route = "progress"</conditionExpression></sequenceFlow>
     <sequenceFlow id="progress-piece" sourceRef="after-progress" targetRef="piece"><conditionExpression xsi:type="tFormalExpression">=progress-result.route = "piece"</conditionExpression></sequenceFlow>
     <sequenceFlow id="progress-pause" sourceRef="after-progress" targetRef="paused"><conditionExpression xsi:type="tFormalExpression">=progress-result.route = "pause"</conditionExpression></sequenceFlow>
-    <sequenceFlow id="progress-abandon" sourceRef="after-progress" targetRef="abandoned"><conditionExpression xsi:type="tFormalExpression">=progress-result.route = "abandon"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="progress-abandon" sourceRef="after-progress" targetRef="abandoned-flows"><conditionExpression xsi:type="tFormalExpression">=progress-result.route = "abandon"</conditionExpression></sequenceFlow>
     <!-- 派块：调用块（piece），是本运行的子运行（取消需求运行时一起停，运行页「调用的流程」列出每一块），它的人工任务照旧交给发起需求运行的会话。
          人选默认取开工值，备注里换了的由答复里的标量拼成 agent 对象（参数保留表达式的类型，对象原样传给 agent 参数）。
          一次一块，结束后回到「需求进行中」：合进了带上提交和块的运行，没正常结束（失败、被取消、主 Agent 在块里放弃）带着原因，合入状态待主 Agent 核实。 -->
@@ -150,7 +150,7 @@
 需求分支：{{req.branch}}
 主 Agent 暂停了这个需求：
 {{progress.note}}
-选「继续」交回主 Agent 接着推进，附言随原因一起交给它；选「放弃」结束这次需求运行，需求分支保留。</documentation>
+选「继续」交回主 Agent 接着推进，附言随原因一起交给它；选「放弃」结束这次需求运行：会先运行项目加入「放弃后」挂点的收尾流程，收尾失败时这次需求运行会以失败结束；需求分支保留。</documentation>
       <extensionElements>
         <coda:choice id="continue" name="继续" primary="true" />
         <coda:choice id="abandon" name="放弃" />
@@ -163,8 +163,17 @@
     </scriptTask>
     <sequenceFlow id="paused-route" sourceRef="paused-result" targetRef="after-paused" />
     <exclusiveGateway id="after-paused" name="继续还是放弃" default="paused-continue" />
-    <sequenceFlow id="paused-abandon" sourceRef="after-paused" targetRef="abandoned"><conditionExpression xsi:type="tFormalExpression">=paused-result.route = "abandon"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="paused-abandon" sourceRef="after-paused" targetRef="abandoned-flows"><conditionExpression xsi:type="tFormalExpression">=paused-result.route = "abandon"</conditionExpression></sequenceFlow>
     <sequenceFlow id="paused-continue" sourceRef="after-paused" targetRef="resume" />
+    <!-- 放弃（需求进行中选「放弃」、暂停后选「放弃」）先运行加入挂点 abandoned 的流程，再结束：项目在这里收回这个需求占着的东西。
+         不写 only：加入者全跑，不出卡；不写 commit：放弃时没有合并提交，用本次运行的提交；不挂出错边界：失败就让运行失败，和 merged 一致。
+         只传 run 和 branch：composer 不认识项目的目录和流程名。 -->
+    <serviceTask id="abandoned-flows" name="放弃后的流程" coda:action="run-workflows">
+      <extensionElements>
+        <coda:param name="hook" value="abandoned" /><coda:param name="inputs" value="={run: run.id, branch: req.branch}" />
+      </extensionElements>
+    </serviceTask>
+    <sequenceFlow id="abandoned-flows-done" sourceRef="abandoned-flows" targetRef="abandoned" />
     <endEvent id="abandoned" name="已放弃" coda:notify="true" />
 
     <!-- 提交验收先跟上目标分支：需求分支已包含它不动，是它的祖先就快进，分叉能干净合并就做保留双亲的合并提交，都是普通推送（不 force）；
@@ -361,39 +370,54 @@ PR：{{pr.url}}
     <sequenceFlow id="acceptance-skip" sourceRef="acceptance-choice" targetRef="delivery-choice" />
     <subProcess id="acceptance" name="安装与设备验收" coda:optional="true">
       <startEvent id="acceptance-start" />
-      <sequenceFlow id="acceptance-enter" sourceRef="acceptance-start" targetRef="device-lock-choice" />
+      <sequenceFlow id="acceptance-enter" sourceRef="acceptance-start" targetRef="hold-choice" />
       <exclusiveGateway id="device-lock-choice" name="是否占用验收设备" default="device-lock-skip" />
       <sequenceFlow id="device-lock-needed" sourceRef="device-lock-choice" targetRef="device-resolve"><conditionExpression xsi:type="tFormalExpression">=inputs.devices and inputs.device != ""</conditionExpression></sequenceFlow>
-      <sequenceFlow id="device-lock-skip" sourceRef="device-lock-choice" targetRef="hold-choice" />
+      <sequenceFlow id="device-lock-skip" sourceRef="device-lock-choice" targetRef="preview" />
       <callActivity id="device-resolve" name="解析验收设备" calledElement="resolve-testbed">
         <extensionElements><coda:param name="device" value="=inputs.device" /></extensionElements>
       </callActivity>
-      <sequenceFlow id="device-resolved" sourceRef="device-resolve" targetRef="device-lock" />
+      <sequenceFlow id="device-resolved" sourceRef="device-resolve" targetRef="device-group-choice" />
+      <!-- 默认去占设备（device-lock）：只有 hold 去空白后非空、且正好是本设备的组时才跳过——本段已经占着这个组，就等于已经占着设备，不再占第二次（再排同一个组会永远等自己）；宿主取锁前会去掉组名首尾的空白，所以比较前也去掉 hold 的。
+           组名解析成空串、hold 也留空时不算「已占着」，仍然走 device-lock，不会一把锁都不占就进安装。
+           两条需求交叉把对方设备的组填进 hold，原来的流程里就会互等，属于填错，不处理。 -->
+      <exclusiveGateway id="device-group-choice" name="设备组是否已占着" default="device-group-free" />
+      <sequenceFlow id="device-group-free" sourceRef="device-group-choice" targetRef="device-lock" />
+      <sequenceFlow id="device-group-held" sourceRef="device-group-choice" targetRef="preview"><conditionExpression xsi:type="tFormalExpression">=replace(inputs.hold, "^\s+|\s+$", "") != "" and device-resolve.group = replace(inputs.hold, "^\s+|\s+$", "")</conditionExpression></sequenceFlow>
       <serviceTask id="device-lock" name="等验收设备" coda:action="hold-group" coda:status="等验收设备 {{inputs.device}}">
         <extensionElements>
           <coda:param name="group" value="=device-resolve.group" />
           <coda:param name="capacity" value="1" />
+          <coda:param name="borrow" value="no" />
         </extensionElements>
       </serviceTask>
-      <sequenceFlow id="device-lock-acquired" sourceRef="device-lock" targetRef="hold-choice" />
-      <!-- 验收时占用（inputs.hold）：先设备后这个组，各处同一顺序，不会互相等住；离开本段就放开。 -->
+      <sequenceFlow id="device-lock-acquired" sourceRef="device-lock" targetRef="preview" />
+      <!-- 正常进入本段时，先占验收时占用的组（inputs.hold），再占验收设备（inputs.device），都是可选的，离开本段就放开。
+           约定（composer 不加机制强制）：
+           · hold 只填一个环境组，比如项目给需求分支专用的后端部署组；不要填别的设备的组，设备用「验收设备」填；也不要填 host 这类构建名额组。填错了可能卡住。
+           · 安装要用的、会和别的需求共用的环境组，要填进 hold。先组后设备的顺序保证以此为前提，composer 没法强制。
+           · 两把锁写 borrow="no" 只保证本段自己的申请独立排队；本段发起的运行可以向本段借。宿主按会话认出借方，同一会话发起的其他运行仍可能借到。
+           · 原地恢复时，宿主会把这一段占过的锁一次全部重排，罕见情况下仍可能互相等住，这次不处理。
+           · 需求交付（deliver）没有 hold：它的安装要用别的需求作为 hold 占着的共用组时，仍可能互相等住。 -->
       <exclusiveGateway id="hold-choice" name="是否另占一个组" default="hold-skip" />
       <sequenceFlow id="hold-needed" sourceRef="hold-choice" targetRef="hold-lock"><conditionExpression xsi:type="tFormalExpression">=inputs.hold != ""</conditionExpression></sequenceFlow>
-      <sequenceFlow id="hold-skip" sourceRef="hold-choice" targetRef="preview" />
+      <sequenceFlow id="hold-skip" sourceRef="hold-choice" targetRef="device-lock-choice" />
       <serviceTask id="hold-lock" name="等验收时占用的组" coda:action="hold-group" coda:status="等 {{inputs.hold}}">
         <extensionElements>
           <coda:param name="group" value="=inputs.hold" />
           <coda:param name="capacity" value="1" />
+          <coda:param name="borrow" value="no" />
         </extensionElements>
       </serviceTask>
-      <sequenceFlow id="hold-acquired" sourceRef="hold-lock" targetRef="preview" />
+      <sequenceFlow id="hold-acquired" sourceRef="hold-lock" targetRef="device-lock-choice" />
       <userTask id="preview" name="安装预览版" coda:noteLabel="安装结果或回到进行中的原因">
         <documentation>主 Agent：需求分支 {{pr.branch}} 的最新提交是 {{pr.head}}。
 {{if preview-result.feedback = null then "" else preview-result.feedback}}
 只装改到的那一端：改了 Mac 用 workflow_run 发起 mac-preview-install，改了 iPhone 发起 ios-preview-install，改了后端且项目允许从需求分支部署后端时按项目的说明发起它的后端部署，都传 commit="{{pr.head}}"。等发起的安装都成功后答复；有失败先处理，不能把发起当作装好。
 
 {{if inputs.device = "" then "" else "发起 ios-preview-install 时还要传 device=\"" + inputs.device + "\"。安装运行会借本段占着的设备，不另排队。"}}
-{{if inputs.hold = "" then "" else "本段还占着组 " + inputs.hold + "：你在这张任务里发起、要用这个组的运行借用它，不另排队；别的运行排在本段之后。"}}
+{{if inputs.device = "" then "" else "你发起的运行如果要用设备之外的组、而本段没占着它，会在占着设备时去排队，可能和别的需求互相等住；只有验收期间要独占的共享环境组（比如需求分支专用的后端部署组）才有这个风险，这样的组要在开工时填进「验收时占用」；host 这类构建名额组不要填。"}}
+{{if inputs.hold = "" then "" else "本段还占着组 " + inputs.hold + "：你在这张任务里发起、要用这个组的运行借用它，不另排队；别的要用这个组的运行，按这个组的名额排队。"}}
 需要先修改时选「回到进行中」，备注必填，说明待处理问题；回到「需求进行中」后派一块修好再提交验收。</documentation>
         <extensionElements>
           <coda:choice id="installed" name="已装好" primary="true" />
