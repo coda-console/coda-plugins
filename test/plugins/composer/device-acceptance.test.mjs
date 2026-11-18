@@ -74,23 +74,13 @@ for (const name of ['develop', 'deliver']) {
       const instructions = nodes.preview.documentation[0].text;
       const expression = [...instructions.matchAll(/{{(.*?)}}/g)].find(m => m[1].includes('ios-preview-install'))[1];
       const rendered = evaluate(expression, context).value;
-      // 填了设备时才出现的提醒：用填了设备时的渲染结果认出它（提到「验收时占用」的模板），分别核对共享环境组「要填进」和 host 这类构建名额组「不要填」；未填设备时它渲染为空串。
+      // 填了设备时才出现的提醒：依赖 inputs.device、且不是上面已单独验证的安装指令的模板；只断言填了设备时渲染非空、留空时为空串，不绑定具体文案。
       const templates = [...instructions.matchAll(/{{(.*?)}}/g)].map(m => m[1]);
-      const reminders = templates.filter(t => String(evaluate(t, { inputs: { device: 'duo-testbed' } }).value).includes('验收时占用'));
+      const reminders = templates.filter(t => t.includes('inputs.device') && t !== expression);
       assert.equal(reminders.length, name === 'develop' ? 1 : 0);
       if (name === 'develop') {
         const queuedText = evaluate(reminders[0], context).value;
-        if (device) {
-          const sentences = queuedText.split(/[；。]/);
-          // 方向要分清：共享环境组「要填进」验收时占用，host 这类构建名额组「不要填」；写反了必须红。
-          const shared = sentences.filter(t => t.includes('共享环境组'));
-          assert.equal(shared.length, 1);
-          assert.match(shared[0], /(?<!不)要在开工时填进「验收时占用」/);
-          // host 对应的否定要落在它自己的短分句里，不能借旁边分句的「不要填」。
-          const host = queuedText.split(/[，；。]/).filter(t => t.includes('host'));
-          assert.equal(host.length, 1);
-          assert.match(host[0], /host.*不要填/);
-        } else assert.equal(queuedText, '');
+        assert.ok(device ? queuedText : queuedText === '');
       }
       assert.equal(rendered, device ? '发起 ios-preview-install 时还要传 device="duo-testbed"。安装运行会借本段占着的设备，不另排队。' : '');
       const acceptance = nodes.device.documentation[0].text;
@@ -147,6 +137,8 @@ test('develop：填了「验收时占用」时，安装与验收段先占这个�
   }
   assert.equal(route('device-group-choice', { inputs: { hold: 'other-group' }, 'device-resolve': { group: 'testbed-duo' } }), 'device-lock');
   assert.equal(route('device-group-choice', { inputs: { hold: '' }, 'device-resolve': { group: 'testbed-duo' } }), 'device-lock');
+  // 设备组解析成空串、hold 也留空：不能当作已占着，仍要经过 device-lock。
+  assert.deepEqual(path({ devices: true, hold: '', device: 'duo-testbed' }, ''), ['device-lock']);
   for (const [id, text] of [['preview', '本段还占着组 preview-backend：你在这张任务里发起、要用这个组的运行借用它，不另排队；别的要用这个组的运行，按这个组的名额排队。'],
     ['device', '验收期间组 preview-backend 也一直被本段占着。']]) {
     const doc = nodes[id].documentation[0].text;

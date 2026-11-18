@@ -87,7 +87,7 @@
 - …（3～5 条）
 需要你知道：…（风险、没做的、顺带改的；没有写「无」）
 「暂停」备注必填，写为什么停、等什么；这张任务转成用户手上的「需求已暂停」，由用户选继续或放弃。
-「放弃」结束这次需求运行，需求分支保留。</documentation>
+「放弃」结束这次需求运行：会先运行项目加入「放弃后」挂点的收尾流程，收尾失败时这次需求运行会以失败结束；需求分支保留。</documentation>
       <extensionElements>
         <coda:choice id="submit" name="提交验收" primary="true" note="required" />
         <coda:choice id="piece" name="派一块" note="required" />
@@ -150,7 +150,7 @@
 需求分支：{{req.branch}}
 主 Agent 暂停了这个需求：
 {{progress.note}}
-选「继续」交回主 Agent 接着推进，附言随原因一起交给它；选「放弃」结束这次需求运行，需求分支保留。</documentation>
+选「继续」交回主 Agent 接着推进，附言随原因一起交给它；选「放弃」结束这次需求运行：会先运行项目加入「放弃后」挂点的收尾流程，收尾失败时这次需求运行会以失败结束；需求分支保留。</documentation>
       <extensionElements>
         <coda:choice id="continue" name="继续" primary="true" />
         <coda:choice id="abandon" name="放弃" />
@@ -378,11 +378,12 @@ PR：{{pr.url}}
         <extensionElements><coda:param name="device" value="=inputs.device" /></extensionElements>
       </callActivity>
       <sequenceFlow id="device-resolved" sourceRef="device-resolve" targetRef="device-group-choice" />
-      <!-- 只处理 hold 正好是本设备的组这一种情况：本段已经占着这个组，就等于已经占着设备，不再占第二次（再排同一个组会永远等自己）；宿主取锁前会去掉组名首尾的空白，所以比较前也去掉 hold 的。
+      <!-- 默认去占设备（device-lock）：只有 hold 去空白后非空、且正好是本设备的组时才跳过——本段已经占着这个组，就等于已经占着设备，不再占第二次（再排同一个组会永远等自己）；宿主取锁前会去掉组名首尾的空白，所以比较前也去掉 hold 的。
+           组名解析成空串、hold 也留空时不算「已占着」，仍然走 device-lock，不会一把锁都不占就进安装。
            两条需求交叉把对方设备的组填进 hold，原来的流程里就会互等，属于填错，不处理。 -->
-      <exclusiveGateway id="device-group-choice" name="设备组是否已占着" default="device-group-held" />
-      <sequenceFlow id="device-group-free" sourceRef="device-group-choice" targetRef="device-lock"><conditionExpression xsi:type="tFormalExpression">=device-resolve.group != replace(inputs.hold, "^\s+|\s+$", "")</conditionExpression></sequenceFlow>
-      <sequenceFlow id="device-group-held" sourceRef="device-group-choice" targetRef="preview" />
+      <exclusiveGateway id="device-group-choice" name="设备组是否已占着" default="device-group-free" />
+      <sequenceFlow id="device-group-free" sourceRef="device-group-choice" targetRef="device-lock" />
+      <sequenceFlow id="device-group-held" sourceRef="device-group-choice" targetRef="preview"><conditionExpression xsi:type="tFormalExpression">=replace(inputs.hold, "^\s+|\s+$", "") != "" and device-resolve.group = replace(inputs.hold, "^\s+|\s+$", "")</conditionExpression></sequenceFlow>
       <serviceTask id="device-lock" name="等验收设备" coda:action="hold-group" coda:status="等验收设备 {{inputs.device}}">
         <extensionElements>
           <coda:param name="group" value="=device-resolve.group" />
