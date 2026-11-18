@@ -404,10 +404,11 @@ const submitTo = (f, options = {}) => {
   return pr;
 };
 
-test('整体评审评不评：填了整体评审者、合进过不止一块（跟上目标分支的块、流程直推的不算）、这次运行还没评过才评；勾「重新整体评审」再评一次', t => {
+test('整体评审评不评：填了整体评审者、不是只合进了一块且它评成过（跟上目标分支的块、流程直推的不算）、这次运行还没评过才评；勾「重新整体评审」再评一次', t => {
   const f = fixture(t); f.run('branch');
   const plan = (reviewer = true) => f.run('overall-plan', { REVIEWER: String(reviewer) }).outputs;
   f.land('one', 'first', '块一\n\nCoda-Piece: piece-1');
+  f.run('piece-landed', { TITLE: '块一', COMMIT: 'c'.repeat(40), PIECE_RUN: 'piece-1', REVIEWED: 'true' });
   // 跟上目标分支的块是执行者的合并提交，不带 Coda-Piece；提交验收时流程直接推的合并提交同样不算。
   const main = f.advanceMain('m', 'main');
   f.git('fetch', '-q', 'origin', 'req/run-1'); f.git('switch', '-q', '--detach', 'FETCH_HEAD'); f.git('merge', '-q', '--no-ff', '--no-edit', main);
@@ -415,10 +416,11 @@ test('整体评审评不评：填了整体评审者、合进过不止一块（�
   f.advanceMain('n', 'main again');
   submitTo(f);
   assert.equal(f.state().pushed.length, 1, '提交验收时流程又推了一个合并提交');
-  assert.deepEqual(plan(), { review: 'false', evidence: '项目检查：\ntest: succeeded coda://workflow-runs/c1' }, '只有一块：跳过');
+  assert.deepEqual(plan(), { review: 'false', evidence: '项目检查：\ntest: succeeded coda://workflow-runs/c1' }, '只有一块且它评成过：跳过');
   f.land('two', 'second', '块二\n\nCoda-Piece: piece-2');
+  f.run('piece-landed', { TITLE: '块二', COMMIT: 'd'.repeat(40), PIECE_RUN: 'piece-2', REVIEWED: 'true' });
   submitTo(f);
-  assert.equal(f.state().landed, 2);
+  assert.deepEqual(f.state().landed, ['piece-2', 'piece-1']);
   assert.equal(plan(false).review, 'false', '没填整体评审者不评');
   assert.equal(plan().review, 'true', '两块、还没评过：评');
   // 没评成（调用没成、没评完）不算评过，下次提交验收照样评。
@@ -436,18 +438,33 @@ test('整体评审评不评：填了整体评审者、合进过不止一块（�
   assert.equal(plan().review, 'true', '勾了重新整体评审');
   submitTo(f);
   assert.equal(plan().review, 'false');
+
+  // 只有一块，但它没评审者（评审者：无）或没评成：照常整体评审。
+  for (const reviewed of ['false', undefined]) {
+    const g = fixture(t); g.run('branch');
+    g.land('one', 'first', '块一\n\nCoda-Piece: piece-1');
+    g.run('piece-landed', { TITLE: '块一', COMMIT: 'c'.repeat(40), PIECE_RUN: 'piece-1', ...reviewed && { REVIEWED: reviewed } });
+    submitTo(g);
+    assert.equal(g.run('overall-plan', { REVIEWER: 'true' }).outputs.review, 'true', `块没评成（REVIEWED=${reviewed}）`);
+  }
 });
 
-test('整理整体评审：没评或没有必须修往下走，小问题与原有问题写进 PR 描述和汇总；有必须修或没评成交主 Agent 一页结论；自动合并只看这次运行出没出过必须修', t => {
+test('整理整体评审：没评或没有必须修往下走，小问题与原有问题写进 PR 描述和汇总；有必须修或没评成交主 Agent 一页结论；自动合并要这次运行评成过、整体评审没出过必须修', t => {
   const f = fixture(t); f.run('branch');
   f.land('one', 'first', '块一\n\nCoda-Piece: piece-1'); f.land('two', 'second', '块二\n\nCoda-Piece: piece-2');
+  const landed = (run, reviewed) => f.run('piece-landed', { TITLE: run, COMMIT: 'c'.repeat(40), PIECE_RUN: run, REVIEWED: reviewed });
+  landed('piece-1', 'false'); landed('piece-2', 'false');
   let pr = submitTo(f);
   const overall = (AUTO = 'true') => f.run('overall', { SUMMARY: pr.summary, AUTO }).outputs;
   const edits = () => f.calls().filter(c => c.args[1] === 'edit');
   const report = n => join(f.env.CODA_ARTIFACTS, `overall-review-${n}.md`);
   f.run('overall-plan', { REVIEWER: 'false' });
   const before = edits().length;
-  assert.deepEqual(overall(), { route: 'accept', summary: pr.summary, auto: 'true', review: '', note: '' }, '没评：往下走，开了 autoMerge 就自动合并');
+  assert.deepEqual(overall(), { route: 'accept', summary: pr.summary, auto: 'false', review: '', note: '' }, '块评审者、整体评审者都没有：往下走，开了 autoMerge 也出批准卡');
+  landed('piece-1', 'true');
+  assert.equal(overall().auto, 'false', '块二没评成：还是出批准卡');
+  landed('piece-2', 'true');
+  assert.equal(overall().auto, 'true', '合进的每一块都评成过：开了 autoMerge 就自动合并');
   assert.equal(overall('false').auto, 'false', '没开 autoMerge');
   assert.equal(edits().length, before, '没有要补的，不改 PR 描述');
 
@@ -661,12 +678,12 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   assert.equal(next('piece-lost'), 'resume', '块失败回到进行中，需求运行不失败');
   assert.equal(next('piece'), 'piece-landed');
   assert.equal(next('piece-landed'), 'resume');
-  assert.deepEqual(params('piece-landed'), { TITLE: '=progress-result.title', COMMIT: '=piece.commit', PIECE_RUN: '=piece.run' });
+  assert.deepEqual(params('piece-landed'), { TITLE: '=progress-result.title', COMMIT: '=piece.commit', PIECE_RUN: '=piece.run', REVIEWED: '=piece.reviewed' });
   assert.deepEqual(params('progress-result').FIXER, '=inputs.executor != null');
   // 填了整体评审者，提交验收的说明里写怎么评；批准卡写评没评过的是「整理整体评审」的 note。
   const overallSaid = [...doc.matchAll(/{{(.*?)}}/gs)].find(m => m[1].includes('inputs.overallReviewer'))[1];
   assert.equal(evaluate(overallSaid, { inputs: { overallReviewer: null } }).value, '');
-  assert.equal(evaluate(overallSaid, { inputs: { overallReviewer: { agent: 'c' } } }).value, '需求分支上合进过不止一块、这次运行还没整体评审过时由整体评审者评一次整条需求分支（勾「重新整体评审」就当没评过），有必须修或没评成时交你看结论，');
+  assert.equal(evaluate(overallSaid, { inputs: { overallReviewer: { agent: 'c' } } }).value, '这次运行还没整体评审过时由整体评审者评一次整条需求分支（只合进了一块且它评成过时跳过；勾「重新整体评审」就当没评过），有必须修或没评成时交你看结论，');
   const reasonLine = [...doc.matchAll(/{{(.*?)}}/gs)].find(m => m[1].includes('resume.reason'))[1];
   assert.equal(evaluate(reasonLine, { resume: { reason: '' } }).value, '');
   assert.equal(evaluate(reasonLine, { resume: { reason: '合并前检查未通过' } }).value, '回到进行中的原因：\n合并前检查未通过\n');
@@ -676,7 +693,7 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   assert.equal(own, '再交用户设备验收，然后跑合并前检查与 GitHub 检查，通过后由用户批准合并（合并提交）。任何失败和用户的「暂不合并」都带着原因回到这里。');
   assert.equal(evaluate(ending, { inputs: { delivery: '', devices: false } }).value, '然后跑合并前检查与 GitHub 检查，通过后由用户批准合并（合并提交）。任何失败和用户的「暂不合并」都带着原因回到这里。');
   assert.equal(evaluate(ending, { inputs: { delivery: '', devices: false, autoMerge: true } }).value,
-    '然后跑合并前检查与 GitHub 检查，通过后直接合并（合并提交；这次运行的整体评审出过必须修时照常由用户批准）。任何失败和用户的「暂不合并」都带着原因回到这里。', '自动合并不看填没填整体评审者');
+    '然后跑合并前检查与 GitHub 检查，通过后直接合并（合并提交；这次运行一次都没评成过、或整体评审出过必须修时照常由用户批准）。任何失败和用户的「暂不合并」都带着原因回到这里。', '自动合并不看填没填整体评审者');
   assert.equal(member, '然后跑合并前检查与 GitHub 检查，通过后进入「待交付」，由需求交付运行 deliver-1 统一验收、批准，没有用户的「暂不合并」。任何失败和待交付的「退回修改」都带着原因回到这里。');
   assert.equal(nodes.paused.assignee, 'user');
   assert.deepEqual(values(nodes.paused).map(v => [v.id, v.name]), [['continue', '继续'], ['abandon', '放弃']]);

@@ -281,7 +281,7 @@ test('跟上目标分支的块：执行者收到合并 origin/<base> 的说明�
   const head = f.state().executor.head;
   assert.equal(f.git('rev-parse', `${head}^@`).split('\n').length, 2, '执行者交的是合并提交');
   f.delivered();
-  assert.deepEqual(f.run('land').outputs, { route: 'landed', commit: head });
+  assert.deepEqual(f.run('land').outputs, { route: 'landed', commit: head, reviewed: 'false' });
   assert.equal(f.remote(BRANCH), head, '需求分支快进到这个合并提交');
   f.git('merge-base', '--is-ancestor', main, f.remote(BRANCH));
   assert.equal(f.remote(TEMP), '');
@@ -533,7 +533,7 @@ test('块的流程定义：输入、回路、审查卡答复、结束输出与�
   assert.equal(route('after-land', { land: { route: 'sync' } }), 'revise', '冲突交回同一个执行会话');
   assert.equal(route('after-land', { land: { route: 'landed' } }), 'landed');
   for (const id of ['landed', 'abandoned']) assert.equal(nodes[id].notify, 'true', `${id} 结果回发起会话`);
-  assert.deepEqual(values(nodes.landed).map(v => [v.name, v.value]), [['commit', '=land.commit'], ['run', '=run.id']], '合进需求分支的提交与本运行，调用它的需求运行写进「需求进行中」');
+  assert.deepEqual(values(nodes.landed).map(v => [v.name, v.value]), [['commit', '=land.commit'], ['run', '=run.id'], ['reviewed', '=land.reviewed']], '合进需求分支的提交、本运行与最后一次交付评成没有，调用它的需求运行写进「需求进行中」、定整体评审');
   assert.equal(next('abandon'), 'abandoned');
   // 放弃以出错结束：运行失败，原因就是这个结束事件的名字，callActivity 调它的流程由出错边界接住、拿到原因。
   assert.deepEqual(nodes.abandoned.eventDefinitions.map(e => e.$type), ['bpmn:ErrorEventDefinition']);
@@ -804,6 +804,15 @@ test('退回之后复评：只评上次评过的提交之后的变动，带上�
   assert.deepEqual([full.base, full.previous], [f.remote(BRANCH), '']);
   f.run('reviewed', verdict([]));
   assert.equal(f.state().findings.at(-1).status, 'superseded');
+});
+
+test('合进需求分支时输出 reviewed：最后一次交付有评成的评审才是 true；没评审者、没评成、评的是之前的交付都是 false', t => {
+  const landed = setup => { const f = fixture(t); f.task('one', 'first'); f.run('execute'); f.delivered(); setup(f); f.decide('land'); return f.run('land').outputs.reviewed; };
+  assert.equal(landed(f => f.run('reviewed', verdict([NIT]))), 'true');
+  assert.equal(landed(() => {}), 'false', '没评审者（评审者：无）');
+  assert.equal(landed(f => f.run('reviewed', verdict([], { DECISION: 'INCOMPLETE', LINE: '评审没有完成' }))), 'false', '没评成');
+  assert.equal(landed(f => f.run('review-lost')), 'false', '调用没成');
+  assert.equal(landed(f => { f.run('reviewed', verdict([MUST])); f.decide('revise', '修 #1'); f.task('one', 'fixed'); f.run('revise'); f.run('gate'); f.run('gate-failed'); }), 'false', '评过的是之前的交付');
 });
 
 test('同一块退回满三次后再退回：不退回，出用户卡「这一块三轮没过」列这次的意见和还开着的必须修；继续修清零并按这次的意见退回，放弃同主 Agent 放弃', t => {

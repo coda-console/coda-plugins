@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- 块（README.md「块」）：需求运行（develop）里的一项改动，一项一个。执行者从需求分支 head 开工，交付推到临时分支 piece/<运行 ID>（不开 PR），
-     项目检查、一位评审者（review-commit 提交模式）评过后由主 Agent 看一页结论审查，squash 成一个提交快进进需求分支后删掉临时分支，输出这个提交和本运行 ID；
+     项目检查、一位评审者（review-commit 提交模式）评过后由主 Agent 看一页结论审查，squash 成一个提交快进进需求分支后删掉临时分支，输出这个提交、本运行 ID 和最后一次交付评成没有；
      放弃时走出错结束，调用方的出错边界接得到。评审结论不决定去向；主 Agent 退回修改后评审者只复评之后的变动（README.md「评审」）。
      同一块退回满三次后再退回交用户「这一块三轮没过」，此外不出用户卡；不装机、不部署、不跑合并前检查。BPMN 2.0，由 Coda 执行（docs/workflows.md）。 -->
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0"
@@ -181,7 +181,7 @@
     </scriptTask>
     <sequenceFlow id="swap-report" sourceRef="swap" targetRef="gate" />
     <scriptTask id="land" name="试合并并合进需求分支" scriptFormat="bash" coda:timeout="10" coda:retry="3">
-      <extensionElements><coda:output name="route" /><coda:output name="commit" /></extensionElements>
+      <extensionElements><coda:output name="route" /><coda:output name="commit" /><coda:output name="reviewed" /></extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/piece.mjs" land</script>
     </scriptTask>
     <sequenceFlow id="land-route" sourceRef="land" targetRef="after-land" />
@@ -190,7 +190,7 @@
     <sequenceFlow id="land-done" sourceRef="after-land" targetRef="landed" />
     <endEvent id="landed" name="已合进需求分支" coda:notify="true">
       <extensionElements>
-        <coda:output name="commit" value="=land.commit" /><coda:output name="run" value="=run.id" />
+        <coda:output name="commit" value="=land.commit" /><coda:output name="run" value="=run.id" /><coda:output name="reviewed" value="=land.reviewed" />
       </extensionElements>
     </endEvent>
     <scriptTask id="abandon" name="删除临时分支" scriptFormat="bash" coda:timeout="5" coda:retry="3">

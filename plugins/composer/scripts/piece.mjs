@@ -293,6 +293,8 @@ switch (action) {
     removeTemp();
     output('route', 'landed');
     output('commit', commit);
+    // 这一块最后一次交付有没有评成的评审：需求运行只在唯一的一块评成过时跳过整体评审。
+    output('reviewed', String(Boolean(state.outcome?.report && state.outcome.head === head)));
     break;
   }
   // 主 Agent 放弃：删掉临时分支，需求分支不动；之后流程走到出错结束，调用方的出错边界接得到。临时分支已不在（重跑）就跳过。

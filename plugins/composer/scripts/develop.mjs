@@ -77,7 +77,9 @@ ${files.map(file => `- ${file}`).join('\n')}
 跑和冲突相关的测试后提交合并提交。回报冲突了哪些文件、各自怎么解决的、跑了什么。`;
 
 // 整体评审（README.md「整体评审」）：state.overall 是这次运行最近一次评完的结果（有它就是评过了），state.outcome 是这次提交验收的评审结果（没评就没有），
-// state.overallMust 记这次运行的整体评审出没出过必须修（自动合并只看它）。
+// state.overallMust 记这次运行的整体评审出没出过必须修；state.landed 是合进的块，state.reviewedPieces 是最后一次交付评成了的块（这两样和 overall 定评不评、能不能自动合并）。
+// 合进需求分支的块（至少一块）最后一次交付都评成过。
+const piecesReviewed = () => state.landed.length > 0 && state.landed.every(run => state.reviewedPieces?.includes(run));
 const flat = text => String(text ?? '').replace(/\s*[\r\n]+\s*/g, ' ');
 const findingLine = f => `- ${flat(f.title)}${f.location ? `（${flat(f.location)}）` : ''}`;
 // 「整体评审结论」卡上的一页结论：必须修每条一句加位置，小问题、原有问题只给条数，评审原文的路径；没评成的写原因。
@@ -149,8 +151,9 @@ switch (action) {
     }
     break;
   }
-  // 块合进了需求分支：下一次「需求进行中」写上合入的提交和块的运行。
+  // 块合进了需求分支：下一次「需求进行中」写上合入的提交和块的运行。最后一次交付评成了的块记进 reviewedPieces，整体评审与自动合并看它。
   case 'piece-landed':
+    if (env.REVIEWED === 'true') (state.reviewedPieces ??= []).push(env.PIECE_RUN);
     back(`块「${env.TITLE}」已合进需求分支 ${state.branch}：提交 ${env.COMMIT}，运行 coda://workflow-runs/${env.PIECE_RUN}。`);
     break;
   // 块没正常结束（失败、被取消，或主 Agent 在块里选了放弃）：引擎只把调用失败交给出错边界，不带被调运行的原因，所以指向本运行里调用的块。
@@ -170,8 +173,8 @@ switch (action) {
     const base = git('rev-parse', 'FETCH_HEAD');
     git('fetch', 'origin', state.branch);
     state.head = git('rev-parse', 'FETCH_HEAD');
-    // 合进过几块：说明带 Coda-Piece 的提交，跟上目标分支的块（执行者的合并提交）和流程直接推的不算。整体评审按它定评不评。
-    state.landed = git('log', '--format=%(trailers:key=Coda-Piece,valueonly)', `${base}..${state.head}`).split('\n').filter(Boolean).length;
+    // 合进过哪几块（块的运行 ID）：说明带 Coda-Piece 的提交，跟上目标分支的块（执行者的合并提交）和流程直接推的不算。整体评审按它定评不评。
+    state.landed = git('log', '--format=%(trailers:key=Coda-Piece,valueonly)', `${base}..${state.head}`).split('\n').filter(Boolean);
     const direct = state.pushed?.length ? `\n\n流程直接推到需求分支的提交：\n${state.pushed.map(p => `- ${p.commit.slice(0, 12)} ${p.subject}（${p.why}）`).join('\n')}` : '';
     const summary = `${state.report}\n\n块：\n${pieces(base, state.head)}${direct}\n\n${changes(base, state.head)}`;
     const path = join(env.RUNNER_TEMP, 'pr.md');
@@ -201,11 +204,11 @@ switch (action) {
   case 'check-failed':
     back(`${env.STEP}未通过，需求分支 head ${state.head}。\n运行：coda://workflow-runs/${env.GITHUB_RUN_ID}\n请用 workflow_status 查看本运行「${env.STEP}」及其调用的失败流程，读取错误和日志；派一块修好后再提交验收。`);
     break;
-  // 项目检查有了结论，定这次评不评：填了整体评审者、合进过不止一块、这次运行还没评过（或这次勾了「重新整体评审」）。evidence 是交给评审者的已有验证。
+  // 项目检查有了结论，定这次评不评：填了整体评审者、不是只合进了一块且它评成过、这次运行还没评过（或这次勾了「重新整体评审」）。evidence 是交给评审者的已有验证。
   case 'overall-plan':
     delete state.outcome;
     save();
-    output('review', String(env.REVIEWER === 'true' && state.landed > 1 && (!state.overall || state.again)));
+    output('review', String(env.REVIEWER === 'true' && !(state.landed.length === 1 && piecesReviewed()) && (!state.overall || state.again)));
     output('evidence', `项目检查：\n${checksText(state.checks, state.head)}`);
     break;
   // 调用 review-commit 本身没成（出错边界）：记为没评成。
@@ -228,7 +231,7 @@ switch (action) {
     break;
   }
   // 评不评都经过这里：这次评了、有必须修或没评成交主 Agent（review），否则往下走（accept）。最近一次评完的小问题、原有问题写进汇总，
-  // 有就更新 PR 描述；auto 是自动合并的唯一判定：开了 autoMerge，且这次运行的整体评审没出过必须修。
+  // 有就更新 PR 描述；auto 是自动合并的唯一判定：开了 autoMerge，这次运行评成过（整体评审，或合进的每一块都评成过），且整体评审没出过必须修。
   case 'overall': {
     const o = state.outcome, done = state.overall;
     const at = done && done.head !== state.head ? `，评审时需求分支 head ${done.head.slice(0, 12)}` : '';
@@ -242,7 +245,7 @@ switch (action) {
     }
     output('route', o && (o.lost || !o.report || o.must.length) ? 'review' : 'accept');
     output('summary', summary);
-    output('auto', String(env.AUTO === 'true' && !state.overallMust));
+    output('auto', String(env.AUTO === 'true' && Boolean(done || piecesReviewed()) && !state.overallMust));
     output('review', o ? overallText(o) : '');
     output('note', !done ? '' : done.head === state.head ? '，整条需求分支已整体评审' : `，整条需求分支在 ${done.head.slice(0, 12)} 时整体评审过`);
     break;
