@@ -43,8 +43,9 @@ test('declarations follow atomic replacements; invalid/missing registration pres
   const groups = () => held(records, 'coda/group@1');
   writeFileSync(file, JSON.stringify([phone]));
   await activated(coda, state, file);
+  // The default of the definition is filled in, as Coda does: capacity 1 until the plugin writes it.
   assert.deepEqual(groups(), [{ owner: 'testbed', kind: 'coda/group@1', id: recordId('testbed', 'coda/group@1', phone.udid), key: phone.udid, status: {},
-    spec: { name: 'device:phone', unique: ['udid'], attributes: { name: phone.name, udid: phone.udid, note: phone.note, personal: 'false', platform: 'ios' } } }]);
+    spec: { name: 'device:phone', capacity: 1, unique: ['udid'], attributes: { name: phone.name, udid: phone.udid, note: phone.note, personal: 'false', platform: 'ios' } } }]);
   writeFileSync(join(state, 'next'), JSON.stringify([{ ...phone, name: 'Changed', personal: true }]));
   renameSync(join(state, 'next'), file);
   await until(() => groups()[0]?.spec.attributes.name === 'Changed');
