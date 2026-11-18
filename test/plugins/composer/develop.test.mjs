@@ -540,7 +540,7 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   assert.equal(next('resume'), 'progress');
   assert.equal(nodes.progress.assignee, undefined);
   assert.deepEqual(values(nodes.progress).map(v => [v.id, v.name, v.note]), [['submit', '提交验收', 'required'], ['piece', '派一块', 'required'], ['sync', '跟上目标分支', undefined], ['pause', '暂停', 'required'], ['abandon', '放弃', undefined]]);
-  for (const [value, target] of [['progress', 'progress'], ['piece', 'piece'], ['pause', 'paused'], ['abandon', 'abandoned'], ['submit', 'sync']]) assert.equal(route('after-progress', { 'progress-result': { route: value } }), target);
+  for (const [value, target] of [['progress', 'progress'], ['piece', 'piece'], ['pause', 'paused'], ['abandon', 'abandoned-flows'], ['submit', 'sync']]) assert.equal(route('after-progress', { 'progress-result': { route: value } }), target);
   const doc = nodes.progress.documentation[0].text;
   for (const text of ['「派一块」：备注第一行是这一块的标题', '其后是自足的任务书（背景、范围、验收要求）', '块里的任务交到这个会话', '写着合入的提交和块的运行', '块失败或你在块里选了放弃，也带着原因回到这里',
     '「跟上目标分支」', '以合并提交快进进需求分支', '写了附在固定任务后面', '一次只派一块：派出后等它结束才回到这里', '第三整体评审者只评整条需求分支', '在备注最前面', '有执行者名单就从名单选',
@@ -600,8 +600,17 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   assert.deepEqual(values(nodes.paused).map(v => [v.id, v.name]), [['continue', '继续'], ['abandon', '放弃']]);
   assert.match(nodes.paused.documentation[0].text, /\{\{progress\.note\}\}/);
   assert.equal(route('after-paused', { 'paused-result': { route: 'continue' } }), 'resume');
-  assert.equal(route('after-paused', { 'paused-result': { route: 'abandon' } }), 'abandoned');
+  // 两条放弃路径都先运行加入挂点 abandoned 的流程，再到结束：不写 only、commit，不挂出错边界；只传 run 和 branch。
+  assert.equal(route('after-paused', { 'paused-result': { route: 'abandon' } }), 'abandoned-flows');
+  assert.equal(nodes['abandoned-flows'].action, 'run-workflows');
+  assert.deepEqual(Object.keys(params('abandoned-flows')).sort(), ['hook', 'inputs']);
+  assert.equal(params('abandoned-flows').hook, 'abandoned');
+  assert.ok(!elements.some(e => e.attachedToRef === nodes['abandoned-flows']), '失败就让运行失败');
+  assert.equal(next('abandoned-flows'), 'abandoned');
   assert.equal(nodes.abandoned.$type, 'bpmn:EndEvent');
+  assert.equal(elements.filter(e => e.targetRef === nodes.abandoned).length, 1, '只有 abandoned-flows 能到结束');
+  // 函数名写错 workflow_check 也能过，所以实际求值一次：得到 {run, branch}。
+  assert.deepEqual(evaluate(params('abandoned-flows').inputs.slice(1), { run: { id: 'run-1' }, req: { branch: 'req/abc' } }).value, { run: 'run-1', branch: 'req/abc' });
 
   // 收尾：PR → 项目检查（复用）→ 合并前检查 → GitHub 检查 → 整体评审 → 设备验收 → 待交付或批准。
   assert.equal(next('pr'), 'pr-fork');
@@ -712,7 +721,7 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   assert.deepEqual(envs('merged-inputs'), { INPUTS: '=approval-result.inputs', MISSING: '=approval-result.missing', ASKS: '=approval-result.asks', FILLS: '=fill', NEEDS: '=approval-result.needs', ONLY: '=approval-result.only' });
   assert.equal(route('left', { 'merged-inputs': { only: '["deploy"]' } }), 'run-merged');
   assert.deepEqual(params('run-merged'), { hook: 'merged', only: '=merged-inputs.only', commit: '=merge.commit', inputs: '=merged-inputs.inputs' });
-  assert.deepEqual(elements.filter(e => e.action === 'run-workflows').map(e => e.id), ['prebuild', 'checks', 'premerge', 'run-merged']);
+  assert.deepEqual(elements.filter(e => e.action === 'run-workflows').map(e => e.id), ['abandoned-flows', 'prebuild', 'checks', 'premerge', 'run-merged']);
   for (const context of [{ inputs: { delivery: '' }, approve: { options: { notify: false } } }, { inputs: { delivery: 'deliver-1' } }]) {
     assert.equal(evaluate(nodes.done.notify.slice(1), context).value, context.inputs.delivery ? true : false);
   }
