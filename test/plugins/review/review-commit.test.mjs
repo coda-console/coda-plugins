@@ -291,3 +291,20 @@ test('the same head reviewed again still hands over the musts left open: empty f
   assert.equal(passed.out.decision, 'APPROVE');
   assert.doesNotMatch(p.prompt(), /这是复评/);
 });
+
+test('three reviews in a row, the second on the same commit: a new must is numbered on, the old keeps its id, and the third judges each once', t => {
+  const p = project(t), at = `${p.head.slice(0, 12)}-`;
+  const first = p.reviewPr({ AGENT_REPLY: JSON.stringify({ findings: [{ level: 'must', title: '旧的错' }] }) });
+  assert.deepEqual(JSON.parse(first.out.open).map(f => f.id), [`${at}1`]);
+  // The same commit again: the old must upheld, one new must and a nit.
+  const second = p.reviewPr({ LAST: JSON.stringify(first.out), AGENT_REPLY: JSON.stringify({ findings: [{ level: 'must', title: '新的错' }, { level: 'nit', title: '小' }],
+    resolutions: [{ id: `${at}1`, status: 'upheld' }] }) });
+  assert.equal(second.code, 0, second.said);
+  assert.deepEqual(JSON.parse(second.out.open).map(f => [f.id, f.title]), [[`${at}1`, '旧的错'], [`${at}2`, '新的错']], '新发现接着最大序号编，旧发现保留原编号');
+  // Fixed on top: both old musts are judged, each once.
+  p.git('commit', '--allow-empty', '-qm', 'fix'); const fixed = p.git('rev-parse', 'HEAD');
+  const third = p.reviewPr({ LAST: JSON.stringify(second.out), AGENT_REPLY: JSON.stringify({ findings: [],
+    resolutions: [{ id: `${at}1`, status: 'resolved' }, { id: `${at}2`, status: 'resolved' }] }) }, fixed);
+  assert.deepEqual([third.code, third.out.decision], [0, 'APPROVE'], third.said);
+  assert.equal(third.out.open, '[]');
+});

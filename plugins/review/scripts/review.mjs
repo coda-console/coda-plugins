@@ -256,7 +256,10 @@ output('rules', rules);
 output('files', files());
 if (pr) {
   output('pr', `#${Number(pr.number)}（${pr.html_url}）`);
-  output('open', JSON.stringify([...upheld, ...findings.filter(f => f.level === 'must').map((f, i) => ({ id: `${head.slice(0, 12)}-${i + 1}`, ...f }))]));
+  // A new `must` is numbered on from the highest number this head's findings already have: reviewed again on the same commit,
+  // an upheld old one keeps its id and no new one takes it.
+  const prefix = `${head.slice(0, 12)}-`, taken = Math.max(0, ...left.filter(f => f.id?.startsWith(prefix)).map(f => Number(f.id.slice(prefix.length))));
+  output('open', JSON.stringify([...upheld, ...findings.filter(f => f.level === 'must').map((f, i) => ({ id: `${prefix}${taken + i + 1}`, ...f }))]));
 }
 output('head', head);
 output('base', pr ? pr.base?.ref ?? '' : base);
