@@ -11,7 +11,7 @@
       <coda:input name="title" label="需求名" default="" description="也是需求分支进目标分支的 PR 标题；留空时由主 Agent 在第一张任务里写" />
       <coda:input name="devices" label="设备验收" type="boolean" default="false" description="改了客户端、要在 Mac 或 iPhone 上验收时打开" />
       <coda:input name="device" label="验收设备" type="string" default="" description="测试机设备名，如 duo-testbed；验收期间独占它；留空不占设备" />
-      <coda:input name="hold" label="验收时占用" type="string" default="" description="安装与设备验收期间另外占满的整个组，如项目的需求分支专用后端；留空不占。验收时要部署、而部署要占一个会和别的需求共用的组，就把这个组填在这里；只能填一个完整的组名，不要填 host 这类构建名额组（构建只在编译时短占短放，填进来反而会让构建和别的验收互相等住）" />
+      <coda:input name="hold" label="验收时占用" type="string" default="" description="安装与设备验收期间另外占满的整个组，如项目的需求分支专用后端；留空不占。验收时要部署、而部署要占一个会和别的需求共用的组，就把这个组填在这里；只能填一个完整的组名，不要填 host 这类构建名额组（构建只在编译时短占短放，填进来反而会让构建和别的验收互相等住）；填成验收设备的组，等于独占这台设备，本段不再重复占" />
       <coda:input name="delivery" label="所属需求交付" type="string" default="" description="需求交付（deliver）运行的 ID；留空为独立交付" />
       <coda:input name="executor" label="执行者" type="agent" description="每一块的默认执行者，主 Agent 派块时可在备注里换；提交验收时的解冲突、整体评审的小问题也交它；不填则每块都要在备注里写" />
       <coda:input name="executor2" label="备用执行者" type="agent" description="每一块审查卡上「换备用执行者重做」的默认接手人，主 Agent 派块时可在备注里换；不填则不能换人" />
@@ -377,17 +377,24 @@ PR：{{pr.url}}
       <callActivity id="device-resolve" name="解析验收设备" calledElement="resolve-testbed">
         <extensionElements><coda:param name="device" value="=inputs.device" /></extensionElements>
       </callActivity>
-      <sequenceFlow id="device-resolved" sourceRef="device-resolve" targetRef="device-lock" />
+      <sequenceFlow id="device-resolved" sourceRef="device-resolve" targetRef="device-group-choice" />
+      <!-- 验收设备解析出的组就是 hold 的组时，本段已经独占了它，等于已经占着设备，不再占第二次（再排同一个组会永远等自己）；宿主取锁前会去掉组名首尾的空白，所以比较前也去掉 hold 的。 -->
+      <exclusiveGateway id="device-group-choice" name="设备组是否已占着" default="device-group-held" />
+      <sequenceFlow id="device-group-free" sourceRef="device-group-choice" targetRef="device-lock"><conditionExpression xsi:type="tFormalExpression">=device-resolve.group != replace(inputs.hold, "^\s+|\s+$", "")</conditionExpression></sequenceFlow>
+      <sequenceFlow id="device-group-held" sourceRef="device-group-choice" targetRef="preview" />
       <serviceTask id="device-lock" name="等验收设备" coda:action="hold-group" coda:status="等验收设备 {{inputs.device}}">
         <extensionElements>
           <coda:param name="group" value="=device-resolve.group" />
           <coda:param name="capacity" value="1" />
+          <coda:param name="borrow" value="no" />
         </extensionElements>
       </serviceTask>
       <sequenceFlow id="device-lock-acquired" sourceRef="device-lock" targetRef="preview" />
-      <!-- 先占验收时占用的组（inputs.hold），再占验收设备（inputs.device），都是可选的，离开本段就放开。
+      <!-- 正常进入本段时，先占验收时占用的组（inputs.hold），再占验收设备（inputs.device），都是可选的，离开本段就放开。
+           这两把锁都写 borrow="no"：本段自己的申请独立排队，不向别人借；本段发起的运行可以向本段借。宿主按会话认出借方，同一会话在本段的卡片打开期间发起的其他运行也可能借到本段的组，这不在保证之内。
            前提是安装任务里发起的运行要用的、会和别的需求共用的组，都已填在 hold 里：它们借本段占着的组，全局才只有「先组后设备」一个顺序，不会成环。
-           hold 只能填一个完整的组名，保证只在这个组和设备之间成立，需要多个共用组的情况不在保证之内。没填的组，在占着设备时再去排，仍可能和别的需求互相等住（composer 不知道安装要用哪些组，没法强制）。代价是等设备期间一直占着这个组。 -->
+           hold 只能填一个完整的组名，保证只在这个组和设备之间成立，需要多个共用组的情况不在保证之内。没填的组，在占着设备时再去排，仍可能和别的需求互相等住（composer 不知道安装要用哪些组，没法强制）。代价是等设备期间一直占着这个组。
+           例外：原地恢复时宿主会把这一段占过的锁一次全部重新排队，先组后设备不再保证，几件罕见的事凑在一起时仍可能互相等住，这次不处理。 -->
       <exclusiveGateway id="hold-choice" name="是否另占一个组" default="hold-skip" />
       <sequenceFlow id="hold-needed" sourceRef="hold-choice" targetRef="hold-lock"><conditionExpression xsi:type="tFormalExpression">=inputs.hold != ""</conditionExpression></sequenceFlow>
       <sequenceFlow id="hold-skip" sourceRef="hold-choice" targetRef="device-lock-choice" />
@@ -395,6 +402,7 @@ PR：{{pr.url}}
         <extensionElements>
           <coda:param name="group" value="=inputs.hold" />
           <coda:param name="exclusive" value="true" />
+          <coda:param name="borrow" value="no" />
         </extensionElements>
       </serviceTask>
       <sequenceFlow id="hold-acquired" sourceRef="hold-lock" targetRef="device-lock-choice" />
