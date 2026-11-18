@@ -7,12 +7,15 @@
     "symbol": "pawprint.fill",
     "color": "pink"
   },
-  "version": "0.1.1",
+  "version": "0.1.2",
   "categories": [
     "Skills 与工具"
   ],
   "type": "module",
   "main": "main.mjs",
+  "uses": {
+    "coda/thread@1": ["read"]
+  },
   "contributes": {
     "views": [
       {
