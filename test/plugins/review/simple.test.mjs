@@ -74,15 +74,15 @@ test('简易开发推送主 Agent 分支的最新提交到运行自己的分支�
   const created = f.calls().find(c => c.args[1] === 'create');
   assert.deepEqual(created.args.slice(0, 8), ['pr', 'create', '--base', 'main', '--head', 'simple/run-1', '--title', '修好输入框']);
   assert.equal(created.body, report);
-  // 评审一次：要求修改后主 Agent 不改，理由写进 PR 与批准卡；之后不再评审。
-  f.run('reviewed', { REVIEW: JSON.stringify({ line: '评审要求修改（REQUEST_CHANGES）', report: '### 要求修改\n\n- **[P1]** 漏了空值' }) });
+  // 评审要求修改后主 Agent 不改，理由写进 PR 与批准卡；之后不再评审。
+  assert.deepEqual(f.run('reviewed', { REVIEW: JSON.stringify({ decision: 'REQUEST_CHANGES', line: '评审要求修改（REQUEST_CHANGES）', report: '必须修 1 条。\n\n### 必须修\n\n- 漏了空值' }) }), { route: 'answer' });
   f.run('kept', { ANSWER: JSON.stringify({ choice: 'kept', note: '空值在上游已挡住' }) });
   const kept = f.run('pr', { DEVICES: 'true' });
   assert.equal(kept.review, 'false');
   assert.equal(kept.summary, `${report}\n\n评审：评审要求修改（REQUEST_CHANGES）\n\n没有照评审意见改的：\n空值在上游已挡住`);
   const edited = f.calls().filter(c => c.args[1] === 'edit');
   assert.deepEqual(edited.map(c => c.args.slice(0, 3)), [['pr', 'edit', 'https://github.com/acme/app/pull/7']]);
-  assert.match(edited[0].body, /<details><summary>评审意见<\/summary>\n\n### 要求修改/);
+  assert.match(edited[0].body, /<details><summary>评审意见<\/summary>\n\n必须修 1 条。\n\n### 必须修/);
   // 设备验收不行：意见和截图交回主 Agent；没有新提交就答复的，再交回一次。
   assert.deepEqual(f.run('accepted', { ROUTE: 'failed', DEVICE: JSON.stringify({ choice: 'no', note: '', attachments: ['/uploads/a/shot.png'] }) }), {
     feedback: `设备验收不通过（提交 ${first}）：\n附件：\n- /uploads/a/shot.png`, route: 'fix' });
@@ -98,6 +98,29 @@ test('简易开发推送主 Agent 分支的最新提交到运行自己的分支�
   assert.deepEqual([f.run('pr', { DEVICES: 'true' }).device, f.run('pr', { DEVICES: 'false' }).device], ['false', 'false']);
   assert.deepEqual(f.run('accepted', { ROUTE: 'changed' }), { route: 'push' });
   assert.equal(f.calls().filter(c => c.args[1] === 'create').length, 1);
+});
+
+test('评审要求修改：改了就复评；第三次仍要求修改出用户卡，继续修清零；通过后不再评审', t => {
+  const f = fixture(t);
+  f.git('switch', '-q', '-c', 'agent/work'); f.commit('one', '改动');
+  f.run('push', { REPORT: JSON.stringify({ note: '汇报' }) });
+  const changes = JSON.stringify({ decision: 'REQUEST_CHANGES', line: '评审要求修改（REQUEST_CHANGES）', report: '必须修 1 条。' });
+  const round = (n, review = changes) => { f.commit('one', `第 ${n} 次`); f.run('push'); assert.equal(f.run('pr', { DEVICES: 'false' }).review, 'true', `第 ${n} 次`); return f.run('reviewed', { REVIEW: review }).route; };
+  assert.equal(f.run('pr', { DEVICES: 'false' }).review, 'true');
+  assert.equal(f.run('reviewed', { REVIEW: changes }).route, 'answer');
+  assert.equal(round(2), 'answer');
+  assert.equal(round(3), 'stuck');
+  assert.equal(f.state().rounds, 3);
+  f.run('again');
+  assert.equal(f.state().rounds, 0);
+  assert.equal(round(4), 'answer');
+  assert.equal(round(5, JSON.stringify({ decision: 'COMMENT', line: '评审通过（COMMENT）：没有要修的', report: '没有要修的；小问题 1 条。' })), 'passed');
+  // 复评通过后回到「开 PR 或更新」：批准卡的 summary 和 PR 正文都是这一轮的结论，不再评审。
+  const passed = f.run('pr', { DEVICES: 'false' });
+  assert.deepEqual([passed.review, passed.summary], ['false', '汇报\n\n评审：评审通过（COMMENT）：没有要修的']);
+  assert.match(f.calls().filter(c => c.args[1] === 'edit').at(-1).body, /<summary>评审意见<\/summary>\n\n没有要修的；小问题 1 条。/);
+  f.commit('one', '检查没过后修的'); f.run('push');
+  assert.equal(f.run('pr', { DEVICES: 'false' }).review, 'false', '通过后再改只重跑检查');
 });
 
 test('准备分支：给了就用给的；没给就从目标分支的最新提交开 agent/simple-<运行>，再走同一遍时沿用', t => {
@@ -133,7 +156,7 @@ test('检查没过交回主 Agent 并写明运行；合并冲突交回，其余�
   f.run('merge', { MERGE_EXIT: '1', GH_STATE: 'OPEN', GH_MERGEABLE: 'MERGEABLE' }, 1);
 });
 
-test('简易开发的流程定义：开启时什么都不必选，第一张任务不叫醒主 Agent，只评审一轮，拒绝必须附言', async () => {
+test('简易开发的流程定义：开启时什么都不必选，第一张任务不叫醒主 Agent，修改后复评、三轮没过交用户，拒绝必须附言', async () => {
   const { root, problem } = await readWorkflow(workflow, 'simple'); assert.ok(!problem, problem);
   const process = root.rootElements.find(e => e.$type === 'bpmn:Process');
   const acceptance = process.flowElements.find(e => e.id === 'acceptance');
@@ -155,9 +178,9 @@ test('简易开发的流程定义：开启时什么都不必选，第一张任�
   assert.deepEqual([inputs.devices.type, inputs.devices.default], ['boolean', 'false']);
   assert.deepEqual([nodes.report.wake, nodes.report.assignee], ['false', undefined]);
   for (const [id, choices] of [['report', [['done', 'required']]], ['answer', [['fixed', undefined], ['kept', 'required']]],
-    ['device', [['yes', undefined], ['no', 'required']]], ['approve', [['merge', undefined], ['stop', 'required']]], ['preview', [['installed', undefined], ['changed', 'required']]]])
+    ['device', [['yes', undefined], ['no', 'required']]], ['approve', [['merge', undefined], ['stop', 'required']]], ['stuck', [['more', undefined], ['stop', 'required']]], ['preview', [['installed', undefined], ['changed', 'required']]]])
     assert.deepEqual(values(nodes[id]).map(v => [v.id, v.note]), choices, id);
-  for (const id of ['device', 'approve']) assert.equal(nodes[id].assignee, 'user');
+  for (const id of ['device', 'approve', 'stuck']) assert.equal(nodes[id].assignee, 'user');
   for (const id of ['report', 'answer', 'fix', 'preview', 'fill']) assert.equal(nodes[id].assignee, undefined, id);
   // 先准备分支，之后所有步骤与任务都用它定下的分支。
   assert.equal(nodes['start-lane'].targetRef.id, 'lane');
@@ -173,11 +196,17 @@ test('简易开发的流程定义：开启时什么都不必选，第一张任�
   // 开 PR 之后：没评审过先评审，要验收先验收，否则合并前检查。
   for (const [review, device, target] of [[true, true, 'review'], [false, true, 'acceptance'], [false, false, 'premerge']])
     assert.equal(route('after-pr', { pr: { review, device } }), target);
-  assert.equal(route('verdict', { review: { changes: true } }), 'answer');
-  assert.equal(route('verdict', { review: { changes: false } }), 'after-review');
+  for (const [value, target] of [['answer', 'answer'], ['stuck', 'stuck'], ['passed', 'pr']]) assert.equal(route('verdict', { 'reviewed-record': { route: value } }), target);
+  assert.equal(nodes['after-review'], undefined, '通过后经「开 PR 或更新」写上这一轮的结论，再由那里的门去验收或合并前检查');
+  // 评审三轮没过：继续修先清零再回到处理评审意见，暂不合并走批准卡同一个结束。
+  assert.equal(route('stuck-choice', { stuck: { chose: { more: true } } }), 'again');
+  assert.equal(route('stuck-choice', { stuck: { chose: { stop: true } } }), 'stopped');
+  assert.equal(nodes['again-answer'].targetRef.id, 'answer');
+  assert.match(nodes.stuck.documentation[0].text, /评审了三次仍要求修改。还开着的必须修：\n\n\{\{review\.findings\}\}/);
+  assert.deepEqual([params('review').LAST, params('review').BLOCKING], ['=review', undefined], '复评拿上次的评审，没有阻塞级别');
   assert.equal(route('answer-how', { answer: { chose: { kept: true } } }), 'kept-record');
   assert.equal(route('answer-how', { answer: { chose: { kept: false } } }), 'push');
-  assert.equal(nodes['kept-pr'].targetRef.id, 'pr', '不改也只更新 PR，不再评审');
+  assert.equal(nodes['kept-pr'].targetRef.id, 'pr', '不改也只更新 PR，不再评审（kept 记下 reviewed）');
   for (const [value, target] of [['push', 'push'], ['fix', 'problem'], ['premerge', 'premerge']]) assert.equal(route('after-acceptance', { accepted: { route: value } }), target);
   for (const [chose, target] of [[{ changed: true }, 'acceptance-changed'], [{ changed: false }, 'device']]) assert.equal(route('after-preview', { preview: { chose } }), target);
   for (const [passed, target] of [[false, 'github-feedback'], [true, 'joiners']]) assert.equal(route('github-how', { 'github-checks': { passed }, github: { event: {} } }), target);

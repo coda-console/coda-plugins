@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- 简易开发（README.md「简易开发」）：主 Agent 自己把活干完，你在会话里开启它，流程推送、检查、评审一次，你验收、批准后合并。
+<!-- 简易开发（README.md「简易开发」）：主 Agent 自己把活干完，你在会话里开启它，流程推送、检查、评审，你验收、批准后合并。
      准备分支：改动交在哪条分支上由发起的 Agent 定，给了（或会话所在的）就用它；都没有时从目标分支的最新提交替它开一条。
      交上改动：第一张任务交给主 Agent，不叫醒它，随会话的下一条输入告诉它；它把改动提交到那条分支，答复改动汇报。
      推送：流程把那个分支的最新提交推到自己的分支 simple/<运行>，开 PR 到目标分支；之后每次修改都推同一个分支、更新同一个 PR。
      检查：在这个提交上调用项目加入挂点 check 的流程（检查），没通过交回主 Agent。
-     评审：评审方（发起时选的，没选按设置「评审组合」）在只读会话里评审一次；要求修改交回主 Agent，它改，或写明不改的理由。之后只重跑检查，不评第二轮。
+     评审：评审方（发起时选的，没选按设置「评审组合」）在只读会话里评审；只有「必须修」要求修改，交回主 Agent，它改了就复评（只评上次评过的提交之后的变动），
+     或写明不改的理由、不再评审。第三次评审仍要求修改时交你决定：继续修（次数清零），或暂不合并。评审通过后再改只重跑检查。
      设备验收（可选）：主 Agent 装预览版，你在设备上验收，「不行」交回主 Agent。
      合并前检查、GitHub 检查都通过后请你批准；合并后运行你勾选的合并后流程（挂点 merged）。BPMN 2.0，由 Coda 执行（docs/workflows.md）。 -->
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0"
@@ -33,7 +34,7 @@
     <sequenceFlow id="lane-report" sourceRef="lane" targetRef="report" />
 
     <userTask id="report" name="交上改动" coda:wake="false" coda:noteLabel="写给用户的改动汇报">
-      <documentation>这次用简易开发：你自己把这次的改动做完，流程推送、跑项目检查、请{{if inputs.reviewer = null then "评审方" else " " + inputs.reviewer.agent + " "}}评审一次，用户验收、批准后合并。
+      <documentation>这次用简易开发：你自己把这次的改动做完，流程推送、跑项目检查、请{{if inputs.reviewer = null then "评审方" else " " + inputs.reviewer.agent + " "}}评审，用户验收、批准后合并。
 把改动提交到分支 {{lane.branch}}（不用推送、不用开 PR），再答复。{{if lane.made = true then "这条分支是流程从 " + lane.base + " 的最新提交替你开的，在仓库 " + lane.repo + " 里：在那里用 git worktree add 开你自己的工作树，改动提交到这条分支。" else ""}}备注必填，是写给用户的改动汇报，会放在 PR 描述和批准卡最上面。约 8 行以内，只写用户能感知的变化和动到的端，不放实现细节、测试数量、文件清单，不贴代码：
 做了什么
 - …（3～5 条）
@@ -85,32 +86,55 @@
     <sequenceFlow id="pr-device" sourceRef="after-pr" targetRef="acceptance"><conditionExpression xsi:type="tFormalExpression">=pr.device = true</conditionExpression></sequenceFlow>
     <sequenceFlow id="pr-premerge" sourceRef="after-pr" targetRef="premerge" />
 
-    <!-- 评审只有一轮：评审过的运行，修改后只重跑检查。 -->
+    <!-- 评审：要求修改后主 Agent 改了就复评（LAST 是上次的评审），不改或通过后再改只重跑检查。 -->
     <scriptTask id="review" name="评审" coda:audience="user" coda:timeout="120" coda:status="评审中" scriptFormat="bash">
       <extensionElements>
         <coda:env name="REVIEWER" value="=inputs.reviewer" />
         <coda:env name="REVIEWERS" value="=vars.review.reviewers" />
-        <coda:env name="BLOCKING" value="=vars.review.blockingSeverity" />
         <coda:env name="PRINCIPLES" value="=vars.review.principles" />
         <coda:env name="SESSION" value="=github.event.coda.session" />
         <coda:env name="PR" value="=pr.url" />
+        <coda:env name="LAST" value="=review" />
         <coda:output name="decision" /><coda:output name="passed" /><coda:output name="changes" /><coda:output name="line" />
         <coda:output name="findings" /><coda:output name="report" /><coda:output name="rules" /><coda:output name="files" />
-        <coda:output name="pr" /><coda:output name="head" /><coda:output name="base" /><coda:output name="count" /><coda:output name="changesAt" />
+        <coda:output name="pr" /><coda:output name="open" /><coda:output name="head" /><coda:output name="base" /><coda:output name="count" /><coda:output name="changesAt" />
       </extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/review.mjs"</script>
     </scriptTask>
     <sequenceFlow id="reviewed" sourceRef="review" targetRef="reviewed-record" />
     <scriptTask id="reviewed-record" name="记下评审" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
-      <extensionElements><coda:env name="REVIEW" value="=review" /></extensionElements>
+      <extensionElements><coda:env name="REVIEW" value="=review" /><coda:output name="route" /></extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/simple.mjs" reviewed</script>
     </scriptTask>
     <sequenceFlow id="reviewed-verdict" sourceRef="reviewed-record" targetRef="verdict" />
     <exclusiveGateway id="verdict" name="要求修改吗" default="review-passed" />
-    <sequenceFlow id="review-changes" sourceRef="verdict" targetRef="answer"><conditionExpression xsi:type="tFormalExpression">=review.changes</conditionExpression></sequenceFlow>
-    <sequenceFlow id="review-passed" sourceRef="verdict" targetRef="after-review" />
+    <sequenceFlow id="review-changes" sourceRef="verdict" targetRef="answer"><conditionExpression xsi:type="tFormalExpression">=reviewed-record.route = "answer"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="review-stuck" sourceRef="verdict" targetRef="stuck"><conditionExpression xsi:type="tFormalExpression">=reviewed-record.route = "stuck"</conditionExpression></sequenceFlow>
+    <!-- 通过：回到「开 PR 或更新」，PR 正文和批准卡换成这一轮的结论，再按那里的门去验收或合并前检查。 -->
+    <sequenceFlow id="review-passed" sourceRef="verdict" targetRef="pr" />
+
+    <!-- 第三次评审仍要求修改：不再交给主 Agent，由你决定继续修（次数清零）还是暂不合并。 -->
+    <userTask id="stuck" name="评审三轮没过" coda:assignee="user" coda:status="评审三轮没过：等你决定">
+      <documentation>PR {{review.pr}} 评审了三次仍要求修改。还开着的必须修：
+
+{{review.findings}}
+
+继续修：交回主 Agent 处理评审意见，重新计数。</documentation>
+      <extensionElements>
+        <coda:choice id="more" name="继续修" primary="true" />
+        <coda:choice id="stop" name="暂不合并" note="required" />
+      </extensionElements>
+    </userTask>
+    <sequenceFlow id="stuck-how" sourceRef="stuck" targetRef="stuck-choice" />
+    <exclusiveGateway id="stuck-choice" name="继续修吗" default="stuck-more" />
+    <sequenceFlow id="stuck-stop" sourceRef="stuck-choice" targetRef="stopped"><conditionExpression xsi:type="tFormalExpression">=stuck.chose.stop</conditionExpression></sequenceFlow>
+    <sequenceFlow id="stuck-more" sourceRef="stuck-choice" targetRef="again" />
+    <scriptTask id="again" name="重新计数" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <script>node "${CODA_PLUGIN_PATH}/scripts/simple.mjs" again</script>
+    </scriptTask>
+    <sequenceFlow id="again-answer" sourceRef="again" targetRef="answer" />
     <userTask id="answer" name="处理评审意见" coda:noteLabel="改了什么，或不改的理由">
-      <documentation>评审方要求修改 PR {{review.pr}}，阻塞级别（{{vars.review.blockingSeverity}}）及以上的问题：
+      <documentation>评审方要求修改 PR {{review.pr}}，必须修的问题：
 
 {{review.findings}}
 
@@ -118,8 +142,8 @@
 
 {{review.rules}}
 
-请照这些规则独立核实：没有可达的触发路径的、属于规则说不报的、按严重程度的定义其实低于阻塞级别的，都不算成立。
-成立的就修改，提交到分支 {{lane.branch}}，选「已修改」，备注写改了什么。不改的选「不改」，备注写明理由和依据的规则，会写进 PR 与批准卡，由用户批准时判断。之后只重跑检查，不再评审。</documentation>
+请照这些规则独立核实：没有可达的触发路径的、属于规则说不报的、按级别的定义其实不算必须修的，都不算成立。
+成立的就修改，提交到分支 {{lane.branch}}，选「已修改」，备注写改了什么；流程重跑检查后复评，只评这次的修改。不改的选「不改」，备注写明理由和依据的规则，会写进 PR 与批准卡，由用户批准时判断，之后只重跑检查，不再评审。</documentation>
       <extensionElements>
         <coda:choice id="fixed" name="已修改" primary="true" />
         <coda:choice id="kept" name="不改" note="required" />
@@ -134,9 +158,6 @@
       <script>node "${CODA_PLUGIN_PATH}/scripts/simple.mjs" kept</script>
     </scriptTask>
     <sequenceFlow id="kept-pr" sourceRef="kept-record" targetRef="pr" />
-    <exclusiveGateway id="after-review" name="设备验收吗" default="review-premerge" />
-    <sequenceFlow id="review-device" sourceRef="after-review" targetRef="acceptance"><conditionExpression xsi:type="tFormalExpression">=pr.device = true</conditionExpression></sequenceFlow>
-    <sequenceFlow id="review-premerge" sourceRef="after-review" targetRef="premerge" />
 
     <subProcess id="acceptance" name="安装与设备验收" coda:optional="true">
       <startEvent id="acceptance-start" />

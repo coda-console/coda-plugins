@@ -2,7 +2,7 @@
 <!-- PR 生命流程（docs/plugins.md「内置插件：PR 生命流程」）：会话开的 PR 从开出来起一条运行，走到合并或关闭才结束。
      草稿：等作者标记为可评审。
      检查：在这个提交上调用项目加入挂点 check 的流程（检查），再等它在 GitHub 上的检查都有结果；有没通过的交给开 PR 的会话。
-     评审：另一家 Agent 评审这个版本；要求修改交给开 PR 的会话，它不同意交给你仲裁。有新提交就从头再来。
+     评审：另一家 Agent 评审这个版本，只有「必须修」要求修改，交给开 PR 的会话，它不同意交给你仲裁。有新提交就从头再来；再评时只评上次评过的提交之后的变动。
      叠放：base 不是默认分支的不合并，等 base 改过去再接着走。
      合并：请你批准，再在这个提交上调用项目加入挂点 premerge 的流程（合并前检查），都通过才合并；没通过或 GitHub 没合并就交给开 PR 的会话，
      它推了新提交、评审通过后按你的批准合并，不再问。
@@ -154,7 +154,6 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
       <scriptTask id="review" name="交叉评审" coda:audience="user" coda:timeout="120" coda:status="评审中" scriptFormat="bash">
         <extensionElements>
           <coda:env name="REVIEWERS" value="=vars.review.reviewers" />
-          <coda:env name="BLOCKING" value="=vars.review.blockingSeverity" />
           <coda:env name="PRINCIPLES" value="=vars.review.principles" />
           <coda:env name="SESSION" value="=github.event.coda.session" />
           <coda:env name="PULL_REQUEST" value="=github.event.pull_request" />
@@ -171,6 +170,7 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
           <coda:output name="rules" />
           <coda:output name="files" />
           <coda:output name="pr" />
+          <coda:output name="open" />
           <coda:output name="head" />
           <coda:output name="base" />
           <coda:output name="count" />
@@ -206,7 +206,7 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
       <sequenceFlow id="released" sourceRef="limit-how" targetRef="released-at-limit" />
 
       <userTask id="fix" name="处理评审意见" coda:status="评审要求修改：处理评审意见" coda:completeLabel="已修改并推送" coda:rejectLabel="不同意评审意见">
-        <documentation>交叉评审要求修改 PR {{review.pr}}，阻塞级别（{{vars.review.blockingSeverity}}）及以上的问题如下（本任务只处理这些问题）：
+        <documentation>交叉评审要求修改 PR {{review.pr}}，必须修的问题如下（本任务只处理这些问题）：
 
 {{review.findings}}
 
@@ -214,14 +214,14 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
 
 {{review.rules}}
 
-请照这些规则独立核实：没有可达的触发路径的、属于规则说不报的、按严重程度的定义其实低于阻塞级别的，都不算成立。
+请照这些规则独立核实：没有可达的触发路径的、属于规则说不报的、按级别的定义其实不算必须修的，都不算成立。
 成立的就修改、验证并推送新版本（新版本会自动重新评审），然后用 completed 答复。不同意的，用 rejected 答复，在 note 里写明理由和依据的规则，交给用户仲裁；用户维持评审意见时这个任务会再交给你。</documentation>
       </userTask>
       <sequenceFlow id="fixed" sourceRef="fix" targetRef="fixing" />
       <boundaryEvent id="disputed" name="不同意" attachedToRef="fix"><errorEventDefinition /></boundaryEvent>
       <sequenceFlow id="to-arbitrate" sourceRef="disputed" targetRef="arbitrate" />
       <userTask id="arbitrate" name="仲裁评审意见" coda:assignee="user" coda:status="评审意见有分歧：等你仲裁" coda:completeLabel="放行本次评审" coda:rejectLabel="按评审意见修改">
-        <documentation>交叉评审要求修改 PR {{review.pr}}，开 PR 的会话不同意，理由在这次运行的「处理评审意见」任务里。阻塞级别及以上的问题：
+        <documentation>交叉评审要求修改 PR {{review.pr}}，开 PR 的会话不同意，理由在这次运行的「处理评审意见」任务里。必须修的问题：
 
 {{review.findings}}
 

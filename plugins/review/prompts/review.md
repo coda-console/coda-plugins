@@ -6,12 +6,12 @@
 - {{checks}}：这个提交上各项 GitHub 检查的结论（评审前已等它们都有了结果），没有检查或手动发起时为空；评审一段提交时是「还没有 PR」的说明
 - {{evidence}}：评审一段提交时调用方提供的已有验证证据，没提供或评 PR 时为空
 - {{author}}：PR 作者写的标题、分支与正文，评审一段提交时是调用方给的任务书原文，包在随机标记之间
-- {{previous}}：这条运行上一次评审的发现，请评审方核实是否已解决；评审一段提交的增量复评时，是这个评审位置上一轮的发现（带编号）与执行者逐条的回应
-- {{rules}}：评审的规则，即 rules.md 填好的全文（项目评审准则、通用要求、评审重点、严重程度）；开 PR 的会话处理评审意见时拿到同一份
+- {{previous}}：复评时的说明：只评上次评过的提交之后的变动（别人的 PR 仍给整份改动），已经提过的不再提，以及上次还没关的必须修（带编号；评审一段提交时是调用方给的发现，附执行者逐条的回应）；上次没留下必须修时，只在只评变动时有说明，其余为空
+- {{rules}}：评审的规则，即 rules.md 填好的全文（项目评审准则、通用要求、评审重点、三种级别）；开 PR 的会话处理评审意见时拿到同一份
 - {{focus}}：手动发起时给的关注点
-- {{resolutions}}：增量复评时要求在 review 代码块里对每条旧发现给出结论（resolutions）的说明，其他时候为空
+- {{resolutions}}：复评时要求在 review 代码块里对每条旧发现给出结论（resolutions）的说明，其他时候为空
 
-必须保留的只有最后两段：回复末尾的 review 代码块与它的 JSON 格式，脚本靠它读出结论（severity 只能是 P0 到 P3，kind 不认识的按 correctness）。
+必须保留的只有最后两段：回复末尾的 review 代码块与它的 JSON 格式，脚本靠它读出结论（level 只能是 must、nit、existing，kind 不认识的按 correctness；nit 超过 5 条时只留前 5 条）。
 这段注释不会发给评审方。
 -->
 {{subject}}
@@ -34,6 +34,6 @@
 
 {{focus}}
 
-回复的最后，单独给出一个代码块：开头一行是三个反引号加 review，结尾一行是三个反引号，中间是一个 JSON 对象，只有 findings 一个字段，是发现的数组，每条有 severity（P0 到 P3）、kind（类别，按评审规则里的六类之一：correctness、contract、scope、test-quality、documentation、style）、title（一句话）、location（文件:行，可空）、detail（问题、触发条件与建议）；没有发现时 findings 是空数组。
+回复的最后，单独给出一个代码块：开头一行是三个反引号加 review，结尾一行是三个反引号，中间是一个 JSON 对象，只有 findings 一个字段，是发现的数组，每条有 level（按评审规则里的三种级别：must 必须修、nit 小问题、existing 原有问题）、kind（类别，按评审规则里的六类之一：correctness、contract、scope、test-quality、documentation、style）、title（一句话）、location（文件:行，可空）、detail（问题、触发条件与建议）；没有发现时 findings 是空数组。
 
 {{resolutions}}

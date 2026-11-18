@@ -68,7 +68,7 @@ test('the session that opened the pull request is given the rules the reviewer w
   stub('gh', 'exit 0');
   // The reviewer keeps what it was asked and finds one blocking problem.
   stub('coda-agent', `while [ "$1" != --prompt-file ]; do shift; done; cp "$2" ${JSON.stringify(prompt)}
-printf '%s\\n' '\`\`\`review' '{"findings":[{"severity":"P1","title":"t"}]}' '\`\`\`'`);
+printf '%s\\n' '\`\`\`review' '{"findings":[{"level":"must","title":"t"}]}' '\`\`\`'`);
   const git = (...args) => spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgSign=false', ...args],
     { cwd: work, encoding: 'utf8' }).stdout.trim();
   git('init', '-q');
@@ -79,12 +79,12 @@ printf '%s\\n' '\`\`\`review' '{"findings":[{"severity":"P1","title":"t"}]}' '\`
   const head = git('rev-parse', 'HEAD');
   writeFileSync(outputs, '');
   const done = spawnSync(process.execPath, [script], { cwd: work, encoding: 'utf8', env: { PATH: `${bin}:/usr/bin:/bin`, HOME: root,
-    RUNNER_TEMP: root, GITHUB_OUTPUT: outputs, REVIEWERS: JSON.stringify({ '*': { agent: 'codex' } }), PRINCIPLES: '["tests"]', BLOCKING: 'P2',
+    RUNNER_TEMP: root, GITHUB_OUTPUT: outputs, REVIEWERS: JSON.stringify({ '*': { agent: 'codex' } }), PRINCIPLES: '["tests"]',
     PULL_REQUEST: JSON.stringify({ number: 1, html_url: 'https://github.com/acme/app/pull/1', head: { sha: head, ref: 'f' }, base: { sha: base, ref: 'main' } }) } });
   assert.equal(done.status, 0, done.stderr);
   const rules = /^rules<<EOF_rules\n([\s\S]*?)\nEOF_rules$/m.exec(readFileSync(outputs, 'utf8'))?.[1];
   assert.ok(readFileSync(prompt, 'utf8').includes(`\n${rules}\n`), 'the reviewer is given the same rules');
-  for (const part of ['项目准则：只跑相关测试。', '只报可操作的发现', '**测试**', 'P3 低优']) assert.ok(rules.includes(part), part);
+  for (const part of ['项目准则：只跑相关测试。', '只报可操作的发现', '**测试**', 'must 必须修', 'nit 小问题', 'existing 原有问题', '以项目的为准']) assert.ok(rules.includes(part), part);
   assert.doesNotMatch(rules, /<!--|\{\{/);
 });
 

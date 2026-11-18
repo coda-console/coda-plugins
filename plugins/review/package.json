@@ -4,7 +4,7 @@
   "displayName": "PR 生命流程",
   "description": "PR 从检查、评审到批准合并；简易开发",
   "icon": { "symbol": "checkmark.bubble.fill", "color": "purple" },
-  "version": "3.4.1",
+  "version": "4.0.0",
   "categories": [
     "工作流程"
   ],
@@ -64,19 +64,6 @@
             }
           }
         },
-        "review.blockingSeverity": {
-          "title": "阻塞级别",
-          "type": "string",
-          "order": 2,
-          "enum": [
-            "P0",
-            "P1",
-            "P2",
-            "P3"
-          ],
-          "default": "P2",
-          "description": "这一级及更严重的问题要求修改：交给开 PR 的会话处理，它不同意时交给你仲裁。更轻的问题不挡住 PR，评审仍算通过，写在 PR 评论和批准卡上。P0 最严重，P3 最轻。"
-        },
         "review.principles": {
           "title": "评审重点",
           "type": "array",
@@ -97,12 +84,12 @@
               {
                 "const": "architecture",
                 "title": "架构与腐化",
-                "description": "绕过边界、依赖反向、第二个事实来源或第二套机制、复制核心逻辑、迁移做一半、死代码、为不存在的需求做的抽象。会扩散的按 P1。"
+                "description": "绕过边界、依赖反向、第二个事实来源或第二套机制、复制核心逻辑、迁移做一半、死代码、为不存在的需求做的抽象。"
               },
               {
                 "const": "tests",
                 "title": "测试",
-                "description": "缺少回归测试或失败路径的测试；不能失败的测试；依赖时序、顺序、外部环境的脆弱测试；不必要的重型或缓慢测试。偶发失败、会被照搬的写法按 P1。"
+                "description": "缺少回归测试或失败路径的测试；不能失败的测试；依赖时序、顺序、外部环境的脆弱测试；不必要的重型或缓慢测试。"
               }
             ]
           },
