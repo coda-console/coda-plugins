@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- 持锁执行（README.md）：会话的 Agent 用 workflow_run 交来的命令。排进这台 Mac 的名额组 host（容量是本插件为它声明的设置
-     host.capacity），排到后在给定的目录里、带项目的环境执行，结束（含被取消）时删掉命令用 host-sim bind 登记的模拟器，再放开名额。
+<!-- 持锁执行（README.md）：会话的 Agent 用 workflow_run 交来的命令。排进这台 Mac 的名额组 host（容量是本插件按设置
+     host.capacity 写的组记录），排到后在给定的目录里、带项目的环境执行，结束（含被取消）时删掉命令用 host-sim bind 登记的模拟器，再放开名额。
      命令一律在这台跑、在这台排队。
      总时限由 run-held.mjs 从命令启动时计时，不含排队：到限停下整棵进程树，留 5 分钟收尾。
      命令的退出码作为输出 exit_code。能力：只被调用，结果交给调用者；原生子 Agent 不能发起（coda:subagents="false"）。 -->
