@@ -11,6 +11,10 @@
   "extensionDependencies": [
     "github"
   ],
+  "uses": {
+    "coda/composer@1": ["read"],
+    "coda/thread@1": ["read"]
+  },
   "license": "MIT",
   "repository": {
     "type": "git",
