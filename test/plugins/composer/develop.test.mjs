@@ -192,31 +192,36 @@ const pieceInputs = async (outputs, inputs) => {
   const { params } = await definition();
   return Object.fromEntries(Object.entries(params('piece')).map(([name, value]) => [name, evaluate(value.slice(1), { inputs, req: { branch: 'req/run-1', base: 'main' }, 'progress-result': typedOutputs(outputs) }).value]));
 };
-const KICKOFF = { executor: { agent: 'codex', model: 'gpt-6.1-sol', options: { 'service-tier': 'priority' } }, executor2: { agent: 'claude-sdk' }, reviewer: { agent: 'kimi', effort: 'high' }, reviewer2: null, reviewer3: { agent: 'grok' }, autoLandMinor: false };
+// review-commit 的输出交给「记下整体评审结果」：发现按 level 分级。
+const reviewed = (findings, extra = {}) => ({ DECISION: findings.some(f => f.level === 'must') ? 'REQUEST_CHANGES' : findings.length ? 'COMMENT' : 'APPROVE',
+  FINDINGS: JSON.stringify(findings.map(f => ({ kind: 'correctness', location: '', detail: '', ...f }))), LINE: findings.some(f => f.level === 'must') ? '评审要求修改' : '评审通过', REPORT: '评审原文', ...extra });
+const KICKOFF = { executor: { agent: 'codex', model: 'gpt-6.1-sol', options: { 'service-tier': 'priority' } }, executor2: { agent: 'claude-sdk' }, reviewer: { agent: 'kimi', effort: 'high' }, overallReviewer: { agent: 'grok' } };
 
-test('派一块：第一行标题、其后任务书，人选默认取开工单的执行者、备用执行者与评审者（第三整体评审者不评块）', async t => {
+test('派一块：第一行标题、其后任务书，人选默认取开工单的执行者、备用执行者与评审者（整体评审者不评块）', async t => {
   const f = fixture(t); f.run('branch');
   f.run('check-failed', { STEP: '项目检查' });
   const outputs = f.dispatch('piece', '修好登录跳转\n\n## 背景\n登录后停在空白页\n\n## 验收\n- 跳到首页');
   assert.deepEqual([outputs.route, outputs.feedback, outputs.title, outputs.task, outputs.sync], ['piece', '', '修好登录跳转', '## 背景\n登录后停在空白页\n\n## 验收\n- 跳到首页', 'false']);
   assert.equal(f.reason(), '', '派出去了，回来的原因已处理');
   assert.deepEqual(await pieceInputs(outputs, KICKOFF), { branch: 'req/run-1', base: 'main', title: '修好登录跳转', task: '## 背景\n登录后停在空白页\n\n## 验收\n- 跳到首页', sync: false,
-    executor: KICKOFF.executor, executor2: KICKOFF.executor2, reviewer: KICKOFF.reviewer, reviewer2: null, autoLandMinor: false });
+    executor: KICKOFF.executor, executor2: KICKOFF.executor2, reviewer: KICKOFF.reviewer });
 });
 
 test('派一块：备注最前面换人的行覆盖开工值，「无」表示这一块不用，没写的照旧；开工值渲染出的行原样能读回', async t => {
   const f = fixture(t); f.run('branch');
-  const note = '- 执行者：opencode，模型 big-1，强度 max，模式 build\n评审者: 无\n- 第二评审者：cursor，强度 low\n\n补测试\n给登录跳转补回归测试';
+  const note = '- 执行者：opencode，模型 big-1，强度 max，模式 build\n评审者: 无\n\n补测试\n给登录跳转补回归测试';
   const outputs = f.dispatch('piece', note);
   assert.deepEqual([outputs.route, outputs.title, outputs.task], ['piece', '补测试', '给登录跳转补回归测试']);
   assert.deepEqual(await pieceInputs(outputs, KICKOFF), { branch: 'req/run-1', base: 'main', title: '补测试', task: '给登录跳转补回归测试', sync: false,
-    executor: { agent: 'opencode', model: 'big-1', effort: 'max', mode: 'build' }, executor2: KICKOFF.executor2, reviewer: null, reviewer2: { agent: 'cursor', effort: 'low' }, autoLandMinor: false });
+    executor: { agent: 'opencode', model: 'big-1', effort: 'max', mode: 'build' }, executor2: KICKOFF.executor2, reviewer: null });
   // 开工值在「需求进行中」里写成同样的行：抄过来就是同一组人选（其他选项不在行里）。
   const { nodes } = await definition(), doc = nodes.progress.documentation[0].text;
   const rendered = doc.replace(/{{([\s\S]*?)}}/g, (_, e) => { const v = evaluate(e, { inputs: { ...KICKOFF, delivery: '', devices: false }, req: {}, resume: { reason: '' } }).value; return v ?? ''; });
   const lines = rendered.split('\n').filter(l => /^- (执行者|评审者)：/.test(l)).slice(0, 2);
-  const back = await pieceInputs(f.dispatch('piece', `${lines.join('\n')}\n标题\n任务`), { executor: null, executor2: null, reviewer: null, reviewer2: null });
+  const back = await pieceInputs(f.dispatch('piece', `${lines.join('\n')}\n标题\n任务`), { executor: null, executor2: null, reviewer: null });
   assert.deepEqual([back.executor, back.reviewer], [{ agent: 'codex', model: 'gpt-6.1-sol' }, { agent: 'kimi', effort: 'high' }]);
+  // 人选只有执行者、备用执行者、评审者三行：「第二评审者」不是换人的行，不派。
+  assert.equal(f.dispatch('piece', '第二评审者：cursor\n标题\n任务').title, '第二评审者：cursor', '不认第二评审者');
 });
 
 test('派块的写法解析不了、开工没填执行者备注也没写：不派，带着原因回到需求进行中，回来的原因保留', t => {
@@ -250,7 +255,6 @@ test('跟上目标分支：派 sync=true 的块，标题与任务固定，备注
   assert.deepEqual([plain.route, plain.feedback, plain.title, plain.sync], ['piece', '', '跟上 main', 'true']);
   assert.match(plain.task, /^把目标分支 main 最新的提交合并进需求分支 req\/run-1，让需求分支跟上它：解冲突，数据库迁移等版本号和目标分支撞号时顺延需求分支这边的/);
   const inputs = await pieceInputs(plain, KICKOFF);
-  for (const auto of [true, false]) assert.equal((await pieceInputs(plain, { ...KICKOFF, autoLandMinor: auto })).autoLandMinor, auto, '开工单的小改动免主控审查原样传给块');
   assert.deepEqual([inputs.sync, inputs.executor, inputs.reviewer], [true, KICKOFF.executor, KICKOFF.reviewer]);
   const noted = f.dispatch('sync', '执行者：claude-sdk\n注意 migrations 目录');
   assert.equal(noted.task, `${plain.task}\n\n注意 migrations 目录`);
@@ -262,9 +266,7 @@ test('块结束回到需求进行中：合进了写上提交和块的运行；�
   f.run('piece-landed', { TITLE: '修好登录跳转', COMMIT: 'c'.repeat(40), PIECE_RUN: 'piece-7' });
   const landed = f.reason();
   for (const part of ['块「修好登录跳转」已合进需求分支 req/run-1', `提交 ${'c'.repeat(40)}`, 'coda://workflow-runs/piece-7']) assert.ok(landed.includes(part), part);
-  assert.doesNotMatch(landed, /免主控审查/, '出过审查卡合入的不提免审');
-  f.run('piece-landed', { TITLE: '补测试', COMMIT: 'd'.repeat(40), PIECE_RUN: 'piece-9', AUTO: 'true', SUMMARY: '改动文件：\n- A test/a.test.mjs' });
-  assert.equal(f.reason(), `块「补测试」已合进需求分支 req/run-1：提交 ${'d'.repeat(40)}，运行 coda://workflow-runs/piece-9。\n这一块是小改动免主控审查合入的，没出你的审查卡；需要时自己看这个提交。\n改动文件：\n- A test/a.test.mjs`);
+  assert.equal(landed, `块「修好登录跳转」已合进需求分支 req/run-1：提交 ${'c'.repeat(40)}，运行 coda://workflow-runs/piece-7。`);
   f.dispatch('piece', '下一块\n任务');
   assert.equal(f.reason(), '', '下一块派出去就清掉');
   // 块已推进需求分支、随后删临时分支失败（piece.test.mjs「删临时分支失败」）：块失败，但不能说没合进、需求分支没动。
@@ -327,8 +329,8 @@ test('项目检查按需求分支 head 复用：同一 head 通过过就不再�
   const f = fixture(t); f.run('branch'); f.land('one', 'first'); f.progress('submit', '汇报');
   assert.equal(route('reuse-checks', { pr: f.run('pr').outputs }), 'checks');
   f.run('checks-passed', { RUNS: JSON.stringify([{ workflow: 'test', state: 'succeeded', runId: 'c1' }]) });
-  assert.equal(route('reuse-checks', { pr: f.run('pr').outputs }), 'premerge');
-  assert.match(f.run('github-checks').outputs.evidence, /^项目检查：\ntest: succeeded coda:\/\/workflow-runs\/c1\n合并前检查与 GitHub 检查已通过。$/);
+  assert.equal(route('reuse-checks', { pr: f.run('pr').outputs }), 'overall-plan');
+  assert.equal(f.run('overall-plan', { REVIEWER: 'true' }).outputs.evidence, '项目检查：\ntest: succeeded coda://workflow-runs/c1', '整体评审时项目检查已有结论，交给评审者');
   f.land('two', 'second');
   assert.equal(route('reuse-checks', { pr: f.run('pr').outputs }), 'checks');
 });
@@ -355,8 +357,9 @@ test('收尾的失败与「暂不合并」都带着原因回到需求进行中',
   assert.equal(f.run('device', { DEVICE: JSON.stringify({ choice: 'no', note: '', attachments: ['/uploads/a/shot.png'] }) }).outputs.route, 'progress', '只附截图也算附言');
   assert.equal(f.reason(), '设备验收不通过：\n附件：\n- /uploads/a/shot.png');
   f.progress('submit', '汇报');
-  assert.deepEqual(f.answer('review', 'REVIEW', 'progress', '先修 P1'), { route: 'progress' });
-  assert.match(f.reason(), /^整体评审后主 Agent 选了回到进行中。\n先修 P1\n评审的发现与原文：.*reviews\.md$/);
+  f.run('overall-reviewed', reviewed([{ level: 'must', title: '登录后停在空白页', location: 'app.mjs:3' }]));
+  assert.deepEqual(f.answer('review', 'REVIEW', 'progress', '先修登录'), { route: 'progress' });
+  assert.equal(f.reason(), `整体评审后主 Agent 选了回到进行中。\n先修登录\n整体评审的结论：\n评审要求修改\n必须修 1 条：\n- 登录后停在空白页（app.mjs:3）\n小问题 0 条，原有问题 0 条。\n评审原文：${join(f.env.CODA_ARTIFACTS, 'overall-review-1.md')}`);
   f.progress('submit', '汇报');
   assert.deepEqual(f.answer('review', 'REVIEW', 'continue'), { route: 'continue' });
   assert.equal(f.reason(), '', '继续验收不回去');
@@ -392,20 +395,115 @@ test('合并：用合并提交进目标分支（--merge），冲突带着原因�
   }
 });
 
-test('整体评审的材料：只取评需求分支这个 head 的，没评成的指向本运行「评审整条需求分支」', t => {
-  const f = fixture(t); f.run('branch'); f.land('one', 'first'); f.progress('submit', '汇报'); f.run('pr');
-  const head = f.state().head, path = join(f.env.CODA_ARTIFACTS, 'reviews.md');
-  const reviews = [
-    { state: 'done', slot: 'reviewer', who: JSON.stringify({ agent: 'a1', effort: 'high' }), head, decision: 'APPROVE', line: '可以', findings: '[]', report: '原文' },
-    { state: 'lost', slot: 'reviewer2', who: JSON.stringify({ agent: 'a2' }), head },
-  ];
-  assert.equal(f.run('reviewed', { REVIEWS: JSON.stringify(reviews) }).outputs.reviews, [
-    '评审者（a1 · high）：可以',
-    '第二评审者（a2）：没评成。调用 review-commit 没有成功，原因见本运行 coda://workflow-runs/run-1 的「评审整条需求分支」（workflow_status）。',
-  ].join('\n\n') + `\n评审原文：${path}`);
-  assert.ok(readFileSync(path, 'utf8').includes('原文'));
-  f.land('two', 'second'); f.run('pr');
-  assert.equal(f.run('reviewed', { REVIEWS: JSON.stringify(reviews) }).outputs.reviews, '', '需求分支动了，旧的评审不带');
+// 提交验收到项目检查有了结论：答复「提交验收」（options 是勾选项），跟上目标分支，开或更新 PR，记下通过的检查。
+const submitTo = (f, options = {}) => {
+  f.run('progress', { PROGRESS: JSON.stringify({ choice: 'submit', note: '汇报', options }) });
+  f.run('sync-base', { FIXER: 'true' });
+  const pr = f.run('pr').outputs;
+  if (pr.checked !== 'true') f.run('checks-passed', { RUNS: JSON.stringify([{ workflow: 'test', state: 'succeeded', runId: 'c1' }]) });
+  return pr;
+};
+
+test('整体评审评不评：填了整体评审者、不是只合进了一块且它评成过（跟上目标分支的块、流程直推的不算）、这次运行还没评过才评；勾「重新整体评审」再评一次', t => {
+  const f = fixture(t); f.run('branch');
+  const plan = (reviewer = true) => f.run('overall-plan', { REVIEWER: String(reviewer) }).outputs;
+  f.land('one', 'first', '块一\n\nCoda-Piece: piece-1');
+  f.run('piece-landed', { TITLE: '块一', COMMIT: 'c'.repeat(40), PIECE_RUN: 'piece-1', REVIEWED: 'true' });
+  // 跟上目标分支的块是执行者的合并提交，不带 Coda-Piece；提交验收时流程直接推的合并提交同样不算。
+  const main = f.advanceMain('m', 'main');
+  f.git('fetch', '-q', 'origin', 'req/run-1'); f.git('switch', '-q', '--detach', 'FETCH_HEAD'); f.git('merge', '-q', '--no-ff', '--no-edit', main);
+  f.git('push', '-q', 'origin', 'HEAD:refs/heads/req/run-1');
+  f.advanceMain('n', 'main again');
+  submitTo(f);
+  assert.equal(f.state().pushed.length, 1, '提交验收时流程又推了一个合并提交');
+  assert.deepEqual(plan(), { review: 'false', evidence: '项目检查：\ntest: succeeded coda://workflow-runs/c1' }, '只有一块且它评成过：跳过');
+  f.land('two', 'second', '块二\n\nCoda-Piece: piece-2');
+  f.run('piece-landed', { TITLE: '块二', COMMIT: 'd'.repeat(40), PIECE_RUN: 'piece-2', REVIEWED: 'true' });
+  submitTo(f);
+  assert.deepEqual(f.state().landed, ['piece-2', 'piece-1']);
+  assert.equal(plan(false).review, 'false', '没填整体评审者不评');
+  assert.equal(plan().review, 'true', '两块、还没评过：评');
+  // 没评成（调用没成、没评完）不算评过，下次提交验收照样评。
+  f.run('overall-lost');
+  submitTo(f);
+  assert.equal(plan().review, 'true');
+  f.run('overall-reviewed', reviewed([], { DECISION: 'INCOMPLETE', LINE: '评审没有完成：没有合格的 review 代码块', FINDINGS: '[]', REPORT: '' }));
+  submitTo(f);
+  assert.equal(plan().review, 'true');
+  // 评过了：再提交验收不再评；勾「重新整体评审」这一次照常评，下一次又不评。
+  f.run('overall-reviewed', reviewed([]));
+  submitTo(f);
+  assert.equal(plan().review, 'false', '评过之后不再评');
+  submitTo(f, { again: true });
+  assert.equal(plan().review, 'true', '勾了重新整体评审');
+  submitTo(f);
+  assert.equal(plan().review, 'false');
+
+  // 只有一块，但它没评审者（评审者：无）或没评成：照常整体评审。
+  for (const reviewed of ['false', undefined]) {
+    const g = fixture(t); g.run('branch');
+    g.land('one', 'first', '块一\n\nCoda-Piece: piece-1');
+    g.run('piece-landed', { TITLE: '块一', COMMIT: 'c'.repeat(40), PIECE_RUN: 'piece-1', ...reviewed && { REVIEWED: reviewed } });
+    submitTo(g);
+    assert.equal(g.run('overall-plan', { REVIEWER: 'true' }).outputs.review, 'true', `块没评成（REVIEWED=${reviewed}）`);
+  }
+});
+
+test('整理整体评审：没评或没有必须修往下走，小问题与原有问题写进 PR 描述和汇总；有必须修或没评成交主 Agent 一页结论；自动合并要这次运行评成过、整体评审没出过必须修', t => {
+  const f = fixture(t); f.run('branch');
+  f.land('one', 'first', '块一\n\nCoda-Piece: piece-1'); f.land('two', 'second', '块二\n\nCoda-Piece: piece-2');
+  const landed = (run, reviewed) => f.run('piece-landed', { TITLE: run, COMMIT: 'c'.repeat(40), PIECE_RUN: run, REVIEWED: reviewed });
+  landed('piece-1', 'false'); landed('piece-2', 'false');
+  let pr = submitTo(f);
+  const overall = (AUTO = 'true') => f.run('overall', { SUMMARY: pr.summary, AUTO }).outputs;
+  const edits = () => f.calls().filter(c => c.args[1] === 'edit');
+  const report = n => join(f.env.CODA_ARTIFACTS, `overall-review-${n}.md`);
+  f.run('overall-plan', { REVIEWER: 'false' });
+  const before = edits().length;
+  assert.deepEqual(overall(), { route: 'accept', summary: pr.summary, auto: 'false', review: '', note: '' }, '块评审者、整体评审者都没有：往下走，开了 autoMerge 也出批准卡');
+  landed('piece-1', 'true');
+  assert.equal(overall().auto, 'false', '块二没评成：还是出批准卡');
+  landed('piece-2', 'true');
+  assert.equal(overall().auto, 'true', '合进的每一块都评成过：开了 autoMerge 就自动合并');
+  assert.equal(overall('false').auto, 'false', '没开 autoMerge');
+  assert.equal(edits().length, before, '没有要补的，不改 PR 描述');
+
+  // 评了，只有小问题和原有问题：往下走，写进 PR 描述和汇总，照样自动合并。
+  f.run('overall-plan', { REVIEWER: 'true' });
+  f.run('overall-reviewed', reviewed([{ level: 'nit', title: '变量名', location: 'one:1', detail: '可以更短' }, { level: 'existing', title: '旧的重复', location: 'base:1' }]));
+  assert.equal(readFileSync(report(1), 'utf8'), '评审原文');
+  const tail = '整体评审的小问题（没有修）：\n- 变量名（one:1）\n  可以更短\n\n整体评审提到的原有问题（不是这个需求引入的）：\n- 旧的重复（base:1）';
+  assert.deepEqual(overall(), { route: 'accept', summary: `${pr.summary}\n\n${tail}`, auto: 'true', note: '，整条需求分支已整体评审',
+    review: `评审通过\n必须修 0 条。\n小问题 1 条，原有问题 1 条。\n评审原文：${report(1)}` });
+  assert.deepEqual([edits().at(-1).args.slice(0, 3), edits().at(-1).body], [['pr', 'edit', PR], `${pr.summary}\n\n${tail}`]);
+
+  // 再评一次，有必须修：交主 Agent，卡上必须修每条一句加位置，小问题、原有问题只给条数；自动合并关掉。
+  pr = submitTo(f, { again: true });
+  f.run('overall-plan', { REVIEWER: 'true' });
+  f.run('overall-reviewed', reviewed([{ level: 'must', title: '登录后停在空白页', location: 'app.mjs:3', detail: '跳转写错' }, { level: 'must', title: '第二套缓存', location: 'cache.mjs:1' },
+    { level: 'nit', title: '变量名', location: 'one:1' }]));
+  const must = overall();
+  assert.deepEqual([must.route, must.auto], ['review', 'false']);
+  assert.equal(must.review, `评审要求修改\n必须修 2 条：\n- 登录后停在空白页（app.mjs:3）\n- 第二套缓存（cache.mjs:1）\n小问题 1 条，原有问题 0 条。\n评审原文：${report(2)}`);
+  // 派块修好、再提交验收：不再评，往下走；这次运行出过必须修，照常出批准卡。小问题是在旧 head 上评的，写明。
+  const old = f.state().head;
+  f.land('three', 'fix', '修登录\n\nCoda-Piece: piece-3');
+  pr = submitTo(f);
+  assert.equal(f.run('overall-plan', { REVIEWER: 'true' }).outputs.review, 'false');
+  const after = overall();
+  assert.deepEqual([after.route, after.auto, after.review, after.note], ['accept', 'false', '', `，整条需求分支在 ${old.slice(0, 12)} 时整体评审过`]);
+  assert.ok(after.summary.endsWith(`整体评审的小问题（没有修，评审时需求分支 head ${old.slice(0, 12)}）：\n- 变量名（one:1）`), after.summary);
+
+  // 没评成：调用没成、没评完都交主 Agent，写明原因。
+  pr = submitTo(f, { again: true });
+  f.run('overall-plan', { REVIEWER: 'true' });
+  f.run('overall-lost');
+  const lost = overall();
+  assert.deepEqual([lost.route, lost.review], ['review', '没评成：调用 review-commit 没有成功，原因见本运行 coda://workflow-runs/run-1 的「评审整条需求分支」（workflow_status）。']);
+  pr = submitTo(f, { again: true });
+  f.run('overall-plan', { REVIEWER: 'true' });
+  f.run('overall-reviewed', reviewed([], { DECISION: 'INCOMPLETE', LINE: '评审没有完成：评审方没有按格式给出结论', FINDINGS: '[]', REPORT: '' }));
+  assert.deepEqual([overall().route, overall().review], ['review', '没评成：评审没有完成：评审方没有按格式给出结论']);
 });
 
 test('PR 汇总按 .coda/areas.json 最长前缀归区域，未声明走顶层目录，改名按新路径，二进制只计文件', t => {
@@ -508,11 +606,11 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   assert.equal(process.name, '监督开发'); assert.equal(process.kind, undefined); assert.equal(process.concurrency, undefined);
   assert.deepEqual(values(process).filter(v => v.$type === 'coda:Join').map(j => j.hook), ['develop'], '开发流程：加入挂点 develop');
   const inputs = Object.fromEntries(values(process).filter(v => v.$type === 'coda:Input').map(v => [v.name, v]));
-  assert.deepEqual(Object.keys(inputs), ['title', 'devices', 'device', 'hold', 'delivery', 'executor', 'executor2', 'reviewer', 'reviewer2', 'reviewer3', 'autoMerge', 'autoLandMinor', 'base']);
+  assert.deepEqual(Object.keys(inputs), ['title', 'devices', 'device', 'hold', 'delivery', 'executor', 'executor2', 'reviewer', 'overallReviewer', 'autoMerge', 'base']);
   assert.deepEqual(Object.values(inputs).filter(v => v.required), [], '用户在会话里开启时什么都不必填');
   for (const name of ['title', 'device', 'delivery', 'base']) assert.equal(inputs[name].default, '', name);
-  for (const name of ['devices', 'autoMerge', 'autoLandMinor']) assert.deepEqual([inputs[name].type, inputs[name].default], ['boolean', 'false'], name);
-  for (const name of ['executor', 'executor2', 'reviewer', 'reviewer2', 'reviewer3']) assert.deepEqual([inputs[name].type, inputs[name].default, inputs[name].defaultFrom], ['agent', undefined, undefined], name);
+  for (const name of ['devices', 'autoMerge']) assert.deepEqual([inputs[name].type, inputs[name].default], ['boolean', 'false'], name);
+  for (const name of ['executor', 'executor2', 'reviewer', 'overallReviewer']) assert.deepEqual([inputs[name].type, inputs[name].default, inputs[name].defaultFrom], ['agent', undefined, undefined], name);
   assert.equal(nodes.start.eventDefinitions, undefined, '不订阅 PR 事件');
   assert.ok(manifest.files.includes('.coda/workflows')); assert.ok(manifest.files.includes('scripts'));
   for (const [title, expected] of [['', '监督开发'], ['输入框', '需求：输入框']]) assert.equal(evaluate(process.title.slice(2, -2), { inputs: { title } }).value, expected);
@@ -541,31 +639,38 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   assert.equal(nodes.progress.assignee, undefined);
   assert.deepEqual(values(nodes.progress).map(v => [v.id, v.name, v.note]), [['submit', '提交验收', 'required'], ['piece', '派一块', 'required'], ['sync', '跟上目标分支', undefined], ['pause', '暂停', 'required'], ['abandon', '放弃', undefined]]);
   for (const [value, target] of [['progress', 'progress'], ['piece', 'piece'], ['pause', 'paused'], ['abandon', 'abandoned-flows'], ['submit', 'sync']]) assert.equal(route('after-progress', { 'progress-result': { route: value } }), target);
+  // 「提交验收」带勾选项「重新整体评审」：默认不勾，只在填了整体评审者时给出。
+  assert.deepEqual(values(nodes.progress)[0].options.map(o => [o.id, o.name, o.default, o.shown]), [['again', '重新整体评审', 'false', '=inputs.overallReviewer != null']]);
   const doc = nodes.progress.documentation[0].text;
   for (const text of ['「派一块」：备注第一行是这一块的标题', '其后是自足的任务书（背景、范围、验收要求）', '块里的任务交到这个会话', '写着合入的提交和块的运行', '块失败或你在块里选了放弃，也带着原因回到这里',
-    '「跟上目标分支」', '以合并提交快进进需求分支', '写了附在固定任务后面', '一次只派一块：派出后等它结束才回到这里', '第三整体评审者只评整条需求分支', '在备注最前面', '有执行者名单就从名单选',
-    '「模型 …」「强度 …」「模式 …」', '写「无」表示这一块不用', '写法看不懂', 'mac-preview-install', '加入挂点 premerge 的流程', '{{req.branch}}', '{{req.goal}}']) assert.ok(doc.includes(text), text);
+    '「跟上目标分支」', '以合并提交快进进需求分支', '写了附在固定任务后面', '一次只派一块：派出后等它结束才回到这里', '在备注最前面', '有执行者名单就从名单选',
+    '「模型 …」「强度 …」「模式 …」', '写「无」表示这一块不用', '写法看不懂', 'mac-preview-install', '加入挂点 premerge 的流程', '{{req.branch}}', '{{req.goal}}',
+    '取舍标准：只有必须修才派块修；评审者说成立不等于现在要修。', '测试是红的或会偶发失败', '会扩散、越晚越难改的结构问题（跨模块或会被照着写', '修复块只修那一条，不顺手带小问题，不加设计改动，不把以后的需求提前做进来。']) assert.ok(doc.includes(text), text);
   assert.doesNotMatch(doc, /workflow_run 发起一个块|值是 JSON|可以同时发起|sync=true/, '不再让主 Agent 自己发起块、抄开工 JSON');
   // 开工人选照引擎渲染成备注的写法，没填的写「没填」。
   const render = (text, context) => text.replace(/{{([\s\S]*?)}}/g, (_, e) => { const v = evaluate(e, context).value; return v === null || v === undefined ? '' : String(v); });
   const line = (text, head) => text.split('\n').find(l => l.startsWith(head));
   const chosen = { agent: 'codex', model: 'gpt-6.1-sol', effort: 'ultra', options: { 'service-tier': 'priority' } }, backup = { agent: 'claude-sdk', mode: 'plan' };
-  const people = { reviewer: null, reviewer2: { agent: 'kimi' }, reviewer3: null, delivery: '', devices: false };
+  const people = { reviewer: { agent: 'kimi' }, overallReviewer: { agent: 'grok' }, delivery: '', devices: false };
   const filled = render(doc, { inputs: { ...people, executor: chosen, executor2: backup }, run: { id: 'run-1' }, req: {}, resume: { reason: '' } });
   assert.equal(line(filled, '- 执行者：'), '- 执行者：codex，模型 gpt-6.1-sol，强度 ultra');
   assert.equal(line(filled, '- 备用执行者：'), '- 备用执行者：claude-sdk，模式 plan');
-  assert.equal(line(filled, '- 评审者：'), '- 评审者：没填');
-  assert.equal(line(filled, '- 第二评审者：'), '- 第二评审者：kimi');
-  const empty = render(doc, { inputs: { ...people, executor: null, executor2: null }, run: { id: 'run-1' }, req: {}, resume: { reason: '' } });
+  assert.equal(line(filled, '- 评审者：'), '- 评审者：kimi');
+  const section = filled.slice(filled.indexOf('块的人选默认用开工时填的：'), filled.indexOf('难的或性质不同的块要换人'));
+  assert.deepEqual(section.split('\n').slice(1).filter(Boolean).map(l => l.split('：')[0]), ['- 执行者', '- 备用执行者', '- 评审者'], '人选只列这三行，整体评审者不在其中');
+  const empty = render(doc, { inputs: { ...people, executor: null, executor2: null, reviewer: null }, run: { id: 'run-1' }, req: {}, resume: { reason: '' } });
   assert.equal(line(empty, '- 执行者：'), '- 执行者：没填');
+  assert.equal(line(empty, '- 评审者：'), '- 评审者：没填');
 
   // 派块：callActivity 调 piece（本运行的子运行），需求分支与目标分支来自建需求分支，标题、任务、是否跟上目标分支来自答复；
   // 合进了记下提交与块的运行，出错边界（含主 Agent 在块里放弃）带着原因，都回到进行中。
   assert.equal(nodes.piece.$type, 'bpmn:CallActivity');
   assert.equal(nodes.piece.calledElement, 'piece');
   const call = params('piece');
-  assert.deepEqual(Object.keys(call), ['branch', 'base', 'title', 'task', 'sync', 'executor', 'executor2', 'reviewer', 'reviewer2', 'autoLandMinor'], '参数正是块的输入');
-  assert.equal(call.autoLandMinor, '=inputs.autoLandMinor', '小改动免主控审查原样传给每一块');
+  assert.deepEqual(Object.keys(call), ['branch', 'base', 'title', 'task', 'sync', 'executor', 'executor2', 'reviewer'], '参数正是块的输入，不再传已删的 reviewer2、autoLandMinor');
+  const { root: pieceRoot } = await readWorkflow(readFileSync(new URL('../../../plugins/composer/.coda/workflows/piece.bpmn', import.meta.url), 'utf8'), 'piece');
+  const pieceProcess = pieceRoot.rootElements.find(e => e.$type === 'bpmn:Process');
+  assert.deepEqual(Object.keys(call), pieceProcess.extensionElements.values.filter(v => v.$type === 'coda:Input').map(v => v.name), '与块声明的输入一一对应');
   assert.deepEqual([call.branch, call.base, call.title, call.task, call.sync], ['=req.branch', '=req.base', '=progress-result.title', '=progress-result.task', '=progress-result.sync']);
   assert.equal(nodes['piece-failed'].attachedToRef.id, 'piece');
   assert.equal(nodes['piece-failed'].eventDefinitions[0].$type, 'bpmn:ErrorEventDefinition');
@@ -573,29 +678,23 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   assert.equal(next('piece-lost'), 'resume', '块失败回到进行中，需求运行不失败');
   assert.equal(next('piece'), 'piece-landed');
   assert.equal(next('piece-landed'), 'resume');
-  assert.deepEqual(params('piece-landed'), { TITLE: '=progress-result.title', COMMIT: '=piece.commit', PIECE_RUN: '=piece.run', AUTO: '=piece.autoLanded', SUMMARY: '=piece.summary' });
+  assert.deepEqual(params('piece-landed'), { TITLE: '=progress-result.title', COMMIT: '=piece.commit', PIECE_RUN: '=piece.run', REVIEWED: '=piece.reviewed' });
   assert.deepEqual(params('progress-result').FIXER, '=inputs.executor != null');
-  // 只填了第三整体评审者也算要整体评审：进行中的说明与批准卡都这样写。
-  const reviewed = (text, needle) => [...text.matchAll(/{{(.*?)}}/gs)].find(m => m[1].includes('inputs.reviewer3') && m[1].includes(needle))[1];
-  const nobody = { reviewer: null, reviewer2: null, reviewer3: null };
-  for (const [text, needle, said] of [[doc, '整体评审一次', '整体评审一次（只有测试、文档、风格类的小问题时先交开工执行者就地修、原评审者复评），'], [nodes.approve.documentation[0].text, '整条需求分支已整体评审', '，整条需求分支已整体评审']]) {
-    assert.equal(evaluate(reviewed(text, needle), { inputs: nobody }).value, '');
-    assert.equal(evaluate(reviewed(text, needle), { inputs: { ...nobody, reviewer3: { agent: 'c' } } }).value, said);
-  }
+  // 填了整体评审者，提交验收的说明里写怎么评；批准卡写评没评过的是「整理整体评审」的 note。
+  const overallSaid = [...doc.matchAll(/{{(.*?)}}/gs)].find(m => m[1].includes('inputs.overallReviewer'))[1];
+  assert.equal(evaluate(overallSaid, { inputs: { overallReviewer: null } }).value, '');
+  assert.equal(evaluate(overallSaid, { inputs: { overallReviewer: { agent: 'c' } } }).value, '这次运行还没整体评审过时由整体评审者评一次整条需求分支（只合进了一块且它评成过时跳过；勾「重新整体评审」就当没评过），有必须修或没评成时交你看结论，');
   const reasonLine = [...doc.matchAll(/{{(.*?)}}/gs)].find(m => m[1].includes('resume.reason'))[1];
   assert.equal(evaluate(reasonLine, { resume: { reason: '' } }).value, '');
   assert.equal(evaluate(reasonLine, { resume: { reason: '合并前检查未通过' } }).value, '回到进行中的原因：\n合并前检查未通过\n');
   // 收尾按是否归属需求交付分段写：成员运行没有用户的批准卡和「暂不合并」。
   const ending = [...doc.matchAll(/{{(.*?)}}/gs)].find(m => m[1].includes('inputs.delivery'))[1];
   const own = evaluate(ending, { inputs: { delivery: '', devices: true } }).value, member = evaluate(ending, { inputs: { delivery: 'deliver-1', devices: true } }).value;
-  assert.equal(own, '再交用户设备验收，最后由用户批准合并（合并提交）。任何失败和用户的「暂不合并」都带着原因回到这里。');
-  assert.equal(evaluate(ending, { inputs: { delivery: '', devices: false } }).value, '最后由用户批准合并（合并提交）。任何失败和用户的「暂不合并」都带着原因回到这里。');
-  for (const reviewer of [{ agent: 'a' }, null]) {
-    const said = evaluate(ending, { inputs: { delivery: '', devices: false, autoMerge: true, reviewer, reviewer2: null, reviewer3: null } }).value;
-    assert.equal(said, reviewer ? '整体评审直接通过、没有任何未关闭的发现（含 P3）时跳过批准卡直接合并，否则最后由用户批准合并（合并提交）。任何失败和用户的「暂不合并」都带着原因回到这里。'
-      : '最后由用户批准合并（合并提交）。任何失败和用户的「暂不合并」都带着原因回到这里。', '没填整体评审者照常批准');
-  }
-  assert.equal(member, '之后进入「待交付」，由需求交付运行 deliver-1 统一验收、批准，没有用户的「暂不合并」。任何失败和待交付的「退回修改」都带着原因回到这里。');
+  assert.equal(own, '再交用户设备验收，然后跑合并前检查与 GitHub 检查，通过后由用户批准合并（合并提交）。任何失败和用户的「暂不合并」都带着原因回到这里。');
+  assert.equal(evaluate(ending, { inputs: { delivery: '', devices: false } }).value, '然后跑合并前检查与 GitHub 检查，通过后由用户批准合并（合并提交）。任何失败和用户的「暂不合并」都带着原因回到这里。');
+  assert.equal(evaluate(ending, { inputs: { delivery: '', devices: false, autoMerge: true } }).value,
+    '然后跑合并前检查与 GitHub 检查，通过后直接合并（合并提交；这次运行一次都没评成过、或整体评审出过必须修时照常由用户批准）。任何失败和用户的「暂不合并」都带着原因回到这里。', '自动合并不看填没填整体评审者');
+  assert.equal(member, '然后跑合并前检查与 GitHub 检查，通过后进入「待交付」，由需求交付运行 deliver-1 统一验收、批准，没有用户的「暂不合并」。任何失败和待交付的「退回修改」都带着原因回到这里。');
   assert.equal(nodes.paused.assignee, 'user');
   assert.deepEqual(values(nodes.paused).map(v => [v.id, v.name]), [['continue', '继续'], ['abandon', '放弃']]);
   assert.match(nodes.paused.documentation[0].text, /\{\{progress\.note\}\}/);
@@ -612,7 +711,7 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   // 函数名写错 workflow_check 也能过，所以实际求值一次：得到 {run, branch}。
   assert.deepEqual(evaluate(params('abandoned-flows').inputs.slice(1), { run: { id: 'run-1' }, req: { branch: 'req/abc' } }).value, { run: 'run-1', branch: 'req/abc' });
 
-  // 收尾：PR → 项目检查（复用）→ 合并前检查 → GitHub 检查 → 整体评审 → 设备验收 → 待交付或批准。
+  // 收尾：PR → 项目检查（复用）→ 整体评审 → 设备验收 → 合并前检查 → GitHub 检查 → 待交付、批准或自动合并（顺序见「提交验收的顺序」那个用例）。
   assert.equal(next('pr'), 'pr-fork');
   // 需求分支 head 在检查的同时预编：只在随后会进设备验收时，不挡检查，失败也不算数。
   assert.deepEqual(elements.filter(e => e.sourceRef === nodes['pr-fork']).map(e => e.targetRef.id), ['reuse-checks', 'prebuild-choice']);
@@ -623,53 +722,44 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   for (const id of ['prebuild-done', 'prebuild-failed-done', 'prebuild-skip']) assert.equal(nodes[id].targetRef.id, 'prebuilt');
   assert.deepEqual(params('checks'), { hook: 'check', commit: '=pr.head' });
   assert.equal(next('checks'), 'checks-passed');
-  assert.equal(next('checks-passed'), 'premerge');
+  assert.equal(next('checks-passed'), 'overall-plan');
   assert.deepEqual(params('premerge'), { hook: 'premerge', commit: '=pr.head' });
   assert.equal(next('premerge'), 'github-checks');
-  assert.equal(next('github-checks'), 'reviews-choice');
+  assert.equal(next('github-checks'), 'delivery-choice');
   for (const [boundary, task, step] of [['checks-failed', 'checks-feedback', '项目检查'], ['premerge-failed', 'premerge-feedback', '合并前检查'], ['github-checks-failed', 'github-feedback', 'GitHub 检查']]) {
     assert.equal(nodes[boundary].eventDefinitions[0].$type, 'bpmn:ErrorEventDefinition');
     assert.equal(next(boundary), task);
     assert.deepEqual(params(task), { STEP: step });
     assert.equal(next(task), 'resume', `${step}失败回到进行中`);
   }
-  // 整体评审：填了才评，对整条需求分支评一次；发现交主 Agent。
-  for (const [reviewer, reviewer2, reviewer3, target] of [[null, null, null, 'acceptance-choice'], [{ agent: 'a' }, null, null, 'overall-round'], [null, { agent: 'b' }, null, 'overall-round'], [null, null, { agent: 'c' }, 'overall-round']]) {
-    assert.equal(route('reviews-choice', { inputs: { reviewer, reviewer2, reviewer3 } }), target);
-  }
-  assert.equal(nodes.reviews.optional, true);
-  assert.equal(nodes['review-call'].calledElement, 'review-commit');
-  assert.equal(next('overall-round'), 'reviews');
-  assert.deepEqual(params('review-call'), { base: '=overall-round.base', head: '=pr.head', task: '=pr.task', reviewer: '=slot.who', evidence: '=github-checks.evidence', previous: '=slot.previous' });
-  const slots = evaluate(nodes.reviews.loopCharacteristics.inputCollection.slice(1), { inputs: { reviewer: { agent: 'a' }, reviewer2: null, reviewer3: { agent: 'c' } }, 'overall-round': { previous: 'p1', previous2: '', previous3: 'p3' } }).value;
-  assert.deepEqual(slots, [{ slot: 'reviewer', who: { agent: 'a' }, previous: 'p1' }, { slot: 'reviewer2', who: null, previous: '' }, { slot: 'reviewer3', who: { agent: 'c' }, previous: 'p3' }]);
-  assert.equal(nodes['review-failed'].attachedToRef.id, 'review-call');
-  assert.equal(next('reviews'), 'overall-triage');
-  assert.equal(next('overall-rounds'), 'reviewed');
-  assert.equal(params('reviewed').REVIEWS, '=reviews');
+  // 整体评审：「定整体评审」说评才调一次 review-commit（一位整体评审者，评整条需求分支，不增量复评）；评不评、评没评成都经过「整理整体评审」。
+  assert.deepEqual(params('overall-plan'), { REVIEWER: '=inputs.overallReviewer != null', review: undefined, evidence: undefined });
+  assert.equal(next('overall-plan'), 'overall-choice');
+  for (const [review, target] of [[true, 'overall-call'], [false, 'overall']]) assert.equal(route('overall-choice', { 'overall-plan': { review } }), target);
+  assert.equal(nodes['overall-call'].calledElement, 'review-commit');
+  assert.deepEqual(params('overall-call'), { base: '=pr.base', head: '=pr.head', task: '=pr.task', reviewer: '=inputs.overallReviewer', evidence: '=overall-plan.evidence' });
+  assert.equal(nodes['overall-failed'].attachedToRef.id, 'overall-call');
+  assert.deepEqual([next('overall-failed'), next('overall-lost'), next('overall-call'), next('overall-reviewed')], ['overall-lost', 'overall', 'overall-reviewed', 'overall']);
+  assert.deepEqual(params('overall-reviewed'), { DECISION: '=overall-call.decision', FINDINGS: '=overall-call.findings', LINE: '=overall-call.line', REPORT: '=overall-call.report' });
+  assert.deepEqual(params('overall'), { SUMMARY: '=pr.summary', AUTO: '=inputs.autoMerge', route: undefined, summary: undefined, auto: undefined, review: undefined, note: undefined });
+  for (const [value, target] of [['review', 'review'], ['accept', 'acceptance-choice']]) assert.equal(route('overall-route', { overall: { route: value } }), target);
+  for (const id of ['overall-round', 'reviews', 'overall-triage', 'overall-fix', 'overall-rounds', 'reviewed']) assert.ok(!nodes[id], `${id} 已删`);
   assert.equal(nodes.review.assignee, undefined);
   assert.deepEqual(values(nodes.review).map(v => [v.id, v.name]), [['continue', '继续验收'], ['progress', '回到进行中']]);
-  // 卡上展开的是「整理整体评审」的输出，不是多实例子流程 reviews 的结果列表。
-  const card = nodes.review.documentation[0].text, found = '评审者（a）：评审要求修改\n- [P1] 标题';
-  const shown = card.replace(/\{\{([\s\S]*?)\}\}/g, (_, expression) => evaluate(expression, {
-    req: { title: '需求', base: 'main' }, pr: { url: 'https://github.com/o/r/pull/1', head: 'h1' }, reviews: [null, null], reviewed: { reviews: found }, 'overall-rounds': { text: '' },
-  }).value ?? '');
-  assert.ok(shown.includes(`的发现：\n${found}\n`), shown);
   assert.equal(route('after-review', { 'review-result': { route: 'progress' } }), 'resume');
   assert.equal(route('after-review', { 'review-result': { route: 'continue' } }), 'acceptance-choice');
-  for (const [devices, delivery, target] of [[true, '', 'acceptance'], [false, '', 'delivery-choice'], [true, 'deliver-1', 'delivery-choice']]) {
+  for (const [devices, delivery, target] of [[true, '', 'acceptance'], [false, '', 'premerge'], [true, 'deliver-1', 'premerge']]) {
     assert.equal(route('acceptance-choice', { inputs: { devices, delivery } }), target);
   }
   assert.equal(route('acceptance-route', { acceptance: { route: 'return' } }), 'resume');
   assert.equal(route('acceptance-route', { acceptance: { route: 'passed' } }), 'tell-device');
   const tell = (field, extra = {}) => evaluate(params('tell-device')[field].slice(1), { req: { title: '输入框' }, run: { id: 'run-1' }, pr: { head: 'head-1' }, inputs: { delivery: '' }, ...extra }).value;
-  // 按之后的实际去向说：归属需求交付的进交付验收，整体评审直接通过（auto）的自动合并，其余等用户批准合并；没有整体评审者时没有 overall-triage。
-  assert.equal(tell('text'), '需求「输入框」：用户设备验收通过，接下来等用户批准合并。');
-  assert.equal(tell('text', { 'overall-triage': { auto: false } }), '需求「输入框」：用户设备验收通过，接下来等用户批准合并。');
-  assert.equal(tell('text', { 'overall-triage': { auto: true } }), '需求「输入框」：用户设备验收通过，检查和整体评审已通过，流程将自动合并。');
-  assert.equal(tell('text', { inputs: { delivery: 'deliver-1' }, 'overall-triage': { auto: true } }), '需求「输入框」：用户设备验收通过，接下来进入需求交付验收。');
+  // 按之后的实际去向说：先跑合并前检查与 GitHub 检查，之后归属需求交付的进交付验收，自动合并（overall.auto）的直接合并，其余等用户批准合并。
+  assert.equal(tell('text', { overall: { auto: false } }), '需求「输入框」：用户设备验收通过，接下来跑合并前检查与 GitHub 检查，通过后等用户批准合并。');
+  assert.equal(tell('text', { overall: { auto: true } }), '需求「输入框」：用户设备验收通过，接下来跑合并前检查与 GitHub 检查，通过后流程自动合并。');
+  assert.equal(tell('text', { inputs: { delivery: 'deliver-1' }, overall: { auto: true } }), '需求「输入框」：用户设备验收通过，接下来跑合并前检查与 GitHub 检查，通过后进入需求交付验收。');
   assert.equal(tell('key'), 'run-1:device:head-1');
-  assert.equal(next('tell-device'), 'delivery-choice');
+  assert.equal(next('tell-device'), 'premerge');
   assert.equal(route('delivery-choice', { inputs: { delivery: '' } }), 'auto-merge-choice');
   assert.equal(route('auto-merge-choice', { inputs: { delivery: '' } }), 'joiners');
   assert.equal(route('delivery-choice', { inputs: { delivery: 'deliver-1' } }), 'delivery');
@@ -683,13 +773,9 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   assert.deepEqual(values(nodes.approve).map(v => [v.id, v.note]), [['merge', undefined], ['stop', 'required']]);
   assert.deepEqual(values(nodes.approve)[0].options.map(o => [o.$type, o.value ?? o.id, o.default]), [['coda:OptionList', '=joiners.list', undefined], ['coda:Option', 'notify', 'true']]);
   const face = nodes.approve.documentation[0].text;
-  for (const text of ['{{pr.url}}', '项目检查、合并前检查、GitHub 检查已通过']) assert.ok(face.includes(text), text);
-  // 汇总：整体评审分流过就用它的（只有 P3 时带上没修的小问题），没整体评审用开 PR 时的。
-  for (const card of [face, nodes.delivery.documentation[0].text]) {
-    const summary = [...card.matchAll(/{{(.*?)}}/g)].find(m => m[1].includes('summary'))[1];
-    assert.equal(evaluate(summary, { pr: { summary: '开 PR 时' } }).value, '开 PR 时');
-    assert.equal(evaluate(summary, { pr: { summary: '开 PR 时' }, 'overall-triage': { summary: '带 P3' } }).value, '带 P3');
-  }
+  for (const text of ['{{pr.url}}', '项目检查、合并前检查、GitHub 检查已通过{{overall.note}}。']) assert.ok(face.includes(text), text);
+  // 汇总：「整理整体评审」每次都经过，用它的（评过有小问题、原有问题时带上）。
+  for (const card of [face, nodes.delivery.documentation[0].text]) assert.deepEqual([...card.matchAll(/{{(.*?)}}/g)].map(m => m[1]).filter(e => e.includes('summary')), ['overall.summary']);
   assert.doesNotMatch(face, /勾选|默认|发布说明|暂不合并|部署/);
   const envs = id => Object.fromEntries(values(nodes[id]).filter(v => v.$type === 'coda:Env').map(v => [v.name, v.value]));
   const outputs = id => values(nodes[id]).filter(v => v.$type === 'coda:Output').map(v => v.name);
@@ -823,142 +909,6 @@ test('流程推需求分支被拒（需求分支被别人推进了）：不重�
   assert.deepEqual(f2.run('sync-base', { FIXER: 'true' }, 1).outputs, {});
 });
 
-// 整体评审各份的输出（review-commit 的结果加位置、评的 head）。
-const overallReview = (slot, head, findings, extra = {}) => ({ state: 'done', slot, who: JSON.stringify({ agent: slot }), head, reviewed: head,
-  decision: findings.length ? 'COMMENT' : 'APPROVE', line: '结论', findings: JSON.stringify(findings), report: '原文', resolutions: '[]', blocking: 'P2', ...extra });
-const DOC = { severity: 'P2', kind: 'documentation', title: 'README 漏了新输入', location: 'README.md:1', detail: '补一句' };
-const NIT = { severity: 'P3', kind: 'style', title: '变量名', location: 'one:1', detail: '可以更短' };
-const responded = (text, responses) => `${text}\n\n\`\`\`responses\n${JSON.stringify({ responses })}\n\`\`\``;
-
-function submitted(t) {
-  const f = fixture(t); f.run('branch'); f.land('one', 'first'); f.progress('submit', '汇报');
-  f.run('sync-base', { FIXER: 'true' });
-  const pr = f.run('pr').outputs;
-  return { f, pr };
-}
-
-test('整体评审只有 P3：不出主 Agent 的卡，直接验收，P3 原样写进 PR 描述和批准卡用的汇总', t => {
-  const { f, pr } = submitted(t);
-  assert.deepEqual(f.run('overall-round', { BASE: pr.base }).outputs, { base: pr.base, previous: '', previous2: '', previous3: '' }, '完整评审整条需求分支');
-  const result = f.run('overall-triage', { REVIEWS: JSON.stringify([overallReview('reviewer', pr.head, [NIT]), overallReview('reviewer2', pr.head, []), { state: 'skipped' }]), SUMMARY: pr.summary, FIXER: 'false', AUTO: 'true' }).outputs;
-  assert.deepEqual([result.route, result.auto], ['accept', 'false'], '开了 autoMerge，但有没关的 P3：照常验收，不自动合并');
-  assert.equal(result.summary, `${pr.summary}\n\n整体评审的小问题（P3，没有修）：\n- reviewer:1 [P3·style] 变量名（one:1）\n  可以更短`);
-  const edit = f.calls().filter(c => c.args[1] === 'edit').at(-1);
-  assert.deepEqual([edit.args.slice(0, 3), edit.body], [['pr', 'edit', PR], result.summary]);
-  // 没有发现：汇总不变，不改 PR 描述。
-  const edits = f.calls().filter(c => c.args[1] === 'edit').length;
-  f.run('sync-base', { FIXER: 'true' }); f.run('pr');
-  assert.deepEqual(f.run('overall-triage', { REVIEWS: JSON.stringify([overallReview('reviewer', pr.head, [])]), SUMMARY: pr.summary, FIXER: 'true' }).outputs, { route: 'accept', summary: pr.summary, auto: 'false' });
-  assert.equal(f.calls().filter(c => c.args[1] === 'edit').length, edits);
-  // 自动合并只看这一个输出：开了 autoMerge 且零发现才是 true。
-  for (const AUTO of ['true', 'false', '']) {
-    f.run('sync-base', { FIXER: 'true' }); f.run('pr');
-    assert.equal(f.run('overall-triage', { REVIEWS: JSON.stringify([overallReview('reviewer', pr.head, [])]), SUMMARY: pr.summary, FIXER: 'true', AUTO }).outputs.auto, String(AUTO === 'true'), AUTO);
-  }
-});
-
-test('整体评审的 P2 小问题：开工执行者在需求分支上修，普通推送，汇总列出修复提交；新 head 增量复评，修好了直接验收', t => {
-  const { f, pr } = submitted(t);
-  f.run('overall-round', { BASE: pr.base });
-  assert.equal(f.run('overall-triage', { REVIEWS: JSON.stringify([overallReview('reviewer', pr.head, [DOC, NIT])]), SUMMARY: pr.summary, FIXER: 'true' }).outputs.route, 'fix');
-  f.task({ file: 'README.md', text: '新输入', subject: '补 README', answer: responded('补了', [{ id: 'reviewer:1', disposition: 'fixed', commit: 'c1', reason: '补了一句' }]) });
-  assert.equal(f.run('overall-fix', { EXECUTOR: JSON.stringify({ agent: 'codex' }) }).outputs.route, 'pr');
-  const call = f.agentCalls()[0], fixed = f.remote('req/run-1');
-  assert.deepEqual(call.args.slice(0, 6), ['--commit', pr.head, '--title', '输入框：整体评审修复', '--agent', 'codex']);
-  for (const part of ['不再委派', '- reviewer:1 [P2·documentation·阻塞] README 漏了新输入（README.md:1）', '三个反引号加 responses']) assert.ok(call.prompt.includes(part), part);
-  assert.ok(!call.prompt.includes('reviewer:2'), 'P3 不交执行者');
-  assert.deepEqual(parents(f, fixed), [pr.head], '普通推送，接在需求分支 head 后面');
-
-  // 回到开 PR：汇总列出直接推到需求分支的修复提交，新 head 重跑检查。
-  const again = f.run('pr').outputs;
-  assert.equal(again.head, fixed);
-  assert.equal(again.checked, 'false', '新 head 照常跑全部检查');
-  assert.ok(again.summary.includes(`流程直接推到需求分支的提交：\n- ${fixed.slice(0, 12)} 补 README（整体评审修复）`), again.summary);
-  assert.ok(f.calls().filter(c => c.args[1] === 'create' || c.args[1] === 'edit').at(-1).body.includes(`- ${fixed.slice(0, 12)} 补 README（整体评审修复）`), 'PR 描述里也有');
-
-  const round = f.run('overall-round', { BASE: again.base }).outputs;
-  assert.equal(round.base, pr.head, '增量复评：base 是上次评过的 head');
-  assert.deepEqual(JSON.parse(round.previous).map(p => [p.id, p.response?.disposition]), [['reviewer:1', 'fixed'], ['reviewer:2', undefined]]);
-  assert.deepEqual([round.previous2, round.previous3], ['[]', '[]']);
-  const resolutions = JSON.stringify([{ id: 'reviewer:1', status: 'resolved', reason: '补上了' }]);
-  const done = f.run('overall-triage', { REVIEWS: JSON.stringify([overallReview('reviewer', fixed, [], { resolutions })]), SUMMARY: again.summary, FIXER: 'true' }).outputs;
-  assert.equal(done.route, 'accept');
-  assert.ok(done.summary.includes('补 README（整体评审修复）') && done.summary.includes('- reviewer:2 [P3·style] 变量名'), '批准卡的汇总：修复提交和没修的 P3');
-});
-
-test('整体评审的回路：只反驳不重跑检查直接复评，坚持就交主 Agent，卡上附收敛经过；两轮上限；没填执行者、推送被拒', t => {
-  const { f, pr } = submitted(t);
-  f.run('overall-round', { BASE: pr.base });
-  f.run('overall-triage', { REVIEWS: JSON.stringify([overallReview('reviewer', pr.head, [DOC])]), SUMMARY: pr.summary, FIXER: 'true' });
-  f.task({ noCommit: true, answer: responded('不成立', [{ id: 'reviewer:1', disposition: 'disputed', reason: 'README 已经写了', evidence: 'README.md:9' }]) });
-  assert.equal(f.run('overall-fix', { EXECUTOR: JSON.stringify({ agent: 'codex' }) }).outputs.route, 'again');
-  const round = f.run('overall-round', { BASE: pr.base }).outputs;
-  assert.equal(round.base, pr.head, '没有新提交：base 与 head 相同');
-  const upheld = JSON.stringify([{ id: 'reviewer:1', status: 'upheld', reason: '没写' }]);
-  assert.equal(f.run('overall-triage', { REVIEWS: JSON.stringify([overallReview('reviewer', pr.head, [], { resolutions: upheld })]), SUMMARY: pr.summary, FIXER: 'true' }).outputs.route, 'escalate');
-  const text = f.run('overall-rounds').outputs.text;
-  for (const part of [`评审（head ${pr.head.slice(0, 12)}）：`, '- reviewer:1 [P2·documentation·阻塞] README 漏了新输入', '交执行者修第 1 轮', '- reviewer:1：disputed：README 已经写了；证据：README.md:9',
-    '- reviewer:1 → upheld：没写', '结论：升级给主 Agent：reviewer:1：执行者反驳了，评审者仍坚持', `全文：${join(f.env.CODA_ARTIFACTS, 'converge.md')}`]) assert.ok(text.includes(part), part);
-  assert.equal(f.state().converge.waiting, false);
-
-  // 重新提交验收：收敛从头开始；修两轮仍有 P2 就交主 Agent，第二轮续同一个执行会话。
-  f.progress('submit', '汇报'); f.run('sync-base', { FIXER: 'true' });
-  let head = f.run('pr').outputs.head;
-  f.run('overall-round', { BASE: pr.base });
-  f.run('overall-triage', { REVIEWS: JSON.stringify([overallReview('reviewer', head, [DOC])]), SUMMARY: '', FIXER: 'true' });
-  const kept = JSON.stringify([{ id: 'reviewer:1', status: 'upheld', reason: '还不全' }]);
-  for (const round of [1, 2]) {
-    f.task({ file: 'README.md', text: `第 ${round} 次`, answer: responded('改了', [{ id: 'reviewer:1', disposition: 'fixed' }]) });
-    assert.equal(f.run('overall-fix', { EXECUTOR: JSON.stringify({ agent: 'codex' }) }).outputs.route, 'pr');
-    head = f.run('pr').outputs.head;
-    f.run('overall-round', { BASE: pr.base });
-    const route = f.run('overall-triage', { REVIEWS: JSON.stringify([overallReview('reviewer', head, [], { resolutions: kept })]), SUMMARY: '', FIXER: 'true' }).outputs.route;
-    assert.equal(route, round === 1 ? 'fix' : 'escalate', `第 ${round} 轮之后`);
-  }
-  assert.deepEqual(f.agentCalls().slice(-2).map(c => c.args[0]), ['--commit', '--continue'], '第二轮续同一会话');
-  assert.match(f.run('overall-rounds').outputs.text, /自动修了 2 轮仍有 P2 发现/);
-
-  // 没填开工执行者：P2 小问题也交主 Agent。
-  f.progress('submit', '汇报'); f.run('sync-base', { FIXER: 'false' }); head = f.run('pr').outputs.head;
-  f.run('overall-round', { BASE: pr.base });
-  assert.equal(f.run('overall-triage', { REVIEWS: JSON.stringify([overallReview('reviewer', head, [DOC])]), SUMMARY: '', FIXER: 'false' }).outputs.route, 'escalate');
-
-  // 修复推送被拒：别人推进了需求分支，不覆盖，回到进行中。
-  f.progress('submit', '汇报'); f.run('sync-base', { FIXER: 'true' }); head = f.run('pr').outputs.head;
-  f.run('overall-round', { BASE: pr.base });
-  f.run('overall-triage', { REVIEWS: JSON.stringify([overallReview('reviewer', head, [DOC])]), SUMMARY: '', FIXER: 'true' });
-  f.git('switch', '-q', '--detach', head); writeFileSync(join(f.work, 'other'), 'other'); f.git('add', 'other'); f.git('commit', '-qm', 'other');
-  const other = f.git('rev-parse', 'HEAD');
-  f.task({ advance: other, file: 'README.md', text: '再改', answer: '改了' });
-  assert.equal(f.run('overall-fix', { EXECUTOR: JSON.stringify({ agent: 'codex' }) }).outputs.route, 'progress');
-  assert.equal(f.remote('req/run-1'), other);
-  assert.match(f.reason(), /被拒/);
-});
-
-test('新流程定义：提交验收先跟上目标分支，再开 PR；整体评审之后分流，就地修回到开 PR 重跑全部检查，卡与答复不变', async () => {
-  const { nodes, params, route, next, values } = await definition();
-  assert.equal(route('after-progress', { 'progress-result': { route: 'submit' } }), 'sync');
-  assert.deepEqual(params('sync'), { FIXER: '=inputs.executor != null', route: undefined });
-  for (const [value, target] of [['pr', 'pr'], ['resolve', 'sync-resolve'], ['progress', 'resume']]) assert.equal(route('after-sync', { sync: { route: value } }), target, value);
-  assert.deepEqual(params('sync-resolve'), { EXECUTOR: '=inputs.executor', route: undefined });
-  for (const [value, target] of [['pr', 'pr'], ['progress', 'resume']]) assert.equal(route('after-sync-resolve', { 'sync-resolve': { route: value } }), target, value);
-  for (const id of ['sync-resolve', 'overall-fix']) assert.equal(nodes[id].checkout, undefined, `${id} 在步骤工作区里推送`);
-  assert.equal(nodes.sync.checkout, undefined, '在步骤工作区里试合并、做合并提交');
-  assert.equal(next('pr'), 'pr-fork', '同步之后照常开 PR、跑全部检查');
-  assert.deepEqual(params('overall-round'), { BASE: '=pr.base', base: undefined, previous: undefined, previous2: undefined, previous3: undefined });
-  assert.deepEqual(Object.fromEntries(values(nodes['review-done']).map(v => [v.name, v.value])), {
-    state: 'done', slot: '=slot.slot', who: '=slot.who', head: '=pr.head', decision: '=review-call.decision', line: '=review-call.line',
-    findings: '=review-call.findings', report: '=review-call.report', reviewed: '=review-call.head', resolutions: '=review-call.resolutions', blocking: '=review-call.blocking' });
-  assert.deepEqual(params('overall-triage'), { REVIEWS: '=reviews', SUMMARY: '=pr.summary', FIXER: '=inputs.executor != null', AUTO: '=inputs.autoMerge', route: undefined, summary: undefined, auto: undefined });
-  for (const [value, target] of [['accept', 'acceptance-choice'], ['fix', 'overall-fix'], ['escalate', 'overall-rounds']]) assert.equal(route('overall-triage-route', { 'overall-triage': { route: value } }), target, value);
-  for (const [value, target] of [['pr', 'pr'], ['again', 'overall-round'], ['progress', 'resume'], ['review', 'overall-rounds']]) assert.equal(route('overall-fix-route', { 'overall-fix': { route: value } }), target, value);
-  assert.equal(next('overall-rounds'), 'reviewed');
-  assert.equal(next('reviewed'), 'review');
-  const card = nodes.review.documentation[0].text, expression = [...card.matchAll(/{{(.*?)}}/g)].find(m => m[1].includes('overall-rounds.text'))[1];
-  assert.equal(evaluate(expression, { 'overall-rounds': { text: '' } }).value, '');
-  assert.match(evaluate(expression, { 'overall-rounds': { text: '经过' } }).value, /^\n收敛经过（.*）：\n经过\n$/);
-});
-
 test('执行者合并目标分支失败：会话记进运行状态，再跑接回它、先核对现场；接不回（没有会话 ID）才从需求分支 head 新开一次', t => {
   const f = fixture(t); f.run('branch'); f.progress('submit', '汇报');
   const head = f.land('shared', 'branch side'), base = f.advanceMain('shared', 'main side'), executor = { EXECUTOR: JSON.stringify({ agent: 'codex' }) };
@@ -989,52 +939,6 @@ test('执行者合并目标分支失败：会话记进运行状态，再跑接�
   assert.deepEqual(parents(f2, f2.remote('req/run-1')), [head2, base2]);
 });
 
-test('整体评审修复失败：会话与「这一轮没做完」记进运行状态，再跑接回它、先核对现场；新一轮照常续会话；第一轮之后接不回不新开', t => {
-  const { f, pr } = submitted(t), executor = { EXECUTOR: JSON.stringify({ agent: 'codex' }) }, converge = () => f.state().converge;
-  f.run('overall-round', { BASE: pr.base });
-  f.run('overall-triage', { REVIEWS: JSON.stringify([overallReview('reviewer', pr.head, [DOC])]), SUMMARY: pr.summary, FIXER: 'true' });
-  f.task({ file: 'README.md', text: '补到一半', subject: '补 README', answer: '中断', exit: 1 });
-  f.run('overall-fix', executor, 1);
-  assert.deepEqual([converge().session, converge().fixing, converge().rounds], ['worker-1', true, 0]);
-  assert.equal(f.remote('req/run-1'), pr.head, '失败不推送');
-  f.task({ noCommit: true, answer: responded('补了', [{ id: 'reviewer:1', disposition: 'fixed' }]) });
-  assert.equal(f.run('overall-fix', executor).outputs.route, 'pr');
-  const resumed = f.agentCalls()[1];
-  assert.deepEqual(resumed.args.slice(0, 2), ['--continue', 'worker-1']);
-  for (const part of ['不再委派', '上一次没有正常结束', 'git status', '原任务：', '- reviewer:1 [P2·documentation·阻塞] README 漏了新输入']) assert.ok(resumed.prompt.includes(part), part);
-  const fixed = f.remote('req/run-1');
-  assert.deepEqual(parents(f, fixed), [pr.head], '上次做好的提交推到需求分支');
-  assert.deepEqual([converge().session, converge().fixing, converge().rounds], ['worker-1', undefined, 1]);
-
-  // 第二轮：续同一会话、不带核对现场；接不回（没有会话 ID）就按失败退出，不新开会话；再跑才是续这一轮。
-  const head = f.run('pr').outputs.head;
-  f.run('overall-round', { BASE: pr.base });
-  const kept = JSON.stringify([{ id: 'reviewer:1', status: 'upheld', reason: '还不全' }]);
-  assert.equal(f.run('overall-triage', { REVIEWS: JSON.stringify([overallReview('reviewer', head, [], { resolutions: kept })]), SUMMARY: '', FIXER: 'true' }).outputs.route, 'fix');
-  f.task({ lost: true });
-  f.run('overall-fix', executor, 1);
-  assert.equal(f.agentCalls().length, 3, '没有新开会话');
-  assert.deepEqual(f.agentCalls()[2].args.slice(0, 2), ['--continue', 'worker-1']);
-  assert.ok(!f.agentCalls()[2].prompt.includes('上一次没有正常结束'), '新一轮不是续跑');
-  assert.deepEqual([converge().session, converge().fixing, converge().rounds], ['worker-1', true, 1]);
-  f.task({ file: 'README.md', text: '补全', answer: responded('补全了', [{ id: 'reviewer:1', disposition: 'fixed' }]) });
-  assert.equal(f.run('overall-fix', executor).outputs.route, 'pr');
-  assert.ok(f.agentCalls()[3].prompt.includes('上一次没有正常结束'), '续这一轮');
-  assert.equal(converge().rounds, 2);
-
-  // 第一轮接不回：从需求分支 head 新开一次。
-  const { f: f2, pr: pr2 } = submitted(t);
-  f2.run('overall-round', { BASE: pr2.base });
-  f2.run('overall-triage', { REVIEWS: JSON.stringify([overallReview('reviewer', pr2.head, [DOC])]), SUMMARY: pr2.summary, FIXER: 'true' });
-  f2.task({ file: 'README.md', text: '补到一半', answer: '中断', exit: 1 });
-  f2.run('overall-fix', executor, 1);
-  f2.task({ lost: true, file: 'README.md', text: '补了', answer: responded('补了', [{ id: 'reviewer:1', disposition: 'fixed' }]) });
-  assert.equal(f2.run('overall-fix', executor).outputs.route, 'pr');
-  assert.deepEqual(f2.agentCalls().map(c => c.args[0]), ['--commit', '--continue', '--commit']);
-  assert.deepEqual(f2.agentCalls()[2].args.slice(0, 2), ['--commit', pr2.head]);
-  assert.deepEqual([f2.state().converge.session, f2.state().converge.rounds], ['worker-3', 1]);
-});
-
 test('执行者做完、推需求分支因网络失败退出：会话 ID 已落盘，再跑接回同一会话推送，不另开', t => {
   const executor = { EXECUTOR: JSON.stringify({ agent: 'codex' }) };
   // 服务端拒收、需求分支没动：推送失败保留退出码（同网络失败），去掉钩子后再跑。
@@ -1054,69 +958,111 @@ test('执行者做完、推需求分支因网络失败退出：会话 ID 已落�
   assert.deepEqual(f.agentCalls().map(c => c.args.slice(0, 2)), [['--commit', head], ['--continue', 'worker-1']]);
   assert.deepEqual(parents(f, f.remote('req/run-1')), [head, base]);
   assert.equal(f.state().sync.session, undefined, '推送成功后清掉');
-
-  const { f: f2, pr } = submitted(t);
-  f2.run('overall-round', { BASE: pr.base });
-  f2.run('overall-triage', { REVIEWS: JSON.stringify([overallReview('reviewer', pr.head, [DOC])]), SUMMARY: pr.summary, FIXER: 'true' });
-  unblock = block(f2);
-  f2.task({ file: 'README.md', text: '补了', answer: responded('补了', [{ id: 'reviewer:1', disposition: 'fixed' }]) });
-  f2.run('overall-fix', executor, 1);
-  assert.deepEqual([f2.state().converge.session, f2.state().converge.fixing, f2.state().converge.rounds], ['worker-1', true, 0], '推送前已记下会话，这一轮还没做完');
-  assert.equal(f2.remote('req/run-1'), pr.head);
-  unblock();
-  f2.task({ noCommit: true, answer: responded('已经补了', [{ id: 'reviewer:1', disposition: 'fixed' }]) });
-  assert.equal(f2.run('overall-fix', executor).outputs.route, 'pr');
-  assert.deepEqual(f2.agentCalls().map(c => c.args.slice(0, 2)), [['--commit', pr.head], ['--continue', 'worker-1']]);
-  assert.deepEqual(parents(f2, f2.remote('req/run-1')), [pr.head]);
-  for (const part of ['上一次没有正常结束', 'git status', '原任务：']) assert.ok(f2.agentCalls()[1].prompt.includes(part), part);
-  assert.deepEqual([f2.state().converge.fixing, f2.state().converge.rounds], [undefined, 1], '推送成功、本轮记下后才清');
 });
 
-test('自动合并：开了 autoMerge、填了整体评审者、这次整体评审直接通过且没有任何未关闭的发现（含 P3；开了设备验收的已通过、不是成员运行）才不出批准卡直接合并；不跑合并后的流程，照常通知', async () => {
-  const { nodes, values, params, route, next } = await definition();
-  // 从 from 走到 stops 之一：网关按 context 分流，其余走唯一的出口；返回经过的节点，最后一个是停下的。
-  const walk = (from, context, stops) => {
-    const visited = [from];
-    while (!stops.includes(visited.at(-1))) { const step = visited.at(-1); visited.push(nodes[step].$type === 'bpmn:ExclusiveGateway' ? route(step, context) : next(step)); }
-    return visited;
-  };
-  const reach = (from, context) => walk(from, context, ['merge', 'approve', 'delivery', 'resume', 'overall-rounds']).at(-1);
-  // 判定只在「分流整体评审意见」：它的 auto 输出（开了 autoMerge、accept、零未关闭发现）；收尾各处都只引用它。
-  assert.deepEqual([params('overall-triage').AUTO, values(nodes['overall-triage']).filter(v => v.$type === 'coda:Output').map(v => v.name)], ['=inputs.autoMerge', ['route', 'summary', 'auto']]);
+// 从 from 走到 stops 之一：网关按 context 分流（并行网关走检查那一支），其余走唯一的出口；返回经过的节点，最后一个是停下的。
+const walk = ({ nodes, route, next }, from, context, stops) => {
+  const visited = [from];
+  while (!stops.includes(visited.at(-1))) {
+    const step = visited.at(-1);
+    visited.push(step === 'pr-fork' ? 'reuse-checks' : nodes[step].$type === 'bpmn:ExclusiveGateway' ? route(step, context) : next(step));
+  }
+  return visited;
+};
+
+test('提交验收的顺序：跟上目标分支、开 PR、项目检查、整体评审、设备验收、合并前检查、GitHub 检查，最后待交付、批准或自动合并', async () => {
+  const flow = await definition();
+  const order = ['sync', 'pr', 'checks', 'overall-plan', 'overall-call', 'overall', 'acceptance', 'premerge', 'github-checks'];
+  const context = { 'progress-result': { route: 'submit' }, sync: { route: 'pr' }, pr: { checked: false }, 'overall-plan': { review: true }, overall: { route: 'accept', auto: false },
+    inputs: { devices: true, delivery: '' }, acceptance: { route: 'passed' } };
+  const visited = walk(flow, 'after-progress', context, ['approve', 'delivery', 'merge']);
+  assert.deepEqual(visited.filter(id => order.includes(id)), order, visited.join(' → '));
+  assert.equal(visited.at(-1), 'approve');
+  // 同一 head 的项目检查复用，评审时检查已有结论；没评也一样往下走，合并前检查仍在设备验收之后。
+  const reused = walk(flow, 'pr', { ...context, pr: { checked: true }, 'overall-plan': { review: false } }, ['approve']);
+  assert.deepEqual(reused.filter(id => order.includes(id)), ['pr', 'overall-plan', 'overall', 'acceptance', 'premerge', 'github-checks']);
+  // 有必须修：先交主 Agent，继续验收才接着走设备验收和合并前检查；回到进行中就不跑。
+  const escalated = { ...context, overall: { route: 'review', auto: false } };
+  assert.deepEqual(walk(flow, 'overall', { ...escalated, 'review-result': { route: 'continue' } }, ['approve']).filter(id => [...order, 'review'].includes(id)),
+    ['overall', 'review', 'acceptance', 'premerge', 'github-checks']);
+  assert.deepEqual(walk(flow, 'overall', { ...escalated, 'review-result': { route: 'progress' } }, ['resume', 'premerge']).at(-1), 'resume');
+});
+
+test('自动合并：开了且这次运行的整体评审没出过必须修（overall.auto）就在合并前检查和 GitHub 检查之后直接合并、不跑合并后的流程；出过必须修照常出批准卡；成员运行照旧进待交付', async () => {
+  const flow = await definition(), { nodes, values, route } = flow;
+  const stops = ['merge', 'approve', 'delivery'];
+  const at = (auto, inputs = {}) => walk(flow, 'overall-route', { overall: { route: 'accept', auto }, inputs: { devices: false, delivery: '', ...inputs }, acceptance: { route: 'passed' } }, stops);
+  const merged = at(true);
+  assert.deepEqual([merged.at(-1), merged.includes('premerge'), merged.includes('github-checks'), merged.includes('joiners')], ['merge', true, true, false]);
+  assert.equal(at(true, { devices: true }).at(-1), 'merge', '设备验收通过之后');
+  assert.equal(at(false).at(-1), 'approve', '出过必须修');
+  assert.equal(at(true, { delivery: 'deliver-1' }).at(-1), 'delivery');
+  // 判定只在「整理整体评审」的 auto；收尾各处只引用它。
   for (const text of [nodes['auto-merge-needed'].conditionExpression.body, nodes['merged-only'].conditionExpression.body, nodes.done.notify, values(nodes.done).find(v => v.name === 'notify').value]) {
-    assert.ok(text.includes('overall-triage.auto = true') && !text.includes('inputs.autoMerge') && !text.includes('overall-triage.route'), text);
+    assert.ok(text.includes('overall.auto = true') && !text.includes('inputs.autoMerge'), text);
   }
-  const auto = { inputs: { autoMerge: true, reviewer: { agent: 'a' }, reviewer2: null, reviewer3: null, devices: false, delivery: '' }, 'overall-triage': { route: 'accept', auto: 'true' } };
-  const set = (inputs, extra = {}) => ({ ...auto, ...extra, inputs: { ...auto.inputs, ...inputs } });
-  assert.equal(reach('overall-triage-route', auto), 'merge', '条件都满足：跳过合并后流程的清单和批准卡');
-  for (const [why, from, context] of [
-    ['没开 autoMerge 或带没关的 P3（auto 为 false）', 'overall-triage-route', set({}, { 'overall-triage': { route: 'accept', auto: 'false' } })],
-    ['没填整体评审者（没有分流这一步的输出）', 'reviews-choice', { inputs: { ...auto.inputs, reviewer: null } }],
-  ]) assert.equal(reach(from, context), 'approve', why);
-  // 整体评审交过主 Agent（升级或修过之后交卡），主 Agent 选继续验收也不自动合并。
-  for (const value of ['escalate', 'fix']) assert.equal(reach('after-review', set({}, { 'overall-triage': { route: value, auto: 'false' }, 'review-result': { route: 'continue' } })), 'approve', value);
-  // 开了设备验收：验收通过才走到这里；没通过回到进行中。
-  assert.equal(reach('overall-triage-route', set({ devices: true }, { acceptance: { route: 'return' } })), 'resume');
-  assert.equal(reach('overall-triage-route', set({ devices: true }, { acceptance: { route: 'passed' } })), 'merge');
-  // 需求交付的成员照常进「待交付」。
-  assert.equal(reach('overall-triage-route', set({ devices: true, delivery: 'deliver-1' })), 'delivery');
-
-  // 合并之后：自动合并不跑合并后的流程（哪怕留着之前批准卡的答复），照常通知、输出 PR 与合并提交；冲突回到进行中。
-  const stale = { approve: { options: { notify: false } }, 'approval-result': { only: '["deploy"]', missing: '' }, merge: { route: 'merged' } };
-  const after = ['done', 'done-none', 'resume', 'merged-inputs'];
-  assert.deepEqual(walk('after-merge', { ...auto, ...stale }, after), ['after-merge', 'merged-choice', 'done']);
-  assert.equal(route('merged-choice', { ...auto, ...stale }), 'done');
-  assert.equal(route('merged-choice', set({}, { ...stale, 'overall-triage': { route: 'accept', auto: 'false' } })), 'fill-choice', '批准合并的照旧跑勾了的');
-  assert.equal(route('merged-choice', { inputs: auto.inputs, ...stale }), 'fill-choice', '没有分流输出（没填整体评审者）也照旧');
-  assert.equal(route('after-merge', { ...auto, merge: { route: 'conflict' } }), 'resume');
-  const notify = [nodes.done.notify, values(nodes.done).find(v => v.name === 'notify').value];
-  // 引擎把步骤输出的 "true"、"false" 转为真假值。
-  for (const expression of notify) {
-    assert.equal(evaluate(expression.slice(1), { ...auto, 'overall-triage': { route: 'accept', auto: true }, ...stale }).value, true);
-    assert.equal(evaluate(expression.slice(1), { ...auto, 'overall-triage': { route: 'accept', auto: false }, ...stale }).value, false, '批准卡上没勾通知');
-    assert.equal(evaluate(expression.slice(1), { inputs: auto.inputs, ...stale }).value, false, '没有分流输出');
+  // 自动合并后不跑合并后的流程（哪怕留着之前批准卡的答复），照常通知。
+  const stale = { approve: { options: { notify: false } }, 'approval-result': { only: '["deploy"]', missing: '' }, inputs: { delivery: '' } };
+  assert.equal(route('merged-choice', { ...stale, overall: { auto: true } }), 'done');
+  assert.equal(route('merged-choice', { ...stale, overall: { auto: false } }), 'fill-choice');
+  for (const expression of [nodes.done.notify, values(nodes.done).find(v => v.name === 'notify').value]) {
+    assert.equal(evaluate(expression.slice(1), { ...stale, overall: { auto: true } }).value, true);
+    assert.equal(evaluate(expression.slice(1), { ...stale, overall: { auto: false } }).value, false, '批准卡上没勾通知');
   }
-  assert.deepEqual(values(nodes.done).map(v => [v.name, v.value?.slice(0, 13)]).slice(0, 2), [['pr', '=pr.url'], ['commit', '=merge.commit']]);
-
 });
 
+// 假宿主：照流程定义从开始走到结束。网关按 FEEL 分流（并行网关走检查那一支），脚本步骤真跑 develop.mjs（env 照 coda:env 求值、输出照引擎转布尔），
+// 人工任务按引擎展开文字后交给 answers 里的函数答，调用的流程和服务步骤也由 answers 给结果（没给的服务步骤当作成功、没有输出）。
+async function host(f, inputs, message, answers) {
+  const { nodes, values, route, next } = await definition();
+  const context = { inputs, run: { id: 'run-1', message } }, visited = [], cards = [];
+  const value = v => (v.startsWith('=') ? evaluateTyped(v.slice(1), context) : v);
+  const render = text => text.replace(/{{([\s\S]*?)}}/g, (_, e) => { const v = evaluateTyped(e, context); return v === null || v === undefined ? '' : String(v); });
+  for (let step = 'start'; nodes[step].$type !== 'bpmn:EndEvent';) {
+    const node = nodes[step], type = node.$type;
+    visited.push(step);
+    if (type === 'bpmn:ScriptTask') {
+      const env = Object.fromEntries(values(node).filter(v => v.$type === 'coda:Env').map(v => [v.name, value(v.value)]).map(([k, v]) => [k, typeof v === 'string' ? v : JSON.stringify(v ?? null)]));
+      context[step] = typedOutputs(f.run(/develop\.mjs" (\S+)/.exec(node.script)[1], env).outputs);
+    } else if (type === 'bpmn:UserTask') {
+      const text = render(node.documentation[0].text);
+      cards.push({ step, text });
+      context[step] = answers[step](text);
+    } else if (type === 'bpmn:CallActivity' || type === 'bpmn:ServiceTask') context[step] = answers[step]?.() ?? {};
+    step = step === 'pr-fork' ? 'reuse-checks' : type === 'bpmn:ExclusiveGateway' ? route(step, context) : next(step);
+  }
+  return { visited, cards, context };
+}
+
+test('假宿主走一遍：两块的需求提交验收，整体评审有必须修回到进行中，派块修好再提交验收不再评，合并前检查后出批准卡', async t => {
+  const f = fixture(t);
+  const pieces = [['块一', 'one'], ['块二', 'two'], ['修登录跳转', 'fix']];
+  const progress = [
+    { choice: 'piece', note: '块一\n做第一块' }, { choice: 'piece', note: '块二\n做第二块' }, { choice: 'submit', note: '做了什么\n- 输入框能输入\n需要你知道：无', options: { again: false } },
+    { choice: 'piece', note: '修登录跳转\n只修整体评审的必须修 1' }, { choice: 'submit', note: '做了什么\n- 输入框能输入，登录跳转修好\n需要你知道：无', options: { again: false } },
+  ];
+  let landed = 0;
+  const run = await host(f, { title: '输入框', devices: false, device: '', hold: '', delivery: '', executor: { agent: 'codex' }, executor2: null, reviewer: { agent: 'kimi' },
+    overallReviewer: { agent: 'grok' }, autoMerge: true, base: '' }, '输入框可以输入', {
+    progress: () => progress.shift(),
+    piece: () => { const [title, file] = pieces[landed++]; return { commit: f.land(file, title, `${title}\n\nCoda-Piece: piece-${landed}`), run: `piece-${landed}` }; },
+    checks: () => ({ runs: [{ workflow: 'test', state: 'succeeded', runId: 'c1' }] }),
+    'overall-call': () => ({ decision: 'REQUEST_CHANGES', line: '评审要求修改（REQUEST_CHANGES）', report: '评审原文', resolutions: '[]', head: f.state().head, base: f.remote('main'),
+      findings: JSON.stringify([{ level: 'must', kind: 'correctness', title: '登录后停在空白页', location: 'app.mjs:3', detail: '' }, { level: 'nit', kind: 'style', title: '变量名', location: 'one:1', detail: '可以更短' }]) }),
+    review: () => ({ choice: 'progress', note: '先修登录跳转' }),
+    joiners: () => ({ list: [] }),
+    approve: () => ({ choice: 'merge', options: { notify: true }, inputs: {} }),
+  });
+  const { visited, cards } = run;
+  assert.equal(visited.filter(id => id === 'overall-call').length, 1, '整体评审只评一次');
+  assert.deepEqual(visited.filter(id => ['overall-call', 'review', 'premerge', 'github-checks', 'approve', 'merge'].includes(id)), ['overall-call', 'review', 'premerge', 'github-checks', 'approve', 'merge']);
+  assert.ok(!visited.slice(0, visited.indexOf('review')).includes('premerge'), '有必须修回到进行中之前没跑合并前检查');
+  const card = id => cards.find(c => c.step === id).text;
+  const overallCard = card('review'), approveCard = card('approve'), backCard = cards.filter(c => c.step === 'progress')[3].text;
+  for (const text of ['必须修 1 条：\n- 登录后停在空白页（app.mjs:3）\n小问题 1 条，原有问题 0 条。', `评审原文：${join(f.env.CODA_ARTIFACTS, 'overall-review-1.md')}`, '只有必须修才回到进行中派块修', '不把以后的需求提前做进来'])
+    assert.ok(overallCard.includes(text), text);
+  assert.ok(backCard.includes('整体评审后主 Agent 选了回到进行中。\n先修登录跳转\n整体评审的结论：'), backCard);
+  for (const text of ['做了什么\n- 输入框能输入，登录跳转修好', '整体评审的小问题（没有修，评审时需求分支 head', '- 变量名（one:1）', '项目检查、合并前检查、GitHub 检查已通过，整条需求分支在 ']) assert.ok(approveCard.includes(text), text);
+  t.diagnostic(`「整体评审结论」卡：\n${overallCard}`);
+  t.diagnostic(`「批准合并」卡：\n${approveCard}`);
+});

@@ -208,7 +208,11 @@ test('需求流程回路、人工任务、结果通知和合并后的流程契�
   // 成员怎样发起写在任务里：Ultra 不再讲开发流程。
   for (const text of ['workflow_run 发起 develop', '传 title、message（这个仓库要做的部分与完成标准）', 'delivery="{{run.id}}"', 'devices=false', 'project', '需求进行中', '块', '确认达标', '待交付']) assert.ok(nodes.brief.documentation[0].text.includes(text), text);
   assert.doesNotMatch(workflow, /task（/);
-  assert.match(nodes.brief.documentation[0].text, /为每个成员选好执行者 executor 和备用执行者 executor2/, '成员的开工执行者由这里选，块的执行者再由各成员的主 Agent 按块定');
+  assert.match(nodes.brief.documentation[0].text, /为每个成员选好执行者 executor、备用执行者 executor2、评审者 reviewer 和整体评审者 overallReviewer/, '成员的开工人选由这里选，块的人选再由各成员的主 Agent 按块定');
+  assert.doesNotMatch(workflow, /reviewer2|reviewer3|autoLandMinor/, '不再传已删的输入');
+  // 传的人选正是 develop 声明的输入。
+  const develop = readFileSync(new URL('../../../plugins/composer/.coda/workflows/develop.bpmn', import.meta.url), 'utf8');
+  for (const name of ['executor', 'executor2', 'reviewer', 'overallReviewer']) assert.match(develop, new RegExp(`<coda:input name="${name}" [^>]*type="agent"`), name);
   assert.doesNotMatch(nodes.brief.documentation[0].text, /goal/);
   for (const [field, written] of [['TITLE', 'title'], ['GOAL', 'goal']]) {
     const expression = params('init')[field].slice(1);

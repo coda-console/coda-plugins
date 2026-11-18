@@ -1,6 +1,7 @@
 // The steps of the simple development flow (../.coda/workflows/simple.bpmn「简易开发」) other than the review itself: the
 // branch the lead agent hands its change in on, and what it hands in pushed from there to the run's own branch and opened as
-// one pull request, updated by every later change. What the run has seen so far — the report, the head pushed, the review,
+// one pull request, updated by every later change. What the run has seen so far — the report, the head pushed, the review
+// and how many in a row asked for changes,
 // what the user accepted on a device, what the agent is to change next — stays in the run's artifacts, every step's
 // checkout being its own.
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -38,7 +39,7 @@ switch (action) {
   case 'push': {
     // The first time, before a pull request: the report the agent wrote, which heads the pull request and the approval card.
     const now = state ?? { base: target(),
-      lane: `simple/${env.GITHUB_RUN_ID}`, head: '', pr: '', reviewed: false, deviceHead: '' };
+      lane: `simple/${env.GITHUB_RUN_ID}`, head: '', pr: '', reviewed: false, rounds: 0, deviceHead: '' };
     if (!now.pr) now.report = (json('REPORT', {}).note ?? '').trim();
     const back = now.pr ? 'fix' : 'report', branch = env.BRANCH;
     git('fetch', '--quiet', 'origin', now.base);
@@ -66,12 +67,18 @@ switch (action) {
     output('text', state.feedback);
     break;
   case 'reviewed': {
-    const review = json('REVIEW', {});
-    save({ ...state, reviewed: true, review: { line: review.line ?? '', report: review.report ?? '' } });
+    // Asked for changes, the agent's fix is reviewed again (`reviewed` stays false); the third time in a row, the user decides.
+    const review = json('REVIEW', {}), changes = review.decision === 'REQUEST_CHANGES';
+    const rounds = changes ? state.rounds + 1 : 0;
+    save({ ...state, reviewed: !changes, rounds, review: { line: review.line ?? '', report: review.report ?? '' } });
+    output('route', !changes ? 'passed' : rounds >= 3 ? 'stuck' : 'answer');
     break;
   }
+  case 'again':
+    save({ ...state, rounds: 0 });
+    break;
   case 'kept':
-    save({ ...state, kept: (json('ANSWER', {}).note ?? '').trim() });
+    save({ ...state, reviewed: true, kept: (json('ANSWER', {}).note ?? '').trim() });
     break;
   case 'pr': {
     const summary = [state.report, state.review ? `评审：${state.review.line}` : '', state.kept ? `没有照评审意见改的：\n${state.kept}` : ''].filter(Boolean).join('\n\n');

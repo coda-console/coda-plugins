@@ -16,7 +16,7 @@ export const command = (bin, args, env = process.env) => {
 export const git = (...args) => command('git', args);
 export const gh = (...args) => command('gh', args);
 
-// 执行者的固定说明，放在每个交给执行者的任务前面：块的执行与修改、监督开发的同步与整体评审修复都用它。
+// 执行者的固定说明，放在每个交给执行者的任务前面：块的执行与修改、监督开发提交验收时的解冲突都用它。
 export const instructions = `你是这次开发流程的执行者，自己完成这一项任务，不继承主 Agent 的协调职责，不再委派。
 只做这一项，在当前分支提交，不推送、不开 PR、不合并、不部署。
 遵守仓库的 AGENTS.md。只改必需的地方，不写防御性、冗余的代码，不顺手重构。
@@ -67,28 +67,27 @@ export const checksText = (record, head) => record?.head === head
   ? record.runs.map(r => `${r.workflow}: ${r.state} coda://workflow-runs/${r.runId}`).join('\n') || '此提交未声明项目检查流程。'
   : '此提交项目检查未通过。';
 
-// 「评审」各份的结果，只取评这个 head 的。卡片正文的上限（4000 字）是协议对 BPMN 里字面的检查，展开后的不限；
-// 评审这一段也按这个数收着：放不下时每条只留严重程度、标题和位置，说明和评审原文写在产物里。
-// 评审没完成（INCOMPLETE）的写「没评成」与 review-commit 给的原因；调用本身没成（lost）的指向本运行那一步。
-// 标题、位置各占一行里的一段，其中的换行压成空格，说明原样。
-export const SLOTS = { reviewer: '评审者', reviewer2: '第二评审者', reviewer3: '第三评审者' };
-export function reviewsText(raw, head, step) {
-  const results = (raw ? JSON.parse(raw) : []).filter(r => r.head === head);
-  if (!results.length) return '';
-  const path = join(process.env.CODA_ARTIFACTS, 'reviews.md');
-  const render = detailed => results.map(r => {
-    const agent = JSON.parse(r.who);
-    const who = `${SLOTS[r.slot]}（${[agent.agent, agent.model, agent.effort].filter(Boolean).join(' · ')}）`;
-    if (r.state === 'lost') return `${who}：没评成。调用 review-commit 没有成功，原因见本运行 coda://workflow-runs/${process.env.GITHUB_RUN_ID} 的「${step}」（workflow_status）。`;
-    if (r.decision === 'INCOMPLETE') return `${who}：没评成：${r.line}`;
-    const flat = text => text.replace(/\s*[\r\n]+\s*/g, ' ');
-    const findings = JSON.parse(r.findings).map(f => `- [${f.severity}] ${flat(f.title)}${f.location ? `（${flat(f.location)}）` : ''}${detailed && f.detail ? `\n  ${f.detail.replace(/\n/g, '\n  ')}` : ''}`);
-    return [`${who}：${r.line}`, ...findings].join('\n');
-  }).join('\n\n');
-  const full = render(true);
-  writeFileSync(path, [full, ...results.filter(r => r.state === 'done').map(r => `## ${SLOTS[r.slot]}的评审原文\n\n${r.report}`)].join('\n\n'));
-  return full.length <= 4000 ? `${full}\n评审原文：${path}` : `${render(false)}\n发现较多，这里只列严重程度、标题和位置；每条的说明与评审原文见 ${path}`;
-}
+// 改动区域（README.md「改动区域」）：base...head 的三点 diff（与 PR 的 Files changed 一致），按 head 上 .coda/areas.json 的最长前缀归区域。
+// 监督开发的 PR 汇总与块的审查卡用同一份。
+export const changes = (base, head) => {
+  const declared = git('ls-tree', '--name-only', head, '.coda/areas.json') ? JSON.parse(git('show', `${head}:.coda/areas.json`)) : {};
+  const prefixes = Object.entries(declared).flatMap(([area, list]) => list.map(prefix => [prefix, area])).sort((a, b) => b[0].length - a[0].length);
+  const fields = git('diff', '--numstat', '-z', '-M', `${base}...${head}`).split('\0');
+  const areas = {}, total = { files: 0, added: 0, deleted: 0 };
+  for (let i = 0; i < fields.length - 1; i++) {
+    const [added, deleted, name] = fields[i].split('\t');
+    // 改名时 -z 输出旧路径和新路径两个字段，按新路径归类。
+    const file = name || fields[i += 2];
+    const area = prefixes.find(([prefix]) => file.startsWith(prefix))?.[1] ?? (file.includes('/') ? file.split('/')[0] : '根目录');
+    for (const group of [areas[area] ??= { files: 0, added: 0, deleted: 0 }, total]) {
+      group.files++;
+      group.added += added === '-' ? 0 : Number(added);
+      group.deleted += deleted === '-' ? 0 : Number(deleted);
+    }
+  }
+  const line = ({ files, added, deleted }) => `${files} 个文件 +${added} -${deleted}`;
+  return [`改动：${line(total)}`, ...Object.entries(areas).sort(([, a], [, b]) => b.added + b.deleted - a.added - a.deleted).map(([area, group]) => `- ${area}：${line(group)}`)].join('\n');
+};
 
 // PR 地址里的 host/owner/repo：给 gh 显式 --repo，它就只删除远端分支，不碰本地分支，分离 HEAD 也能用。
 export const repoOf = url => { const { host, pathname } = new URL(url); return `${host}/${pathname.split('/').slice(1, 3).join('/')}`; };

@@ -1,9 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- 块（README.md「块」）：需求运行（develop）里的一项改动，一项一个。执行者从需求分支 head 开工，交付推到临时分支 piece/<运行 ID>（不开 PR），
-     项目检查、评审（提交模式）后由主 Agent 审查，squash 成一个提交快进进需求分支后删掉临时分支，输出这个提交和本运行 ID；放弃时走出错结束，调用方的出错边界接得到。
-     评审有阻塞级发现时先交执行者逐条修复或反驳、原评审者增量复评，收敛了或判断不了才给主 Agent（README.md「评审回路」）。
-     开了 autoLandMinor 时，只动测试与说明文档、检查与评审全过的小改动不出审查卡，直接合进需求分支（README.md「小改动免主控审查」）。
-     不出用户卡、不装机、不部署、不跑合并前检查。BPMN 2.0，由 Coda 执行（docs/workflows.md）。 -->
+     项目检查、一位评审者（review-commit 提交模式）评过后由主 Agent 看一页结论审查，squash 成一个提交快进进需求分支后删掉临时分支，输出这个提交、本运行 ID 和最后一次交付评成没有；
+     放弃时走出错结束，调用方的出错边界接得到。评审结论不决定去向；主 Agent 退回修改后评审者只复评之后的变动（README.md「评审」）。
+     同一块退回满三次后再退回交用户「这一块三轮没过」，此外不出用户卡；不装机、不部署、不跑合并前检查。BPMN 2.0，由 Coda 执行（docs/workflows.md）。 -->
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="piece-definitions" targetNamespace="https://coda.pub/plugins/composer">
   <process id="piece" name="块" isExecutable="true" coda:title='="块：" + inputs.title'>
@@ -15,9 +14,7 @@
       <coda:input name="sync" label="跟上目标分支" type="boolean" default="false" description="把目标分支合进需求分支的块：以合并提交快进，不 squash" />
       <coda:input name="executor" label="执行者" type="agent" required="true" description="必填，做这一项的 Agent；通常是所属监督开发的开工执行者" />
       <coda:input name="executor2" label="备用执行者" type="agent" description="主 Agent 在审查卡上选「换备用执行者重做」时接手；不填不能换" />
-      <coda:input name="reviewer" label="评审者" type="agent" description="项目检查通过后评每一次交付；不填不评" />
-      <coda:input name="reviewer2" label="第二评审者" type="agent" description="与评审者同时评每一次交付；不填不评" />
-      <coda:input name="autoLandMinor" label="小改动免主控审查" type="boolean" default="false" description="只动测试与说明文档、项目检查通过、评审者全部 APPROVE 且没有发现时不出审查卡，直接合进需求分支；没填评审者时照常出审查卡" />
+      <coda:input name="reviewer" label="评审者" type="agent" description="项目检查通过后评每一次交付；主 Agent 退回修改后只复评之后的变动。不填不评" />
     </extensionElements>
     <startEvent id="start" />
     <sequenceFlow id="start-execute" sourceRef="start" targetRef="execute" />
@@ -52,130 +49,80 @@
     </scriptTask>
     <sequenceFlow id="checks-review" sourceRef="check-feedback" targetRef="gate-route" />
     <exclusiveGateway id="gate-route" name="连续失败是否达到三次" default="gate-revise" />
-    <sequenceFlow id="gate-escalate" sourceRef="gate-route" targetRef="minor-choice"><conditionExpression xsi:type="tFormalExpression">=check-feedback.route = "review"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="gate-escalate" sourceRef="gate-route" targetRef="report"><conditionExpression xsi:type="tFormalExpression">=check-feedback.route = "review"</conditionExpression></sequenceFlow>
     <sequenceFlow id="gate-revise" sourceRef="gate-route" targetRef="revise" />
     <sequenceFlow id="checks-passed" sourceRef="checks" targetRef="gate-passed" />
-    <scriptTask id="gate-passed" name="记录通过的检查" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
-      <extensionElements><coda:env name="RUNS" value="=checks.runs" /><coda:output name="base" /><coda:output name="task" /><coda:output name="checks" /></extensionElements>
+    <!-- 检查通过后定评审范围：主 Agent 退回修改之后是复评（base 是上次评过的 head，previous 带还没关的必须修），否则评需求分支 head 到这次交付；
+         task 是任务书原文后附主 Agent 历次的退回意见。 -->
+    <scriptTask id="gate-passed" name="记录检查并定评审范围" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements>
+        <coda:env name="RUNS" value="=checks.runs" />
+        <coda:output name="base" /><coda:output name="head" /><coda:output name="task" /><coda:output name="checks" /><coda:output name="previous" />
+      </extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/piece.mjs" gate-passed</script>
     </scriptTask>
-    <sequenceFlow id="gate-passed-review" sourceRef="gate-passed" targetRef="review-round" />
-    <!-- 定这一次怎么评：交执行者修过、等复评时，对原来每个评审位置增量复评（base 是上次评过的 head，带上次的发现与执行者的回应）；否则完整评审。 -->
-    <scriptTask id="review-round" name="确定评审范围" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+    <sequenceFlow id="gate-passed-review" sourceRef="gate-passed" targetRef="review-choice" />
+    <exclusiveGateway id="review-choice" name="是否评审" default="review-skip" />
+    <sequenceFlow id="review-needed" sourceRef="review-choice" targetRef="review-call"><conditionExpression xsi:type="tFormalExpression">=inputs.reviewer != null</conditionExpression></sequenceFlow>
+    <sequenceFlow id="review-skip" sourceRef="review-choice" targetRef="report" />
+    <!-- 评审只调一次 review-commit；评审没完成时它照常结束（decision 为 INCOMPLETE），出错边界只接调用本身没成。两种都照常出审查卡，结论不决定去向。 -->
+    <callActivity id="review-call" name="评审这次交付" calledElement="review-commit">
       <extensionElements>
-        <coda:output name="base" /><coda:output name="head" /><coda:output name="task" /><coda:output name="checks" /><coda:output name="previous" /><coda:output name="previous2" />
+        <coda:param name="base" value="=gate-passed.base" />
+        <coda:param name="head" value="=gate-passed.head" />
+        <coda:param name="task" value="=gate-passed.task" />
+        <coda:param name="reviewer" value="=inputs.reviewer" />
+        <coda:param name="evidence" value="=gate-passed.checks" />
+        <coda:param name="previous" value="=gate-passed.previous" />
       </extensionElements>
-      <script>node "${CODA_PLUGIN_PATH}/scripts/piece.mjs" review-round</script>
+    </callActivity>
+    <boundaryEvent id="review-failed" attachedToRef="review-call"><errorEventDefinition /></boundaryEvent>
+    <sequenceFlow id="review-failed-lost" sourceRef="review-failed" targetRef="review-lost" />
+    <scriptTask id="review-lost" name="记下没评成" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <script>node "${CODA_PLUGIN_PATH}/scripts/piece.mjs" review-lost</script>
     </scriptTask>
-    <sequenceFlow id="review-round-reviews" sourceRef="review-round" targetRef="reviews-choice" />
-    <!-- 检查通过后、整理审查材料前，填了的评审者各评一次这次交付；一个都不评时直接整理。
-         两个位置各一份、同时进行，每份都走到自己的结束事件：没填的跳过；评审没完成时 review-commit 照常结束（decision 为 INCOMPLETE），
-         不算这一步失败；出错边界只接调用本身没成，记下来照常结束。各份都结束才往下走，交「分流评审意见」。 -->
-    <exclusiveGateway id="reviews-choice" name="是否有人评审" default="reviews-skip" />
-    <sequenceFlow id="reviews-needed" sourceRef="reviews-choice" targetRef="reviews"><conditionExpression xsi:type="tFormalExpression">=inputs.reviewer != null or inputs.reviewer2 != null</conditionExpression></sequenceFlow>
-    <sequenceFlow id="reviews-skip" sourceRef="reviews-choice" targetRef="minor-choice" />
-    <subProcess id="reviews" name="评审" coda:optional="true">
-      <multiInstanceLoopCharacteristics coda:inputCollection='=[{slot: "reviewer", who: inputs.reviewer, previous: review-round.previous}, {slot: "reviewer2", who: inputs.reviewer2, previous: review-round.previous2}]' coda:inputElement="slot" />
-      <startEvent id="reviews-start" />
-      <sequenceFlow id="reviews-enter" sourceRef="reviews-start" targetRef="review-choice" />
-      <exclusiveGateway id="review-choice" name="这一位评不评" default="review-skip" />
-      <sequenceFlow id="review-needed" sourceRef="review-choice" targetRef="review-call"><conditionExpression xsi:type="tFormalExpression">=slot.who != null</conditionExpression></sequenceFlow>
-      <sequenceFlow id="review-skip" sourceRef="review-choice" targetRef="review-skipped" />
-      <callActivity id="review-call" name="评审这次交付" calledElement="review-commit">
-        <extensionElements>
-          <coda:param name="base" value="=review-round.base" />
-          <coda:param name="head" value="=review-round.head" />
-          <coda:param name="task" value="=review-round.task" />
-          <coda:param name="reviewer" value="=slot.who" />
-          <coda:param name="evidence" value="=review-round.checks" />
-          <coda:param name="previous" value="=slot.previous" />
-        </extensionElements>
-      </callActivity>
-      <boundaryEvent id="review-failed" attachedToRef="review-call"><errorEventDefinition /></boundaryEvent>
-      <sequenceFlow id="review-failed-lost" sourceRef="review-failed" targetRef="review-lost" />
-      <sequenceFlow id="review-call-done" sourceRef="review-call" targetRef="review-done" />
-      <endEvent id="review-skipped"><extensionElements><coda:output name="state" value="skipped" /></extensionElements></endEvent>
-      <endEvent id="review-lost"><extensionElements>
-        <coda:output name="state" value="lost" /><coda:output name="slot" value="=slot.slot" /><coda:output name="who" value="=slot.who" /><coda:output name="head" value="=review-round.head" />
-      </extensionElements></endEvent>
-      <endEvent id="review-done"><extensionElements>
-        <coda:output name="state" value="done" /><coda:output name="slot" value="=slot.slot" /><coda:output name="who" value="=slot.who" /><coda:output name="head" value="=review-round.head" />
-        <coda:output name="decision" value="=review-call.decision" /><coda:output name="line" value="=review-call.line" /><coda:output name="findings" value="=review-call.findings" /><coda:output name="report" value="=review-call.report" />
-        <coda:output name="reviewed" value="=review-call.head" /><coda:output name="resolutions" value="=review-call.resolutions" /><coda:output name="blocking" value="=review-call.blocking" />
-      </extensionElements></endEvent>
-    </subProcess>
-    <sequenceFlow id="reviews-triage" sourceRef="reviews" targetRef="triage" />
-    <!-- 分流（scripts/triage.mjs）：都评完、没有没评成的、评的都是当前 head、没有阻塞级发现时照常交主 Agent；有阻塞级发现、没有契约或范围类、
-         自动修不到两轮时交执行者；其余（没评成、评的不是当前 head、执行者的反驳被坚持、契约或范围类、两轮用完）升级给主 Agent。 -->
-    <scriptTask id="triage" name="分流评审意见" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
-      <extensionElements><coda:env name="REVIEWS" value="=reviews" /><coda:output name="route" /></extensionElements>
-      <script>node "${CODA_PLUGIN_PATH}/scripts/piece.mjs" triage</script>
-    </scriptTask>
-    <sequenceFlow id="triage-how" sourceRef="triage" targetRef="triage-route" />
-    <exclusiveGateway id="triage-route" name="交执行者还是主 Agent" default="triage-review" />
-    <sequenceFlow id="triage-fix" sourceRef="triage-route" targetRef="address"><conditionExpression xsi:type="tFormalExpression">=triage.route = "fix"</conditionExpression></sequenceFlow>
-    <sequenceFlow id="triage-review" sourceRef="triage-route" targetRef="minor-choice" />
-    <!-- 同一执行会话逐条处理：有新提交就推送、检查后复评；只反驳、没有新提交就不重跑检查，直接复评；都没有就交主 Agent。 -->
-    <scriptTask id="address" name="执行者处理评审意见" scriptFormat="bash">
-      <extensionElements><coda:output name="route" /></extensionElements>
-      <script>node "${CODA_PLUGIN_PATH}/scripts/piece.mjs" address</script>
-    </scriptTask>
-    <sequenceFlow id="address-how" sourceRef="address" targetRef="address-route" />
-    <exclusiveGateway id="address-route" name="有没有新提交" default="address-review" />
-    <sequenceFlow id="address-gate" sourceRef="address-route" targetRef="gate"><conditionExpression xsi:type="tFormalExpression">=address.route = "gate"</conditionExpression></sequenceFlow>
-    <sequenceFlow id="address-again" sourceRef="address-route" targetRef="review-round"><conditionExpression xsi:type="tFormalExpression">=address.route = "again"</conditionExpression></sequenceFlow>
-    <sequenceFlow id="address-review" sourceRef="address-route" targetRef="minor-choice" />
-    <!-- 小改动免主控审查（README.md「小改动免主控审查」）：开了 autoLandMinor 时，每次出审查卡之前（审查卡选了答复又回到卡上的除外）先判定，
-         条件全满足才不出卡、直接合进需求分支（试合并冲突时照常交执行者合并需求分支，之后重新检查、评审、判定）；否则照常出卡，卡上写明原因。 -->
-    <exclusiveGateway id="minor-choice" name="是否判定免审" default="minor-skip" />
-    <sequenceFlow id="minor-needed" sourceRef="minor-choice" targetRef="minor"><conditionExpression xsi:type="tFormalExpression">=inputs.autoLandMinor = true</conditionExpression></sequenceFlow>
-    <sequenceFlow id="minor-skip" sourceRef="minor-choice" targetRef="rounds" />
-    <scriptTask id="minor" name="判定小改动免审" scriptFormat="bash" coda:timeout="5">
-      <extensionElements><coda:env name="REVIEWS" value="=reviews" /><coda:env name="AUTO" value="=inputs.autoLandMinor" /><coda:output name="route" /></extensionElements>
-      <script>node "${CODA_PLUGIN_PATH}/scripts/piece.mjs" minor</script>
-    </scriptTask>
-    <sequenceFlow id="minor-how" sourceRef="minor" targetRef="minor-route" />
-    <exclusiveGateway id="minor-route" name="是否免审" default="minor-review" />
-    <sequenceFlow id="minor-land" sourceRef="minor-route" targetRef="land"><conditionExpression xsi:type="tFormalExpression">=minor.route = "land"</conditionExpression></sequenceFlow>
-    <sequenceFlow id="minor-review" sourceRef="minor-route" targetRef="rounds" />
-    <scriptTask id="rounds" name="整理收敛经过" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
-      <extensionElements><coda:output name="text" /></extensionElements>
-      <script>node "${CODA_PLUGIN_PATH}/scripts/piece.mjs" rounds</script>
-    </scriptTask>
-    <sequenceFlow id="rounds-report" sourceRef="rounds" targetRef="report" />
-    <scriptTask id="report" name="整理审查材料" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+    <sequenceFlow id="review-lost-report" sourceRef="review-lost" targetRef="report" />
+    <sequenceFlow id="review-call-done" sourceRef="review-call" targetRef="reviewed" />
+    <scriptTask id="reviewed" name="评审结果入账" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
       <extensionElements>
-        <coda:env name="REVIEWS" value="=reviews" />
-        <coda:output name="session" /><coda:output name="head" /><coda:output name="branch" /><coda:output name="temp" />
-        <coda:output name="checks" /><coda:output name="answer" /><coda:output name="feedback" /><coda:output name="reviews" /><coda:output name="returns" /><coda:output name="minor" />
+        <coda:env name="DECISION" value="=review-call.decision" /><coda:env name="FINDINGS" value="=review-call.findings" /><coda:env name="LINE" value="=review-call.line" />
+        <coda:env name="REPORT" value="=review-call.report" /><coda:env name="RESOLUTIONS" value="=review-call.resolutions" />
+      </extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/piece.mjs" reviewed</script>
+    </scriptTask>
+    <sequenceFlow id="reviewed-report" sourceRef="reviewed" targetRef="report" />
+    <scriptTask id="report" name="整理审查材料" scriptFormat="bash" coda:timeout="5">
+      <extensionElements>
+        <coda:env name="REVIEWER" value="=inputs.reviewer != null" />
+        <coda:output name="session" /><coda:output name="head" /><coda:output name="branch" /><coda:output name="temp" /><coda:output name="tip" /><coda:output name="feedback" /><coda:output name="returns" />
+        <coda:output name="answer" /><coda:output name="checks" /><coda:output name="review" /><coda:output name="changes" />
       </extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/piece.mjs" review</script>
     </scriptTask>
     <sequenceFlow id="report-review" sourceRef="report" targetRef="review" />
     <userTask id="review" name="主 Agent 审查" coda:noteLabel="修改意见或说明">
-      <documentation>请发起这一块的主 Agent 亲自审查架构和实现方式，不以执行者的回答或检查通过代替读代码。
-执行会话：{{report.session}}
-head：{{report.head}}（推在临时分支 {{report.temp}}）
-需求分支：{{report.branch}}
-在仓库中看改动：git fetch origin {{report.branch}} {{report.temp}}，再 git diff origin/{{report.branch}}...{{report.head}}
-这一项已退回 {{report.returns}} 次（只数你选的「退回修改」）。
+      <documentation>这一块：{{inputs.title}}
+执行会话：{{report.session}}；head {{report.head}}（推在临时分支 {{report.temp}}），需求分支 {{report.branch}}
+已退回 {{report.returns}} 次（只数你选的「退回修改」；满三次后再退回交用户决定）。
 备用执行者：{{if inputs.executor2 = null then "未指定，不能换人" else string join([inputs.executor2.agent, inputs.executor2.model, inputs.executor2.effort][item != null], " · ")}}
+
+执行者最后一条回复：
+{{report.answer}}
 
 项目检查结果：
 {{report.checks}}
 
-执行者回答：
-{{report.answer}}
-{{if report.reviews = "" then "" else "\n评审者的发现：\n" + report.reviews}}
-{{if rounds.text = "" then "" else "\n收敛经过（评审意见先交执行者逐条修复或反驳、原评审者复评，编号固定）：\n" + rounds.text}}
-{{if report.minor = "" then "" else "\n开了小改动免主控审查，这一次没免审，原因：\n" + report.minor}}
+评审结论：
+{{report.review}}
 
-待处理反馈：
-{{report.feedback}}
+改动范围：
+{{report.changes}}
 
-审查要点：架构是否得当、改动是否最小、有没有防御性或冗余代码、有没有无关改动，实际验证是否足够。检查通过和执行者的回答不能代替你读 diff；不要自己改代码，修改都交给执行者。
-评审者的发现是否成立由你判断，不成立的不必转给执行者。
-选择「退回修改」时备注必填，给具体意见；同一个执行会话继续修改。
+看改动（备查）：git fetch origin {{report.branch}} {{report.temp}} &amp;&amp; git diff {{report.tip}}...{{report.head}}
+{{if report.feedback = "" then "" else "\n待处理反馈：\n" + report.feedback + "\n"}}
+不要求读 diff。只在三种情况下读有疑问的那部分：评审者说动了对外契约或超出任务书；执行者和评审者各执一词；改动范围明显超出任务书。不要自己改代码，修改都交给执行者。
+取舍标准：只有必须修才退回；评审者说成立不等于现在要修。必须修是合并后用户会遇到错的结果、丢数据、安全问题，对外契约写错，测试是红的或会偶发失败，漏了任务书要求的事或做了任务书之外的事，以及会扩散、越晚越难改的结构问题（跨模块或会被照着写：绕过已有边界、依赖方向反过来、第二个事实来源或第二套做同一件事的机制、迁移只做一半）；其余是小问题。退回时只列要修的那几条，定了不改的单独一行写「#编号 不改」，后面可以接理由，如「#2 不改：只影响少见路径」；不顺手带小问题，不加设计改动，不把以后的需求提前做进来。
+选择「退回修改」时备注必填，同一个执行会话按它修，照常过项目检查，再由评审者复评：只评上次评过的提交之后的变动，带上还没关的必须修和你历次的退回意见；单独一行写「#编号 不改」的由流程关掉，不再交评审者。
 选择「让执行者合并需求分支」时备注可选，写了就附在固定说明后面；同一个执行会话把需求分支当前 head 合入当前分支并解冲突（别的块刚合进去、有相关改动或版本号会撞时选它），不算退回。
 选择「换备用执行者重做」时备注必填，写为什么换、接手的人要注意什么；备用执行者从需求分支当前 head 新开执行会话重做这一项，之后的退回修改续它。没填备用执行者时选它会回到这张卡。
 流程自己跑项目检查；执行者只需跑直接相关的快检查，不必用 run-held 跑整套编译。
@@ -191,16 +138,38 @@ head：{{report.head}}（推在临时分支 {{report.temp}}）
     </userTask>
     <sequenceFlow id="review-decide" sourceRef="review" targetRef="decide" />
     <scriptTask id="decide" name="读取审查意见" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
-      <extensionElements><coda:env name="REVIEW" value="=review" /><coda:env name="BACKUP" value="=inputs.executor2 != null" /><coda:output name="route" /></extensionElements>
+      <extensionElements><coda:env name="REVIEW" value="=review" /><coda:env name="BACKUP" value="=inputs.executor2 != null" /><coda:output name="route" /><coda:output name="stuck" /></extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/piece.mjs" decide</script>
     </scriptTask>
     <sequenceFlow id="decide-how" sourceRef="decide" targetRef="how" />
     <exclusiveGateway id="how" name="审查结论" default="how-land" />
-    <sequenceFlow id="how-note" sourceRef="how" targetRef="rounds"><conditionExpression xsi:type="tFormalExpression">=decide.route = "review"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="how-note" sourceRef="how" targetRef="report"><conditionExpression xsi:type="tFormalExpression">=decide.route = "review"</conditionExpression></sequenceFlow>
     <sequenceFlow id="how-revise" sourceRef="how" targetRef="revise"><conditionExpression xsi:type="tFormalExpression">=decide.route = "revise"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="how-stuck" sourceRef="how" targetRef="stuck"><conditionExpression xsi:type="tFormalExpression">=decide.route = "stuck"</conditionExpression></sequenceFlow>
     <sequenceFlow id="how-swap" sourceRef="how" targetRef="swap"><conditionExpression xsi:type="tFormalExpression">=decide.route = "swap"</conditionExpression></sequenceFlow>
     <sequenceFlow id="how-abandon" sourceRef="how" targetRef="abandon"><conditionExpression xsi:type="tFormalExpression">=decide.route = "abandon"</conditionExpression></sequenceFlow>
     <sequenceFlow id="how-land" sourceRef="how" targetRef="land" />
+    <!-- 退回满三次后主 Agent 再选退回：不退回，交用户。继续修把退回次数清零、按主 Agent 这次的意见退回；放弃同主 Agent 选放弃。 -->
+    <userTask id="stuck" name="这一块三轮没过" coda:assignee="user">
+      <documentation>块「{{inputs.title}}」已经退回修改三次，主 Agent 这次又要退回。
+{{decide.stuck}}
+
+选「继续修」：退回次数清零，按主 Agent 这次的意见退回同一个执行会话。
+选「放弃这一块」：同主 Agent 选放弃，删掉临时分支，需求分支不动，这一块以失败结束。</documentation>
+      <extensionElements>
+        <coda:choice id="continue" name="继续修" primary="true" />
+        <coda:choice id="abandon" name="放弃这一块" />
+      </extensionElements>
+    </userTask>
+    <sequenceFlow id="stuck-decide" sourceRef="stuck" targetRef="stuck-result" />
+    <scriptTask id="stuck-result" name="读取用户的决定" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements><coda:env name="STUCK" value="=stuck" /><coda:output name="route" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/piece.mjs" stuck</script>
+    </scriptTask>
+    <sequenceFlow id="stuck-how" sourceRef="stuck-result" targetRef="stuck-route" />
+    <exclusiveGateway id="stuck-route" name="继续修还是放弃" default="stuck-revise" />
+    <sequenceFlow id="stuck-abandon" sourceRef="stuck-route" targetRef="abandon"><conditionExpression xsi:type="tFormalExpression">=stuck-result.route = "abandon"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="stuck-revise" sourceRef="stuck-route" targetRef="revise" />
     <scriptTask id="revise" name="同一执行会话修改" scriptFormat="bash">
       <script>node "${CODA_PLUGIN_PATH}/scripts/piece.mjs" revise</script>
     </scriptTask>
@@ -212,7 +181,7 @@ head：{{report.head}}（推在临时分支 {{report.temp}}）
     </scriptTask>
     <sequenceFlow id="swap-report" sourceRef="swap" targetRef="gate" />
     <scriptTask id="land" name="试合并并合进需求分支" scriptFormat="bash" coda:timeout="10" coda:retry="3">
-      <extensionElements><coda:output name="route" /><coda:output name="commit" /><coda:output name="auto" /><coda:output name="summary" /></extensionElements>
+      <extensionElements><coda:output name="route" /><coda:output name="commit" /><coda:output name="reviewed" /></extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/piece.mjs" land</script>
     </scriptTask>
     <sequenceFlow id="land-route" sourceRef="land" targetRef="after-land" />
@@ -221,8 +190,7 @@ head：{{report.head}}（推在临时分支 {{report.temp}}）
     <sequenceFlow id="land-done" sourceRef="after-land" targetRef="landed" />
     <endEvent id="landed" name="已合进需求分支" coda:notify="true">
       <extensionElements>
-        <coda:output name="commit" value="=land.commit" /><coda:output name="run" value="=run.id" />
-        <coda:output name="autoLanded" value="=land.auto = true" /><coda:output name="summary" value="=land.summary" />
+        <coda:output name="commit" value="=land.commit" /><coda:output name="run" value="=run.id" /><coda:output name="reviewed" value="=land.reviewed" />
       </extensionElements>
     </endEvent>
     <scriptTask id="abandon" name="删除临时分支" scriptFormat="bash" coda:timeout="5" coda:retry="3">

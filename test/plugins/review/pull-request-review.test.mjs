@@ -34,7 +34,7 @@ else if (name === 'gh') {
 } else {
   copyFileSync(args[args.indexOf('--prompt-file') + 1], process.env.FIXTURE + '/prompt.md');
   if (process.env.AGENT_NOBASE) { console.log('没有启动 Agent：无法确定 Agent 步骤要检出的提交'); process.exit(1); }
-  if (process.env.VERDICT === 'changes') console.log('看过了。\n` + '```' + String.raw`review\n{"findings":[{"severity":"P1","title":"阻塞","location":"a:1","detail":"d"}]}\n` + '```' + String.raw`');
+  if (process.env.VERDICT === 'changes') console.log('看过了。\n` + '```' + String.raw`review\n{"findings":[{"level":"must","title":"阻塞","location":"a:1","detail":"d"}]}\n` + '```' + String.raw`');
   else console.log('看过了。\n` + '```' + String.raw`review\n{"findings":[]}\n` + '```' + String.raw`');
 }
 `;
@@ -56,7 +56,7 @@ function fixture(t) {
     const outputs = join(root, 'outputs'), summary = join(root, 'summary.md');
     writeFileSync(outputs, ''); writeFileSync(summary, ''); writeFileSync(join(root, 'calls'), '');
     const done = spawnSync(process.execPath, [...argv], { cwd, encoding: 'utf8', env: { PATH: `${bin}:/usr/bin:/bin`, HOME: root, FIXTURE: root,
-      RUNNER_TEMP: root, GITHUB_OUTPUT: outputs, GITHUB_STEP_SUMMARY: summary, PRINCIPLES: '["tests"]', BLOCKING: 'P2', ...env } });
+      RUNNER_TEMP: root, GITHUB_OUTPUT: outputs, GITHUB_STEP_SUMMARY: summary, PRINCIPLES: '["tests"]', ...env } });
     const out = Object.fromEntries([...readFileSync(outputs, 'utf8').matchAll(/^(\w+)<<EOF_\1\n([\s\S]*?)\nEOF_\1$/gm)].map(m => [m[1], m[2]]));
     const calls = readFileSync(join(root, 'calls'), 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line));
     return { code: done.status, said: done.stderr.trim().split('\n').at(-1), out, calls, summary: readFileSync(summary, 'utf8') };
@@ -89,7 +89,7 @@ for (const [verdict, decision] of [['approve', 'APPROVE'], ['changes', 'REQUEST_
     const comment = done.calls[3].args;
     assert.deepEqual(comment.slice(0, 3), ['pr', 'comment', URL_7]);
     assert.ok(done.calls.every(c => !c.args.includes('merge') && c.name !== 'run-workflows'));
-    assert.match(comment[4], decision === 'APPROVE' ? /^### Coda 交叉评审：通过（APPROVE）/ : /^### Coda 交叉评审：要求修改（REQUEST_CHANGES）[\s\S]*\*\*\[P1\]\*\* 阻塞/);
+    assert.match(comment[4], decision === 'APPROVE' ? /^### Coda 交叉评审：通过（APPROVE）/ : /^### Coda 交叉评审：要求修改（REQUEST_CHANGES）[\s\S]*必须修 1 条。[\s\S]*### 必须修\n\n- 阻塞（`a:1`）：d/);
     // Nothing is handed to a session: the verdict stays in the step's outputs and the comment.
     assert.equal(done.out.passed, String(decision === 'APPROVE'));
   });
@@ -152,7 +152,7 @@ test('the guidelines come from the base commit through the API; none there is no
   const event = JSON.stringify(f.event);
   const none = f.review({ PULL_REQUEST: event, GUIDE_FAIL: 'gh: Not Found (HTTP 404)' });
   assert.equal(none.code, 0, none.said);
-  assert.doesNotMatch(f.prompt(), /项目评审准则/);
+  assert.doesNotMatch(f.prompt(), /项目评审准则（来自|项目准则：/);
   const called = f.review({ PULL_REQUEST: event });
   assert.ok(called.calls[1].args.at(-1).endsWith(`/contents/.coda/review.md?ref=${f.base}`));
   assert.match(f.prompt(), /项目评审准则（来自 PR base 提交 \w+ 的 .coda\/review.md）：\n\n项目准则：只跑相关测试。/);
@@ -287,7 +287,7 @@ test('the review-only flow has no node that checks, asks, merges, deletes, deplo
   assert.doesNotMatch(source, /coda:action=|callActivity|userTask|run-workflows|workflow-kinds|merge\.mjs|delete-branch|publish-event|coda:notify|coda:wake/);
   // What it passes to the reviewer is the event's pull request, the explicit one and the settings: nothing it was not given.
   assert.deepEqual(g.nodes.review.extensionElements.values.filter(v => v.$type === 'coda:Env').map(v => v.name),
-    ['REVIEWERS', 'BLOCKING', 'PRINCIPLES', 'SESSION', 'PULL_REQUEST', 'PR', 'FOCUS', 'LAST']);
+    ['REVIEWERS', 'PRINCIPLES', 'SESSION', 'PULL_REQUEST', 'PR', 'FOCUS', 'LAST']);
 });
 
 test('the manual entry of the lifecycle asks whose the pull request is first; someone else\'s ends there, pointing at the review-only flow', async () => {
@@ -324,4 +324,17 @@ test('who wrote the pull request is asked of GitHub as the repository\'s account
     assert.deepEqual([done.code, done.out.mine, done.said], [1, undefined, `GitHub 没有回答 PR ${URL_7} 的作者：${why}`], answer);
     assert.match(done.summary, /没能确认/);
   }
+});
+
+test('someone else\'s pull request is re-reviewed whole: the full diff again, with the musts left open to judge', t => {
+  const f = fixture(t);
+  const before = 'e'.repeat(40), last = JSON.stringify({ head: before, count: 1, open: JSON.stringify([{ id: 'x-1', level: 'must', kind: 'correctness', title: '旧的错', location: '', detail: '' }]) });
+  const again = f.review({ PULL_REQUEST: JSON.stringify(f.event), LAST: last, DIFF });
+  assert.equal(again.code, 1, '没判旧发现：没评成');
+  assert.deepEqual(again.calls.filter(c => c.args.some(a => a.includes('/compare/'))).map(c => c.args.at(-1)), [f.compare], '只取整份 diff');
+  const prompt = f.prompt();
+  assert.ok(prompt.includes(`的全部改动（GitHub 给出的 ${f.base}...${f.head} 之间的 diff）`) && prompt.includes(DIFF), prompt);
+  assert.ok(prompt.includes(`这是复评：${before} 是上次评过的提交，这次评整份改动。已经提过的不再提。`));
+  assert.ok(prompt.includes('"旧的错"') && prompt.includes('resolutions 字段'));
+  assert.doesNotMatch(prompt, /只评它到/);
 });

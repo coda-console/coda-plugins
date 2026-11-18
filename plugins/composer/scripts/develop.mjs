@@ -4,8 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { waitForGitHubChecks } from './github-checks.mjs';
-import { agentArgs, checksText, fail, gh, git, mergedCommit, mergePr, openPr, output, outputFilled, outputPicked, resumeText, reviewsText, talk } from './shared.mjs';
-import { findingLine, fixText, historyText, previousFor, readResponses, triageOverall } from './triage.mjs';
+import { agentArgs, changes, checksText, fail, gh, git, mergedCommit, mergePr, openPr, output, outputFilled, outputPicked, resumeText, talk } from './shared.mjs';
 
 const env = process.env, action = process.argv[2];
 const statePath = join(env.CODA_ARTIFACTS, 'develop.json');
@@ -41,27 +40,6 @@ const save = () => writeFileSync(statePath, JSON.stringify(state));
 // 回到「需求进行中」的原因，主 Agent 答复后清掉。
 const back = reason => { state.feedback = reason; save(); };
 
-// 与 PR 的 Files changed 一致：目标分支最新提交到需求分支 head 的三点 diff，按 .coda/areas.json 的最长前缀归区域。
-const changes = base => {
-  const declared = git('ls-tree', '--name-only', state.head, '.coda/areas.json') ? JSON.parse(git('show', `${state.head}:.coda/areas.json`)) : {};
-  const prefixes = Object.entries(declared).flatMap(([area, list]) => list.map(prefix => [prefix, area])).sort((a, b) => b[0].length - a[0].length);
-  const fields = git('diff', '--numstat', '-z', '-M', `${base}...${state.head}`).split('\0');
-  const areas = {}, total = { files: 0, added: 0, deleted: 0 };
-  for (let i = 0; i < fields.length - 1; i++) {
-    const [added, deleted, name] = fields[i].split('\t');
-    // 改名时 -z 输出旧路径和新路径两个字段，按新路径归类。
-    const file = name || fields[i += 2];
-    const area = prefixes.find(([prefix]) => file.startsWith(prefix))?.[1] ?? (file.includes('/') ? file.split('/')[0] : '根目录');
-    for (const group of [areas[area] ??= { files: 0, added: 0, deleted: 0 }, total]) {
-      group.files++;
-      group.added += added === '-' ? 0 : Number(added);
-      group.deleted += deleted === '-' ? 0 : Number(deleted);
-    }
-  }
-  const line = ({ files, added, deleted }) => `${files} 个文件 +${added} -${deleted}`;
-  return [`改动：${line(total)}`, ...Object.entries(areas).sort(([, a], [, b]) => b.added + b.deleted - a.added - a.deleted).map(([area, group]) => `- ${area}：${line(group)}`)].join('\n');
-};
-
 // 合进需求分支的块，从需求分支的历史读（目标分支最新提交到需求分支 head，按先后）：说明带 Coda-Piece: <运行 ID> 的块合入提交，
 // 不论在哪条父链上（跟上目标分支的块把需求分支合进自己时，别的块在合并提交的第二父链上），附上那次运行；
 // 再加上 first-parent 上没带它的提交（跟上目标分支的块的合并提交等）。流程直接推的另列，不算块。
@@ -75,7 +53,7 @@ const pieces = (base, head) => {
 
 const ancestor = (older, newer) => spawnSync('git', ['merge-base', '--is-ancestor', older, newer]).status === 0;
 const fetched = ref => { git('fetch', 'origin', ref); return git('rev-parse', 'FETCH_HEAD'); };
-// 流程自己往需求分支推（跟上目标分支、整体评审的修复）：普通推送，不 force。被拒且需求分支已不是 from（别人推进了需求分支）时返回 false，
+// 流程自己往需求分支推（提交验收时跟上目标分支）：普通推送，不 force。被拒且需求分支已不是 from（别人推进了需求分支）时返回 false，
 // 不重试、不覆盖，由调用方带着原因回到进行中；其余失败保留原退出码。
 const pushBranch = (commit, from) => {
   const result = spawnSync('git', ['push', '--no-follow-tags', 'origin', `${commit}:refs/heads/${state.branch}`], { stdio: 'inherit' });
@@ -98,11 +76,22 @@ ${files.map(file => `- ${file}`).join('\n')}
 解决冲突；数据库迁移等版本号和目标分支撞号时，顺延需求分支这边的。
 跑和冲突相关的测试后提交合并提交。回报冲突了哪些文件、各自怎么解决的、跑了什么。`;
 
+// 整体评审（README.md「整体评审」）：state.overall 是这次运行最近一次评完的结果（有它就是评过了），state.outcome 是这次提交验收的评审结果（没评就没有），
+// state.overallMust 记这次运行的整体评审出没出过必须修；state.landed 是合进的块，state.reviewedPieces 是最后一次交付评成了的块（这两样和 overall 定评不评、能不能自动合并）。
+// 合进需求分支的块（至少一块）最后一次交付都评成过。
+const piecesReviewed = () => state.landed.length > 0 && state.landed.every(run => state.reviewedPieces?.includes(run));
+const flat = text => String(text ?? '').replace(/\s*[\r\n]+\s*/g, ' ');
+const findingLine = f => `- ${flat(f.title)}${f.location ? `（${flat(f.location)}）` : ''}`;
+// 「整体评审结论」卡上的一页结论：必须修每条一句加位置，小问题、原有问题只给条数，评审原文的路径；没评成的写原因。
+const overallText = o => o.lost ? `没评成：调用 review-commit 没有成功，原因见本运行 coda://workflow-runs/${env.GITHUB_RUN_ID} 的「评审整条需求分支」（workflow_status）。`
+  : !o.report ? `没评成：${o.line}`
+  : [o.line, `必须修 ${o.must.length} 条${o.must.length ? '：' : '。'}`, ...o.must.map(findingLine), `小问题 ${o.nit.length} 条，原有问题 ${o.existing.length} 条。`, `评审原文：${o.report}`].join('\n');
+
 // 「需求进行中」派块时备注最前面换人的行（README.md「派块」）：一行一个角色，冒号后先写 Agent ID，再按需写「模型 …」「强度 …」「模式 …」，逗号隔开；
 // 可带 Markdown 列表的「- 」。备用执行者和评审者写「无」表示这一块不用。没写的角色用开工值（流程里用 FEEL 拼成 agent 对象）。
-const ROLES = { 执行者: 'executor', 备用执行者: 'executor2', 评审者: 'reviewer', 第二评审者: 'reviewer2' };
+const ROLES = { 执行者: 'executor', 备用执行者: 'executor2', 评审者: 'reviewer' };
 const SETTINGS = { 模型: 'model', 强度: 'effort', 模式: 'mode' };
-const ROLE_LINE = /^(?:[-*]\s+)?(执行者|备用执行者|评审者|第二评审者)\s*[:：]\s*(.*)$/;
+const ROLE_LINE = /^(?:[-*]\s+)?(执行者|备用执行者|评审者)\s*[:：]\s*(.*)$/;
 // 解析出 { roles, rest }（rest 是换人行之后的文字），看不懂时 { error }。
 const readRoles = note => {
   const lines = note.trim().split(/\r?\n/), roles = {};
@@ -140,12 +129,12 @@ switch (action) {
     output('reason', state.feedback);
     break;
   case 'progress': {
-    const { choice, note = '' } = JSON.parse(env.PROGRESS);
+    const { choice, note = '', options = {} } = JSON.parse(env.PROGRESS);
     const piece = choice === 'piece' || choice === 'sync' ? pieceOf(choice, note) : {};
     const missing = piece.error ? `${piece.error}这一块没有派出去。`
       : !note.trim() && { submit: '提交验收必须在备注中写给用户的改动汇报。', pause: '暂停必须在备注中写为什么暂停、等什么。' }[choice];
     if (!missing) {
-      if (choice === 'submit') state.report = note;
+      if (choice === 'submit') Object.assign(state, { report: note, again: options.again === true });
       state.feedback = '';
       save();
     }
@@ -162,10 +151,10 @@ switch (action) {
     }
     break;
   }
-  // 块合进了需求分支：下一次「需求进行中」写上合入的提交和块的运行；小改动免主控审查合入的写明没出审查卡，附上块给的摘要。
+  // 块合进了需求分支：下一次「需求进行中」写上合入的提交和块的运行。最后一次交付评成了的块记进 reviewedPieces，整体评审与自动合并看它。
   case 'piece-landed':
-    back(`块「${env.TITLE}」已合进需求分支 ${state.branch}：提交 ${env.COMMIT}，运行 coda://workflow-runs/${env.PIECE_RUN}。${env.AUTO === 'true'
-      ? `\n这一块是小改动免主控审查合入的，没出你的审查卡；需要时自己看这个提交。\n${env.SUMMARY}` : ''}`);
+    if (env.REVIEWED === 'true') (state.reviewedPieces ??= []).push(env.PIECE_RUN);
+    back(`块「${env.TITLE}」已合进需求分支 ${state.branch}：提交 ${env.COMMIT}，运行 coda://workflow-runs/${env.PIECE_RUN}。`);
     break;
   // 块没正常结束（失败、被取消，或主 Agent 在块里选了放弃）：引擎只把调用失败交给出错边界，不带被调运行的原因，所以指向本运行里调用的块。
   // 合入状态不能断言：piece.mjs 的 land 先推需求分支再删临时分支，删除失败时块失败但提交已经合进去了。
@@ -184,8 +173,10 @@ switch (action) {
     const base = git('rev-parse', 'FETCH_HEAD');
     git('fetch', 'origin', state.branch);
     state.head = git('rev-parse', 'FETCH_HEAD');
+    // 合进过哪几块（块的运行 ID）：说明带 Coda-Piece 的提交，跟上目标分支的块（执行者的合并提交）和流程直接推的不算。整体评审按它定评不评。
+    state.landed = git('log', '--format=%(trailers:key=Coda-Piece,valueonly)', `${base}..${state.head}`).split('\n').filter(Boolean);
     const direct = state.pushed?.length ? `\n\n流程直接推到需求分支的提交：\n${state.pushed.map(p => `- ${p.commit.slice(0, 12)} ${p.subject}（${p.why}）`).join('\n')}` : '';
-    const summary = `${state.report}\n\n块：\n${pieces(base, state.head)}${direct}\n\n${changes(base)}`;
+    const summary = `${state.report}\n\n块：\n${pieces(base, state.head)}${direct}\n\n${changes(base, state.head)}`;
     const path = join(env.RUNNER_TEMP, 'pr.md');
     writeFileSync(path, summary);
     state.pr = gh('pr', 'list', '--head', state.branch, '--base', state.base, '--state', 'open', '--limit', '1', '--json', 'url', '--jq', '.[].url');
@@ -208,18 +199,60 @@ switch (action) {
   case 'github-checks': {
     const status = await waitForGitHubChecks(state.pr, state.head);
     if (status !== 0) process.exit(status);
-    output('evidence', `项目检查：\n${checksText(state.checks, state.head)}\n合并前检查与 GitHub 检查已通过。`);
     break;
   }
   case 'check-failed':
     back(`${env.STEP}未通过，需求分支 head ${state.head}。\n运行：coda://workflow-runs/${env.GITHUB_RUN_ID}\n请用 workflow_status 查看本运行「${env.STEP}」及其调用的失败流程，读取错误和日志；派一块修好后再提交验收。`);
     break;
-  case 'reviewed':
-    output('reviews', reviewsText(env.REVIEWS, state.head, '评审整条需求分支'));
+  // 项目检查有了结论，定这次评不评：填了整体评审者、不是只合进了一块且它评成过、这次运行还没评过（或这次勾了「重新整体评审」）。evidence 是交给评审者的已有验证。
+  case 'overall-plan':
+    delete state.outcome;
+    save();
+    output('review', String(env.REVIEWER === 'true' && !(state.landed.length === 1 && piecesReviewed()) && (!state.overall || state.again)));
+    output('evidence', `项目检查：\n${checksText(state.checks, state.head)}`);
     break;
+  // 调用 review-commit 本身没成（出错边界）：记为没评成。
+  case 'overall-lost':
+    state.outcome = { head: state.head, lost: true };
+    save();
+    break;
+  // 评审结果入账：没评完（INCOMPLETE）只记没评成，不算评过；评完了按级别分开记，原文写进产物。
+  case 'overall-reviewed': {
+    if (env.DECISION === 'INCOMPLETE') state.outcome = { head: state.head, line: env.LINE };
+    else {
+      const findings = JSON.parse(env.FINDINGS), of = level => findings.filter(f => f.level === level);
+      state.reviews = (state.reviews ?? 0) + 1;
+      const report = join(env.CODA_ARTIFACTS, `overall-review-${state.reviews}.md`);
+      writeFileSync(report, env.REPORT);
+      state.overall = state.outcome = { head: state.head, line: env.LINE, report, must: of('must'), nit: of('nit'), existing: of('existing') };
+      if (state.overall.must.length) state.overallMust = true;
+    }
+    save();
+    break;
+  }
+  // 评不评都经过这里：这次评了、有必须修或没评成交主 Agent（review），否则往下走（accept）。最近一次评完的小问题、原有问题写进汇总，
+  // 有就更新 PR 描述；auto 是自动合并的唯一判定：开了 autoMerge，这次运行评成过（整体评审，或合进的每一块都评成过），且整体评审没出过必须修。
+  case 'overall': {
+    const o = state.outcome, done = state.overall;
+    const at = done && done.head !== state.head ? `，评审时需求分支 head ${done.head.slice(0, 12)}` : '';
+    const minor = done ? [[done.nit, `整体评审的小问题（没有修${at}）：`], [done.existing, `整体评审提到的原有问题（不是这个需求引入的${at}）：`]]
+      .filter(([list]) => list.length).map(([list, heading]) => [heading, ...list.map(f => `${findingLine(f)}${f.detail ? `\n  ${f.detail.replace(/\n/g, '\n  ')}` : ''}`)].join('\n')) : [];
+    const summary = [env.SUMMARY, ...minor].join('\n\n');
+    if (minor.length) {
+      const path = join(env.RUNNER_TEMP, 'pr.md');
+      writeFileSync(path, summary);
+      gh('pr', 'edit', state.pr, '--body-file', path);
+    }
+    output('route', o && (o.lost || !o.report || o.must.length) ? 'review' : 'accept');
+    output('summary', summary);
+    output('auto', String(env.AUTO === 'true' && Boolean(done || piecesReviewed()) && !state.overallMust));
+    output('review', o ? overallText(o) : '');
+    output('note', !done ? '' : done.head === state.head ? '，整条需求分支已整体评审' : `，整条需求分支在 ${done.head.slice(0, 12)} 时整体评审过`);
+    break;
+  }
   case 'review': {
     const { choice, note = '' } = JSON.parse(env.REVIEW);
-    if (choice === 'progress') back(`整体评审后主 Agent 选了回到进行中。${note.trim() ? `\n${note}` : ''}\n评审的发现与原文：${join(env.CODA_ARTIFACTS, 'reviews.md')}`);
+    if (choice === 'progress') back(`整体评审后主 Agent 选了回到进行中。${note.trim() ? `\n${note}` : ''}\n整体评审的结论：\n${overallText(state.outcome)}`);
     output('route', choice);
     break;
   }
@@ -274,9 +307,7 @@ switch (action) {
   }
   // 提交验收先跟上目标分支（README.md「跟上目标分支」），两端 SHA 在这里固定：需求分支已包含目标分支不动；需求分支是它的祖先就快进；
   // 分叉但能干净合并，就在步骤工作区做保留双亲的合并提交（需求分支在前）；有冲突交开工执行者（sync-resolve），没填就带着冲突文件回到进行中。
-  // 每次提交验收都从这里进来，整体评审的收敛从头开始。
   case 'sync-base': {
-    state.converge = { findings: [], rounds: 0, history: [], waiting: false };
     const base = fetched(state.base), head = fetched(state.branch);
     let route = 'pr';
     if (ancestor(base, head)) console.error(`需求分支 ${head} 已包含 ${state.base} ${base}`);
@@ -330,87 +361,6 @@ switch (action) {
     } else route = 'progress';
     save();
     output('route', route);
-    break;
-  }
-  // 整体评审的收敛（README.md「整体评审」），状态在 state.converge，记法同块的评审回路，另有 session：修复用的执行会话。
-  // 定这一次怎么评：交执行者修过、等复评时增量复评（base 是上次评过的 head，带各位置上次的发现与回应）；否则对整条需求分支完整评审（base 是目标分支最新提交）。
-  case 'overall-round': {
-    const c = state.converge;
-    c.full = !c.waiting;
-    output('base', c.full ? env.BASE : c.reviewedHead);
-    for (const [name, slot] of [['previous', 'reviewer'], ['previous2', 'reviewer2'], ['previous3', 'reviewer3']]) output(name, c.full ? '' : previousFor(c.findings, slot));
-    save();
-    break;
-  }
-  // 分流（triage.mjs 的 triageOverall）：accept 直接进验收，没修的 P3 写进汇报（更新 PR 描述，批准卡用输出的 summary）；fix 交执行者；escalate 交主 Agent 的「整体评审结论」。
-  // auto 是自动合并的唯一判定：开了 autoMerge、accept 且没有任何没关的发现（含 P3）；带 P3 的 accept 照常出批准卡。
-  case 'overall-triage': {
-    const c = state.converge, head = state.head;
-    if (c.full) c.rounds = 0;
-    const result = triageOverall(JSON.parse(env.REVIEWS), { head, findings: c.findings, rounds: c.rounds, full: c.full, fixer: env.FIXER === 'true' });
-    Object.assign(c, { findings: result.findings, reviewedHead: head, waiting: false });
-    c.history.push({ kind: 'review', full: c.full, head, resolutions: result.resolutions, added: result.findings.filter(f => result.added.includes(f.id)), route: result.route, reasons: result.reasons });
-    const minor = result.route === 'accept' ? result.findings.filter(f => f.status === 'open') : [];
-    const summary = minor.length ? `${env.SUMMARY}\n\n整体评审的小问题（P3，没有修）：\n${minor.map(f => findingLine(f, true)).join('\n')}` : env.SUMMARY;
-    if (minor.length) {
-      const path = join(env.RUNNER_TEMP, 'pr.md');
-      writeFileSync(path, summary);
-      gh('pr', 'edit', state.pr, '--body-file', path);
-    }
-    save();
-    output('route', result.route);
-    output('summary', summary);
-    output('auto', String(env.AUTO === 'true' && result.route === 'accept' && !minor.length));
-    break;
-  }
-  // 没关的 P2 交开工执行者在需求分支上逐条修复或反驳：第一轮从需求分支 head 开会话，之后续同一会话；它只提交，这里普通推送到需求分支。
-  // fixing 标记这一轮已开工、还没成功结束：再跑就是续这一轮，接回会话先核对现场。第一轮接不回会话（回复里没有会话 ID）从需求分支 head 新开一次；
-  // 之后几轮的会话里有前几轮的上下文，接不回按失败退出。
-  // 有新提交回到开 PR（汇总列出这些提交）、重跑全部检查后增量复评（pr）；只反驳、没有新提交就不重跑检查，直接复评（again）；
-  // 都没有交主 Agent（review）；推送被拒带着原因回到进行中（progress）。
-  case 'overall-fix': {
-    const c = state.converge, from = state.head, open = c.findings.filter(f => f.status === 'open' && f.severity === 'P2');
-    const task = fixText(from, open), resumed = c.fixing;
-    const fresh = () => talk(['--commit', from, '--title', `${state.title}：整体评审修复`, ...agentArgs(JSON.parse(env.EXECUTOR))], task);
-    c.fixing = true;
-    save();
-    let attempt = c.session ? talk(['--continue', c.session], resumed ? `${resumeText}\n\n原任务：\n${task}` : task) : fresh();
-    if (!attempt.reply?.session && c.session && c.rounds === 0) {
-      console.error(`接回会话 ${c.session} 失败（没有会话 ID），第一轮改为从需求分支 ${from} 新开会话。`);
-      delete c.session;
-      save();
-      attempt = fresh();
-    }
-    if (attempt.failed) {
-      if (attempt.reply?.session) { c.session = attempt.reply.session; save(); }
-      fail(attempt);
-    }
-    const executor = attempt.reply;
-    // 先落盘会话、留着 fixing：随后推送需求分支失败退出时，再跑接回这个会话并先核对现场；推送处理完、本轮记下后才清。
-    c.session = executor.session;
-    save();
-    const responses = readResponses(executor.answer, open.map(f => f.id));
-    for (const f of open) f.response = responses[f.id];
-    const moved = executor.head !== from, disputed = Object.values(responses).some(r => r.disposition === 'disputed');
-    let route = moved ? 'pr' : disputed ? 'again' : 'review';
-    if (moved && pushBranch(executor.head, from)) pushed(from, executor.head, '整体评审修复');
-    else if (moved) route = 'progress';
-    delete c.fixing;
-    c.rounds++;
-    c.waiting = route === 'pr' || route === 'again';
-    c.history.push({ kind: 'fix', round: c.rounds, from, head: executor.head, ids: open.map(f => f.id), responses,
-      note: route === 'review' ? '执行者没有新提交，也没有反驳，升级给主 Agent' : route === 'progress' ? '推送被拒，回到进行中' : '' });
-    save();
-    output('route', route);
-    break;
-  }
-  // 出「整体评审结论」之前：收敛经过放上卡（全文在产物里），不再等复评。
-  case 'overall-rounds': {
-    const history = state.converge.history, path = join(env.CODA_ARTIFACTS, 'converge.md'), text = historyText(history);
-    state.converge.waiting = false;
-    save();
-    writeFileSync(path, text);
-    output('text', text.length <= 4000 ? `${text}\n全文：${path}` : `前面的轮次见 ${path}。\n\n${historyText(history.slice(-1))}`);
     break;
   }
   default: throw new Error(`未知开发步骤：${action}`);
