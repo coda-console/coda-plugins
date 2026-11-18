@@ -4,7 +4,7 @@
   "displayName": "宿主资源",
   "description": "Xcode、模拟器的排队名额",
   "icon": { "symbol": "hammer.fill", "color": "gray" },
-  "version": "4.0.0",
+  "version": "5.0.0",
   "coda": {
     "channels": [
       "preview"
@@ -24,11 +24,8 @@
     "capabilities": [
       "run-held"
     ],
-    "groups": [
-      {
-        "name": "host",
-        "capacity": "host.capacity"
-      }
+    "protocolImplementations": [
+      "coda/group@1"
     ],
     "commands": [
       {
@@ -52,7 +49,7 @@
           "minimum": 1,
           "maximum": 8,
           "default": 1,
-          "description": "这个后端实例同时运行几条占名额的命令（模拟器、Xcode 构建和项目要求排队的命令）；同一台 Mac 上的每个实例各有一组名额。"
+          "description": "这个后端实例同时运行几条占名额的命令（模拟器、Xcode 构建和项目要求排队的命令）；名额是整台后端的事：流程步骤写 coda:group=\"host\" 也按这个值排，按目录给的值不再起作用。同一台 Mac 上的每个实例各有一组名额。"
         },
         "host.cleanSchedule": {
           "title": "清点模拟器的周期",

@@ -2,6 +2,8 @@
 
 ## 名额与模拟器清点
 
+5.0.0（接口破坏性变更）：名额改由插件模块写一条 `coda/group@1` 记录（`name: 'host'`、`capacity` 取设置 `host.capacity`、`reach: { scope: 'machine' }`），设置一改记录就整份重写，容量随之变；清单删 `contributes.groups`，加 `protocolImplementations: ['coda/group@1']`。每台机器各写一条 `host`，彼此不冲突。名额是整台后端的事，按目录给的容量不再起作用。需要先带 H9-B 的 Coda。只给预览渠道。
+
 4.0.0（接口破坏性变更）：不再发布 `coda/executor@1` 执行器记录：清单里的 `protocolImplementations`、每分钟的本机探测与容量计算一并删掉。名额（组 `host`、`run-held`、`host-sim`）与模拟器清点不变，插件模块只剩 `coda self run-finished` 的处理。需要先带 H4 之后结构减负的 Coda。只给预览渠道。
 
 3.1.0：清理脚本改用 `coda self run-finished` 问本插件模块，模块用 `coda.self.handle` 登记，不再开本机端口、不再写状态文件。需要先带 H5（命令的绑定）的 Coda。只给预览渠道。
@@ -15,7 +17,7 @@
 ## 现有持锁执行与模拟器工具
 
 这个后端实例的 Apple 模拟器、Xcode 构建和项目要求排队的命令共用一组名额，会话里的这类命令经这个插件排队与执行。名额是流程引擎的[并发组](https://github.com/coda-console/coda/blob/main/docs/workflows.md#并发组) `host`，
-每个[后端实例](https://github.com/coda-console/coda/blob/main/docs/deployment.md#后端实例)各有一组，同一台 Mac 上的两个实例互不相干；插件只声明名额，也就是组 `host` 的容量，Coda 内核不认识它。
+每个[后端实例](https://github.com/coda-console/coda/blob/main/docs/deployment.md#后端实例)各有一组，同一台 Mac 上的两个实例互不相干；插件用一条记录给出名额，也就是组 `host` 的容量，Coda 内核不认识它。
 
 从 Coda 的商店安装（npm 包 `@coda-console/host`，分类「机器与资源」），不随 Coda 默认装上；没装时流程步骤写 `coda:group="host"` 照样排队，容量按 1，
 会话里也没有 `host-sim`。用法给 Agent 的部分在 Skill `host-slots`（`skills/host-slots/SKILL.md`）。
@@ -72,11 +74,11 @@
 
 **资源**「构建名额」（类型 `slots`）：从 `CODA_GROUPS_STATE` 读组 `host`，一行：读数「空闲」画空闲名额（空几个、共几个），
 接着每个占着的写运行标题、所属会话和占了多久（借用中、正在收尾、占满另外注明），每个排着的写排第几、等了多久，合计至多 8 个读数。打开或刷新资源页时读，不在后台采集。
-容量在「设置 › 插件」里改。
+容量取组 `host` 的记录（`coda resources group-owner host` 的 `capacity`），不取设置：设置改了、记录还没重写的那一刻，显示的仍是 Coda 排队用的值；没有记录按 1。容量在「设置 › 插件」里改。
 
 **设置**：`host.capacity`「名额数」，1–8，默认 1；`host.cleanSchedule`「清点模拟器的周期」，ISO 8601 重复间隔，默认 `R/P1D`（每天一次）。
-插件以 `contributes.groups` 声明组 `host` 的容量就是 `host.capacity`，所以项目流程的步骤写 `coda:group="host"`
-也按这个容量排；步骤里看到 `CODA_GROUPS` 含 `host` 时，`host-sim` 同样视作已占着名额（`run` 直接执行、`check` 通过，`bind` 只记进本实例的 `simulator-registrations/`，由定时清点删除）。`run` 直接执行的命令带上 `HOST_SIM_LEASE=coda-group:host`，所以只看有没有 `HOST_SIM_LEASE` 的项目脚本在步骤里多走一次就照常往下，不会反复调用自己。项目脚本判断自己在不在名额里应问 `host-sim check`（Skill `host-slots`）：测试机上执行的命令也带 `HOST_SIM_LEASE`，占的却不是构建名额。已占着名额只说构建与模拟器，测试机的设备名另由[测试机插件](../testbed/README.md)借用：在构建名额里用设备名调用，同样交给测试机插件，只借给正在做那台设备任务的会话。
+插件模块把组 `host` 写成一条记录，容量就是 `host.capacity`，设置改了记录随之改，所以项目流程的步骤写 `coda:group="host"`
+也按这个容量排（容量只取记录的，不取目录给的值）；步骤里看到 `CODA_GROUPS` 含 `host` 时，`host-sim` 同样视作已占着名额（`run` 直接执行、`check` 通过，`bind` 只记进本实例的 `simulator-registrations/`，由定时清点删除）。`run` 直接执行的命令带上 `HOST_SIM_LEASE=coda-group:host`，所以只看有没有 `HOST_SIM_LEASE` 的项目脚本在步骤里多走一次就照常往下，不会反复调用自己。项目脚本判断自己在不在名额里应问 `host-sim check`（Skill `host-slots`）：测试机上执行的命令也带 `HOST_SIM_LEASE`，占的却不是构建名额。已占着名额只说构建与模拟器，测试机的设备名另由[测试机插件](../testbed/README.md)借用：在构建名额里用设备名调用，同样交给测试机插件，只借给正在做那台设备任务的会话。
 
 **扩展点** `kinds`：`host-sim` 遇到 `build`、`simulator` 之外的 `--kind`，把整条命令交给接在这里的第一个命令（按插件 ID 排），参数原样附在后面；
 那条命令以接上它的插件的 `CODA_PLUGIN_PATH`、`CODA_PLUGIN_STATE` 运行，退出码就是 `host-sim` 的。没有插件接上时拒绝，提示装测试机插件。
