@@ -196,7 +196,7 @@ test('需求流程回路、人工任务、结果通知和合并后的流程契�
     return (flows.find(e => e.conditionExpression && evaluate(e.conditionExpression.body.trim().slice(1), context).value) ?? node.default).targetRef.id;
   };
   // 用户在会话里开启时什么都不必填：需求名与目标由主 Agent 写。
-  assert.deepEqual(values(process).map(v => [v.name, v.required, v.default]), [['title', undefined, ''], ['devices', undefined, 'false'], ['device', undefined, ''], ['hold', undefined, '']]);
+  assert.deepEqual(values(process).map(v => [v.name, v.required, v.default]), [['title', undefined, ''], ['devices', undefined, 'false'], ['device', undefined, '']]);
   assert.equal(values(process)[1].type, 'boolean');
   // 目标是发起时带的需求文字（run.message），需求名和它缺一样就先交主 Agent 写。
   for (const [title, message, target] of [['', '', 'brief'], ['输入框', '', 'brief'], ['', '能输入', 'brief'], ['输入框', '能输入', 'init']]) {
