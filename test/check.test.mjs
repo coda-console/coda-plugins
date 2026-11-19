@@ -460,6 +460,19 @@ describe('manifests Coda does not take', () => {
     const { report } = await checkPlugin(join(top, 'reader'), { manifestOnly: true });
     assert.deepEqual(failed(report), []);
     assert.deepEqual(report.items.filter(item => item.rule === 'manifest.events').map(item => item.message), ['用到 liar/deploy@1 的事件组 watch：deploy.started、deploy.ended']);
+    assert.deepEqual(report.items.filter(item => item.rule === 'manifest.events-main').map(item => [item.status, item.message]),
+      [['warn', '订了事件组 liar/deploy@1 watch，但没有 main，收不到事件']]);
+  });
+  test('an event group with a main is not warned about', async () => {
+    const top = mkdtempSync(join(tmpdir(), 'coda-plugin-check-events-'));
+    temps.push(top);
+    const write = (id, manifest) => { mkdirSync(join(top, id)); writeFileSync(join(top, id, 'package.json'), JSON.stringify({ name: id, version: '1.0.0', ...manifest })); };
+    write('liar', { contributes: { protocols: [deploys] } });
+    write('reader', { extensionDependencies: ['liar'], main: 'index.mjs', uses: { 'liar/deploy@1': ['watch'] }, contributes: {} });
+    writeFileSync(join(top, 'reader', 'index.mjs'), '');
+    const { report } = await checkPlugin(join(top, 'reader'), { manifestOnly: true });
+    assert.deepEqual(failed(report), []);
+    assert.deepEqual(report.items.filter(item => item.rule === 'manifest.events-main'), []);
   });
   test('a group the protocol it uses does not have is refused, as Coda refuses it at install', async () => {
     const top = mkdtempSync(join(tmpdir(), 'coda-plugin-check-events-'));

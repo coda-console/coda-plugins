@@ -123,7 +123,10 @@ export function checkManifest(dir, say) {
     else for (const group of groups) {
       const events = definition?.permissions[group].events;
       if (!definition) say.info('manifest.events', `用到 ${kind} 的权限组 ${group}：协议定义不在本地，列不出事件`);
-      else if (events) say.pass('manifest.events', `用到 ${kind} 的事件组 ${group}：${events.join('、')}`);
+      else if (events) {
+        say.pass('manifest.events', `用到 ${kind} 的事件组 ${group}：${events.join('、')}`);
+        if (!plugin.main) say.warn('manifest.events-main', `订了事件组 ${kind} ${group}，但没有 main，收不到事件`);
+      }
       else say.pass('manifest.events', `用到 ${kind} 的权限组 ${group}：不含事件`);
     }
   }
