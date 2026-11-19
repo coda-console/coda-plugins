@@ -3,6 +3,7 @@
 // Grok's questions are asked of Coda as ACP forms (questions.mjs). Grok gives one up (its timeout, a cancelled turn)
 // by ending the tool call alone, so that end withdraws the form. Its context compactions, auto or a /compact of the user's, are
 // told as `_x.ai/session_notification` updates, which are also told to Coda as `compaction_update` (docs/agent-protocol.md).
+// The prompt's usage Grok tells in `_meta.usage` is also told as the response's `usage` (usage.mjs).
 // Grok's ACP has no session/delete, so the entry declares it and answers it with `grok sessions delete`
 // (delete.mjs; checked on 1.0.77): Coda's probes (session/new, then gone) leave no empty sessions in Grok's history.
 import { spawn } from 'node:child_process';
@@ -11,6 +12,7 @@ import { grokBinary } from '../scripts/ask.mjs';
 import { deleteSession } from './delete.mjs';
 import { describeExit, endedError } from './exit.mjs';
 import { ASK, questionForm } from './questions.mjs';
+import { promptUsage } from './usage.mjs';
 
 const modes = [{ id: 'auto', name: '自动审批', _meta: { coda: { shortName: '自动审批' } } },
   { id: 'always-approve', name: '全部放行', _meta: { coda: { shortName: '全部放行' } } }];
@@ -94,6 +96,9 @@ read(grok.stdout, message => {
     if (message.result && request.method === 'initialize') {
       const capabilities = message.result.agentCapabilities ??= {};
       capabilities.sessionCapabilities = { ...capabilities.sessionCapabilities, delete: {} };
+    } else if (message.result && request.method === 'session/prompt') {
+      const usage = promptUsage(message.result);
+      if (usage) message.result.usage = usage;
     } else if (message.result && request.method !== 'session/prompt') {
       sessionId = message.result.sessionId ?? request.params.sessionId;
       mode = request.params?._meta?.yoloMode ? 'always-approve' : request.params?._meta?.autoMode ? 'auto' : '';

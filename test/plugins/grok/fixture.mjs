@@ -64,6 +64,8 @@ createInterface({ input: process.stdin }).on('line', m => {
       note('child', { sessionUpdate: 'auto_compact_started' });
       say('compacted'); send({ id: m.id, result: { stopReason: 'end_turn' } }); return;
     }
+    // `result:<json>` answers with that response as given, as Grok's own carry `_meta.usage`.
+    if (m.params.prompt[0].text.startsWith('result:')) { send({ id: m.id, result: JSON.parse(m.params.prompt[0].text.slice('result:'.length)) }); return; }
     // The checker's question about the session instructions, answered from what came in front of it as a model would.
     const given = m.params.prompt.map(block => block.text ?? '').join('\n');
     if (given.includes('What is the Coda check word?')) {
