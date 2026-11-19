@@ -303,8 +303,12 @@ function recordCommands(contributes, dir) {
   return (contributes.records ?? []).map(({ kind, command, every }, i) => {
     const where = `contributes.records 第 ${i + 1} 项（${kind}）`;
     check(implemented.has(kind), 'invalid_plugin', `contributes.records 第 ${i + 1} 项的种类 ${kind} 不在这个插件的 protocolImplementations 里`);
+    let ms = null;
+    if (every !== undefined) {
+      try { ms = durationMs(every); } catch { ms = NaN; }
+      check(Number.isSafeInteger(ms), 'invalid_plugin', `${where}的 every ${every} 不是能用的时长`);
+    }
     runnable(dir, command, where);
-    const ms = every === undefined ? null : durationMs(every);
     check(ms === null || ms >= EVERY_LEAST, 'invalid_plugin', `${where}的 every ${every} 短于 PT1M`);
     return { kind, command, ...(ms === null ? {} : { every: ms }) };
   });

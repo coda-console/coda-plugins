@@ -1,9 +1,9 @@
 {
-  "commit": "ac62648a67e83781fe9d0bf5cf3c9e494b76848d",
+  "commit": "ca6267e229bcf0c622187c6cd300022d59505203",
   "packages": {
     "@0dep/piso": "5.2.0",
     "@agentclientprotocol/sdk": "2.6.0",
-    "@coda-console/protocol": "git+https://github.com/coda-console/coda-protocol.git#4dbe7cc69c3a322b6a67ecf1811cb3323e2177b8",
+    "@coda-console/protocol": "6.15.0",
     "ajv": "8.20.0",
     "yaml": "2.9.1"
   },
@@ -31,7 +31,7 @@
     "check/coda/components/plugins/model-contributions.mjs": "018a7157954b2326887ba1a780b37d3beb33338e41a28936b313562c2939d563",
     "check/coda/components/plugins/plugin-extensions.mjs": "ac1858346d94e41a2dcb030033d40df6c1f222b5de0759eb1f28d8db47c8097b",
     "check/coda/components/plugins/plugin-icons.mjs": "ec29cadce4948ecacabfe911a2ceb45414b96e28971358acbc4e952bedc78e1a",
-    "check/coda/components/plugins/plugin-rules.mjs": "2c91ab4992e37088c2f1cb722695673e88a4cc9deac69a3e0d27bd4b5662454a",
+    "check/coda/components/plugins/plugin-rules.mjs": "32cf0a3956a646e0c18cea62da4c0969af9f4c6f60ab1a4970937163a13a878a",
     "check/coda/components/plugins/plugin-source-rules.mjs": "d3bf278c4fb35e99f602ea81419dff0ad0c2753ee20e6e3b648d2fecf82da44f",
     "check/coda/components/plugins/process-contributions.mjs": "6d39a904f52956b87c04351398f79a4fc34981fa01453195bd7a3b9f2c5d237b",
     "check/coda/components/plugins/skill-document.mjs": "153ad3c096c7c9b7774bcf7dcc0ba603c962ee1ac8697c8a71e3f2c9ba9c92e6",
