@@ -114,8 +114,11 @@ async function installer(t, script) {
   return { home, install: operation(t, 'grok', 'scripts/install.mjs', pluginEnv('grok', { HOME: home, PATH: `${bin}:/usr/bin:/bin`, SHELL: '/bin/zsh' })) };
 }
 
+// What an installer run here leaves in ~/.grok/bin: a `grok` whose version says `grok <said>`, or (null) one that does not start.
+const leaves = said => `mkdir -p "$HOME/.grok/bin"; printf '#!/bin/sh\\n${said ? `echo grok ${said}` : 'exit 1'}\\n' > "$HOME/.grok/bin/grok"; chmod 755 "$HOME/.grok/bin/grok"\n`;
+
 test('Grok is installed by its own installer, touching no shell configuration, and the result is {}', async t => {
-  const { home, install } = await installer(t, `printf '%s\\n' "$SHELL" "$PATH" "$2" > "$HOME/installed"`);
+  const { home, install } = await installer(t, `${leaves('1.0.52')}printf '%s\\n' "$SHELL" "$PATH" "$2" > "$HOME/installed"`);
   assert.equal(await install.ended, 0, install.stderr);
   assert.equal(install.stdout, '{}\n');
   const [shell, path, script] = (await readFile(join(home, 'installed'), 'utf8')).trimEnd().split('\n');
@@ -129,6 +132,20 @@ test('an installer that fails fails the install with a line of its own', async t
   assert.equal(await install.ended, 1);
   assert.equal(install.stdout, '');
   assert.equal(install.stderr.trim(), '安装失败（退出码 3）');
+});
+
+test('an installer that ends well but leaves no CLI that starts, or one too old, fails the install with the reason the setup would give', async t => {
+  for (const [script, reason] of [
+    ['exit 0', '安装后这台机器上没有 Grok CLI'],
+    [leaves(null), home => `安装后Grok CLI 无法运行（${join(home, '.grok/bin/grok')}）`],
+    [leaves('1.0.51'), '安装后Grok CLI 1.0.51 低于所需的 1.0.52'],
+    [leaves('grok'), home => `安装后读不出 Grok CLI 的版本（${join(home, '.grok/bin/grok')}）`],
+  ]) {
+    const { home, install } = await installer(t, script);
+    assert.equal(await install.ended, 1, script);
+    assert.equal(install.stdout, '');
+    assert.equal(install.stderr.trim(), typeof reason === 'function' ? reason(home) : reason);
+  }
 });
 
 // What the first-choice path may hold that is no CLI (a leftover that cannot run), with a `grok` on the PATH that is: the record, the

@@ -103,7 +103,7 @@ test('a Bot removed while the refusal of its request is read starts no renewal; 
   removed.abort(new Error('removed'));
   await assert.rejects(first, /removed/);
   // Another Bot's request is refused too, and its renewal fails: it is told, with the failure marked as the renewal's.
-  await assert.rejects(auth.client.request('ListGrokBotAgents', { bot: 'other' }), e => e.renewalFailed && /资源页/.test(e.message));
+  await assert.rejects(auth.client.request('ListGrokBotAgents', { bot: 'other' }), e => e.renewalFailed && e.status === 503 && e.message === 'Grok 登录续期失败：HTTP 503');
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(unhandled, []);
   assert.equal(renewals, 1, 'the removed Bot\'s request renewed nothing');

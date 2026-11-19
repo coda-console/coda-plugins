@@ -18,7 +18,7 @@ Codex Agent：Codex 插件提供的入口运行 codex-acp，报告子 Agent、�
 - **身份**：额度是一个人在一个工作区的，身份是邮箱与工作区账号 ID 一起的哈希 `codex:<哈希>`；Codex 没给出邮箱或工作区时不带。
 - **完全重置**：有可用的那一次时，行尾有「使用完全重置」，总是用最早到期的那一次；确认框写账号与这一次的到期时间。
   动作（操作 `act` 的 `reset`，`scripts/act.mjs`）只兑换按钮指定的那一次（不让上游自己挑），没重置成（当前额度无需重置、这次已被使用或已不可用）时那一行写明。
-- **登录**：操作 `sign-in`（`scripts/sign-in.mjs`）运行同一个 CLI 的 `codex login --device-auth`，把它打印的链接与设备码用 `coda progress` 报给 Coda（报完才算登录结束，报失败登录就失败），20 秒内没有链接就失败，原因是那时 CLI 说的最后一行（之后被结束时 CLI 说什么不改它，退出码 0 也不算成功）；这套流程在 `scripts/device-login.mjs`，`codex-accounts` 也用它；设备码登录要在 ChatGPT 账号安全设置或工作区权限里启用
+- **登录**：操作 `sign-in`（`scripts/sign-in.mjs`）运行同一个 CLI 的 `codex login --device-auth`，把它打印的链接与设备码用 `coda progress` 报给 Coda（报完才算登录结束，报失败登录就失败），20 秒内没有链接就失败，原因是那时 CLI 说的最后一行（之后被结束时 CLI 说什么不改它，退出码 0 也不算成功）；这套流程在 `scripts/device-login.mjs`，`codex-accounts` 随包带一份一字不差的（旁边的 `codex` 可能是没有它的旧版），改它要同步那一份；设备码登录要在 ChatGPT 账号安全设置或工作区权限里启用
   （[OpenAI 登录说明](https://learn.chatgpt.com/docs/auth)）。重新登录替换 `CODEX_HOME` 当前的登录；多账号管理器的活动账号若也用这个目录，同样被替换，
   管理器那边读取时仍会核对账号身份。
 - **读取**：记录命令不定时（清单里没有 `every`），资源页打开、点「刷新」和每个操作之后才运行，每次都重新查询。Codex 本身启动不了或不答复时命令以非零退出，原因写在标准错误的最后一行。

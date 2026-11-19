@@ -120,6 +120,18 @@ test('device login adds accounts, re-login updates by identity, and failed login
   assert.ok(!(first.stdout + first.stderr + JSON.stringify(first.reported)).includes('PRIVATE-REFRESH')); assert.ok(!JSON.stringify(await list(f.at)).includes('PRIVATE-REFRESH'));
 });
 
+test('the sign-in starts beside an older codex that has no device login of its own: it carries the same one, to the byte', async t => {
+  assert.equal(await readFile(join(pluginDir('codex-accounts'), 'scripts', 'device-login.mjs'), 'utf8'),
+    await readFile(join(pluginDir('codex'), 'scripts', 'device-login.mjs'), 'utf8'), 'the copy follows the codex plugin\'s');
+  const f = await setup(t), old = join(f.dir, 'codex-1.14.4');
+  await mkdir(join(old, 'scripts'), { recursive: true });
+  await writeFile(join(old, 'package.json'), JSON.stringify({ name: '@coda-console/codex', id: 'codex', version: '1.14.4' }));
+  const signed = await f.login('first', { CODA_PLUGIN_DEPENDENCIES: JSON.stringify({ codex: old }) });
+  assert.equal(signed.code, 0, signed.stderr); assert.equal(signed.stdout, '{}\n');
+  assert.deepEqual(signed.reported, [{ command: 'progress', input: { url: 'https://auth.openai.com/codex/device', code: 'ABCD-12345' } }]);
+  assert.equal(selection(f.at), identity('first'));
+});
+
 test('cancelling device login cleans its attempt and leaves no account behind', async t => {
   const f = await setup(t), confirmation = join(f.dir, 'never-confirmed');
   const coda = await fakeCoda(f.dir, f.env({ FAKE_CONFIRM: confirmation })), run = operation(t, 'codex-accounts', 'scripts/sign-in.mjs', coda.env);

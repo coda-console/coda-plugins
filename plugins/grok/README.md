@@ -19,11 +19,12 @@ Grok Agent：适配运行机上 Grok CLI 的 ACP 与审批模式；资源页的�
 - **显示**：一个资源，名字是用户在 xAI 填的名字（没有就叫「Grok」，不显示邮箱与套餐）。额度与 CLI 的 `/usage` 同源：
   按当前周期画「7 天」或「月度」的剩余，剩余 = 100 减 `creditUsagePercent`（字段缺省即已用 0%：protobuf JSON 省略零值；旧格式按 `used / monthlyLimit` 算），
   重置时间取当前周期结束；设了按需上限时另一条「按需用量」（旧格式没给按需已用时取超出额度的部分）。预付余额是金额，不折算，不显示。
-  登录文件读不了、CLI 的订阅查询说登录已失效（此时不再查账号信息和额度）、或有登录却找不到 CLI 时，记录照写：一行「Grok」写原因，登录与安装入口照常在；CLI 起不来、不答复、答复读不懂或没有额度时，命令以非零退出，原因写在标准错误的最后一行，Coda 保留上一份记录，资源页显示「更新失败：原因」。记录命令是 `scripts/resource.mjs`，不定时（没有 `every`），资源页打开、点「刷新」和每个操作之后运行。
+  登录文件读不了、CLI 的订阅查询说登录已失效（此时不再查账号信息和额度）、或有登录而 CLI 没就绪（找不到、`--version` 起不来、读不出版本或低于最低版本，与安装同一个检查）时，记录照写：一行「Grok」写原因，登录与安装入口照常在；CLI 起不来、不答复、答复读不懂或没有额度时，命令以非零退出，原因写在标准错误的最后一行，Coda 保留上一份记录，资源页显示「更新失败：原因」。记录命令是 `scripts/resource.mjs`，不定时（没有 `every`），资源页打开、点「刷新」和每个操作之后运行。
 - **身份**：`grok:<邮箱的哈希>`，邮箱本身不显示也不送出。
 - **登录**：操作 `sign-in`（`scripts/sign-in.mjs`）运行 `grok login --device-auth`（设备码，可以用 X 账号确认），`BROWSER=/usr/bin/true`，运行机上不开浏览器；把它打印的链接与设备码用 `coda progress` 报给 Coda（只认完整的行，两路输出各自成行；报完才算登录结束，报失败登录就失败），20 秒内没有链接就失败，原因是那时 CLI 说的最后一行；这套流程在 `scripts/device-login.mjs`。
 - **安装**：操作 `install`（`scripts/install.mjs`，设置动作 `scripts/setup.mjs` 也用它）运行官方安装脚本 `curl -fsSL https://x.ai/cli/install.sh | bash`，下载约 150 MB 装进 `~/.grok/bin`。运行时 `SHELL` 置空、`~/.grok/bin` 放在 `PATH` 最前，
   脚本因此不改 shell 配置、不往 `~/.local/bin` 建链接；除 `~/.grok` 外只写一个 fish 补全文件。
+  安装脚本退出 0 还不算装好：之后再查一遍找到的 CLI（能启动、读得出版本、不低于 1.0.52），过了才报成功，否则失败并写明原因；设置动作和记录的 `signIn.installed` 用的是同一个检查（`scripts/install.mjs` 的 `needed`）。
 
 ## 提问
 

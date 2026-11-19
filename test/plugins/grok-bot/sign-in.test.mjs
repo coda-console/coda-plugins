@@ -18,8 +18,10 @@ const lastLine = text => text.split('\n').map(line => line.trim()).filter(Boolea
 // A directory to work in, with a preload that stands in for the network: `/auth/poll` is 404 until `confirmed` is there, then the
 // login (500 for TEST_POLL_FAIL), and is noted in the file `polled`; TEST_UNAUTHORIZED answers every other request 401. TEST_SLOW
 // answers none (`all`) or none but the renewal's own 401 (`renewal`: the account's request is refused, the renewal never answers) before
-// the reading's time is up, which is shortened to a moment, as it is the case that tests it. TEST_BOTS answers the account and a
-// list of that many Bots, and notes the list in the file `listed`.
+// the reading's time is up, which is shortened to a moment, as it is the case that tests it; the time a renewal on its way is given
+// after it is shortened too (TEST_RENEW_BY, half a second unless said). TEST_RENEWAL refuses every request but the renewal, which
+// answers with that status, or `garbled` (200 and no JSON), or `late` (renewed, with a rotated refresh token, only once the reading's
+// time is up). TEST_BOTS answers the account and a list of that many Bots, and notes the list in the file `listed`.
 async function machine(t) {
   const dir = await mkdtemp(join(tmpdir(), 'coda-grok-bot-sign-in-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
@@ -28,7 +30,9 @@ async function machine(t) {
 import { join } from 'node:path';
 const set = globalThis.setTimeout, timeout = AbortSignal.timeout;
 globalThis.setTimeout = (fn, ms, ...args) => set(fn, ms === 2000 ? 5 : ms, ...args);
-AbortSignal.timeout = ms => timeout.call(AbortSignal, ms === 20_000 ? 100 : ms);
+let budget;
+AbortSignal.timeout = ms => ms === 20_000 ? (budget = timeout.call(AbortSignal, 100))
+  : timeout.call(AbortSignal, ms === 28_000 ? Number(process.env.TEST_RENEW_BY ?? 500) : ms);
 // A request that is not answered, as a socket is not: it keeps the process going, and ends when its signal does.
 const hang = signal => new Promise((_, reject) => {
   const keep = setInterval(() => {}, 1000);
@@ -38,6 +42,17 @@ globalThis.fetch = async (url, options = {}) => {
   const path = new URL(url).pathname;
   if (process.env.TEST_SLOW === 'all' || (process.env.TEST_SLOW === 'renewal' && path === '/oauth/token')) return hang(options.signal);
   if (process.env.TEST_SLOW === 'renewal') return new Response('{}', { status: 401 });
+  const renewal = process.env.TEST_RENEWAL;
+  if (renewal && path !== '/oauth/token') return new Response('{}', { status: 401 });
+  if (renewal === 'late') {
+    // Its socket keeps the process going, as a real one does.
+    const keep = setInterval(() => {}, 1000);
+    await new Promise(resolve => budget.aborted ? resolve() : budget.addEventListener('abort', resolve, { once: true }));
+    await new Promise(resolve => set(resolve, 50));
+    clearInterval(keep);
+    return Response.json({ access_token: 'renewed', refresh_token: 'rotated' });
+  }
+  if (renewal) return renewal === 'garbled' ? new Response('<html>', { status: 200 }) : new Response('{}', { status: Number(renewal) });
   if (process.env.TEST_BOTS) {
     if (path.endsWith('/GetMe')) return Response.json({ authId: 'account' });
     appendFileSync(join(process.env.TEST_DIR, 'listed'), 'x');
@@ -126,6 +141,27 @@ test('a reading that cannot be had within its time fails the command with the re
   const { dir, env } = await machine(t);
   await writeFile(join(dir, 'native-auth.json'), JSON.stringify({ accessToken: 'old', refreshToken: 'refresh' }));
   for (const slow of ['all', 'renewal']) await assert.rejects(resourceRecords(pluginDir('grok-bot'), { env: env({ TEST_SLOW: slow }) }), { message: '读取超时' }, slow);
+});
+
+test('a renewal still on its way when the reading\'s time is up is not ended with it: the rotated token it gets is written before the command ends', async t => {
+  const { dir, env } = await machine(t), file = join(dir, 'native-auth.json');
+  await writeFile(file, JSON.stringify({ accessToken: 'old', refreshToken: 'refresh' }));
+  await assert.rejects(resourceRecords(pluginDir('grok-bot'), { env: env({ TEST_RENEWAL: 'late', TEST_RENEW_BY: '10000' }) }), { message: '读取超时' });
+  assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), { accessToken: 'renewed', refreshToken: 'rotated' });
+});
+
+test('a renewal the server cannot give (503) or whose answer cannot be read fails the command, keeping the record and the login; only a refused one asks to sign in', async t => {
+  const { dir, env } = await machine(t), file = join(dir, 'native-auth.json'), login = JSON.stringify({ accessToken: 'old', refreshToken: 'refresh' });
+  await writeFile(file, login);
+  const read = extra => resourceRecords(pluginDir('grok-bot'), { env: env(extra) });
+  await assert.rejects(read({ TEST_RENEWAL: '503' }), { message: 'Grok 登录续期失败：HTTP 503' });
+  await assert.rejects(read({ TEST_RENEWAL: 'garbled' }), { message: '续期的响应读不懂' });
+  assert.equal(await readFile(file, 'utf8'), login, 'the login is as it was');
+  for (const refused of ['400', '401']) {
+    const [{ spec }] = await read({ TEST_RENEWAL: refused });
+    assert.deepEqual(spec.resources, [{ name: 'Grok Bot', values: [], buttons: [], error: '请重新登录' }], refused);
+    assert.equal(spec.signIn.installed, true);
+  }
 });
 
 test('a reading that fails for any other reason, after one that went well, fails the command with the reason, keeping the record Coda has', async t => {

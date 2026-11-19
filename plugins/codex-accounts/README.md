@@ -10,4 +10,4 @@
 - **按钮**（在「···」里；都是操作 `act`，由 `scripts/act.mjs` 按 `{ action, args }` 分派 `select`、`reset`、`remove`）：「切换使用」（先用这个账号核对一次，通过才记下；会话在下一个边界换过去）、
   「使用完全重置」（同 `codex`，用这个账号的令牌）、「移除账号」（删掉插件保存的登录；移除的是正在用的，要再选或添加一个）。
 - **身份**：知道邮箱的账号带与 `codex` 同一写法的身份（邮箱与工作区），同一账号在几台上、或与本机登录是同一个时，Coda 的资源页只显示一行。
-- **登录**：操作 `sign-in`（`scripts/sign-in.mjs`）运行 `scripts/login.mjs`（Codex 的设备码登录，每次在私有目录里，登完核对才保存），设备码的解析、用 `coda progress` 上报、20 秒首链超时与收尾用依赖插件 `codex` 的 `scripts/device-login.mjs`（经 `CODA_PLUGIN_DEPENDENCIES` 找到），这里只提供怎么起 `login.mjs`。`codex` 自己的登录入口接上它之后也走 `login.mjs`。
+- **登录**：操作 `sign-in`（`scripts/sign-in.mjs`）运行 `scripts/login.mjs`（Codex 的设备码登录，每次在私有目录里，登完核对才保存），设备码的解析、用 `coda progress` 上报、20 秒首链超时与收尾用 `scripts/device-login.mjs`：与 `codex` 的同名文件一字不差，随本插件带着，旁边装的 `codex` 是没有这个文件的旧版时登录照样能起（测试核两份一致，改一份另一份跟着改）。`codex` 自己的登录入口接上它之后也走 `login.mjs`。

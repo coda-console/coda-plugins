@@ -25,8 +25,9 @@ const waiting = (work, signal) => !signal ? work : new Promise((resolve, reject)
   work.then(resolve, reject).finally(() => signal.removeEventListener('abort', abandon));
 });
 export class NativeAuth {
-  constructor({ root, fetcher = fetch, clock = { setTimeout, clearTimeout } }) {
-    Object.assign(this, { root, fetcher, clock });
+  // `renewBy`: a signal that ends a renewal still on its way (beside its own 30 seconds), for a process that has to end by then.
+  constructor({ root, fetcher = fetch, clock = { setTimeout, clearTimeout }, renewBy }) {
+    Object.assign(this, { root, fetcher, clock, renewBy });
     this.file = root && join(root, 'native-auth.json');
     if (this.file) {
       try { this.use(JSON.parse(readFileSync(this.file, 'utf8'))); }
@@ -59,17 +60,20 @@ export class NativeAuth {
   // The renewal shared by the requests the token was refused for, settling to its failure (null once renewed) rather than
   // rejecting: every one of them may have given up its wait, and a failure no one is left to hear must not end the process. The
   // send was already rejected, so a failure (rejected, offline, timed out, unwritable) is marked for callers; its status and
-  // message stay as they are.
+  // message stay as they are. Only a refusal of the refresh token (400, 401, 403, or `shouldLogout`) is a 401, which asks for a
+  // new login; any other answer keeps its own status (a 503 is the server's), and one that cannot be read has none.
   refresh(auth) {
     this.renewing ??= (async () => {
       const response = await this.fetcher(`${API}/oauth/token`, {
-        method: 'POST', redirect: 'error', signal: AbortSignal.timeout(30_000),
+        method: 'POST', redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(30_000), this.renewBy].filter(Boolean)),
         headers: { ...clientHeaders(), 'content-type': 'application/json' },
         body: JSON.stringify({ client_id: 'KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB', grant_type: 'refresh_token', refresh_token: auth.refreshToken }),
       });
-      const renewed = await response.json().catch(() => ({}));
-      if (!response.ok || renewed.shouldLogout || typeof renewed.access_token !== 'string' || !renewed.access_token)
+      const renewed = await response.json().catch(() => null);
+      if ([400, 401, 403].includes(response.status) || renewed?.shouldLogout)
         throw Object.assign(new Error('Grok 登录续期失败，请在资源页重新登录'), { status: 401 });
+      if (!response.ok) throw Object.assign(new Error(`Grok 登录续期失败：HTTP ${response.status}`), { status: response.status });
+      if (typeof renewed?.access_token !== 'string' || !renewed.access_token) throw new Error('续期的响应读不懂');
       if (this.credentials !== auth) return; // A completed login supersedes an old refresh.
       const next = { ...auth, accessToken: renewed.access_token, refreshToken: renewed.refresh_token ?? auth.refreshToken };
       writePrivate(this.root, this.file, next);
