@@ -131,6 +131,9 @@ export function readPlugin(dir, source, points = CONTRIBUTION_POINTS) {
     category: manifestCategory(manifest), ...(icon ? { icon } : {}), ...(readmeFile(dir) ? { readme: true } : {}),
     source, dir, title: typeof configuration.title === 'string' ? configuration.title : displayName, properties,
     ...(manifest.coda !== undefined ? { coda: manifest.coda } : {}),
+    // The permission groups of others' protocols it uses (docs/plugins.md「用到的权限」), by protocol: checked against the
+    // catalog as it is installed (plugin-extensions.mjs usesProblem).
+    ...(manifest.uses && Object.keys(manifest.uses).length ? { uses: structuredClone(manifest.uses) } : {}),
     ...(manifest.main ? { main: posix.normalize(manifest.main) } : {}), ...(activation.includes('onStartupFinished') ? { startup: true } : {}),
     ...(required.length ? { required: [...required] } : {}), workflows: files('.coda/workflows'),
     services: [...(contributes.services ?? [])],
@@ -141,7 +144,7 @@ export function readPlugin(dir, source, points = CONTRIBUTION_POINTS) {
       ...(v.icon ? { icon: v.icon } : {}), ...(v.handles?.length ? { handles: [...v.handles] } : {}), ...(v.readout ? { readout: v.readout } : {}),
       ...(v.checkout ? { checkout: v.checkout } : {}), ...(v.frame ? { frame: v.frame } : {}), ...(v.provides?.length ? { provides: [...v.provides] } : {}) })),
     ...(contributes.protocols?.length ? { protocols: structuredClone(contributes.protocols) } : {}),
-    ...(contributes.protocolImplementations?.length ? { protocolImplementations: [...contributes.protocolImplementations] } : {}),
+    ...(contributes.protocolImplementations?.length ? { protocolImplementations: implementations(contributes.protocolImplementations) } : {}),
     ...(Object.keys(offers).length ? { offers } : {}),
     dependencies: [...dependencies], extensionPoints: extensionPoints(contributes.extensionPoints, dir),
     extensions: Object.entries(contributes.extensions ?? {}).map(([key, value]) => { const [plugin, point] = key.split('/'); return { plugin, point, command: value.command }; }),
@@ -282,6 +285,19 @@ export function pluginEnv({ catalog, installed, id, stateDir = () => null, setti
     ...(plugin.dependencies.length ? { CODA_PLUGIN_DEPENDENCIES: JSON.stringify(Object.fromEntries(plugin.dependencies.map(d => [d, catalog.get(d).dir]))) } : {}),
     ...(arbiter ? { CODA_ARBITER: '1' } : {}) };
 }
+// A manifest's `contributes.protocolImplementations` as Coda keeps it, each `{ kind, commands }`: the operations its commands
+// implement, by the file of each in its directory; the rest are its module's, all of them for a protocol named alone
+// (docs/plugins.md「用命令实现操作」). The test host (adapters/plugin-test-host.mjs) reads a manifest's with it too.
+export const implementations = entries => entries
+  .map(entry => typeof entry === 'string' ? { kind: entry, commands: {} } : { kind: entry.kind, commands: { ...entry.commands } });
+// The file in its directory that implements an operation of a protocol the plugin implements (`protocolImplementations`'
+// `commands`), or null: its module's, or not the plugin's at all.
+export function commandOf(plugin, kind, operation) {
+  const commands = plugin?.protocolImplementations?.find(entry => entry.kind === kind)?.commands;
+  return commands && Object.hasOwn(commands, operation) ? commands[operation] : null;
+}
+// Whether any operation of the plugin's is a command's.
+export const hasCommands = plugin => !!plugin?.protocolImplementations?.some(entry => Object.keys(entry.commands).length);
 // What such a process inherits, cleared of what Coda gives it as a plugin's: it never takes another plugin's for its own.
 // Nor the session it was started from (THREAD_ENV) or that session's or the step's token (TOKEN_ENV), which are only ever the
 // process's own.

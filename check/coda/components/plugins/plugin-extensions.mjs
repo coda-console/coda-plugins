@@ -4,6 +4,7 @@
 // is the extended plugin's own contract, which Coda neither reads nor shapes. A point may instead take what any plugin
 // writes under a key of its `contributes` (`contributes` there, as the resources plugin's `panels`): of the schema the point
 // declares, kept as written, for the declaring plugin to read, only the commands in it listed where installing confirms them.
+import { CORE_PROTOCOLS } from '@coda-console/protocol/protocol';
 import { pointProblem, valueProblem } from '@coda-console/protocol/validate';
 import { requireCondition as check } from '../../domain/errors.mjs';
 
@@ -35,12 +36,15 @@ export function offeredCommands(raw, declared) {
   return { count: items.length, commands };
 }
 // The catalog as a whole: every plugin needed is there, nothing needs itself round about, every point plugged into is
-// one its plugin declares, and what is written under a key of `contributes` not Coda's own a point takes.
+// one its plugin declares, what is written under a key of `contributes` not Coda's own a point takes, and every operation a
+// plugin's commands implement is one of its protocol's definition, Coda's own or a plugin's here.
 export function checkCatalog(plugins) {
   for (const plugin of plugins.values()) {
     for (const id of plugin.dependencies) check(plugins.has(id), code, `插件 ${plugin.id} 依赖的 ${id} 不在 Coda 里`);
     for (const e of plugin.extensions) check(Object.hasOwn(plugins.get(e.plugin).extensionPoints, e.point), code,
       `插件 ${plugin.id} 接的 ${e.plugin}/${e.point} 不是 ${e.plugin} 声明的扩展点`);
+    const operation = operationProblem(plugin, plugins);
+    check(!operation, code, operation);
     const problem = offerProblem(plugin, plugins);
     check(!problem, code, `插件 ${plugin.id}：${problem}`);
   }
@@ -54,6 +58,63 @@ export function checkCatalog(plugins) {
   };
   for (const id of plugins.keys()) visit(id, []);
   return plugins;
+}
+// Why an operation a plugin's commands implement is not of its protocol's definition, Coda's own or a plugin's in
+// `plugins` (the catalog beside it), or null.
+export function operationProblem(plugin, plugins) {
+  for (const { kind, commands } of plugin.protocolImplementations ?? []) {
+    const definition = Object.values(CORE_PROTOCOLS).find(one => one.name === kind)
+      ?? [...plugins.values()].flatMap(other => other.protocols ?? []).find(one => one.name === kind);
+    const missing = Object.keys(commands).find(operation => !Object.hasOwn(definition?.operations ?? {}, operation));
+    if (missing) return `插件 ${plugin.id} 用命令实现的 ${kind} 没有操作 ${missing}`;
+  }
+  return null;
+}
+// A protocol's definition as this machine has it with `plugins` (the catalog): one of Coda's (namespace coda), a core
+// protocol of the protocol package or one Coda's components registered (`defined`: kind → its registered type, with the
+// title and permission groups it was registered with), else the one a plugin of the catalog defines; none without one.
+export function protocolDefinition(kind, plugins, defined) {
+  if (kind.startsWith('coda/')) return CORE_PROTOCOLS[kind] ?? defined(kind);
+  return [...plugins.values()].flatMap(plugin => plugin.protocols ?? []).find(one => one.name === kind);
+}
+// Why a permission group a plugin uses (docs/plugins.md「用到的权限」) is not one of its protocol's definition in `plugins`
+// (the catalog once it is installed) or Coda's (`defined`), or null.
+export function usesProblem(plugin, plugins, defined) {
+  for (const [kind, groups] of Object.entries(plugin.uses ?? {})) {
+    const definition = protocolDefinition(kind, plugins, defined);
+    if (!definition) return `插件 ${plugin.id} 用到的协议 ${kind} 不在这台机器上，也不随它一起装`;
+    const missing = groups.find(group => !Object.hasOwn(definition.permissions ?? {}, group));
+    if (missing) return `插件 ${plugin.id} 用到的协议 ${kind} 没有权限组 ${missing}`;
+  }
+  return null;
+}
+// Why a plugin installing `id` installs uses a permission group `catalog` (the catalog once they are installed) or Coda
+// (`defined`) does not define, or null: it, and what it needs this machine has not installed (`installed`: the installed
+// rows by ID), as reading it and installing it both say. The plugins installed already are not checked again: what they
+// use is theirs to answer for (docs/plugins.md「用到的权限」). One needed and nowhere is said missing, not here.
+export function installingUsesProblem(catalog, installed, id, defined) {
+  for (const each of withDependencies(catalog, id)) {
+    if ((each !== id && installed.has(each)) || !catalog.has(each)) continue;
+    const problem = usesProblem(catalog.get(each), catalog, defined);
+    if (problem) return problem;
+  }
+  return null;
+}
+// Why plugin `plugin` (its catalog entry) may not reach kind `kind` as `need` says — an operation of it (`{ operation }`),
+// a stream of its records (`{ stream }`), or reading its records (`'read'`; writing them is the implementer's alone) —
+// `definition` its protocol's (`protocolDefinition`), or null (docs/plugins.md「用到的权限」). The plugin that implements or
+// defines the kind may; any other, a built-in one too, only by a group of the kind's it uses that has the operation or the
+// stream, or reads its records. An operation or a stream in no group is open to no plugin.
+export function usesRefusal(plugin, kind, need, definition) {
+  if ((plugin.protocols ?? []).some(one => one.name === kind) || (plugin.protocolImplementations ?? []).some(one => one.kind === kind)) return null;
+  const groups = Object.entries(definition?.permissions ?? {}), used = new Set(plugin.uses?.[kind] ?? []);
+  const covers = ([, group]) => typeof need === 'string' ? group[need] === true
+    : need.stream !== undefined ? (group.streams ?? []).includes(need.stream) : (group.operations ?? []).includes(need.operation);
+  if (groups.some(entry => used.has(entry[0]) && covers(entry))) return null;
+  const what = typeof need === 'string' ? `读 ${kind} 的记录` : need.stream !== undefined ? `读 ${kind} 的流 ${need.stream}` : `调 ${kind} 的操作 ${need.operation}`;
+  const group = groups.find(covers)?.[0];
+  return group ? `插件 ${plugin.id} 要${what}，须在清单的 uses 里写 ${kind} 的权限组 ${group}`
+    : `插件 ${plugin.id} 不能${what}：它不在 ${kind} 的任何权限组里，不对插件开放`;
 }
 // Why what a plugin writes under the keys of `contributes` not Coda's own cannot be taken here (`plugins`: the catalog
 // beside it), or null: no point takes one of them, or what it writes is not of the schema the point declares.

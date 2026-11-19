@@ -1,8 +1,12 @@
 export class ContractError extends Error {
-  constructor(code, message) {
+  // `effects`, when said: how much of what was asked was done — `none`, `some` or `unknown`; `retryAfterMs`, when said: how
+  // long the caller had better wait before asking again (docs/plugins.md「调用」).
+  constructor(code, message, { effects, retryAfterMs } = {}) {
     super(message);
     this.name = 'ContractError';
     this.code = code;
+    if (effects) this.effects = effects;
+    if (retryAfterMs !== undefined) this.retryAfterMs = retryAfterMs;
   }
 }
 
