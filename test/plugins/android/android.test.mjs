@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { device, declaration, links, CLEAN_UP, HOME_AND_SLEEP } from '../../../plugins/android/lib/android.mjs';
 import { activate, deactivate, declare } from '../../../plugins/android/main.mjs';
-import { recordsHost, recordId, held } from '../records.mjs';
+import { TEST_OWNER, createTestHost } from '../../../check/coda/adapters/plugin-test-host.mjs';
 import { NAMESPACES, changes, command, notDone, parseList } from '../../../plugins/android/lib/settings.mjs';
 
 function state(t) {
@@ -142,54 +142,63 @@ test('地址设置为空且 wlan0 没有 IPv4 时拒绝声明链路', async () =
   }, async lines => lines[0].startsWith('getprop ') ? properties(lines) : '\n'), /android.address 为空，且 wlan0 没有 IPv4 地址/);
 });
 
-test('组记录按插件整份替换，不写 status：借出的状态与别的插件的记录原样留着', async () => {
+const GROUP = 'coda/group@1';
+const phoneHost = records => createTestHost({ plugin: { id: 'android', protocolImplementations: [GROUP] }, records });
+
+test('组记录按插件整份替换，不写 status：状态归 Coda，别的插件的记录原样留着，重名冲突被拒', async t => {
   const machine = 'f9bf79a1-61c3-40ce-b656-aec1bc7c60b8';
-  const { coda, records } = recordsHost('android');
   const spec = await declaration({ 'android.machines': [{ id: machine }] }, properties);
-  const foreign = { owner: 'other', kind: 'coda/group@1', id: 'b1d3f2a0-0000-4000-8000-000000000001', status: {}, spec: { name: 'device:other', attributes: {}, unique: [] } };
-  records.set(`${foreign.kind}/${foreign.id}`, foreign);
+  const foreign = { kind: GROUP, id: 'b1d3f2a0-0000-4000-8000-000000000001', owner: TEST_OWNER, plugin: 'other', status: { state: 'free' },
+    spec: { name: 'device:other', capacity: 1, attributes: {}, unique: [] } };
+  const host = phoneHost([foreign]), { coda } = host;
+  t.after(() => host.close());
   const declareAgain = () => declare(coda, {}, async () => structuredClone(spec));
+  const mine = async () => (await coda.list(GROUP, { scope: 'local' })).filter(row => row.plugin === 'android');
   await declareAgain();
-  const id = recordId('android', 'coda/group@1', 'device');
-  assert.deepEqual(held(records, 'coda/group@1').find(row => row.owner === 'android'), { owner: 'android', kind: 'coda/group@1', id, key: 'device', status: {}, spec });
-  // Lent out, and given again at the next start: the state stays, so the return still to do is retried.
-  records.get(`coda/group@1/${id}`).status = { state: 'returning', holder: { owner: 'o', location: 'l', runId: 'r' } };
+  const [entry, ...more] = await mine();
+  assert.deepEqual([entry.key, entry.spec, entry.status, more.length], ['device', spec, { state: 'free' }, 0]);
+  const version = entry.version;
   await declareAgain();
-  assert.equal(records.get(`coda/group@1/${id}`).status.state, 'returning');
+  assert.equal((await mine())[0].version, version, 'declared again as it was: not written again');
   // The link settings emptied: the group comes without a link, and another plugin's record stays.
   delete spec.links; delete spec.reach;
   await declareAgain();
-  assert.equal(records.get(`coda/group@1/${id}`).spec.links, undefined);
-  assert.equal(records.get(`coda/group@1/${foreign.id}`), foreign);
-  await assert.rejects(() => coda.replace('coda/group@1', [{ key: 'device', spec, shared: true }]), { code: 'invalid_input' });
-  await assert.rejects(() => coda.replace('coda/group@1', [{ key: 'device', spec, status: { state: 'free' } }]), /refused/);
-  await assert.rejects(() => coda.replace('coda/group@1', [{ key: 'device', spec: { ...spec, name: 'device:two words' } }]), /refused/);
-  await assert.rejects(() => coda.replace('coda/group@1', [{ key: 'device', spec: { ...spec, capacity: 2 } }]), /refused/);
+  assert.equal((await mine())[0].spec.links, undefined);
+  assert.deepEqual((await coda.get({ kind: GROUP, id: foreign.id })).spec, foreign.spec);
+  await assert.rejects(() => coda.replace(GROUP, [{ key: 'device', spec, shared: true }]), { code: 'invalid_input' });
+  await assert.rejects(() => coda.replace(GROUP, [{ key: 'device', spec, status: { state: 'free' } }]), { code: 'invalid_input' });
+  await assert.rejects(() => coda.replace(GROUP, [{ key: 'device', spec: { ...spec, name: 'device:two words' } }]), { code: 'invalid_input' });
+  await assert.rejects(() => coda.replace(GROUP, [{ key: 'device', spec: { ...spec, capacity: 2 } }]), { code: 'invalid_input' });
+  await assert.rejects(() => coda.replace(GROUP, [{ key: 'device', spec: { ...spec, name: foreign.spec.name } }]), { code: 'conflict' });
 });
 
 test('activate：先登记 lend、return，再写记录；借还照原样做并答 {}；停用后撤掉', async t => {
   const dir = state(t), machine = 'f9bf79a1-61c3-40ce-b656-aec1bc7c60b8';
-  const { coda, records } = recordsHost('android');
-  const calls = [], handled = new Map(), disposed = [], fake = { settings: structuredClone(before) };
+  const host = phoneHost([]), { coda } = host, order = [];
+  t.after(() => host.close());
+  const calls = [], fake = { settings: structuredClone(before) };
   const run = async lines => {
     if (lines[0].startsWith('settings list ')) return Object.entries(fake.settings[lines[0].split(' ').at(-1)]).map(([k, v]) => `${k}=${v}`).join('\n');
     if (lines[0].startsWith('settings ')) { fake.settings = structuredClone(before); return ''; }
     calls.push(lines);
     return lines[0].startsWith('getprop ') || lines[0].startsWith('ip ') ? properties(lines) : '';
   };
-  await activate({ ...coda, plugin: { ...coda.plugin, state: dir },
-    settings: { get: async () => ({ 'android.machines': [{ id: machine }] }) },
-    handle: (kind, op, handler) => { assert.equal(records.size, 0, 'registered before declaring'); handled.set(`${kind}:${op}`, handler); return { dispose: () => disposed.push(op) }; } }, run);
-  assert.deepEqual([...handled.keys()], ['coda/group@1:lend', 'coda/group@1:return']);
-  assert.equal(held(records, 'coda/group@1')[0].spec.name, 'device:xiaomi');
+  const record = { kind: GROUP, id: null };
+  await activate({ ...coda, plugin: { ...coda.plugin, state: dir }, settings: { get: async () => ({ 'android.machines': [{ id: machine }] }) },
+    handle: (...args) => { order.push(`handle ${args[1]}`); return coda.handle(...args); },
+    replace: (...args) => { order.push('replace'); return coda.replace(...args); } }, run);
+  assert.deepEqual(order, ['handle lend', 'handle return', 'replace']);
+  const [group] = await coda.list(GROUP, { scope: 'local' });
+  assert.equal(group.spec.name, 'device:xiaomi');
+  record.id = group.id;
   const holder = { owner: 'o', location: 'l', runId: 'r' };
-  assert.deepEqual(await handled.get('coda/group@1:lend')({ holder }, {}), {});
+  assert.deepEqual(await host.call(record, 'lend', { holder }), {});
   assert.deepEqual(JSON.parse(readFileSync(join(dir, 'settings.json'))), before);
   fake.settings = structuredClone(changed);
-  assert.deepEqual(await handled.get('coda/group@1:return')({ holder }, {}), {});
+  assert.deepEqual(await host.call(record, 'return', { holder }), {});
   assert.deepEqual(fake.settings, before);
   assert.equal(existsSync(join(dir, 'settings.json')), false);
   assert.ok(calls.some(lines => lines === CLEAN_UP));
   deactivate();
-  assert.deepEqual(disposed, ['lend', 'return']);
+  await assert.rejects(() => host.call(record, 'lend', { holder }), { code: 'not_found' });
 });

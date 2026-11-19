@@ -1,7 +1,8 @@
 // The resource types installed plugins bring to this machine's resources page (docs/plugins.md「资源」), read and acted on
 // here, in the resources plugin's module: what each plugin declares comes from Coda's collection of the installed plugins
 // (`coda.watch("plugins")`), and each command runs with that plugin's own environment (`coda.environment(null, { plugin })`),
-// as Coda gives every process of the plugin's. A plugin declaring `resources` has those; one still declaring the panels
+// as Coda gives every process of the plugin's, with no token of its (docs/plugins.md「令牌」: a module never holds another
+// plugin's; the host is to run them, coda#2749 H9). A plugin declaring `resources` has those; one still declaring the panels
 // before them has its panels, read as they were (`format`), for the page to take as resources (docs/plugins.md「旧的面板」).
 // A type is read when a page asks (opening it, refreshing, an action), or, for a kind declaring `report`, on its period
 // while this machine shows it; nothing else is read in the background, and no reading is kept on disk.
@@ -9,20 +10,24 @@
 // reading shown again within the type's `maxAge` and listed with it, and on failure the last good one kept and marked as
 // such. The machine keeps which it shows and which not, in this plugin's state; their order is their plugins'
 // (docs/resources-page.md「顺序」). Inside, a type is still called a panel, as the page's view and its messages are.
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runCommand, ended, outcome } from './command.mjs';
+import { runPluginCommand, settle } from '../../../../adapters/plugin-command.mjs';
 import { PanelError, panelDeclarations, panelItems, resourceItems, actionArgs, shownItems, displayOptions, keepMissingMetrics } from './rules.mjs';
 import { SignIn, authorizationLink, deviceCode } from './sign-in.mjs';
 
 const fail = (code, message) => { throw new PanelError(code, message); };
+// How a command starts here, in the plugin host's tree, whose root is registered: in a process group of its own, as the
+// backend's registry door starts one (adapters/process-start.mjs), registering nothing.
+const start = { spawn: (_owner, _entry, file, args, options) => spawn(file, args, { ...options, detached: true }), remove: () => {} };
 
 export class Panels {
   // `onChange(key)`: a panel moved (its reading, its login, whether it is hidden); none for the list as a whole.
-  // `run`: how a command runs (panels/command.mjs runCommand); `now()`: the time, as readings are dated by it.
-  constructor(coda, { run = runCommand, now = Date.now, readTimeoutMs = 30_000, actionTimeoutMs = 10 * 60_000, timer = true } = {}) {
+  // `run`: how a command runs (adapters/plugin-command.mjs runPluginCommand, from its plugin's directory with its environment,
+  // started here); `now()`: the time, as readings are dated by it.
+  constructor(coda, { run = runPluginCommand, now = Date.now, readTimeoutMs = 30_000, actionTimeoutMs = 10 * 60_000, timer = true } = {}) {
     this.coda = coda; this.run = run; this.now = now; this.readTimeoutMs = readTimeoutMs; this.actionTimeoutMs = actionTimeoutMs; this.timerOn = timer;
     // `last`: each panel's last good items, for a failed reading to show again; `shown`: what its last reading answered.
     this.plugins = new Map(); this.last = new Map(); this.shown = new Map(); this.reading = new Map(); this.acting = new Map(); this.failures = new Map();
@@ -143,16 +148,18 @@ export class Panels {
     if (panel.reportMs) this.reportedAt.set(key, this.now());
     let failure;
     try {
-      const result = await this.run(panel.command, { env: await this.env(plugin.id), timeoutMs: this.readTimeoutMs, signal: this.closing.signal });
-      if (ended(result)) {
-        const content = this.content(entry, result.stdout), at = this.now();
+      const env = await this.env(plugin.id);
+      const ran = await this.run(panel.command, { start, cwd: env.CODA_PLUGIN_PATH, env, input: '{}', timeoutMs: this.readTimeoutMs, signal: this.closing.signal });
+      const { error } = settle(ran, { what: '读取' });
+      if (!error) {
+        const content = this.content(entry, ran.stdout), at = this.now();
         this.last.set(key, { content, at }); this.failures.delete(key);
         this.shown.set(key, { ...content, readAt: at });
         // A kind's reading is what this machine reports of it: a failed one reports nothing, so the last good objects stay.
         if (entry.panel.kind) await this.report(entry, content.resources, at);
         return this.present(entry, { ...content, readAt: at });
       }
-      failure = outcome(result, '读取');
+      failure = error.message;
     } catch (e) {
       if (!(e instanceof PanelError)) { this.failures.set(key, e.message); throw e; }
       failure = `输出无效：${e.message}`;
@@ -231,9 +238,11 @@ export class Panels {
       const action = panel.actions?.[name] ?? fail('not_found', `面板 ${panel.title} 没有动作 ${name}`);
       const given = actionArgs(args);
       this.acting.set(key, { button }); this.changed(key);
-      const result = await this.run(action.command, { env: await this.env(plugin.id, { CODA_PANEL_ARGS: JSON.stringify(given) }),
-        timeoutMs: this.actionTimeoutMs, signal: this.closing.signal });
-      if (!ended(result)) fail('action_failed', outcome(result, '操作'));
+      const env = await this.env(plugin.id, { CODA_PANEL_ARGS: JSON.stringify(given) });
+      const ran = await this.run(action.command, { start, cwd: env.CODA_PLUGIN_PATH, env, input: JSON.stringify(given), timeoutMs: this.actionTimeoutMs, signal: this.closing.signal });
+      // What an action prints is what it says, not a result: ending with 0 is all of it.
+      const { error } = settle(ran, { answers: false, what: '操作' });
+      if (error) fail(error.code, error.message);
       this.acting.delete(key);
     } catch (e) {
       this.acting.set(key, { button, error: e.message }); this.changed(key);
@@ -258,8 +267,8 @@ export class Panels {
     return change;
   }
   // A panel's login from Coda (docs/plugins.md「面板的登录」), one per panel at a time. Signed in, the panel is read anew;
-  // its CLI installed, the plugin's setup is run again (docs/plugins.md「准备运行环境」), which done well has Coda read its
-  // agents again: what they offer may be readable now.
+  // its CLI installed, the plugin's setup is run again (docs/plugins.md「准备运行环境」; `coda.pluginSetup`, asked as this
+  // plugin), which done well has Coda read its agents again: what they offer may be readable now.
   login(entry) {
     const { plugin, panel, key } = entry, known = this.logins.get(key);
     const declared = panel.signIn ?? fail('not_found', `${panel.title} 不能从 Coda 登录`);
@@ -273,14 +282,14 @@ export class Panels {
       if (!declared.installed) return true;
       const given = this.envs.get(plugin.id);
       if (!given) return false;
-      if (fresh || Date.now() - checkedAt > 2000) { there = spawnSync('/bin/sh', ['-c', declared.installed], { cwd: tmpdir(), env: given, stdio: 'ignore', timeout: 2000 }).status === 0; checkedAt = Date.now(); }
+      if (fresh || Date.now() - checkedAt > 2000) { there = spawnSync('/bin/sh', ['-c', declared.installed], { cwd: given.CODA_PLUGIN_PATH, env: given, stdio: 'ignore', timeout: 2000 }).status === 0; checkedAt = Date.now(); }
       return there;
     };
     const login = new SignIn({ provider: key, name: panel.title, command: declared.command, installed, install: declared.install ?? null,
       readCode: declared.input ? authorizationLink : deviceCode, input: !!declared.input, note: declared.note ?? null },
-    { env, onChange: () => this.changed(key),
+    { start, env, onChange: () => this.changed(key),
       onSignedIn: () => { this.read(key, { force: true }).catch(() => {}); },
-      onInstalled: () => { checkedAt = 0; this.coda.api(`plugins/${encodeURIComponent(plugin.id)}/setup`, {}).catch(() => {}); } });
+      onInstalled: () => { checkedAt = 0; this.coda.pluginSetup.retry(plugin.id).catch(() => {}); } });
     login.declared = JSON.stringify(declared);
     login.recheck = () => { checkedAt = 0; };
     this.logins.set(key, login);

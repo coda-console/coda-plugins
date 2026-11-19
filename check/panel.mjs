@@ -5,9 +5,10 @@
 // Its actions are not run: a button may change things (switch an account, spend a reset), and only a person presses it.
 import { dirname } from 'node:path';
 import { cleared } from './coda/components/plugins/plugin-rules.mjs';
-import { ended, runCommand } from './command.mjs';
+import { ENVELOPE } from './coda/adapters/call-limit.mjs';
+import { runPluginCommand } from './coda/adapters/plugin-command.mjs';
 import { Panels } from './coda/resources/plugins/resources/panels/panels.mjs';
-import { OUTPUT_LIMIT, panelItems, resourceItems } from './coda/resources/plugins/resources/panels/rules.mjs';
+import { panelItems, resourceItems } from './coda/resources/plugins/resources/panels/rules.mjs';
 import { closing, temporary } from './leftovers.mjs';
 
 // The session a process would belong to: the host's belong to none.
@@ -46,15 +47,15 @@ export async function checkPanel({ panel, checked, say, limit }) {
     watch: async (name, told) => { told({ type: 'ADDED', id: offered.id, object: offered }); return { dispose() {} }; } };
   // The command's own result, beside what the page shows of it: whether it ended well and what it printed was not a panel's.
   let result = null;
-  const panels = new Panels(coda, { run: async (command, options) => (result = await runCommand(command, options)), ...(limit ? { readTimeoutMs: limit } : {}) });
+  const panels = new Panels(coda, { run: async (command, options) => (result = await runPluginCommand(command, options)), ...(limit ? { readTimeoutMs: limit } : {}) });
   const done = closing(() => panels.close());
   try {
     await panels.start();
     const started = Date.now(), reading = await panels.read(`${plugin.id}/${panel.id}`), took = ((Date.now() - started) / 1000).toFixed(1);
     const kind = panel.format === 'resources' ? '资源' : '面板';
-    if (reading.error && result && ended(result)) return say.fail('panel.output', `输出不合${kind}格式：资源页显示「${reading.error}」`);
+    if (reading.error && result && result.code === 0 && !result.timedOut && !result.overflow) return say.fail('panel.output', `输出不合${kind}格式：资源页显示「${reading.error}」`);
     if (reading.error) {
-      const why = !result ? '没有运行' : result.timedOut ? `${panels.readTimeoutMs / 1000} 秒没读完，Coda 停下这次读取` : result.overflow ? `标准输出超过 ${OUTPUT_LIMIT / 1024} KiB，Coda 停下这次读取`
+      const why = !result ? '没有运行' : result.timedOut ? `${panels.readTimeoutMs / 1000} 秒没读完，Coda 停下这次读取` : result.overflow ? `标准输出超过 ${ENVELOPE / 1024 / 1024} MiB，Coda 停下这次读取`
         : result.error ? '命令起不来' : `退出码 ${result.code}`;
       return say.fail('panel.read', `读取没成功（${why}）：资源页显示「${reading.error}」`);
     }

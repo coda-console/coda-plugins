@@ -18,10 +18,12 @@ export const target = {
 };
 const snapshotMode = object({ mode, values, sent: { type: 'integer', minimum: 0 }, changedSinceSent: { type: 'boolean' } });
 export const COMPOSER = 'coda/composer@1', SUBMISSION = 'coda/submission@1';
-export const composerType = { kind: COMPOSER, participants: () => [],
+export const composerType = { kind: COMPOSER, title: '输入框', participants: () => [],
+  permissions: { read: { title: '查看输入框里选的模式与参数', trial: true, read: true } },
   spec: { ...object({ thread: string, project: string, modes: array(object({ mode, values })) }, ['modes']),
     oneOf: [{ required: ['thread'], not: { required: ['project'] } }, { required: ['project'], not: { required: ['thread'] } }] },
-  status: object({ modes: array(object({ mode, sent: { type: 'integer', minimum: 0 }, changedSinceSent: { type: 'boolean' }, presets: { type: 'object', additionalProperties: array(object({ name: {}, values: array(values) })) } })) }) };
+  status: object({ compactions: { type: 'integer', minimum: 0, default: 0 },
+    modes: array(object({ mode, sent: { type: 'integer', minimum: 0 }, changedSinceSent: { type: 'boolean' }, presets: { type: 'object', additionalProperties: array(object({ name: {}, values: array(values) })) } })) }, ['modes']) };
 const tell = array({ type: 'string', minLength: 1, pattern:'^[^\\u0000]*\\S[^\\u0000]*$' });
 const targets = array(target), divert = { type: 'boolean' };
 export const submissionType = { kind: SUBMISSION,

@@ -438,7 +438,7 @@ Coda 根上的同一条 overrides 由 `sync-coda` 一起改（npm 只认根的�
 - `name` 是包名；另写 `id` 时以它为 Coda 插件 ID，否则以 `name` 为 ID。ID 只能用小写字母、数字和 `-`，以字母开头，至多 40 个字符。
   本仓库的包名是 `@coda-console/<id>`，设置名与 Agent ID 仍使用原来的插件 ID。可以与 Coda 内置插件同名；从其他来源替换时，须先在目标机器卸载内置插件。契约检查照刚装好的 Coda 读：与它默认装着的内置插件同名、又不是那个插件的同一来源的，判不通过。
 - `displayName`、`description`、`version` 显示在安装确认与插件页。
-- `contributes` 只能有 Coda 认识的贡献：`agents`、`resources`（旧的 `panels` 仍认）、`configuration`、`capabilities`、`instructions`、`extensionPoints`、`extensions`、`groups`、`commands`、`services`、`setup`；读不懂的键一律报错，不会被悄悄忽略。
+- `contributes` 只能有 Coda 认识的贡献：`agents`、`resources`（旧的 `panels` 仍认）、`configuration`、`capabilities`、`instructions`、`extensionPoints`、`extensions`、`commands`、`services`、`setup`；读不懂的键一律报错，不会被悄悄忽略。
 - `setup` 是插件的设置动作：`{ "command": "…" }`，一行、不超过 4000 字（与资源命令同样的规则），没有别的键。
 
 **从仓库安装的限制**：带 npm 依赖（`dependencies`、`optionalDependencies`）就要把 `package-lock.json` 一起提交，Coda 在插件的版本目录里
@@ -489,7 +489,7 @@ Agent 进程的环境是会话的环境再加插件进程的那组变量（资�
 | `actions` | 至多 8 个按钮，每个 `label` 和 `action`（须是这个类型声明的动作）、`view`（插件的视图）或 `url`（`https://` 网页）之一，可选 `args`、`disabled`、`confirm` |
 
 `name` 与 `values` 至少有一个。没有副标题、说明行或整段文字：资源页上只有类型名、名字、读数与按钮，要说明的写进插件自己的文档或视图。
-只在打开资源页或点「刷新」时读，30 秒没结束或输出超过 64 KiB 就停下；读不懂的键算这次读取失败。`resources` 为空的类型不显示。
+只在打开资源页或点「刷新」时读，30 秒没结束或输出超过 1 MiB 就停下；读不懂的键算这次读取失败。`resources` 为空的类型不显示。
 命令的环境是后端的环境（不带会话 ID）加上插件进程的那组变量（同上），`PATH` 最前面是 Coda 后端的 `node`；`CODA_GROUPS_STATE` 是这一刻这个后端各并发组的占用与排队
 （`{now, groups}`）；动作另有 `CODA_PANEL_ARGS`（按钮的 `args`）。
 动作至多跑 10 分钟，成功后 Coda 立即重读这个类型。之前的写法 `contributes.panels`（`{ "items": [...] }`，卡片与说明行）Coda 仍读，当作资源显示、说明文字丢掉；新插件写 `resources`。

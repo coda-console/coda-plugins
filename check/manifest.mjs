@@ -88,7 +88,6 @@ export function checkManifest(dir, say) {
   const settingCount = Object.keys(plugin.properties).length, names = list => list.map(x => x.name).join('、');
   if (settingCount) say.pass('manifest.settings', `设置 ${settingCount} 项`);
   if (plugin.workflows.length || plugin.capabilities.length) say.pass('manifest.capabilities', `流程 ${plugin.workflows.join('、') || '无'}，能力 ${plugin.capabilities.join('、') || '无'}`);
-  if (plugin.groups.length) say.pass('manifest.groups', `并发组 ${names(plugin.groups)}`);
   if (plugin.events?.length) say.pass('manifest.events', `发布的事件 ${names(plugin.events)}`);
   if (plugin.commands.length) say.pass('manifest.commands', `会话 PATH 上的命令 ${names(plugin.commands)}`);
   if (plugin.services.length) say.pass('manifest.services', `开启随包服务 ${plugin.services.join('、')}：没有已安装插件开启的服务不运行`);

@@ -13,7 +13,7 @@ import { pluginDir } from '../plugin.mjs';
 import { declaredPanel, manifest, pluginEnv, run } from '../command.mjs';
 import { readResources } from '../../../check/panel.mjs';
 import { activate, deactivate } from '../../../plugins/host/main.mjs';
-import { held as heldRecords, recordId, recordsHost } from '../records.mjs';
+import { createTestHost } from '../../../check/coda/adapters/plugin-test-host.mjs';
 
 const dir = pluginDir('host');
 function temporary(t) {
@@ -44,23 +44,26 @@ if (args[0] === 'delete' && args[1] !== 'STUCK') fs.writeFileSync(${JSON.stringi
   return { tool, devices: () => readFileSync(state, 'utf8').split('\n').filter(Boolean), log: () => existsSync(log) ? readFileSync(log, 'utf8') : '' };
 }
 
-test('the slots are the group record the module writes, the capacity that of the setting, and the manifest declares no groups', async () => {
+test('the slots are the group record the module writes, the capacity that of the setting, and the manifest declares no groups', async t => {
   assert.equal(manifest('host').contributes.groups, undefined);
   assert.deepEqual(manifest('host').contributes.protocolImplementations, ['coda/group@1']);
-  const { coda, records } = recordsHost('host'), listeners = new Set(), disposed = [];
-  let settings = { 'host.capacity': 2 };
-  const told = async next => { settings = next; for (const listener of listeners) await listener(next); };
-  await activate({ ...coda, self: { handle: async () => ({ dispose: () => disposed.push('self') }) },
-    settings: { get: async () => settings, onChange: fn => { listeners.add(fn); return { dispose: () => { listeners.delete(fn); disposed.push('settings'); } }; } } });
-  const row = () => records.get(`coda/group@1/${recordId('host', 'coda/group@1', 'host')}`);
-  assert.deepEqual(heldRecords(records, 'coda/group@1').map(r => r.key), ['host']);
-  assert.deepEqual(row().spec, { name: 'host', capacity: 2, reach: { scope: 'machine' }, attributes: {}, unique: [] });
-  assert.deepEqual(row().status, {});
-  await told({ 'host.capacity': 5 });
-  assert.equal(row().spec.capacity, 5);
-  assert.equal(heldRecords(records, 'coda/group@1').length, 1);
+  const host = createTestHost({ plugin: { id: 'host', protocolImplementations: ['coda/group@1'] }, settings: { 'host.capacity': 2 } });
+  t.after(() => host.close());
+  const rows = () => host.coda.list('coda/group@1', { scope: 'local' });
+  await activate(host.coda);
+  let [row, ...more] = await rows();
+  assert.deepEqual([row.key, more.length], ['host', 0]);
+  assert.deepEqual(row.spec, { name: 'host', capacity: 2, reach: { scope: 'machine' }, attributes: {}, unique: [] });
+  // Coda keeps the status of a group of capacity 1, and a larger one has none.
+  assert.deepEqual(row.status, {});
+  await host.setSettings({ 'host.capacity': 5 });
+  [row, ...more] = await rows();
+  assert.deepEqual([row.spec.capacity, more.length], [5, 0]);
+  await host.setSettings({ 'host.capacity': 1 });
+  assert.deepEqual((await rows())[0].status, { state: 'free' });
   await deactivate();
-  assert.deepEqual([listeners.size, disposed.sort()], [0, ['self', 'settings']]);
+  await host.setSettings({ 'host.capacity': 3 });
+  assert.equal((await rows())[0].spec.capacity, 1);
 });
 
 test('the resource shows the free slots, who holds the group host and who waits; one holding it whole leaves none free', async t => {

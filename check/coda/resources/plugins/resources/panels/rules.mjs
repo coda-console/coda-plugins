@@ -22,8 +22,6 @@ function durationMs(text) {
 export const ITEM_TYPES = ['card', 'meter', 'stat', 'markdown', 'button', 'error'];
 // How many resources a reading lists, and how many values and buttons one has.
 const RESOURCES = 50, VALUES = 8, ACTIONS = 8;
-// What a panel's command may print: past these, the reading fails rather than being cut short.
-export const OUTPUT_LIMIT = 64 * 1024;
 export const ARGS_LIMIT = 4 * 1024;
 const ITEMS = 50, CARD_ITEMS = 20, LABEL = 80, IDENTITY = 200, MARKDOWN = 4000, ERROR = 500, CONFIRM = 200, LINK = 2000;
 const fail = (code, message) => check(false, code, message);
@@ -132,7 +130,6 @@ function button(raw, where, scope, keys = BUTTON_KEYS) {
 // of its plugin's views, which a button may open.
 export function panelItems(output, panel, views = []) {
   const code = 'invalid_panel';
-  check(Buffer.byteLength(output) <= OUTPUT_LIMIT, code, `输出超过 ${OUTPUT_LIMIT / 1024} KiB`);
   let value;
   try { value = JSON.parse(output); } catch { return fail(code, '输出不是 JSON'); }
   object(value, '输出', code);
@@ -149,7 +146,6 @@ export function panelItems(output, panel, views = []) {
 // explains: a value is a name and what it reads (docs/plugins.md「资源」). Anything else fails the reading, with where.
 export function resourceItems(output, type, views = []) {
   const code = 'invalid_panel';
-  check(Buffer.byteLength(output) <= OUTPUT_LIMIT, code, `输出超过 ${OUTPUT_LIMIT / 1024} KiB`);
   let value;
   try { value = JSON.parse(output); } catch { return fail(code, '输出不是 JSON'); }
   object(value, '输出', code);
