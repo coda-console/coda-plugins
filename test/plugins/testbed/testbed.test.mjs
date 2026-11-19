@@ -46,7 +46,7 @@ test('the resources are each device registered here, who uses it, who borrowed i
     holders: [one('r5', 'iphone-testbed：xcrun devicectl', '会话甲', ago(0), { borrowed: true, leaving: false }), one('r3', 'iphone-testbed：看首页', '会话甲', ago(12), { borrowed: false, leaving: false })] },
   { name: 'host', occupied: 1, holders: [one('r1', 'testflight', null, ago(75), { borrowed: false, leaving: false })], queue: [] }];
   const read = async state => {
-    const { code, stdout, stderr } = await run(declaredPanel('testbed').command, env({ CODA_PLUGIN_STATE: state, CODA_GROUPS_STATE: JSON.stringify({ now, groups }), CODA_PLUGIN_SETTINGS: JSON.stringify({ 'testbed.entities': [{ name: 'unreachable', entity: 'missing' }] }) }));
+    const { code, stdout, stderr } = await run(declaredPanel('testbed').command, env({ CODA_PLUGIN_STATE: state, CODA_GROUPS_STATE: JSON.stringify({ now, groups }) }));
     return code === 0 ? readResources(stdout, declaredPanel('testbed')) : { code, stderr };
   };
   const [iphone, ipad] = await read(state);
@@ -64,7 +64,12 @@ test('找测试机 gives the registered device\'s name, UDID and note; one not r
   const state = registered(t, [phone]);
   const found = await step(t, 'device', { CODA_PLUGIN_STATE: state, DEVICE: phone.id });
   assert.equal(found.code, 0);
-  assert.equal(found.outputs, `group=device:${phone.id}\nentity=\nname=${phone.name}\nudid=${phone.udid}\npersonal=false\nplatform=ios\nadb=\nnote<<CODA_NOTE\n${phone.note}\nCODA_NOTE\n`);
+  assert.equal(found.outputs, `id=${phone.id}\ngroup=device:${phone.id}\nname=${phone.name}\nudid=${phone.udid}\npersonal=false\nplatform=ios\nadb=\nnote<<CODA_NOTE\n${phone.note}\nCODA_NOTE\n`);
+  // A pool's group is resolved whole: `device:<设备名>` is the device, any other group is no device.
+  const pooled = await step(t, 'device', { CODA_PLUGIN_STATE: state, DEVICE: '', HELD: `device:${phone.id}` });
+  assert.deepEqual([pooled.code, pooled.outputs], [0, found.outputs]);
+  const other = await step(t, 'device', { CODA_PLUGIN_STATE: state, DEVICE: '', HELD: `other:device:${phone.id}` });
+  assert.equal(other.code, 1); assert.match(other.stderr, /排到的组 other:device:iphone-testbed 不是测试机/);
   const personal = await step(t, 'device', { CODA_PLUGIN_STATE: registered(t, [{ ...phone, personal: true }]), DEVICE: phone.id });
   assert.equal(personal.code, 0, personal.stderr);
   assert.equal(personal.outputs, found.outputs.replace('personal=false', 'personal=true'));

@@ -50,7 +50,7 @@ test('清单只有 git/source@1，定义合乎格式与命名空间，spec 有�
     types.register({ kind: definition.name, spec: definition.spec, status: definition.status, participants: () => [] });
   }
   assert.deepEqual(manifest.contributes.protocols.map(definition => definition.name), [SOURCE]);
-  assert.deepEqual(readPlugin(dir, { kind: 'git' }).protocolImplementations, [SOURCE]);
+  assert.deepEqual(readPlugin(dir, { kind: 'git' }).protocolImplementations, [{ kind: SOURCE, commands: {} }]);
   assert.deepEqual(manifest.coda, { channels: ['preview'] });
   assert.equal(types.get(SOURCE).spec({ name: 'repo', path: '/tmp/repo' }), true);
   assert.equal(types.get(SOURCE).spec({ path: '/tmp/repo' }), false);

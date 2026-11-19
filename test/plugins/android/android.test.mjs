@@ -3,9 +3,9 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { device, declarations, links, record, CLEAN_UP, HOME_AND_SLEEP } from '../../../plugins/android/lib/android.mjs';
-import { declare } from '../../../plugins/android/main.mjs';
-import { recordsHost, recordId, held } from '../records.mjs';
+import { device, declaration, links, CLEAN_UP, HOME_AND_SLEEP } from '../../../plugins/android/lib/android.mjs';
+import { activate, deactivate, declare } from '../../../plugins/android/main.mjs';
+import { TEST_OWNER, createTestHost } from '../../../check/coda/adapters/plugin-test-host.mjs';
 import { NAMESPACES, changes, command, notDone, parseList } from '../../../plugins/android/lib/settings.mjs';
 
 function state(t) {
@@ -93,37 +93,38 @@ test('无变化不写设置、不多核对；无快照只回桌面和熄屏', as
   assert.equal(existsSync(file), false);
 });
 
-test('链路的 key 是 adb，使用机器 ID 名单；空名单不声明', () => {
+test('链路是 adb，使用机器 ID 名单；空名单不声明', () => {
   const machine = 'f9bf79a1-61c3-40ce-b656-aec1bc7c60b8';
   assert.deepEqual(links({ address: '192.168.1.7', port: '5555', machines: [machine] }), [
-    { key: 'adb', protocol: 'adb', endpoint: '192.168.1.7:5555', reach: { scope: 'machines', machines: [machine] } },
+    { protocol: 'adb', endpoint: '192.168.1.7:5555', reach: { scope: 'machines', machines: [machine] } },
   ]);
   assert.deepEqual(links({ machines: [] }), []);
 });
 
 async function properties(lines) {
-  const values = { 'getprop ro.product.model': 'Mi 10 Pro', 'getprop ro.build.version.release': '13',
+  const values = { 'getprop ro.product.device': 'xiaomi', 'getprop ro.product.model': 'Mi 10 Pro', 'getprop ro.build.version.release': '13',
     'getprop ro.serialno': 'serial', 'getprop persist.adb.tcp.port': '5555' };
   return values[lines[0]] ?? '192.168.1.7';
 }
 
-test('本体默认名称与属性，链路地址读取或覆盖；空名单不读取网络属性', async () => {
+test('组名默认取 ro.product.device，属性、容量、借还与链路范围如记录所写；空名单不读取网络属性', async () => {
   const machine = 'f9bf79a1-61c3-40ce-b656-aec1bc7c60b8';
   const settings = { 'android.machines': [{ id: machine }] };
-  const declared = await declarations(settings, properties);
-  assert.deepEqual(declared.entities, [{ key: 'device', name: 'Mi 10 Pro', category: 'android', capacity: 1,
-    attributes: { model: 'Mi 10 Pro', android: '13', serial: 'serial' } }]);
-  assert.deepEqual(declared.links, links({ address: '192.168.1.7', port: '5555', machines: [machine] }));
-  const override = await declarations({ ...settings, 'android.name': '手机', 'android.address': 'phone' }, async lines => {
+  const reach = { scope: 'machines', machines: [machine] };
+  assert.deepEqual(await declaration(settings, properties), { name: 'device:xiaomi', capacity: 1, lends: true, unique: ['serial'],
+    attributes: { platform: 'android', model: 'Mi 10 Pro', android: '13', serial: 'serial' }, reach,
+    links: [{ protocol: 'adb', endpoint: '192.168.1.7:5555', reach }] });
+  const override = await declaration({ ...settings, 'android.name': 'phone', 'android.address': 'wifi' }, async lines => {
     assert.ok(lines[0].startsWith('getprop '));
     return properties(lines);
   });
-  assert.equal(override.entities[0].name, '手机');
-  assert.equal(override.links[0].endpoint, 'phone:5555');
-  assert.deepEqual((await declarations({}, async lines => {
-    assert.ok(['getprop ro.product.model', 'getprop ro.build.version.release', 'getprop ro.serialno'].includes(lines[0]));
+  assert.equal(override.name, 'device:phone');
+  assert.equal(override.links[0].endpoint, 'wifi:5555');
+  const none = await declaration({}, async lines => {
+    assert.ok(lines[0].startsWith('getprop '));
     return properties(lines);
-  })).links, []);
+  });
+  assert.deepEqual(none, { name: 'device:xiaomi', capacity: 1, lends: true, unique: ['serial'], attributes: { platform: 'android', model: 'Mi 10 Pro', android: '13', serial: 'serial' } });
 });
 
 test('复制的解析、比较、核对和引号逻辑保留多行、null、删除及特殊字符', () => {
@@ -136,34 +137,68 @@ test('复制的解析、比较、核对和引号逻辑保留多行、null、删�
   assert.equal(command({ name: 'secure', key: "k'", value: "it's\n$(anything)" }), "settings put secure 'k'\\''' 'it'\\''s\n$(anything)'");
 });
 test('地址设置为空且 wlan0 没有 IPv4 时拒绝声明链路', async () => {
-  await assert.rejects(() => declarations({
+  await assert.rejects(() => declaration({
     'android.address': '', 'android.machines': [{ id: 'f9bf79a1-61c3-40ce-b656-aec1bc7c60b8' }],
   }, async lines => lines[0].startsWith('getprop ') ? properties(lines) : '\n'), /android.address 为空，且 wlan0 没有 IPv4 地址/);
 });
 
-test('本体与链路按插件整份替换：先写本体，链路指向宿主给本体的 ID；不写 status，借出的状态与别的插件的记录原样留着', async () => {
+const GROUP = 'coda/group@1';
+const phoneHost = records => createTestHost({ plugin: { id: 'android', protocolImplementations: [GROUP] }, records });
+
+test('组记录按插件整份替换，不写 status：状态归 Coda，别的插件的记录原样留着，重名冲突被拒', async t => {
   const machine = 'f9bf79a1-61c3-40ce-b656-aec1bc7c60b8';
-  const { coda, records } = recordsHost('android');
-  const declared = await declarations({ 'android.machines': [{ id: machine }] }, properties);
-  const foreign = { owner: 'other', kind: 'coda/entity@1', id: 'b1d3f2a0-0000-4000-8000-000000000001', status: { state: 'free' },
-    spec: { name: '别的', category: 'x', attributes: {}, capacity: 1 } };
-  records.set(`${foreign.kind}/${foreign.id}`, foreign);
-  const declareAgain = () => declare(coda, {}, async () => structuredClone(declared));
+  const spec = await declaration({ 'android.machines': [{ id: machine }] }, properties);
+  const foreign = { kind: GROUP, id: 'b1d3f2a0-0000-4000-8000-000000000001', owner: TEST_OWNER, plugin: 'other', status: { state: 'free' },
+    spec: { name: 'device:other', capacity: 1, attributes: {}, unique: [] } };
+  const host = phoneHost([foreign]), { coda } = host;
+  t.after(() => host.close());
+  const declareAgain = () => declare(coda, {}, async () => structuredClone(spec));
+  const mine = async () => (await coda.list(GROUP, { scope: 'local' })).filter(row => row.plugin === 'android');
   await declareAgain();
-  const entity = recordId('android', 'coda/entity@1', 'device');
-  assert.deepEqual(held(records, 'coda/entity@1').find(row => row.owner === 'android'), { owner: 'android', kind: 'coda/entity@1', id: entity, key: 'device', status: {},
-    spec: { name: 'Mi 10 Pro', category: 'android', capacity: 1, attributes: { model: 'Mi 10 Pro', android: '13', serial: 'serial' } } });
-  assert.deepEqual(held(records, 'coda/link@1').map(({ id, key, spec }) => ({ id, key, spec })), [{ id: recordId('android', 'coda/link@1', 'adb'), key: 'adb',
-    spec: { entity, protocol: 'adb', endpoint: '192.168.1.7:5555', reach: { scope: 'machines', machines: [machine] } } }]);
-  // Lent out, and declared again at the next start: the state stays, so the return still to do is retried.
-  records.get(`coda/entity@1/${entity}`).status = { state: 'returning' };
+  const [entry, ...more] = await mine();
+  assert.deepEqual([entry.key, entry.spec, entry.status, more.length], ['device', spec, { state: 'free' }, 0]);
+  const version = entry.version;
   await declareAgain();
-  assert.deepEqual(records.get(`coda/entity@1/${entity}`).status, { state: 'returning' });
-  // The link settings emptied: the link goes, the entity and another plugin's records stay.
-  declared.links.length = 0;
+  assert.equal((await mine())[0].version, version, 'declared again as it was: not written again');
+  // The link settings emptied: the group comes without a link, and another plugin's record stays.
+  delete spec.links; delete spec.reach;
   await declareAgain();
-  assert.deepEqual(held(records, 'coda/link@1'), []);
-  assert.equal(records.get(`coda/entity@1/${foreign.id}`), foreign);
-  await assert.rejects(() => coda.replace('coda/entity@1', [{ ...record(declared.entities[0]), shared: true }]), { code: 'invalid_input' });
-  await assert.rejects(() => coda.replace('coda/entity@1', [{ ...record(declared.entities[0]), id: entity }]), { code: 'invalid_input' });
+  assert.equal((await mine())[0].spec.links, undefined);
+  assert.deepEqual((await coda.get({ kind: GROUP, id: foreign.id })).spec, foreign.spec);
+  await assert.rejects(() => coda.replace(GROUP, [{ key: 'device', spec, shared: true }]), { code: 'invalid_input' });
+  await assert.rejects(() => coda.replace(GROUP, [{ key: 'device', spec, status: { state: 'free' } }]), { code: 'invalid_input' });
+  await assert.rejects(() => coda.replace(GROUP, [{ key: 'device', spec: { ...spec, name: 'device:two words' } }]), { code: 'invalid_input' });
+  await assert.rejects(() => coda.replace(GROUP, [{ key: 'device', spec: { ...spec, capacity: 2 } }]), { code: 'invalid_input' });
+  await assert.rejects(() => coda.replace(GROUP, [{ key: 'device', spec: { ...spec, name: foreign.spec.name } }]), { code: 'conflict' });
+});
+
+test('activate：先登记 lend、return，再写记录；借还照原样做并答 {}；停用后撤掉', async t => {
+  const dir = state(t), machine = 'f9bf79a1-61c3-40ce-b656-aec1bc7c60b8';
+  const host = phoneHost([]), { coda } = host, order = [];
+  t.after(() => host.close());
+  const calls = [], fake = { settings: structuredClone(before) };
+  const run = async lines => {
+    if (lines[0].startsWith('settings list ')) return Object.entries(fake.settings[lines[0].split(' ').at(-1)]).map(([k, v]) => `${k}=${v}`).join('\n');
+    if (lines[0].startsWith('settings ')) { fake.settings = structuredClone(before); return ''; }
+    calls.push(lines);
+    return lines[0].startsWith('getprop ') || lines[0].startsWith('ip ') ? properties(lines) : '';
+  };
+  const record = { kind: GROUP, id: null };
+  await activate({ ...coda, plugin: { ...coda.plugin, state: dir }, settings: { get: async () => ({ 'android.machines': [{ id: machine }] }) },
+    handle: (...args) => { order.push(`handle ${args[1]}`); return coda.handle(...args); },
+    replace: (...args) => { order.push('replace'); return coda.replace(...args); } }, run);
+  assert.deepEqual(order, ['handle lend', 'handle return', 'replace']);
+  const [group] = await coda.list(GROUP, { scope: 'local' });
+  assert.equal(group.spec.name, 'device:xiaomi');
+  record.id = group.id;
+  const holder = { owner: 'o', location: 'l', runId: 'r' };
+  assert.deepEqual(await host.call(record, 'lend', { holder }), {});
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, 'settings.json'))), before);
+  fake.settings = structuredClone(changed);
+  assert.deepEqual(await host.call(record, 'return', { holder }), {});
+  assert.deepEqual(fake.settings, before);
+  assert.equal(existsSync(join(dir, 'settings.json')), false);
+  assert.ok(calls.some(lines => lines === CLEAN_UP));
+  deactivate();
+  await assert.rejects(() => host.call(record, 'lend', { holder }), { code: 'not_found' });
 });

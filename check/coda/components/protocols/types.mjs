@@ -21,14 +21,19 @@ export function validate(check, value, who) {
 
 export class ProtocolTypes {
   constructor() { this.types = new Map(); }
-  register({ kind, spec, status, operations = {}, contributions = {}, participants = () => [] }, registered = () => {}, replace = false) {
+  // `side`: for one of Coda's own protocols, the side of the call kernel on each backend that does its doing operations
+  // (`<backend ID>/<side>`, components/plugins/plugin-callers.mjs `route`); none for one a plugin implements.
+  register({ kind, title, spec, status, operations = {}, streams = {}, permissions, contributions = {}, participants = () => [], side }, registered = () => {}, replace = false) {
     if (!parseProtocolName(kind) || (this.types.has(kind) && !replace)) throw new TypeError(`协议名无效或已登记：${kind}`);
     if (spec?.type !== 'object' || status?.type !== 'object') throw new TypeError(`${kind}: spec 与 status 须为对象 schema`);
     if (typeof participants !== 'function' || !object(contributions)) throw new TypeError(`${kind}: 需要 participants 与 contributions`);
     // Each operation is an input and either an immediate result or a run reference, as the protocol package defines them.
     // `join` names an input field holding the run of an open call that the operation adds to instead of opening one;
     // `safe`, one that only reads and answers at once, whose request and answer neither side keeps; `idempotent`, one that
-    // may change what it acts on but does the same again when sent again, kept by neither side as `safe` is.
+    // may change what it acts on but does the same again when sent again, kept by neither side as `safe` is; `timeout`, how
+    // many milliseconds a call of it is given when the caller gives it less than that or nothing (components/protocols/calls.mjs);
+    // `codaOnly`, one of Coda's own protocols that only Coda calls, never a plugin, implementing the protocol or not
+    // (components/plugins/plugin-callers.mjs `call`) — Coda's mark, not the protocol package's, as `side` is.
     if (!object(operations)) throw new TypeError(`${kind}: operations 须为对象`);
     const compiled = new Map();
     for (const [name, operation] of Object.entries(operations)) {
@@ -36,8 +41,18 @@ export class ProtocolTypes {
       const run = operation.run === true, join = operation.join;
       if (run === Object.hasOwn(operation, 'result') || !operation.input) throw new TypeError(`${kind}.${name}: 操作要写 input，并恰写 result 或 run`);
       if (join !== undefined && (!run || typeof join !== 'string' || !join)) throw new TypeError(`${kind}.${name}: join 只能用于运行，并写出输入里的字段`);
+      if (operation.timeout !== undefined && !(Number.isInteger(operation.timeout) && operation.timeout > 0)) throw new TypeError(`${kind}.${name}: timeout 须为正整数毫秒`);
       compiled.set(name, { input: compile(operation.input), ...(run ? { run } : { result: compile(operation.result) }), ...(join ? { join } : {}),
-        ...(operation.safe === true ? { safe: true } : {}), ...(operation.idempotent === true ? { idempotent: true } : {}) });
+        ...(operation.safe === true ? { safe: true } : {}), ...(operation.idempotent === true ? { idempotent: true } : {}),
+        ...(operation.timeout ? { timeout: operation.timeout } : {}), ...(operation.codaOnly === true ? { codaOnly: true } : {}) });
+    }
+    // Each stream (a record's read-only bytes, transport/record-streams.mjs) by its name, its parameters' schema: they come
+    // from the query string, all strings. A stream and an operation may share a name; each is its own.
+    if (!object(streams)) throw new TypeError(`${kind}: streams 须为对象`);
+    const readable = new Map();
+    for (const [name, stream] of Object.entries(streams)) {
+      if (!/^[a-z][a-z0-9-]{0,63}$/.test(name) || !object(stream) || !stream.input) throw new TypeError(`${kind}.${name}: 流名或定义无效`);
+      readable.set(name, { input: compile(stream.input) });
     }
     const properties = {};
     for (const [field, { merge, schema }] of Object.entries(contributions)) {
@@ -47,7 +62,10 @@ export class ProtocolTypes {
       }
       Object.defineProperty(properties, field, { value: schema, enumerable: true });
     }
-    const type = { kind, participants, contributions: structuredClone(contributions), operations: compiled,
+    // Its title and permission groups as defined (@coda-console/protocol definition.json), for what a plugin's `uses` names
+    // (components/plugins/plugin-extensions.mjs usesProblem).
+    const type = { kind, ...(title ? { title } : {}), ...(permissions ? { permissions: structuredClone(permissions) } : {}), ...(side ? { side } : {}),
+      participants, contributions: structuredClone(contributions), operations: compiled, streams: readable,
       spec: compile(spec, defaults), status: compile(status, defaults),
       // Before supplementation only merge operands must be shaped correctly. Required fields and counts apply to the
       // complete spec, so a participant can supply a required list that the initial object does not have yet.

@@ -1,16 +1,18 @@
 # 测试机
 
+3.0.0（接口破坏性变更）：删设置 `testbed.entities`「安卓本体」，安卓不再按别名找本体：安卓设备由保管方（android 插件）写成一条 `device:<设备名>` 的组记录，带 adb 链路，点名用设备名，与 iOS 一样。`use-testbed` 加可选输入 `select`（与 `device` 恰写一个），按池子借；`use-testbed`、`resolve-testbed` 不再输出 `entity`。写给 Coda 的 iOS 组记录补上 `capacity: 1`。需要先带 `hold-group` 有 `select` 的协议（`@coda-console/protocol` 6.11.0）和合一后组记录的 Coda。只给预览渠道。
+
 2.1.0：写 `coda/group@1` 记录时，`spec` 里不再带 `plugin`（持有插件由 Coda 记在条目上）。需要先带 H4 之后结构减负的 Coda。只给预览渠道。
 
 2.0.1：脚本、README、Skill 改用 `coda` 一个命令的子命令（`coda run`、`coda resources`），不再用 `coda-run`、`coda-resources`。需要先带 H5 的 Coda。只给预览渠道。
 
 2.0.0（接口破坏性变更）：设备归属改用 Coda 的新接口 `coda.replace('coda/group@1', …)`，不再用 `resources.declareGroups`，也不再自己串行声明（宿主按插件依次写）；清单声明实现 `coda/group@1`。每台设备一条记录：插件给的 key 是 udid，记录 ID 由宿主按后端、插件、种类和 key 派生；`spec.name` 是 `device:<设备名>`，`spec` 另有 `plugin`（本插件）、`attributes`、`unique`，内容与原来的声明一致。需要先带这套接口的 Coda（coda#2749）。只给预览渠道。
 
-iPhone、iPad 测试机由这个插件登记归属；安卓只引用保管方已登记的本体。每台设备是一个[并发组](https://github.com/coda-console/coda/blob/main/docs/workflows.md#并发组)，iOS 为 `device:<设备名>`，安卓为 `entity:<UUID>`，容量 1；
+iPhone、iPad 测试机由这个插件登记归属；安卓由保管方（android 插件）登记。每台设备是一个[并发组](https://github.com/coda-console/coda/blob/main/docs/workflows.md#并发组)，组名都是 `device:<设备名>`，容量 1；
 排到、装 App、交给会话写在它的能力 `use-testbed`（`.coda/capabilities/use-testbed.bpmn`）里，会话借用设备的命令走它的另一个能力 `run-on-device`。
 它依赖[宿主资源](../host/README.md)插件（`extensionDependencies`），接在那边的扩展点 `kinds` 上：会话里 `host-sim --kind <设备名>` 由它的 `scripts/host-sim.mjs` 处理。
 从 Coda 的商店安装（npm 包 `@coda-console/testbed`），装它时一起装上宿主资源；给 Agent 的用法在 Skill `testbed`（`skills/testbed/SKILL.md`）。
-需要会话操作时调用 `use-testbed`。无需会话操作但需要独占设备的流程（如预览版直装、开发流程的设备验收），先调用 `resolve-testbed`（参数 device），读返回的 group、platform、entity（iOS 为空）、adb，再用 `hold-group` 占返回的 group（capacity 1）这一段，不自行拼组名，测试机会话排在它后面；流程负责自己的操作与收尾。
+需要会话操作时调用 `use-testbed`。无需会话操作但需要独占设备的流程（如预览版直装、开发流程的设备验收），先调用 `resolve-testbed`（参数 device），读返回的 group、platform、adb（iOS 为空），再用 `hold-group` 占返回的 group（capacity 1）这一段，不自行拼组名，测试机会话排在它后面；流程负责自己的操作与收尾。
 
 **设备登记**：插件在这个后端的状态目录里的 `devices.json`（[`CODA_PLUGIN_STATE`](https://github.com/coda-console/coda/blob/main/docs/plugins.md#插件进程的环境)：默认实例是 `~/.local/state/coda/data/plugins/testbed/devices.json`，
 另一个[后端实例](https://github.com/coda-console/coda/blob/main/docs/deployment.md#后端实例)是 `P/data/plugins/testbed/devices.json`）。它是一个数组，每项一台归本实例的 iOS 设备：
@@ -19,7 +21,7 @@ iPhone、iPad 测试机由这个插件登记归属；安卓只引用保管方已
 [{ "id": "iphone-testbed", "name": "iPhone13pm", "udid": "…", "note": "…" }]
 ```
 
-`platform` 可省，缺省是 `ios`（iPhone、iPad）；devices.json 只放 iOS 设备。安卓在空间共享设置表里填写名字和本体 UUID，见[安卓测试机](#安卓测试机)。
+`platform` 可省，缺省是 `ios`（iPhone、iPad）；devices.json 只放 iOS 设备。安卓由保管方登记，见[安卓测试机](#安卓测试机)。
 
 `personal` 可省；`"personal": true` 表示维护者的个人设备：拿在维护者手里、用来验收，借给会话之前先问维护者，归还时不切黑屏。缺省为常驻测试机，给 Agent 自助使用，不问，沿用切黑屏行为。空间声明的属性均为文本，`personal` 发布为 `"true"` 或 `"false"`；读取时归一为布尔值。
 `id` 是设备名（小写字母开头，字母、数字、连字符），`name` 显示名，`udid` 不重复；`note` 可省，是给拿到任务的会话的说明（这台 Mac 上怎么驱动这台设备、哪些东西不能碰），原样附在任务末尾。
@@ -29,16 +31,18 @@ iPhone、iPad 测试机由这个插件登记归属；安卓只引用保管方已
 任何实例的会话都能用设备，由引擎在归属实例排队。安装、会话的 `host-sim` 命令和切黑屏在发起的机器上执行：iPhone、iPad 要这台 Mac 与设备配对，跑 XCTest 还须有本机 runner；安卓设备要这台装着 adb、连得上本机可达 adb 链路的 endpoint，且设备授权了这台的 adb 公钥。
 
 **入口**：
-- Agent：`workflow_run`，`workflow: "use-testbed"`，`inputs` 给 `device`（设备名，iOS 登记的 `id` 或共享表里的安卓名字）、
+- Agent：`workflow_run`，`workflow: "use-testbed"`，`inputs` 给 `device`（设备名，iOS 登记的 `id` 或安卓的 `android.name`）或 `select`（两个恰写一个，见下）、
   `instructions`（要会话在测试机上做什么、怎么答复），可选 `app`（先装上的 `.app`、`.ipa` 或 `.apk` 的绝对路径）、`task`（任务名，默认「在测试机上验证」）。插件的说明告诉每个会话的 Agent 这样调用。
 - 其他流程：`<callActivity calledElement="use-testbed">`，参数用 `coda:param`；项目流程先在自己的步骤构建、签名，把 App 路径传给它。
 
 **过程**：
-1. 「找测试机」：统一按设备名解析。iOS 先查本地登记；没有这个 id 就用 `coda resources group-owner device:<id>` 读取归属实例声明的显示名、UDID、说明、`personal` 和平台。两边都没有则报「没有这台测试机」，列出本地可用设备，不排队。
-   安卓从共享表查本体 UUID，先用 `group-owner entity:<UUID>` 确认本体存在，再从 `coda resources links <UUID>` 返回的本机可达链路里选第一条 protocol 为 adb 的链路，保留 Coda 的优先顺序；没有本体或可达 adb 链路时明确报错，不排队。
+1. 「找测试机」：写 `device` 时，按设备名解析，不排队就失败的都在这里。本地登记里有这个 id 就是 iOS；没有就用 `coda resources group-owner device:<设备名>` 读归属方声明的组：
+   带着本机可达的 adb 链路（Coda 已按可达范围过滤，取第一条 adb 链路的 endpoint，保留 Coda 的优先顺序）就是安卓；否则是别的实例登记的 iOS 设备，读显示名、UDID、说明、`personal` 与平台。
+   安卓组本机没有可达的 adb 链路就报「没有本机可达的 adb 链路」；两处都没有就报「没有这台测试机」，列出本地可用设备。
    安卓设备在这里先 `adb connect`：连不上，或设备没授权这台的公钥，就此失败并说明，不排队。
-2. 「等测试机」：`hold-group` 为「占用测试机」这一段排进解析得到的组（iOS 为 `device:<设备名>`，安卓为 `entity:<UUID>`）（`capacity` 1、`borrow="no"`：每次使用都排队，做着上一次任务的会话再发起一次也排在后面），由引擎到归属实例排队，排到才往下走；之后到这一段结束都占着它。
-3. 「连接测试机」：安卓本体排到后由核心调用保管方借出，调用机器再用链路 endpoint 做 `adb connect`；iPhone、iPad 没有要连的。
+   写 `select` 时先排再找，见下面的[按池子借](#按池子借)。`device`、`select` 两个都写或都不写，这一次调用在排队前就失败。
+2. 「等测试机」：`hold-group` 为「占用测试机」这一段排进解析得到的组 `device:<设备名>`（`capacity` 1、`borrow="no"`：每次使用都排队，做着上一次任务的会话再发起一次也排在后面），由引擎到归属实例排队，排到才往下走；之后到这一段结束都占着它。
+3. 「连接测试机」：安卓设备排到后由核心调用保管方借出，调用机器再用链路 endpoint 做 `adb connect`；iPhone、iPad 没有要连的。
    个人设备（`personal: true`）排到后先给用户一张卡片「借用 <显示名>」，写明哪个任务、要不要先装 App 和 `instructions`：选「借给它」才往下走；
    选「现在不行」（备注可写什么时候方便）按拒绝结束，设备直接放开，调用者收到拒绝的理由。常驻测试机不出这张卡片。
    有 `app` 就装上（`xcrun devicectl device install app`，安卓设备 `adb install -r`），再把任务交给调用的会话：要求是 `instructions`，加上设备名、UDID、借用方法和登记里的说明。
@@ -56,31 +60,31 @@ iPhone、iPad 测试机由这个插件登记归属；安卓只引用保管方已
 **结果**：做完了，`result`、`note`、`choice` 是任务的答复，调用者照常读到；没做完时以原来的原因结束（被拒绝时是拒绝的理由），被取消的记为已取消。
 
 **设置**：`testbed.blackscreen`「切黑屏命令」是表格，默认没有行；某台 iOS 设备要换掉默认的做法时加一行：左边是设备名，右边是在发起的机器上执行的命令。
-设置在整个空间只有一份，所以各台 Mac 的设备写在同一张表里，设备名在空间里不重复。安卓别名另在 `testbed.entities`「安卓本体」表中填写，每行是名字（name）和本体 UUID（entity），其他机器也能解析。
+设置在整个空间只有一份，所以各台 Mac 的设备写在同一张表里，设备名在空间里不重复。`testbed.entities` 已删：安卓设备名由保管方的设置 `android.name` 决定，不在这里填。
 
 **资源**「测试机」（类型 `devices`）：这台 Mac 的 devices.json 登记的每台 iOS 设备一行（显示名 · 设备名），读数写谁在用（`use-testbed` 的运行与会话、会话借用的命令）、
-用了多久、谁在排队，至多 8 个；没人用写「空闲」。读的是设备登记和 `CODA_GROUPS_STATE` 里的 `device:<设备名>`；本机没有登记设备就不显示，登记读不了时这次读取失败并写明原因。安卓本体由核心的「本体」资源显示，testbed 不重复列出，也不为资源读数查询远端本体或链路。
+用了多久、谁在排队，至多 8 个；没人用写「空闲」。读的是设备登记和 `CODA_GROUPS_STATE` 里的 `device:<设备名>`；本机没有登记设备就不显示，登记读不了时这次读取失败并写明原因。安卓设备由保管方的资源显示，testbed 不重复列出，也不为资源读数查询远端的组。
 
 - 装上后对这台机器的所有项目生效（[安装、停用与卸载](https://github.com/coda-console/coda/blob/main/docs/plugins.md#安装停用与卸载)），可按 Tag 限定或在项目里停用。
 
 ## 安卓测试机
 
-安卓设备经 adb 的 TCP 连接使用，不靠 USB 线。testbed 只引用保管方插件登记的 `coda/entity@1` 本体，不能直接登记普通 adb 设备。
-在空间共享设置 `testbed.entities`「安卓本体」表中填名字与本体 UUID，不放在某台机器的 devices.json 里：
+安卓设备经 adb 的 TCP 连接使用，不靠 USB 线。testbed 不登记安卓设备，也没有设备名对照表：保管方（android 插件）把手机写成一条 `coda/group@1` 记录，组名 `device:<android.name>`、`attributes.platform` 为 `android`，
+内嵌的 `links` 里有 adb 的 endpoint，`reach` 照它的设置 `android.machines`，`lends: true` 让 Coda 在排到后调保管方借出、放开后归还。设备名就是 `android.name`，如 `xiaomi`，`use-testbed device=xiaomi` 与 iOS 点名一样。
+`group-owner` 只带回调用机器够得着的链路：这台机器不在 `android.machines` 里时，点名在「找测试机」就失败，说「没有本机可达的 adb 链路」，不排队。
 
-```json
-[{ "name": "xiaomi", "entity": "03acc3f8-6a6c-4f65-a90e-48f3af5aa3e5" }]
-```
+### 按池子借
 
-本体和链路由保管方声明；调用机器须在 adb 链路的可达范围内。排队用 `entity:<UUID>`，不再声明 `device:xiaomi`。
-装 APK、截图及 host-sim 命令仍走调用机器的 adb，`ANDROID_SERIAL` 使用链路 endpoint。
+`use-testbed select=platform=android` 不点名：`select` 是逗号分隔的 `键=值`，全部与组记录的 `attributes` 相等才算匹配（`platform=ios`、`platform=android,model=Mi 10 Pro`），`device`、`select` 恰写一个。
+流程先用 `hold-group select=…` 排到一台匹配、本机够得着的设备，排到后把得到的组名（`device:<设备名>`）按点名同样的办法解析，再连接（安卓 `adb connect`）；
+之后与点名一样：任务里说明排到的设备名，会话用 `host-sim run --kind <设备名>` 操作。没有匹配、够得着的设备时当场失败，不排队。
 
 - **授权**：每台要用它的机器，设备上要有这台的 adb 公钥（`adb pubkey ~/.android/adbkey` 打出的一行；私钥在第一次运行 adb 时生成）。设备已 root 时，由能上它的机器把这一行追加进
   `/data/misc/adb/adb_keys`，不用在手机上点「允许 USB 调试」。没授权时「找测试机」就失败并说明，不排队。
 - **会话里**：`host-sim run --kind <设备名> -- adb shell …`，借用的命令里 `ANDROID_SERIAL` 已是这台（会话环境里原有的值不算数；这时查不到这台设备就不执行），
   frida（经 `adb forward`）、scrcpy 照常可用。
-- **复原**：安卓本体的借出、归还由核心调用保管方的 lend/return 钩子执行；借出时记录 settings，归还时改回、停掉 frida-server、回到桌面并熄屏。
-  testbed 不再拍安卓快照或执行复原，也不使用「切黑屏命令」或出重试、放锁卡片。归还失败由核心把本体标成 failed、队列停住，等保管方重新声明时再试。
+- **复原**：安卓设备的借出、归还由核心调用保管方记录上的 `lend`、`return` 操作执行；借出时记录 settings，归还时改回、停掉 frida-server、回到桌面并熄屏。
+  testbed 不再拍安卓快照或执行复原，也不使用「切黑屏命令」或出重试、放锁卡片。归还失败由核心把这个组的 `status.state` 标成 failed、队列停住，等保管方重新给出记录时再试。
   `settings` 以外的改动（App 数据、装上的 App、文件）不复原：要留下或要清掉的，会话在答复里说明。
 
 ## 黑屏 App

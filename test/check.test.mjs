@@ -483,18 +483,18 @@ describe('manifests Coda does not take', () => {
     await manifestFails({ manifest: { contributes: { configuration: { properties: { 'liar.providers': { ...providers, additionalProperties: { ...providers.additionalProperties,
       properties: { ...providers.additionalProperties.properties, key: secret } } } } } } } }, 'manifest.read', /密文设置（writeOnly）只能是没有 format、enum 与默认值的文本/);
   });
-  test('a group with a key Coda does not read', () => manifestFails({ manifest: { contributes: { groups: [{ name: 'liar', capacity: 'liar.capacity', note: '' }],
-    configuration: { properties: { 'liar.capacity': { type: 'integer', default: 1 } } } } } }, 'manifest.read', /contributes\.groups/));
+  // Concurrency groups are coda/group@1 records, no longer of the manifest: `groups` is a key no type of Coda's takes.
+  test('a groups key is no type of Coda\'s', () => manifestFails({ manifest: { contributes: { groups: [{ name: 'liar', capacity: 'liar.capacity' }],
+    configuration: { properties: { 'liar.capacity': { type: 'integer', default: 1 } } } } } }, 'manifest.offers', /groups 不是 Coda 的类型/));
   // Coda reads these (docs/plugins.md); the checker does not refuse a plugin for bringing them.
   test('Skills, variables, PATH, MCP servers, endpoints, views and model services are contributions Coda takes', async () => {
     const contributes = { skills: [], environment: {}, path: [], mcpServers: {}, endpoints: [], views: [], modelProviders: [] };
     const { report } = await checkPlugin(plugin({ manifest: { contributes } }), { manifestOnly: true });
     assert.ok(!failed(report).includes('manifest.contributes'), JSON.stringify(report.failures));
   });
-  test('commands and groups of its own are taken', async () => {
-    const { report } = await checkPlugin(plugin({ manifest: { contributes: { commands: [{ name: 'liar-run', command: 'exec true' }],
-      groups: [{ name: 'liar', capacity: 'liar.capacity' }], configuration: { properties: { 'liar.capacity': { type: 'integer', default: 1 } } } } } }), { manifestOnly: true });
-    assertPasses(report, ['manifest.commands', 'manifest.groups']);
+  test('commands of its own are taken', async () => {
+    const { report } = await checkPlugin(plugin({ manifest: { contributes: { commands: [{ name: 'liar-run', command: 'exec true' }] } } }), { manifestOnly: true });
+    assertPasses(report, ['manifest.commands']);
   });
   // A type is declared by a plugin it depends on through another as well: the checker looks for each beside it, once.
   test('a key of contributes a plugin it depends on through another declares is of that type', async () => {

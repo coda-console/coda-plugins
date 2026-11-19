@@ -7,3 +7,4 @@ import '../components/workflows/contributions.mjs';
 import '../components/plugins/model-contributions.mjs';
 import '../components/plugins/git-contributions.mjs';
 import '../components/composers/contributions.mjs';
+import '../components/plugins/process-contributions.mjs';

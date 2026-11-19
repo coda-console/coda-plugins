@@ -6,8 +6,10 @@ import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import { setTimeout } from 'node:timers/promises';
 import { activate, deactivate } from '../../../plugins/testbed/main.mjs';
-import { recordsHost, recordId, held } from '../records.mjs';
+import { TEST_OWNER, createTestHost } from '../../../check/coda/adapters/plugin-test-host.mjs';
 
+const GROUP = 'coda/group@1';
+const testbedHost = records => createTestHost({ plugin: { id: 'testbed', protocolImplementations: [GROUP] }, records });
 const phone = { id: 'phone', name: 'Phone', udid: 'UDID', note: 'local runner required' };
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), 'testbed-ownership-'));
@@ -16,7 +18,7 @@ function fixture(t) {
 }
 async function until(check, tries = 300) {
   for (let i = 0; i < tries; i++) {
-    if (check()) return;
+    if (await check()) return;
     await setTimeout(10);
   }
   assert.fail('file change not observed');
@@ -39,26 +41,31 @@ test('declarations follow atomic replacements; invalid/missing registration pres
   const original = console.error;
   console.error = message => errors.push(message);
   t.after(async () => { await deactivate(); console.error = original; });
-  const { coda, records } = recordsHost('testbed');
-  const groups = () => held(records, 'coda/group@1');
+  const host = testbedHost([]), sent = [];
+  t.after(() => host.close());
+  const coda = { ...host.coda, replace: (kind, items) => { sent.push(structuredClone(items)); return host.coda.replace(kind, items); } };
+  const groups = () => host.coda.list(GROUP, { scope: 'local' });
   writeFileSync(file, JSON.stringify([phone]));
   await activated(coda, state, file);
-  assert.deepEqual(groups(), [{ owner: 'testbed', kind: 'coda/group@1', id: recordId('testbed', 'coda/group@1', phone.udid), key: phone.udid, status: {},
-    spec: { name: 'device:phone', unique: ['udid'], attributes: { name: phone.name, udid: phone.udid, note: phone.note, personal: 'false', platform: 'ios' } } }]);
+  // The capacity is the plugin's to write, not left to the definition's default.
+  assert.equal(sent[0][0].spec.capacity, 1);
+  const [declared, ...more] = await groups();
+  assert.deepEqual([declared.key, declared.status, more.length], [phone.udid, { state: 'free' }, 0]);
+  assert.deepEqual(declared.spec, { name: 'device:phone', capacity: 1, unique: ['udid'], attributes: { name: phone.name, udid: phone.udid, note: phone.note, personal: 'false', platform: 'ios' } });
   writeFileSync(join(state, 'next'), JSON.stringify([{ ...phone, name: 'Changed', personal: true }]));
   renameSync(join(state, 'next'), file);
-  await until(() => groups()[0]?.spec.attributes.name === 'Changed');
-  assert.equal(groups()[0].spec.attributes.personal, 'true');
-  const before = structuredClone(groups());
+  await until(async () => (await groups())[0]?.spec.attributes.name === 'Changed');
+  assert.equal((await groups())[0].spec.attributes.personal, 'true');
+  const before = await groups();
   writeFileSync(file, '{broken');
   await until(() => errors.length > 0);
-  assert.deepEqual(groups(), before);
+  assert.deepEqual(await groups(), before);
   const logged = errors.length;
   rmSync(file);
   await until(() => errors.length > logged);
-  assert.deepEqual(groups(), before);
+  assert.deepEqual(await groups(), before);
   writeFileSync(file, '[]');
-  await until(() => groups().length === 0);
+  await until(async () => (await groups()).length === 0);
 });
 
 test('the set replaces only this plugin\'s groups; a refused set is logged', async t => {
@@ -66,21 +73,27 @@ test('the set replaces only this plugin\'s groups; a refused set is logged', asy
   const original = console.error;
   console.error = message => errors.push(message);
   t.after(async () => { await deactivate(); console.error = original; });
-  const { coda, records } = recordsHost('testbed');
-  const other = { owner: 'other', kind: 'coda/group@1', id: recordId('other', 'coda/group@1', phone.udid), key: phone.udid, status: {}, spec: { name: 'device:other', attributes: {}, unique: [] } };
-  const entity = { owner: 'coda', kind: 'coda/group@1', id: '03acc3f8-6a6c-4f65-a90e-48f3af5aa3e5', status: {}, spec: { name: 'entity:03acc3f8-6a6c-4f65-a90e-48f3af5aa3e5', attributes: {}, unique: [] } };
-  for (const row of [other, entity]) records.set(`${row.kind}/${row.id}`, row);
+  // Another plugin's group on this machine (the Android one, of a name of its own), and testbed's own on another machine.
+  const group = (spec, more) => ({ kind: GROUP, status: { state: 'free' }, spec: { capacity: 1, attributes: {}, unique: [], ...spec }, ...more });
+  const xiaomi = group({ name: 'device:xiaomi' }, { id: 'b1d3f2a0-0000-4000-8000-000000000002', owner: TEST_OWNER, plugin: 'android' });
+  const other = group({ name: 'device:other' }, { id: 'b1d3f2a0-0000-4000-8000-000000000001', owner: 'other', plugin: 'testbed' });
+  const host = testbedHost([xiaomi, other]), { coda } = host;
+  t.after(() => host.close());
   writeFileSync(file, JSON.stringify([phone]));
   await activated(coda, state, file);
-  const mine = recordId('testbed', 'coda/group@1', phone.udid);
-  assert.deepEqual(held(records, 'coda/group@1').map(row => row.id).sort(), [other.id, mine, entity.id].sort());
-  assert.deepEqual([records.get(`coda/group@1/${other.id}`), records.get(`coda/group@1/${entity.id}`)], [other, entity]);
+  const local = await coda.list(GROUP, { scope: 'local' }), available = await coda.list(GROUP);
+  assert.deepEqual(local.map(row => row.plugin).sort(), ['android', 'testbed']);
+  assert.deepEqual(available.map(row => row.id).sort(), [other.id, xiaomi.id, local.find(row => row.plugin === 'testbed').id].sort());
   // A key the host refuses (longer than 256): nothing changes, the refusal is logged.
   writeFileSync(file, JSON.stringify([{ ...phone, udid: 'U'.repeat(257) }]));
   await until(() => errors.length > 0);
-  assert.match(errors[0], /^测试机归属声明失败：bad or repeated key/);
-  assert.equal(records.get(`coda/group@1/${other.id}`), other);
-  assert.ok(records.has(`coda/group@1/${mine}`));
+  assert.match(errors[0], /^测试机归属声明失败：/);
+  assert.deepEqual(await coda.list(GROUP), available);
+  // A name another plugin's group here has is the one group's: the declaration is refused, the other's stays.
+  writeFileSync(file, JSON.stringify([phone, { ...phone, id: 'xiaomi', udid: 'UDID-2' }]));
+  await until(() => errors.length > 1);
+  assert.match(errors[1], /conflict|本机已有组 device:xiaomi/);
+  assert.deepEqual(await coda.list(GROUP), available);
 });
 
 test('find resolves remote devices and propagates missing/conflict errors', t => {

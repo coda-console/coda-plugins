@@ -7,7 +7,7 @@
 import { createHash } from 'node:crypto';
 import { normalize } from 'node:path';
 import { requireCondition as check } from '../../domain/errors.mjs';
-import { catalogChannelProblem, offerPoint, offeredCommands, offerProblem, withDependencies } from './plugin-extensions.mjs';
+import { catalogChannelProblem, installingUsesProblem, offerPoint, offeredCommands, offerProblem, protocolDefinition, withDependencies } from './plugin-extensions.mjs';
 import { CONTRIBUTION_POINTS } from './contribution-points.mjs';
 
 export const COMMIT = /^[0-9a-f]{40}$/;
@@ -290,11 +290,11 @@ export function catalogProblem(plugin, catalog, builtin, installed) {
 // withDependencies, as components/plugins/plugins.mjs installFrom): what this version of it needs, directly or through another,
 // and this machine has not installed; each found among this machine's plugins (`builtin`: one Coda ships, not installed),
 // else in another directory of the same commit (`source`, `siblings`: ID → { path, plugin }), else nowhere (`missing`).
-// What each found one brings is confirmed with it.
-export function together(plugin, { catalog, installed, siblings }) {
+// What each found one brings is confirmed with it (`defined`: the protocols Coda defines, as contributions takes them).
+export function together(plugin, { catalog, installed, siblings, defined = () => null }) {
   const id = plugin.id, known = new Map([...[...siblings].map(([sibling, at]) => [sibling, at.plugin]), ...catalog, [id, plugin]]);
   const after = catalogAfter(plugin, { catalog, siblings });
-  const shown = plugin => ({ displayName: plugin.displayName, contributes: contributions(plugin, after) });
+  const shown = plugin => ({ displayName: plugin.displayName, contributes: contributions(plugin, after, defined) });
   return withDependencies(known, id).filter(each => each !== id && !(installed.has(each) && catalog.has(each)))
     .map(each => catalog.has(each) ? { id: each, from: 'builtin', ...shown(catalog.get(each)) }
       : siblings.has(each) ? { id: each, from: 'source', path: siblings.get(each).path, ...shown(siblings.get(each).plugin) } : { id: each, from: 'missing' });
@@ -310,12 +310,13 @@ export function catalogAfter(plugin, { catalog, siblings }) {
 // What installing it brings, as the confirmation lists it: every command it runs, word for word (those it plugs into
 // another plugin's points too, which that plugin runs — those it writes for a point under a key of `contributes`, where
 // the point says, the catalog beside it (`catalog`) declaring it —, those it puts on every session's PATH, those
-// answering clients' requests, and the one that makes each
+// answering clients' requests, those implementing operations of its protocols (by kind, operation and file), and the one that makes each
 // machine ready for it, run as it is installed or updated), what a component's contribution point confirms (its
 // `confirm`: its agents and the commands it puts on sessions' PATH, the Agent Skills it lays into projects, the MCP
 // servers their agents start and what it tells every agent; the groups it brings, what it calls its capabilities; the
-// modes it puts the composer in), what it calls its workflows and how many settings.
-export function contributions(plugin, catalog = new Map()) {
+// modes it puts the composer in), what it calls its workflows and how many settings; and the permission groups it uses of
+// others' protocols, as those define them in the catalog beside it or Coda does (`defined`: plugin-extensions.mjs protocolDefinition).
+export function contributions(plugin, catalog = new Map(), defined = () => null) {
   const offers = Object.entries(plugin.offers ?? {}).flatMap(([key, raw]) => {
     const found = offerPoint(new Map([...catalog, [plugin.id, plugin]]), key);
     return found ? [{ plugin: found.plugin.id, point: found.point, title: found.declared.title, ...offeredCommands(raw, found.declared) }] : [];
@@ -326,6 +327,8 @@ export function contributions(plugin, catalog = new Map()) {
     ...(plugin.environment?.length ? { environment: plugin.environment.map(({ name, value }) => ({ name, value })) } : {}),
     ...(plugin.path?.length ? { path: plugin.path } : {}),
     ...(plugin.endpoints?.length ? { endpoints: plugin.endpoints.map(e => ({ id: e.id, command: e.command })) } : {}),
+    // The files in its directory the backend runs as Coda calls an operation of a protocol it implements (docs/plugins.md「用命令实现操作」).
+    ...(operationCommands(plugin).length ? { operations: operationCommands(plugin) } : {}),
     // Its module the plugin host runs (docs/plugins.md「插件宿主」): code of its own in Coda's Node on this machine.
     ...(plugin.main ? { main: plugin.main } : {}),
     // The pages it opens in the clients, by name, with where they stay and their icon there: they run in the client's
@@ -341,26 +344,41 @@ export function contributions(plugin, catalog = new Map()) {
     workflows: plugin.workflows, settings: Object.keys(plugin.properties).length,
     // What each machine installs for it from npm, as read from its repository (components/plugins/plugin-sources.mjs inspect).
     ...(plugin.npm?.length ? { npm: plugin.npm } : {}),
+    ...(permissions(plugin, catalog, defined).length ? { permissions: permissions(plugin, catalog, defined) } : {}),
   };
 }
+// Each permission group it uses (docs/plugins.md「用到的权限」): its protocol, by the definition's title (its name without
+// one), and what the group lets it do, whether on trial; by protocol, then group. One its protocol does not define is
+// why it cannot be installed (usesProblem), not listed.
+function permissions(plugin, catalog, defined) {
+  return Object.entries(plugin.uses ?? {}).flatMap(([kind, groups]) => {
+    const definition = protocolDefinition(kind, catalog, defined), declared = definition?.permissions ?? {};
+    return groups.filter(group => Object.hasOwn(declared, group)).map(group =>
+      ({ kind, protocol: definition.title ?? kind, group, title: declared[group].title, trial: declared[group].trial === true }));
+  }).sort((a, b) => a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : a.group < b.group ? -1 : a.group > b.group ? 1 : 0);
+}
+const operationCommands = plugin => (plugin.protocolImplementations ?? [])
+  .flatMap(({ kind, commands }) => Object.entries(commands).map(([operation, command]) => ({ kind, operation, command })));
 // The ID a manifest says its plugin has, as readPlugin takes it (not checked): its `id`, or its package name.
 export const manifestId = manifest => manifest?.id ?? manifest?.name;
 
 // One plugin of a source as its reading lists it, said against what this machine has (`known`: the catalog, the installed
 // rows, the built-in plugins): what it is, the one of its ID installed here, why it cannot be installed, what comes along
 // with it (`siblings`: the other plugins of the same commit, by ID) and what it brings. `manifest`: what is known of it
-// when it does not read as a plugin, its ID `fallback` without a name.
-export function candidate({ path, manifest, plugin, problem, fallback }, { catalog, installed, builtin, channel }, siblings) {
+// when it does not read as a plugin, its ID `fallback` without a name. `defined`: the protocols Coda defines, for the
+// permission groups it and what comes along use (plugin-extensions.mjs installingUsesProblem).
+export function candidate({ path, manifest, plugin, problem, fallback }, { catalog, installed, builtin, channel, defined = () => null }, siblings) {
   const id = plugin?.id ?? (typeof manifestId(manifest) === 'string' ? manifestId(manifest) : fallback);
-  const row = installed.get(id), along = plugin ? together(plugin, { catalog, installed, siblings }) : [];
+  const row = installed.get(id), along = plugin ? together(plugin, { catalog, installed, siblings, defined }) : [];
   const missing = along.filter(each => each.from === 'missing').map(each => each.id);
   // What this machine has once it is installed, those installed with it among them: the points it may write for.
   const after = plugin ? catalogAfter(plugin, { catalog, siblings }) : catalog;
   return { path, id, displayName: plugin?.displayName ?? (typeof manifest?.displayName === 'string' ? manifest.displayName : id),
     description: plugin?.description ?? (typeof manifest?.description === 'string' ? manifest.description : ''), version: plugin?.version ?? '',
     installed: row ? row.source ?? builtin.get(id)?.source ?? { kind: 'builtin' } : null,
-    problem: problem ?? (plugin ? catalogChannelProblem(after, id, channel) ?? catalogProblem(plugin, catalog, builtin, installed) ?? offerProblem(plugin, after) : null)
+    problem: problem ?? (plugin ? catalogChannelProblem(after, id, channel) ?? catalogProblem(plugin, catalog, builtin, installed) ?? offerProblem(plugin, after)
+      ?? installingUsesProblem(after, installed, id, defined) : null)
       ?? (missing.length ? `要一起装的 ${missing.join('、')} 不在这台机器上${plugin.source?.kind === 'npm' ? '' : '，也不在这个提交里'}` : null),
     together: along.filter(each => each.from !== 'missing'),
-    ...(plugin ? { contributes: contributions(plugin, after) } : {}) };
+    ...(plugin ? { contributes: contributions(plugin, after, defined) } : {}) };
 }

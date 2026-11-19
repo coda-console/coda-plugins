@@ -1,9 +1,11 @@
 // This environment's slots for simulators and heavy builds as a resource (README.md): the group host as Coda says it is now
-// (`CODA_GROUPS_STATE`), how many it lets in (the setting host.capacity), who holds it and who waits, as many as a resource
-// has values. One holding it whole (清点模拟器) leaves no slot free.
+// (`CODA_GROUPS_STATE`), how many it lets in (the capacity of the group's record, which Coda queues by, not the setting
+// host.capacity that the module has yet to write), who holds it and who waits, as many as a resource has values. One holding
+// it whole (清点模拟器) leaves no slot free.
+import { execFileSync } from 'node:child_process';
+
 const { now, groups } = JSON.parse(process.env.CODA_GROUPS_STATE || '{"groups":[]}');
-const settings = JSON.parse(process.env.CODA_PLUGIN_SETTINGS || '{}');
-const capacity = Number(settings['host.capacity']) || 1;
+const capacity = JSON.parse(execFileSync('coda', ['resources', 'group-owner', 'host'], { encoding: 'utf8' }))?.capacity ?? 1;
 const host = groups.find(g => g.name === 'host') ?? { occupied: 0, holders: [], queue: [] };
 const VALUES = 8;
 

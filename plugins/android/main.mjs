@@ -1,21 +1,18 @@
-import { device, declarations, record } from './lib/android.mjs';
+import { device, declaration } from './lib/android.mjs';
 
+const GROUP = 'coda/group@1';
 const handlers = [];
-export async function activate(coda) {
-  const phone = device(coda.plugin.state);
+export async function activate(coda, run) {
+  const phone = device(coda.plugin.state, run);
   // Register before declaring: a declaration can retry an unfinished return.
-  handlers.push(coda.resources.handle('lend', () => phone.lend()));
-  handlers.push(coda.resources.handle('return', () => phone.return()));
-  const settings = JSON.parse((await coda.environment()).CODA_PLUGIN_SETTINGS || '{}');
-  await declare(coda, settings);
+  handlers.push(coda.handle(GROUP, 'lend', async () => { await phone.lend(); return {}; }));
+  handlers.push(coda.handle(GROUP, 'return', async () => { await phone.return(); return {}; }));
+  await declare(coda, await coda.settings.get(), settings => declaration(settings, run));
 }
 
-// The entity and the links of the phone, replaced as this plugin's whole; `source` is where they are read from.
-// The entity first: a link names it by the ID the host gave it.
-export async function declare(coda, settings, source = declarations) {
-  const declared = await source(settings);
-  const [entity] = await coda.replace('coda/entity@1', declared.entities.map(item => record(item)));
-  await coda.replace('coda/link@1', declared.links.map(item => record({ ...item, entity: entity.id })));
+// The group of the phone, replaced as this plugin's whole; `source` is where it is read from. No status: Coda keeps the lending.
+export async function declare(coda, settings, source = declaration) {
+  await coda.replace(GROUP, [{ key: 'device', spec: await source(settings) }]);
 }
 
 export function deactivate() {

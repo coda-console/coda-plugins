@@ -12,6 +12,8 @@ import { registerSimulator, registrations } from '../../../plugins/host/lib/simu
 import { pluginDir } from '../plugin.mjs';
 import { declaredPanel, manifest, pluginEnv, run } from '../command.mjs';
 import { readResources } from '../../../check/panel.mjs';
+import { activate, deactivate } from '../../../plugins/host/main.mjs';
+import { createTestHost } from '../../../check/coda/adapters/plugin-test-host.mjs';
 
 const dir = pluginDir('host');
 function temporary(t) {
@@ -42,14 +44,41 @@ if (args[0] === 'delete' && args[1] !== 'STUCK') fs.writeFileSync(${JSON.stringi
   return { tool, devices: () => readFileSync(state, 'utf8').split('\n').filter(Boolean), log: () => existsSync(log) ? readFileSync(log, 'utf8') : '' };
 }
 
-test('the resource shows the free slots, who holds the group host and who waits; one holding it whole leaves none free', async () => {
+test('the slots are the group record the module writes, the capacity that of the setting, and the manifest declares no groups', async t => {
+  assert.equal(manifest('host').contributes.groups, undefined);
+  assert.deepEqual(manifest('host').contributes.protocolImplementations, ['coda/group@1']);
+  const host = createTestHost({ plugin: { id: 'host', protocolImplementations: ['coda/group@1'] }, settings: { 'host.capacity': 2 } });
+  t.after(() => host.close());
+  const rows = () => host.coda.list('coda/group@1', { scope: 'local' });
+  await activate(host.coda);
+  let [row, ...more] = await rows();
+  assert.deepEqual([row.key, more.length], ['host', 0]);
+  assert.deepEqual(row.spec, { name: 'host', capacity: 2, reach: { scope: 'machine' }, attributes: {}, unique: [] });
+  // Coda keeps the status of a group of capacity 1, and a larger one has none.
+  assert.deepEqual(row.status, {});
+  await host.setSettings({ 'host.capacity': 5 });
+  [row, ...more] = await rows();
+  assert.deepEqual([row.spec.capacity, more.length], [5, 0]);
+  await host.setSettings({ 'host.capacity': 1 });
+  assert.deepEqual((await rows())[0].status, { state: 'free' });
+  await deactivate();
+  await host.setSettings({ 'host.capacity': 3 });
+  assert.equal((await rows())[0].spec.capacity, 1);
+});
+
+test('the resource shows the free slots, who holds the group host and who waits; one holding it whole leaves none free', async t => {
   const now = Date.UTC(2026, 9, 13, 12), ago = minutes => now - minutes * 60_000;
   const one = (runId, title, thread, since, more = {}) => ({ runId, workflow: 'w', title, status: null, threadId: 't', thread, since, ...more });
   const host = { name: 'host', occupied: 1, holders: [one('r1', 'testflight', null, ago(75), { borrowed: false, leaving: false })],
     queue: [one('r2', 'xcodebuild test', '会话乙', ago(2), { capacity: 2 })] };
+  // The capacity is that of the group's record, as `coda resources group-owner host` says it: the setting may be ahead of it
+  // (changed, the record not yet written) and says 5 here, or the record not yet written at all (null).
+  const tools = temporary(t);
+  const record = value => writeFileSync(join(tools, 'coda'), `#!/bin/sh\n[ "$1 $2 $3" = "resources group-owner host" ] || exit 9\necho '${JSON.stringify(value)}'\n`, { mode: 0o755 });
+  record({ name: 'host', capacity: 2 });
   const read = async groups => {
     const { code, stdout } = await run(declaredPanel('host').command,
-      env({ CODA_GROUPS_STATE: JSON.stringify({ now, groups }), CODA_PLUGIN_SETTINGS: JSON.stringify({ 'host.capacity': 2 }) }));
+      env({ CODA_GROUPS_STATE: JSON.stringify({ now, groups }), CODA_PLUGIN_SETTINGS: JSON.stringify({ 'host.capacity': 5 }), PATH: `${tools}:${process.env.PATH}` }));
     assert.equal(code, 0);
     return readResources(stdout, declaredPanel('host'))[0].values;
   };
@@ -59,6 +88,10 @@ test('the resource shows the free slots, who holds the group host and who waits;
   const cleaning = await read([{ ...host, holders: [one('r6', '清点模拟器', null, ago(1), { borrowed: false, leaving: false, exclusive: true })] }]);
   assert.deepEqual(cleaning.slice(0, 2).map(i => [i.label, i.value]), [['空闲', '0 / 2'], ['清点模拟器', '占满 1 分钟']]);
   assert.deepEqual((await read([])).map(i => [i.label, i.value]), [['空闲', '2 / 2']]);
+  // No record yet: the group is Coda's own queue of one.
+  record(null);
+  assert.deepEqual((await read([host])).slice(0, 1).map(i => [i.label, i.value]), [['空闲', '0 / 1']]);
+  record({ name: 'host', capacity: 2 });
   // As many as a resource has values: the free slots, then those holding it, then those waiting.
   const many = await read([{ ...host, queue: Array.from({ length: 12 }, (_, i) => one(`q${i}`, `job ${i}`, null, ago(1), { capacity: 2 })) }]);
   assert.deepEqual([many.length, many.at(-1).label], [8, 'job 5']);
@@ -97,7 +130,7 @@ test('inside a slot host-sim runs at once, the command told the slot is held, an
 test('another kind goes whole to the first command plugged into kinds, as that plugin\'s; none plugged in is refused', async t => {
   const other = temporary(t);
   writeFileSync(join(other, 'kind.sh'), 'echo "plugin=$CODA_PLUGIN_PATH state=$CODA_PLUGIN_STATE settings=$CODA_PLUGIN_SETTINGS args=$*"\nexit 5\n');
-  const kinds = { kinds: [{ command: `sh "${join(other, 'kind.sh')}"`, path: other, state: join(other, 'state'), settings: { 'testbed.entities': [{ name: 'xiaomi', entity: 'entity-id' }], 'testbed.blackscreen': {} } }] };
+  const kinds = { kinds: [{ command: `sh "${join(other, 'kind.sh')}"`, path: other, state: join(other, 'state'), settings: { 'testbed.blackscreen': {} } }] };
   const handed = await hostSim('run --kind iphone-testbed -- true', { CODA_THREAD_ID: 'thread', CODA_PLUGIN_SETTINGS: JSON.stringify({ 'host.capacity': 2 }), CODA_PLUGIN_EXTENSIONS: JSON.stringify(kinds) });
   assert.deepEqual([handed.code, handed.stdout], [5, `plugin=${other} state=${join(other, 'state')} settings=${JSON.stringify(kinds.kinds[0].settings)} args=run --kind iphone-testbed -- true\n`]);
   delete kinds.kinds[0].settings;

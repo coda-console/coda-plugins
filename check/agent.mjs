@@ -8,7 +8,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { cleared } from './coda/components/plugins/plugin-rules.mjs';
-import { RETRY_DELAYS, continuationPrompt, serviceFailure } from './coda/components/prompt-recovery/prompt-recovery.mjs';
+import { RETRY_DELAYS, serviceFailure } from './coda/components/prompt-recovery/prompt-recovery.mjs';
+import { continuationPrompt } from './coda/domain/resume-prompt.mjs';
 import { NOT_STEERED, OPEN_LIMIT, REMOTE_CODE, SIGNED_OUT, STEERED, STEERING, STOP_LIMIT, TERM_GRACE, clientCapabilities, currentModel, steeringParams, supportsSteering, systemPrompt, instructionsBlock,
   takesInstructions } from './coda/domain/agent-protocol.mjs';
 import { agentErrorMessage } from './coda/kernel/agent-failures.mjs';
