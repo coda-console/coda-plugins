@@ -1,5 +1,7 @@
 # 宿主资源
 
+5.1.0：资源「构建名额」改由记录命令 `scripts/resource.mjs` 写 `coda/resource@1` 记录（类型 `slots`），不再是清单里的 `contributes.resources`。读不出名额数时（`coda resources group-owner host` 失败或超过 10 秒），记录照写：一行写原因，不画空闲名额，占用与排队照常列出。需要先带 `coda/resource@1` 的 Coda（API Level 6）。只给预览渠道。
+
 ## 名额与模拟器清点
 
 5.0.0（接口破坏性变更）：名额改由插件模块写一条 `coda/group@1` 记录（`name: 'host'`、`capacity` 取设置 `host.capacity`、`reach: { scope: 'machine' }`），设置一改记录就整份重写，容量随之变；清单删 `contributes.groups`，加 `protocolImplementations: ['coda/group@1']`。每台机器各写一条 `host`，彼此不冲突。名额是整台后端的事，按目录给的容量不再起作用。需要先带 H9-B 的 Coda。只给预览渠道。
@@ -73,7 +75,7 @@
 没有占着组的流程步骤里调用同样拒绝，提示写 `coda:group="host"`。
 
 **资源**「构建名额」（类型 `slots`）：从 `CODA_GROUPS_STATE` 读组 `host`，一行：读数「空闲」画空闲名额（空几个、共几个），
-接着每个占着的写运行标题、所属会话和占了多久（借用中、正在收尾、占满另外注明），每个排着的写排第几、等了多久，合计至多 8 个读数。打开或刷新资源页时读，不在后台采集。
+接着每个占着的写运行标题、所属会话和占了多久（借用中、正在收尾、占满另外注明），每个排着的写排第几、等了多久，合计至多 8 个读数。资源页打开、点「刷新」时读，不在后台采集。
 容量取组 `host` 的记录（`coda resources group-owner host` 的 `capacity`），不取设置：设置改了、记录还没重写的那一刻，显示的仍是 Coda 排队用的值；没有记录按 1。容量在「设置 › 插件」里改。
 
 **设置**：`host.capacity`「名额数」，1–8，默认 1；`host.cleanSchedule`「清点模拟器的周期」，ISO 8601 重复间隔，默认 `R/P1D`（每天一次）。

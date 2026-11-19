@@ -10,8 +10,8 @@ import { test } from 'node:test';
 import { runFinished } from '../../../plugins/host/lib/simulator-status.mjs';
 import { registerSimulator, registrations } from '../../../plugins/host/lib/simulators.mjs';
 import { pluginDir } from '../plugin.mjs';
-import { declaredPanel, manifest, pluginEnv, run } from '../command.mjs';
-import { readResources } from '../../../check/panel.mjs';
+import { barePath, manifest, pluginEnv, run } from '../command.mjs';
+import { resourceRecords } from '../../../check/resources.mjs';
 import { activate, deactivate } from '../../../plugins/host/main.mjs';
 import { createTestHost } from '../../../check/coda/adapters/plugin-test-host.mjs';
 
@@ -46,7 +46,7 @@ if (args[0] === 'delete' && args[1] !== 'STUCK') fs.writeFileSync(${JSON.stringi
 
 test('the slots are the group record the module writes, the capacity that of the setting, and the manifest declares no groups', async t => {
   assert.equal(manifest('host').contributes.groups, undefined);
-  assert.deepEqual(manifest('host').contributes.protocolImplementations, ['coda/group@1']);
+  assert.deepEqual(manifest('host').contributes.protocolImplementations, ['coda/group@1', 'coda/resource@1']);
   const host = createTestHost({ plugin: { id: 'host', protocolImplementations: ['coda/group@1'] }, settings: { 'host.capacity': 2 } });
   t.after(() => host.close());
   const rows = () => host.coda.list('coda/group@1', { scope: 'local' });
@@ -72,29 +72,55 @@ test('the resource shows the free slots, who holds the group host and who waits;
   const host = { name: 'host', occupied: 1, holders: [one('r1', 'testflight', null, ago(75), { borrowed: false, leaving: false })],
     queue: [one('r2', 'xcodebuild test', '会话乙', ago(2), { capacity: 2 })] };
   // The capacity is that of the group's record, as `coda resources group-owner host` says it: the setting may be ahead of it
-  // (changed, the record not yet written) and says 5 here, or the record not yet written at all (null).
-  const tools = temporary(t);
-  const record = value => writeFileSync(join(tools, 'coda'), `#!/bin/sh\n[ "$1 $2 $3" = "resources group-owner host" ] || exit 9\necho '${JSON.stringify(value)}'\n`, { mode: 0o755 });
-  record({ name: 'host', capacity: 2 });
+  // (changed, the record not yet written) and says 5 here, or the record not yet written at all (null). A `coda` that fails
+  // says why on its standard error. Nothing of the machine is on the PATH or in the home directory but this Node and the stand-in.
+  const tools = temporary(t), node = await barePath(tools, tools);
+  const record = body => writeFileSync(join(tools, 'coda'), `#!/bin/sh\n[ "$1 $2 $3" = "resources group-owner host" ] || exit 9\n${body}\n`, { mode: 0o755 });
+  const answer = value => record(`echo '${JSON.stringify(value)}'`);
+  answer({ name: 'host', capacity: 2 });
   const read = async groups => {
-    const { code, stdout } = await run(declaredPanel('host').command,
-      env({ CODA_GROUPS_STATE: JSON.stringify({ now, groups }), CODA_PLUGIN_SETTINGS: JSON.stringify({ 'host.capacity': 5 }), PATH: `${tools}:${process.env.PATH}` }));
-    assert.equal(code, 0);
-    return readResources(stdout, declaredPanel('host'))[0].values;
+    const [{ key, spec }, ...more] = await resourceRecords(dir, { env: env({ CODA_GROUPS_STATE: JSON.stringify({ now, groups }),
+      CODA_PLUGIN_SETTINGS: JSON.stringify({ 'host.capacity': 5 }), PATH: node, HOME: tools }) });
+    assert.deepEqual([key, spec.type, spec.title, more.length, spec.resources.length], ['slots', 'slots', '构建名额', 0, 1]);
+    return spec.resources[0];
   };
-  const slots = await read([host]);
+  const { values: slots, buttons } = await read([host]);
   assert.deepEqual(slots.map(i => [i.label, i.value]), [['空闲', '1 / 2'], ['testflight', '占用 1 小时 15 分钟'], ['xcodebuild test · 会话乙', '排第 1 位，等了 2 分钟']]);
   assert.equal(slots[0].fraction, 0.5);
+  assert.deepEqual(buttons, []);
   const cleaning = await read([{ ...host, holders: [one('r6', '清点模拟器', null, ago(1), { borrowed: false, leaving: false, exclusive: true })] }]);
-  assert.deepEqual(cleaning.slice(0, 2).map(i => [i.label, i.value]), [['空闲', '0 / 2'], ['清点模拟器', '占满 1 分钟']]);
-  assert.deepEqual((await read([])).map(i => [i.label, i.value]), [['空闲', '2 / 2']]);
+  assert.deepEqual(cleaning.values.slice(0, 2).map(i => [i.label, i.value]), [['空闲', '0 / 2'], ['清点模拟器', '占满 1 分钟']]);
+  assert.deepEqual((await read([])).values.map(i => [i.label, i.value]), [['空闲', '2 / 2']]);
   // No record yet: the group is Coda's own queue of one.
-  record(null);
-  assert.deepEqual((await read([host])).slice(0, 1).map(i => [i.label, i.value]), [['空闲', '0 / 1']]);
-  record({ name: 'host', capacity: 2 });
+  answer(null);
+  assert.deepEqual((await read([host])).values.slice(0, 1).map(i => [i.label, i.value]), [['空闲', '0 / 1']]);
+  answer({ name: 'host', capacity: 2 });
   // As many as a resource has values: the free slots, then those holding it, then those waiting.
   const many = await read([{ ...host, queue: Array.from({ length: 12 }, (_, i) => one(`q${i}`, `job ${i}`, null, ago(1), { capacity: 2 })) }]);
-  assert.deepEqual([many.length, many.at(-1).label], [8, 'job 5']);
+  assert.deepEqual([many.values.length, many.values.at(-1).label], [8, 'job 5']);
+});
+
+test('a capacity that cannot be had is said on the resource, which still shows who holds the group and who waits', async t => {
+  const now = Date.UTC(2026, 9, 13, 12);
+  const one = (runId, title, since) => ({ runId, workflow: 'w', title, status: null, threadId: 't', thread: null, since, borrowed: false, leaving: false });
+  const tools = temporary(t), node = await barePath(tools, tools);
+  const read = async (groups, body) => {
+    writeFileSync(join(tools, 'coda'), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+    const [{ spec }] = await resourceRecords(dir, { env: env({ CODA_GROUPS_STATE: JSON.stringify({ now, groups }), PATH: node, HOME: tools }) });
+    return spec.resources[0];
+  };
+  const waiting = { name: 'host', occupied: 1, holders: [one('r1', 'testflight', now - 60_000)], queue: [] };
+  // The backend does not answer.
+  const down = await read([waiting], 'echo "没有后端在应答" >&2\nexit 1');
+  assert.deepEqual(down, { name: '构建名额', values: [{ label: 'testflight', value: '占用 1 分钟' }], buttons: [], error: '读不了名额数：没有后端在应答' });
+  // An answer that is not a record, with nothing holding the group: a resource must have a name or a value, and has the name.
+  const garbled = await read([], 'echo not-json');
+  assert.deepEqual([garbled.name, garbled.values, garbled.error.startsWith('读不了名额数：')], ['构建名额', [], true]);
+  // No `coda` at all.
+  assert.match((await read([], 'exit 127')).error, /^读不了名额数：/);
+  rmSync(join(tools, 'coda'));
+  const absent = await resourceRecords(dir, { env: env({ CODA_GROUPS_STATE: JSON.stringify({ now, groups: [] }), PATH: node, HOME: tools }) });
+  assert.match(absent[0].spec.resources[0].error, /^读不了名额数：/);
 });
 
 test('host-sim in a session points to run-held; outside Coda, or in a step holding nothing, there is no slot to take', async () => {
