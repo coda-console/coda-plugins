@@ -162,7 +162,7 @@ setInterval(() => {
   // whose report fails fails only after the login has dealt with the exit of its CLI.
   const watch = { ack: join(dir, 'ack'), gate: join(dir, 'gate') };
   const env = pluginEnv('codex', { ...substituted({ '@openai/codex/bin/codex.js': script }), CODEX_HOME: dir, ...extra, ...(extra.FAKE_CODA_AFTER_EXIT ? { FAKE_CODA_AFTER_EXIT: watch.ack } : {}) });
-  const coda = await fakeCoda(dir, probed(env, watch));
+  const coda = await fakeCoda(dir, extra.FAKE_SILENT || extra.FAKE_CODA_AFTER_EXIT ? probed(env, watch) : env);
   return { dir, coda, run: operation(t, 'codex', command, coda.env), endWait: () => endWait(watch, 'Contacting OpenAI...') };
 }
 const reported = async coda => { for (let i = 0; i < 1000; i++) { const calls = await coda.calls(); if (calls.length) return calls; await delay(10); } throw new Error('没等到登录报告'); };
