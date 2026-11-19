@@ -25,7 +25,6 @@
       "approve-command"
     ],
     "gitCredentials": [],
-    "endpoints": [],
     "views": [],
     "dependencies": [],
     "extensionPoints": {},
@@ -57,7 +56,6 @@
       "ask-user"
     ],
     "gitCredentials": [],
-    "endpoints": [],
     "views": [],
     "dependencies": [],
     "extensionPoints": {},
@@ -89,7 +87,6 @@
       "change-setting"
     ],
     "gitCredentials": [],
-    "endpoints": [],
     "views": [],
     "dependencies": [],
     "extensionPoints": {},
@@ -124,7 +121,6 @@
     "commands": [],
     "capabilities": [],
     "gitCredentials": [],
-    "endpoints": [],
     "views": [
       {
         "id": "changes",
@@ -191,7 +187,6 @@
       }
     ],
     "gitCredentials": [],
-    "endpoints": [],
     "views": [],
     "offers": {
       "resources": [
@@ -242,7 +237,6 @@
     ],
     "capabilities": [],
     "gitCredentials": [],
-    "endpoints": [],
     "views": [],
     "dependencies": [
       "space"
@@ -254,7 +248,7 @@
     "id": "github",
     "displayName": "GitHub",
     "description": "登录账号，推送时自动选对账号",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "category": "模型与账号",
     "icon": {
       "symbol": "arrow.triangle.pull",
@@ -304,12 +298,6 @@
     "repositories": {
       "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/repositories.mjs\""
     },
-    "endpoints": [
-      {
-        "id": "accounts",
-        "command": "exec node \"$CODA_PLUGIN_PATH/scripts/endpoint.mjs\""
-      }
-    ],
     "views": [
       {
         "id": "accounts",
@@ -1281,6 +1269,183 @@
             ]
           }
         }
+      },
+      {
+        "name": "github/account@1",
+        "title": "GitHub 账号",
+        "description": "这台机器上登录的 GitHub 账号，按试用顺序，带登录状态与提交署名",
+        "spec": {
+          "type": "object",
+          "required": [
+            "login",
+            "order"
+          ],
+          "properties": {
+            "login": {
+              "type": "string"
+            },
+            "order": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "status": {
+          "type": "object",
+          "required": [
+            "state",
+            "signature",
+            "unreadable"
+          ],
+          "properties": {
+            "state": {
+              "enum": [
+                "ok",
+                "invalid",
+                "absent",
+                "unknown"
+              ]
+            },
+            "signature": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "required": [
+                "name",
+                "email"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "email": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            },
+            "unreadable": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        },
+        "operations": {
+          "move": {
+            "description": "在试用顺序里上移（-1）或下移（1）一位",
+            "input": {
+              "type": "object",
+              "required": [
+                "by"
+              ],
+              "properties": {
+                "by": {
+                  "enum": [
+                    -1,
+                    1
+                  ]
+                }
+              },
+              "additionalProperties": false
+            },
+            "result": {
+              "type": "object",
+              "additionalProperties": false
+            }
+          }
+        }
+      },
+      {
+        "name": "github/owner@1",
+        "title": "GitHub owner",
+        "description": "记下的 owner 与它的仓库用来推送和署名的账号",
+        "spec": {
+          "type": "object",
+          "required": [
+            "owner",
+            "login",
+            "manual"
+          ],
+          "properties": {
+            "owner": {
+              "type": "string"
+            },
+            "login": {
+              "type": "string"
+            },
+            "manual": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        },
+        "status": {
+          "type": "object",
+          "additionalProperties": false
+        },
+        "operations": {
+          "assign": {
+            "description": "改用另一个已登录的账号",
+            "input": {
+              "type": "object",
+              "required": [
+                "login"
+              ],
+              "properties": {
+                "login": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            },
+            "result": {
+              "type": "object",
+              "additionalProperties": false
+            },
+            "idempotent": true
+          },
+          "forget": {
+            "description": "删掉记录，下次用到时重新试出",
+            "input": {
+              "type": "object",
+              "additionalProperties": false
+            },
+            "result": {
+              "type": "object",
+              "additionalProperties": false
+            },
+            "idempotent": true
+          }
+        }
+      }
+    ],
+    "protocolImplementations": [
+      {
+        "kind": "github/account@1",
+        "commands": {
+          "move": "scripts/ops/move.mjs"
+        }
+      },
+      {
+        "kind": "github/owner@1",
+        "commands": {
+          "assign": "scripts/ops/assign.mjs",
+          "forget": "scripts/ops/forget.mjs"
+        }
+      }
+    ],
+    "records": [
+      {
+        "kind": "github/account@1",
+        "command": "scripts/records/accounts.mjs",
+        "every": 300000
+      },
+      {
+        "kind": "github/owner@1",
+        "command": "scripts/records/owners.mjs",
+        "every": 60000
       }
     ],
     "offers": {
@@ -1345,7 +1510,6 @@
     "commands": [],
     "capabilities": [],
     "gitCredentials": [],
-    "endpoints": [],
     "views": [],
     "dependencies": [],
     "extensionPoints": {},
@@ -1417,7 +1581,6 @@
     "commands": [],
     "capabilities": [],
     "gitCredentials": [],
-    "endpoints": [],
     "views": [],
     "dependencies": [],
     "extensionPoints": {},
@@ -1453,7 +1616,6 @@
     "commands": [],
     "capabilities": [],
     "gitCredentials": [],
-    "endpoints": [],
     "views": [
       {
         "id": "panels",
@@ -1761,7 +1923,6 @@
       "secret-request"
     ],
     "gitCredentials": [],
-    "endpoints": [],
     "views": [],
     "dependencies": [],
     "extensionPoints": {},
@@ -1818,7 +1979,6 @@
     "commands": [],
     "capabilities": [],
     "gitCredentials": [],
-    "endpoints": [],
     "views": [],
     "dependencies": [],
     "extensionPoints": {},
@@ -1865,7 +2025,6 @@
     "commands": [],
     "capabilities": [],
     "gitCredentials": [],
-    "endpoints": [],
     "views": [],
     "dependencies": [
       "tailnet"
@@ -1903,7 +2062,6 @@
     ],
     "capabilities": [],
     "gitCredentials": [],
-    "endpoints": [],
     "views": [],
     "dependencies": [],
     "extensionPoints": {
@@ -1954,7 +2112,6 @@
     "commands": [],
     "capabilities": [],
     "gitCredentials": [],
-    "endpoints": [],
     "views": [
       {
         "id": "session",
@@ -2064,7 +2221,6 @@
     "commands": [],
     "capabilities": [],
     "gitCredentials": [],
-    "endpoints": [],
     "views": [],
     "offers": {
       "resources": [
@@ -2149,7 +2305,6 @@
     "commands": [],
     "capabilities": [],
     "gitCredentials": [],
-    "endpoints": [],
     "views": [],
     "offers": {
       "resources": [
@@ -2209,7 +2364,6 @@
     "commands": [],
     "capabilities": [],
     "gitCredentials": [],
-    "endpoints": [],
     "views": [],
     "offers": {
       "resources": [
@@ -2602,7 +2756,6 @@
         }
       }
     ],
-    "endpoints": [],
     "views": [],
     "dependencies": [
       "github"
@@ -2662,7 +2815,6 @@
     "commands": [],
     "capabilities": [],
     "gitCredentials": [],
-    "endpoints": [],
     "views": [],
     "offers": {
       "resources": [
@@ -2740,7 +2892,6 @@
     "commands": [],
     "capabilities": [],
     "gitCredentials": [],
-    "endpoints": [],
     "views": [],
     "offers": {
       "resources": [
@@ -2835,7 +2986,6 @@
     "commands": [],
     "capabilities": [],
     "gitCredentials": [],
-    "endpoints": [],
     "views": [],
     "dependencies": [],
     "extensionPoints": {},
@@ -3000,7 +3150,6 @@
       "review-commit"
     ],
     "gitCredentials": [],
-    "endpoints": [],
     "views": [],
     "dependencies": [
       "github"
@@ -3035,7 +3184,6 @@
     "commands": [],
     "capabilities": [],
     "gitCredentials": [],
-    "endpoints": [],
     "views": [],
     "offers": {
       "resources": [

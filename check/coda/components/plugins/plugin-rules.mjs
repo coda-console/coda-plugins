@@ -9,15 +9,15 @@
 // gives), and that its settings are named under it.
 // A secret (`writeOnly`) is a text written and never read back, kept in a file beside the database and given to the
 // plugin's processes as that file's path (`CODA_PLUGIN_SECRETS`).
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { join, normalize, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { requireCondition as check, ContractError } from '../../domain/errors.mjs';
-import { isDuration } from '../../domain/duration.mjs';
+import { durationMs, isDuration } from '../../domain/duration.mjs';
 import { AGENT_ID } from '../../domain/values.mjs';
 import { THREAD_ENV, TOKEN_ENV } from '../../domain/session-env.mjs';
 import { iconFiles } from './plugin-icons.mjs';
-import { checkCatalog, extensionsFor } from './plugin-extensions.mjs';
+import { checkCatalog, extensionsFor, retiredContributes } from './plugin-extensions.mjs';
 import { contributionProblem, manifestProblem, TYPES } from '@coda-console/protocol/validate';
 import { ownedProtocolsProblem } from '@coda-console/protocol/protocol';
 import { claims, COMMIT, INTEGRITY, NPM_VERSION, npmPluginId, repoAddress, sourcePath } from './plugin-source-rules.mjs';
@@ -33,6 +33,8 @@ const PACKAGE_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 // contribution point's (contribution-points.mjs), or for a point another plugin declares to take it (the resources
 // plugin's `panels`), refused when neither does.
 export const CONTRIBUTES = TYPES;
+// The shortest a kind's records are given again by its command on their own (`contributes.records`' `every`).
+const EVERY_LEAST = 60_000;
 export const MODEL_PROVIDER = /^[a-z][a-z0-9-]{0,39}\/[a-z][a-z0-9-]{0,39}$/;
 // How many model services a setting of several may name.
 const MODEL_PROVIDERS_AT_MOST = 20;
@@ -114,6 +116,7 @@ export function readPlugin(dir, source, points = CONTRIBUTION_POINTS) {
   const contributes = manifest.contributes ?? {}, configuration = contributes.configuration ?? {};
   const protocolsProblem = ownedProtocolsProblem({ id, contributes: { protocols: contributes.protocols } });
   check(!protocolsProblem, 'invalid_plugin', protocolsProblem);
+  const records = recordCommands(contributes, dir), self = selfCommands(contributes, dir), retired = retiredContributes(contributes);
   const properties = Object.fromEntries(Object.entries(configuration.properties ?? {}).map(([key, value]) => {
     check(key.split('.')[0] === id, 'invalid_plugin', `设置名须以「${id}.」开头：${key}`);
     return [key, setting(value, key)];
@@ -131,6 +134,7 @@ export function readPlugin(dir, source, points = CONTRIBUTION_POINTS) {
     ...(manifest.coda !== undefined ? { coda: manifest.coda } : {}),
     // The API Level it needs (plugin-extensions.mjs compatibility).
     ...(manifest.engines?.coda !== undefined ? { engines: { coda: manifest.engines.coda } } : {}),
+    ...(retired.length ? { retired } : {}),
     // The permission groups of others' protocols it uses (docs/plugins.md「用到的权限」), by protocol: checked against the
     // catalog it is installed into, and whenever the catalog is read (plugin-extensions.mjs compatibility).
     ...(manifest.uses && Object.keys(manifest.uses).length ? { uses: structuredClone(manifest.uses) } : {}),
@@ -138,13 +142,14 @@ export function readPlugin(dir, source, points = CONTRIBUTION_POINTS) {
     ...(required.length ? { required: [...required] } : {}), workflows: files('.coda/workflows'),
     services: [...(contributes.services ?? [])],
     ...read,
-    endpoints: (contributes.endpoints ?? []).map(e => ({ id: e.id, command: e.command })),
     // The entry as one path in its directory (`./view/a.html`, `view//a.html` are `view/a.html`): the clients load it by that.
     views: (contributes.views ?? []).map(v => ({ id: v.id, title: v.title, entry: posix.normalize(v.entry), ...(v.in?.length ? { in: [...v.in] } : {}),
       ...(v.icon ? { icon: v.icon } : {}), ...(v.handles?.length ? { handles: [...v.handles] } : {}), ...(v.readout ? { readout: v.readout } : {}),
       ...(v.checkout ? { checkout: v.checkout } : {}), ...(v.frame ? { frame: v.frame } : {}), ...(v.provides?.length ? { provides: [...v.provides] } : {}) })),
     ...(contributes.protocols?.length ? { protocols: structuredClone(contributes.protocols) } : {}),
     ...(contributes.protocolImplementations?.length ? { protocolImplementations: implementations(contributes.protocolImplementations) } : {}),
+    ...(records.length ? { records } : {}),
+    ...(Object.keys(self).length ? { self } : {}),
     ...(Object.keys(offers).length ? { offers } : {}),
     dependencies: [...dependencies], extensionPoints: extensionPoints(contributes.extensionPoints, dir),
     extensions: Object.entries(contributes.extensions ?? {}).map(([key, value]) => { const [plugin, point] = key.split('/'); return { plugin, point, command: value.command }; }),
@@ -290,6 +295,34 @@ export function pluginEnv({ catalog, installed, id, stateDir = () => null, setti
 // (docs/plugins.md「用命令实现操作」). The test host (adapters/plugin-test-host.mjs) reads a manifest's with it too.
 export const implementations = entries => entries
   .map(entry => typeof entry === 'string' ? { kind: entry, commands: {} } : { kind: entry.kind, commands: { ...entry.commands } });
+// A manifest's `contributes.records` as Coda keeps it (docs/plugins.md「命令写记录」), each `{ kind, command, every? }`, `every`
+// in milliseconds: the kinds its commands give the records of, each one it implements (`protocolImplementations`, as only
+// a plugin implementing a kind holds its records), given again no oftener than EVERY_LEAST. The file is one it runs itself (`runnable`).
+function recordCommands(contributes, dir) {
+  const implemented = new Set(implementations(contributes.protocolImplementations ?? []).map(entry => entry.kind));
+  return (contributes.records ?? []).map(({ kind, command, every }, i) => {
+    const where = `contributes.records 第 ${i + 1} 项（${kind}）`;
+    check(implemented.has(kind), 'invalid_plugin', `contributes.records 第 ${i + 1} 项的种类 ${kind} 不在这个插件的 protocolImplementations 里`);
+    runnable(dir, command, where);
+    const ms = every === undefined ? null : durationMs(every);
+    check(ms === null || ms >= EVERY_LEAST, 'invalid_plugin', `${where}的 every ${every} 短于 PT1M`);
+    return { kind, command, ...(ms === null ? {} : { every: ms }) };
+  });
+}
+// A manifest's `contributes.self` as Coda keeps it (docs/plugins.md「只给自己用的查询」): by name, the file in its directory
+// that answers its own query of that name, before its module (plugin-host.mjs `querySelf`); each one it runs itself (`runnable`).
+function selfCommands(contributes, dir) {
+  const self = { ...contributes.self };
+  for (const [name, command] of Object.entries(self)) runnable(dir, command, `contributes.self「${name}」`);
+  return self;
+}
+// A file of a plugin's that Coda runs itself (adapters/plugin-command.mjs fileCommand), there in its directory as the schema
+// checks: executable, starting with `#!`; refused naming `where` it is written.
+function runnable(dir, command, where) {
+  const path = join(dir, command);
+  check(statSync(path).mode & 0o111, 'invalid_plugin', `${where}的 ${command} 不可执行`);
+  check(readFileSync(path).subarray(0, 2).toString('latin1') === '#!', 'invalid_plugin', `${where}的 ${command} 不以 #! 开头`);
+}
 // The file in its directory that implements an operation of a protocol the plugin implements (`protocolImplementations`'
 // `commands`), or null: its module's, or not the plugin's at all.
 export function commandOf(plugin, kind, operation) {

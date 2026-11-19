@@ -538,9 +538,11 @@ describe('manifests Coda does not take', () => {
   // Concurrency groups are coda/group@1 records, no longer of the manifest: `groups` is a key no type of Coda's takes.
   test('a groups key is no type of Coda\'s', () => manifestFails({ manifest: { contributes: { groups: [{ name: 'liar', capacity: 'liar.capacity' }],
     configuration: { properties: { 'liar.capacity': { type: 'integer', default: 1 } } } } } }, 'manifest.offers', /groups 不是 Coda 的类型/));
+  // Endpoints went with `window.coda.request`: like `groups`, a key no type of Coda's takes.
+  test('an endpoints key is no type of Coda\'s', () => manifestFails({ manifest: { contributes: { endpoints: [] } } }, 'manifest.offers', /endpoints 不是 Coda 的类型/));
   // Coda reads these (docs/plugins.md); the checker does not refuse a plugin for bringing them.
-  test('Skills, variables, PATH, MCP servers, endpoints, views and model services are contributions Coda takes', async () => {
-    const contributes = { skills: [], environment: {}, path: [], mcpServers: {}, endpoints: [], views: [], modelProviders: [] };
+  test('Skills, variables, PATH, MCP servers, views and model services are contributions Coda takes', async () => {
+    const contributes = { skills: [], environment: {}, path: [], mcpServers: {}, views: [], modelProviders: [] };
     const { report } = await checkPlugin(plugin({ manifest: { contributes } }), { manifestOnly: true });
     assert.ok(!failed(report).includes('manifest.contributes'), JSON.stringify(report.failures));
   });

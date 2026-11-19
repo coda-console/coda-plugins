@@ -1,4 +1,4 @@
-// The one runner of a plugin's commands (docs/plugins.md「命令的约定」): its endpoints, the operations its commands implement
+// The one runner of a plugin's commands (docs/plugins.md「命令的约定」): the operations its commands implement
 // (components/plugins/plugin-host.mjs `startCommand`), its resources' readings and actions,
 // their logins and installers, its setup; and, bounded the same way, the programs Coda runs for a plugin itself (Git taking a
 // plugin from its repository, components/plugins/plugin-sources.mjs; a repository's listing; what a plugin tells agents).
@@ -54,10 +54,11 @@ export const runBounded = (program, args, options) => startBounded(program, args
 export const fileCommand = file => `./'${posix.normalize(file).replaceAll("'", "'\\''")}'`;
 // What a command implementing an operation is told of its call in its environment, as a module's handler is in its `ctx`
 // (docs/plugins.md「用命令实现操作」): its record (`ctx.record`, its key only of one its plugin holds here), its ID (`ctx.id`)
-// and, when it has one, its deadline (`ctx.deadline`, milliseconds).
-export const callEnv = ({ id, record, deadline }) => ({ CODA_RECORD_KIND: record.kind, CODA_RECORD_ID: record.id,
+// and, when it has one, its deadline (`ctx.deadline`, milliseconds); made from a page, who is before it (`ctx.caller`, JSON).
+export const callEnv = ({ id, record, deadline, caller }) => ({ CODA_RECORD_KIND: record.kind, CODA_RECORD_ID: record.id,
   ...(record.key === undefined ? {} : { CODA_RECORD_KEY: record.key }), CODA_CALL_ID: id,
-  ...(deadline === null || deadline === undefined ? {} : { CODA_DEADLINE: String(deadline) }) });
+  ...(deadline === null || deadline === undefined ? {} : { CODA_DEADLINE: String(deadline) }),
+  ...(caller ? { CODA_CALLER: JSON.stringify(caller) } : {}) });
 // A query's ID, as its handler is given it (`ctx.id`, adapters/plugin-modules.mjs): of its caller and its request's.
 export const queryId = request => derivedUUID('query', request.parent, request.requestId);
 
