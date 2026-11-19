@@ -220,11 +220,13 @@ test('简易开发的流程定义：开启时什么都不必选，第一张任�
   // 合并后：没勾就结束；勾了的先补没写的文字，再在合并提交上运行。
   for (const only of ['[]', '["deploy"]']) for (const missing of ['', 'notes']) {
     const visited = [], context = { approval: { only, missing } };
-    for (let step = 'after-merged'; step !== 'done';) {
+    let step = 'after-merged';
+    while (nodes[step].$type !== 'bpmn:EndEvent') {
       if (!nodes[step].$type.endsWith('Gateway')) visited.push(step);
       step = nodes[step].$type === 'bpmn:ExclusiveGateway' ? route(step, context) : elements.find(e => e.sourceRef === nodes[step]).targetRef.id;
     }
-    assert.deepEqual(visited, only === '[]' ? [] : [...(missing ? ['fill'] : []), 'merged-inputs', 'run-merged'], `${only}|${missing}`);
+    assert.deepEqual(visited, only === '[]' ? [] : [...(missing ? ['fill'] : []), 'merged-inputs', 'run-merged', 'after-run'], `${only}|${missing}`);
+    assert.equal(step, only === '[]' ? 'done-none' : 'done', `${only}|${missing}`);
   }
   assert.deepEqual([nodes.fill.loopCharacteristics.isSequential, nodes.fill.loopCharacteristics.inputCollection], [true, '=split(approval.missing, ",")']);
   assert.deepEqual(values(nodes.fill).filter(v => v.$type === 'coda:Choice').map(v => [v.id, v.note]), [['done', 'required'], ['skip', undefined]]);
@@ -242,6 +244,28 @@ test('简易开发的流程定义：开启时什么都不必选，第一张任�
   assert.deepEqual(params('run-merged'), { hook: 'merged', only: '=merged-inputs.only', commit: '=merge.commit', inputs: '=merged-inputs.inputs' });
   for (const [failed, target] of [['checks-failed', 'checks'], ['premerge-failed', 'premerge']]) assert.equal(nodes[failed].attachedToRef.id, target);
   assert.equal(evaluate(nodes.done.notify.slice(1), { approval: { notify: false } }).value, false);
+  // 结束时交给发起会话的结果写明合并后的流程：都成功的逐项列出，一项都没跑的写没跑；两个结束都有，名字一样。
+  assert.deepEqual(params('after-run'), { RUNS: '=run-merged.runs', JOINERS: '=joiners.list', line: undefined });
+  const ended = id => Object.fromEntries(values(nodes[id]).filter(v => v.$type === 'coda:Output').map(v => [v.name, v.value]));
+  assert.equal(ended('done').afterMerge, '=after-run.line');
+  assert.equal(ended('done-none').afterMerge, '没有运行合并后的流程，没有什么要再等的');
+  assert.deepEqual(Object.keys(ended('done')), Object.keys(ended('done-none')));
+});
+
+test('合并后的流程都成功：结束时的输出按合并卡上的名字列出每一项，拿不到名字用流程名', t => {
+  const scripts = fileURLToPath(new URL('../../../plugins/review/scripts/approval.mjs', import.meta.url));
+  const root = mkdtempSync(join(tmpdir(), 'review-simple-ran-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const ran = (RUNS, JOINERS) => {
+    const out = join(root, 'out');
+    writeFileSync(out, '');
+    const done = spawnSync(process.execPath, [scripts, 'ran'], { cwd: root, encoding: 'utf8', env: { PATH: process.env.PATH, GITHUB_OUTPUT: out, RUNS: JSON.stringify(RUNS), JOINERS: JSON.stringify(JOINERS) } });
+    assert.equal(done.status, 0, done.stderr);
+    return readFileSync(out, 'utf8');
+  };
+  const runs = [{ workflow: 'deploy', runId: 'r1', state: 'completed' }, { workflow: 'publish-preview', runId: 'r2', state: 'completed' }, { workflow: 'unlisted', runId: 'r3', state: 'completed' }];
+  const joiners = [{ id: 'deploy', name: '部署' }, { id: 'publish-preview', name: '发布预览版' }];
+  assert.equal(ran(runs, joiners), 'line<<EOF_line\n合并后的流程已全部结束，不用再等：部署：成功；发布预览版：成功；unlisted：成功\nEOF_line\n');
 });
 
 // What "这一项这次不跑" does after the merge: the session writes no text for an input, so every ticked workflow asking for it
@@ -281,7 +305,7 @@ async function afterSkip(t, ticked, fills) {
 test('skipping a text drops every ticked workflow that asks for it and runs the others', async t => {
   const skipped = await afterSkip(t, ['deploy', 'publish-preview', 'publish-release'], [{ result: 'completed', choice: 'skip', note: '' }]);
   assert.deepEqual([skipped.merged.only, skipped.merged.inputs], ['["deploy"]', '{}']);
-  assert.deepEqual([skipped.visited, skipped.end.id], [['fill', 'merged-inputs', 'run-merged'], 'done']);
+  assert.deepEqual([skipped.visited, skipped.end.id], [['fill', 'merged-inputs', 'run-merged', 'after-run'], 'done']);
 });
 
 test('skipping the only texts asked for leaves nothing to run: no run-workflows, the run ends as merged', async t => {

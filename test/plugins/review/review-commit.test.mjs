@@ -132,6 +132,9 @@ test('the capability takes base, head, task, reviewer, focus, evidence and previ
   const outputs = [...source.matchAll(/<coda:output name="(\w+)" value="=review\.(\w+)" \/>/g)];
   // previous 不必填：不带它就是完整评审。
   assert.match(source, /<coda:env name="PREVIOUS" value="=inputs\.previous" \/>/);
+  const previous = /<coda:input name="previous"[^>]*description="([^"]*)"/.exec(source)[1];
+  assert.match(previous, /^给了就是复评：只评上一轮评过的提交（base）之后的变动，并逐条判断旧的必须修解决了没有/);
+  assert.doesNotMatch(previous, /增量/);
   assert.deepEqual(outputs.map(m => m[1]), ['decision', 'findings', 'line', 'report', 'head', 'base', 'resolutions']);
   assert.ok(outputs.every(m => m[1] === m[2]));
   const manifest = JSON.parse(readFileSync(new URL('../../../plugins/review/package.json', import.meta.url), 'utf8'));
@@ -199,6 +202,15 @@ test('a re-review is handed the musts left open between markers, judges each aga
   // 坚持旧的必须修照样要求修改。
   const upheld = judged([{ id: 'reviewer:1', status: 'upheld', reason: '没修好' }, { id: 'reviewer:2', status: 'resolved' }]);
   assert.deepEqual([upheld.out.decision, upheld.out.findings], ['REQUEST_CHANGES', '[]']);
+  assert.equal(JSON.parse(upheld.out.resolutions)[0].reason, '没修好', '调用方在 resolutions 里拿到坚持的理由');
+  assert.match(p.prompt(), /判 upheld 的必须写：照现在的代码，它还缺什么才算解决/);
+
+  // 坚持旧的必须修却没写理由（缺、空、只有空白）：和其他格式不合格一样，没评成。
+  for (const reason of [undefined, '', '  ']) {
+    const bare = judged([{ id: 'reviewer:1', status: 'upheld', reason }, { id: 'reviewer:2', status: 'resolved' }]);
+    assert.deepEqual([bare.out.decision, bare.out.findings, bare.out.resolutions], ['INCOMPLETE', '[]', '[]'], JSON.stringify(reason));
+    assert.equal(bare.out.line, '评审没有完成：评审方给出的结论不合格式');
+  }
 
   // 漏判、重复、不认识的结论都不算数：没评成。
   for (const resolutions of [[{ id: 'reviewer:1', status: 'resolved' }], [{ id: 'reviewer:1', status: 'resolved' }, { id: 'reviewer:1', status: 'resolved' }],
@@ -263,8 +275,10 @@ test('a pull request\'s later review covers only what came after the commit revi
   assert.ok(prompt.includes(`git diff ${p.head} ${fixed}`));
   assert.ok(prompt.includes('"错"') && !prompt.includes('"小"') && !prompt.includes('"旧"'), '只带必须修');
   assert.doesNotMatch(prompt, /执行者对每条的回应/);
-  assert.deepEqual([again.out.decision, again.out.findings], ['REQUEST_CHANGES', '- 错（上次提出，仍未解决）（`a:1`）']);
-  assert.equal(again.out.report, '必须修 1 条，小问题 1 条。\n\n### 必须修\n\n- 错（上次提出，仍未解决）（`a:1`）\n\n### 小问题\n\n- 新的小', '小问题只报当轮新提的');
+  const kept = '- 错（上次提出，仍未解决）（`a:1`）\n  - 现在的代码还缺：没修好';
+  assert.deepEqual([again.out.decision, again.out.findings], ['REQUEST_CHANGES', kept]);
+  assert.equal(again.out.report, `必须修 1 条，小问题 1 条。\n\n### 必须修\n\n${kept}\n\n### 小问题\n\n- 新的小`, '理由紧跟在坚持的那条后面；小问题只报当轮新提的');
+  assert.ok(!JSON.parse(again.out.open)[0].lacking, '理由不带进下一轮的旧发现');
   assert.deepEqual(JSON.parse(again.out.open).map(f => f.id), [open[0].id], '仍坚持的留着，下次再判');
   // Every old finding must be judged: a reply without the resolutions did not finish.
   assert.equal(p.reviewPr({ LAST: JSON.stringify(first.out), AGENT_REPLY: JSON.stringify({ findings: [] }) }, fixed).code, 1);
@@ -309,7 +323,8 @@ test('the same head reviewed again still hands over the musts left open: empty f
   const prompt = p.prompt();
   assert.ok(prompt.includes(`这是复评：${p.head} 是上次评过的提交，这次评整份改动。`) && prompt.includes('"错"') && prompt.includes('resolutions 字段'));
   const id = JSON.parse(first.out.open)[0].id;
-  assert.equal(p.reviewPr({ LAST: JSON.stringify(first.out), AGENT_REPLY: JSON.stringify({ findings: [], resolutions: [{ id, status: 'upheld' }] }) }).out.decision, 'REQUEST_CHANGES');
+  assert.equal(p.reviewPr({ LAST: JSON.stringify(first.out), AGENT_REPLY: JSON.stringify({ findings: [], resolutions: [{ id, status: 'upheld', reason: '还是错' }] }) }).out.decision, 'REQUEST_CHANGES');
+  assert.equal(p.reviewPr({ LAST: JSON.stringify(first.out), AGENT_REPLY: JSON.stringify({ findings: [], resolutions: [{ id, status: 'upheld' }] }) }).code, 1, '坚持不写理由，评审没完成');
   // Nothing left open: a full review as the first was.
   const passed = p.reviewPr({ LAST: JSON.stringify({ ...first.out, open: '[]' }), AGENT_REPLY: JSON.stringify({ findings: [] }) });
   assert.equal(passed.out.decision, 'APPROVE');
@@ -322,7 +337,7 @@ test('three reviews in a row, the second on the same commit: a new must is numbe
   assert.deepEqual(JSON.parse(first.out.open).map(f => f.id), [`${at}1`]);
   // The same commit again: the old must upheld, one new must and a nit.
   const second = p.reviewPr({ LAST: JSON.stringify(first.out), AGENT_REPLY: JSON.stringify({ findings: [{ level: 'must', title: '新的错' }, { level: 'nit', title: '小' }],
-    resolutions: [{ id: `${at}1`, status: 'upheld' }] }) });
+    resolutions: [{ id: `${at}1`, status: 'upheld', reason: '还是错' }] }) });
   assert.equal(second.code, 0, second.said);
   assert.deepEqual(JSON.parse(second.out.open).map(f => [f.id, f.title]), [[`${at}1`, '旧的错'], [`${at}2`, '新的错']], '新发现接着最大序号编，旧发现保留原编号');
   // Fixed on top: both old musts are judged, each once.

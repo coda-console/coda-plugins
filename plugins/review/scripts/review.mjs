@@ -154,7 +154,7 @@ const prompt = fill('review.md', {
   previous: reReview || '',
   rules,
   focus: process.env.FOCUS ? `发起评审的会话请你特别关注：\n${process.env.FOCUS}` : '',
-  resolutions: earlier?.length ? `这次 JSON 对象除了 findings 还要有 resolutions 字段：对上次还没关的每条发现各一条，有 id（原编号）、status（resolved 已解决；upheld 仍未解决；withdrawn 本来就不成立，撤回）、reason（一句话理由）。` +
+  resolutions: earlier?.length ? `这次 JSON 对象除了 findings 还要有 resolutions 字段：对上次还没关的每条发现各一条，有 id（原编号）、status（resolved 已解决；upheld 仍未解决；withdrawn 本来就不成立，撤回）、reason（一句话理由；判 upheld 的必须写：照现在的代码，它还缺什么才算解决，不写就算这次评审没有完成）。` +
     `findings 只写这一轮新发现的问题，不重复上次的发现：没解决的旧发现标 upheld，不另列。` : '',
 });
 
@@ -180,7 +180,7 @@ const reply = (result.stdout ?? '').trim();
 
 // The findings the reviewer gave in its closing block. Every finding as asked, or none counts: one dropped for its form
 // could be a `must`. A kind left out or not one of these is a correctness finding. A re-review also judges every
-// old finding once (`resolutions`), or none counts. Past the first 5 `nit`s the rest are dropped, and the report says how many.
+// old finding once (`resolutions`), or none counts; one it upholds says in its `reason` what the code now still lacks, or none counts. Past the first 5 `nit`s the rest are dropped, and the report says how many.
 const LEVELS = ['must', 'nit', 'existing'], NITS = 5;
 const KINDS = ['correctness', 'contract', 'scope', 'test-quality', 'documentation', 'style'], STATUSES = ['resolved', 'upheld', 'withdrawn'];
 const block = [...reply.matchAll(/^```review[ \t]*\n([\s\S]*?)\n```[ \t]*$/gm)].at(-1);
@@ -191,7 +191,7 @@ try {
   if (Array.isArray(value?.findings) && value.findings.every(f => LEVELS.includes(f?.level) && typeof f.title === 'string' && f.title.trim()
     && ['string', 'undefined'].includes(typeof f.location) && ['string', 'undefined'].includes(typeof f.detail))
     && Array.isArray(judged) && judged.length === (earlier?.length ?? 0) && (earlier ?? []).every(old => judged.filter(r => r?.id === old.id && STATUSES.includes(r.status)).length === 1)
-    && judged.every(r => ['string', 'undefined'].includes(typeof r.reason))) {
+    && judged.every(r => ['string', 'undefined'].includes(typeof r.reason) && (r.status !== 'upheld' || (r.reason ?? '').trim()))) {
     const nits = value.findings.filter(f => f.level === 'nit');
     dropped = Math.max(0, nits.length - NITS);
     findings = value.findings.filter(f => nits.indexOf(f) < NITS)
@@ -219,13 +219,14 @@ if (result.status !== 0 || findings === null) {
   process.exit(0);
 }
 
-// In a re-review an old finding the reviewer upholds is still open, and a `must` of them asks for changes as a new one would.
+// In a re-review an old finding the reviewer upholds is still open, and a `must` of them asks for changes as a new one would;
+// its `reason`, what the code now still lacks, follows it in the report.
 const upheld = (earlier ?? []).filter(old => resolutions.some(r => r.id === old.id && r.status === 'upheld'));
-const open = [...findings, ...upheld.map(old => ({ ...old, title: `${old.title}（上次提出，仍未解决）` }))];
+const open = [...findings, ...upheld.map(old => ({ ...old, title: `${old.title}（上次提出，仍未解决）`, lacking: resolutions.find(r => r.id === old.id).reason }))];
 const of = level => open.filter(f => f.level === level), musts = of('must');
 const decision = musts.length ? 'REQUEST_CHANGES' : open.length ? 'COMMENT' : 'APPROVE';
 const verdict = { APPROVE: '通过（APPROVE）', COMMENT: '通过（COMMENT）：没有要修的', REQUEST_CHANGES: '要求修改（REQUEST_CHANGES）' }[decision];
-const list = items => items.map(f => `- ${f.title}${f.location ? `（\`${f.location}\`）` : ''}${f.detail ? `：${f.detail}` : ''}`).join('\n');
+const list = items => items.map(f => `- ${f.title}${f.location ? `（\`${f.location}\`）` : ''}${f.detail ? `：${f.detail}` : ''}${f.lacking ? `\n  - 现在的代码还缺：${f.lacking}` : ''}`).join('\n');
 const counted = [musts.length ? `必须修 ${musts.length} 条` : '没有要修的',
   of('nit').length ? `小问题 ${of('nit').length} 条` : '', of('existing').length ? `原有问题 ${of('existing').length} 条` : ''].filter(Boolean);
 const report = [`${counted[0]}${counted.length > 1 ? `${musts.length ? '，' : '；'}${counted.slice(1).join('，')}` : ''}。`,
