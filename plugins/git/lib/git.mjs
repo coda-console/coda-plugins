@@ -25,13 +25,13 @@ export function git(cwd, args, { env = process.env, extra = {}, input, accept = 
   });
 }
 
-export async function repository(path, env) {
+export async function repository(path) {
   if (!isAbsolute(path) || path.includes('\0')) throw new Error('仓库路径须为本机绝对路径');
   const root = await realpath(path);
-  const bare = await git(root, ['rev-parse', '--is-bare-repository'], { env }) === 'true';
-  if (!bare && await realpath(await git(root, ['rev-parse', '--show-toplevel'], { env })) !== root)
+  const bare = await git(root, ['rev-parse', '--is-bare-repository']) === 'true';
+  if (!bare && await realpath(await git(root, ['rev-parse', '--show-toplevel'])) !== root)
     throw new Error('请登记工作副本根目录');
-  const gitDir = await realpath(await git(root, ['rev-parse', '--absolute-git-dir'], { env }));
-  const commonDir = await realpath(await git(root, ['rev-parse', '--path-format=absolute', '--git-common-dir'], { env }));
+  const gitDir = await realpath(await git(root, ['rev-parse', '--absolute-git-dir']));
+  const commonDir = await realpath(await git(root, ['rev-parse', '--path-format=absolute', '--git-common-dir']));
   return { path: root, gitDir, commonDir, bare };
 }

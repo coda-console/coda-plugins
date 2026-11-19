@@ -64,7 +64,7 @@ export function host(state) {
     return items.map(({ key, ...value }) => write(kind, key, value));
   };
   const seed = (kind, id, value) => objects.set(`${kind}/${id}`, { kind, id, spec: value.spec, status: value.status ?? {}, labels: null, version: String(++version) });
-  const coda = { plugin: { id: plugin, state }, environment: async () => env, put, delete: remove, replace,
+  const coda = { plugin: { id: plugin, state }, put, delete: remove, replace,
     services: { register: async (_id, handler) => { coda.handler = handler; return { dispose() {} }; } },
   };
   return { coda, objects, seed, id: name => recordId(plugin, SOURCE, name) };

@@ -16,7 +16,7 @@ export class GitProvider {
     // one written; neither is in the file. `repositories` is by record ID.
     this.sources = new Map(); this.repositories = new Map(); this.managing = Promise.resolve();
     this.file = join(coda.plugin.state, 'sources.json');
-    this.http = smartHTTP({ lookup: id => this.lookup(id), environment: () => coda.environment() });
+    this.http = smartHTTP({ lookup: id => this.lookup(id) });
   }
   async start() {
     await mkdir(this.coda.plugin.state, { recursive: true });
@@ -49,7 +49,7 @@ export class GitProvider {
     const source = this.sources.get(name);
     let status;
     try {
-      const repo = await repository(source.spec.path, await this.coda.environment());
+      const repo = await repository(source.spec.path);
       if (source.identity && !sameRepository(source.identity, repo)) throw new Error('源路径已指向另一仓库，请删除源后重新登记');
       if (!source.identity) {
         const identity = { path: repo.path, gitDir: repo.gitDir, commonDir: repo.commonDir };
@@ -69,7 +69,7 @@ export class GitProvider {
     const source = [...this.sources.values()].find(source => source.id === id), repo = this.repositories.get(id);
     if (!source || !repo || source.spec.path !== repo.pathSpec) return null;
     // Do not follow a registered path after it is replaced by a symlink to another repository.
-    const now = await repository(source.spec.path, await this.coda.environment());
+    const now = await repository(source.spec.path);
     return sameRepository(now, repo) ? repo : null;
   }
   async manage(req, res, caller) {
@@ -99,7 +99,7 @@ export class GitProvider {
       if (!source) throw Object.assign(new Error('对象不存在'), { status: 404 });
       next.delete(name);
     } else {
-      await repository(data.spec?.path ?? '', await this.coda.environment());
+      await repository(data.spec?.path ?? '');
       // The new spec is not checked yet: no status until `reconcile` has put it.
       next.set(name, { ...source, spec: { path: data.spec.path, name }, status: undefined });
     }

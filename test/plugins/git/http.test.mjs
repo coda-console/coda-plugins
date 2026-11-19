@@ -10,7 +10,7 @@ import { smartHTTP } from '../../../plugins/git/lib/http.mjs';
 import { repository, git } from '../../../plugins/git/lib/git.mjs';
 
 async function server(t, dir, caller = { local: true }) {
-  const handler = smartHTTP({ lookup: async id => id === 'source' ? await repository(dir, env) : null, environment: async () => env });
+  const handler = smartHTTP({ lookup: async id => id === 'source' ? await repository(dir) : null });
   const seen = [];
   const http = createServer((req, res) => { seen.push({ url: req.url, protocol: req.headers['git-protocol'] }); void handler(req, res, caller); });
   t.after(async () => { handler.dispose(); http.closeAllConnections(); await new Promise(resolve => http.close(resolve)); });
@@ -154,7 +154,7 @@ test('拒绝取源码的请求时记一行日志：状态、原因、源与三�
 });
 
 test('处理过程出错回 500 时同样记一行日志', async t => {
-  const handler = smartHTTP({ lookup: async () => { throw new Error('boom'); }, environment: async () => env });
+  const handler = smartHTTP({ lookup: async () => { throw new Error('boom'); } });
   const http = createServer((req, res) => { void handler(req, res, { local: true }); });
   t.after(async () => { handler.dispose(); http.closeAllConnections(); await new Promise(resolve => http.close(resolve)); });
   http.listen(0, '127.0.0.1'); await once(http, 'listening');

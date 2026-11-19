@@ -40,7 +40,7 @@ function put(page, { collection, id, object }) {
 
 // The settings as they are now.
 async function settingsOf(coda) {
-  const settings = JSON.parse((await coda.environment()).CODA_PLUGIN_SETTINGS || '{}');
+  const settings = await coda.settings.get();
   return { enabled: settings['network-log.enabled'] === true, targets: settings['network-log.targets'] ?? {},
     hangSeconds: settings['network-log.hangSeconds'] ?? 3, mihomo: settings['network-log.mihomo'] ?? '' };
 }

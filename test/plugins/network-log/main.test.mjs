@@ -15,7 +15,7 @@ test('installing and opening its page leave collection off by default', async t 
   await activate({
     plugin: { id: 'network-log', path: '/plugin', state },
     views: { register: (id, provider) => { views.set(id, provider); return { dispose() {} }; } },
-    environment: async () => ({ CODA_PLUGIN_SETTINGS: JSON.stringify({ 'network-log.targets': {}, 'network-log.hangSeconds': 3, 'network-log.mihomo': '' }) }),
+    settings: { get: async () => ({ 'network-log.targets': {}, 'network-log.hangSeconds': 3, 'network-log.mihomo': '' }) },
   });
   assert.deepEqual([...views.keys()], ['log']);
   const collections = new Map(), closing = [];
