@@ -95,7 +95,7 @@ export function pluginModules({ send }) {
   // One of Coda's collections, whole or as `selector` has it (a session's runs), watched once for each plugin (`plugin`)
   // however many of its modules' watchers watch it, asked with its token (`asks`): `fn` is given every object as `ADDED`
   // first, then each change. Done once the first are given. The last watcher gone, the backend stops reading it. A kind's
-  // records (coda#2749 3.7, `{ scope?, id? }` as `list` takes them) are each told as an entry, as `get` and `list` give it
+  // records (coda#2749 3.7, `{ scope?, id?, labels? }` as `list` takes them) are each told as an entry, as `get` and `list` give it
   // to the plugin (its own with their keys), by its ID: `{ type, id, entry }`.
   // A change as a watcher is told it: of a kind, its entry by the record's ID; the backend tells it by its holder's too.
   const told = (watched, type, id, object) => watched.entries ? { type, id: object.id, entry: object } : { type, id, object };
@@ -232,7 +232,7 @@ export function pluginModules({ send }) {
       // `put({ kind, key }, { spec, status?, labels? })` made or replaced (a status not given kept), answered with its entry,
       // `delete({ kind, key })`, and `replace(kind, entries)`, every one of a kind the plugin holds given (`[{ key, spec,
       // status?, labels? }]`), those it no longer gives gone, answered with the entries given, in their order: each named by
-      // the plugin's own key, its ID the host's. `get({ kind, id })`, one record or null, and `list(kind, { scope?, id? })`,
+      // the plugin's own key, its ID the host's. `get({ kind, id })`, one record or null, and `list(kind, { scope?, id?, labels? })`,
       // the records of any kind, each an entry `{ owner, location, id, plugin, key?, local, spec, status, labels, version }`, `key`
       // only of this plugin's own here: read after what this module wrote before.
       get: record => writing.then(() => asks('provider', { method: 'getRecord', args: [record] })),
@@ -282,8 +282,8 @@ export function pluginModules({ send }) {
         get: () => asks('settings', {}),
         onChange: listen(settingsChanges),
       }),
-      // Coda's own collections, as a page watches the module's (`workflow-runs`: the runs this machine lists, or by a selector
-      // a session's or a run's).
+      // Coda's own collections, as a page watches the module's (`threads`: the sessions this machine lists), or a kind's
+      // records by its protocol's name.
       watch: watching,
     });
     return { coda, views, protocols, operations, services, querying, calling, spawnFor, settingsChanges };

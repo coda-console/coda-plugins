@@ -30,7 +30,7 @@ import { ProtocolTypes } from '../components/protocols/types.mjs';
 import { commandOf, implementations } from '../components/plugins/plugin-rules.mjs';
 import { checkGiven, checkHeld, checkKept, groupType, keptStatus } from '../components/concurrency-groups/schemas.mjs';
 import { validate } from '../components/protocols/types.mjs';
-import { LOCAL_KINDS, checkLabels, checkReplace, checkWrite, picked, readFilter, readRef, recordId, writeRef } from '../components/protocols/record-rules.mjs';
+import { LOCAL_KINDS, checkLabels, checkReplace, checkWrite, labelled, picked, readFilter, readRef, recordId, writeRef } from '../components/protocols/record-rules.mjs';
 import { canonical } from '../domain/values.mjs';
 import { checkInput, checkRequest, checkResult, limit, stopped } from './call-limit.mjs';
 import { Clock } from './clock.mjs';
@@ -94,8 +94,8 @@ export function createTestHost({ plugin = {}, call = null, clock = new Clock(), 
     kindOf(kind).set(keyOf({ owner, id }), entryOf({ owner, location, id, plugin, spec, status, labels }));
   // As the plugin reads them: its own with their keys.
   const listed = (kind, filter) => {
-    const { scope, id } = readFilter(filter), records = kindOf(kind), mine = held.get(kind);
-    return [...records.values()].filter(({ local, id: of }) => (scope === 'available' || local) && (id === undefined || of === id))
+    const { scope, id, labels } = readFilter(filter), records = kindOf(kind), mine = held.get(kind);
+    return [...records.values()].filter(entry => (scope === 'available' || entry.local) && (id === undefined || entry.id === id) && labelled(entry.labels, labels))
       .sort(({ local: one }, { local: other }) => Number(other) - Number(one))
       .map(entry => entry.local && mine.has(entry.id) ? { ...entry, key: mine.get(entry.id) } : entry);
   };

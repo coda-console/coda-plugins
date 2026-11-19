@@ -23,7 +23,7 @@ export class ProtocolTypes {
   constructor() { this.types = new Map(); }
   // `side`: for one of Coda's own protocols, the side of the call kernel on each backend that does its doing operations
   // (`<backend ID>/<side>`, components/plugins/plugin-callers.mjs `route`); none for one a plugin implements.
-  register({ kind, title, spec, status, operations = {}, streams = {}, permissions, contributions = {}, participants = () => [], side }, registered = () => {}, replace = false) {
+  register({ kind, title, spec, status, operations = {}, streams = {}, contributions = {}, participants = () => [], side }, registered = () => {}, replace = false) {
     if (!parseProtocolName(kind) || (this.types.has(kind) && !replace)) throw new TypeError(`协议名无效或已登记：${kind}`);
     if (spec?.type !== 'object' || status?.type !== 'object') throw new TypeError(`${kind}: spec 与 status 须为对象 schema`);
     if (typeof participants !== 'function' || !object(contributions)) throw new TypeError(`${kind}: 需要 participants 与 contributions`);
@@ -62,9 +62,9 @@ export class ProtocolTypes {
       }
       Object.defineProperty(properties, field, { value: schema, enumerable: true });
     }
-    // Its title and permission groups as defined (@coda-console/protocol definition.json), for what a plugin's `uses` names
-    // (components/plugins/plugin-extensions.mjs usesProblem).
-    const type = { kind, ...(title ? { title } : {}), ...(permissions ? { permissions: structuredClone(permissions) } : {}), ...(side ? { side } : {}),
+    // Its title as defined (@coda-console/protocol definition.json). Its permission groups are judged as defined, not as
+    // registered (components/plugins/plugin-extensions.mjs compatibility).
+    const type = { kind, ...(title ? { title } : {}), ...(side ? { side } : {}),
       participants, contributions: structuredClone(contributions), operations: compiled, streams: readable,
       spec: compile(spec, defaults), status: compile(status, defaults),
       // Before supplementation only merge operands must be shaped correctly. Required fields and counts apply to the
