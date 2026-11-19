@@ -22,7 +22,7 @@ scripts/simple.mjs                  简易开发的推送、PR、验收与合并
 scripts/checks.mjs                  等 GitHub 检查
 scripts/review.mjs                  交叉评审：选评审方、开会话、读结论、写 PR 评论；带参数 commit 时评一段提交
 scripts/base.mjs                    看 base（叠放）
-scripts/approval.mjs                记下批准：时刻与合并后要做的事；带参数 inputs 时整理合并后流程的参数
+scripts/approval.mjs                记下批准：时刻与合并后要做的事；带参数 inputs 时整理合并后流程的参数，带 ran 时写出合并后流程的结果
 scripts/merge.mjs                   合并
 scripts/delete-branch.mjs           合并确认后删除远程源分支
 scripts/step.mjs                    各脚本共用：读参数、写输出与摘要、读 PR 的 base
@@ -192,7 +192,7 @@ GitHub 插件的 PR 观察看到这样的 PR，发 `foreign_pull_request.opened`
 6. **设备验收**（`devices` 打开时）：主 Agent 只装改到的那一端（`mac-preview-install`、`ios-preview-install`，传 PR 的提交），你在设备上验收；「不行」必须附言（写意见或附截图），交回主 Agent 修改，改好后重新验收。验收过的提交之后又改了，也要重新验收。
 7. **合并前检查与 GitHub 检查**：在 PR 的提交上跑一次加入挂点 `premerge` 的流程，再等 GitHub 上的检查都有结果；没通过交回主 Agent。
 8. **批准合并**：卡片上是改动汇报、评审结论、不改的理由、检查结果与 PR。「合并」按 `review.mergeMethod` 合并这个提交，可勾项目里加入挂点 `merged` 的流程（`hook-joiners` 列出，默认由各自声明）与「全部完成后通知 Agent」（默认勾选）；「暂不合并」必须写明原因，交给主 Agent 跟进。合并时删除运行自己的分支；与目标分支冲突时交回主 Agent 合入、解冲突，再重跑检查、重新批准。其余合并失败让这一步失败。
-9. **合并后的流程**：合并后在合并提交上运行勾了的；它们要的文字卡上没写的先交主 Agent 逐项补写（下文「挂点 merged」）。
+9. **合并后的流程**：合并后在合并提交上运行勾了的；它们要的文字卡上没写的先交主 Agent 逐项补写（下文「挂点 merged」）。运行结束时交给发起会话的消息里有输出 `afterMerge`：勾的都成功时是「合并后的流程已全部结束，不用再等：部署：成功；…」（名字是合并卡上勾选项的名字），没有要跑的是「没有运行合并后的流程，没有什么要再等的」，会话据此知道已经全部跑完。有一项没成功时运行失败，错误里写明是哪一项。
 
 所有交回主 Agent 修改的（评审意见除外）都是同一张「修改后答复」，写明要改的是什么；答复后从推送重新走。进度存在本次运行的产物 `simple.json` 里。需要支持流程参数 `agent` 类型、`coda:wake` 与 `note="required"` 的 Coda。
 
@@ -222,7 +222,7 @@ PR 生命流程与简易开发声明挂点 `merged`：合并后要做的事由�
 | `reviewer` | 必填，评审方（`agent` 类型） |
 | `focus` | 可空，关注点，同 PR 评审的 `focus` |
 | `evidence` | 可空（标签「已有验证」），调用方已有的验证证据，一段文字（例如项目检查的结果）；带了就在提示词里用一小段转给评审方，说明这是调用方提供的已有验证证据，按评审规则复用；不放进任务书或关注点，没带时没有这一段 |
-| `previous` | 可空（标签「上次没关的必须修」），复评时给：JSON 数组，上次评审没关的必须修，带编号（`id`、`level`、`kind`、`title`、`location`、`detail`）。见下文「复评」 |
+| `previous` | 可空（标签「上次没关的必须修」）。给了就是复评：只评上一轮评过的提交（`base`）之后的变动，逐条判断旧的必须修解决了没有。JSON 数组，上次评审没关的必须修，带编号（`id`、`level`、`kind`、`title`、`location`、`detail`）。见下文「复评」 |
 
 | 输出（`=<调用步骤>.<名字>`） | 内容 |
 | --- | --- |
@@ -231,7 +231,7 @@ PR 生命流程与简易开发声明挂点 `merged`：合并后要做的事由�
 | `line` | 一句话结论；没完成时写明原因 |
 | `report` | 评审方的回答原文（没完成时是它返回的文字），最多 12000 字 |
 | `head`、`base` | 评的两个提交 |
-| `resolutions` | 复评时对每条旧发现的结论，JSON 数组：`id`、`status`（`resolved` 已解决、`upheld` 仍成立、`withdrawn` 撤回）、`reason`；不是复评或没完成时为 `[]` |
+| `resolutions` | 复评时对每条旧发现的结论，JSON 数组：`id`、`status`（`resolved` 已解决、`upheld` 仍成立、`withdrawn` 撤回）、`reason`（`upheld` 的必带：现在的代码还缺什么）；不是复评或没完成时为 `[]` |
 
 和 PR 评审的差别：评审方由调用方给，不查「评审组合」；提示词里原来放 PR 标题、分支和正文的位置放任务书；没有 GitHub 检查结论，上一次评审的发现只在复评时由调用方用 `previous` 给，不留 PR 评论；提示词里明确说这段提交还没有 PR，不必去找 PR 或 CI 记录（PR 评审的提示词不变）；
 `base` 与 `head` 在本地仓库里没有共同祖先（提交不存在）时不评审、直接失败。评审重点按插件设置，与 PR 评审相同。
@@ -246,8 +246,8 @@ PR 生命流程与简易开发声明挂点 `merged`：合并后要做的事由�
 ### 复评
 
 调用方（如块在主 Agent 退回修改之后）对同一位评审者重新调用 `review-commit`，新会话：`base` 是上一轮评过的 head，`head` 是新 head（没有新提交时两者相同），`previous` 是上次没关的必须修。
-提示词说明这是复评、只评 `base` 之后的变动、已经提过的不再提，把 `previous` 原样放在随机标记之间（只当数据），请评审方照现在的代码逐条判断解决了没有。评审方对每条旧发现给结论，`review` 代码块里另给 `resolutions`，每条旧发现恰好一条、`status` 合法，否则算没评成（`INCOMPLETE`）；`findings` 只列这一轮的新问题。
-`decision` 把被坚持（`upheld`）的旧发现算在内：坚持了旧的 `must` 就是 `REQUEST_CHANGES`。`previous` 是空数组时（上一轮没有发现）只看新改动，不要 `resolutions`。
+提示词说明这是复评、只评 `base` 之后的变动、已经提过的不再提，把 `previous` 原样放在随机标记之间（只当数据），请评审方照现在的代码逐条判断解决了没有。评审方对每条旧发现给结论，`review` 代码块里另给 `resolutions`，每条旧发现恰好一条、`status` 合法，判 `upheld`（仍未解决）的还要在 `reason` 里写明现在的代码还缺什么，否则算没评成（`INCOMPLETE`）；`findings` 只列这一轮的新问题。
+`decision` 把被坚持（`upheld`）的旧发现算在内：坚持了旧的 `must` 就是 `REQUEST_CHANGES`；PR 评审与简易开发的报告里，这句理由（「现在的代码还缺：…」）紧跟在那条坚持的发现后面，简易开发「处理评审意见」的任务与评审三次没过的确认卡用的是同一份报告，也看得到。`previous` 是空数组时（上一轮没有发现）只看新改动，不要 `resolutions`。
 
 ## 改成自己的
 

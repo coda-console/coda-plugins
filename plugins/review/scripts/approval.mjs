@@ -13,6 +13,15 @@
 // `only` to run, `[]` when none is left.
 import { json, output } from './step.mjs';
 
+// After the merge (simple.bpmn「记下合并后流程的结果」): run-workflows only gets here when every workflow it ran succeeded, and
+// the run's end tells the session that started it so in one line, each by the name the card showed (JOINERS), the workflow's
+// own when the card has none.
+if (process.argv[2] === 'ran') {
+  const names = new Map(json('JOINERS', []).map(joiner => [joiner.id, joiner.name]));
+  output('line', `合并后的流程已全部结束，不用再等：${json('RUNS', []).map(run => `${names.get(run.workflow) ?? run.workflow}：成功`).join('；')}`);
+  process.exit(0);
+}
+
 if (process.argv[2] === 'inputs') {
   const inputs = json('INPUTS', {}), ids = (process.env.MISSING || '').split(',').filter(Boolean), needs = json('NEEDS', {});
   const fills = json('FILLS', []), asks = (process.env.ASKS || '').split('\n'), dropped = new Set();

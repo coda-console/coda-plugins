@@ -439,6 +439,18 @@ test('整体评审评不评：填了整体评审者、不是只合进了一块�
   submitTo(f);
   assert.equal(plan().review, 'false');
 
+  // 只合进一块且它评成过：跳过；勾「重新整体评审」就当没评过，照常评一次，下一次又跳过。
+  const single = fixture(t); single.run('branch');
+  single.land('one', 'first', '块一\n\nCoda-Piece: piece-1');
+  single.run('piece-landed', { TITLE: '块一', COMMIT: 'c'.repeat(40), PIECE_RUN: 'piece-1', REVIEWED: 'true' });
+  const alone = () => single.run('overall-plan', { REVIEWER: 'true' }).outputs.review;
+  submitTo(single);
+  assert.equal(alone(), 'false', '只有一块且它评成过：跳过');
+  submitTo(single, { again: true });
+  assert.equal(alone(), 'true', '勾了重新整体评审：单块也评');
+  submitTo(single);
+  assert.equal(alone(), 'false');
+
   // 只有一块，但它没评审者（评审者：无）或没评成：照常整体评审。
   for (const reviewed of ['false', undefined]) {
     const g = fixture(t); g.run('branch');
@@ -592,13 +604,33 @@ async function afterSkip(t, ticked, fills) {
 test('合并后的流程：主 Agent 选「这一项这次不跑」，要这段文字的加入者都不跑，其余照跑，运行成功结束', async t => {
   const skipped = await afterSkip(t, ['deploy', 'publish-preview', 'publish-release'], [{ result: 'completed', choice: 'skip', note: '' }]);
   assert.deepEqual([skipped.merged.only, skipped.merged.inputs], ['["deploy"]', '{}']);
-  assert.deepEqual([skipped.visited, skipped.end.id], [['fill', 'merged-inputs', 'run-merged'], 'done']);
+  assert.deepEqual([skipped.visited, skipped.end.id], [['fill', 'merged-inputs', 'run-merged', 'after-run'], 'done']);
 });
 
 test('合并后的流程：勾了的都被「这一项这次不跑」去掉，不进 run-merged，运行成功结束', async t => {
   const skipped = await afterSkip(t, ['publish-preview', 'publish-release'], [{ result: 'completed', choice: 'skip', note: '' }]);
   assert.equal(skipped.merged.only, '[]');
   assert.deepEqual([skipped.visited, skipped.end.id, skipped.end.status], [['fill', 'merged-inputs'], 'done-none', '已完成，没有要跑的合并后流程']);
+  assert.equal(skipped.end.extensionElements.values.find(v => v.name === 'afterMerge').value, '没有运行合并后的流程，没有什么要再等的', '补填时都选了不跑');
+});
+
+test('合并后的流程都成功：结束时的 afterMerge 按批准卡上的名字逐项列出，拿不到名字用流程名；没跑的几条路都写没有运行', async t => {
+  const f = fixture(t); f.run('branch');
+  const runs = [{ workflow: 'deploy', runId: 'r1', state: 'succeeded' }, { workflow: 'publish-preview', runId: 'r2', state: 'succeeded' }, { workflow: 'unlisted', runId: 'r3', state: 'succeeded' }];
+  const joiners = [{ id: 'deploy', name: '部署' }, { id: 'publish-preview', name: '发布预览版' }];
+  assert.deepEqual(f.run('ran', { RUNS: JSON.stringify(runs), JOINERS: JSON.stringify(joiners) }).outputs, { line: '合并后的流程已全部结束，不用再等：部署：成功；发布预览版：成功；unlisted：成功' });
+  // 没跑的路：没勾、归属需求交付、自动合并（留着之前批准卡的答复也一样）都不经 run-merged，直接到写着「没有运行」的结束。
+  const { nodes, route, next } = await definition();
+  const end = context => {
+    let step = 'merged-choice';
+    while (nodes[step].$type !== 'bpmn:EndEvent') step = nodes[step].$type === 'bpmn:ExclusiveGateway' ? route(step, context) : next(step);
+    return step;
+  };
+  const picked = { 'approval-result': { only: '["deploy"]', missing: '' } };
+  assert.equal(end({ inputs: { delivery: '' }, overall: { auto: false }, 'approval-result': { only: '[]', missing: '' } }), 'done-none', '没勾');
+  assert.equal(end({ inputs: { delivery: 'deliver-1' }, overall: { auto: false }, ...picked }), 'done-none', '归属需求交付');
+  assert.equal(end({ inputs: { delivery: '' }, overall: { auto: true }, ...picked }), 'done-none', '自动合并');
+  assert.equal(end({ inputs: { delivery: '' }, overall: { auto: false }, ...picked, 'merged-inputs': { only: '["deploy"]' } }), 'done', '勾了：跑完才到 done');
 });
 
 test('需求运行的定义：输入、进行中的三种答复、暂停卡、收尾各处失败回到进行中、整体评审、合并方式与合并后的流程', async () => {
@@ -790,12 +822,14 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   // 合并后：成员运行不跑；独立交付只跑勾了的，没写的文字先交主 Agent 逐项写。
   for (const delivery of ['', 'deliver-1']) for (const only of ['[]', '["deploy","publish-preview"]']) for (const missing of ['', 'notes']) {
     const visited = [], context = { inputs: { delivery }, 'approval-result': { only, missing } };
-    for (let step = 'merged-choice'; step !== 'done';) {
+    let step = 'merged-choice';
+    while (nodes[step].$type !== 'bpmn:EndEvent') {
       visited.push(step);
       step = nodes[step].$type === 'bpmn:ExclusiveGateway' ? route(step, context) : next(step);
     }
     const runs = !delivery && only !== '[]';
-    assert.deepEqual(visited.filter(id => !nodes[id].$type.endsWith('Gateway')), runs ? [...(missing ? ['fill'] : []), 'merged-inputs', 'run-merged'] : [], `${delivery}|${only}|${missing}`);
+    assert.deepEqual(visited.filter(id => !nodes[id].$type.endsWith('Gateway')), runs ? [...(missing ? ['fill'] : []), 'merged-inputs', 'run-merged', 'after-run'] : [], `${delivery}|${only}|${missing}`);
+    assert.equal(step, runs ? 'done' : 'done-none', `${delivery}|${only}|${missing}`);
   }
   const loop = nodes.fill.loopCharacteristics;
   assert.deepEqual([loop.isSequential, loop.inputElement], [true, 'input']);
@@ -811,7 +845,13 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   for (const context of [{ inputs: { delivery: '' }, approve: { options: { notify: false } } }, { inputs: { delivery: 'deliver-1' } }]) {
     assert.equal(evaluate(nodes.done.notify.slice(1), context).value, context.inputs.delivery ? true : false);
   }
-  assert.deepEqual(values(nodes.done).map(v => v.name), ['pr', 'commit', 'notify']);
+  // 结束时交给发起会话的 afterMerge 写明合并后流程的结果：跑了的是 after-run 写的一句，没跑的各条路都到 done-none；两个结束输出的名字一样（同上一块的简易开发）。
+  assert.deepEqual(values(nodes.done).map(v => v.name), ['pr', 'commit', 'notify', 'afterMerge']);
+  assert.deepEqual(values(nodes['done-none']).map(v => v.name), ['pr', 'commit', 'notify', 'afterMerge']);
+  assert.equal(values(nodes.done).find(v => v.name === 'afterMerge').value, '=after-run.line');
+  assert.equal(values(nodes['done-none']).find(v => v.name === 'afterMerge').value, '没有运行合并后的流程，没有什么要再等的');
+  assert.deepEqual(params('after-run'), { RUNS: '=run-merged.runs', JOINERS: '=joiners.list', line: undefined });
+  assert.deepEqual(elements.filter(e => e.targetRef === nodes.done).map(e => e.sourceRef.id), ['after-run'], '只有跑了合并后的流程才到 done');
   // 流程只定位置，不写 Ultra 或模型的知识。
   assert.doesNotMatch(workflow, /ultra|codex|claude|kimi|grok|opencode|cursor|gpt|sonnet|opus|haiku|gemini/i);
   assert.doesNotMatch(workflow, /squash 合并/, '进目标分支用合并提交');
@@ -1003,9 +1043,9 @@ test('自动合并：开了且这次运行的整体评审没出过必须修（ov
   }
   // 自动合并后不跑合并后的流程（哪怕留着之前批准卡的答复），照常通知。
   const stale = { approve: { options: { notify: false } }, 'approval-result': { only: '["deploy"]', missing: '' }, inputs: { delivery: '' } };
-  assert.equal(route('merged-choice', { ...stale, overall: { auto: true } }), 'done');
+  assert.equal(route('merged-choice', { ...stale, overall: { auto: true } }), 'done-none');
   assert.equal(route('merged-choice', { ...stale, overall: { auto: false } }), 'fill-choice');
-  for (const expression of [nodes.done.notify, values(nodes.done).find(v => v.name === 'notify').value]) {
+  for (const expression of ['done', 'done-none'].flatMap(id => [nodes[id].notify, values(nodes[id]).find(v => v.name === 'notify').value])) {
     assert.equal(evaluate(expression.slice(1), { ...stale, overall: { auto: true } }).value, true);
     assert.equal(evaluate(expression.slice(1), { ...stale, overall: { auto: false } }).value, false, '批准卡上没勾通知');
   }
