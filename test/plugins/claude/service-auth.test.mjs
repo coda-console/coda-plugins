@@ -57,7 +57,9 @@ test('the real Claude Code identifies as Coda and sends the service only its own
   t.after(() => session.close());
   await session.open({ cwd, mcpServers: [] });
   await session.configure('model', 'magpie/anthropic/fake/alpha');
-  assert.deepEqual(await session.prompt({ prompt: [{ type: 'text', text: 'hi' }] }), { stopReason: 'end_turn' });
+  const { usage, ...ended } = await session.prompt({ prompt: [{ type: 'text', text: 'hi' }] });
+  assert.deepEqual(ended, { stopReason: 'end_turn' });
+  assert.deepEqual(usage.breakdown.map(row => row.model), ['fake/alpha'], 'the service\'s own model says what it used');
   const sent = asked.filter(request => request.path.startsWith('/service/v1/messages'));
   assert.ok(sent.length, JSON.stringify(asked));
   for (const request of sent) {

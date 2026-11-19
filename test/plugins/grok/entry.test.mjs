@@ -10,6 +10,7 @@ import { pluginDir } from '../plugin.mjs';
 import { MINIMUM, needed, older } from '../../../plugins/grok/scripts/setup.mjs';
 import { deleteSession } from '../../../plugins/grok/agent/delete.mjs';
 import { OTHER } from '../../../plugins/grok/agent/questions.mjs';
+import { promptUsage } from '../../../plugins/grok/agent/usage.mjs';
 import { relaysInstructions } from '../relay.mjs';
 
 const manifest = JSON.parse(readFileSync(join(pluginDir('grok'), 'package.json')));
@@ -178,4 +179,43 @@ test('Grok\'s compactions of the main session are told as compaction updates, on
   assert.equal(told[3].compactionId, told[4].compactionId);
   assert.equal(new Set(told.map(u => u.compactionId)).size, 3);
   assert.equal(messages.filter(m => m.method === '_x.ai/session_notification').length, 7, 'what Grok said is passed on as it was');
+});
+
+// What a turn used (usage.mjs): Grok tells it in `_meta.usage`, its input counting the cached tokens; Coda reads the response's `usage`.
+test('the prompt response gets the turn\'s usage at its top level, the cached tokens out of the input, and Grok\'s `_meta` as it was', async t => {
+  const { dir, request, prompt } = start(t);
+  await request('initialize', { protocolVersion: 1, clientCapabilities: {} });
+  await request('session/new', { cwd: dir, mcpServers: [] });
+  const answer = (result) => prompt(`result:${JSON.stringify(result)}`);
+  for (const [name, written] of [['cachedWriteTokens', { cachedWriteTokens: 40 }], ['cacheCreationTokens', { cacheCreationTokens: 40 }]]) {
+    const meta = { usage: { inputTokens: 1000, outputTokens: 70, cachedReadTokens: 600, ...written }, other: 'kept' };
+    assert.deepEqual(await answer({ stopReason: 'end_turn', _meta: meta }), { stopReason: 'end_turn', _meta: meta,
+      usage: { totalTokens: 360 + 70 + 600 + 40, inputTokens: 360, outputTokens: 70, cachedReadTokens: 600, cachedWriteTokens: 40 } }, name);
+  }
+  // Without cache fields nothing is taken out and none is told.
+  assert.deepEqual((await answer({ stopReason: 'end_turn', _meta: { usage: { inputTokens: 12, outputTokens: 3 } } })).usage, { totalTokens: 15, inputTokens: 12, outputTokens: 3 });
+  // More cached than input is no negative input.
+  assert.deepEqual((await answer({ stopReason: 'end_turn', _meta: { usage: { inputTokens: 100, outputTokens: 5, cachedReadTokens: 150, cachedWriteTokens: 10 } } })).usage,
+    { totalTokens: 165, inputTokens: 0, outputTokens: 5, cachedReadTokens: 150, cachedWriteTokens: 10 });
+  // Nothing used, or nothing valid in it: the response is as Grok sent it.
+  for (const result of [{ stopReason: 'end_turn' }, { stopReason: 'end_turn', _meta: {} }, { stopReason: 'end_turn', _meta: { usage: {} } },
+    { stopReason: 'end_turn', _meta: { usage: { inputTokens: -1, outputTokens: '3', cachedReadTokens: 1.5, cachedWriteTokens: null } } },
+    { stopReason: 'cancelled', _meta: { usage: 'a lot' } }])
+    assert.deepEqual(await answer(result), result);
+  // A usage of Grok's own at the top level is passed on, whatever `_meta` says.
+  const own = { stopReason: 'end_turn', usage: { totalTokens: 9, inputTokens: 4, outputTokens: 5 }, _meta: { usage: { inputTokens: 1000, outputTokens: 70 } } };
+  assert.deepEqual(await answer(own), own);
+  // The fixture's own turns say nothing of usage.
+  assert.deepEqual(await prompt('hello'), { stopReason: 'end_turn' });
+});
+
+test('only a count that is a non-negative safe integer is told: a missing or invalid field is left out, not made zero', () => {
+  assert.deepEqual(promptUsage({ _meta: { usage: { outputTokens: 7 } } }), { outputTokens: 7 });
+  assert.deepEqual(promptUsage({ _meta: { usage: { inputTokens: 50, outputTokens: 'x', cachedReadTokens: 20 } } }), { inputTokens: 30, cachedReadTokens: 20 });
+  assert.deepEqual(promptUsage({ _meta: { usage: { inputTokens: 50, outputTokens: 7, cachedReadTokens: -1, cachedWriteTokens: Number.MAX_SAFE_INTEGER + 1 } } }),
+    { totalTokens: 57, inputTokens: 50, outputTokens: 7 });
+  assert.deepEqual(promptUsage({ _meta: { usage: { inputTokens: 5, outputTokens: 1, cachedWriteTokens: 'x', cacheCreationTokens: 2 } } }),
+    { totalTokens: 6, inputTokens: 3, outputTokens: 1, cachedWriteTokens: 2 });
+  assert.deepEqual(promptUsage({ usage: null, _meta: { usage: { outputTokens: 0 } } }), { outputTokens: 0 }, 'a null usage is none');
+  for (const result of [undefined, null, 'x', [], {}, { _meta: null }, { _meta: { usage: [] } }, { _meta: { usage: { inputTokens: NaN } } }]) assert.equal(promptUsage(result), null, JSON.stringify(result));
 });

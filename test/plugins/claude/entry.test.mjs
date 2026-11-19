@@ -1130,8 +1130,8 @@ test('a turn stopped while the session moves to the service\'s query ends cancel
   await delay(50); release();
   assert.deepEqual((await stopped).result, { stopReason: 'cancelled' });
   assert.equal(c.said().includes('hello'), false, 'the input of a stopped turn is not given');
-  // The next turn runs on the service's query, as chosen.
-  assert.deepEqual((await c.prompt('again')).result, { stopReason: 'end_turn' });
+  // The next turn runs on the service's query, as chosen (its transcript was resumed: the main loop's usage says what it used).
+  assert.deepEqual((await c.prompt('again')).result, { stopReason: 'end_turn', usage: { totalTokens: 10, inputTokens: 10, outputTokens: 0 } });
   assert.equal(queries.get(c.sessionId).options.model, 'fake/alpha');
 });
 
