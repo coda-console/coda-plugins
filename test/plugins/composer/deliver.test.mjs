@@ -291,9 +291,20 @@ test('需求流程回路、人工任务、结果通知和合并后的流程契�
   };
   for (const ran of [false, true]) for (const yes of [false, true]) {
     const extra = { 'merged-inputs': ran ? { only: '["deploy"]', picked: '部署' } : { only: '[]', picked: '' }, verify: { chose: { yes }, note: '实际验证结论' } };
-    assert.equal(message('tell-result', 'text', extra), `需求「输入框」：${ran ? '已运行部署' : '没有运行合并后的流程'}，真实环境验证${yes ? '通过。' : '有问题。'}\n实际验证结论\n提交：merged-head`);
+    assert.equal(message('tell-result', 'text', extra), `需求「输入框」：${ran ? '已运行部署' : '没有运行合并后的流程'}，真实环境验证${yes ? '通过。' : '有问题。'}\n提交：merged-head\n交付运行：coda://workflow-runs/run-1（验证备注在这次运行的 note 输出里）`);
     assert.equal(message('tell-result', 'key', extra), 'run-1:verified:merged-head');
   }
+  // 通知是固定格式，不拼验证备注：通过时答卡没填备注（note 缺失）、标题与备注都很长、选「有问题」，都得非空且不超过 tell-session 的 4000 字。
+  const told = (extra, over = {}) => evaluate(params('tell-result').text.slice(1), { ...context, ...over, 'merged-inputs': { only: '["deploy"]', picked: '部署' }, ...extra }).value;
+  const within = text => { assert.equal(typeof text, 'string'); assert.ok(text.trim().length > 0 && text.length <= 4000, `长度 ${text?.length}`); return text; };
+  assert.match(within(told({ verify: { chose: { yes: true, no: false }, choice: 'yes' } })), /^需求「输入框」：已运行部署，真实环境验证通过。\n提交：merged-head\n交付运行：coda:\/\/workflow-runs\/run-1/);
+  const longTitle = '长'.repeat(3000), longNote = '甲'.repeat(5000);
+  const long = within(told({ verify: { chose: { yes: true }, note: longNote } }, { init: { title: longTitle }, merged: { commit: 'c'.repeat(3000) } }));
+  assert.ok(long.includes('长'.repeat(40) + '…') && !long.includes('长'.repeat(41)) && !long.includes('甲'), '标题截断、备注不进通知');
+  assert.ok(long.includes('c'.repeat(64)) && !long.includes('c'.repeat(65)), '提交只取前 64 个字符');
+  const bad = within(told({ verify: { chose: { yes: false, no: true }, choice: 'no', note: '实际问题' } }));
+  assert.match(bad, /真实环境验证有问题。\n提交：merged-head\n交付运行：coda:\/\/workflow-runs\/run-1/);
+  assert.ok(!bad.includes('实际问题'));
   assert.equal(nodes['result-done'].targetRef.id, 'done');
 });
 
@@ -334,7 +345,7 @@ async function afterSkip(t, ticked, fills) {
       ? flows.find(e => e.conditionExpression && evaluate(e.conditionExpression.body.trim().slice(1), context).value)?.targetRef ?? node.default.targetRef
       : flows[0].targetRef).id;
   }
-  const shown = (text, extra) => evaluate(text, { init: { title: '输入框' }, merged: { commit: 'merged-head' }, verify: { chose: { yes: true }, note: '' }, 'merged-inputs': merged, ...extra });
+  const shown = (text, extra) => evaluate(text, { init: { title: '输入框' }, run: { id: 'run-1' }, merged: { commit: 'merged-head' }, verify: { chose: { yes: true }, note: '' }, 'merged-inputs': merged, ...extra });
   const verifyText = shown(/\{\{(if merged-inputs[\s\S]*?)\}\}/.exec(nodes.verify.documentation[0].text)[1]).value;
   const toldText = shown(nodes['tell-result'].extensionElements.values.find(v => v.name === 'text').value.slice(1)).value;
   return { visited, merged, verifyText, toldText };
