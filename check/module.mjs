@@ -3,6 +3,8 @@
 // handshake, for a plugin with a `main`.
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { protocolHasRecords } from '@coda-console/protocol/protocol';
+import { usesRefusal } from './coda/components/plugins/plugin-extensions.mjs';
 import { createTestHost } from './coda/adapters/plugin-test-host.mjs';
 import { closing, temporary } from './leftovers.mjs';
 
@@ -50,8 +52,12 @@ function within(work, limit) {
 export async function checkModule({ checked, say, note, limit = ACTIVATE_LIMIT }) {
   const { plugin } = checked, main = plugin.main;
   const state = temporary('coda-plugin-check-state-');
-  // Others' definitions of the protocols it uses, for the event groups its `coda.on` may name.
-  const protocols = Object.keys(plugin.uses ?? {}).filter(kind => !plugin.protocols?.some(one => one.name === kind)).map(checked.definitionOf).filter(Boolean);
+  // Others' definitions of the protocols it uses, for the event groups its `coda.on` may name. The test host takes them for
+  // those alone: its record types are Coda's, the plugin's own and its kinds that stay on this machine, so it cannot hand out a
+  // dependency's records (registering the definitions among the plugin's own protocols would let it publish their events too).
+  const used = Object.keys(plugin.uses ?? {}).filter(kind => !plugin.protocols?.some(one => one.name === kind));
+  const protocols = used.map(checked.definitionOf).filter(Boolean);
+  const absent = used.filter(kind => !checked.definitionOf(kind));
   const host = createTestHost({ plugin: { id: plugin.id, path: plugin.dir, state: state.dir, protocols: plugin.protocols,
     protocolImplementations: plugin.protocolImplementations, processes: plugin.processes, uses: plugin.uses }, settings: checked.settings, protocols });
   const done = closing(() => host.close());
@@ -67,7 +73,9 @@ export async function checkModule({ checked, say, note, limit = ACTIVATE_LIMIT }
       activated = true;
     } catch (e) {
       const from = thrown.get(e), lacking = NOT_PROVIDED[from];
-      if (from === 'on' && e.code === 'forbidden') say.fail('module.events', `coda.on 订了不在自己事件组里的事件：${e.message}`);
+      const unsettled = from === 'on' || from === 'get' || from === 'list' ? unfinished(checked, e, from, absent, used) : null;
+      if (unsettled?.fail) say.fail(...unsettled.fail);
+      else if (unsettled) say.warn('module.registered', `未完成核对：${unsettled.warn}`);
       else if (lacking && e.code === lacking.code && e.message === lacking.message) {
         note.info('note.host', `模块用到测试宿主不提供的能力 coda.${from}，模块一级只验到这里`);
         say.warn('module.registered', `未完成核对：模块用到测试宿主不提供的能力 coda.${from}，登记的操作没有拿去与清单比对`);
@@ -77,9 +85,31 @@ export async function checkModule({ checked, say, note, limit = ACTIVATE_LIMIT }
       say.pass('module.activate', `activate 完成：${main}`);
       compare(checked, host.registered(), say);
     }
-    // As Coda's host ends a module before it goes: what it started ends with it.
-    try { await within(module.deactivate?.(), limit); } catch (e) { say.fail('module.deactivate', `deactivate 失败：${firstLine(e)}`); }
+    // As Coda's host ends a module before it goes, once it has been activated: what it started ends with it. One that did not
+    // finish activating is not called; closing the test host ends what it started.
+    if (activated) try { await within(module.deactivate?.(), limit); } catch (e) { say.fail('module.deactivate', `deactivate 失败：${firstLine(e)}`); }
   } finally { done(); await host.close(); state.remove(); }
+}
+
+// A `coda.on` the test host refused, or a `coda.get`/`coda.list` of a kind it does not have, judged by the definitions that are
+// here: a failure when they settle it (`{ fail: [rule, message] }`), what the check could not tell when it depends on one that
+// is not (`{ warn }`), null when it is neither (the module's own failure). `absent`: the protocols it uses whose definition is
+// not here; `used`: those it uses that are not its own.
+function unfinished({ plugin, definitions, definitionOf }, e, from, absent, used) {
+  if (from === 'on') {
+    if (e.code !== 'forbidden') return null;
+    const name = /没有订事件 (\S+)：/.exec(e.message)?.[1];
+    // An event is one protocol's, as far as the definitions here say: its group is not among those used, whoever else is missing.
+    if (definitions.some(one => one.events && Object.hasOwn(one.events, name)) || !absent.length) return { fail: ['module.events', `coda.on 订了不在自己事件组里的事件：${e.message}`] };
+    return { warn: `协议 ${absent.join('、')} 的定义不在本地，coda.on 被拒可能只是不认识它的事件组` };
+  }
+  const kind = /^没有协议：(.+)$/.exec(e.message)?.[1];
+  if (e.code !== 'not_found' || kind === undefined) return null;
+  const definition = definitionOf(kind);
+  if (!definition) return used.includes(kind) ? { warn: `协议 ${kind} 的定义不在本地，查不了 coda.${from} 读它的记录是不是已获授权` } : null;
+  if (!protocolHasRecords(definition)) return null;
+  const refusal = usesRefusal(plugin, kind, 'read', definition);
+  return refusal ? { fail: ['module.activate', `activate 失败：${refusal}`] } : { warn: `测试宿主登记不了已获授权的记录类型 ${kind}，coda.${from} 之后没有核对` };
 }
 
 // What the manifest says it implements against what the module registered, both ways: an operation not implemented by a command

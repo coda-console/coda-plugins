@@ -766,10 +766,83 @@ describe('the module level', () => {
     assert.deepEqual(messages(report, 'note.host'), []);
   });
   test('a deactivate that waits for what never finishes fails in time, as an activate does', async () => {
-    const main = `const starting = new Promise(() => {}); export function activate() { return starting; } export function deactivate() { return starting; }`;
+    const main = `${BOTH}\nexport function deactivate() { return new Promise(() => {}); }`;
     const { report } = await checkPlugin(modulePlugin({ main }), { limits: { ...limits, activate: 200 } });
-    assert.deepEqual(failed(report), ['module.activate', 'module.deactivate']);
-    assert.match(report.failures[1].message, /deactivate 失败：Error: 0\.2 秒没完成$/);
+    assert.deepEqual(failed(report), ['module.deactivate']);
+    assert.match(report.failures[0].message, /deactivate 失败：Error: 0\.2 秒没完成$/);
+  });
+  test('deactivate is not called when the activate did not finish: failed, timed out or not fully checked', async () => {
+    const gone = (activate, limit) => {
+      const dir = modulePlugin({ main: `import { writeFileSync } from 'node:fs';\nexport ${activate}\nexport function deactivate() { writeFileSync(new URL('./gone', import.meta.url), 'x'); }` });
+      return checkPlugin(dir, { limits: { ...limits, ...(limit && { activate: limit }) } }).then(({ report }) => ({ report, ran: existsSync(join(dir, 'gone')) }));
+    };
+    const failing = await gone(`function activate() { throw new Error('起不来'); }`);
+    assert.deepEqual(failed(failing.report), ['module.activate']);
+    assert.equal(failing.ran, false);
+    const hanging = await gone(`function activate() { return new Promise(() => {}); }`, 200);
+    assert.deepEqual(failed(hanging.report), ['module.activate']);
+    assert.equal(hanging.ran, false);
+    const lacking = await gone(`async function activate(coda) { await coda.tell('s', 't'); }`);
+    assert.deepEqual(failed(lacking.report), []);
+    assert.match(messages(lacking.report, 'module.registered')[0], /^未完成核对/);
+    assert.equal(lacking.ran, false);
+  });
+  // A plugin `reader` with a module, using `liar/deploy@1` of its dependency `liar` (written beside it unless `beside` is false;
+  // its protocol is `definition`) by `groups`, and `more` of other protocols no definition of which is here.
+  const DEPLOY = { name: 'liar/deploy@1', title: '部署', spec: OBJECT, status: OBJECT, events: { 'deploy.started': { payload: { type: 'object' } } },
+    permissions: { watch: { title: '看部署', events: ['deploy.started'] }, read: { title: '读部署', read: true } } };
+  const EVENTS_ONLY = { name: DEPLOY.name, title: DEPLOY.title, events: DEPLOY.events, permissions: { watch: DEPLOY.permissions.watch } };
+  const reading = ({ main, beside = true, groups = ['watch'], definition = DEPLOY, more = {} }) => {
+    const top = mkdtempSync(join(tmpdir(), 'coda-plugin-check-uses-'));
+    temps.push(top);
+    const write = (id, manifest) => { mkdirSync(join(top, id)); writeFileSync(join(top, id, 'package.json'), JSON.stringify({ name: id, version: '1.0.0', ...manifest })); };
+    if (beside) write('liar', { contributes: { protocols: [definition] } });
+    write('reader', { main: 'main.mjs', engines: { coda: 3 }, categories: ['工作流程'], extensionDependencies: ['liar'], uses: { 'liar/deploy@1': groups, ...more }, contributes: {} });
+    writeFileSync(join(top, 'reader', 'main.mjs'), main);
+    return join(top, 'reader');
+  };
+  const LIST = `export async function activate(coda) { await coda.list('liar/deploy@1'); }`;
+  test('a coda.on of an event group of a dependency beside it passes; without the dependency the check is not completed', async () => {
+    const main = `export function activate(coda) { coda.on('deploy.started', () => {}); }`;
+    const beside = await checkPlugin(reading({ main }));
+    assert.deepEqual(failed(beside.report), []);
+    assert.deepEqual(rules(beside.report, 'pass').filter(rule => rule.startsWith('module.')), ['module.activate', 'module.registered']);
+    const apart = await checkPlugin(reading({ main, beside: false }));
+    assert.deepEqual(failed(apart.report), []);
+    assert.deepEqual(rules(apart.report, 'warn').filter(rule => rule === 'module.registered'), ['module.registered']);
+    assert.match(messages(apart.report, 'module.registered')[0], /^未完成核对：协议 liar\/deploy@1 的定义不在本地/);
+  });
+  test('a coda.list of records it may read is not completed: the test host registers no record types of others', async () => {
+    for (const beside of [true, false]) {
+      const { report } = await checkPlugin(reading({ main: LIST, beside, groups: ['read'] }));
+      assert.deepEqual(failed(report), []);
+      assert.match(messages(report, 'module.registered')[0], beside ? /^未完成核对：测试宿主登记不了已获授权的记录类型 liar\/deploy@1/ : /^未完成核对：协议 liar\/deploy@1 的定义不在本地/);
+      assert.deepEqual(rules(report, 'pass').filter(rule => rule.startsWith('module.')), []);
+    }
+  });
+  test('a coda.list of records of a protocol it uses only for events fails: the group it asked for does not read', async () => {
+    const { report } = await checkPlugin(reading({ main: LIST, groups: ['watch'] }));
+    assert.deepEqual(failed(report), ['module.activate']);
+    assert.match(report.failures[0].message, /须在清单的 uses 里写 liar\/deploy@1 的权限组 read/);
+  });
+  test('a coda.list of a protocol of events only is the module\'s failure, not the test host\'s limit', async () => {
+    const { report } = await checkPlugin(reading({ main: LIST, definition: EVENTS_ONLY }));
+    assert.deepEqual(failed(report), ['module.activate']);
+    assert.match(report.failures[0].message, /没有协议：liar\/deploy@1/);
+    assert.deepEqual(rules(report, 'warn').filter(rule => rule === 'module.registered'), []);
+  });
+  test('a coda.on outside the event groups it uses fails, with the dependency beside it or an unrelated one missing', async () => {
+    for (const more of [{}, { 'ghost/thing@1': ['read'] }]) {
+      // `deploy.started` is liar's, its group `watch` not among those used.
+      const { report } = await checkPlugin(reading({ main: `export function activate(coda) { coda.on('deploy.started', () => {}); }`, groups: ['read'], more }));
+      assert.deepEqual(failed(report), ['module.events']);
+      assert.deepEqual(rules(report, 'warn').filter(rule => rule === 'module.registered'), []);
+    }
+  });
+  test('a coda.on of a name no definition here has is not completed while a definition is missing', async () => {
+    const { report } = await checkPlugin(reading({ main: `export function activate(coda) { coda.on('ghost.thing', () => {}); }`, more: { 'ghost/thing@1': ['watch'] } }));
+    assert.deepEqual(failed(report), []);
+    assert.match(messages(report, 'module.registered')[0], /^未完成核对：协议 ghost\/thing@1 的定义不在本地/);
   });
   test('a member the test host lacks failing otherwise is the module\'s failure', async () => {
     const { report } = await checkPlugin(modulePlugin({ main: `export async function activate(coda) { await coda.watch('other/x@1', '不是函数'); }` }));
