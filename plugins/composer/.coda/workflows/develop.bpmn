@@ -137,7 +137,7 @@
     <sequenceFlow id="piece-done" sourceRef="piece" targetRef="piece-landed" />
     <scriptTask id="piece-landed" name="记下合进的块" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
       <extensionElements>
-        <coda:env name="TITLE" value="=progress-result.title" /><coda:env name="COMMIT" value="=piece.commit" /><coda:env name="PIECE_RUN" value="=piece.run" /><coda:env name="REVIEWED" value="=piece.reviewed" />
+        <coda:env name="TITLE" value="=progress-result.title" /><coda:env name="COMMIT" value="=piece.commit" /><coda:env name="PIECE_RUN" value="=piece.run" /><coda:env name="REVIEWED" value="=piece.reviewed" /><coda:env name="BY" value="=piece.by" />
       </extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" piece-landed</script>
     </scriptTask>

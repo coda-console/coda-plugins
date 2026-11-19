@@ -114,20 +114,24 @@
     <!-- 通过：回到「开 PR 或更新」，PR 正文和批准卡换成这一轮的结论，再按那里的门去验收或合并前检查。 -->
     <sequenceFlow id="review-passed" sourceRef="verdict" targetRef="pr" />
 
-    <!-- 第三次评审仍要求修改：不再交给主 Agent，由你决定继续修（次数清零）还是暂不合并。 -->
+    <!-- 第三次评审仍要求修改：不再交给主 Agent，由你决定继续修（次数清零）、不改往下走（同主 Agent 在「处理评审意见」选「不改」）还是暂不合并。 -->
     <userTask id="stuck" name="评审三轮没过" coda:assignee="user" coda:status="评审三轮没过：等你决定">
       <documentation>PR {{review.pr}} 评审了三次仍要求修改。还开着的必须修：
 
 {{review.findings}}
 
-继续修：交回主 Agent 处理评审意见，重新计数。</documentation>
+选「继续修」：交回主 Agent 处理评审意见，重新计数。
+选「不改，往下走」：备注必填，写为什么放行；与主 Agent 在「处理评审意见」选「不改」同一条路：记下理由，之后只重跑检查，不再评审，然后到批准卡；理由会写进 PR 和批准卡，注明是你定的。
+选「暂不合并」：流程到此结束，不合并。</documentation>
       <extensionElements>
         <coda:choice id="more" name="继续修" primary="true" />
+        <coda:choice id="kept" name="不改，往下走" note="required" />
         <coda:choice id="stop" name="暂不合并" note="required" />
       </extensionElements>
     </userTask>
     <sequenceFlow id="stuck-how" sourceRef="stuck" targetRef="stuck-choice" />
     <exclusiveGateway id="stuck-choice" name="继续修吗" default="stuck-more" />
+    <sequenceFlow id="stuck-kept" sourceRef="stuck-choice" targetRef="kept-record"><conditionExpression xsi:type="tFormalExpression">=stuck.chose.kept</conditionExpression></sequenceFlow>
     <sequenceFlow id="stuck-stop" sourceRef="stuck-choice" targetRef="stopped"><conditionExpression xsi:type="tFormalExpression">=stuck.chose.stop</conditionExpression></sequenceFlow>
     <sequenceFlow id="stuck-more" sourceRef="stuck-choice" targetRef="again" />
     <scriptTask id="again" name="重新计数" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
@@ -155,7 +159,11 @@
     <sequenceFlow id="answer-kept" sourceRef="answer-how" targetRef="kept-record"><conditionExpression xsi:type="tFormalExpression">=answer.chose.kept</conditionExpression></sequenceFlow>
     <sequenceFlow id="answer-push" sourceRef="answer-how" targetRef="push" />
     <scriptTask id="kept-record" name="记下不改的理由" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
-      <extensionElements><coda:env name="ANSWER" value="=answer" /></extensionElements>
+      <!-- 主 Agent 在「处理评审意见」选「不改」，或你在「评审三轮没过」选「不改，往下走」：同一步记下理由，BY 区分是谁定的。 -->
+      <extensionElements>
+        <coda:env name="ANSWER" value="=if stuck.chose.kept = true then stuck else answer" />
+        <coda:env name="BY" value='=if stuck.chose.kept = true then "user" else "agent"' />
+      </extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/simple.mjs" kept</script>
     </scriptTask>
     <sequenceFlow id="kept-pr" sourceRef="kept-record" targetRef="pr" />
