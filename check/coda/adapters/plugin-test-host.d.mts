@@ -289,7 +289,7 @@ export interface Coda {
   views: Readonly<{ register(id: string, provider: { open(view: ViewInstance): void | Promise<void> }): { dispose(): void } }>;
   /** Trial. Protocol contributions and the records' services: a contributor to another protocol's records, a record's service as this machine reaches it, and an upload of this machine's. */
   protocols: Readonly<{
-    register(kind: string, key: string, handler: (object: Json, key: string) => Json | Promise<Json>): Disposable;
+    register(kind: string, key: string, handler: (object: ProtocolObject, key: string) => Contribution | null | Promise<Contribution | null>): Disposable;
     resolve(record: Ref, service: string): Promise<{ resource: Ref; url: string; headers: Record<string, string> }>;
     upload(id: string): Promise<{ id: string; name: string; size: number; path: string; mime?: string; duration?: number; [key: string]: Json | undefined }>;
   }>;
@@ -302,6 +302,17 @@ export interface Coda {
   /** Trial. Runs an installed plugin's environment setup again, asked as this plugin; the test host's fails (`unsupported`). */
   pluginSetup: Readonly<{ retry(plugin: string): Promise<Json> }>;
 }
+
+/** The record or draft a protocol hands a contributor, without who created it: its `spec` and `status` are objects the protocol's schemas describe. */
+export interface ProtocolObject {
+  kind: string;
+  id: string;
+  spec: { [key: string]: Json };
+  status: { [key: string]: Json };
+}
+
+/** What a contributor adds: only the fields the protocol declares as contributions, each of the value the protocol says (an object, not a list or a scalar); `null` adds nothing. */
+export type Contribution = { [field: string]: Json };
 
 /** A page of the plugin's, opened, as its view provider's `open` is given it. */
 export interface ViewInstance {

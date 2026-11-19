@@ -1,5 +1,5 @@
 {
-  "commit": "f4b53fff1a7f053f9317a56786b498d5cbfe5af0",
+  "commit": "46a06458a98d290d4cc69dfdfcf1880889d0bfcf",
   "apiLevel": 3,
   "packages": {
     "@0dep/piso": "5.2.0",
@@ -21,7 +21,7 @@
     "check/coda/adapters/plugin-events.mjs": "5b6b98063a2a2f3d112908ad9fdc08119ec1bd577ca765811799ef6d1030dfe4",
     "check/coda/adapters/plugin-modules.mjs": "dd916da2c3411087fc09ed20e2c1c5f10ce450ed096b9054db7d9c47000a2857",
     "check/coda/adapters/plugin-stream-services.mjs": "1e92eb3dd9d844d4f2773a60bc2941aae3c9cda10d9e96e31de9f09f51e672e5",
-    "check/coda/adapters/plugin-test-host.d.mts": "137ef22f9bfee5ddbc6d65bee0b11ae5e4db545b9a58e9f10ca9ceb1b008414f",
+    "check/coda/adapters/plugin-test-host.d.mts": "d0592b00e898da7abae8d48b0ee6f72cd807ac9b7a7e8d185148904082850575",
     "check/coda/adapters/plugin-test-host.mjs": "7c8e5ee46792181bfd3b2f4d67d1ac6844c64c2af678655308cfdeb5ecf84c42",
     "check/coda/adapters/process-relay.mjs": "5d379bd7ad07138d69c7accbe769d71294843399539bdf1fab8b6a1ddf13b9d8",
     "check/coda/components/composers/contributions.mjs": "43d3e15fb1f63b7b5c20716030d9537613809ed5cc2fb466a3678bfa308f9f92",
