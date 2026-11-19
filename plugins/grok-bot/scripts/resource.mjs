@@ -18,7 +18,7 @@ async function read() {
     return agents.map(bot => ({ name: bot.name || bot.agentId, identity: recordKey(who.id, bot.agentId), values: [], buttons: [] }));
   } catch (error) { return [{ name: 'Grok Bot', values: [], buttons: [], error: budget.aborted ? '读取超时' : error.status === 401 ? '请重新登录' : error.message }]; }
 }
-console.log(JSON.stringify([{ key: 'account', spec: { type: 'account', title: 'Grok Bot', resources: await read(),
-  signIn: { installed: true, installable: false, note: '打开官方登录链接确认；手机可能需要点 Continue。' } } }]));
-// A renewal or request the time ran out on is still on its way: the record is printed, and that is all this ran for.
-process.exit(0);
+// A renewal or request the time ran out on is still on its way: the record is printed, and that is all this ran for, so this
+// ends once it is all written (a pipe takes what it has room for; what is still queued is lost to an exit before then).
+process.stdout.write(`${JSON.stringify([{ key: 'account', spec: { type: 'account', title: 'Grok Bot', resources: await read(),
+  signIn: { installed: true, installable: false, note: '打开官方登录链接确认；手机可能需要点 Continue。' } } }])}\n`, () => process.exit(0));

@@ -17,6 +17,7 @@ export function writePrivate(root, file, value) {
   renameSync(temp, file);
 }
 // A caller's wait for work that is shared: its own signal ends its own wait, never the work, which the others are waiting for too.
+// The work does not reject (see `refresh`), so a wait given up leaves nothing unhandled behind it.
 const waiting = (work, signal) => !signal ? work : new Promise((resolve, reject) => {
   if (signal.aborted) return reject(signal.reason);
   const abandon = () => reject(signal.reason);
@@ -45,15 +46,22 @@ export class NativeAuth {
       // Only a rejected authentication is retried. Never retry an ambiguous
       // transport failure for a message or widget response.
       if (error.status !== 401 || !auth.refreshToken) throw error;
-      // The send was already rejected, so a renewal failure (rejected, offline, timed out,
-      // unwritable) is marked for callers; its status and message stay as they are.
-      if (this.credentials === auth) await waiting(this.refresh(auth).catch(e => { throw Object.assign(e, { renewalFailed: true }); }), options?.signal);
+      // A request its caller has given up (as when it went while the refusal's body was read, and the refusal came all the same)
+      // is over: it neither starts a renewal nor waits for one.
+      options?.signal?.throwIfAborted();
+      if (this.credentials === auth) {
+        const failure = await waiting(this.refresh(auth), options?.signal);
+        if (failure) throw failure;
+      }
       return this.transport.request(method, value, options);
     }
   }
-  async refresh(auth) {
-    if (this.renewing) return this.renewing;
-    this.renewing = (async () => {
+  // The renewal shared by the requests the token was refused for, settling to its failure (null once renewed) rather than
+  // rejecting: every one of them may have given up its wait, and a failure no one is left to hear must not end the process. The
+  // send was already rejected, so a failure (rejected, offline, timed out, unwritable) is marked for callers; its status and
+  // message stay as they are.
+  refresh(auth) {
+    this.renewing ??= (async () => {
       const response = await this.fetcher(`${API}/oauth/token`, {
         method: 'POST', redirect: 'error', signal: AbortSignal.timeout(30_000),
         headers: { ...clientHeaders(), 'content-type': 'application/json' },
@@ -66,7 +74,7 @@ export class NativeAuth {
       const next = { ...auth, accessToken: renewed.access_token, refreshToken: renewed.refresh_token ?? auth.refreshToken };
       writePrivate(this.root, this.file, next);
       this.use(next);
-    })().finally(() => { this.renewing = null; });
+    })().then(() => null, error => Object.assign(error, { renewalFailed: true })).finally(() => { this.renewing = null; });
     return this.renewing;
   }
   // `report(url)`: told the link before anything is polled for or kept; one that fails ends the login with its error.

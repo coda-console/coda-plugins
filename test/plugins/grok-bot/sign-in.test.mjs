@@ -9,7 +9,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { resourceRecords } from '../../../check/resources.mjs';
+import { resourceRecords, runResourceCommand } from '../../../check/resources.mjs';
 import { fakeCoda, operation, pluginEnv } from '../command.mjs';
 import { pluginDir } from '../plugin.mjs';
 
@@ -18,7 +18,8 @@ const lastLine = text => text.split('\n').map(line => line.trim()).filter(Boolea
 // A directory to work in, with a preload that stands in for the network: `/auth/poll` is 404 until `confirmed` is there, then the
 // login (500 for TEST_POLL_FAIL), and is noted in the file `polled`; TEST_UNAUTHORIZED answers every other request 401. TEST_SLOW
 // answers none (`all`) or none but the renewal's own 401 (`renewal`: the account's request is refused, the renewal never answers) before
-// the reading's time is up, which is shortened to a moment, as it is the case that tests it.
+// the reading's time is up, which is shortened to a moment, as it is the case that tests it. TEST_BOTS answers the account and a
+// list of that many Bots, and notes the list in the file `listed`.
 async function machine(t) {
   const dir = await mkdtemp(join(tmpdir(), 'coda-grok-bot-sign-in-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
@@ -37,6 +38,11 @@ globalThis.fetch = async (url, options = {}) => {
   const path = new URL(url).pathname;
   if (process.env.TEST_SLOW === 'all' || (process.env.TEST_SLOW === 'renewal' && path === '/oauth/token')) return hang(options.signal);
   if (process.env.TEST_SLOW === 'renewal') return new Response('{}', { status: 401 });
+  if (process.env.TEST_BOTS) {
+    if (path.endsWith('/GetMe')) return Response.json({ authId: 'account' });
+    appendFileSync(join(process.env.TEST_DIR, 'listed'), 'x');
+    return Response.json({ agents: Array.from({ length: Number(process.env.TEST_BOTS) }, (_, i) => ({ agentId: \`bot-\${i}\`, name: \`Bot \${i}\` })) });
+  }
   if (path !== '/auth/poll') return new Response('{}', { status: process.env.TEST_UNAUTHORIZED ? 401 : 500 });
   appendFileSync(join(process.env.TEST_DIR, 'polled'), 'x');
   if (process.env.TEST_POLL_FAIL) return new Response('{}', { status: 500 });
@@ -124,4 +130,20 @@ test('a reading that cannot be had within its time is still a record, with the r
     assert.deepEqual(spec.resources, [{ name: 'Grok Bot', values: [], buttons: [], error: '读取超时' }], slow);
     assert.deepEqual(spec.signIn, { installed: true, installable: false, note: spec.signIn.note });
   }
+});
+
+test('a record of hundreds of Bots reaches a host that is slow to read it whole: the command ends only once all of it is written', async t => {
+  const { dir, env } = await machine(t);
+  await writeFile(join(dir, 'native-auth.json'), JSON.stringify({ accessToken: 'fixture-access' }));
+  // Far more than a pipe holds unread (64 KiB), so the most of it is still queued in the command when it has printed it.
+  const bots = 800;
+  const ran = runResourceCommand(pluginDir('grok-bot'), 'scripts/resource.mjs', env({ TEST_BOTS: String(bots) }));
+  // The host reads nothing for a while (it is busy): until the list has been had, and a moment after it to print it in.
+  const busy = (until, ms) => { const end = Date.now() + ms; while (!until() && Date.now() < end) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10); };
+  busy(() => existsSync(join(dir, 'listed')), 10_000);
+  busy(() => false, 300);
+  const { result, error } = await ran;
+  assert.equal(error, undefined);
+  assert.equal(result[0].spec.resources.length, bots);
+  assert.deepEqual(result[0].spec.resources.at(-1).name, `Bot ${bots - 1}`);
 });
