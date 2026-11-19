@@ -100,6 +100,22 @@ test('简易开发推送主 Agent 分支的最新提交到运行自己的分支�
   assert.equal(f.calls().filter(c => c.args[1] === 'create').length, 1);
 });
 
+test('评审三轮没过用户选「不改，往下走」：理由写进 PR 和批准卡并注明是用户定的，之后不再评审；主 Agent 选「不改」的写法不变', t => {
+  const f = fixture(t);
+  f.git('switch', '-q', '-c', 'agent/work'); f.commit('one', '改动');
+  f.run('push', { REPORT: JSON.stringify({ note: '汇报' }) });
+  const changes = JSON.stringify({ decision: 'REQUEST_CHANGES', line: '评审要求修改（REQUEST_CHANGES）', report: '必须修 1 条。' });
+  for (let n = 1; n <= 3; n++) { if (n > 1) { f.commit('one', `第 ${n} 次`); f.run('push'); } assert.equal(f.run('pr', { DEVICES: 'false' }).review, 'true'); f.run('reviewed', { REVIEW: changes }); }
+  assert.equal(f.state().rounds, 3);
+  f.run('kept', { ANSWER: JSON.stringify({ choice: 'kept', note: '这条风险我接受' }), BY: 'user' });
+  const opened = f.run('pr', { DEVICES: 'false' });
+  assert.equal(opened.review, 'false', '之后不再评审');
+  assert.equal(opened.summary, '汇报\n\n评审：评审要求修改（REQUEST_CHANGES）\n\n评审三轮没过，用户决定不改，放行的理由：\n这条风险我接受');
+  assert.match(f.calls().filter(c => c.args[1] === 'edit').at(-1).body, /用户决定不改，放行的理由：\n这条风险我接受/);
+  f.commit('one', '检查没过后修的'); f.run('push');
+  assert.equal(f.run('pr', { DEVICES: 'false' }).review, 'false', '放行后再改只重跑检查');
+});
+
 test('评审要求修改：改了就复评；第三次仍要求修改出用户卡，继续修清零；通过后不再评审', t => {
   const f = fixture(t);
   f.git('switch', '-q', '-c', 'agent/work'); f.commit('one', '改动');
@@ -178,7 +194,7 @@ test('简易开发的流程定义：开启时什么都不必选，第一张任�
   assert.deepEqual([inputs.devices.type, inputs.devices.default], ['boolean', 'false']);
   assert.deepEqual([nodes.report.wake, nodes.report.assignee], ['false', undefined]);
   for (const [id, choices] of [['report', [['done', 'required']]], ['answer', [['fixed', undefined], ['kept', 'required']]],
-    ['device', [['yes', undefined], ['no', 'required']]], ['approve', [['merge', undefined], ['stop', 'required']]], ['stuck', [['more', undefined], ['stop', 'required']]], ['preview', [['installed', undefined], ['changed', 'required']]]])
+    ['device', [['yes', undefined], ['no', 'required']]], ['approve', [['merge', undefined], ['stop', 'required']]], ['stuck', [['more', undefined], ['kept', 'required'], ['stop', 'required']]], ['preview', [['installed', undefined], ['changed', 'required']]]])
     assert.deepEqual(values(nodes[id]).map(v => [v.id, v.note]), choices, id);
   for (const id of ['device', 'approve', 'stuck']) assert.equal(nodes[id].assignee, 'user');
   for (const id of ['report', 'answer', 'fix', 'preview', 'fill']) assert.equal(nodes[id].assignee, undefined, id);
@@ -201,7 +217,16 @@ test('简易开发的流程定义：开启时什么都不必选，第一张任�
   // 评审三轮没过：继续修先清零再回到处理评审意见，暂不合并走批准卡同一个结束。
   assert.equal(route('stuck-choice', { stuck: { chose: { more: true } } }), 'again');
   assert.equal(route('stuck-choice', { stuck: { chose: { stop: true } } }), 'stopped');
+  assert.equal(route('stuck-choice', { stuck: { chose: { kept: true } } }), 'kept-record', '不改，往下走：与「处理评审意见」选「不改」同一步');
+  assert.equal(nodes['stuck-kept'].targetRef.id, 'kept-record');
   assert.equal(nodes['again-answer'].targetRef.id, 'answer');
+  // 记下不改的理由取谁的答复：用户在三轮没过卡上选了就取那张卡，否则取主 Agent 的（之前选过「继续修」留下的旧答复不算）。
+  const taken = chose => { const context = { answer: { choice: 'fixed', note: '主 Agent 的答复' }, stuck: { choice: chose, note: '用户的答复', chose: { [chose]: true } } };
+    return [evaluate(params('kept-record').ANSWER.slice(1), context).value.note, evaluate(params('kept-record').BY.slice(1), context).value]; };
+  assert.deepEqual(taken('kept'), ['用户的答复', 'user']);
+  assert.deepEqual(taken('more'), ['主 Agent 的答复', 'agent']);
+  assert.deepEqual([evaluate(params('kept-record').ANSWER.slice(1), { answer: { note: 'x' } }).value.note, evaluate(params('kept-record').BY.slice(1), { answer: { note: 'x' } }).value], ['x', 'agent'], '没出过用户卡');
+  assert.match(nodes.stuck.documentation[0].text, /继续修[\s\S]*不改，往下走[\s\S]*备注必填[\s\S]*注明是你定的[\s\S]*暂不合并/);
   assert.match(nodes.stuck.documentation[0].text, /评审了三次仍要求修改。还开着的必须修：\n\n\{\{review\.findings\}\}/);
   assert.deepEqual([params('review').LAST, params('review').BLOCKING], ['=review', undefined], '复评拿上次的评审，没有阻塞级别');
   assert.equal(route('answer-how', { answer: { chose: { kept: true } } }), 'kept-record');

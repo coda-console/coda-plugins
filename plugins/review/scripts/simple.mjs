@@ -77,11 +77,12 @@ switch (action) {
   case 'again':
     save({ ...state, rounds: 0 });
     break;
+  // 不改的理由：主 Agent 在「处理评审意见」选的，或用户在「评审三轮没过」选的（BY 为 user），之后都只重跑检查、不再评审。
   case 'kept':
-    save({ ...state, reviewed: true, kept: (json('ANSWER', {}).note ?? '').trim() });
+    save({ ...state, reviewed: true, kept: (json('ANSWER', {}).note ?? '').trim(), keptBy: env.BY });
     break;
   case 'pr': {
-    const summary = [state.report, state.review ? `评审：${state.review.line}` : '', state.kept ? `没有照评审意见改的：\n${state.kept}` : ''].filter(Boolean).join('\n\n');
+    const summary = [state.report, state.review ? `评审：${state.review.line}` : '', state.kept ? `${state.keptBy === 'user' ? '评审三轮没过，用户决定不改，放行的理由' : '没有照评审意见改的'}：\n${state.kept}` : ''].filter(Boolean).join('\n\n');
     const path = join(env.RUNNER_TEMP, 'pr.md');
     writeFileSync(path, [summary, state.review?.report ? `<details><summary>评审意见</summary>\n\n${state.review.report}\n\n</details>` : ''].filter(Boolean).join('\n\n'));
     const pr = state.pr ? (gh('pr', 'edit', state.pr, '--body-file', path), state.pr)

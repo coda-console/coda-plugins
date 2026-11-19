@@ -281,7 +281,7 @@ test('跟上目标分支的块：执行者收到合并 origin/<base> 的说明�
   const head = f.state().executor.head;
   assert.equal(f.git('rev-parse', `${head}^@`).split('\n').length, 2, '执行者交的是合并提交');
   f.delivered();
-  assert.deepEqual(f.run('land').outputs, { route: 'landed', commit: head, reviewed: 'false' });
+  assert.deepEqual(f.run('land').outputs, { route: 'landed', commit: head, reviewed: 'false', by: '' });
   assert.equal(f.remote(BRANCH), head, '需求分支快进到这个合并提交');
   f.git('merge-base', '--is-ancestor', main, f.remote(BRANCH));
   assert.equal(f.remote(TEMP), '');
@@ -516,10 +516,10 @@ test('块的流程定义：输入、回路、审查卡答复、结束输出与�
   assert.equal(next('report'), 'review');
   assert.equal(nodes.report.checkout, undefined, '改动范围要读 diff，检出仓库');
   assert.equal(params('report').REVIEWER, '=inputs.reviewer != null');
-  assert.deepEqual(values(nodes.stuck).map(v => [v.id, v.name]), [['continue', '继续修'], ['abandon', '放弃这一块']]);
+  assert.deepEqual(values(nodes.stuck).map(v => [v.id, v.name]), [['continue', '继续修'], ['land', '不退了，合进需求分支'], ['abandon', '放弃这一块']]);
   assert.equal(next('stuck'), 'stuck-result');
   assert.equal(params('stuck-result').STUCK, '=stuck');
-  for (const [value, target] of [['revise', 'revise'], ['abandon', 'abandon']]) assert.equal(route('stuck-route', { 'stuck-result': { route: value } }), target);
+  for (const [value, target] of [['revise', 'revise'], ['land', 'land'], ['abandon', 'abandon']]) assert.equal(route('stuck-route', { 'stuck-result': { route: value } }), target);
   for (const id of ['execute', 'revise', 'swap']) assert.equal(next(id), 'gate');
   assert.equal(next('gate'), 'has-new');
   assert.equal(route('has-new', { gate: { empty: 'false' } }), 'checks');
@@ -533,7 +533,7 @@ test('块的流程定义：输入、回路、审查卡答复、结束输出与�
   assert.equal(route('after-land', { land: { route: 'sync' } }), 'revise', '冲突交回同一个执行会话');
   assert.equal(route('after-land', { land: { route: 'landed' } }), 'landed');
   for (const id of ['landed', 'abandoned']) assert.equal(nodes[id].notify, 'true', `${id} 结果回发起会话`);
-  assert.deepEqual(values(nodes.landed).map(v => [v.name, v.value]), [['commit', '=land.commit'], ['run', '=run.id'], ['reviewed', '=land.reviewed']], '合进需求分支的提交、本运行与最后一次交付评成没有，调用它的需求运行写进「需求进行中」、定整体评审');
+  assert.deepEqual(values(nodes.landed).map(v => [v.name, v.value]), [['commit', '=land.commit'], ['run', '=run.id'], ['reviewed', '=land.reviewed'], ['by', '=land.by']], '合进需求分支的提交、本运行与最后一次交付评成没有，调用它的需求运行写进「需求进行中」、定整体评审');
   assert.equal(next('abandon'), 'abandoned');
   // 放弃以出错结束：运行失败，原因就是这个结束事件的名字，callActivity 调它的流程由出错边界接住、拿到原因。
   assert.deepEqual(nodes.abandoned.eventDefinitions.map(e => e.$type), ['bpmn:ErrorEventDefinition']);
@@ -896,6 +896,35 @@ test('同一块退回满三次后再退回：不退回，出用户卡「这一�
   assert.equal(g.decide('revise', '还要改'), 'stuck');
   assert.equal(g.run('stuck', { STUCK: JSON.stringify({ choice: 'abandon' }) }).outputs.route, 'abandon');
   assert.ok(g.run('decide', { REVIEW: JSON.stringify({ choice: 'revise', note: '还要改' }), BACKUP: 'false' }).outputs.stuck.endsWith('还开着的必须修：\n没有'));
+});
+
+test('三轮没过用户选「不退了，合进需求分支」：不再退回执行者，走同一个 land 合进需求分支，结果记明是用户定的；主 Agent 自己合进的不带这个记号', t => {
+  const f = fixture(t); f.task('one', 'first'); f.run('execute'); f.delivered();
+  f.run('reviewed', verdict([MUST]));
+  for (let i = 1; i <= 3; i++) { f.decide('revise', `第 ${i} 次`); f.task('one', `fix ${i}`); f.run('revise'); }
+  assert.equal(f.decide('revise', '第 4 次'), 'stuck');
+  const agentCalls = f.calls('agent').length, head = f.state().executor.head, tip = f.git('rev-parse', `origin/${BRANCH}`);
+  assert.equal(f.run('stuck', { STUCK: JSON.stringify({ choice: 'land' }) }).outputs.route, 'land');
+  assert.equal(f.state().pending, undefined);
+  assert.equal(f.calls('agent').length, agentCalls, '没有退回执行者');
+  const landed = f.run('land').outputs;
+  assert.deepEqual([landed.route, landed.by], ['landed', 'user']);
+  assert.equal(f.remote(BRANCH), landed.commit, '合进了需求分支');
+  assert.equal(f.git('rev-parse', `${landed.commit}^@`), tip, '同「合进需求分支」：squash 成一个提交接在需求分支 head 上');
+  assert.equal(f.git('log', '-1', '--format=%B', landed.commit), '输入框可以输入\n\nCoda-Piece: pr-run-1');
+  assert.notEqual(head, landed.commit);
+  assert.equal(f.state().returns, 3, '退回次数不变');
+
+  // 主 Agent 自己合进：没有用户记号；用户选了合进但有冲突交回执行者后，主 Agent 再答复，记号清掉。
+  const g = fixture(t); g.task('one', 'first'); g.run('execute'); g.delivered();
+  assert.equal(g.decide('land'), 'land');
+  assert.equal(g.run('land').outputs.by, '');
+  const h = fixture(t); h.task('one', 'first'); h.run('execute'); h.delivered();
+  for (let i = 1; i <= 3; i++) { h.decide('revise', `第 ${i} 次`); h.task('one', `fix ${i}`); h.run('revise'); }
+  h.decide('revise', '第 4 次'); h.run('stuck', { STUCK: JSON.stringify({ choice: 'land' }) });
+  assert.equal(h.state().userLand, true);
+  h.decide('land');
+  assert.equal(h.state().userLand, undefined);
 });
 
 test('「不改」只认独立成行的写法：行首（可带 -、*）是「#编号 不改」，后面是行尾或「：」「:」「，」「,」接理由；句子中间提到的不算', t => {
