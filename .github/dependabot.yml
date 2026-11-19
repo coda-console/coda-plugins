@@ -1,5 +1,5 @@
 # Codex CLI 与 Claude Agent SDK 的新版本：每周为它们开一个 PR（docs 见 README「升级 Agent 的 CLI 与 SDK」）。
-# 合并并发布后，Coda 里「设置 › 插件」点「检查更新」就用上；合并时勾选「部署」，sync-coda 给 Coda 开升级依赖的 PR。
+# 合并并发布后，Coda 里「设置 › 插件」点「检查更新」就用上，各台 Coda 默认也会自己更新。
 version: 2
 updates:
   - package-ecosystem: npm

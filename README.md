@@ -1,6 +1,6 @@
 # Coda 插件
 
-Coda 的公开插件仓库，和给插件作者用的契约检查。Coda 自带的 Agent 插件（Codex、Claude、Kimi、Grok、OpenCode 与 Codex 多账号）和 PR 生命流程也在这里维护。
+Coda 的公开插件仓库，和给插件作者用的契约检查。Agent 插件（Codex、Claude、Kimi、Grok、OpenCode 与 Codex 多账号）和 PR 生命流程也在这里维护，用户在 Coda 的商店里安装。
 
 Coda 是一个多 Agent 客户端（Mac、iPhone 与运行在你机器上的后端）。Agent 与资源页上的资源都以插件接入：
 插件是一个目录，清单就是它的 `package.json`（`contributes.agents`、`contributes.resources` 等，照 VS Code 扩展的写法）；
@@ -30,7 +30,6 @@ templates/resource/      最小的资源插件：一个资源、两个读数、�
 templates/module/        带模块的插件：自己的协议（一个查询、一个做事的操作、一个事件），模块登记操作、写记录、发布并订阅事件，附测试
 bin/、check/             契约检查（仓库根的 package.json 就是它，@coda-console/plugin-check）；check/coda/ 是 Coda 同步来的规则副本，不要手改
 test/                    检查包的测试；test/plugins/ 是各插件的测试（插件目录里只放运行要用的文件）
-.coda/workflows/         本仓库自己的流程：sync-coda 等新版本发到 npm，再给 Coda 开升级依赖的 PR
 ```
 
 ## 商店
@@ -43,24 +42,19 @@ Coda 插件页的「商店」列出 Coda 自带的插件，以及 npm 上 `@coda
 - **下架**：给它的最新版标 `npm deprecate`，商店就不再列它。
 - 别处的插件（别的仓库、别的 npm 包）不在商店里，用户在 Coda 里填仓库地址或包名添加。
 
-## Coda 自带的插件
+## 常用的 Agent 与流程插件
 
-`codex`、`claude`、`kimi`、`grok`、`opencode`、`codex-accounts`、`review` 是 Coda 内置的插件，源码从此在这里维护。
-合进 main 后它们发布为 npm 包 `@coda-console/<id>`（[npm 发布](#npm-发布)），Coda 后端的 `package.json` 把它们写成钉住版本号的依赖，
-随后端的 `npm ci` 装好，新机器首次启动就带着它们。
+`codex`、`claude`、`kimi`、`grok`、`opencode`、`codex-accounts`、`review` 的源码在这里维护。
+合进 main 后它们发布为 npm 包 `@coda-console/<id>`（[npm 发布](#npm-发布)）；Coda 不随安装包带它们，用户在商店里安装，装的就是 npm 上的包。
 
-- **改它们先在这里提 PR、合并**，发布流程发出新版本后，再让 Coda 把依赖升到那个版本（Coda 的 docs/development.md「coda-plugins 维护的内置插件」）。
-  升依赖由本仓库的部署流程 `sync-coda`（`.coda/workflows/sync-coda.bpmn`、`scripts/sync-coda.mjs`）做：合并时勾选「部署」，它在合并提交上先等
-  `publish.yml` 跑完、npm 读得到这个提交的版本（发布失败就带着那次运行的地址失败），再把 Coda 用到的包升到这些版本（只升不降）、照抄插件的 `overrides`，
-  推到 Coda 的分支 `sync/coda-plugins` 并开 PR（开着的就只更新），PR 由开这边 PR 的会话负责、走 Coda 的 PR 流程；Coda 已是这些版本就什么都不做。
-  也可以单独发起，同步默认分支的最新提交。
+- **改它们先在这里提 PR、合并**，发布流程发出新版本就完了：不用给 Coda 开改依赖的 PR，各台 Coda 自己更新（默认自动更新插件，也可在「设置 › 插件」点「检查更新」）。
 - **改了哪个插件就升哪个插件的 `version`**（`plugins/<id>/` 下任何文件，含 `package-lock.json`；只改 `test/` 不用）：Coda 的插件页与遥测按版本认插件。
   CI 在 PR 上运行 `node scripts/check-versions.mjs origin/<目标分支>` 核对；Dependabot 升 CLI、SDK 的 PR 也要补一个升版本的提交。
-- Coda 的「检查更新」可以从 npm 装同一个包的新版本，盖过 Coda 带的版本；只有 `@coda-console/<id>` 这个包能用这些名字。
+- Coda 自带插件的 ID 和 `coda`，外部插件不能用。
 - 测的是插件自己代码的用例在 `test/plugins/<id>/`；把 Coda 与入口合在一起测的（启动 Coda 后端、写进 Coda 的存储）留在 Coda，对它装的 npm 包跑。
   `review` 是一个流程，要 Coda 的流程引擎才跑得起来，它的用例都在 Coda。
 
-| 插件 | npm 依赖（与 Coda 后端同版本） | 运行机上另要 |
+| 插件 | npm 依赖 | 运行机上另要 |
 | --- | --- | --- |
 | `codex` | `@agentclientprotocol/codex-acp` 1.12.0、`@openai/codex` 0.169.0；`overrides` 让 codex-acp 用同一个 `@openai/codex` | — |
 | `claude` | `@agentclientprotocol/sdk` 1.4.0、`@anthropic-ai/claude-agent-sdk` 0.3.312（平台二进制是 SDK 自己的可选依赖） | — |
@@ -337,12 +331,11 @@ Codex 用普通 ACP 选择型配置项 `service-tier`（「速度」）报告速
 
 ### Codex 账号与额度
 
-`codex` 与 `codex-accounts` 是两个独立插件：Codex Agent 由 Coda 默认安装；多账号插件需用户在「设置 › 插件」主动安装。
-仅随 Coda 提供插件目录不代表启用。未安装多账号插件时保留 Codex 原生登录与额度看板，安装后由多账号插件接管，卸载后恢复。
+`codex` 与 `codex-accounts` 是两个独立插件，都在商店里安装；多账号插件需用户主动安装。
+未安装多账号插件时保留 Codex 原生登录与额度看板，安装后由多账号插件接管，卸载后恢复。
 
 `codex-accounts` 2.0.0 自己管理账号，不需要预装账号管理器或 Python。安装时 Coda 安装它的 npm 依赖和
-`codex` 插件；本版接管额度、登录入口和续期通知的配套入口是 `codex` 1.1.0。已有安装升级时两个插件一起更新，
-Coda 升级依赖时也一起升这两个包。
+`codex` 插件；本版接管额度、登录入口和续期通知的配套入口是 `codex` 1.1.0。已有安装的更新由各台 Coda 本机做（默认自动更新），两个插件各自更新。
 
 - 首次使用会把运行机 `$CODEX_HOME/auth.json`（默认 `~/.codex/auth.json`）里的 ChatGPT 登录导入插件，作为第一个
   普通受控账号并默认选用。原文件保留；之后的凭据、续期与选择都由插件维护，原登录文件后续变化不会替换受控账号。
@@ -411,8 +404,7 @@ Kimi 在一轮失败后暂停 goal，goal 的定时随之以 `failed` 结束，�
 Codex 会话、资源与登录用的 Codex CLI 就是 `codex` 插件依赖的 `@openai/codex`；Claude 的是 `claude` 插件依赖的
 `@anthropic-ai/claude-agent-sdk`。插件按包名从自己的依赖里找它们，Coda 不另给路径。升级就是改这两个版本：
 Dependabot（`.github/dependabot.yml`）每周为它们各开一个 PR，连同 `package-lock.json` 一起改；合并后在 Coda「设置 › 插件」
-对该插件点「检查更新」；合并时勾选「部署」，`sync-coda` 给 Coda 开升级依赖的 PR。升 `@openai/codex` 时 codex-acp 经 `overrides` 跟着用新版本，
-Coda 根上的同一条 overrides 由 `sync-coda` 一起改（npm 只认根的，Coda 的测试会核对）；合并前用真实会话跑一轮。
+对该插件点「检查更新」（默认自动更新的各台 Coda 自己会取到）。升 `@openai/codex` 时 codex-acp 经 `overrides` 跟着用新版本；合并前用真实会话跑一轮。
 升 `@openai/codex` 还要登记新 Codex 带来的东西，见 [Codex 没适配的东西](#codex-没适配的东西)。
 升 `@anthropic-ai/claude-agent-sdk` 要先把新 SDK 的消息类型与内容块登记进 `plugins/claude/agent/registry.mjs`，`npm test` 里的升级检查会列出没登记的，
 见 [plugins/claude/README.md](plugins/claude/README.md)「认不出的东西」。
@@ -422,11 +414,11 @@ Coda 根上的同一条 overrides 由 `sync-coda` 一起改（npm 只认根的�
 「设置 › 插件 › 从仓库添加…」：
 
 1. **仓库**填 `coda-console/coda-plugins`（或 `https://github.com/coda-console/coda-plugins`）；**版本**留空是默认分支，也可以填分支、标签或完整的提交号。
-2. **读取**：Coda 拉取那个提交，把仓库根与两层以内 `package.json` 带 `contributes` 的目录各列成一个插件——这个仓库里是 `plugins/` 下的七个与三个模板。Coda 内置的那几个只能从 npm 上自己的包单独更新；在 Coda 里先卸载它，才能从这里装同名的。
+2. **读取**：Coda 拉取那个提交，把仓库根与两层以内 `package.json` 带 `contributes` 的目录各列成一个插件——这个仓库里是 `plugins/` 下的各个插件与三个模板。已装的外部插件（如商店里装的 `@coda-console/<id>`）可以用这里的同名插件替换；Coda 真正自带的插件（Coda 资源目录里的那些）的 ID 外部不能占用，装不了同名的。
 3. 选一个，确认里逐条列出它会运行的命令（Agent 的 `command`、资源的命令与动作），确认就是批准：这些命令以你的账户在空间里每台机器上运行，Coda 不做隔离，只装你信任的来源。
 
 **Coda 只认提交**：安装时钉在读取到的那个提交上，每台机器各自取同一个提交。「检查更新」用记下的仓库与版本再读一次，提交变了才有更新；
-上一个提交留着，可以回退。清单里的 `version` 只作显示，不参与比较——改了行为就把它加一，方便人看。这个仓库不打标签、不发 npm、不发 release。
+上一个提交留着，可以回退。清单里的 `version` 只作显示，不参与比较——改了行为就把它加一，方便人看。这个仓库不打标签、不发 release；发 npm 的方式见下面的「npm 发布」。
 
 自己的插件可以放在自己的仓库里（单插件仓库让仓库根就是插件目录），在自己的 Mac 上试的时候，仓库填本机仓库的绝对路径即可：Coda 读的是**提交**，没提交的改动它看不到。
 
@@ -446,7 +438,7 @@ Agent 模板里 Agent 的 `id` 不随目录名变，按需自己改。
 **清单**（`package.json`）
 
 - `name` 是包名；另写 `id` 时以它为 Coda 插件 ID，否则以 `name` 为 ID。ID 只能用小写字母、数字和 `-`，以字母开头，至多 40 个字符。
-  本仓库的包名是 `@coda-console/<id>`，设置名与 Agent ID 仍使用原来的插件 ID。可以与 Coda 内置插件同名；从其他来源替换时，须先在目标机器卸载内置插件。契约检查照刚装好的 Coda 读：与它默认装着的内置插件同名、又不是那个插件的同一来源的，判不通过。
+  本仓库的包名是 `@coda-console/<id>`，设置名与 Agent ID 仍使用原来的插件 ID。可以与已装的外部插件同名（用别的来源替换它）；不能与 Coda 自带的插件（Coda 资源目录里的那些）同名：这是安装时的规矩，Coda 拒绝装与自带插件同 ID 的外部插件。契约检查不因同 ID 判失败，`manifest.name` 只提示一句「Coda 也自带这个 ID」。
 - `displayName`、`description`、`version` 显示在安装确认与插件页。
 - `contributes` 只能有 Coda 认识的贡献：`agents`、`resources`（旧的 `panels` 仍认）、`configuration`、`capabilities`、`instructions`、`extensionPoints`、`extensions`、`commands`、`services`、`setup`；读不懂的键一律报错，不会被悄悄忽略。
 - `setup` 是插件的设置动作：`{ "command": "…" }`，一行、不超过 4000 字（与资源命令同样的规则），没有别的键。
@@ -508,7 +500,7 @@ Agent 进程的环境是会话的环境再加插件进程的那组变量（资�
 
 仓库根的 `@coda-console/plugin-check` 与 `plugins/*` 各自发布为公开 npm 包；包名带 scope，插件 ID 单独写在清单的 `id`。
 `repository.directory` 指向插件所在目录。Coda 必须先支持清单的 `id`，才能从改名后的仓库或 npm 读取这些插件。
-插件在仓库里的锁文件仍供 Git 来源安装与本仓库测试使用；npm 包不带 `package-lock.json`，从 npm 单独安装时按依赖声明解析，随 Coda 发的版本由 Coda 自己的锁文件固定。
+插件在仓库里的锁文件仍供 Git 来源安装与本仓库测试使用；npm 包不带 `package-lock.json`，从 npm 安装时按依赖声明解析。
 
 `.github/workflows/publish.yml` 在合入 main 或手动发起时检查测试、清单与 npm 包内容，然后逐包发布 npm 上尚不存在的版本。
 只有发布步骤有 `id-token: write`，由 GitHub 托管运行机通过 npm Trusted Publishing 鉴权并生成 provenance，不配置 npm 写令牌。

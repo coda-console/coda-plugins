@@ -4,7 +4,7 @@
   "displayName": "Codex 多账号",
   "description": "管理多个 Codex 账号与额度",
   "icon": { "symbol": "person.2.fill", "color": "teal" },
-  "version": "2.3.0",
+  "version": "2.3.1",
   "categories": ["模型与账号"],
   "extensionDependencies": [
     "codex"

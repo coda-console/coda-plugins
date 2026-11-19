@@ -100,3 +100,27 @@ Claude Code 会自己长出新东西：SDK 升级带来新的消息类型，服�
 | `prewarm` 进入 `/core`；`Settings.permissions.blockWritesOutsideWorkingDirectories / blockReadsExemptPaths / workingDirectoriesAsGiven / denyInsteadOfPrompting`、`disableReplyCheck / disableWindowsBashCommandSplit`；`PushNotificationInput.status` 可省略 | 有意不启用；继续使用现有 `query`、Stop hook 和设置。 |
 
 ACP 2.6.0 只使用默认 stable v1。逐项经过真实连接的解析测试：`initialize` 保留 `clientCapabilities._meta.coda.unrecognized`；`new/load` 保留目录、MCP 配置及其环境变量、`systemPrompt`、`_meta`；`prompt` 保留文本及内容块的 `_meta`；配置值与模式照常到达处理器；`_session/steering`、`_coda/wait/stop`、`_coda/session/compact` 沿用原自有解析器。未发现 Coda 用到的字段被新版裁掉，因而没有新增解析器。`new/load` 原注释中“schema 不认识 systemPrompt”在 2.6.0 已不成立。
+
+## 资源页：额度与登录
+
+另带资源页上的资源类型「Claude」：会话报告的套餐额度，以及从 Coda 登录。
+
+- **额度从哪来**：只来自这台机器上 Claude SDK 会话自己的报告，不看本机 Claude CLI 的登录（不读 `~/.claude` 的凭据与钥匙串，也不临时启动 CLI 问 `/usage`）。
+  Coda 的 Claude 会话常用 setup token，它没有 profile 权限，问不到 `/usage`，也不一定与本机 CLI 是同一个账号；
+  而会话里的 CLI 在套餐窗口的已用比例或重置时间变动时发 `rate_limit_event`，入口从中读出窗口，
+  合并写进插件状态目录的 `limits.json`（每个写入方用自己的临时文件，原子替换），不经过会话、不进会话历史。
+  `unifiedWindows`（新版 CLI 的内部字段，升级 SDK 时要复核）每次带全部窗口，旧版只带顶层的 `rateLimitType`、`utilization`、`resetsAt`（当前受限的那个）；
+  两处都有时取前者。已用比例是 0 到 1 的小数，超过 1 按剩余 0；重置时间是 Unix 秒。每个窗口只留最近一次，多个会话报告同一窗口时以后到的为准。
+- **显示**：没有会话报告过（没跑过 Claude 会话，或是 API key、Bedrock、Vertex 的会话，没有这些窗口）时输出为空，「Claude」出现在「添加资源」里。
+  报告过就一个资源（不写名字：文件里只有账号的哈希），每个窗口一个读数（5 小时、7 天、Opus · 7 天、Sonnet · 7 天、Fable · 7 天，按这个顺序），条画剩余，时刻是重置时间。
+  过了重置时间的窗口不再显示（重置后用了多少这里看不到，既不当作用满也不当作清空）；全部过期时那一行写「额度记录已过期，会话再运行后更新」。每次打开都读文件。
+- **身份**：会话启动时 SDK 报出账号邮箱的，资源带身份 `claude:<邮箱的哈希>`（Coda 的资源页据此合并同一账号；文件里只存哈希）。
+  它跟着最近启动的会话换账号：换了账号旧窗口作废，别的账号的旧会话再报来的额度不写入；拿不到邮箱的会话（如 setup token、API key）不带身份。
+- **登录**：`signIn` 运行 `scripts/login.mjs`，它启动插件依赖的 Claude SDK 自带的 `claude auth login --claudeai`（与会话用的是同一个，不用 `PATH` 上另一份 Claude），
+  运行机不打开浏览器（`BROWSER=/usr/bin/true`），也不导入环境里的 refresh token，而是发起新的网页登录。
+  只把 CLI 输出里官方的授权链接（`claude.ai/oauth/authorize` 或 `claude.com/cai/oauth/authorize`，带 `state` 与 `code_challenge`）交给 Coda，其余输出不传出（可能带着授权码）。
+  用户贴回的授权码须是 `<码>#<state>` 且 `state` 与这次的链接相符，才交给 CLI；不符就结束登录，写「授权码不对」。CLI 没登成时写固定的「Claude 登录没有完成，请重新登录。」，不回显它的输出。
+  PKCE、令牌交换、凭据保存和续期都由 Claude CLI 负责，沿用服务账号的 `CLAUDE_CONFIG_DIR`。配置了 token 文件、OAuth token、API key 或云服务商时它们仍然优先，添加窗口里写明。
+  SDK 0.3.296 的登录输出与原生二进制包布局是这里的版本边界，升级时复核。
+
+「模型服务」设置的行为见仓库根 README 的「模型服务」。
