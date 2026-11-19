@@ -473,10 +473,18 @@ describe('manifests Coda does not take', () => {
     assert.deepEqual(report.items.filter(item => item.rule === 'manifest.events'), []);
   });
   test('a group of a protocol that is not here is said, with no events listed', async () => {
-    const { report } = await checkPlugin(plugin({ manifest: { uses: { 'liar/deploy@1': ['watch'], 'coda/thread@1': ['read'] } } }), { manifestOnly: true });
+    const { report } = await checkPlugin(plugin({ manifest: { uses: { 'liar/deploy@1': ['watch'] } } }), { manifestOnly: true });
     assert.deepEqual(failed(report), []);
     assert.deepEqual(report.items.filter(item => item.rule === 'manifest.events').map(item => item.message),
-      ['用到 liar/deploy@1 的权限组 watch：协议定义不在本地，列不出事件', '用到 coda/thread@1 的权限组 read：协议定义不在本地，列不出事件']);
+      ['用到 liar/deploy@1 的权限组 watch：协议定义不在本地，列不出事件']);
+  });
+  test('a group of a protocol Coda defines is judged against Coda\'s own definition', async () => {
+    const { report } = await checkPlugin(plugin({ manifest: { uses: { 'coda/thread@1': ['read'] } } }), { manifestOnly: true });
+    assert.deepEqual(failed(report), []);
+    assert.deepEqual(report.items.filter(item => item.rule === 'manifest.events').map(item => item.message), ['用到 coda/thread@1 的权限组 read：不含事件']);
+    const wrong = await checkPlugin(plugin({ manifest: { uses: { 'coda/thread@1': ['raed'] } } }), { manifestOnly: true });
+    assert.deepEqual(failed(wrong.report), ['manifest.uses']);
+    assert.match(wrong.report.items.find(item => item.rule === 'manifest.uses').message, /用到的协议 coda\/thread@1 没有权限组 raed/);
   });
   test('a setup action and services are taken, and the setup action is not run', async () => {
     const { report } = await checkPlugin(plugin({ manifest: { contributes: { setup: { command: 'exec false' }, services: ['space'] } } }), { manifestOnly: true });

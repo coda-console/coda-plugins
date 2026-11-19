@@ -9,9 +9,10 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { inflateSync } from 'node:zlib';
 import './coda/application/contributions.mjs';
+import { HOST_PROTOCOLS } from './coda/application/host-protocols.mjs';
 import shipped from './coda/builtin.json' with { type: 'json' };
 import { manifestProblem } from '@coda-console/protocol/validate';
-import { offerProblem, protocolDefinition, usesProblem } from './coda/components/plugins/plugin-extensions.mjs';
+import { offerProblem, protocolDefinition, usesMissing } from './coda/components/plugins/plugin-extensions.mjs';
 import { choosesModelProviders, pluginEnv, readPlugin, resolveSettings } from './coda/components/plugins/plugin-rules.mjs';
 import { panelDeclarations } from './coda/resources/plugins/resources/panels/rules.mjs';
 
@@ -112,11 +113,13 @@ export function checkManifest(dir, say) {
   for (const definition of plugin.protocols ?? [])
     for (const [name, event] of Object.entries(definition.events ?? {})) say.pass('manifest.events', `协议 ${definition.name} 定义的事件 ${name}：starts ${event.starts ?? true}，ends ${event.ends ?? false}`);
   const protocols = new Map([...builtin, ...found, [plugin.id, plugin]]);
+  // Coda's own protocols, as Coda judges a plugin's `uses` against them (application/host-protocols.mjs).
+  const hosted = kind => HOST_PROTOCOLS.find(one => one.kind === kind);
   for (const [kind, groups] of Object.entries(plugin.uses ?? {})) {
-    const definition = protocolDefinition(kind, protocols, () => undefined);
-    // A group the definition lacks is Coda's to refuse (usesProblem, as it does at install); a definition not here is only said.
-    const problem = definition && usesProblem({ ...plugin, uses: { [kind]: groups } }, protocols, () => undefined);
-    if (problem) say.fail('manifest.uses', problem);
+    const definition = protocolDefinition(kind, protocols, hosted);
+    // A group the definition lacks is Coda's to refuse (usesMissing, as Coda does at install); a definition not here is only said.
+    const missing = definition && usesMissing({ ...plugin, uses: { [kind]: groups } }, protocols, hosted);
+    if (missing) say.fail('manifest.uses', `插件 ${plugin.id} 用到的协议 ${kind} 没有权限组 ${missing.group}`);
     else for (const group of groups) {
       const events = definition?.permissions[group].events;
       if (!definition) say.info('manifest.events', `用到 ${kind} 的权限组 ${group}：协议定义不在本地，列不出事件`);

@@ -179,6 +179,22 @@ export interface RecordFilter { scope?: 'local' | 'available'; id?: string }
 /** A record read anew, made or gone: by its ID, as it is now, or as it was last. */
 export interface RecordChange { type: 'ADDED' | 'MODIFIED' | 'DELETED'; id: string; entry: Entry }
 
+/** An event, as a module's handler of it is given it (`coda.on`). */
+export interface Event {
+  /** Its name, the full dotted one (`pull_request.closed`), one on this machine. */
+  name: string;
+  /** The protocol it is of, with its major version (`github/pull-request@1`): the event's version. */
+  kind: string;
+  /** What it is about, `<kind>:<id>`. */
+  subject: string;
+  /** The ID of the project of this machine it was published in. */
+  project: string;
+  /** What it says, as its protocol's payload schema has it. */
+  data: { [key: string]: Json };
+  /** The ID of the plugin that published it; `coda` for Coda's own. */
+  publisher: string;
+}
+
 export interface Coda {
   /** Handles an operation of a protocol the plugin implements: a query (`safe`) or a doing call (any other, `idempotent` among them). */
   handle(kind: string, operation: string, handler: Handler | { run: Handler; resume?: Resume }): Disposable;
@@ -235,6 +251,18 @@ export interface Coda {
    * the entries given, in their order.
    */
   replace(kind: string, entries: (RecordValue & { key: string })[]): Promise<Entry[]>;
+  /**
+   * Publishes an event of a protocol the plugin defines or implements, not one of Coda's own (those only Coda publishes),
+   * about `subject` in `project` (a project of this machine, by ID, the plugin applying there): done once Coda has checked
+   * it, its delivery not waited for; refused (`invalid_input`), nothing was published.
+   */
+  emit(name: string, data: { [key: string]: Json }, options: { subject: string; project: string }): Promise<void>;
+  /**
+   * Handles an event the plugin subscribes to: one of an event group in its `uses`, any other throwing at once (`forbidden`).
+   * Given each one published in a project the plugin applies in, at most once, while the module is activated; not sorted by
+   * subject. What it throws is logged; the event is not given again.
+   */
+  on(name: string, fn: (event: Event) => void): Disposable;
 }
 
 /** A protocol a plugin implements, some of its operations by commands: operation name to the file that implements it. */
@@ -261,6 +289,8 @@ export interface TestPlugin {
   protocolImplementations?: (string | ProtocolImplementation)[];
   /** The names of the processes it declares (`contributes.processes`): a named `spawn` of any other fails (`not_found`). */
   processes?: string[];
+  /** The permission groups it uses (`uses`), by protocol: its event groups are the events its `coda.on` may name. */
+  uses?: Record<string, string[]>;
 }
 
 export interface TestCallOptions extends QueryOptions {
@@ -293,6 +323,13 @@ export interface TestHost {
   resume(record: Ref, operation: string, call?: { id?: string; input?: Json; progress?: Json | null; canceled?: boolean; deadline?: number | null }): Promise<Json>;
   /** Writes the plugin's settings again, as the backend does: `coda.settings.get` gives them, and `onChange` is told. */
   setSettings(settings: Json): Promise<void>;
+  /** Delivers an event to the module as Coda does: to its handlers of the name (`coda.on`) now. */
+  emit(event: Event): Promise<void>;
+  /**
+   * The events the module published (`coda.emit`), in order, each checked as Coda checks it but for its project: of a
+   * protocol the plugin defines or implements, not one of Coda's own, as its payload schema has it.
+   */
+  emitted: Omit<Event, 'publisher'>[];
   close(): Promise<unknown>;
 }
 
@@ -311,6 +348,8 @@ export function createTestHost(options?: {
    * this machine (`TEST_OWNER`). The space's 64 KiB a record is not held to here.
    */
   records?: (Ref & RecordValue & { plugin?: string; owner?: string; location?: string })[];
+  /** Others' protocol definitions the plugin uses event groups of. */
+  protocols?: object[];
 }): TestHost;
 /** This machine's backend in the test host: the `owner` and `location` of the records the module writes. */
 export const TEST_OWNER: string;

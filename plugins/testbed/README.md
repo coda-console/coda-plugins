@@ -1,5 +1,7 @@
 # 测试机
 
+3.0.1：点名借设备（`device`）时，按 `coda resources group-owner` 的三种结果处理：只有「没有这台」（没有这个名字的记录，报「没有这台测试机」）和「本机够不着」（`reachable: false`，报设备在哪台机器（`location`）上、到那台上借，并附够得着它的机器 ID（`reachedBy`），安卓说「没有本机可达的 adb 链路」，iOS 说「本机够不着」）在排队前就结束；够得着的照常排队借。按池子借（`select`）不变。需要先带这种组主人回答的 Coda。只给预览渠道。
+
 3.0.0（接口破坏性变更）：删设置 `testbed.entities`「安卓本体」，安卓不再按别名找本体：安卓设备由保管方（android 插件）写成一条 `device:<设备名>` 的组记录，带 adb 链路，点名用设备名，与 iOS 一样。`use-testbed` 加可选输入 `select`（与 `device` 恰写一个），按池子借；`use-testbed`、`resolve-testbed` 不再输出 `entity`。写给 Coda 的 iOS 组记录补上 `capacity: 1`。需要先带 `hold-group` 有 `select` 的协议（`@coda-console/protocol` 6.11.0）和合一后组记录的 Coda。只给预览渠道。
 
 2.1.0：写 `coda/group@1` 记录时，`spec` 里不再带 `plugin`（持有插件由 Coda 记在条目上）。需要先带 H4 之后结构减负的 Coda。只给预览渠道。

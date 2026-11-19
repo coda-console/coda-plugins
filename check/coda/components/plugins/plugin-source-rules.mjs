@@ -7,8 +7,9 @@
 import { createHash } from 'node:crypto';
 import { normalize } from 'node:path';
 import { requireCondition as check } from '../../domain/errors.mjs';
-import { catalogChannelProblem, installingUsesProblem, offerPoint, offeredCommands, offerProblem, protocolDefinition, withDependencies } from './plugin-extensions.mjs';
+import { installingIncompatibility, offerPoint, offeredCommands, offerProblem, protocolDefinition, withDependencies } from './plugin-extensions.mjs';
 import { CONTRIBUTION_POINTS } from './contribution-points.mjs';
+import { definedEvents, eventsProblem } from '../protocols/protocol-events.mjs';
 
 export const COMMIT = /^[0-9a-f]{40}$/;
 const ID = /^[a-z][a-z0-9-]{0,39}$/;
@@ -169,7 +170,8 @@ export function npmManifest(id, own, skills) {
   }
   if (!Object.keys(contributes).length) return { problem: '这个 npm 包读不成插件：package.json 没有 contributes，没有 Skill 目录，也不是写了 mcpName 的 MCP 服务器' };
   return { manifest: { name: id, displayName: own.name, description: typeof own.description === 'string' ? own.description.slice(0, 500) : '',
-    version: String(own.version ?? ''), ...(own.coda !== undefined ? { coda: own.coda } : {}), contributes } };
+    version: String(own.version ?? ''), ...(own.coda !== undefined ? { coda: own.coda } : {}),
+    ...(own.engines?.coda !== undefined ? { engines: { coda: own.engines.coda } } : {}), contributes } };
 }
 // The packages npm installs for a package from npm, by name with the range it asks for: its dependencies are not pinned
 // (docs/plugins.md「从 npm 安装」), unless it brings an `npm-shrinkwrap.json`, whose versions they then are. Among them the
@@ -265,7 +267,7 @@ export const claims = plugin => [...[...CONTRIBUTION_POINTS.values()].flatMap(po
 // Why a plugin cannot sit beside those this machine has (`catalog`: built-in and installed, by ID; `builtin`: the plugins
 // Coda ships, by ID), or null: an installed built-in one's ID from another source (builtinProblem), what a component's
 // contribution point lets only a built-in plugin bring (its `builtinOnly`, of the plugin read: why, none when it brings none
-// of it), or what only one plugin may declare (claims) another plugin declares. What it needs of the others — the plugins it depends on,
+// of it), or what only one plugin may declare (claims), a protocol or an event of one, another plugin declares. What it needs of the others — the plugins it depends on,
 // the points it plugs into or writes for (plugin-extensions.mjs offerProblem) — is checked once all of them are there.
 export function catalogProblem(plugin, catalog, builtin, installed) {
   const named = builtinProblem(plugin.id, plugin.source, builtin, installed);
@@ -284,7 +286,14 @@ export function catalogProblem(plugin, catalog, builtin, installed) {
     const owner = [...catalog.values()].find(p => p.id !== plugin.id && p.protocols?.some(other => other.name === definition.name));
     if (owner) return `协议 ${definition.name} 已由插件 ${owner.displayName} 定义`;
   }
-  return null;
+  // An event is known by its name on this machine (components/protocols/protocol-events.mjs): one protocol's alone.
+  const events = definedEvents(plugin), again = events.find((name, i) => events.indexOf(name) !== i);
+  if (again) return `事件 ${again} 在插件的两个协议里都定义了`;
+  for (const name of events) {
+    const owner = [...catalog.values()].find(p => p.id !== plugin.id && definedEvents(p).includes(name));
+    if (owner) return `事件 ${name} 已由插件 ${owner.displayName} 的协议定义`;
+  }
+  return eventsProblem(plugin);
 }
 // What installing a plugin from a repository brings along, in the order installing does it (components/plugins/plugin-extensions.mjs
 // withDependencies, as components/plugins/plugins.mjs installFrom): what this version of it needs, directly or through another,
@@ -349,7 +358,7 @@ export function contributions(plugin, catalog = new Map(), defined = () => null)
 }
 // Each permission group it uses (docs/plugins.md「用到的权限」): its protocol, by the definition's title (its name without
 // one), and what the group lets it do, whether on trial; by protocol, then group. One its protocol does not define is
-// why it cannot be installed (usesProblem), not listed.
+// why it cannot be installed (plugin-extensions.mjs compatibility), not listed.
 function permissions(plugin, catalog, defined) {
   return Object.entries(plugin.uses ?? {}).flatMap(([kind, groups]) => {
     const definition = protocolDefinition(kind, catalog, defined), declared = definition?.permissions ?? {};
@@ -365,20 +374,21 @@ export const manifestId = manifest => manifest?.id ?? manifest?.name;
 // One plugin of a source as its reading lists it, said against what this machine has (`known`: the catalog, the installed
 // rows, the built-in plugins): what it is, the one of its ID installed here, why it cannot be installed, what comes along
 // with it (`siblings`: the other plugins of the same commit, by ID) and what it brings. `manifest`: what is known of it
-// when it does not read as a plugin, its ID `fallback` without a name. `defined`: the protocols Coda defines, for the
-// permission groups it and what comes along use (plugin-extensions.mjs installingUsesProblem).
-export function candidate({ path, manifest, plugin, problem, fallback }, { catalog, installed, builtin, channel, defined = () => null }, siblings) {
+// when it does not read as a plugin, its ID `fallback` without a name. `channel`, `level` and `defined` (the protocols
+// Coda defines): this machine, which it and what comes along are judged against (plugin-extensions.mjs compatibility);
+// one that does not run here says why in `incompatible`, as installing it and the store say.
+export function candidate({ path, manifest, plugin, problem, fallback }, { catalog, installed, builtin, channel, level, defined = () => null }, siblings) {
   const id = plugin?.id ?? (typeof manifestId(manifest) === 'string' ? manifestId(manifest) : fallback);
   const row = installed.get(id), along = plugin ? together(plugin, { catalog, installed, siblings, defined }) : [];
   const missing = along.filter(each => each.from === 'missing').map(each => each.id);
   // What this machine has once it is installed, those installed with it among them: the points it may write for.
   const after = plugin ? catalogAfter(plugin, { catalog, siblings }) : catalog;
+  const incompatible = plugin ? installingIncompatibility(after, installed, id, { channel, level, defined }) : null;
   return { path, id, displayName: plugin?.displayName ?? (typeof manifest?.displayName === 'string' ? manifest.displayName : id),
     description: plugin?.description ?? (typeof manifest?.description === 'string' ? manifest.description : ''), version: plugin?.version ?? '',
     installed: row ? row.source ?? builtin.get(id)?.source ?? { kind: 'builtin' } : null,
-    problem: problem ?? (plugin ? catalogChannelProblem(after, id, channel) ?? catalogProblem(plugin, catalog, builtin, installed) ?? offerProblem(plugin, after)
-      ?? installingUsesProblem(after, installed, id, defined) : null)
+    problem: problem ?? incompatible?.error ?? (plugin ? catalogProblem(plugin, catalog, builtin, installed) ?? offerProblem(plugin, after) : null)
       ?? (missing.length ? `要一起装的 ${missing.join('、')} 不在这台机器上${plugin.source?.kind === 'npm' ? '' : '，也不在这个提交里'}` : null),
-    together: along.filter(each => each.from !== 'missing'),
+    ...(!problem && incompatible ? { incompatible } : {}), together: along.filter(each => each.from !== 'missing'),
     ...(plugin ? { contributes: contributions(plugin, after, defined) } : {}) };
 }

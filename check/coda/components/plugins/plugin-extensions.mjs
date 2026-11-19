@@ -7,6 +7,7 @@
 import { CORE_PROTOCOLS } from '@coda-console/protocol/protocol';
 import { pointProblem, valueProblem } from '@coda-console/protocol/validate';
 import { requireCondition as check } from '../../domain/errors.mjs';
+import { payloadProblem } from '../protocols/protocol-events.mjs';
 
 const code = 'invalid_plugin';
 
@@ -71,34 +72,107 @@ export function operationProblem(plugin, plugins) {
   return null;
 }
 // A protocol's definition as this machine has it with `plugins` (the catalog): one of Coda's (namespace coda), a core
-// protocol of the protocol package or one Coda's components registered (`defined`: kind → its registered type, with the
-// title and permission groups it was registered with), else the one a plugin of the catalog defines; none without one.
+// protocol of the protocol package or one of Coda's own (`defined`: kind → its definition, application/host-protocols.mjs),
+// else the one a plugin of the catalog defines; none without one.
 export function protocolDefinition(kind, plugins, defined) {
   if (kind.startsWith('coda/')) return CORE_PROTOCOLS[kind] ?? defined(kind);
   return [...plugins.values()].flatMap(plugin => plugin.protocols ?? []).find(one => one.name === kind);
 }
-// Why a permission group a plugin uses (docs/plugins.md「用到的权限」) is not one of its protocol's definition in `plugins`
-// (the catalog once it is installed) or Coda's (`defined`), or null.
-export function usesProblem(plugin, plugins, defined) {
+// What of the protocols a plugin uses (docs/plugins.md「用到的权限」) neither its definition in `plugins` (the catalog beside
+// it) nor Coda's (`defined`) has: the protocol (`{ protocol }`), or one of its permission groups (`{ protocol, group }`);
+// null when they have all of it.
+export function usesMissing(plugin, plugins, defined) {
   for (const [kind, groups] of Object.entries(plugin.uses ?? {})) {
     const definition = protocolDefinition(kind, plugins, defined);
-    if (!definition) return `插件 ${plugin.id} 用到的协议 ${kind} 不在这台机器上，也不随它一起装`;
-    const missing = groups.find(group => !Object.hasOwn(definition.permissions ?? {}, group));
-    if (missing) return `插件 ${plugin.id} 用到的协议 ${kind} 没有权限组 ${missing}`;
+    if (!definition) return { protocol: kind };
+    const group = groups.find(each => !Object.hasOwn(definition.permissions ?? {}, each));
+    if (group) return { protocol: kind, group };
   }
   return null;
 }
-// Why a plugin installing `id` installs uses a permission group `catalog` (the catalog once they are installed) or Coda
-// (`defined`) does not define, or null: it, and what it needs this machine has not installed (`installed`: the installed
-// rows by ID), as reading it and installing it both say. The plugins installed already are not checked again: what they
-// use is theirs to answer for (docs/plugins.md「用到的权限」). One needed and nowhere is said missing, not here.
-export function installingUsesProblem(catalog, installed, id, defined) {
+// The first protocol a plugin implements (`protocolImplementations`) that neither it, `plugins` (the catalog beside it) nor
+// Coda (`defined`) defines, as `{ protocol }`; null when all are here.
+export function implementsMissing(plugin, plugins, defined) {
+  const found = (plugin.protocolImplementations ?? []).find(({ kind }) => !(plugin.protocols ?? []).some(one => one.name === kind) && !protocolDefinition(kind, plugins, defined));
+  return found ? { protocol: found.kind } : null;
+}
+// This Coda's API Level (docs/plugins.md「兼容」): what it offers plugins, counted. A manifest's `engines.coda` names the least
+// a plugin needs; one naming none needs 0, which any Coda has.
+export const API_LEVEL = 1;
+// The API Level a package's registry metadata asks for in its `engines`: a positive integer, or its digits as text (what
+// npm's registry may make of one); undefined when it asks for none, null when it is anything else. A manifest read from
+// its directory has the schema's shape (plugin-rules.mjs readPlugin).
+export function wantedLevel(engines) {
+  const value = engines?.coda;
+  if (value === undefined) return undefined;
+  if (Number.isInteger(value) && value >= 1) return value;
+  return typeof value === 'string' && /^[1-9][0-9]{0,8}$/.test(value) ? Number(value) : null;
+}
+// Whether a plugin runs on this machine (docs/plugins.md「兼容」): the one judgment reading a source, installing, the store and
+// the catalog take. Null when it does; else what it needs (`need`), what is missing (`missing`) and why, as the user is
+// told (`error`). `host`: this machine — its API Level (`level`), its backend's channel, the catalog beside the plugin and
+// Coda's own protocols (`defined`, as usesMissing takes them). A Level above this Coda's is Coda's to catch up with
+// (`coda`); short of that, a channel it is not for, or a protocol or permission group it uses or a protocol it implements
+// that is not here, is the plugin's to update (`update`): Coda no longer offers what it was made for.
+export function compatibility(plugin, { catalog = new Map(), defined = () => null, ...here }) {
+  const own = ownIncompatibility(plugin, here);
+  if (own) return own;
+  const used = usesMissing(plugin, catalog, defined), missing = used ?? implementsMissing(plugin, catalog, defined);
+  if (!missing) return null;
+  const { protocol, group } = missing, coda = protocol.startsWith('coda/');
+  const error = group ? (coda ? `本机的 Coda 已不提供 ${protocol} 的权限组 ${group}，插件需要更新` : `协议 ${protocol} 已没有权限组 ${group}，插件需要更新`)
+    : coda ? `本机的 Coda 已不提供协议 ${protocol}，插件需要更新` : `${used ? '用到' : '实现'}的协议 ${protocol} 不在这台机器上，也不随它一起装`;
+  return { need: 'update', missing, error };
+}
+// What of that a plugin answers by itself, whatever else is here: the API Level it needs, the channels it is for.
+export function ownIncompatibility(plugin, { level = API_LEVEL, channel = null }) {
+  const wanted = plugin.engines?.coda ?? 0;
+  if (wanted > level) return { need: 'coda', missing: { level: wanted }, error: `这个版本要 Coda API Level ≥ ${wanted}（本机 ${level}），请先升级 Coda` };
+  const channelProblem = pluginChannelProblem(plugin, channel);
+  return channelProblem ? { need: 'update', missing: { channel }, error: channelProblem } : null;
+}
+// The same for installing `id`, `here` this machine but for the catalog (`catalog`: the catalog once it and what comes along are installed; `installed`: the
+// installed rows by ID): it, and what it needs that this machine has not installed, that one named. Those installed
+// already are the catalog's to judge (components/plugins/plugins.mjs refresh). One needed and nowhere is said missing, not here.
+export function installingIncompatibility(catalog, installed, id, here) {
   for (const each of withDependencies(catalog, id)) {
     if ((each !== id && installed.has(each)) || !catalog.has(each)) continue;
-    const problem = usesProblem(catalog.get(each), catalog, defined);
-    if (problem) return problem;
+    const found = compatibility(catalog.get(each), { ...here, catalog });
+    if (found) return each === id ? found : { ...found, error: `${each}：${found.error}` };
   }
   return null;
+}
+// Whether plugin `plugin` (its catalog entry) defines kind `kind` or implements it: what it may reach of it and the events it may publish.
+export const ownsProtocol = (plugin, kind) =>
+  (plugin.protocols ?? []).some(one => one.name === kind) || (plugin.protocolImplementations ?? []).some(one => one.kind === kind);
+// What an event is about: `<kind>:<ID>`, at most 500 characters.
+const SUBJECT = /^(?=.{3,500}$)[a-z][a-z0-9_-]*:\S+$/;
+// Why plugin `plugin` (its catalog entry) may not publish (by `how`: publish-event, coda event, coda.emit) event `name`
+// about `subject`, saying `payload`, or null — `event` the event of that name on this machine (components/protocols/
+// protocol-events.mjs), or none: it is one of a protocol the plugin defines or implements and not Coda's own (`codaOnly`:
+// application/host-protocols.mjs; a plugin implementing coda/thread@1 publishes no session's), about a subject it names (not a
+// session's: `thread:` is Coda's), saying a JSON object its payload schema has, no more than 100 KB of it and nothing of
+// `coda` (Coda's, beside it in a run). Where it is published is the backend's to check, as the backend and the plugin host
+// for a plugin's tests (adapters/plugin-test-host.mjs) both check the rest.
+export function publishedProblem(how, plugin, event, { name, subject, payload }) {
+  if (!event || !ownsProtocol(plugin, event.kind)) return `插件 ${plugin.id} 定义或实现的协议里没有事件 ${name}`;
+  if (event.codaOnly) return `插件 ${plugin.id} 不能发布事件 ${name}：它是 Coda 自己的协议 ${event.kind} 的，只由 Coda 发布`;
+  if (typeof subject !== 'string' || !SUBJECT.test(subject) || subject.startsWith('thread:'))
+    return `${how} 的 subject 须为「<种类>:<标识>」（如 pull_request:<地址>），不超过 500 个字符；thread: 是会话的，由 Coda 发布`;
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return `${how} 的 payload 须为 JSON 对象`;
+  if (JSON.stringify(payload).length > 100_000) return `${how} 的 payload 不能超过 100 KB`;
+  if (Object.hasOwn(payload, 'coda')) return `${how} 的 payload 顶层不能有 coda，那是 Coda 的`;
+  const problem = payloadProblem(event, payload);
+  return problem && `${how} 的 payload ${problem}`;
+}
+// The events plugin `plugin` (its catalog entry) subscribes to: those of the event groups it uses of the protocols this
+// machine has with `plugins` (the catalog) and Coda's own (`defined`, as `protocolDefinition` takes them). What its module
+// may handle (`coda.on`), as the backend delivers them (./plugin-events.mjs) and the plugin host for a plugin's tests has it.
+export function subscribed(plugin, plugins, defined) {
+  return Object.entries(plugin.uses ?? {}).flatMap(([kind, groups]) => {
+    const permissions = protocolDefinition(kind, plugins, defined)?.permissions ?? {};
+    return groups.flatMap(group => permissions[group]?.events ?? []);
+  });
 }
 // Why plugin `plugin` (its catalog entry) may not reach kind `kind` as `need` says — an operation of it (`{ operation }`),
 // a stream of its records (`{ stream }`), or reading its records (`'read'`; writing them is the implementer's alone) —
@@ -106,7 +180,7 @@ export function installingUsesProblem(catalog, installed, id, defined) {
 // defines the kind may; any other, a built-in one too, only by a group of the kind's it uses that has the operation or the
 // stream, or reads its records. An operation or a stream in no group is open to no plugin.
 export function usesRefusal(plugin, kind, need, definition) {
-  if ((plugin.protocols ?? []).some(one => one.name === kind) || (plugin.protocolImplementations ?? []).some(one => one.kind === kind)) return null;
+  if (ownsProtocol(plugin, kind)) return null;
   const groups = Object.entries(definition?.permissions ?? {}), used = new Set(plugin.uses?.[kind] ?? []);
   const covers = ([, group]) => typeof need === 'string' ? group[need] === true
     : need.stream !== undefined ? (group.streams ?? []).includes(need.stream) : (group.operations ?? []).includes(need.operation);
@@ -142,7 +216,7 @@ export function withDependencies(catalog, id) {
   return order;
 }
 // A channel restriction is the target backend's, never the client's. An unknown channel cannot satisfy an explicit list.
-// The store reads registry metadata; installation reads the package itself. Both use the same schema and rule.
+// The store reads registry metadata; installation reads the package itself. Both judge it so (compatibility).
 export function pluginChannelProblem(plugin, channel) {
   if (plugin.coda === undefined) return null;
   const problem = valueProblem('plugin.json#/properties/coda', plugin.coda, 'coda');
@@ -151,14 +225,6 @@ export function pluginChannelProblem(plugin, channel) {
   if (!channels || channels.includes(channel)) return null;
   const names = channels.map(value => value === 'preview' ? '预览版' : '正式版').join('或');
   return `此插件仅支持 Coda ${names}后端${channel ? '' : '，当前后端没有发布通道记录'}`;
-}
-// The same dependency closure used by installation, after resolving each dependency to its actual local or source version.
-export function catalogChannelProblem(catalog, id, channel) {
-  for (const each of withDependencies(catalog, id)) {
-    const plugin = catalog.get(each), problem = plugin && pluginChannelProblem(plugin, channel);
-    if (problem) return each === id ? problem : `${each}：${problem}`;
-  }
-  return null;
 }
 // The installed plugins that need this one, directly or through another, by ID.
 export function dependents(catalog, installed, id) {

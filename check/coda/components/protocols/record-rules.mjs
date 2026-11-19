@@ -6,22 +6,27 @@ import { derivedUUID } from '../../domain/values.mjs';
 
 // Where a kind's records are, said once for every kind (Protocols `register` reads it). The kinds only this machine keeps:
 // Coda's composers and what is submitted through them, the runs of its posts to sessions, and the kinds it serves whole
-// from its own tables: `coda/thread@1`, `coda/card@1`, `coda/plugin@1` and the workflows' `coda/workflow@1` and
-// `coda/workflow-run@1` (one of another backend is found by asking the space: mirror.mjs `place`). `coda/session@1` is shared (Coda's sessions are served beside
+// from its own tables: `coda/thread@1`, `coda/project@1`, `coda/card@1`, `coda/plugin@1` and the workflows' `coda/workflow@1`
+// and `coda/workflow-run@1` (one of another backend is found by asking the space: mirror.mjs `place`). `coda/session@1` is shared (Coda's sessions are served beside
 // it, a plugin's external sessions are written in the record directory). They are never in the record directory, and no
 // plugin writes one. Every other kind, every one a plugin defines among them, is shared: its records are this machine's rows of
 // the record directory, which the other backends of a space copy.
-export const LOCAL_KINDS = new Set(['coda/composer@1', 'coda/submission@1', 'coda/run@1', 'coda/thread@1', 'coda/card@1',
+export const LOCAL_KINDS = new Set(['coda/composer@1', 'coda/submission@1', 'coda/run@1', 'coda/thread@1', 'coda/project@1', 'coda/card@1',
   'coda/plugin@1', 'coda/workflow@1', 'coda/workflow-run@1']);
-// `list(kind, { scope?, id? })`: this machine's records (`local`) or this machine's and the others' (`available`, unsaid),
-// all of them or those of an ID.
+// `list(kind, { scope?, id?, labels? })`: this machine's records (`local`) or this machine's and the others' (`available`,
+// unsaid), all of them, those of an ID, or those whose labels have each of these values (`labels`, as Kubernetes' equality
+// selector: nothing but equality).
 export function readFilter(filter) {
   check(filter == null || (typeof filter === 'object' && !Array.isArray(filter)), 'invalid_input', '筛选须为对象');
-  const { scope = 'available', id, ...rest } = filter ?? {};
+  const { scope = 'available', id, labels, ...rest } = filter ?? {};
   check(['local', 'available'].includes(scope) && !Object.keys(rest).length && (id === undefined || (typeof id === 'string' && id)),
-    'invalid_input', '筛选只认 scope（local 或 available）和 id');
-  return { scope, id };
+    'invalid_input', '筛选只认 scope（local 或 available）、id 和 labels');
+  check(labels === undefined || (labels && typeof labels === 'object' && !Array.isArray(labels) && Object.values(labels).every(value => typeof value === 'string')),
+    'invalid_input', '筛选的 labels 须为文本键值对象');
+  return { scope, id, labels };
 }
+// Whether a record's labels have each value a filter's `labels` asks for (none asked, any record has).
+export const labelled = (labels, asked) => asked === undefined || Object.entries(asked).every(([name, value]) => labels?.[name] === value);
 // `get({ kind, id })`.
 export function readRef(ref) {
   const { kind, id, ...rest } = ref ?? {};

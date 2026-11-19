@@ -24,8 +24,6 @@ import { claims, COMMIT, INTEGRITY, NPM_VERSION, npmPluginId, repoAddress, sourc
 import { CONTRIBUTION_POINTS } from './contribution-points.mjs';
 
 const ID = /^[a-z][a-z0-9-]{0,39}$/;
-// The domains of the events Coda publishes itself; a plugin's are of a domain of its own (schemas/events.json).
-export const CODA_EVENT_DOMAINS = ['workflow', 'session', 'user'];
 // Plugins that ship with Coda, as VS Code's built-in extensions ship with it: updated with Coda itself.
 export const BUILTIN_DIR = fileURLToPath(new URL('../../resources/plugins/', import.meta.url));
 // The package the backend runs from (the runtime clone's, or the release's), whose npm dependencies may be built-in plugins
@@ -131,8 +129,10 @@ export function readPlugin(dir, source, points = CONTRIBUTION_POINTS) {
     category: manifestCategory(manifest), ...(icon ? { icon } : {}), ...(readmeFile(dir) ? { readme: true } : {}),
     source, dir, title: typeof configuration.title === 'string' ? configuration.title : displayName, properties,
     ...(manifest.coda !== undefined ? { coda: manifest.coda } : {}),
+    // The API Level it needs (plugin-extensions.mjs compatibility).
+    ...(manifest.engines?.coda !== undefined ? { engines: { coda: manifest.engines.coda } } : {}),
     // The permission groups of others' protocols it uses (docs/plugins.md「用到的权限」), by protocol: checked against the
-    // catalog as it is installed (plugin-extensions.mjs usesProblem).
+    // catalog it is installed into, and whenever the catalog is read (plugin-extensions.mjs compatibility).
     ...(manifest.uses && Object.keys(manifest.uses).length ? { uses: structuredClone(manifest.uses) } : {}),
     ...(manifest.main ? { main: posix.normalize(manifest.main) } : {}), ...(activation.includes('onStartupFinished') ? { startup: true } : {}),
     ...(required.length ? { required: [...required] } : {}), workflows: files('.coda/workflows'),
