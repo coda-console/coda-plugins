@@ -316,8 +316,8 @@ export function createTestHost({ plugin = {}, call = null, clock = new Clock(), 
   }
 
   // A run of the plugin's command `file` implementing an operation, as the backend runs one (components/plugins/plugin-host.mjs
-  // `startCommand`): `sh -c` from the plugin's directory, the call's input as JSON on its standard input, its record, ID and
-  // deadline in its environment (`callEnv`); cancelled (`cancel`), its group asked to end, and made to once the grace has
+  // `startCommand`): `sh -c` from the plugin's directory, the call's input as JSON on its standard input, its record, ID,
+  // deadline and caller in its environment (`callEnv`); cancelled (`cancel`), its group asked to end, and made to once the grace has
   // passed on the host's clock; the host closing kills it at once.
   const commanded = (file, call, cancel) => startPluginCommand(fileCommand(file), { cwd: described.path, env: { ...process.env, ...callEnv(call) },
     clock, timeoutMs: Infinity, signal: ending.signal, cancel, input: JSON.stringify(call.input), start: unregistered, label: `${described.id} · ${file}` });
@@ -342,10 +342,11 @@ export function createTestHost({ plugin = {}, call = null, clock = new Clock(), 
   // input checked as the operation has it, its deadline its `timeout` from now or the operation's own, or none; called
   // off with `signal`, or past its deadline, its handler's `ctx.signal` goes off (`AbortError`, `TimeoutError`) and its
   // handler ends it still. Its result as the module's outcome says (`outcomeOf`); failed, thrown with its code; cancelled,
-  // thrown as `canceled`. Each progress is given to `onProgress`, each question to `answer`, which answers it.
-  async function run(record, operation, input, found, { signal, timeout, onProgress, answer }) {
+  // thrown as `canceled`. Each progress is given to `onProgress`, each question to `answer`, which answers it. `caller`, who
+  // is before the page that made it (`ctx.caller`, `CODA_CALLER`), or none, as for a call not made from a page.
+  async function run(record, operation, input, found, { signal, timeout, onProgress, answer, caller }) {
     const name = `${record.kind}/${operation}`, at = timeout ?? found.timeout;
-    const call = { id: randomUUID(), record: recordFor(record), operation, input, deadline: at ? clock.now() + at : null };
+    const call = { id: randomUUID(), record: recordFor(record), operation, input, deadline: at ? clock.now() + at : null, ...(caller ? { caller } : {}) };
     try { checkInput(found, name, input); checkRequest(call); } catch (error) { throw Object.assign(error, { effects: 'none' }); }
     const command = commandOf(manifest, record.kind, operation);
     if (command) return ended(found, name, await commandRun(command, call, signal));
@@ -374,10 +375,11 @@ export function createTestHost({ plugin = {}, call = null, clock = new Clock(), 
     coda,
     // Calls the plugin's module (or, for another's record, `call`) as a caller would: its result, or a failure with its
     // `code`, `effects` and `retryAfterMs`. A query given up on with `signal` fails as an `AbortError`, past `timeout` as a
-    // `timeout`; a doing call of a protocol the plugin implements ends as its handler ends it (`run`).
-    call(record, operation, input = {}, { signal = null, timeout = null, onProgress = null, answer = null } = {}) {
+    // `timeout`; a doing call of a protocol the plugin implements ends as its handler ends it (`run`), made from a page
+    // when it has a `caller`.
+    call(record, operation, input = {}, { signal = null, timeout = null, onProgress = null, answer = null, caller = null } = {}) {
       const found = operationOf(record?.kind, operation);
-      if (found && !found.safe && implemented.includes(record.kind)) return run(record, operation, input, found, { signal, timeout, onProgress, answer });
+      if (found && !found.safe && implemented.includes(record.kind)) return run(record, operation, input, found, { signal, timeout, onProgress, answer, caller });
       return query(record, operation, input, { signal, deadline: timeout ? clock.now() + timeout : null });
     },
     // A query of the module's own (`coda self <名字>`, docs/plugins.md「只给自己用的查询」), handed to what it registered with
@@ -397,15 +399,15 @@ export function createTestHost({ plugin = {}, call = null, clock = new Clock(), 
     },
     // A doing call of a protocol the plugin implements, left by a process of the plugin's that ended before its handler did,
     // handed to its operation's `resume` as the backend hands it (coda#2749 3.6), with the call's `deadline` (`ctx.deadline`),
-    // or none: asked to be cancelled (`canceled`), or past its deadline, its `ctx.signal` gone off already as an
+    // or none, and its `caller` (`ctx.caller`), or none: asked to be cancelled (`canceled`), or past its deadline, its `ctx.signal` gone off already as an
     // `AbortError` or a `TimeoutError`; its result, or its failure, as `call`'s; with no `resume`, interrupted, of unknown
     // effect, as the backend ends it then.
-    async resume(record, operation, { id = randomUUID(), input = {}, progress = null, canceled = false, deadline = null } = {}) {
+    async resume(record, operation, { id = randomUUID(), input = {}, progress = null, canceled = false, deadline = null, caller = null } = {}) {
       const found = operationOf(record?.kind, operation), name = `${record?.kind}/${operation}`;
       if (!found || found.safe || !implemented.includes(record.kind)) throw refused('not_found', `插件没有实现做事的操作 ${name}`);
       const halted = canceled ? { name: 'AbortError' } : deadline !== null && deadline <= clock.now() ? { name: 'TimeoutError' } : null;
       const call = { id, record: recordFor(record), operation, input, deadline, progress, canceled,
-        ...(halted ? { halted } : {}) }, at = ++next;
+        ...(caller ? { caller } : {}), ...(halted ? { halted } : {}) }, at = ++next;
       const said = await new Promise((resolve, reject) => {
         waiting.set(at, { resolve, reject });
         modules.receive({ id: at, method: 'resume', params: { plugin: described, call } });
