@@ -5,11 +5,22 @@
 // set_config_option, and the process closed. No prompt, no delete, nothing global set. That collection does leave one
 // empty conversation; its ID goes to the log, `catalog-v1.log`.
 //
-// Out of date: a day old, another format, another agy (path or version), another stat of ~/.gemini/antigravity-cli/settings.json,
-// or marked by a real session whose options did not match. Entries collect one at a time (a lock in the state directory,
-// waited on for a while, the catalog and the last failure read again once it is held); a collection that fails, or answers
-// options that do not hold together, is not tried again for five minutes for the same agy and settings, and leaves the
-// catalog there was.
+// Out of date: another format, another agy (path or version), another stat of ~/.gemini/antigravity-cli/settings.json, or
+// marked by a real session whose options did not match. There is no age past which it is collected again: models the
+// server adds under the same agy (as Gemini 4 Neon came to 1.5.9) are found by a check instead. Once an hour (`check`) after
+// the collection or the last check, the entry that answers a probe asks `agy models`, which opens no conversation and takes
+// two or three seconds, and holds its list of models (ID and name, sorted by ID) to the one the collection kept
+// (`agyModels`). The same list is written down as checked (`catalog-v1.check.json`, for that collection) and the catalog
+// answers; another list has it collected again. A catalog of an older plugin, with no list kept, is collected again once
+// `agy models` answers. A check that fails (signed out, no network, a timeout) keeps the catalog and is tried again after
+// the cool-down, never collecting for it; a collection a check asked for that fails keeps the catalog there was as well.
+// The check is made in the probe, under the lock, before the answer, not after it: an entry may go as soon as its probe is
+// answered, and what is learnt then would be lost. It is held to `models` (8 seconds) so that the version, a check and a
+// collection stay inside the 60 seconds Coda gives a probe.
+//
+// Entries collect and check one at a time (a lock in the state directory, waited on for a while, the catalog and the last
+// failure read again once it is held); a collection that fails, or answers options that do not hold together, is not tried
+// again for five minutes for the same agy and settings, and leaves the catalog there was.
 //
 // The lock is a line of generations, `catalog-v1.lock.<n>`, each made at once with its holder in it (a hard link); the
 // highest is the lock. It is free once its holder marks it `.free`, is gone, or is past a collection's time, and is then
@@ -25,8 +36,9 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { versionOf } from '../scripts/agy.mjs';
 
 export const FORMAT = 1;
-// `collect` stays inside the 60 seconds Coda gives a probe; `wait` is how long an entry waits for another's collection.
-export const LIMITS = { ttl: 24 * 3600_000, collect: 40_000, wait: 45_000, cooldown: 5 * 60_000, poll: 200, version: 10_000 };
+// `collect` stays inside the 60 seconds Coda gives a probe; `wait` is how long an entry waits for another's collection;
+// `check` is how often `agy models` is asked, and `models` how long it is given.
+export const LIMITS = { check: 3600_000, models: 8_000, collect: 40_000, wait: 45_000, cooldown: 5 * 60_000, poll: 200, version: 10_000 };
 const SIGNED_OUT = -32000;
 
 export class CatalogError extends Error {
@@ -55,16 +67,32 @@ async function askVersion(binary, timeout) {
   return new Promise(resolve => execFile(binary, ['--version'], { encoding: 'utf8', timeout, env: { ...process.env, AGY_CLI_DISABLE_AUTO_UPDATE: 'true' } },
     (error, stdout, stderr) => resolve(error ? null : versionOf({ stdout, stderr }))));
 }
+// `agy models`: the models it lists, `[id, name]` sorted by ID, from its lines `<id>\t<name>` (the rest of what it says,
+// such as its progress line, goes to the standard error). A CatalogError for one that fails, times out or lists none.
+export async function askModels(binary, timeout, cwd) {
+  return new Promise((resolve, reject) => execFile(binary, ['models'], { cwd, encoding: 'utf8', timeout,
+    env: { ...process.env, AGY_CLI_DISABLE_AUTO_UPDATE: 'true', NO_COLOR: '1' } }, (error, stdout, stderr) => {
+    if (error) {
+      const said = `${stderr ?? ''}`.trim().split('\n').filter(line => !/^Fetching available models/.test(line)).at(-1);
+      return reject(new CatalogError(`agy models 失败（${error.killed ? `超过 ${timeout / 1000} 秒` : error.code ?? error.signal}）${said ? `：${said}` : ''}`));
+    }
+    const listed = `${stdout}`.split('\n').map(line => line.replace(/\r$/, '')).filter(line => line.includes('\t'))
+      .map(line => { const at = line.indexOf('\t'); return [line.slice(0, at).trim(), line.slice(at + 1).trim()]; }).filter(([id]) => id)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    if (!listed.length) return reject(new CatalogError('agy models 没列出任何模型'));
+    resolve(listed);
+  }));
+}
 const alive = pid => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; } };
 
 // `state`: the plugin's state directory; `binary`: agy's path. The clock, the file system (node:fs/promises), the process
-// (node:child_process spawn) and how agy's version is asked are given for the tests.
+// (node:child_process spawn) and how agy's version and models are asked are given for the tests.
 export function createCatalog({ state, binary, home = homedir(), now = Date.now, fs = fsPromises, spawn = spawnProcess, version = askVersion,
-  limits: given = {} } = {}) {
+  models = askModels, limits: given = {} } = {}) {
   const limits = { ...LIMITS, ...given };
   const file = name => join(state, name);
   const paths = state && { catalog: file('catalog-v1.json'), failure: file('catalog-v1.failure.json'),
-    stale: file('catalog-v1.stale.json'), log: file('catalog-v1.log'), cwd: file('catalog-cwd') };
+    stale: file('catalog-v1.stale.json'), check: file('catalog-v1.check.json'), log: file('catalog-v1.log'), cwd: file('catalog-cwd') };
   const lockFile = n => file(`catalog-v1.lock.${n}`);
   let child = null, holding = 0, aborted = false;
 
@@ -80,11 +108,37 @@ export function createCatalog({ state, binary, home = homedir(), now = Date.now,
       s => ({ exists: true, size: s.size, mtimeMs: s.mtimeMs, ctimeMs: s.ctimeMs, ino: s.ino }), () => ({ exists: false }));
     return { format: FORMAT, agy: { path: binary, version: await version(binary, limits.version) }, settings };
   }
+  // Whether a catalog answers: 'fresh', 'check' when `agy models` is to be asked first, or false when it is to be collected.
   async function usable(catalog, print) {
     if (!catalog || catalog.format !== print.format || !same(catalog.agy, print.agy) || !same(catalog.settings, print.settings)) return false;
-    const age = now() - catalog.collectedAt;
-    if (!(age >= 0 && age < limits.ttl)) return false;
-    return (await readJson(paths.stale))?.collectedAt !== catalog.collectedAt;
+    if ((await readJson(paths.stale))?.collectedAt === catalog.collectedAt) return false;
+    // One with no list of agy models is checked at once, save within the cool-down of a check that failed.
+    const checked = await readJson(paths.check), last = checked?.collectedAt === catalog.collectedAt ? checked : null;
+    const since = last?.at ?? catalog.collectedAt;
+    const due = since + (last && !last.ok ? limits.cooldown : Array.isArray(catalog.agyModels) ? limits.check : 0);
+    // A clock that went back is due as well.
+    return now() >= since && now() < due ? 'fresh' : 'check';
+  }
+  const noteCheck = async (catalog, ok, reason) => {
+    await fs.writeFile(paths.check, JSON.stringify({ collectedAt: catalog.collectedAt, at: now(), ok, ...(reason && { reason }) })).catch(() => {});
+  };
+  // The check of a catalog: `{ catalog }` to answer with it, or `{ listed }` (agy models' list) to collect it again.
+  async function check(catalog) {
+    const started = now();
+    let listed;
+    try { await fs.mkdir(paths.cwd, { recursive: true }); listed = await models(binary, limits.models, paths.cwd); }
+    catch (error) {
+      await log({ event: 'check.failed', reason: error.message, ms: now() - started });
+      await noteCheck(catalog, false, error.message);
+      return { catalog };
+    }
+    if (Array.isArray(catalog.agyModels) && same(listed, catalog.agyModels)) {
+      await noteCheck(catalog, true);
+      await log({ event: 'check.same', models: listed.length, ms: now() - started });
+      return { catalog };
+    }
+    await log({ event: 'check.changed', reason: Array.isArray(catalog.agyModels) ? 'agy models 列出的模型变了' : '目录里没有 agy models 的模型清单', ms: now() - started });
+    return { listed };
   }
   // The lock, or false while another live entry holds it (or took it first).
   async function lock() {
@@ -166,11 +220,17 @@ export function createCatalog({ state, binary, home = homedir(), now = Date.now,
       setTimeout(() => proc.kill('SIGKILL'), 800).unref();
     }
   }
-  // Collects and writes the catalog, all of it or nothing; a failure is remembered.
-  async function refresh(print) {
+  // Collects and writes the catalog, all of it or nothing; a failure is remembered. `listed`: agy models' list, when a check
+  // has just asked it; else it is asked here, and a catalog whose asking failed keeps none (and is collected again once a
+  // check gets one).
+  async function refresh(print, listed) {
     const started = now();
     try {
       const catalog = await collect(print);
+      catalog.agyModels = listed ?? await models(binary, limits.models, paths.cwd).catch(async error => {
+        await log({ event: 'check.failed', reason: error.message });
+        return null;
+      });
       const temporary = `${paths.catalog}.${process.pid}.${randomUUID()}.tmp`;
       try { await fs.writeFile(temporary, JSON.stringify(catalog)); await fs.rename(temporary, paths.catalog); }
       catch (error) { await fs.rm(temporary, { force: true }).catch(() => {}); throw new CatalogError(`写不了模型目录（${error.code ?? error.message}）：${state}`); }
@@ -192,21 +252,32 @@ export function createCatalog({ state, binary, home = homedir(), now = Date.now,
     async get() {
       if (!state) throw new CatalogError('没有插件状态目录（CODA_PLUGIN_STATE），存不了模型目录');
       const print = await fingerprint(), deadline = now() + limits.wait;
-      // The catalog if it is up to date, null if it is to be collected; a failure still cooling down is thrown.
+      // `{ catalog }` if it is up to date, `{ check }` if agy models is to be asked first, null if it is to be collected; a
+      // failure still cooling down is thrown.
       const settled = async () => {
-        const cached = await readJson(paths.catalog);
-        if (await usable(cached, print)) return cached;
+        const cached = await readJson(paths.catalog), status = await usable(cached, print);
+        if (status === 'fresh') return { catalog: cached };
+        if (status === 'check') return { check: cached };
         const failure = await readJson(paths.failure);
         if (failure && same(failure.fingerprint, print) && now() - failure.at < limits.cooldown)
           throw new CatalogError(`读取 Antigravity 的模型目录失败，${Math.ceil((failure.at + limits.cooldown - now()) / 1000)} 秒后再试：${failure.reason}`);
         return null;
       };
       for (;;) {
-        const cached = await settled();
-        if (cached) return cached;
+        const found = await settled();
+        if (found?.catalog) return found.catalog;
         if (await lock()) {
-          // Another entry may have collected, or failed to, between the reading and the lock.
-          try { return await settled() ?? await refresh(print); } finally { await unlock(); }
+          // Another entry may have collected, checked, or failed to, between the reading and the lock.
+          try {
+            const again = await settled();
+            if (again?.catalog) return again.catalog;
+            if (!again) return await refresh(print);
+            const checked = await check(again.check);
+            if (checked.catalog) return checked.catalog;
+            // A collection the check asked for that fails keeps the catalog there was, and the next check waits the cool-down.
+            try { return await refresh(print, checked.listed); }
+            catch (error) { await noteCheck(again.check, false, error.message); return again.check; }
+          } finally { await unlock(); }
         }
         if (now() >= deadline) throw new CatalogError(`等另一个进程读取模型目录超过 ${limits.wait / 1000} 秒`);
         await delay(limits.poll);

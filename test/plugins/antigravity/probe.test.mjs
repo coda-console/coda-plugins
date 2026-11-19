@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { createCatalog } from '../../../plugins/antigravity/agent/catalog.mjs';
+import { askModels, createCatalog } from '../../../plugins/antigravity/agent/catalog.mjs';
 import { manifest } from '../command.mjs';
 import { pluginDir } from '../plugin.mjs';
 
@@ -276,26 +276,111 @@ test('a real session whose options differ from the catalog has it collected agai
   assert.equal(natives().length, 4);
 });
 
-// The catalog itself, its clock given.
+// The catalog itself, its clock given; `listed` is what agy models answers (a list, or an Error it fails with), each asking counted.
 function catalogAt(t, extra = {}) {
   const { home, state, log } = machine(t);
   let clock = Date.parse('2026-11-16T00:00:00Z');
+  const asked = { models: 0, listed: [['m-low', 'M (Low)'], ['xh-high', 'XH (High)']] };
   const run = (cmd, args, options) => spawn(cmd, args, { ...options, env: { ...process.env, FAKE_AGY_LOG: log } });
-  const catalog = createCatalog({ state, home, binary: join(home, '.local/bin/agy'), now: () => clock, spawn: run, version: async () => '1.5.9', ...extra });
+  const models = async () => { asked.models++; if (asked.listed instanceof Error) throw asked.listed; return structuredClone(asked.listed); };
+  const catalog = createCatalog({ state, home, binary: join(home, '.local/bin/agy'), now: () => clock, spawn: run, version: async () => '1.5.9', models, ...extra });
   const natives = () => existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean).length : 0;
-  return { catalog, natives, state, tick: ms => { clock += ms; } };
+  return { catalog, natives, state, asked, tick: ms => { clock += ms; } };
 }
 
-test('the catalog is good for a day, by the clock it is given', async t => {
-  const { catalog, natives, tick } = catalogAt(t);
+test('the catalog has no age: agy models is asked once an hour, and the same list collects nothing', async t => {
+  const { catalog, natives, asked, state, tick } = catalogAt(t);
+  const first = await catalog.get();
+  assert.deepEqual([natives(), asked.models], [1, 1], 'the collection asks agy models once, for the list it keeps');
+  assert.deepEqual(first.agyModels, asked.listed);
+  tick(59 * 60_000);
   await catalog.get();
-  tick(23 * 3600_000);
+  assert.equal(asked.models, 1, 'within the hour nothing is asked');
+  for (let hour = 0; hour < 30; hour++) { tick(3600_000); assert.equal((await catalog.get()).collectedAt, first.collectedAt); }
+  assert.deepEqual([natives(), asked.models], [1, 31], 'thirty hours: a check each hour, never a collection');
+  assert.deepEqual(JSON.parse(readFileSync(join(state, 'catalog-v1.check.json'), 'utf8')).ok, true);
+});
+
+test('a list agy models changes collects the catalog again, once', async t => {
+  const { catalog, natives, asked, tick } = catalogAt(t);
   await catalog.get();
-  assert.equal(natives(), 1);
-  tick(2 * 3600_000);
+  tick(3600_000);
+  asked.listed = [...asked.listed, ['neon-high', 'Neon (High)']];
   const fresh = await catalog.get();
-  assert.equal(natives(), 2);
-  assert.equal(fresh.collectedAt, Date.parse('2026-11-17T01:00:00Z'));
+  assert.deepEqual([natives(), asked.models], [2, 2], 'the check\'s list is the one kept: agy models is not asked again');
+  assert.deepEqual(fresh.agyModels, asked.listed);
+  assert.equal(fresh.collectedAt, Date.parse('2026-11-16T01:00:00Z'));
+  tick(10 * 60_000);
+  await catalog.get();
+  assert.deepEqual([natives(), asked.models], [2, 2]);
+});
+
+test('agy models failing keeps the catalog, collects nothing, and is asked again after the cool-down', async t => {
+  const { catalog, natives, asked, state, tick } = catalogAt(t);
+  const first = await catalog.get();
+  tick(3600_000);
+  asked.listed = new Error('agy models 失败（1）：Error: not signed in');
+  assert.equal((await catalog.get()).collectedAt, first.collectedAt);
+  assert.deepEqual([natives(), asked.models], [1, 2]);
+  tick(4 * 60_000);
+  await catalog.get();
+  assert.equal(asked.models, 2, 'not within the cool-down');
+  tick(61_000);
+  asked.listed = [['m-low', 'M (Low)'], ['xh-high', 'XH (High)']];
+  await catalog.get();
+  assert.deepEqual([natives(), asked.models], [1, 3], 'asked again, the same list, still no collection');
+  assert.match(readFileSync(join(state, 'catalog-v1.log'), 'utf8'), /"event":"check.failed","reason":"agy models 失败（1）：Error: not signed in"/);
+});
+
+test('a catalog with no list of agy models (an older plugin\'s) is collected again once agy models answers', async t => {
+  const { catalog, natives, asked, state, tick } = catalogAt(t);
+  await catalog.get();
+  const file = join(state, 'catalog-v1.json'), old = JSON.parse(readFileSync(file, 'utf8'));
+  delete old.agyModels;
+  writeFileSync(file, JSON.stringify(old));
+  asked.listed = new Error('agy models 失败（1）');
+  assert.equal((await catalog.get()).collectedAt, old.collectedAt, 'a check that fails keeps it');
+  assert.deepEqual([natives(), asked.models], [1, 2]);
+  tick(5 * 60_000);
+  asked.listed = [['m-low', 'M (Low)']];
+  const fresh = await catalog.get();
+  assert.deepEqual([natives(), asked.models], [2, 3]);
+  assert.deepEqual(fresh.agyModels, asked.listed);
+});
+
+test('a collection a check asked for that fails keeps the catalog there was', async t => {
+  let fail = false;
+  const { catalog, natives, asked, tick } = catalogAt(t, { spawn: (cmd, args, options) => spawn(cmd, args, { ...options, env: { ...process.env, ...(fail && { FAKE_AGY_FAIL_MODEL: 'xh' }) } }) });
+  const first = await catalog.get();
+  tick(3600_000);
+  fail = true; asked.listed = [['other', 'Other']];
+  assert.equal((await catalog.get()).collectedAt, first.collectedAt);
+  tick(60_000);
+  await catalog.get();
+  assert.equal(asked.models, 2, 'the next check waits the cool-down');
+  tick(5 * 60_000);
+  fail = false;
+  assert.deepEqual((await catalog.get()).agyModels, [['other', 'Other']]);
+});
+
+test('agy models is read from its lines as agy prints them, and a failing one says why', async t => {
+  const { home } = machine(t);
+  const binary = join(home, '.local/bin/agy');
+  const listed = await askModels(binary, 5_000, home);
+  assert.deepEqual(listed.map(([id]) => id), ['m-high', 'm-low', 'm-medium', 'none', 'xh-high', 'xh-low', 'xh-medium', 'xh-xhigh']);
+  assert.deepEqual(listed.find(([id]) => id === 'xh-xhigh'), ['xh-xhigh', '模型 xh (xhigh)']);
+  process.env.FAKE_AGY_MODELS_FAIL = '1';
+  try { await assert.rejects(askModels(binary, 5_000, home), /agy models 失败（1）：Error: not signed in/); }
+  finally { delete process.env.FAKE_AGY_MODELS_FAIL; }
+});
+
+test('an entry\'s collection keeps agy models\' list, which a probe does not ask again within the hour', async t => {
+  const { probe, home, state } = machine(t);
+  const counted = join(home, 'models.log');
+  await probe('/a', { FAKE_AGY_LOG_MODELS: counted });
+  await probe('/b', { FAKE_AGY_LOG_MODELS: counted });
+  assert.equal(readFileSync(counted, 'utf8'), 'models\n');
+  assert.ok(JSON.parse(readFileSync(join(state, 'catalog-v1.json'), 'utf8')).agyModels.some(([id]) => id === 'xh-xhigh'));
 });
 
 test('a failure is waited out for five minutes of the clock', async t => {
