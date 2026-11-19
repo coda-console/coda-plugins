@@ -23,6 +23,7 @@ import { toolCallFields, ToolCallCache } from './tools.mjs';
 import { elicitationForm, questionForm } from './questions.mjs';
 import { ClaudeWaits } from './waits.mjs';
 import { CacheUse } from './compaction.mjs';
+import { PromptUsage } from './usage.mjs';
 import { ASSISTANT_BLOCKS, MESSAGES, USER_BLOCKS, Unrecognized, messageName } from './registry.mjs';
 
 // The Claude Agent SDK this entry runs, as the handshake's `agentInfo` names it (Coda's protocol「Agent 版本」).
@@ -104,6 +105,8 @@ export class ClaudeSession {
     // what the native turn going said of compacting (its boundary, its failure, its command's output), the compaction's once
     // that turn's result names its input.
     this.cacheUse = new CacheUse({ now }); this.compacting = null; this.turnCompaction = {};
+    // What the prompts use, from the SDK's cumulative modelUsage (usage.mjs): told in the prompt's response as `usage`.
+    this.usage = new PromptUsage();
     this.unrecognized = new Unrecognized(params => this.notify('_coda/unrecognized', { sessionId: this.sessionId, ...params }));
   }
   connect(stream) {
@@ -230,7 +233,7 @@ export class ClaudeSession {
     const settings = { ...this.launch.settings, ...(this.current.effort ? { effortLevel: this.current.effort } : {}),
       ...(this.current.ultracode === true ? { ultracode: true } : {}),
       ...(entry ? serviceSettings(this.services.find(service => service.ref === entry.service), entry.model) : {}) };
-    this.serviceModel = entry ? model : null; this.cacheUse.restarted();
+    this.serviceModel = entry ? model : null; this.cacheUse.restarted(); this.usage.restarted(!!at.resume);
     // A compaction in the query moved off ends with it.
     this.compacting?.answer({ compacted: false, reason: '会话换到另一个模型，压缩没有做完' }); this.compacting = null;
     this.query = this.sdk.query({ prompt: this.input, options: { ...this.launch, ...at, settings,
@@ -383,10 +386,10 @@ export class ClaudeSession {
   settle(id, { stopReason, failure: error }) {
     const prompt = this.prompts.get(id);
     this.prompts.delete(id); this.held = null; this.ending = null; this.steering.clear();
-    if (!prompt) return;
+    if (!prompt) { this.usage.drop(); return; }
     // What ended before this turn ended was taken in by it.
     this.waits.settled();
-    if (error) prompt.reject(error); else prompt.resolve({ stopReason });
+    if (error) { this.usage.drop(); prompt.reject(error); } else prompt.resolve({ stopReason, ...this.usage.take() });
   }
   // Coda asks the session compacted (the plugin's lifecycle process decides when, compaction.mjs): it compacts as /compact
   // would, in a turn that is neither Coda's nor Claude's own (result), and answers with the context before and after. One not
@@ -474,7 +477,7 @@ export class ClaudeSession {
       first = false;
       reject(new RequestError(-32603, `Claude 会话已结束：${this.endReason}`, { _meta: { coda: { failure: { kind: 'session_ended', ...(input && { input }) } } } }));
     }
-    this.prompts.clear();
+    this.prompts.clear(); this.usage.drop();
     try { query?.close(); } catch {}
     this.dropMcpConfig();
     if (!intended) this.onEnded(error);
@@ -664,6 +667,8 @@ export class ClaudeSession {
     }
   }
   result(m) {
+    // What this turn used; the base moves with every result, whose turn it is told as (below) or not.
+    const spent = this.usage.measure(m);
     const windows = Object.values(m.modelUsage ?? {});
     const ids = takenIn(m);
     // The compaction Coda asked for (compact) is the turn that names its input. Any other is the session's own, whose cache runs
@@ -707,6 +712,7 @@ export class ClaudeSession {
     const own = this.waits.handling || this.waits.unclaimed;
     if (own) this.waits.finished(error ? { error: error.message, title: error.data?._meta?.coda?.failure?.kind === 'quota_exhausted' ? '额度不足' : undefined } : {});
     if (id) {
+      this.usage.hold(spent);
       const outcome = this.ending ?? (failed ? { failure: error } : { stopReason: cancelled ? 'cancelled' : 'end_turn' });
       if (this.ending || !this.steering.size) this.settle(id, outcome);
       else { this.held = id; if (cancelled || failed) this.dropRest(outcome); }
@@ -718,7 +724,7 @@ export class ClaudeSession {
       const unsent = failure?.kind === 'service_unavailable' ? new RequestError(error.code, error.message,
         { _meta: { coda: { failure: { ...failure, input: 'not_accepted' } } } }) : error;
       for (const prompt of this.prompts.values()) prompt.reject(unsent);
-      this.prompts.clear();
+      this.prompts.clear(); this.usage.drop();
     }
     void this.title?.refresh(!failed && !cancelled);
   }

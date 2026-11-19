@@ -62,7 +62,10 @@ test('native questions accept or cancel through Coda, and a denied command stays
   await session.configure('model', 'fixture/anthropic/fake/permissions');
   assert.equal(session.current.mode, 'default');
   for (scenario of ['accept', 'cancel', 'command']) {
-    assert.deepEqual(await session.prompt({ prompt: [{ type: 'text', text: `Run ${scenario}` }] }), { stopReason: 'end_turn' });
+    // The real SDK's turn says what it used, as this turn's own (breakdown by its model).
+    const { usage, ...ended } = await session.prompt({ prompt: [{ type: 'text', text: `Run ${scenario}` }] });
+    assert.deepEqual(ended, { stopReason: 'end_turn' });
+    assert.ok(usage.totalTokens > 0 && usage.breakdown.length > 0, JSON.stringify(usage));
     const card = cards.find(card => card.scenario === scenario);
     assert.equal(card?.method, scenario === 'command' ? 'session/request_permission' : 'elicitation/create', JSON.stringify(results));
     const result = results.find(result => result.scenario === scenario);
