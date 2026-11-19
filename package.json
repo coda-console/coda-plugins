@@ -20,7 +20,8 @@
   },
   "files": [
     "bin",
-    "check"
+    "check",
+    "templates"
   ],
   "scripts": {
     "test": "node --test 'test/**/*.test.mjs'"

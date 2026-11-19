@@ -1,14 +1,17 @@
 #!/usr/bin/env node
 // coda-plugin-check <插件目录> [--agent <id>] [--manifest] [--live] [--prompt "…"]
+// coda-plugin-check init <目录> [--template module|agent|resource]
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import pkg from '../package.json' with { type: 'json' };
 import { ACP_PROTOCOL_VERSION } from '../check/agent.mjs';
 import contract from '../check/coda/contract.json' with { type: 'json' };
 import { checkPlugin } from '../check/index.mjs';
+import { init } from '../check/init.mjs';
 import { format } from '../check/report.mjs';
 
 const USAGE = `用法：coda-plugin-check <插件目录> [--agent <id>] [--manifest] [--live] [--prompt "…"]
+      coda-plugin-check init <目录> [--template module|agent|resource]
 
   清单（总是查）  package.json 能不能被 Coda 读懂，从仓库安装的限制（带 npm 依赖要有 package-lock.json）；engines.coda 够不够用到的各项（算出该写几）；列出用到的试行面
   模块（有 main）  用 Coda 自己的 coda（测试宿主）加载 main、调 activate（10 秒内要完成）；模块登记的操作与清单的 protocolImplementations 两个方向对一遍；coda.on 只能订自己事件组里的事件
@@ -19,7 +22,19 @@ const USAGE = `用法：coda-plugin-check <插件目录> [--agent <id>] [--manif
   --agent <id>   只查这一个 Agent（面板不读）
   --manifest     只查清单，什么也不运行
   --live         查一轮：会真的发提示词，可能要登录、花额度
-  --prompt "…"   一轮用的提示词`;
+  --prompt "…"   一轮用的提示词
+
+  init           把模板（默认 module）复制到一个新目录（须不存在或为空），插件名与协议名前缀换成目录名`;
+
+if (process.argv[2] === 'init') {
+  try {
+    const { values: { template = 'module' }, positionals } = parseArgs({ args: process.argv.slice(3), allowPositionals: true, options: { template: { type: 'string' } } });
+    if (positionals.length !== 1) throw new Error(`init 要一个目录\n\n${USAGE}`);
+    const id = init(positionals[0], template);
+    console.log(`已从模板 ${template} 生成插件 ${id}：${positionals[0]}\n检查：coda-plugin-check ${positionals[0]}`);
+    process.exit(0);
+  } catch (e) { console.error(e.message); process.exit(2); }
+}
 
 let options;
 try {

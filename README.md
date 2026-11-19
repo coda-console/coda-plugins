@@ -27,6 +27,7 @@ plugins/testbed/         测试机：长插在 Mac 上的 iPhone、iPad 只经 u
 plugins/composer/        输入框模式与开发流程：监督开发（一个需求一条需求分支，主 Agent 把一块块改动合进需求分支，用户批准一次）与需求交付；Ultra 名单引用 composer.templates
 templates/agent/         最小的 Agent 插件：手写 ACP 的回声 Agent，演示会话指令、插话、Agent 活动与自主轮次
 templates/resource/      最小的资源插件：一个资源、两个读数、一个按钮
+templates/module/        带模块的插件：自己的协议（一个查询、一个做事的操作、一个事件），模块登记操作、写记录、发布并订阅事件，附测试
 bin/、check/             契约检查（仓库根的 package.json 就是它，@coda-console/plugin-check）；check/coda/ 是 Coda 同步来的规则副本，不要手改
 test/                    检查包的测试；test/plugins/ 是各插件的测试（插件目录里只放运行要用的文件）
 .coda/workflows/         本仓库自己的流程：sync-coda 等新版本发到 npm，再给 Coda 开升级依赖的 PR
@@ -421,7 +422,7 @@ Coda 根上的同一条 overrides 由 `sync-coda` 一起改（npm 只认根的�
 「设置 › 插件 › 从仓库添加…」：
 
 1. **仓库**填 `coda-console/coda-plugins`（或 `https://github.com/coda-console/coda-plugins`）；**版本**留空是默认分支，也可以填分支、标签或完整的提交号。
-2. **读取**：Coda 拉取那个提交，把仓库根与两层以内 `package.json` 带 `contributes` 的目录各列成一个插件——这个仓库里是 `plugins/` 下的七个与两个模板。Coda 内置的那几个只能从 npm 上自己的包单独更新；在 Coda 里先卸载它，才能从这里装同名的。
+2. **读取**：Coda 拉取那个提交，把仓库根与两层以内 `package.json` 带 `contributes` 的目录各列成一个插件——这个仓库里是 `plugins/` 下的七个与三个模板。Coda 内置的那几个只能从 npm 上自己的包单独更新；在 Coda 里先卸载它，才能从这里装同名的。
 3. 选一个，确认里逐条列出它会运行的命令（Agent 的 `command`、资源的命令与动作），确认就是批准：这些命令以你的账户在空间里每台机器上运行，Coda 不做隔离，只装你信任的来源。
 
 **Coda 只认提交**：安装时钉在读取到的那个提交上，每台机器各自取同一个提交。「检查更新」用记下的仓库与版本再读一次，提交变了才有更新；
@@ -431,7 +432,16 @@ Coda 根上的同一条 overrides 由 `sync-coda` 一起改（npm 只认根的�
 
 ## 写一个插件
 
-从模板开始：把 `templates/agent` 或 `templates/resource` 复制成自己的目录，改掉 `name`（插件 ID）与 Agent 的 `id`。
+从模板开始：
+
+```sh
+npx @coda-console/plugin-check init my-plugin                        # 默认 module：带模块与测试
+npx @coda-console/plugin-check init my-plugin --template agent       # 或 resource
+```
+
+目录要不存在或为空；目录名就是插件 ID（小写字母开头，小写字母、数字和 `-`，至多 40 个字符），`name` 与模块模板里协议名的前缀都换成它。
+生成后 `npx @coda-console/plugin-check my-plugin` 检查；模块模板的测试在装好依赖后用 `npm test` 跑（`devDependencies` 只有检查包，钉确切版本，模板带 `package-lock.json`）。
+Agent 模板里 Agent 的 `id` 不随目录名变，按需自己改。
 
 **清单**（`package.json`）
 

@@ -71,6 +71,12 @@ describe('this repository', () => {
     assert.match(report.items.find(item => item.rule === 'manifest.panels').message, /资源类型 uptime「运行时间」：动作 mark/);
     assert.match(report.items.find(item => item.rule === 'panel.read').message, /输出合资源格式：1 个资源，读数 2 个，按钮 1 个/);
   });
+  test('templates/module passes the manifest and the module level, its engines.coda the Level it needs', async () => {
+    const { report } = await checkPlugin(at('templates/module'));
+    assertPasses(report, ['manifest.name', 'manifest.level', 'module.activate', 'module.registered']);
+    assert.match(report.items.find(item => item.rule === 'module.registered').message, /登记了 2 个操作/);
+    assert.deepEqual(rules(report, 'warn'), []);
+  });
   // Coda's own types, and those the points of the plugins Coda ships declare (the resources plugin's `panels`), pass; another
   // no plugin declares is of no type.
   test('contributes takes what Coda takes, and refuses what nothing takes', async () => {
