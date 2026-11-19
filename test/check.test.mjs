@@ -442,10 +442,62 @@ describe('manifests Coda does not take', () => {
       'manifest.workflows', /^go：coda:action 只能是 /);
     await manifestFails({ files: { '.coda/workflows/broken.bpmn': '<definitions' } }, 'manifest.workflows', /^broken\.bpmn 不是有效的 BPMN 2\.0/);
   });
-  test('the events it publishes are said', async () => {
-    const { report } = await checkPlugin(plugin({ manifest: { contributes: { events: [{ name: 'deploy.started' }, { name: 'deploy.ended', starts: false, ends: true }] } } }), { manifestOnly: true });
+  // Events are of a protocol (the definition's `events`); a protocol of events only has no spec, status or operations.
+  const deploys = { name: 'liar/deploy@1', title: '部署', events: { 'deploy.started': { payload: { type: 'object' } }, 'deploy.ended': { payload: { type: 'object' }, starts: false, ends: true } },
+    permissions: { watch: { title: '看部署', events: ['deploy.started', 'deploy.ended'] } } };
+  test('the events its protocols define are said', async () => {
+    const { report } = await checkPlugin(plugin({ manifest: { contributes: { protocols: [deploys] } } }), { manifestOnly: true });
     assert.deepEqual(failed(report), []);
-    assert.match(report.items.find(item => item.rule === 'manifest.events').message, /deploy\.started、deploy\.ended/);
+    assert.deepEqual(report.items.filter(item => item.rule === 'manifest.events').map(item => item.message),
+      ['协议 liar/deploy@1 定义的事件 deploy.started：starts true，ends false', '协议 liar/deploy@1 定义的事件 deploy.ended：starts false，ends true']);
+  });
+  test('the event groups it uses are said', async () => {
+    const top = mkdtempSync(join(tmpdir(), 'coda-plugin-check-events-'));
+    temps.push(top);
+    const write = (id, manifest) => { mkdirSync(join(top, id)); writeFileSync(join(top, id, 'package.json'), JSON.stringify({ name: id, version: '1.0.0', ...manifest })); };
+    write('liar', { contributes: { protocols: [deploys] } });
+    write('reader', { extensionDependencies: ['liar'], uses: { 'liar/deploy@1': ['watch'] }, contributes: {} });
+    const { report } = await checkPlugin(join(top, 'reader'), { manifestOnly: true });
+    assert.deepEqual(failed(report), []);
+    assert.deepEqual(report.items.filter(item => item.rule === 'manifest.events').map(item => item.message), ['用到 liar/deploy@1 的事件组 watch：deploy.started、deploy.ended']);
+    assert.deepEqual(report.items.filter(item => item.rule === 'manifest.events-main').map(item => [item.status, item.message]),
+      [['warn', '订了事件组 liar/deploy@1 watch，但没有 main，收不到事件']]);
+  });
+  test('an event group with a main is not warned about', async () => {
+    const top = mkdtempSync(join(tmpdir(), 'coda-plugin-check-events-'));
+    temps.push(top);
+    const write = (id, manifest) => { mkdirSync(join(top, id)); writeFileSync(join(top, id, 'package.json'), JSON.stringify({ name: id, version: '1.0.0', ...manifest })); };
+    write('liar', { contributes: { protocols: [deploys] } });
+    write('reader', { extensionDependencies: ['liar'], main: 'index.mjs', uses: { 'liar/deploy@1': ['watch'] }, contributes: {} });
+    writeFileSync(join(top, 'reader', 'index.mjs'), '');
+    const { report } = await checkPlugin(join(top, 'reader'), { manifestOnly: true });
+    assert.deepEqual(failed(report), []);
+    assert.deepEqual(report.items.filter(item => item.rule === 'manifest.events-main'), []);
+  });
+  test('a group the protocol it uses does not have is refused, as Coda refuses it at install', async () => {
+    const top = mkdtempSync(join(tmpdir(), 'coda-plugin-check-events-'));
+    temps.push(top);
+    const write = (id, manifest) => { mkdirSync(join(top, id)); writeFileSync(join(top, id, 'package.json'), JSON.stringify({ name: id, version: '1.0.0', ...manifest })); };
+    write('liar', { contributes: { protocols: [deploys] } });
+    write('reader', { extensionDependencies: ['liar'], uses: { 'liar/deploy@1': ['watc'] }, contributes: {} });
+    const { report } = await checkPlugin(join(top, 'reader'), { manifestOnly: true });
+    assert.deepEqual(failed(report), ['manifest.uses']);
+    assert.match(report.items.find(item => item.rule === 'manifest.uses').message, /插件 reader 用到的协议 liar\/deploy@1 没有权限组 watc/);
+    assert.deepEqual(report.items.filter(item => item.rule === 'manifest.events'), []);
+  });
+  test('a group of a protocol that is not here is said, with no events listed', async () => {
+    const { report } = await checkPlugin(plugin({ manifest: { uses: { 'liar/deploy@1': ['watch'] } } }), { manifestOnly: true });
+    assert.deepEqual(failed(report), []);
+    assert.deepEqual(report.items.filter(item => item.rule === 'manifest.events').map(item => item.message),
+      ['用到 liar/deploy@1 的权限组 watch：协议定义不在本地，列不出事件']);
+  });
+  test('a group of a protocol Coda defines is judged against Coda\'s own definition', async () => {
+    const { report } = await checkPlugin(plugin({ manifest: { uses: { 'coda/thread@1': ['read'] } } }), { manifestOnly: true });
+    assert.deepEqual(failed(report), []);
+    assert.deepEqual(report.items.filter(item => item.rule === 'manifest.events').map(item => item.message), ['用到 coda/thread@1 的权限组 read：不含事件']);
+    const wrong = await checkPlugin(plugin({ manifest: { uses: { 'coda/thread@1': ['raed'] } } }), { manifestOnly: true });
+    assert.deepEqual(failed(wrong.report), ['manifest.uses']);
+    assert.match(wrong.report.items.find(item => item.rule === 'manifest.uses').message, /用到的协议 coda\/thread@1 没有权限组 raed/);
   });
   test('a setup action and services are taken, and the setup action is not run', async () => {
     const { report } = await checkPlugin(plugin({ manifest: { contributes: { setup: { command: 'exec false' }, services: ['space'] } } }), { manifestOnly: true });

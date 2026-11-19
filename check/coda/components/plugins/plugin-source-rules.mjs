@@ -9,6 +9,7 @@ import { normalize } from 'node:path';
 import { requireCondition as check } from '../../domain/errors.mjs';
 import { installingIncompatibility, offerPoint, offeredCommands, offerProblem, protocolDefinition, withDependencies } from './plugin-extensions.mjs';
 import { CONTRIBUTION_POINTS } from './contribution-points.mjs';
+import { definedEvents, eventsProblem } from '../protocols/protocol-events.mjs';
 
 export const COMMIT = /^[0-9a-f]{40}$/;
 const ID = /^[a-z][a-z0-9-]{0,39}$/;
@@ -266,7 +267,7 @@ export const claims = plugin => [...[...CONTRIBUTION_POINTS.values()].flatMap(po
 // Why a plugin cannot sit beside those this machine has (`catalog`: built-in and installed, by ID; `builtin`: the plugins
 // Coda ships, by ID), or null: an installed built-in one's ID from another source (builtinProblem), what a component's
 // contribution point lets only a built-in plugin bring (its `builtinOnly`, of the plugin read: why, none when it brings none
-// of it), or what only one plugin may declare (claims) another plugin declares. What it needs of the others — the plugins it depends on,
+// of it), or what only one plugin may declare (claims), a protocol or an event of one, another plugin declares. What it needs of the others — the plugins it depends on,
 // the points it plugs into or writes for (plugin-extensions.mjs offerProblem) — is checked once all of them are there.
 export function catalogProblem(plugin, catalog, builtin, installed) {
   const named = builtinProblem(plugin.id, plugin.source, builtin, installed);
@@ -285,7 +286,14 @@ export function catalogProblem(plugin, catalog, builtin, installed) {
     const owner = [...catalog.values()].find(p => p.id !== plugin.id && p.protocols?.some(other => other.name === definition.name));
     if (owner) return `协议 ${definition.name} 已由插件 ${owner.displayName} 定义`;
   }
-  return null;
+  // An event is known by its name on this machine (components/protocols/protocol-events.mjs): one protocol's alone.
+  const events = definedEvents(plugin), again = events.find((name, i) => events.indexOf(name) !== i);
+  if (again) return `事件 ${again} 在插件的两个协议里都定义了`;
+  for (const name of events) {
+    const owner = [...catalog.values()].find(p => p.id !== plugin.id && definedEvents(p).includes(name));
+    if (owner) return `事件 ${name} 已由插件 ${owner.displayName} 的协议定义`;
+  }
+  return eventsProblem(plugin);
 }
 // What installing a plugin from a repository brings along, in the order installing does it (components/plugins/plugin-extensions.mjs
 // withDependencies, as components/plugins/plugins.mjs installFrom): what this version of it needs, directly or through another,

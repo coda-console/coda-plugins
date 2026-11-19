@@ -254,7 +254,7 @@
     "id": "github",
     "displayName": "GitHub",
     "description": "登录账号，推送时自动选对账号",
-    "version": "1.11.0",
+    "version": "1.12.0",
     "category": "模型与账号",
     "icon": {
       "symbol": "arrow.triangle.pull",
@@ -295,54 +295,6 @@
       }
     ],
     "capabilities": [],
-    "events": [
-      {
-        "name": "github.pull_request_reported",
-        "starts": true
-      },
-      {
-        "name": "git.pushed",
-        "starts": true
-      },
-      {
-        "name": "pull_request.opened",
-        "starts": true
-      },
-      {
-        "name": "pull_request.synchronize",
-        "starts": true
-      },
-      {
-        "name": "pull_request.ready_for_review",
-        "starts": false
-      },
-      {
-        "name": "pull_request.converted_to_draft",
-        "starts": false
-      },
-      {
-        "name": "pull_request.edited",
-        "starts": false
-      },
-      {
-        "name": "pull_request.closed",
-        "starts": false,
-        "ends": true
-      },
-      {
-        "name": "foreign_pull_request.opened",
-        "starts": true
-      },
-      {
-        "name": "foreign_pull_request.synchronize",
-        "starts": true
-      },
-      {
-        "name": "foreign_pull_request.closed",
-        "starts": false,
-        "ends": true
-      }
-    ],
     "gitCredentials": [
       {
         "url": "https://github.com",
@@ -364,6 +316,971 @@
         "title": "GitHub 账号",
         "entry": "view/accounts.html",
         "frame": "document"
+      }
+    ],
+    "protocols": [
+      {
+        "name": "github/pull-request@1",
+        "title": "GitHub PR",
+        "description": "PR 的打开、更新、关闭等事件，由 PR 观察与会话的 gh、git 发布；只有事件，没有记录",
+        "events": {
+          "github.pull_request_reported": {
+            "description": "会话的 gh 开出或标为可评审了一个 PR",
+            "payload": {
+              "type": "object",
+              "required": [
+                "url"
+              ],
+              "properties": {
+                "url": {
+                  "type": "string"
+                },
+                "session": {
+                  "type": "string"
+                },
+                "reported_at": {
+                  "type": "number"
+                }
+              }
+            }
+          },
+          "git.pushed": {
+            "description": "会话的 git 推送了一个已报告的 PR 的分支",
+            "payload": {
+              "type": "object",
+              "required": [
+                "url",
+                "branch",
+                "after"
+              ],
+              "properties": {
+                "url": {
+                  "type": "string"
+                },
+                "session": {
+                  "type": "string"
+                },
+                "repository": {
+                  "type": "string"
+                },
+                "branch": {
+                  "type": "string"
+                },
+                "before": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "after": {
+                  "type": "string"
+                },
+                "pushed_at": {
+                  "type": "number"
+                }
+              }
+            }
+          },
+          "pull_request.opened": {
+            "description": "自己的 PR 第一次被看到",
+            "payload": {
+              "type": "object",
+              "required": [
+                "action",
+                "number",
+                "pull_request",
+                "repository"
+              ],
+              "properties": {
+                "action": {
+                  "type": "string"
+                },
+                "number": {
+                  "type": "integer"
+                },
+                "pull_request": {
+                  "type": "object",
+                  "required": [
+                    "number",
+                    "html_url",
+                    "head",
+                    "base"
+                  ],
+                  "properties": {
+                    "number": {
+                      "type": "integer"
+                    },
+                    "html_url": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "body": {
+                      "type": "string"
+                    },
+                    "head": {
+                      "type": "object",
+                      "properties": {
+                        "sha": {
+                          "type": "string"
+                        },
+                        "ref": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "base": {
+                      "type": "object",
+                      "properties": {
+                        "sha": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "ref": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      }
+                    },
+                    "draft": {
+                      "type": "boolean"
+                    },
+                    "state": {
+                      "type": "string"
+                    },
+                    "merged": {
+                      "type": "boolean"
+                    },
+                    "merge_commit_sha": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  }
+                },
+                "repository": {
+                  "type": "object",
+                  "required": [
+                    "full_name"
+                  ],
+                  "properties": {
+                    "full_name": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "pull_request.synchronize": {
+            "description": "自己的 PR 有了新版本",
+            "payload": {
+              "type": "object",
+              "required": [
+                "action",
+                "number",
+                "pull_request",
+                "repository"
+              ],
+              "properties": {
+                "action": {
+                  "type": "string"
+                },
+                "number": {
+                  "type": "integer"
+                },
+                "pull_request": {
+                  "type": "object",
+                  "required": [
+                    "number",
+                    "html_url",
+                    "head",
+                    "base"
+                  ],
+                  "properties": {
+                    "number": {
+                      "type": "integer"
+                    },
+                    "html_url": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "body": {
+                      "type": "string"
+                    },
+                    "head": {
+                      "type": "object",
+                      "properties": {
+                        "sha": {
+                          "type": "string"
+                        },
+                        "ref": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "base": {
+                      "type": "object",
+                      "properties": {
+                        "sha": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "ref": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      }
+                    },
+                    "draft": {
+                      "type": "boolean"
+                    },
+                    "state": {
+                      "type": "string"
+                    },
+                    "merged": {
+                      "type": "boolean"
+                    },
+                    "merge_commit_sha": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  }
+                },
+                "repository": {
+                  "type": "object",
+                  "required": [
+                    "full_name"
+                  ],
+                  "properties": {
+                    "full_name": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "pull_request.ready_for_review": {
+            "description": "自己的 PR 从草稿标为可评审",
+            "starts": false,
+            "payload": {
+              "type": "object",
+              "required": [
+                "action",
+                "number",
+                "pull_request",
+                "repository"
+              ],
+              "properties": {
+                "action": {
+                  "type": "string"
+                },
+                "number": {
+                  "type": "integer"
+                },
+                "pull_request": {
+                  "type": "object",
+                  "required": [
+                    "number",
+                    "html_url",
+                    "head",
+                    "base"
+                  ],
+                  "properties": {
+                    "number": {
+                      "type": "integer"
+                    },
+                    "html_url": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "body": {
+                      "type": "string"
+                    },
+                    "head": {
+                      "type": "object",
+                      "properties": {
+                        "sha": {
+                          "type": "string"
+                        },
+                        "ref": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "base": {
+                      "type": "object",
+                      "properties": {
+                        "sha": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "ref": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      }
+                    },
+                    "draft": {
+                      "type": "boolean"
+                    },
+                    "state": {
+                      "type": "string"
+                    },
+                    "merged": {
+                      "type": "boolean"
+                    },
+                    "merge_commit_sha": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  }
+                },
+                "repository": {
+                  "type": "object",
+                  "required": [
+                    "full_name"
+                  ],
+                  "properties": {
+                    "full_name": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "pull_request.converted_to_draft": {
+            "description": "自己的 PR 改回草稿",
+            "starts": false,
+            "payload": {
+              "type": "object",
+              "required": [
+                "action",
+                "number",
+                "pull_request",
+                "repository"
+              ],
+              "properties": {
+                "action": {
+                  "type": "string"
+                },
+                "number": {
+                  "type": "integer"
+                },
+                "pull_request": {
+                  "type": "object",
+                  "required": [
+                    "number",
+                    "html_url",
+                    "head",
+                    "base"
+                  ],
+                  "properties": {
+                    "number": {
+                      "type": "integer"
+                    },
+                    "html_url": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "body": {
+                      "type": "string"
+                    },
+                    "head": {
+                      "type": "object",
+                      "properties": {
+                        "sha": {
+                          "type": "string"
+                        },
+                        "ref": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "base": {
+                      "type": "object",
+                      "properties": {
+                        "sha": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "ref": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      }
+                    },
+                    "draft": {
+                      "type": "boolean"
+                    },
+                    "state": {
+                      "type": "string"
+                    },
+                    "merged": {
+                      "type": "boolean"
+                    },
+                    "merge_commit_sha": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  }
+                },
+                "repository": {
+                  "type": "object",
+                  "required": [
+                    "full_name"
+                  ],
+                  "properties": {
+                    "full_name": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "pull_request.edited": {
+            "description": "自己的 PR 换了 base",
+            "starts": false,
+            "payload": {
+              "type": "object",
+              "required": [
+                "action",
+                "number",
+                "pull_request",
+                "repository"
+              ],
+              "properties": {
+                "action": {
+                  "type": "string"
+                },
+                "number": {
+                  "type": "integer"
+                },
+                "pull_request": {
+                  "type": "object",
+                  "required": [
+                    "number",
+                    "html_url",
+                    "head",
+                    "base"
+                  ],
+                  "properties": {
+                    "number": {
+                      "type": "integer"
+                    },
+                    "html_url": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "body": {
+                      "type": "string"
+                    },
+                    "head": {
+                      "type": "object",
+                      "properties": {
+                        "sha": {
+                          "type": "string"
+                        },
+                        "ref": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "base": {
+                      "type": "object",
+                      "properties": {
+                        "sha": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "ref": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      }
+                    },
+                    "draft": {
+                      "type": "boolean"
+                    },
+                    "state": {
+                      "type": "string"
+                    },
+                    "merged": {
+                      "type": "boolean"
+                    },
+                    "merge_commit_sha": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  }
+                },
+                "repository": {
+                  "type": "object",
+                  "required": [
+                    "full_name"
+                  ],
+                  "properties": {
+                    "full_name": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "pull_request.closed": {
+            "description": "自己的 PR 合并或关闭",
+            "starts": false,
+            "ends": true,
+            "payload": {
+              "type": "object",
+              "required": [
+                "action",
+                "number",
+                "pull_request",
+                "repository"
+              ],
+              "properties": {
+                "action": {
+                  "type": "string"
+                },
+                "number": {
+                  "type": "integer"
+                },
+                "pull_request": {
+                  "type": "object",
+                  "required": [
+                    "number",
+                    "html_url",
+                    "head",
+                    "base"
+                  ],
+                  "properties": {
+                    "number": {
+                      "type": "integer"
+                    },
+                    "html_url": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "body": {
+                      "type": "string"
+                    },
+                    "head": {
+                      "type": "object",
+                      "properties": {
+                        "sha": {
+                          "type": "string"
+                        },
+                        "ref": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "base": {
+                      "type": "object",
+                      "properties": {
+                        "sha": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "ref": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      }
+                    },
+                    "draft": {
+                      "type": "boolean"
+                    },
+                    "state": {
+                      "type": "string"
+                    },
+                    "merged": {
+                      "type": "boolean"
+                    },
+                    "merge_commit_sha": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  }
+                },
+                "repository": {
+                  "type": "object",
+                  "required": [
+                    "full_name"
+                  ],
+                  "properties": {
+                    "full_name": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "foreign_pull_request.opened": {
+            "description": "别人的 PR 第一次被看到",
+            "payload": {
+              "type": "object",
+              "required": [
+                "action",
+                "number",
+                "pull_request",
+                "repository"
+              ],
+              "properties": {
+                "action": {
+                  "type": "string"
+                },
+                "number": {
+                  "type": "integer"
+                },
+                "pull_request": {
+                  "type": "object",
+                  "required": [
+                    "number",
+                    "html_url",
+                    "head",
+                    "base"
+                  ],
+                  "properties": {
+                    "number": {
+                      "type": "integer"
+                    },
+                    "html_url": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "body": {
+                      "type": "string"
+                    },
+                    "head": {
+                      "type": "object",
+                      "properties": {
+                        "sha": {
+                          "type": "string"
+                        },
+                        "ref": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "base": {
+                      "type": "object",
+                      "properties": {
+                        "sha": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "ref": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      }
+                    },
+                    "draft": {
+                      "type": "boolean"
+                    },
+                    "state": {
+                      "type": "string"
+                    },
+                    "merged": {
+                      "type": "boolean"
+                    },
+                    "merge_commit_sha": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  }
+                },
+                "repository": {
+                  "type": "object",
+                  "required": [
+                    "full_name"
+                  ],
+                  "properties": {
+                    "full_name": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "foreign_pull_request.synchronize": {
+            "description": "别人的 PR 有了新版本",
+            "payload": {
+              "type": "object",
+              "required": [
+                "action",
+                "number",
+                "pull_request",
+                "repository"
+              ],
+              "properties": {
+                "action": {
+                  "type": "string"
+                },
+                "number": {
+                  "type": "integer"
+                },
+                "pull_request": {
+                  "type": "object",
+                  "required": [
+                    "number",
+                    "html_url",
+                    "head",
+                    "base"
+                  ],
+                  "properties": {
+                    "number": {
+                      "type": "integer"
+                    },
+                    "html_url": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "body": {
+                      "type": "string"
+                    },
+                    "head": {
+                      "type": "object",
+                      "properties": {
+                        "sha": {
+                          "type": "string"
+                        },
+                        "ref": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "base": {
+                      "type": "object",
+                      "properties": {
+                        "sha": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "ref": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      }
+                    },
+                    "draft": {
+                      "type": "boolean"
+                    },
+                    "state": {
+                      "type": "string"
+                    },
+                    "merged": {
+                      "type": "boolean"
+                    },
+                    "merge_commit_sha": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  }
+                },
+                "repository": {
+                  "type": "object",
+                  "required": [
+                    "full_name"
+                  ],
+                  "properties": {
+                    "full_name": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "foreign_pull_request.closed": {
+            "description": "别人的 PR 合并或关闭",
+            "starts": false,
+            "ends": true,
+            "payload": {
+              "type": "object",
+              "required": [
+                "action",
+                "number",
+                "pull_request",
+                "repository"
+              ],
+              "properties": {
+                "action": {
+                  "type": "string"
+                },
+                "number": {
+                  "type": "integer"
+                },
+                "pull_request": {
+                  "type": "object",
+                  "required": [
+                    "number",
+                    "html_url",
+                    "head",
+                    "base"
+                  ],
+                  "properties": {
+                    "number": {
+                      "type": "integer"
+                    },
+                    "html_url": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "body": {
+                      "type": "string"
+                    },
+                    "head": {
+                      "type": "object",
+                      "properties": {
+                        "sha": {
+                          "type": "string"
+                        },
+                        "ref": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "base": {
+                      "type": "object",
+                      "properties": {
+                        "sha": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "ref": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      }
+                    },
+                    "draft": {
+                      "type": "boolean"
+                    },
+                    "state": {
+                      "type": "string"
+                    },
+                    "merged": {
+                      "type": "boolean"
+                    },
+                    "merge_commit_sha": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  }
+                },
+                "repository": {
+                  "type": "object",
+                  "required": [
+                    "full_name"
+                  ],
+                  "properties": {
+                    "full_name": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "permissions": {
+          "pull-requests": {
+            "title": "收到 PR 的打开、更新、关闭等通知",
+            "trial": true,
+            "events": [
+              "github.pull_request_reported",
+              "git.pushed",
+              "pull_request.opened",
+              "pull_request.synchronize",
+              "pull_request.ready_for_review",
+              "pull_request.converted_to_draft",
+              "pull_request.edited",
+              "pull_request.closed",
+              "foreign_pull_request.opened",
+              "foreign_pull_request.synchronize",
+              "foreign_pull_request.closed"
+            ]
+          }
+        }
       }
     ],
     "offers": {
