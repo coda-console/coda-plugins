@@ -74,14 +74,19 @@ test('the Codex resources are none without a login, and say so when the quota ca
   assert.deepEqual(await resources(empty), { resources: [] });
   assert.deepEqual(empty.asked.map(([m]) => m), ['account/read'], 'no quota asked of no one');
   assert.deepEqual(await resources(server({ 'account/read': { account: { type: 'apiKey' } } })), { resources: [{ name: '本机登录', values: [{ value: '不是 ChatGPT 登录，没有额度' }], buttons: [] }] });
-  // The row stays, so its「重新登录」 does.
+  // A login Codex says is no good is a row, so its「重新登录」 stays; any other failure to read the quota throws.
   const refused = await resources(server({ 'account/read': signedIn, 'account/rateLimits/read': new Error('401 Unauthorized') }));
-  assert.equal(refused.resources[0].error, '暂时无法获取额度：401 Unauthorized');
+  assert.equal(refused.resources[0].error, '登录已失效，请重新登录：401 Unauthorized');
+  assert.ok(refused.resources[0].identity, 'the account stays the one it was');
+  for (const message of ['503 Service Unavailable', 'Codex 没有答复', 'failed to fetch codex rate limits: connection reset'])
+    await assert.rejects(resources(server({ 'account/read': signedIn, 'account/rateLimits/read': new Error(message) })), { message });
   // A count without the credits listed offers no button: which one would be used is not known.
   const unlisted = await resources(server({ 'account/read': signedIn, 'account/rateLimits/read': { rateLimitResetCredits: { availableCount: 2, credits: null } } }));
   assert.deepEqual([unlisted.resources[0].values, unlisted.resources[0].buttons], [[{ label: '完全重置', value: '剩余 2 次' }], []]);
-  const none = await resources(server({ 'account/read': signedIn, 'account/rateLimits/read': {} }));
-  assert.deepEqual([none.resources[0].values, none.resources[0].error], [[], '暂时无法获取额度：Codex 没有给出额度窗口']);
+  // No quota at all is a reading that failed, not a row that would replace the quota shown; the resets alone are kept.
+  await assert.rejects(resources(server({ 'account/read': signedIn, 'account/rateLimits/read': {} })), { message: '暂时无法获取额度：Codex 没有给出额度窗口' });
+  const resetsOnly = await resources(server({ 'account/read': signedIn, 'account/rateLimits/read': { rateLimitResetCredits: { availableCount: 0, credits: [] } } }));
+  assert.deepEqual([resetsOnly.resources[0].values, resetsOnly.resources[0].error], [[{ label: '完全重置', value: '剩余 0 次' }], undefined]);
   // However many limits Codex has, a resource holds 8 values, the resets left last; several limits are told apart by name.
   const many = await resources(server({ 'account/read': signedIn, 'account/rateLimits/read': {
     rateLimitsByLimitId: Object.fromEntries(Array.from({ length: 5 }, (_, i) => [`l${i}`, { limitName: `L${i}`, primary: { usedPercent: 0, windowDurationMins: 300 }, secondary: { usedPercent: 0, windowDurationMins: 10080 } }])),
@@ -203,11 +208,21 @@ test('the report of the link is waited for before the login is settled, and one 
   assert.deepEqual(await coda.calls(), []);
 });
 
-test('Codex refusing the reading itself still writes the record: one row saying why, and the sign-in, entered from that record', async t => {
+test('a reading that fails for any other reason, after one that went well, fails the command with the reason: the record Coda has stays', async t => {
   const dir = await root(t), { script } = await cli(dir);
-  const answers = { 'account/read': { error: { code: -32000, message: 'auth broken' } } };
+  const env = answers => pluginEnv('codex', { ...substituted({ '@openai/codex/bin/codex.js': script }), CODEX_HOME: dir, FAKE_ANSWERS: JSON.stringify(answers) });
+  assert.equal((await resourceRecords(pluginDir('codex'), { env: env({ 'account/read': signedIn, 'account/rateLimits/read': limits }) }))[0].spec.resources[0].values.length > 0, true);
+  await assert.rejects(resourceRecords(pluginDir('codex'), { env: env({ 'account/read': signedIn, 'account/rateLimits/read': { error: { code: -32000, message: 'failed to fetch codex rate limits: 503 Service Unavailable' } } }) }),
+    { message: 'failed to fetch codex rate limits: 503 Service Unavailable' });
+  await assert.rejects(resourceRecords(pluginDir('codex'), { env: env({ 'account/read': signedIn, 'account/rateLimits/read': {} }) }), { message: '暂时无法获取额度：Codex 没有给出额度窗口' });
+  await assert.rejects(resourceRecords(pluginDir('codex'), { env: env({ 'account/read': { error: { code: -32000, message: 'something broke' } } }) }), { message: 'something broke' });
+});
+
+test('Codex saying its login cannot be read still writes the record: one row saying so, and the sign-in, entered from that record', async t => {
+  const dir = await root(t), { script } = await cli(dir);
+  const answers = { 'account/read': { error: { code: -32000, message: 'failed to load auth.json: expected value at line 1' } } };
   const [record] = await resourceRecords(pluginDir('codex'), { env: pluginEnv('codex', { ...substituted({ '@openai/codex/bin/codex.js': script }), CODEX_HOME: dir, FAKE_ANSWERS: JSON.stringify(answers) }) });
-  assert.deepEqual(record.spec.resources, [{ name: '本机登录', values: [], buttons: [], error: '暂时无法读取 Codex：auth broken' }]);
+  assert.deepEqual(record.spec.resources, [{ name: '本机登录', values: [], buttons: [], error: '登录已失效，请重新登录：failed to load auth.json: expected value at line 1' }]);
   assert.equal(record.spec.signIn.installed, true);
   const command = manifest('codex').contributes.protocolImplementations.find(one => one.kind === 'coda/resource@1').commands['sign-in'];
   const { dir: home, coda, run } = await login(t, {}, command);

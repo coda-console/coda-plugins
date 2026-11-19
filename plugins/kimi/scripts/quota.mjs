@@ -4,9 +4,9 @@ export const line = (value, max = 80) => typeof value === 'string' ? [...value.r
 const instant = value => typeof value === 'string' && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null;
 
 // Who is signed in, as the CLI's own page shows it: the nickname and membership level, never the phone number or email
-// that come with them. Null when Kimi refuses the login (revoked though the file is still there).
+// that come with them. Null when Kimi refuses the login.
 export function account(data) {
-  if (data?.kind === 'error' && data.status === 401) return null;
+  if (refused(data)) return null;
   if (data?.kind !== 'ok' || !data.userInfo) throw new Error('Kimi 没有说明是谁登录的');
   const id = typeof data.userInfo.userId === 'string' || typeof data.userInfo.userId === 'number' ? line(String(data.userInfo.userId), 120) : '';
   return { name: line(data.userInfo.nickname), plan: line(data.userInfo.userLevelName), ...(id ? { id } : {}) };
@@ -31,10 +31,13 @@ export function windows(data) {
   }
   return meters;
 }
-// The login as a resource: its nickname, its quota, or why it has none.
+// The login as a resource: its nickname and its quota. Throws, saying why, for a quota that was not had or is not there.
 export function resource(who, usage) {
-  const values = usage.error ? [] : windows(usage.data) ?? [];
-  const error = usage.error ? `暂时无法获取额度：${usage.error}` : values.length ? null : '暂时无法获取额度：Kimi 没有给出额度';
+  if (usage.error) throw new Error(`暂时无法获取额度：${usage.error}`);
+  const values = windows(usage.data) ?? [];
+  if (!values.length) throw new Error('暂时无法获取额度：Kimi 没有给出额度');
   // The account, compared across machines by Coda's group view: its user ID, which the row does not show.
-  return { name: who.name || 'Kimi', ...(who.id ? { identity: `kimi:${who.id}` } : {}), values, buttons: [], ...(error ? { error: line(error) } : {}) };
+  return { name: who.name || 'Kimi', ...(who.id ? { identity: `kimi:${who.id}` } : {}), values, buttons: [] };
 }
+// Whether Kimi refuses the login (revoked though the file is still there).
+export const refused = data => data?.kind === 'error' && data.status === 401;

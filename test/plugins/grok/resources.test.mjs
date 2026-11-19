@@ -36,13 +36,15 @@ test('Grok credits read as its own /usage shows them: values of what is left', (
   assert.deepEqual(account(subscription, { firstName: 'Lea' }), { name: 'Lea', plan: 'SuperGrok' });
   assert.equal(account({ authenticated: false }, {}), null);
   assert.throws(() => account({}, {}), /没有说明登录状态/, 'a passing fault is not a sign-out');
-  const read = resources([subscription, { firstName: null }, {}]);
-  assert.deepEqual(read.resources, [{ name: 'Grok', values: [], buttons: [], error: '暂时无法获取额度：Grok 没有给出额度' }]);
-  assert.equal(resourceRecordsProblem([{ key: 'account', spec: { type: 'account', title: 'Grok', ...read } }]), null, 'a reading the host takes');
+  // Credits it does not give are a reading that failed, not a row.
+  assert.throws(() => resources([subscription, { firstName: null }, {}]), /暂时无法获取额度：Grok 没有给出额度/);
+  const lapsed = resources([{ authenticated: false }, {}, {}]);
+  assert.deepEqual(lapsed.resources, [{ name: 'Grok', values: [], buttons: [], error: '登录已失效，请重新登录' }]);
+  assert.equal(resourceRecordsProblem([{ key: 'account', spec: { type: 'account', title: 'Grok', ...lapsed } }]), null, 'a reading the host takes');
 });
 
 // A machine's home with a Grok CLI where its installer puts it, speaking ACP as the real one does. FAKE_GROK: `out` says no
-// one is signed in, `silent` never answers, `late-name` fills in the name only as the subscription check answers.
+// one is signed in (and fails whatever is asked after that), `broken` fails the billing, `silent` never answers, `late-name` fills in the name only as the subscription check answers.
 async function machine(t, { signedIn = true } = {}) {
   const home = await mkdtemp(join(tmpdir(), 'coda-grok-'));
   t.after(() => rm(home, { recursive: true, force: true }));
@@ -57,8 +59,10 @@ process.stdin.on('data', chunk => {
   for (let i; (i = buffer.indexOf('\\n')) >= 0;) {
     const message = JSON.parse(buffer.slice(0, i)); buffer = buffer.slice(i + 1);
     const answer = result => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }) + '\\n');
-    if (message.method === 'initialize') answer({ protocolVersion: 1 });
+    if (mode === 'out' && /auth\\/info|billing/.test(message.method)) process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, error: { message: 'asked after the sign-out was said' } }) + '\\n');
+    else if (message.method === 'initialize') answer({ protocolVersion: 1 });
     else if (message.method === '_x.ai/auth/info') answer({ email: 'me@example.com', firstName: named ? 'Lea' : null, lastName: null });
+    else if (message.method === '_x.ai/billing' && mode === 'broken') process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, error: { message: '503 Service Unavailable' } }) + '\\n');
     else if (message.method === '_x.ai/billing') answer({ config: { creditUsagePercent: 25, currentPeriod: { type: 'USAGE_PERIOD_TYPE_WEEKLY', end: '2026-10-06T11:48:35Z' } } });
     else if (mode === 'out') answer({ authenticated: false });
     else setTimeout(() => { named = true; answer({ authenticated: true, meta: { email: 'me@example.com', subscription_tier: 'SuperGrok' } }); }, mode === 'late-name' ? 150 : 0);
@@ -76,7 +80,11 @@ test('who is signed in and the credits are asked of one Grok, in order, and a CL
     values: [{ label: '7 天', value: '剩余 75%', fraction: 0.75, time: '2026-10-06T11:48:35.000Z' }], buttons: [] });
   // The name is asked for once the subscription check, which may fill it in, has answered.
   assert.equal(resources(await ask('late-name')).resources[0].name, 'Lea');
-  assert.deepEqual(resources(await ask('out')), { resources: [] });
+  // A subscription check that says no one is signed in ends the asking: what is asked after it would fail here.
+  const out = await ask('out', { stop: ([subscription]) => subscription?.authenticated === false });
+  assert.deepEqual(out, [{ authenticated: false }, undefined, undefined]);
+  assert.deepEqual(resources(out).resources.map(r => r.error), ['登录已失效，请重新登录']);
+  await assert.rejects(ask('out'), /asked after the sign-out was said/);
   await assert.rejects(ask('silent', { timeoutMs: 300 }), /没有回答/);
   await assert.rejects(grokAsk(['_x.ai/billing'], { binary: null }), /找不到 Grok CLI/);
 });
@@ -93,12 +101,12 @@ test('the type shows nothing without a login file, and the login with one; its s
   }
 });
 
-test('a login that cannot be read or a CLI that is not there is one row saying so, and the sign-in is still in the record', async t => {
+test('a login that cannot be read or a login without its CLI is one row saying so, and the sign-in is still in the record', async t => {
   // No CLI: the sign-in is the way to get it.
   const gone = await machine(t);
   await rm(gone.binary);
   const [none] = await records(gone.home, { PATH: await barePath(join(gone.home, 'bare')) });
-  assert.deepEqual(none.spec.resources, [{ name: 'Grok', values: [], buttons: [], error: '暂时无法读取 Grok：这台机器上找不到 Grok CLI' }]);
+  assert.deepEqual(none.spec.resources, [{ name: 'Grok', values: [], buttons: [], error: '这台机器上找不到 Grok CLI，用「···」里的「重新登录」安装' }]);
   assert.equal(none.spec.signIn.installed, false);
   // A login file that cannot even be looked at.
   const odd = await machine(t, { signedIn: false });
@@ -106,4 +114,18 @@ test('a login that cannot be read or a CLI that is not there is one row saying s
   const [unreadable] = await records(odd.home, { GROK_HOME: join(odd.home, 'file') });
   assert.deepEqual(unreadable.spec.resources, [{ name: 'Grok', values: [], buttons: [], error: '读不了 Grok 的登录：ENOTDIR' }]);
   assert.equal(unreadable.spec.signIn.installed, true);
+  // A login the CLI says is no good: the row, and the sign-in to renew it.
+  const lapsed = await machine(t);
+  const [out] = await records(lapsed.home, { FAKE_GROK: 'out' });
+  assert.deepEqual(out.spec.resources, [{ name: 'Grok', values: [], buttons: [], error: '登录已失效，请重新登录' }]);
+  assert.equal(out.spec.signIn.installed, true);
+});
+
+test('a CLI that fails to answer after a reading that went well fails the command with the reason, keeping the record Coda has', async t => {
+  const m = await machine(t);
+  assert.equal((await records(m.home))[0].spec.resources[0].name, 'Lea');
+  await assert.rejects(records(m.home, { FAKE_GROK: 'broken' }), { message: '503 Service Unavailable' });
+  // One that ends before it answers.
+  await writeFile(m.binary, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  await assert.rejects(records(m.home), { message: 'Grok 已退出' });
 });

@@ -1,6 +1,7 @@
 // Questions to a Grok of its own over ACP, as its own clients ask them: the results of `_x.ai/...` extension methods, in
 // order. One process answers them all, as starting it takes seconds; each is asked once the one before is answered, as an
-// answer may change what the next one reads (a subscription check renews the login and fills in its name).
+// answer may change what the next one reads (a subscription check renews the login and fills in its name). `stop(results)`, given
+// the answers so far (those not asked yet undefined), ends the asking at once when it says so, the rest never asked.
 import { spawn } from 'node:child_process';
 import { accessSync, constants, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -16,7 +17,7 @@ export function grokBinary(env = process.env) {
   return (env.PATH ?? '').split(':').filter(Boolean).map(dir => join(dir, 'grok')).find(runnable) ?? null;
 }
 
-export function grokAsk(methods, { binary = grokBinary(), env = process.env, timeoutMs = 20000 } = {}) {
+export function grokAsk(methods, { binary = grokBinary(), env = process.env, timeoutMs = 20000, stop } = {}) {
   if (!binary) return Promise.reject(new Error('这台机器上找不到 Grok CLI'));
   return new Promise((resolve, reject) => {
     const child = spawn(binary, ['agent', '--no-leader', 'stdio'], { cwd: tmpdir(), env, stdio: ['pipe', 'pipe', 'ignore'] });
@@ -39,7 +40,8 @@ export function grokAsk(methods, { binary = grokBinary(), env = process.env, tim
         else if (message.id === results.size + 2 && message.id < methods.length + 2) {
           if (message.error) return finish(new Error(String(message.error.message ?? 'Grok 返回错误')));
           results.set(message.id, message.result);
-          if (results.size === methods.length) finish(null, methods.map((_, index) => results.get(index + 2)));
+          const answers = methods.map((_, index) => results.get(index + 2));
+          if (results.size === methods.length || stop?.(answers)) finish(null, answers);
           else send(results.size + 2, methods[results.size]);
         }
       }

@@ -57,12 +57,17 @@ export function resource(account, result, workspace) {
     if (first && resets.count > 0) buttons.push({ label: '使用完全重置', action: 'reset', args: { creditId: first.id },
       confirm: `使用 ${line(name, 60)} 的完全重置？\n用最早到期的那一次（${first.expiresAt == null ? '不会过期' : `${mark(first.expiresAt)} 到期`}）。成功后消耗 1 次，无法撤销。` });
   }
-  return { name, ...identity(account, workspace), values: values.slice(0, VALUES),
-    ...(values.length ? {} : { error: '暂时无法获取额度：Codex 没有给出额度窗口' }), buttons };
+  if (!values.length) throw new Error('暂时无法获取额度：Codex 没有给出额度窗口');
+  return { name, ...identity(account, workspace), values: values.slice(0, VALUES), buttons };
 }
 
-// The resources: none without a login (the type is then offered under「添加资源」), the login for one. Quota Codex cannot
-// read is said on its row, which keeps「重新登录」 at hand; one not signed in with ChatGPT has no windows to read.
+// Whether what Codex said is that its login is gone, expired or revoked, or its file unreadable: what signing in again cures.
+// Any other failure of a reading (the network, a timeout, a server's error, Codex itself) is not, and is left to fail the command.
+export const needsSignIn = error => /authentication required|not (logged|signed) in|unauthori[sz]ed|\b401\b|token[^.]*\b(expired|invalid|revoked)\b|auth\.json|failed to (load|read) auth/i.test(error?.message ?? '');
+
+// The resources: none without a login (the type is then offered under「添加资源」), the login for one. A login Codex says is no
+// longer good is said on its row, which keeps「重新登录」 at hand; one not signed in with ChatGPT has no windows to read. A quota
+// that cannot be read for any other reason throws.
 export async function resources(server) {
   const { account, workspaceRouting } = await server.request('account/read', { refreshToken: false });
   const workspace = workspaceRouting?.chatgptAccountId;
@@ -70,13 +75,16 @@ export async function resources(server) {
   if (account.type !== 'chatgpt') return { resources: [{ name: '本机登录', values: [{ value: '不是 ChatGPT 登录，没有额度' }], buttons: [] }] };
   let result;
   try { result = await server.request('account/rateLimits/read'); }
-  catch (error) { return { resources: [{ name: line(account.email) || '本机登录', ...identity(account, workspace), values: [], buttons: [], error: line(`暂时无法获取额度：${error.message}`) }] }; }
+  catch (error) {
+    if (!needsSignIn(error)) throw error;
+    return { resources: [{ name: line(account.email) || '本机登录', ...identity(account, workspace), values: [], buttons: [], error: line(`登录已失效，请重新登录：${error.message}`) }] };
+  }
   return { resources: [resource(account, result, workspace)] };
 }
 
 // What a full reset came to, as one line on the row when it did not reset anything.
 export const outcomes = { nothingToReset: '当前额度无需重置', alreadyRedeemed: '这次重置已被使用', noCredit: '这次重置已不可用' };
 
-// What the resources are when Codex itself cannot be read: the one row says why. The type's record is still written, so its
-// sign-in stays offered (re-signing in may be the way out).
-export const unreadable = error => ({ resources: [{ name: '本机登录', values: [], buttons: [], error: line(`暂时无法读取 Codex：${error.message}`) }] });
+// What the resources are when Codex says its login is no good (`needsSignIn`): the one row says so. The type's record is still
+// written, so its sign-in stays offered.
+export const unreadable = error => ({ resources: [{ name: '本机登录', values: [], buttons: [], error: line(`登录已失效，请重新登录：${error.message}`) }] });

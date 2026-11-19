@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { resourceRecords, resourceRecordsProblem } from '../../../check/resources.mjs';
 import { identity, list, tokens, selection, choose, remove, saveLogin } from '../../../plugins/codex-accounts/scripts/manager.mjs';
-import { resources } from '../../../plugins/codex-accounts/scripts/quota.mjs';
+import { SignInAgain, resources } from '../../../plugins/codex-accounts/scripts/quota.mjs';
 import { AccountSource } from '../../../plugins/codex/agent/account-source.mjs';
 import { endWait, fakeCoda, manifest, operation, pluginEnv, probed } from '../command.mjs';
 import { pluginDir } from '../plugin.mjs';
@@ -168,11 +168,11 @@ test('a stale credential lock recovers and unsafe auth files fail without exposi
   await assert.rejects(remove('../native', f.at), /没有指明/);
 });
 
-test('the resources are only the managed accounts, with a selection and removal action; failed quota stays on its own row', async () => {
+test('the resources are only the managed accounts, with a selection and removal action; a login no good stays on its own row', async () => {
   const accounts = [{ alias: 'work', identity: 'w', plan: 'pro' }, { alias: 'home', identity: 'h', plan: 'plus' }];
   const early = Date.UTC(2026, 9, 20, 1) / 1000;
   const read = async a => {
-    if (a.identity === 'h') throw Error('请重新登录');
+    if (a.identity === 'h') throw new SignInAgain('请重新登录');
     return { rateLimits: { primary: { usedPercent: 10, windowDurationMins: 300 } },
       rateLimitResetCredits: { availableCount: 1, credits: [{ id: 'c1', status: 'available', resetType: 'codexRateLimits', expiresAt: early }] } };
   };
@@ -192,7 +192,17 @@ test('the resources are only the managed accounts, with a selection and removal 
     { label: '完全重置', value: '剩余 1 次', time: new Date(early * 1000).toISOString() }]);
   assert.deepEqual(rows.map(r => r.buttons.map(a => a.label)), [['使用完全重置', '移除账号'], ['切换使用', '移除账号']]);
   assert.deepEqual(rows[0].buttons[0].args, { account: 'w', creditId: 'c1' });
-  assert.equal(rows[1].error, '暂时无法获取额度：请重新登录');
+  assert.equal(rows[1].error, '请重新登录');
+  // Codex saying the login is no good is told so; any other failure of a reading fails them all, once every reading is ended.
+  const refused = await resources(accounts, 'w', async a => { throw new Error('401 Unauthorized'); });
+  assert.deepEqual(refused.resources.map(r => r.error), ['登录已失效，请重新登录：401 Unauthorized', '登录已失效，请重新登录：401 Unauthorized']);
+  const ended = [];
+  await assert.rejects(resources(accounts, 'w', async a => { if (a.identity === 'w') throw new Error('503 Service Unavailable'); await delay(20); ended.push(a.identity); return {}; }, { at: 2 }), { message: '503 Service Unavailable' });
+  assert.deepEqual(ended, ['h'], 'the other reading was ended');
+  // A quota with nothing in it fails the reading, not a row that would replace the one shown; the resets alone are kept.
+  await assert.rejects(resources(accounts, 'w', async () => ({})), { message: '暂时无法获取额度：Codex 没有给出work的额度窗口' });
+  const resetsOnly = await resources(accounts, null, async () => ({ rateLimitResetCredits: { availableCount: 0, credits: [] } }));
+  assert.deepEqual(resetsOnly.resources.map(r => [r.values, r.error]), [[[{ label: '完全重置', value: '剩余 0 次' }], undefined], [[{ label: '完全重置', value: '剩余 0 次' }], undefined]]);
   const many = Array.from({ length: 60 }, (_, i) => ({ alias: `account-${i}`, identity: `i${i}`, plan: 'pro' }));
   const big = await resources(many, null, async () => ({ rateLimitResetCredits: { availableCount: 30, credits: Array.from({ length: 30 }, (_, i) =>
     ({ id: `c${i}`, status: 'available', resetType: 'codexRateLimits', expiresAt: early })) } }));
@@ -267,11 +277,30 @@ test('an unreadable old login does not prevent signing in directly through the p
   await assert.rejects(list(f.at), /无法导入已有/);
   // The record is still written, with the reason on a row and the sign-in offered: the way out is entered from it.
   const { spec } = await f.record();
-  assert.deepEqual(spec.resources.map(r => [r.name, r.values, r.buttons, r.error.startsWith('暂时无法读取账号：')]), [['Codex 账号', [], [], true]]);
+  assert.deepEqual(spec.resources.map(r => [r.name, r.values, r.buttons, r.error.startsWith('无法导入已有 Codex 登录')]), [['Codex 账号', [], [], true]]);
   assert.deepEqual([spec.signIn.installed, spec.signIn.installable], [true, false]);
   const login = await f.login('first'); assert.equal(login.code, 0, login.stderr);
   assert.equal((await list(f.at))[0].alias, 'first@example.com');
   assert.equal(await readFile(join(f.native, 'auth.json'), 'utf8'), '{broken');
+});
+
+test('what only signing in again cures is on the account\'s row, with the sign-in in the record; any other failure after a reading that went well fails the command, with the reason', async t => {
+  const f = await setup(t); assert.equal((await f.login('first')).code, 0);
+  assert.equal((await f.record()).spec.resources[0].error, undefined);
+  // Codex saying the login is no good, and the account's own credentials gone bad.
+  const refused = (await f.record({ FAKE_RATE_ERROR: '401 Unauthorized' })).spec;
+  assert.equal(refused.resources[0].error, '登录已失效，请重新登录：401 Unauthorized');
+  assert.equal(refused.signIn.installed, true);
+  const credentials = join(f.home('first'), 'auth.json'), good = await readFile(credentials, 'utf8');
+  await writeFile(credentials, '{broken');
+  const unreadable = (await f.record()).spec;
+  assert.match(unreadable.resources[0].error, /账号登录已失效，请在「Codex 多账号」重新登录该账号/);
+  assert.equal(unreadable.signIn.installed, true);
+  await writeFile(credentials, good);
+  // Anything else: the network, a server's error, a store that cannot be read.
+  await assert.rejects(f.record({ FAKE_RATE_ERROR: '503 Service Unavailable' }), { message: '503 Service Unavailable' });
+  await writeFile(join(f.state, 'accounts.json'), '{broken');
+  await assert.rejects(f.record(), { message: '读不了插件保存的账号列表' });
 });
 
 test('the device login of the codex plugin it depends on settles this one too: no link in time ends it with what Codex said, nothing kept', async t => {

@@ -36,6 +36,7 @@ for await (const line of createInterface({ input: process.stdin })) {
     const current = read(), account = current?.tokens.account_id;
     if (account) writeFileSync(authFile, JSON.stringify(auth(process.env.FAKE_REFRESH_ACCOUNT ?? account, 'renewed')), { mode: 0o600 });
   }
+  if (m.method === 'account/rateLimits/read' && process.env.FAKE_RATE_ERROR) { process.stdout.write(JSON.stringify({ id: m.id, error: { message: process.env.FAKE_RATE_ERROR } }) + '\n'); continue; }
   const current = external ?? fromToken(read()?.tokens.access_token), accountId = current?.chatgpt_account_id;
   const result = m.method === 'account/read' ? { account: accountId ? { type: 'chatgpt', email: `${accountId}@example.com`, planType: 'pro' } : null,
     workspaceRouting: { chatgptAccountId: process.env.FAKE_REFUSE ? 'someone-else' : accountId } }

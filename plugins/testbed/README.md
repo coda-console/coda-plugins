@@ -1,6 +1,6 @@
 # 测试机
 
-3.1.0：资源「测试机」改由记录命令 `scripts/resource.mjs` 写 `coda/resource@1` 记录（类型 `devices`），不再是清单里的 `contributes.resources`。设备登记读不了时，记录照写：一行写原因。需要先带 `coda/resource@1` 的 Coda（API Level 6）。只给预览渠道。
+3.1.0：资源「测试机」改由记录命令 `scripts/resource.mjs` 写 `coda/resource@1` 记录（类型 `devices`），不再是清单里的 `contributes.resources`。设备登记读不了时，命令以非零退出，原因写在标准错误的最后一行：Coda 保留上一份记录，资源页显示「更新失败：原因」。需要先带 `coda/resource@1` 的 Coda（API Level 6）。只给预览渠道。
 
 3.0.1：点名借设备（`device`）时，按 `coda resources group-owner` 的三种结果处理：只有「没有这台」（没有这个名字的记录，报「没有这台测试机」）和「本机够不着」（`reachable: false`，报设备在哪台机器（`location`）上、到那台上借，并附够得着它的机器 ID（`reachedBy`），安卓说「没有本机可达的 adb 链路」，iOS 说「本机够不着」）在排队前就结束；够得着的照常排队借。按池子借（`select`）不变。需要先带这种组主人回答的 Coda。只给预览渠道。
 
@@ -67,7 +67,7 @@ iPhone、iPad 测试机由这个插件登记归属；安卓由保管方（androi
 设置在整个空间只有一份，所以各台 Mac 的设备写在同一张表里，设备名在空间里不重复。`testbed.entities` 已删：安卓设备名由保管方的设置 `android.name` 决定，不在这里填。
 
 **资源**「测试机」（类型 `devices`）：这台 Mac 的 devices.json 登记的每台 iOS 设备一行（显示名 · 设备名），读数写谁在用（`use-testbed` 的运行与会话、会话借用的命令）、
-用了多久、谁在排队，至多 8 个；没人用写「空闲」。读的是设备登记和 `CODA_GROUPS_STATE` 里的 `device:<设备名>`；本机没有登记设备就不显示，登记读不了时记录里写一行说明原因。安卓设备由保管方的资源显示，testbed 不重复列出，也不为资源读数查询远端的组。
+用了多久、谁在排队，至多 8 个；没人用写「空闲」。读的是设备登记和 `CODA_GROUPS_STATE` 里的 `device:<设备名>`；本机没有登记设备就不显示，登记读不了时命令失败，Coda 保留上一份记录。安卓设备由保管方的资源显示，testbed 不重复列出，也不为资源读数查询远端的组。
 
 - 装上后对这台机器的所有项目生效（[安装、停用与卸载](https://github.com/coda-console/coda/blob/main/docs/plugins.md#安装停用与卸载)），可按 Tag 限定或在项目里停用。
 

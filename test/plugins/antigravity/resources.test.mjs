@@ -114,30 +114,28 @@ test('the usage report is the CLI\'s successful one, and anything else is why th
   assert.equal(given, 1234);
 });
 
-test('a quota that cannot be had is said, with the CLI\'s version still shown', async t => {
+test('a quota that cannot be had fails the command with the reason, also after a reading that went well: the record Coda has stays', async t => {
   for (const [what, options] of [
     ['an exit that failed', { usageExit: 1 }],
     ['a report that is not a success', { usage: JSON.stringify({ ...report, status: 'ERROR' }) }],
     ['a report with no bucket', { usage: JSON.stringify({ ...report, command: { name: 'usage', data: { groups: [] } } }) }],
     ['output that is not a report', { usage: 'hello' }]]) {
-    const [resource] = (await record((await machine(t, options)).env)).spec.resources;
-    assert.match(resource.error, /^暂时无法获取额度：/, what);
-    assert.deepEqual(resource.values, [{ label: 'CLI 版本', value: '1.5.9' }], what);
+    const m = await machine(t);
+    assert.equal((await record(m.env)).spec.resources[0].values.length, 5);
+    await writeFile(join(m.home, 'usage.json'), options.usage ?? JSON.stringify(report));
+    if (options.usageExit) await writeFile(join(m.home, '.local/bin/agy'), `#!/bin/sh\nif [ "$1" = --version ]; then echo 1.5.9; exit 0; fi\nexit ${options.usageExit}\n`, { mode: 0o755 });
+    await assert.rejects(record(m.env), { message: /^暂时无法获取额度：/ }, what);
   }
 });
 
-test('a long reason is cut to a line the reading takes, and the version is still shown', async t => {
+test('the reason of a CLI that fails is its own first line, whole', async t => {
   const m = await machine(t, { usageExit: 1 });
   await writeFile(join(m.home, '.local/bin/agy'), `#!/bin/sh
 if [ "$1" = --version ]; then echo 1.5.9; exit 0; fi
 echo "Error: failed to start the language server: could not find a usable network interface for the session" >&2
 exit 1
 `, { mode: 0o755 });
-  const [resource] = (await record(m.env)).spec.resources;
-  assert.equal([...resource.error].length, 80);
-  // The reason is cut, not the words before it, and the CLI's own words are the reason, not its exit code.
-  assert.match(resource.error, /^暂时无法获取额度：Error: failed to start the language server: could not find a usable net$/);
-  assert.deepEqual(resource.values, [{ label: 'CLI 版本', value: '1.5.9' }]);
+  await assert.rejects(record(m.env), { message: '暂时无法获取额度：Error: failed to start the language server: could not find a usable network interface for the session' });
 });
 
 // The reading has 25 seconds of the 30 Coda gives: the version and the quota are asked what is left of them less a second to
@@ -182,7 +180,7 @@ test('a report of more groups than a reading lists values is cut to 7, the versi
   assert.equal(resource.error, undefined);
 });
 
-test('a login with a CLI that is old, gone or mute is shown with what to do, and the sign-in is still in the record, offering the install', async t => {
+test('a login with a CLI that is old or gone is shown with what to do, and the sign-in is still in the record, offering the install', async t => {
   const old = await record((await machine(t, { version: '1.5.8' })).env);
   assert.match(old.spec.resources[0].error, /低于所需的 1\.5\.9/);
   assert.deepEqual(old.spec.resources[0].values.map(v => v.label), ['CLI 版本'], 'no quota is asked of a CLI too old');
@@ -190,10 +188,13 @@ test('a login with a CLI that is old, gone or mute is shown with what to do, and
   const gone = await record((await machine(t, { version: '' })).env);
   assert.deepEqual(gone.spec.resources, [{ name: 'Antigravity', values: [], buttons: [], error: '这台机器上找不到 Antigravity CLI，请在运行机重新安装' }]);
   assert.equal(gone.spec.signIn.installed, false);
-  // A CLI that cannot say its version is a row, not a failed reading: the record keeps the sign-in.
-  const mute = await record((await machine(t, { version: 'oops' })).env);
-  assert.match(mute.spec.resources[0].error, /^读不出 Antigravity CLI 的版本/);
-  assert.equal(mute.spec.signIn.installed, false);
+});
+
+test('a CLI that cannot say its version fails the command with the reason, also after a reading that went well', async t => {
+  const m = await machine(t);
+  assert.equal((await record(m.env)).spec.resources[0].values.at(-1).value, '1.5.9');
+  await writeFile(join(m.home, '.local/bin/agy'), '#!/bin/sh\necho oops\n', { mode: 0o755 });
+  await assert.rejects(record(m.env), { message: /^读不出 Antigravity CLI 的版本（.*\.local\/bin\/agy）$/ });
 });
 
 test('the sign-in counts the CLI as installed only when it is new enough', async t => {
@@ -204,11 +205,9 @@ test('the sign-in counts the CLI as installed only when it is new enough', async
     assert.equal((await record((await machine(t, { version, login: false })).env)).spec.signIn.installed, expected, `${version} without a login`);
 });
 
-test('a keychain that cannot be asked is one row saying so, not a failed reading, and the sign-in is still in the record', async t => {
+test('a keychain that cannot be asked fails the command with the reason, also after a reading that went well: it is not a sign-out', async t => {
   const m = await machine(t);
+  assert.equal((await record(m.env)).spec.resources[0].values.length, 5);
   await writeFile(join(m.home, 'keychain', keychain), `#!/bin/sh\necho 'boom: no keychain' >&2\nexit ${process.platform === 'darwin' ? 36 : 2}\n`, { mode: 0o755 });
-  const { spec } = await record(m.env);
-  assert.deepEqual(spec.resources.map(r => [r.name, r.values, r.buttons]), [['Antigravity', [], []]]);
-  assert.match(spec.resources[0].error, /^读不了(钥匙串| Secret Service)/);
-  assert.equal(spec.signIn.installed, true);
+  await assert.rejects(record(m.env), { message: /^读不了(钥匙串|Secret Service)：/ });
 });

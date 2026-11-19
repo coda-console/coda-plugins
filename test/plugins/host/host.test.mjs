@@ -100,27 +100,25 @@ test('the resource shows the free slots, who holds the group host and who waits;
   assert.deepEqual([many.values.length, many.values.at(-1).label], [8, 'job 5']);
 });
 
-test('a capacity that cannot be had is said on the resource, which still shows who holds the group and who waits', async t => {
+test('a capacity that cannot be had fails the command with the reason, also after one that was had: the record Coda has stays', async t => {
   const now = Date.UTC(2026, 9, 13, 12);
   const one = (runId, title, since) => ({ runId, workflow: 'w', title, status: null, threadId: 't', thread: null, since, borrowed: false, leaving: false });
   const tools = temporary(t), node = await barePath(tools, tools);
   const read = async (groups, body) => {
-    writeFileSync(join(tools, 'coda'), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+    if (body) writeFileSync(join(tools, 'coda'), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
     const [{ spec }] = await resourceRecords(dir, { env: env({ CODA_GROUPS_STATE: JSON.stringify({ now, groups }), PATH: node, HOME: tools }) });
     return spec.resources[0];
   };
   const waiting = { name: 'host', occupied: 1, holders: [one('r1', 'testflight', now - 60_000)], queue: [] };
+  assert.deepEqual((await read([waiting], 'echo \'{"capacity":2}\'')).values[0], { label: '空闲', value: '1 / 2', fraction: 0.5 });
   // The backend does not answer.
-  const down = await read([waiting], 'echo "没有后端在应答" >&2\nexit 1');
-  assert.deepEqual(down, { name: '构建名额', values: [{ label: 'testflight', value: '占用 1 分钟' }], buttons: [], error: '读不了名额数：没有后端在应答' });
-  // An answer that is not a record, with nothing holding the group: a resource must have a name or a value, and has the name.
-  const garbled = await read([], 'echo not-json');
-  assert.deepEqual([garbled.name, garbled.values, garbled.error.startsWith('读不了名额数：')], ['构建名额', [], true]);
+  await assert.rejects(read([waiting], 'echo "没有后端在应答" >&2\nexit 1'), { message: '读不了名额数：没有后端在应答' });
+  // An answer that is not a record.
+  await assert.rejects(read([], 'echo not-json'), { message: /^读不了名额数：/ });
+  await assert.rejects(read([], 'exit 127'), { message: /^读不了名额数：/ });
   // No `coda` at all.
-  assert.match((await read([], 'exit 127')).error, /^读不了名额数：/);
   rmSync(join(tools, 'coda'));
-  const absent = await resourceRecords(dir, { env: env({ CODA_GROUPS_STATE: JSON.stringify({ now, groups: [] }), PATH: node, HOME: tools }) });
-  assert.match(absent[0].spec.resources[0].error, /^读不了名额数：/);
+  await assert.rejects(read([]), { message: /^读不了名额数：/ });
 });
 
 test('host-sim in a session points to run-held; outside Coda, or in a step holding nothing, there is no slot to take', async () => {

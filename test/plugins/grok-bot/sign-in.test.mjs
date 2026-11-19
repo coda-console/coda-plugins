@@ -122,14 +122,19 @@ test('the record has no resource without a login, and a login that cannot be rea
   assert.equal(refused.signIn.installed, true);
 });
 
-test('a reading that cannot be had within its time is still a record, with the reason and the sign-in: the account, the Bots and a renewal share the time', async t => {
+test('a reading that cannot be had within its time fails the command with the reason: the account, the Bots and a renewal share the time', async t => {
   const { dir, env } = await machine(t);
   await writeFile(join(dir, 'native-auth.json'), JSON.stringify({ accessToken: 'old', refreshToken: 'refresh' }));
-  for (const slow of ['all', 'renewal']) {
-    const [{ spec }] = await resourceRecords(pluginDir('grok-bot'), { env: env({ TEST_SLOW: slow }) });
-    assert.deepEqual(spec.resources, [{ name: 'Grok Bot', values: [], buttons: [], error: '读取超时' }], slow);
-    assert.deepEqual(spec.signIn, { installed: true, installable: false, note: spec.signIn.note });
-  }
+  for (const slow of ['all', 'renewal']) await assert.rejects(resourceRecords(pluginDir('grok-bot'), { env: env({ TEST_SLOW: slow }) }), { message: '读取超时' }, slow);
+});
+
+test('a reading that fails for any other reason, after one that went well, fails the command with the reason, keeping the record Coda has', async t => {
+  const { dir, env } = await machine(t);
+  await writeFile(join(dir, 'native-auth.json'), JSON.stringify({ accessToken: 'fixture-access' }));
+  const read = extra => resourceRecords(pluginDir('grok-bot'), { env: env(extra) });
+  assert.equal((await read({ TEST_BOTS: '2' }))[0].spec.resources.length, 2);
+  // The server answers 500 to the account's request.
+  await assert.rejects(read(), { message: /^GetMe: HTTP 500/ });
 });
 
 test('a record of hundreds of Bots reaches a host that is slow to read it whole: the command ends only once all of it is written', async t => {

@@ -59,11 +59,15 @@ test('the resources are each device registered here, who uses it, who borrowed i
     ['iphone-testbed：xcrun devicectl · 会话甲', '会话借用 不到 1 分钟'], ['w · 另一个会话', '排第 1 位，等了 3 分钟']]);
   assert.deepEqual([ipad.values, ipad.buttons], [[{ value: '空闲' }], []]);
   assert.deepEqual(await read(registered(t)), []);
-  // A registration that cannot be read is one resource saying why, the record printed all the same.
-  const [broken] = await read(registered(t, '{ not json'));
-  assert.equal(broken.name, '测试机'); assert.deepEqual(broken.values, []); assert.match(broken.error, /^读不了设备登记 devices\.json：/);
-  const [twice] = await read(registered(t, [phone, { ...phone, id: 'iphone-b' }]));
-  assert.equal(twice.error, '设备登记 devices.json 里 udid 重复：TEST-IPHONE');
+  // A registration that cannot be read fails the command, saying why (without the path of the file), also after one that was read:
+  // the record Coda has stays.
+  const damaged = registered(t, [phone]);
+  assert.equal((await read(damaged)).length, 1);
+  writeFileSync(join(damaged, 'devices.json'), '{ not json');
+  const failed = (state, message) => assert.rejects(read(state), { message });
+  await failed(damaged, /^读不了设备登记 devices\.json：/);
+  await failed(registered(t, '{ not json'), /^读不了设备登记 devices\.json：/);
+  await failed(registered(t, [phone, { ...phone, id: 'iphone-b' }]), '设备登记 devices.json 里 udid 重复：TEST-IPHONE');
 });
 
 test('找测试机 gives the registered device\'s name, UDID and note; one not registered fails, saying which are', async t => {

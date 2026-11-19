@@ -1,6 +1,6 @@
 # 宿主资源
 
-5.1.0：资源「构建名额」改由记录命令 `scripts/resource.mjs` 写 `coda/resource@1` 记录（类型 `slots`），不再是清单里的 `contributes.resources`。读不出名额数时（`coda resources group-owner host` 失败或超过 10 秒），记录照写：一行写原因，不画空闲名额，占用与排队照常列出。需要先带 `coda/resource@1` 的 Coda（API Level 6）。只给预览渠道。
+5.1.0：资源「构建名额」改由记录命令 `scripts/resource.mjs` 写 `coda/resource@1` 记录（类型 `slots`），不再是清单里的 `contributes.resources`。读不出名额数时（`coda resources group-owner host` 失败或超过 10 秒），命令以非零退出，原因写在标准错误的最后一行：Coda 保留上一份记录，资源页显示「更新失败：原因」。需要先带 `coda/resource@1` 的 Coda（API Level 6）。只给预览渠道。
 
 ## 名额与模拟器清点
 

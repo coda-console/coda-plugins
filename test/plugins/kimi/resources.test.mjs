@@ -31,7 +31,9 @@ else {
     if (req.url === '/api/v1/oauth/userinfo') return res.end(JSON.stringify(mode === 'signed-out' ? { code: 0, data: { kind: 'error', status: 401, message: 'SECRET unauthorized' } }
       : mode === 'nameless' ? { code: 0, data: { kind: 'error', message: 'SECRET request timed out' } }
       : { code: 0, data: { kind: 'ok', userInfo: { userId: 'u1', nickname: ' 登月者0448 ', userLevelName: 'Allegretto', email: 'SECRET@example.com', phone: { number: 'SECRET' } } } }));
-    res.end(JSON.stringify(mode === 'expired' ? { code: 0, data: { kind: 'error', message: 'SECRET login expired' } }
+    if (mode === 'down') { res.statusCode = 503; return res.end(); }
+    res.end(JSON.stringify(mode === 'revoked' ? { code: 0, data: { kind: 'error', status: 401, message: 'SECRET unauthorized' } }
+      : mode === 'expired' ? { code: 0, data: { kind: 'error', message: 'SECRET login expired' } }
       : { code: 0, data: { kind: 'ok', quota: { usages: { limit5h: { usedRatio: 0.25, resetAt: '2026-10-13T05:00:00Z' } }, extraUsage: { totalCents: 2500, balanceCents: 400 } } } }));
   });
   server.listen(0, '127.0.0.1', () => {
@@ -67,8 +69,11 @@ test('the quota is what the plan has left, booster balance included; who is sign
   assert.deepEqual(account({ kind: 'ok', userInfo: { userId: 42, nickname: 'a', userLevelName: 'b' } }), { name: 'a', plan: 'b', id: '42' });
   assert.equal(account({ kind: 'error', status: 401 }), null, 'Kimi refuses the login');
   assert.throws(() => account({ kind: 'error', message: 'timed out' }), /没有说明/, 'a passing fault is not a sign-out');
-  const shown = resource({ name: '', plan: '' }, { error: 'Kimi 本地服务返回 500' });
-  assert.deepEqual(shown, { name: 'Kimi', values: [], buttons: [], error: '暂时无法获取额度：Kimi 本地服务返回 500' });
+  // A quota that was not had, or is not there, is a reading that failed.
+  assert.throws(() => resource({ name: '', plan: '' }, { error: 'Kimi 本地服务返回 500' }), { message: '暂时无法获取额度：Kimi 本地服务返回 500' });
+  assert.throws(() => resource({ name: '', plan: '' }, { data: { kind: 'error' } }), { message: '暂时无法获取额度：Kimi 没有给出额度' });
+  const shown = resource({ name: '', plan: '' }, { data: { kind: 'ok', quota: { usages: { limit5h: { usedRatio: 0.5 } } } } });
+  assert.deepEqual(shown, { name: 'Kimi', values: [{ label: '5 小时', value: '剩余 50%', fraction: 0.5 }], buttons: [] });
   assert.equal(resourceRecordsProblem([{ key: 'account', spec: { type: 'account', title: 'Kimi', resources: [shown] } }]), null, 'a reading the host takes');
 });
 
@@ -110,26 +115,25 @@ test('the type shows the login and its quota, asks who it is once per state of t
   assert.equal((await m.requests()).filter(r => r.url === '/api/v1/oauth/userinfo').length, 1, 'not asked again while the login stays as it was');
   const touch = async offset => utimes(file, new Date(), new Date(Date.now() + offset));
   // Kimi not saying who it is keeps the name seen last, but not the identity: the login changed, and the quota is of
-  // whoever it is now. A login it refuses shows nothing.
+  // whoever it is now. A login it refuses is a row saying so; a quota it does not give fails the reading.
   await m.setMode('nameless'); await touch(5000);
   const nameless = (await read())[0];
   assert.equal(nameless.name, '登月者0448');
   assert.equal(nameless.identity, undefined);
   await m.setMode('expired'); await touch(10000);
-  assert.deepEqual([(await read())[0].values, (await read())[0].error], [[], '暂时无法获取额度：Kimi 没有给出额度']);
+  await assert.rejects(read(), { message: '暂时无法获取额度：Kimi 没有给出额度' });
   await m.setMode('signed-out'); await touch(15000);
-  assert.deepEqual(await read(), []);
+  const refused = [{ name: 'Kimi', values: [], buttons: [], error: '登录已失效，请重新登录' }];
+  assert.deepEqual(await read(), refused);
+  // Refused as the quota is asked, with who it is known.
+  await m.setMode('revoked');
+  assert.deepEqual(await read(), refused);
   assert.ok(!JSON.stringify(await m.requests()).includes('SECRET@'), 'nothing of the account but what is shown');
 });
 
-test('a CLI that is gone, one that cannot be asked, or a login that cannot be read is one row saying so, and the sign-in is still in the record', async t => {
+test('a login without its CLI, or one that cannot be read, is one row saying so, and the sign-in is still in the record', async t => {
   // The CLI is looked for in the machine's own directory of the test and on a PATH of this Node alone.
   const records = async (m, extra = {}) => resourceRecords(pluginDir('kimi'), { env: { ...pluginEnv('kimi', { HOME: m.home, KIMI_CODE_HOME: '', ...extra }), PATH: await barePath(join(m.home, 'bare')) } }).then(([record]) => record.spec);
-  // The CLI exits before it serves: the quota cannot be asked.
-  const exits = await machine(t, 'exit');
-  const asked = await records(exits);
-  assert.deepEqual(asked.resources.map(r => [r.name, r.values, r.buttons, /^暂时无法读取 Kimi：.*提前退出/.test(r.error)]), [['Kimi', [], [], true]]);
-  assert.equal(asked.signIn.installed, true);
   // No CLI: the sign-in is the way to get it.
   const gone = await machine(t, 'ok');
   await rm(gone.binary);
@@ -143,3 +147,14 @@ test('a CLI that is gone, one that cannot be asked, or a login that cannot be re
   assert.deepEqual(unreadable.resources, [{ name: 'Kimi', values: [], buttons: [], error: '读不了 Kimi 的登录：ENOTDIR' }]);
 });
 
+test('a CLI that cannot be asked, or whose server fails, after a reading that went well fails the command with the reason, keeping the record Coda has', async t => {
+  const m = await machine(t, 'ok'), state = join(m.home, 'state');
+  await mkdir(state);
+  const read = () => resourceRecords(pluginDir('kimi'), { env: pluginEnv('kimi', { HOME: m.home, KIMI_CODE_HOME: '', CODA_PLUGIN_STATE: state }) });
+  assert.equal((await read())[0].spec.resources[0].name, '登月者0448');
+  // The server answers 503 for the quota, then the CLI exits before it serves.
+  await m.setMode('down');
+  await assert.rejects(read(), { message: '暂时无法获取额度：Kimi 本地服务返回 503' });
+  await m.setMode('exit');
+  await assert.rejects(read(), { message: 'Kimi CLI 提前退出了' });
+});

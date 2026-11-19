@@ -6,6 +6,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import lockfile from 'proper-lockfile';
 import { withAccountHome } from './codex.mjs';
+import { SignInAgain } from './quota.mjs';
 
 const ID = /^[a-f0-9]{64}$/;
 export const identity = account => createHash('sha256').update(account).digest('hex');
@@ -64,7 +65,7 @@ export async function list(at = paths(), { recoverImport = false } = {}) {
       const auth = readJSON(join(at.native, 'auth.json'));
       if (auth?.tokens?.access_token && auth.tokens.refresh_token) login = readAuth(at.native);
     } catch (error) {
-      if (error.code !== 'ENOENT' && !recoverImport) throw new Error('无法导入已有 Codex 登录，请从「添加资源」登录 Codex 多账号');
+      if (error.code !== 'ENOENT' && !recoverImport) throw new SignInAgain('无法导入已有 Codex 登录，请从「添加资源」登录 Codex 多账号');
     }
     if (login) {
       const id = identity(login.tokens.chatgptAccountId);
@@ -91,15 +92,15 @@ export function selection(at = paths()) {
 export async function choose(account, at = paths()) {
   await list(at);
   return locked('store', at, async () => {
-    if (!(await list(at)).some(a => a.identity === account)) throw new Error(missing);
+    if (!(await list(at)).some(a => a.identity === account)) throw new SignInAgain(missing);
     writeJSON(join(at.state, 'selection.json'), { account });
   });
 }
 function homeFor(account, at) {
-  if (!ID.test(account)) throw new Error(missing);
+  if (!ID.test(account)) throw new SignInAgain(missing);
   const home = join(at.state, 'accounts', account);
   try { if (!lstatSync(home).isDirectory() || lstatSync(home).isSymbolicLink()) throw Error(); }
-  catch { throw new Error(missing); }
+  catch { throw new SignInAgain(missing); }
   return home;
 }
 export function readAuth(home, expected) {
@@ -112,16 +113,16 @@ export function readAuth(home, expected) {
       || (auth.tokens.account_id && auth.tokens.account_id !== chatgptAccountId)) throw Error();
     return { auth, expires: claims.exp * 1000, tokens: { accessToken, chatgptAccountId,
       ...(typeof info.chatgpt_plan_type === 'string' ? { chatgptPlanType: info.chatgpt_plan_type } : {}) } };
-  } catch { throw new Error(unavailable); }
+  } catch { throw new SignInAgain(unavailable); }
 }
 async function checked(server, expected, refreshToken = false) {
   const result = await server.request('account/read', { refreshToken });
-  if (result.account?.type !== 'chatgpt' || identity(result.workspaceRouting?.chatgptAccountId ?? '') !== expected) throw new Error('Codex 登录后的账号与所选的不符');
+  if (result.account?.type !== 'chatgpt' || identity(result.workspaceRouting?.chatgptAccountId ?? '') !== expected) throw new SignInAgain('Codex 登录后的账号与所选的不符');
   return result.account;
 }
 // Quota/reset requests use this account's managed login, so Codex itself handles a 401 and persists renewed tokens.
 export async function withManagedAccount(account, work, at = paths(), options) {
-  if (!(await list(at)).some(a => a.identity === account)) throw new Error(missing);
+  if (!(await list(at)).some(a => a.identity === account)) throw new SignInAgain(missing);
   return locked(account, at, async () => {
     const home = homeFor(account, at);
     readAuth(home, account);
@@ -131,7 +132,7 @@ export async function withManagedAccount(account, work, at = paths(), options) {
 // Refresh only when needed or explicitly requested after a rejected access token. Recheck under the lock so concurrent
 // sessions do not refresh the same rotating refresh token at once. The full auth document never leaves this module.
 export async function tokens(account, at = paths(), { refresh = false, ...options } = {}) {
-  if (!(await list(at)).some(a => a.identity === account)) throw new Error(missing);
+  if (!(await list(at)).some(a => a.identity === account)) throw new SignInAgain(missing);
   return locked(account, at, async () => {
     const home = homeFor(account, at), expected = account;
     let current = readAuth(home, expected);
@@ -139,9 +140,9 @@ export async function tokens(account, at = paths(), { refresh = false, ...option
       try {
         await withAccountHome(home, server => checked(server, identity(current.tokens.chatgptAccountId), true), { env: at.env, ...options });
         current = readAuth(home, expected);
-      } catch { throw new Error(unavailable); }
+      } catch { throw new SignInAgain(unavailable); }
     }
-    if (current.expires <= Date.now() + 30_000) throw new Error(unavailable);
+    if (current.expires <= Date.now() + 30_000) throw new SignInAgain(unavailable);
     return current.tokens;
   });
 }
@@ -150,7 +151,7 @@ export async function tokens(account, at = paths(), { refresh = false, ...option
 export async function saveLogin(home, at = paths(), { isCancelled = () => false, ...options } = {}) {
   await list(at);
   const initial = readAuth(home), id = identity(initial.tokens.chatgptAccountId);
-  if (initial.expires <= Date.now() + 30_000 || !initial.auth.tokens.refresh_token) throw new Error(unavailable);
+  if (initial.expires <= Date.now() + 30_000 || !initial.auth.tokens.refresh_token) throw new SignInAgain(unavailable);
   const account = await withAccountHome(home, server => checked(server, id), { env: at.env, ...options });
   return locked('store', at, () => locked(id, at, async () => {
     const accounts = await list(at), previous = accounts.find(a => a.identity === id);
@@ -169,7 +170,7 @@ export async function remove(account, at = paths()) {
   await list(at);
   return locked('store', at, () => locked(account, at, async () => {
     const accounts = await list(at);
-    if (!accounts.some(a => a.identity === account)) throw new Error(missing);
+    if (!accounts.some(a => a.identity === account)) throw new SignInAgain(missing);
     const home = join(at.state, 'accounts', account);
     // Remove secrets before the index: a failed removal remains visible and can be retried.
     rmSync(home, { recursive: true, force: true });

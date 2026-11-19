@@ -36,11 +36,12 @@ export function windows(document) {
   }
   return meters;
 }
-// The resources from what the CLI answered: the login, its name and its credits; none when no one is signed in.
+// The resources from what the CLI answered: the login, its name and its credits; a row saying so when the CLI says the login
+// is no good. Throws for an answer that cannot be understood or gives no credits.
 export function resources([subscription, info, billing]) {
   const who = account(subscription, info);
-  if (!who) return { resources: [] };
+  if (!who) return { resources: [{ name: 'Grok', values: [], buttons: [], error: '登录已失效，请重新登录' }] };
   const values = windows(billing);
-  return { resources: [{ name: who.name || 'Grok', ...(who.id ? { identity: `grok:${who.id}` } : {}), values, buttons: [],
-    ...(values.length ? {} : { error: '暂时无法获取额度：Grok 没有给出额度' }) }] };
+  if (!values.length) throw new Error('暂时无法获取额度：Grok 没有给出额度');
+  return { resources: [{ name: who.name || 'Grok', ...(who.id ? { identity: `grok:${who.id}` } : {}), values, buttons: [] }] };
 }
