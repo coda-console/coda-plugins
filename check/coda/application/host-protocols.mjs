@@ -7,6 +7,8 @@
 // (CORE_PROTOCOLS).
 import { PLUGIN_PROTOCOL } from '../kernel/plugin-protocol.mjs';
 import { PROJECT_PROTOCOL } from '../kernel/project-protocol.mjs';
+import { USAGE_PROTOCOL } from '../kernel/usage-protocol.mjs';
+import { ACCORD_PROTOCOL } from '../kernel/accord-protocol.mjs';
 import { THREAD_PROTOCOL } from '../kernel/thread-protocol.mjs';
 import { composerType, submissionType } from '../components/composers/schemas.mjs';
 import { groupType } from '../components/concurrency-groups/schemas.mjs';
@@ -14,4 +16,4 @@ import { WORKFLOW_PROTOCOL, WORKFLOW_RUN_PROTOCOL, withWorkflows } from '../comp
 
 // A session's, with the workflows' query and the group that has it (workflow-protocol-definitions.mjs `withWorkflows`).
 export const THREAD_DEFINITION = withWorkflows(THREAD_PROTOCOL);
-export const HOST_PROTOCOLS = [THREAD_DEFINITION, PROJECT_PROTOCOL, PLUGIN_PROTOCOL, WORKFLOW_PROTOCOL, WORKFLOW_RUN_PROTOCOL, composerType, submissionType, groupType];
+export const HOST_PROTOCOLS = [THREAD_DEFINITION, PROJECT_PROTOCOL, PLUGIN_PROTOCOL, USAGE_PROTOCOL, ACCORD_PROTOCOL, WORKFLOW_PROTOCOL, WORKFLOW_RUN_PROTOCOL, composerType, submissionType, groupType];
