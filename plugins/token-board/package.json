@@ -1,0 +1,72 @@
+{
+  "name": "@coda-console/token-board",
+  "id": "token-board",
+  "displayName": "Token 消耗榜",
+  "description": "看本机的 Token 用量，并和好友比一比（可选，默认不分享）",
+  "icon": { "symbol": "chart.bar.fill", "color": "orange" },
+  "version": "0.1.0",
+  "categories": [
+    "Skills 与工具"
+  ],
+  "engines": {
+    "coda": 5
+  },
+  "type": "module",
+  "main": "main.mjs",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "uses": {
+    "coda/usage@1": ["read"],
+    "coda/accord@1": ["read", "publish"]
+  },
+  "contributes": {
+    "configuration": {
+      "title": "Token 消耗榜",
+      "properties": {
+        "token-board.share": {
+          "title": "向好友分享用量",
+          "type": "boolean",
+          "order": 0,
+          "default": false,
+          "description": "开启后每 10 分钟向好友发布最近 7 天的匿名每日汇总：只有按十分钟、Agent 和模型的 Token 数与回合数，不含会话、目录、正文和费用。关闭后会撤回已发布的记录。"
+        },
+        "token-board.range": {
+          "title": "默认时间范围",
+          "type": "string",
+          "order": 1,
+          "enum": ["today", "7d", "30d"],
+          "enumItemLabels": ["今天", "近 7 天", "近 30 天"],
+          "default": "7d",
+          "description": "打开页面时先看哪一段时间的用量。"
+        }
+      }
+    },
+    "views": [
+      {
+        "id": "board",
+        "title": "Token 消耗榜",
+        "entry": "view/index.html",
+        "in": [
+          "page"
+        ],
+        "icon": "chart.bar.fill",
+        "frame": "document"
+      }
+    ]
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coda-console/coda-plugins.git",
+    "directory": "plugins/token-board"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "main.mjs",
+    "lib",
+    "view"
+  ]
+}
