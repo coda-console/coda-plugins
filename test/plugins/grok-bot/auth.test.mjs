@@ -40,3 +40,37 @@ test('failed refresh asks for login; network failure never retries an ambiguous 
   await assert.rejects(auth.client.request('SendGrokBotUserMessage', {}), /connection lost/);
   assert.equal(calls, 3);
 });
+
+test('a caller that gives up its wait for a renewal does not end it for the others: both Bots wait on one renewal, one is cancelled, the other gets its token', async t => {
+  const root = temporary(t);
+  writeFileSync(join(root, 'native-auth.json'), JSON.stringify({ accessToken: 'expired', refreshToken: 'old-refresh' }));
+  let rejected = 0, renewals = 0, answer, started;
+  const renewing = new Promise(resolve => { started = resolve; });
+  const auth = new NativeAuth({ root, clock: fakeClock(), fetcher: async (url, options) => {
+    if (new URL(url).pathname === '/oauth/token') {
+      renewals++; started();
+      // The renewal answers when the test says, and ends if its own signal does, as a real request would.
+      return new Promise((resolve, reject) => {
+        options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+        answer = () => resolve(Response.json({ access_token: 'renewed', refresh_token: 'rotated' }));
+      });
+    }
+    if (options.headers.authorization === 'Bearer expired') { rejected++; return new Response('{}', { status: 401 }); }
+    return Response.json({ agents: [] });
+  } });
+  const cancelled = new AbortController(), staying = new AbortController();
+  const first = auth.client.request('ListGrokBotAgents', {}, { signal: cancelled.signal });
+  const second = auth.client.request('ListGrokBotAgents', {}, { signal: staying.signal });
+  const outcomes = Promise.allSettled([first, second]);
+  await renewing;
+  // Both have been refused and joined the one renewal (the settling of their refusals is behind them).
+  while (rejected < 2) await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setImmediate(resolve));
+  cancelled.abort(new Error('cancelled'));
+  await assert.rejects(first, /cancelled/);
+  answer();
+  assert.deepEqual(await second, { agents: [] });
+  assert.equal(renewals, 1);
+  assert.equal(JSON.parse(readFileSync(join(root, 'native-auth.json'))).accessToken, 'renewed');
+  await outcomes;
+});

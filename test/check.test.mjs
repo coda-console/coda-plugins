@@ -707,6 +707,12 @@ describe('the module level', () => {
     chmodSync(join(dir, 'add.sh'), 0o755);
     assertPasses((await checkPlugin(dir)).report, ['module.registered']);
   });
+  test('a module that implements coda/resource@1 with the commands of the operations it has registers no others', async () => {
+    const files = { 'sign-in.sh': '#!/bin/sh\necho {}\n' };
+    const dir = modulePlugin({ files, manifest: { engines: { coda: 6 }, contributes: { protocols: [NOTE], protocolImplementations: ['mod/note@1', { kind: 'coda/resource@1', commands: { 'sign-in': 'sign-in.sh' } }] } } });
+    chmodSync(join(dir, 'sign-in.sh'), 0o755);
+    assertPasses((await checkPlugin(dir)).report, ['module.registered']);
+  });
   test('an operation the module registers and the manifest does not write fails', async () => {
     const unknownOperation = await checkPlugin(modulePlugin({ main: `${BOTH.slice(0, -2)} coda.handle('mod/note@1', 'extra', async () => ({})); }` }));
     assert.deepEqual(failed(unknownOperation.report), ['module.unlisted']);

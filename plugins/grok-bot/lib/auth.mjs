@@ -16,6 +16,13 @@ export function writePrivate(root, file, value) {
   writeFileSync(temp, JSON.stringify(value), { mode: 0o600 });
   renameSync(temp, file);
 }
+// A caller's wait for work that is shared: its own signal ends its own wait, never the work, which the others are waiting for too.
+const waiting = (work, signal) => !signal ? work : new Promise((resolve, reject) => {
+  if (signal.aborted) return reject(signal.reason);
+  const abandon = () => reject(signal.reason);
+  signal.addEventListener('abort', abandon, { once: true });
+  work.then(resolve, reject).finally(() => signal.removeEventListener('abort', abandon));
+});
 export class NativeAuth {
   constructor({ root, fetcher = fetch, clock = { setTimeout, clearTimeout } }) {
     Object.assign(this, { root, fetcher, clock });
@@ -40,7 +47,7 @@ export class NativeAuth {
       if (error.status !== 401 || !auth.refreshToken) throw error;
       // The send was already rejected, so a renewal failure (rejected, offline, timed out,
       // unwritable) is marked for callers; its status and message stay as they are.
-      if (this.credentials === auth) await this.refresh(auth).catch(e => { throw Object.assign(e, { renewalFailed: true }); });
+      if (this.credentials === auth) await waiting(this.refresh(auth).catch(e => { throw Object.assign(e, { renewalFailed: true }); }), options?.signal);
       return this.transport.request(method, value, options);
     }
   }
@@ -62,7 +69,8 @@ export class NativeAuth {
     })().finally(() => { this.renewing = null; });
     return this.renewing;
   }
-  login() {
+  // `report(url)`: told the link before anything is polled for or kept; one that fails ends the login with its error.
+  login(report) {
     if (this.pending) return this.pending;
     if (!this.file) throw new Error('缺少 CODA_PLUGIN_STATE，无法保存登录');
     const request = loginRequest(), controller = new AbortController();
@@ -71,6 +79,7 @@ export class NativeAuth {
     const timer = this.clock.setTimeout(() => controller.abort(), 15 * 60_000);
     const promise = (async () => {
       try {
+        await report?.(request.url);
         for (;;) {
           const response = await this.fetcher(url, { headers: clientHeaders(), redirect: 'error', signal: controller.signal });
           if (response.status === 404) { await pause(this.clock, 2000, controller.signal); continue; }

@@ -3,7 +3,7 @@
 // plugin's directory and this Node first on the PATH.
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -26,6 +26,15 @@ export const pluginEnv = (id, extra = {}) => {
   env.PATH = [dirname(process.execPath), env.PATH].filter(Boolean).join(':');
   return env;
 };
+
+// A PATH of the directories given and a directory of this Node's alone (made in `dir`), for a test of how a CLI is found: set after
+// `pluginEnv`, which puts the directory of this Node first, so that nothing the machine has installed can be on it.
+export async function barePath(dir, ...dirs) {
+  const node = join(dir, 'node-bin');
+  await mkdir(node, { recursive: true });
+  await symlink(process.execPath, join(node, 'node'));
+  return [...dirs, node].join(':');
+}
 
 const killGroup = pid => { try { process.kill(-pid, 'SIGKILL'); } catch {} };
 

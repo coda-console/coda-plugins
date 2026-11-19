@@ -3,7 +3,7 @@
   "id": "grok-bot",
   "displayName": "Grok Bot",
   "description": "把 Grok Bot 主会话接进 Coda",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "coda": {
     "channels": [
       "preview"
@@ -11,7 +11,8 @@
   },
   "type": "module",
   "engines": {
-    "node": ">=24"
+    "node": ">=24",
+    "coda": 6
   },
   "categories": [
     "Agent"
@@ -33,18 +34,18 @@
   ],
   "contributes": {
     "protocolImplementations": [
-      "coda/session@1"
-    ],
-    "resources": [
+      "coda/session@1",
       {
-        "id": "account",
-        "title": "Grok Bot",
-        "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/resources.mjs\"",
-        "maxAge": "PT1M",
-        "signIn": {
-          "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/login.mjs\"",
-          "note": "打开官方登录链接确认；手机可能需要点 Continue。"
+        "kind": "coda/resource@1",
+        "commands": {
+          "sign-in": "scripts/sign-in.mjs"
         }
+      }
+    ],
+    "records": [
+      {
+        "kind": "coda/resource@1",
+        "command": "scripts/resource.mjs"
       }
     ]
   },

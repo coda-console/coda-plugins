@@ -1,6 +1,6 @@
 // What the「Kimi」resource type shows (docs/plugins.md「内置插件：Kimi Code」): the signed-in account and its quota, from what the
 // Kimi CLI's local server says (`/oauth/userinfo`, `/oauth/usage`, the same getManagedUsage its /status uses).
-const line = (value, max = 80) => typeof value === 'string' ? [...value.replace(/\s+/g, ' ').trim()].slice(0, max).join('') : '';
+export const line = (value, max = 80) => typeof value === 'string' ? [...value.replace(/\s+/g, ' ').trim()].slice(0, max).join('') : '';
 const instant = value => typeof value === 'string' && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null;
 
 // Who is signed in, as the CLI's own page shows it: the nickname and membership level, never the phone number or email
@@ -36,5 +36,5 @@ export function resource(who, usage) {
   const values = usage.error ? [] : windows(usage.data) ?? [];
   const error = usage.error ? `暂时无法获取额度：${usage.error}` : values.length ? null : '暂时无法获取额度：Kimi 没有给出额度';
   // The account, compared across machines by Coda's group view: its user ID, which the row does not show.
-  return { name: who.name || 'Kimi', ...(who.id ? { identity: `kimi:${who.id}` } : {}), values, ...(error ? { error: line(error) } : {}) };
+  return { name: who.name || 'Kimi', ...(who.id ? { identity: `kimi:${who.id}` } : {}), values, buttons: [], ...(error ? { error: line(error) } : {}) };
 }

@@ -1,10 +1,10 @@
-// The plugin's setup (`contributes.setup`), which Coda runs on each machine when the user installs or updates the plugin: it
-// ends well once the machine can run the agent. Without an Antigravity CLI, Google's installer puts the latest in
-// ~/.local/bin, where the agent looks first; one older than MINIMUM (the CLI the `agy acp` entry was checked against: the
+#!/usr/bin/env node
+// The plugin's setup (`contributes.setup`), which Coda runs on each machine when the user installs or updates the plugin, and the
+// `install` operation of `coda/resource@1` (「安装」 on the resource page): it ends well once the machine can run the agent.
+// Without an Antigravity CLI, Google's installer puts the latest in ~/.local/bin, where the agent looks first; one older than MINIMUM (the CLI the `agy acp` entry was checked against: the
 // subcommand is there from 1.5.0, Auto mode and keeping the mode from 1.5.4, context usage from 1.5.8) is brought up with its
 // own `agy update`; a newer one is kept. The installer does nothing where ~/.local/bin/agy exists, so a CLI that does not run
-// is never replaced: it is reported. Why the machine is not ready is said in one line on standard error.
-// `--check` only answers (exit 0) whether the machine is ready: the「Antigravity」type's `installed`.
+// is never replaced: it is reported. Why the machine is not ready is said in one line on standard error; the result, when it is, is `{}`.
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -28,7 +28,6 @@ export function needed(binary, run = asked) {
 
 if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   const before = needed(agyBinary());
-  if (process.argv[2] === '--check') process.exit(before.action === 'none' ? 0 : 1);
   if (before.action === 'broken') { console.error(before.reason); process.exit(1); }
   if (before.action !== 'none') {
     // What the installer or the update prints goes to standard error with the rest of its story. The installer ends with
@@ -47,5 +46,6 @@ if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToP
   }
   const after = needed(agyBinary());
   if (after.action !== 'none') { console.error(after.reason); process.exit(1); }
-  console.log(`Antigravity CLI ${after.version}`);
+  console.error(`Antigravity CLI ${after.version}`);
+  console.log('{}');
 }

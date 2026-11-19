@@ -2,16 +2,18 @@
 // order. One process answers them all, as starting it takes seconds; each is asked once the one before is answered, as an
 // answer may change what the next one reads (a subscription check renews the login and fills in its name).
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { accessSync, constants, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 // The installer puts the binary here whatever GROK_HOME says; the login lives in GROK_HOME. The same the agent runs.
 export const grokHome = (env = process.env) => env.GROK_HOME || join(homedir(), '.grok');
+// A file that can be run: a leftover that cannot is not the CLI, and does not hide the one further on the PATH.
+const runnable = path => { try { accessSync(path, constants.X_OK); return statSync(path).isFile(); } catch { return false; } };
 export function grokBinary(env = process.env) {
   const installed = join(homedir(), '.grok/bin/grok');
-  if (existsSync(installed)) return installed;
-  return (env.PATH ?? '').split(':').filter(Boolean).map(dir => join(dir, 'grok')).find(path => existsSync(path)) ?? null;
+  if (runnable(installed)) return installed;
+  return (env.PATH ?? '').split(':').filter(Boolean).map(dir => join(dir, 'grok')).find(runnable) ?? null;
 }
 
 export function grokAsk(methods, { binary = grokBinary(), env = process.env, timeoutMs = 20000 } = {}) {

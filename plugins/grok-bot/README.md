@@ -1,5 +1,7 @@
 # Grok Bot
 
+0.9.0：资源页的类型改成 `coda/resource@1`：记录命令 `scripts/resource.mjs`（登录读不了或被拒时写一行说明原因，登录入口照常在），登录是操作 `sign-in`（`scripts/sign-in.mjs`，原 `login.mjs`），用 `coda progress` 报官方链接，报成功后才开始轮询、写凭据，报失败登录就失败、本机凭据不变。记录命令一次读取（账号、Bot 名单、等续期和续期后的重试）共用 20 秒的时间（宿主给 30 秒），超时也照样写记录：一行「读取超时」，登录入口在。续期是各个调用共用的一次：某个调用取消（或这次读取超时）只放弃它自己的等待，不中止续期，别的 Bot 照常拿到新令牌。需要 API Level 6 的 Coda。
+
 0.8.0（接口破坏性变更）：记录的读写换成 Coda 的新接口（`coda.replace`、`coda.put`），不再用 `protocols.observe`、`put`、`update`、`setStatus`、`delete`、`publish`，也不再有 `revision` 条件写和插件自己的串行队列（宿主按插件依次写）。插件不再读回自己的记录：本机的 `coda/session@1` 里混着 Coda 自己和别的插件的会话，条目上也没有提供者，所以持有哪些由插件自己知道（登录账号与 Bot 名单），只对这些写和删。需要先带这套接口的 Coda（coda#2749）。只给预览渠道。
 
 0.7.0 `read`、`draft`、`post` 改用 `coda.handle` 登记，对应 Coda 宿主代管「做事的操作」（coda#2749）：`post` 发完才返回，不再写 `coda/run@1`，清单不再声明它，启动时也不再改写遗留运行。需要 Coda 先合并该改动；本版不再兼容旧写法。

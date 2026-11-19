@@ -546,6 +546,7 @@ npx github:coda-console/coda-plugins#<提交> <插件目录>
 记录里的动作（`act`、`sign-in`、`install`）不运行。插件自己的测试用 `check/resources.mjs`（代替 `check/panel.mjs` 的 `readResources`）：
 `await resourceRecords(插件目录, { env })` 跑清单里 `coda/resource@1` 的记录命令，返回它打印的记录，不合则抛出原因（`env` 是测试给的进程环境，不给就用本进程的，`CODA_PLUGIN_PATH` 为插件目录）；
 `resourceRecordsProblem(输出)` 判手头已有的输出，返回 `null` 或哪里不对。
+实现了 `coda/resource@1` 又带模块（`main`）的插件，模块一级不要求登记 `act`、`sign-in`、`install` 里清单没写命令的操作：这三个操作插件有哪个写哪个。
 
 | 级 | 要不要登录 | 查什么 |
 | --- | --- | --- |

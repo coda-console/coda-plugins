@@ -1,11 +1,10 @@
-import { readResources } from '../../../check/panel.mjs';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { resourceRecords } from '../../../check/resources.mjs';
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createHash } from 'node:crypto';
 import { Provider, SESSION, recordKey, messageId } from '../../../plugins/grok-bot/lib/provider.mjs';
@@ -472,7 +471,7 @@ test('rebuilding the transcript mirror also rebuilds live state', async t => {
   assert.equal(status().activity, undefined);
   assert.equal(status().head, undefined);
 });
-test('session read, draft and post answer through the registered handlers and the resource list has no actions', async t => {
+test('session read, draft and post answer through the registered handlers and the resource record has no buttons', async t => {
   const f = await fixture(t), handle = (op, input, ctx) => f.handlers.get(`${SESSION}/${op}`)(input, ctx);
   assert.deepEqual([...f.handlers.keys()].sort(), [`${SESSION}/draft`, `${SESSION}/post`, `${SESSION}/read`]);
   // post is registered as a function, not an object carrying `resume`: a registered `resume` would change what users see after a restart.
@@ -490,11 +489,14 @@ test('session read, draft and post answer through the registered handlers and th
     const native = new FakeNative();
     native.handler = async method => method === 'GetMe' ? Response.json({ authId: 'stable-account', name: '本人' }) : undefined;
     globalThis.fetch = native.fetch;`);
-  const resource = await promisify(execFile)(process.execPath, ['--import', preload, new URL('../../../plugins/grok-bot/scripts/resources.mjs', import.meta.url).pathname], { env: { ...process.env, CODA_PLUGIN_STATE: f.root } });
-  const rows = readResources(resource.stdout, manifest.contributes.resources[0], []);
-  assert.equal(rows[0].identity, f.key());
-  assert.deepEqual(rows[0].actions, []);
+  const dir = fileURLToPath(new URL('../../../plugins/grok-bot', import.meta.url));
+  const [record] = await resourceRecords(dir, { env: { ...process.env, CODA_PLUGIN_PATH: dir, CODA_PLUGIN_STATE: f.root, NODE_OPTIONS: `--import=${pathToFileURL(preload).href}` } });
+  assert.deepEqual([record.key, record.spec.type, record.spec.title], ['account', 'account', 'Grok Bot']);
+  assert.equal(record.spec.resources[0].identity, f.key());
+  assert.deepEqual(record.spec.resources[0].buttons, []);
+  assert.deepEqual(record.spec.signIn, { installed: true, installable: false, note: record.spec.signIn.note });
   assert.deepEqual(manifest.coda, { channels: ['preview'] });
   assert.equal(manifest.contributes.views, undefined);
-  assert.deepEqual(manifest.contributes.protocolImplementations, [SESSION]);
+  assert.deepEqual(manifest.contributes.protocolImplementations, [SESSION, { kind: 'coda/resource@1', commands: { 'sign-in': 'scripts/sign-in.mjs' } }]);
+  assert.equal(manifest.engines.coda, 6);
 });

@@ -2,14 +2,13 @@
 // ends well once the machine can run the agent. Without a Grok CLI that runs, or with one older than MINIMUM (the CLI whose
 // `agent --no-leader stdio` and `_x.ai/yolo_mode_changed` the agent entry was checked against: 1.0.52). `sessions delete`
 // was checked on 1.0.77; on an older CLI that does not have it, the entry answers session/delete with its error. Grok's own installer puts
-// the latest in ~/.grok/bin, where the agent looks first, as the「Grok」type's install does; a newer one is kept. Why the
+// the latest in ~/.grok/bin, where the agent looks first (install.mjs, which is the「Grok」type's install too); a newer one is kept. Why the
 // machine is not ready is said in one line on standard error.
 import { spawnSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { grokBinary } from './ask.mjs';
+import { install } from './install.mjs';
 
 export const MINIMUM = '1.0.52';
 // The first x.y.z a version command prints; whether one is older than another.
@@ -35,10 +34,7 @@ export function needed(binary, run = asked) {
 if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   const before = needed(grokBinary());
   if (before.action !== 'none') {
-    // What the installer prints goes to standard error with the rest of its story.
-    // As the type's `install`: without SHELL it leaves the shell's configuration alone.
-    const installed = spawnSync('bash', ['-c', 'set -o pipefail; curl -fsSL https://x.ai/cli/install.sh | bash'], { stdio: ['ignore', 2, 2],
-      env: { ...process.env, SHELL: '', PATH: `${join(homedir(), '.grok/bin')}:${process.env.PATH ?? ''}` } });
+    const installed = install();
     if (installed.status !== 0) { console.error(`${before.reason}，安装失败（退出码 ${installed.status ?? installed.signal}）`); process.exit(1); }
   }
   const after = needed(grokBinary());
