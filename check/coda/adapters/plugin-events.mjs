@@ -32,6 +32,8 @@ export function pluginEvents(plugin, asks, fire) {
     deliver(event) {
       for (const entry of [...handlers.get(event?.name) ?? []]) if (!entry.disposed) fire([entry.fn], event);
     },
+    // The names of the events it has handlers of now.
+    names() { return [...handlers].filter(([, entries]) => entries.size).map(([name]) => name); },
     // The module stopped: its handlers go.
     clear() { handlers.clear(); },
   };

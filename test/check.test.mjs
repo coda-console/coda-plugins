@@ -3,13 +3,18 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { checkPlugin } from '../check/index.mjs';
+import { createTestHost } from '../check/coda/adapters/plugin-test-host.mjs';
+import { checkLevel, parseSurface } from '../check/level.mjs';
+import { checkManifest } from '../check/manifest.mjs';
+import { NOT_PROVIDED } from '../check/module.mjs';
+import { Report } from '../check/report.mjs';
 import { agentCapabilitiesProblem, agentMessageProblem, agentResultProblem, agentValueProblem } from '@coda-console/protocol/agent';
 import { Waits } from '../check/waits.mjs';
 
@@ -65,6 +70,12 @@ describe('this repository', () => {
     assertPasses(report, ['manifest.name', 'manifest.panels', 'panel.read']);
     assert.match(report.items.find(item => item.rule === 'manifest.panels').message, /资源类型 uptime「运行时间」：动作 mark/);
     assert.match(report.items.find(item => item.rule === 'panel.read').message, /输出合资源格式：1 个资源，读数 2 个，按钮 1 个/);
+  });
+  test('templates/module passes the manifest and the module level, its engines.coda the Level it needs', async () => {
+    const { report } = await checkPlugin(at('templates/module'));
+    assertPasses(report, ['manifest.name', 'manifest.level', 'module.activate', 'module.registered']);
+    assert.match(report.items.find(item => item.rule === 'module.registered').message, /登记了 2 个操作/);
+    assert.deepEqual(rules(report, 'warn'), []);
   });
   // Coda's own types, and those the points of the plugins Coda ships declare (the resources plugin's `panels`), pass; another
   // no plugin declares is of no type.
@@ -538,9 +549,11 @@ describe('manifests Coda does not take', () => {
   // Concurrency groups are coda/group@1 records, no longer of the manifest: `groups` is a key no type of Coda's takes.
   test('a groups key is no type of Coda\'s', () => manifestFails({ manifest: { contributes: { groups: [{ name: 'liar', capacity: 'liar.capacity' }],
     configuration: { properties: { 'liar.capacity': { type: 'integer', default: 1 } } } } } }, 'manifest.offers', /groups 不是 Coda 的类型/));
+  // Endpoints went with `window.coda.request`: like `groups`, a key no type of Coda's takes.
+  test('an endpoints key is no type of Coda\'s', () => manifestFails({ manifest: { contributes: { endpoints: [] } } }, 'manifest.offers', /endpoints 不是 Coda 的类型/));
   // Coda reads these (docs/plugins.md); the checker does not refuse a plugin for bringing them.
-  test('Skills, variables, PATH, MCP servers, endpoints, views and model services are contributions Coda takes', async () => {
-    const contributes = { skills: [], environment: {}, path: [], mcpServers: {}, endpoints: [], views: [], modelProviders: [] };
+  test('Skills, variables, PATH, MCP servers, views and model services are contributions Coda takes', async () => {
+    const contributes = { skills: [], environment: {}, path: [], mcpServers: {}, views: [], modelProviders: [] };
     const { report } = await checkPlugin(plugin({ manifest: { contributes } }), { manifestOnly: true });
     assert.ok(!failed(report).includes('manifest.contributes'), JSON.stringify(report.failures));
   });
@@ -658,4 +671,256 @@ test('the checker recognizes quota exhaustion, preserves its cause and never ret
   assert.deepEqual(failed(report), ['live.turn']);
   assert.match(report.failures[0].message, /额度不足\n\nProvider usage allowance exhausted/);
   assert.equal(report.items.filter(x => x.rule === 'live.service-retry').length, 0);
+});
+
+// A plugin with a module: `main` is its text, its protocol `mod/note@1` has the operations `find` and `add`.
+const OBJECT = { type: 'object', properties: {}, additionalProperties: false };
+const NOTE = { name: 'mod/note@1', title: '便条', spec: OBJECT, status: OBJECT, operations: {
+  find: { safe: true, input: OBJECT, result: OBJECT }, add: { idempotent: true, input: OBJECT, result: OBJECT } } };
+const BOTH = `export function activate(coda) { coda.handle('mod/note@1', 'find', async () => ({})); coda.handle('mod/note@1', 'add', async () => ({})); }`;
+function modulePlugin({ main = BOTH, manifest = {}, files = {} } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'coda-plugin-check-module-'));
+  temps.push(dir);
+  writeFileSync(join(dir, 'main.mjs'), main);
+  for (const [name, content] of Object.entries(files)) writeFileSync(join(dir, name), content);
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'mod', version: '1.0.0', main: 'main.mjs', engines: { coda: 3 }, categories: ['工作流程'],
+    contributes: { protocols: [NOTE], protocolImplementations: ['mod/note@1'] }, ...manifest }));
+  return dir;
+}
+const messages = (report, rule) => report.items.filter(item => item.rule === rule).map(item => item.message);
+
+describe('the module level', () => {
+  test('a module that registers what the manifest implements passes', async () => {
+    const { report } = await checkPlugin(modulePlugin());
+    assertPasses(report, ['module.activate', 'module.registered']);
+    assert.match(messages(report, 'module.registered')[0], /登记了 2 个操作/);
+  });
+  test('an operation the manifest implements and the module does not register fails', async () => {
+    const { report } = await checkPlugin(modulePlugin({ main: `export function activate(coda) { coda.handle('mod/note@1', 'find', async () => ({})); }` }));
+    assert.deepEqual(failed(report), ['module.unregistered']);
+    assert.match(report.failures[0].message, /mod\/note@1 的操作 add，模块没登记/);
+  });
+  test('an operation of a command is not the module\'s to register', async () => {
+    const files = { 'add.sh': '#!/bin/sh\necho {}\n' };
+    const dir = modulePlugin({ files, manifest: { contributes: { protocols: [NOTE], protocolImplementations: [{ kind: 'mod/note@1', commands: { add: 'add.sh' } }] } },
+      main: `export function activate(coda) { coda.handle('mod/note@1', 'find', async () => ({})); }` });
+    chmodSync(join(dir, 'add.sh'), 0o755);
+    assertPasses((await checkPlugin(dir)).report, ['module.registered']);
+  });
+  test('an operation the module registers and the manifest does not write fails', async () => {
+    const unknownOperation = await checkPlugin(modulePlugin({ main: `${BOTH.slice(0, -2)} coda.handle('mod/note@1', 'extra', async () => ({})); }` }));
+    assert.deepEqual(failed(unknownOperation.report), ['module.unlisted']);
+    assert.match(unknownOperation.report.failures[0].message, /登记了 mod\/note@1 的操作 extra，协议定义里没有/);
+    // A protocol the manifest does not implement is refused as the module registers it.
+    const unknownKind = await checkPlugin(modulePlugin({ main: `${BOTH.slice(0, -2)} coda.handle('other/thing@1', 'go', async () => ({})); }` }));
+    assert.deepEqual(failed(unknownKind.report), ['module.activate']);
+    assert.match(unknownKind.report.failures[0].message, /没有实现 other\/thing@1/);
+  });
+  test('an activate that throws fails, with the first line of its stack', async () => {
+    const { report } = await checkPlugin(modulePlugin({ main: `export function activate() { throw new Error('起不来'); }` }));
+    assert.deepEqual(failed(report), ['module.activate']);
+    assert.match(report.failures[0].message, /activate 失败：Error: 起不来$/);
+  });
+  test('an activate that does not finish in time fails', async () => {
+    const { report } = await checkPlugin(modulePlugin({ main: `export function activate() { return new Promise(() => {}); }` }), { limits: { ...limits, activate: 200 } });
+    assert.deepEqual(failed(report), ['module.activate']);
+    assert.match(report.failures[0].message, /0\.2 秒没完成/);
+  });
+  test('a coda.on of an event outside the plugin\'s event groups fails', async () => {
+    const { report } = await checkPlugin(modulePlugin({ main: `export function activate(coda) { coda.on('thread.created', () => {}); }` }));
+    assert.deepEqual(failed(report), ['module.events']);
+    assert.match(report.failures[0].message, /没有订事件 thread\.created/);
+  });
+  test('an activate that throws nothing says so, and does not stop the check', async () => {
+    const { report } = await checkPlugin(modulePlugin({ main: `export function activate() { throw null; }` }));
+    assert.deepEqual(failed(report), ['module.activate']);
+    assert.match(report.failures[0].message, /activate 失败：null$/);
+  });
+  test('a forbidden from anywhere but coda.on is the module\'s own failure', async () => {
+    const { report } = await checkPlugin(modulePlugin({ main: `export function activate() { throw Object.assign(new Error('不许'), { code: 'forbidden' }); }` }));
+    assert.deepEqual(failed(report), ['module.activate']);
+  });
+  test('deactivate is called once the module has been activated, and its failure is the module\'s', async () => {
+    const gone = body => modulePlugin({ main: `import { writeFileSync } from 'node:fs';\n${BOTH}\nexport function deactivate() { writeFileSync(new URL('./gone', import.meta.url), 'x'); ${body} }` });
+    const dir = gone('');
+    assert.deepEqual(failed((await checkPlugin(dir)).report), []);
+    assert.ok(existsSync(join(dir, 'gone')), 'deactivate ran');
+    const { report } = await checkPlugin(gone(`throw new Error('收不拢');`));
+    assert.deepEqual(failed(report), ['module.deactivate']);
+    assert.match(report.failures[0].message, /deactivate 失败：Error: 收不拢$/);
+  });
+  test('what the test host does not provide ends the check of the module there, as a note, not a failure', async () => {
+    for (const [use, shown] of [[`coda.watch('other/x@1', () => {})`, 'watch'], [`coda.tell('s', 't')`, 'tell'], [`coda.pluginSetup.retry('x')`, 'pluginSetup.retry']]) {
+      const { report } = await checkPlugin(modulePlugin({ main: `export async function activate(coda) { await ${use}; }` }));
+      assert.deepEqual(failed(report), []);
+      assert.deepEqual(rules(report, 'warn'), ['module.registered']);
+      assert.match(messages(report, 'module.registered')[0], /^未完成核对/);
+      assert.deepEqual(rules(report, 'pass').filter(rule => rule.startsWith('module.')), []);
+      assert.equal(messages(report, 'note.host')[0], `模块用到测试宿主不提供的能力 coda.${shown}，模块一级只验到这里`);
+    }
+  });
+  test('an unsupported from another member than those the test host lacks is the module\'s failure', async () => {
+    const { report } = await checkPlugin(modulePlugin({ main: `export async function activate(coda) { await coda.query({ kind: 'mod/note@1', id: 'a' }, 'add', {}); }` }));
+    assert.deepEqual(failed(report), ['module.activate']);
+    assert.match(report.failures[0].message, /不是只读的操作/);
+    assert.deepEqual(messages(report, 'note.host'), []);
+  });
+  test('a deactivate that waits for what never finishes fails in time, as an activate does', async () => {
+    const main = `${BOTH}\nexport function deactivate() { return new Promise(() => {}); }`;
+    const { report } = await checkPlugin(modulePlugin({ main }), { limits: { ...limits, activate: 200 } });
+    assert.deepEqual(failed(report), ['module.deactivate']);
+    assert.match(report.failures[0].message, /deactivate 失败：Error: 0\.2 秒没完成$/);
+  });
+  test('deactivate is not called when the activate did not finish: failed, timed out or not fully checked', async () => {
+    const gone = (activate, limit) => {
+      const dir = modulePlugin({ main: `import { writeFileSync } from 'node:fs';\nexport ${activate}\nexport function deactivate() { writeFileSync(new URL('./gone', import.meta.url), 'x'); }` });
+      return checkPlugin(dir, { limits: { ...limits, ...(limit && { activate: limit }) } }).then(({ report }) => ({ report, ran: existsSync(join(dir, 'gone')) }));
+    };
+    const failing = await gone(`function activate() { throw new Error('起不来'); }`);
+    assert.deepEqual(failed(failing.report), ['module.activate']);
+    assert.equal(failing.ran, false);
+    const hanging = await gone(`function activate() { return new Promise(() => {}); }`, 200);
+    assert.deepEqual(failed(hanging.report), ['module.activate']);
+    assert.equal(hanging.ran, false);
+    const lacking = await gone(`async function activate(coda) { await coda.tell('s', 't'); }`);
+    assert.deepEqual(failed(lacking.report), []);
+    assert.match(messages(lacking.report, 'module.registered')[0], /^未完成核对/);
+    assert.equal(lacking.ran, false);
+  });
+  // A plugin `reader` with a module, using `liar/deploy@1` of its dependency `liar` (written beside it unless `beside` is false;
+  // its protocol is `definition`) by `groups`, and `more` of other protocols no definition of which is here.
+  const DEPLOY = { name: 'liar/deploy@1', title: '部署', spec: OBJECT, status: OBJECT, events: { 'deploy.started': { payload: { type: 'object' } } },
+    permissions: { watch: { title: '看部署', events: ['deploy.started'] }, read: { title: '读部署', read: true } } };
+  const EVENTS_ONLY = { name: DEPLOY.name, title: DEPLOY.title, events: DEPLOY.events, permissions: { watch: DEPLOY.permissions.watch } };
+  const reading = ({ main, beside = true, groups = ['watch'], definition = DEPLOY, more = {} }) => {
+    const top = mkdtempSync(join(tmpdir(), 'coda-plugin-check-uses-'));
+    temps.push(top);
+    const write = (id, manifest) => { mkdirSync(join(top, id)); writeFileSync(join(top, id, 'package.json'), JSON.stringify({ name: id, version: '1.0.0', ...manifest })); };
+    if (beside) write('liar', { contributes: { protocols: [definition] } });
+    write('reader', { main: 'main.mjs', engines: { coda: 3 }, categories: ['工作流程'], extensionDependencies: ['liar'], uses: { 'liar/deploy@1': groups, ...more }, contributes: {} });
+    writeFileSync(join(top, 'reader', 'main.mjs'), main);
+    return join(top, 'reader');
+  };
+  const LIST = `export async function activate(coda) { await coda.list('liar/deploy@1'); }`;
+  test('a coda.on of an event group of a dependency beside it passes; without the dependency the check is not completed', async () => {
+    const main = `export function activate(coda) { coda.on('deploy.started', () => {}); }`;
+    const beside = await checkPlugin(reading({ main }));
+    assert.deepEqual(failed(beside.report), []);
+    assert.deepEqual(rules(beside.report, 'pass').filter(rule => rule.startsWith('module.')), ['module.activate', 'module.registered']);
+    const apart = await checkPlugin(reading({ main, beside: false }));
+    assert.deepEqual(failed(apart.report), []);
+    assert.deepEqual(rules(apart.report, 'warn').filter(rule => rule === 'module.registered'), ['module.registered']);
+    assert.match(messages(apart.report, 'module.registered')[0], /^未完成核对：协议 liar\/deploy@1 的定义不在本地/);
+  });
+  test('a coda.list of records it may read is not completed: the test host registers no record types of others', async () => {
+    for (const beside of [true, false]) {
+      const { report } = await checkPlugin(reading({ main: LIST, beside, groups: ['read'] }));
+      assert.deepEqual(failed(report), []);
+      assert.match(messages(report, 'module.registered')[0], beside ? /^未完成核对：测试宿主登记不了已获授权的记录类型 liar\/deploy@1/ : /^未完成核对：协议 liar\/deploy@1 的定义不在本地/);
+      assert.deepEqual(rules(report, 'pass').filter(rule => rule.startsWith('module.')), []);
+    }
+  });
+  test('a coda.list of records of a protocol it uses only for events fails: the group it asked for does not read', async () => {
+    const { report } = await checkPlugin(reading({ main: LIST, groups: ['watch'] }));
+    assert.deepEqual(failed(report), ['module.activate']);
+    assert.match(report.failures[0].message, /须在清单的 uses 里写 liar\/deploy@1 的权限组 read/);
+  });
+  test('a coda.list of a protocol of events only is the module\'s failure, not the test host\'s limit', async () => {
+    const { report } = await checkPlugin(reading({ main: LIST, definition: EVENTS_ONLY }));
+    assert.deepEqual(failed(report), ['module.activate']);
+    assert.match(report.failures[0].message, /没有协议：liar\/deploy@1/);
+    assert.deepEqual(rules(report, 'warn').filter(rule => rule === 'module.registered'), []);
+  });
+  test('a coda.on outside the event groups it uses fails, with the dependency beside it or an unrelated one missing', async () => {
+    for (const more of [{}, { 'ghost/thing@1': ['read'] }]) {
+      // `deploy.started` is liar's, its group `watch` not among those used.
+      const { report } = await checkPlugin(reading({ main: `export function activate(coda) { coda.on('deploy.started', () => {}); }`, groups: ['read'], more }));
+      assert.deepEqual(failed(report), ['module.events']);
+      assert.deepEqual(rules(report, 'warn').filter(rule => rule === 'module.registered'), []);
+    }
+  });
+  test('a coda.on of a name no definition here has is not completed while a definition is missing', async () => {
+    const { report } = await checkPlugin(reading({ main: `export function activate(coda) { coda.on('ghost.thing', () => {}); }`, more: { 'ghost/thing@1': ['watch'] } }));
+    assert.deepEqual(failed(report), []);
+    assert.match(messages(report, 'module.registered')[0], /^未完成核对：协议 ghost\/thing@1 的定义不在本地/);
+  });
+  test('a member the test host lacks failing otherwise is the module\'s failure', async () => {
+    const { report } = await checkPlugin(modulePlugin({ main: `export async function activate(coda) { await coda.watch('other/x@1', '不是函数'); }` }));
+    assert.deepEqual(failed(report), ['module.activate']);
+    assert.match(report.failures[0].message, /watch\(集合, fn, 筛选\?\)/);
+  });
+  test('what the module ends with decides where it failed, not a later call that failed', async () => {
+    const main = `export async function activate(coda) {
+      let error;
+      try { await coda.watch('other/x@1', () => {}); } catch (e) { error = e; }
+      try { await coda.query({ kind: 'mod/note@1', id: 'a' }, 'add', {}); } catch {}
+      throw error;
+    }`;
+    const { report } = await checkPlugin(modulePlugin({ main }));
+    assert.deepEqual(failed(report), []);
+    assert.equal(messages(report, 'note.host')[0], '模块用到测试宿主不提供的能力 coda.watch，模块一级只验到这里');
+  });
+  test('the test host still answers what it lacks as the checker recognizes it', async () => {
+    const asked = { watch: c => c.watch('other/x@1', () => {}), 'services.register': c => c.services.register('s', () => {}), tell: c => c.tell('s', 't'),
+      api: c => c.api('/x'), environment: c => c.environment(), 'protocols.resolve': c => c.protocols.resolve({ kind: 'a@1', id: 'b' }, 's'),
+      'protocols.upload': c => c.protocols.upload('u'), 'pluginSetup.retry': c => c.pluginSetup.retry('x') };
+    assert.deepEqual(Object.keys(asked).sort(), Object.keys(NOT_PROVIDED).sort());
+    const host = createTestHost({ plugin: { id: 'x', path: tmpdir(), state: null } });
+    try {
+      for (const [member, ask] of Object.entries(asked)) {
+        const error = await ask(host.coda).then(() => null, e => e);
+        assert.deepEqual([error?.code, error?.message], [NOT_PROVIDED[member].code, NOT_PROVIDED[member].message], member);
+      }
+    } finally { await host.close(); }
+  });
+  test('a protocol whose definition is not here leaves the comparison undone, which is no pass', async () => {
+    const { report } = await checkPlugin(modulePlugin({ manifest: { contributes: { protocolImplementations: ['other/thing@1'] } }, main: `export function activate() {}` }));
+    assert.deepEqual(failed(report), []);
+    assert.match(messages(report, 'module.registered')[0], /^未完成核对：协议 other\/thing@1 的定义不在本地/);
+    assert.deepEqual(rules(report, 'pass').filter(rule => rule === 'module.registered'), []);
+  });
+  test('--manifest does not load the module', async () => {
+    const { report } = await checkPlugin(modulePlugin({ main: `throw new Error('不该被加载');` }), { manifestOnly: true });
+    assert.deepEqual(report.items.filter(item => item.level === 'module'), []);
+    assert.deepEqual(failed(report), []);
+  });
+});
+
+describe('engines.coda against what the plugin uses', () => {
+  test('a key or a definition of a later Level than engines.coda fails', async () => {
+    const { report } = await checkPlugin(modulePlugin({ manifest: { engines: { coda: 2 } } }), { manifestOnly: true });
+    assert.deepEqual(failed(report), ['manifest.level']);
+    assert.match(report.failures[0].message, /^用到 definition .+（Level 3），engines\.coda 至少写 3（现写 2）$/);
+  });
+  test('a key of contributes of a later Level than engines.coda fails, by the surface Coda has', async () => {
+    const dir = modulePlugin({ manifest: { engines: { coda: 1 }, contributes: { self: { ask: 'ask.sh' } } }, files: { 'ask.sh': '#!/bin/sh\n' } });
+    chmodSync(join(dir, 'ask.sh'), 0o755);
+    const { report } = await checkPlugin(dir, { manifestOnly: true });
+    assert.deepEqual(failed(report), ['manifest.level']);
+    assert.match(report.failures[0].message, /^用到 manifest contributes\.self（Level 2），engines\.coda 至少写 2（现写 1）$/);
+  });
+  test('a group of `uses` of a later Level than engines.coda fails', async () => {
+    const dir = modulePlugin({ manifest: { engines: { coda: 1 }, contributes: {}, uses: { 'coda/thread@1': ['read'] } } });
+    const report = new Report(), checked = checkManifest(dir, report.scope('manifest'));
+    checkLevel({ checked, say: report.scope('manifest'), note: report.scope('note'), surface: parseSurface('level 2\n1 manifest engines.coda\n2 coda/thread@1 read\n') });
+    assert.deepEqual(failed(report), ['manifest.level']);
+    assert.match(report.failures[0].message, /^用到 coda\/thread@1 read（Level 2），engines\.coda 至少写 2（现写 1）$/);
+  });
+  test('what the text of its files says only remarks on it', async () => {
+    const dir = modulePlugin({ manifest: { engines: { coda: 2 }, contributes: {} }, main: `export function activate(coda) { coda.tell('s', 'x'); }` });
+    const { report } = await checkPlugin(dir, { manifestOnly: true });
+    assert.deepEqual(failed(report), []);
+    assert.deepEqual(rules(report, 'warn'), ['manifest.level-text']);
+    assert.match(messages(report, 'manifest.level-text')[0], /module coda\.tell（Level 3），engines\.coda 写 2/);
+  });
+  test('without engines.coda it remarks, and gives the value to write', async () => {
+    const { report } = await checkPlugin(modulePlugin({ manifest: { engines: undefined } }), { manifestOnly: true });
+    assert.deepEqual(failed(report), []);
+    assert.match(messages(report, 'manifest.level')[0], /没写 engines\.coda：用到的项最高 Level 3.*"engines": \{ "coda": 3 \}/);
+  });
+  test('a plugin writing enough passes, and lists the trial surface it uses', async () => {
+    const { report } = await checkPlugin(modulePlugin({ main: `export function activate(coda) { coda.tell('s', 'x'); }` }), { manifestOnly: true });
+    assertPasses(report, ['manifest.level']);
+    assert.deepEqual(report.items.filter(item => item.level === 'note').map(item => item.message), ['用到试行面：模块接口 coda.tell，随 Coda 版本可能变']);
+  });
 });

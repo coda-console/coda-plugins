@@ -278,7 +278,7 @@ PR：链接
     <serviceTask id="tell-result" name="告诉发起会话验证结论" coda:action="tell-session">
       <extensionElements>
         <coda:param name="key" value='=run.id + ":verified:" + merged.commit' />
-        <coda:param name="text" value='="需求「" + init.title + "」：" + (if merged-inputs.only = "[]" then "没有运行合并后的流程，" else "已运行" + merged-inputs.picked + "，") + "真实环境验证" + (if verify.chose.yes then "通过。" else "有问题。") + "\n" + verify.note + "\n提交：" + merged.commit' />
+        <coda:param name="text" value='="需求「" + (if string length(init.title) > 40 then substring(init.title, 1, 40) + "…" else init.title) + "」：" + (if merged-inputs.only = "[]" then "没有运行合并后的流程，" else "已运行" + merged-inputs.picked + "，") + "真实环境验证" + (if verify.chose.yes then "通过。" else "有问题。") + "\n提交：" + substring(merged.commit, 1, 64) + "\n交付运行：coda://workflow-runs/" + run.id + "（验证备注在这次运行的 note 输出里）"' />
       </extensionElements>
     </serviceTask>
     <sequenceFlow id="result-done" sourceRef="tell-result" targetRef="done" />

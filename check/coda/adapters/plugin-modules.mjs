@@ -1,7 +1,7 @@
 // The plugin host's modules (docs/plugins.md「插件宿主」): each plugin's that has a `main`, loaded the first time anything
 // of it is needed, or when the backend says to, and given a `coda` of its own. What the runner (adapters/plugin-host-runner.mjs)
 // runs over Node's IPC channel with the backend, and the test host (adapters/plugin-test-host.mjs) over a channel of its own:
-// `send(message)` to the backend, `receive(message)` from it. `adopt(plugin, token)`: a plugin's `coda` made with no module
+// `send(message)` to the backend, `receive(message)` from it. `adopt(plugin, token, parts?)`: a plugin's `coda` made with no module
 // loaded, for whoever holds it to activate a module with; `stop()`: each module loaded ends what it started (`deactivate`).
 //
 // From the backend: `start { api: { url }, parts }`, `activate { plugin, token }` (before anything else of the plugin's),
@@ -42,10 +42,11 @@ export function pluginModules({ send }) {
   // What a handler of a call is given beside its input (coda#2749 3.1): the call's ID, its record, its `signal`, which goes
   // off as the backend calls it off, its `deadline` (milliseconds on the backend's clock, or none), `query`, queries made
   // under it, and `spawn`, processes started for it, the backend's request `under` which the call came; a doing call's
-  // handler (`run`, `resume`), `call` too, doing calls it makes (`doingOf`).
+  // handler (`run`, `resume`), `call` too, doing calls it makes, and, made from a page, `caller`, who is before it (`doingOf`).
   const contextOf = ({ id, record, deadline }, signal, { querying, spawnFor }, under) =>
     ({ id, record, signal, deadline, query: querying.within(signal, deadline), spawn: spawnFor(under, signal) });
-  const doingOf = (call, signal, made, under) => ({ ...contextOf(call, signal, made, under), call: made.calling.within(signal, call.deadline, under) });
+  const doingOf = (call, signal, made, under) => ({ ...contextOf(call, signal, made, under), call: made.calling.within(signal, call.deadline, under),
+    ...(call.caller ? { caller: call.caller } : {}) });
   // The processes the modules started through the backend (`spawn`), by the key this host gave each, until they have
   // exited or the host stops.
   const processes = new Map();
@@ -398,7 +399,7 @@ export function pluginModules({ send }) {
       } finally { cancels.delete(id); }
     },
     // A doing call of a protocol the plugin implements (docs/plugins.md「做事的操作」), as the backend hosts it
-    // (components/plugins/hosted-calls.mjs): `call` is `{ id, ref, record, operation, input, deadline }`, `ref` the call's on the call
+    // (components/plugins/hosted-calls.mjs): `call` is `{ id, ref, record, operation, input, deadline, caller? }`, `ref` the call's on the call
     // kernel (`{ from, id }`), which the doing calls its handler makes are made by. Its handler is given
     // besides `progress`, said to the backend as it comes, and `ask`, answered as the backend passes the answer on (one at
     // a time, as the backend has it: components/plugins/hosted-calls.mjs `question`). It ends with the call's outcome (`ending`). Not handled, nothing was done.
@@ -421,7 +422,7 @@ export function pluginModules({ send }) {
       });
     },
     // A doing call left by a host process that ended before its handler did (coda#2749 3.6), handed to its operation's
-    // `resume` in this one: `call` is `{ id, ref, record, operation, input, deadline, progress, canceled, halted }`, `halted`
+    // `resume` in this one: `call` is `{ id, ref, record, operation, input, deadline, caller?, progress, canceled, halted }`, `halted`
     // why its `ctx.signal` has gone off already (asked to be cancelled, or past its deadline, as `cancel`'s reason
     // crosses), or none. `resume` is given the call as `Interrupted` and a `ctx` as a query's handler is with `call`, and ends it as
     // `run` does; with none, null, for the backend to end it as it does then. Its `ctx.call` makes calls as the call's, as `run`'s
@@ -507,10 +508,19 @@ export function pluginModules({ send }) {
     await services.close(false);
     if (typeof module?.deactivate === 'function') await module.deactivate();
   })));
-  function adopt(plugin, token) {
-    const made = codaFor(plugin, [], token);
+  const adopted = new Map();
+  function adopt(plugin, token, provided = []) {
+    const made = codaFor(plugin, provided, token);
+    adopted.set(plugin.id, made);
     loading.set(plugin.id, Promise.resolve(made));
     return made.coda;
   }
-  return { receive, stop, adopt };
+  // What an adopted plugin's module has registered: its operations (`handle`), its own queries (`self.handle`: kept under
+  // `self`) and the events it handles (`on`).
+  function registered(plugin) {
+    const { operations, events } = adopted.get(plugin.id), kept = [...operations.keys()].map(id => JSON.parse(id));
+    return { operations: kept.filter(([kind]) => kind !== 'self').map(([kind, operation]) => ({ kind, operation })),
+      self: kept.filter(([kind]) => kind === 'self').map(([, name]) => name), events: events.names() };
+  }
+  return { receive, stop, adopt, registered };
 }

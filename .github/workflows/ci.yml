@@ -34,5 +34,10 @@ jobs:
         run: |
           for dir in templates/*/; do node bin/check.mjs "$dir" --live; done
           node bin/check.mjs templates/agent --live --prompt "wait 演示自主轮次"
+      - name: 模板 module 的测试（模板依赖的检查包用这一份，不用 npm 上已发布的）
+        run: |
+          mkdir -p templates/module/node_modules/@coda-console
+          ln -s "$PWD" templates/module/node_modules/@coda-console/plugin-check
+          node --test templates/module/test/main.test.mjs
       - name: 插件：只查清单（真握手与一轮要各家的 CLI 与登录，不在 CI 跑；入口用假的对端跑过的在 npm test 里）
         run: for dir in plugins/*/; do node bin/check.mjs "$dir" --manifest; done
