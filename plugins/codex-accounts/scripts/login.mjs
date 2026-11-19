@@ -1,4 +1,4 @@
-// Coda owns the login UI (signIn). Codex prints the device link/code and owns OAuth. Each attempt has a private home;
+// Coda owns the login UI (the `sign-in` operation, sign-in.mjs, runs this). Codex prints the device link/code and owns OAuth. Each attempt has a private home;
 // only a completed, checked login is committed to the plugin's store.
 import { spawn } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';

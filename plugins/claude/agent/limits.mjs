@@ -5,7 +5,7 @@ import { readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 // profile scope, so /usage cannot be asked with it; but the CLI sends a `rate_limit_event` whenever a window's rounded
 // percentage or reset time moves, with the fraction of the window used and when it resets (SDKRateLimitInfo). Each
 // session's entry (session.mjs) writes it to `limits.json` in this plugin's state; the「Claude」resource reads it
-// (scripts/resources.mjs, docs/plugins.md「内置插件：Claude」).
+// (scripts/resource.mjs, docs/plugins.md「内置插件：Claude」).
 // `unifiedWindows`, an internal field of newer CLIs, carries every window each time; the top-level fields, which every
 // CLI sends, only the one that limits now.
 const labels = { five_hour: '5 小时', seven_day: '7 天', seven_day_opus: 'Opus · 7 天', seven_day_sonnet: 'Sonnet · 7 天', seven_day_overage_included: 'Fable · 7 天' };

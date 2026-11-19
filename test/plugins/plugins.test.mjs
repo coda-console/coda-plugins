@@ -11,7 +11,7 @@ import { dirname, join, relative, sep } from 'node:path';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { checkPlugin } from '../../check/index.mjs';
-import { claudeBinary } from '../../plugins/claude/scripts/login.mjs';
+import { claudeBinary } from '../../plugins/claude/scripts/sign-in.mjs';
 import { codexCli } from '../../plugins/codex-accounts/scripts/app-server.mjs';
 import { pluginDir, resolveFrom } from './plugin.mjs';
 import { pluginEnv, run } from './command.mjs';
@@ -104,7 +104,7 @@ describe('the plugins here', () => {
     const cli = codexCli({ CODA_PLUGIN_DEPENDENCIES: JSON.stringify({ codex: pluginDir('codex') }) });
     assert.equal(relative(pluginDir('codex'), cli), join('node_modules', '@openai', 'codex', 'bin', 'codex.js'));
   });
-  test('the Claude panel\'s login finds the CLI beside the plugin\'s own Claude SDK', () => {
+  test('the Claude sign-in finds the CLI beside the plugin\'s own Claude SDK', () => {
     const binary = claudeBinary();
     assert.ok(binary && relative(join(pluginDir('claude'), 'node_modules', '@anthropic-ai'), binary).split(sep)[0].startsWith('claude-agent-sdk-'), binary);
   });

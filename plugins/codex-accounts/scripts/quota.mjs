@@ -36,7 +36,7 @@ function credits(result) {
 // adopting it.
 export function resource(account, chosen, { result, error }) {
   const name = line(account.alias), values = chosen ? [{ label: '状态', value: '正在使用' }] : [];
-  const actions = chosen ? [] : [{ label: '切换使用', action: 'select', args: { account: account.identity } }];
+  const buttons = chosen ? [] : [{ label: '切换使用', action: 'select', args: { account: account.identity } }];
   let problem = error ? `暂时无法获取额度：${error}` : null;
   if (!error) {
     const known = values.length;
@@ -45,18 +45,18 @@ export function resource(account, chosen, { result, error }) {
     if (resets) {
       const first = resets.listed[0], expires = first?.expiresAt == null ? null : unixTime(first.expiresAt);
       values.splice(VALUES - 1, Infinity, { label: '完全重置', value: `剩余 ${resets.count} 次`, ...(expires ? { time: expires } : {}) });
-      if (first && resets.count > 0) actions.push({ label: '使用完全重置', action: 'reset', args: { account: account.identity, creditId: first.id },
+      if (first && resets.count > 0) buttons.push({ label: '使用完全重置', action: 'reset', args: { account: account.identity, creditId: first.id },
         confirm: `使用 ${line(name, 60)} 的完全重置？\n用最早到期的那一次（${first.expiresAt == null ? '不会过期' : `${mark(first.expiresAt)} 到期`}）。成功后消耗 1 次，无法撤销。` });
     }
     if (values.length === known) problem = '暂时无法获取额度：Codex 没有给出额度窗口';
   }
-  actions.push({ label: '移除账号', action: 'remove', args: { account: account.identity },
+  buttons.push({ label: '移除账号', action: 'remove', args: { account: account.identity },
     confirm: `移除 ${line(name, 60)} 在插件中保存的登录？${chosen ? '\n移除后需要选择或添加账号才能继续会话。' : ''}` });
   // Who it is and in which workspace, as the Codex plugin says it (the manager's identity is the workspace's account ID
   // hashed): Coda's group view shows the same one once. None when its email is not known.
   const email = account.alias.includes('@') ? account.alias.trim().toLowerCase() : '';
   return { name, ...(email ? { identity: `codex:${createHash('sha256').update(`${email}\n${account.identity}`).digest('hex')}` } : {}),
-    values: values.slice(0, VALUES), ...(problem ? { error: line(problem) } : {}), actions };
+    values: values.slice(0, VALUES), ...(problem ? { error: line(problem) } : {}), buttons };
 }
 
 // Empty on a new machine: Coda offers the type's signIn under「添加资源」. Existing accounts can be added to or signed in
@@ -74,8 +74,9 @@ export async function resources(accounts, chosen, read, { at = 4 } = {}) {
       readings[i] = resource(account, chosen === account.identity, reading);
     }
   }));
-  const out = chosen && !accounts.some(a => a.identity === chosen) ? [{ name: '所选账号', error: '尚未在插件中登录：重新登录它，或切换到其他账号' }] : [];
-  // Within what a reading may print (64 KiB).
+  const out = chosen && !accounts.some(a => a.identity === chosen) ? [{ name: '所选账号', values: [], buttons: [], error: '尚未在插件中登录：重新登录它，或切换到其他账号' }] : [];
+  // The 当前选中的账号 when it is not signed in here comes first, as a row of its own; the record stays within 64 KiB, and
+  // rows past it are left out.
   let bytes = Buffer.byteLength(JSON.stringify(out));
   for (const each of readings) {
     const size = Buffer.byteLength(JSON.stringify(each)) + 1;
@@ -85,3 +86,7 @@ export async function resources(accounts, chosen, read, { at = 4 } = {}) {
   return { resources: out };
 }
 export const outcomes = { nothingToReset: '当前额度无需重置', alreadyRedeemed: '这次重置已被使用', noCredit: '这次重置已不可用' };
+
+// What the resources are when the accounts cannot be read (an old login that cannot be imported, say): the one row says why.
+// The type's record is still written, so its sign-in stays offered, which is how to add an account without the old login.
+export const unreadable = error => ({ resources: [{ name: 'Codex 账号', values: [], buttons: [], error: line(`暂时无法读取账号：${error.message}`) }] });
