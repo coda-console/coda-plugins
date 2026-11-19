@@ -209,5 +209,5 @@ test('a keychain that cannot be asked fails the command with the reason, also af
   const m = await machine(t);
   assert.equal((await record(m.env)).spec.resources[0].values.length, 5);
   await writeFile(join(m.home, 'keychain', keychain), `#!/bin/sh\necho 'boom: no keychain' >&2\nexit ${process.platform === 'darwin' ? 36 : 2}\n`, { mode: 0o755 });
-  await assert.rejects(record(m.env), { message: /^读不了(钥匙串|Secret Service)：/ });
+  await assert.rejects(record(m.env), { message: /^读不了 ?(钥匙串|Secret Service)：/ });
 });
