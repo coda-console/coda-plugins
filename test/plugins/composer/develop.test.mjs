@@ -267,6 +267,10 @@ test('块结束回到需求进行中：合进了写上提交和块的运行；�
   const landed = f.reason();
   for (const part of ['块「修好登录跳转」已合进需求分支 req/run-1', `提交 ${'c'.repeat(40)}`, 'coda://workflow-runs/piece-7']) assert.ok(landed.includes(part), part);
   assert.equal(landed, `块「修好登录跳转」已合进需求分支 req/run-1：提交 ${'c'.repeat(40)}，运行 coda://workflow-runs/piece-7。`);
+  f.run('piece-landed', { TITLE: '修好登录跳转', COMMIT: 'c'.repeat(40), PIECE_RUN: 'piece-7', BY: '' });
+  assert.equal(f.reason(), landed, '不是用户定的：写法不变');
+  f.run('piece-landed', { TITLE: '修好登录跳转', COMMIT: 'c'.repeat(40), PIECE_RUN: 'piece-7', BY: 'user' });
+  assert.equal(f.reason(), `${landed}\n这是用户定的：你对这一块的退回已满三次，这次又要退回，用户改成了不退，合进需求分支。`);
   f.dispatch('piece', '下一块\n任务');
   assert.equal(f.reason(), '', '下一块派出去就清掉');
   // 块已推进需求分支、随后删临时分支失败（piece.test.mjs「删临时分支失败」）：块失败，但不能说没合进、需求分支没动。
@@ -710,7 +714,7 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   assert.equal(next('piece-lost'), 'resume', '块失败回到进行中，需求运行不失败');
   assert.equal(next('piece'), 'piece-landed');
   assert.equal(next('piece-landed'), 'resume');
-  assert.deepEqual(params('piece-landed'), { TITLE: '=progress-result.title', COMMIT: '=piece.commit', PIECE_RUN: '=piece.run', REVIEWED: '=piece.reviewed' });
+  assert.deepEqual(params('piece-landed'), { TITLE: '=progress-result.title', COMMIT: '=piece.commit', PIECE_RUN: '=piece.run', REVIEWED: '=piece.reviewed', BY: '=piece.by' });
   assert.deepEqual(params('progress-result').FIXER, '=inputs.executor != null');
   // 填了整体评审者，提交验收的说明里写怎么评；批准卡写评没评过的是「整理整体评审」的 note。
   const overallSaid = [...doc.matchAll(/{{(.*?)}}/gs)].find(m => m[1].includes('inputs.overallReviewer'))[1];

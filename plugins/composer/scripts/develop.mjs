@@ -154,7 +154,7 @@ switch (action) {
   // 块合进了需求分支：下一次「需求进行中」写上合入的提交和块的运行。最后一次交付评成了的块记进 reviewedPieces，整体评审与自动合并看它。
   case 'piece-landed':
     if (env.REVIEWED === 'true') (state.reviewedPieces ??= []).push(env.PIECE_RUN);
-    back(`块「${env.TITLE}」已合进需求分支 ${state.branch}：提交 ${env.COMMIT}，运行 coda://workflow-runs/${env.PIECE_RUN}。`);
+    back(`块「${env.TITLE}」已合进需求分支 ${state.branch}：提交 ${env.COMMIT}，运行 coda://workflow-runs/${env.PIECE_RUN}。${env.BY === 'user' ? '\n这是用户定的：你对这一块的退回已满三次，这次又要退回，用户改成了不退，合进需求分支。' : ''}`);
     break;
   // 块没正常结束（失败、被取消，或主 Agent 在块里选了放弃）：引擎只把调用失败交给出错边界，不带被调运行的原因，所以指向本运行里调用的块。
   // 合入状态不能断言：piece.mjs 的 land 先推需求分支再删临时分支，删除失败时块失败但提交已经合进去了。

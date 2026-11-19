@@ -233,6 +233,7 @@ switch (action) {
     break;
   case 'decide': {
     const { choice, note = '' } = JSON.parse(env.REVIEW);
+    delete state.userLand;
     // 引擎不能按条件隐藏答复：没填备用执行者时「换备用执行者重做」照样能选，选了回到审查卡说明。
     const blocked = !note.trim() ? { revise: '退回修改必须在备注中写具体意见。', swap: '换备用执行者重做必须在备注中写为什么换、接手的人要注意什么。' }[choice]
       : choice === 'swap' && env.BACKUP !== 'true' ? '没有填备用执行者，不能换人重做；请改选别的答复。' : '';
@@ -252,16 +253,18 @@ switch (action) {
     output('route', blocked ? 'review' : stuck ? 'stuck' : choice === 'sync' ? 'revise' : choice);
     break;
   }
-  // 用户在「这一块三轮没过」的答复：继续修就把退回次数清零，按主 Agent 这次的意见退回（算新一轮的第一次）；放弃同主 Agent 选放弃。
+  // 用户在「这一块三轮没过」的答复：继续修就把退回次数清零，按主 Agent 这次的意见退回（算新一轮的第一次）；放弃同主 Agent 选放弃；
+  // 合进同主 Agent 选合进（走 land），记下是用户定的，直到主 Agent 下一次审查答复（decide）清掉。
   case 'stuck': {
     const { choice } = JSON.parse(env.STUCK);
     if (choice === 'continue') {
       state.returns = 0;
       sendBack(state.pending);
     }
+    if (choice === 'land') state.userLand = true;
     delete state.pending;
     save();
-    output('route', choice === 'continue' ? 'revise' : 'abandon');
+    output('route', choice === 'continue' ? 'revise' : choice);
     break;
   }
   // 先认是否已合入（重跑不合入第二次）：需求分支里有带本运行 trailer 的提交；跟上目标分支的块看推送前记下的 landing（从头重跑 execute 会换掉
@@ -308,6 +311,7 @@ switch (action) {
     output('commit', commit);
     // 这一块最后一次交付有没有评成的评审：需求运行只在唯一的一块评成过时跳过整体评审。
     output('reviewed', String(Boolean(state.outcome?.report && state.outcome.head === head)));
+    output('by', state.userLand ? 'user' : '');
     break;
   }
   // 主 Agent 放弃：删掉临时分支，需求分支不动；之后流程走到出错结束，调用方的出错边界接得到。临时分支已不在（重跑）就跳过。
