@@ -319,7 +319,8 @@ export function catalogAfter(plugin, { catalog, siblings }) {
 // What installing it brings, as the confirmation lists it: every command it runs, word for word (those it plugs into
 // another plugin's points too, which that plugin runs — those it writes for a point under a key of `contributes`, where
 // the point says, the catalog beside it (`catalog`) declaring it —, those it puts on every session's PATH, those
-// answering clients' requests, those implementing operations of its protocols (by kind, operation and file), and the one that makes each
+// answering clients' requests, those implementing operations of its protocols (by kind, operation and file), those giving
+// the records of its kinds and answering its own queries, and the one that makes each
 // machine ready for it, run as it is installed or updated), what a component's contribution point confirms (its
 // `confirm`: its agents and the commands it puts on sessions' PATH, the Agent Skills it lays into projects, the MCP
 // servers their agents start and what it tells every agent; the groups it brings, what it calls its capabilities; the
@@ -335,9 +336,12 @@ export function contributions(plugin, catalog = new Map(), defined = () => null)
     // directories it puts on their PATH.
     ...(plugin.environment?.length ? { environment: plugin.environment.map(({ name, value }) => ({ name, value })) } : {}),
     ...(plugin.path?.length ? { path: plugin.path } : {}),
-    ...(plugin.endpoints?.length ? { endpoints: plugin.endpoints.map(e => ({ id: e.id, command: e.command })) } : {}),
     // The files in its directory the backend runs as Coda calls an operation of a protocol it implements (docs/plugins.md「用命令实现操作」).
     ...(operationCommands(plugin).length ? { operations: operationCommands(plugin) } : {}),
+    // The files it runs to give the records of a kind it implements (docs/plugins.md「命令写记录」), by kind, and those
+    // answering its own queries (docs/plugins.md「只给自己用的查询」), by name.
+    ...(plugin.records?.length ? { records: plugin.records.map(({ kind, command }) => ({ kind, command })) } : {}),
+    ...(plugin.self ? { self: Object.entries(plugin.self).map(([name, command]) => ({ name, command })) } : {}),
     // Its module the plugin host runs (docs/plugins.md「插件宿主」): code of its own in Coda's Node on this machine.
     ...(plugin.main ? { main: plugin.main } : {}),
     // The pages it opens in the clients, by name, with where they stay and their icon there: they run in the client's

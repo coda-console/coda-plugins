@@ -98,7 +98,7 @@ export function implementsMissing(plugin, plugins, defined) {
 }
 // This Coda's API Level (docs/plugins.md「兼容」): what it offers plugins, counted. A manifest's `engines.coda` names the least
 // a plugin needs; one naming none needs 0, which any Coda has.
-export const API_LEVEL = 1;
+export const API_LEVEL = 2;
 // The API Level a package's registry metadata asks for in its `engines`: a positive integer, or its digits as text (what
 // npm's registry may make of one); undefined when it asks for none, null when it is anything else. A manifest read from
 // its directory has the schema's shape (plugin-rules.mjs readPlugin).
@@ -108,12 +108,17 @@ export function wantedLevel(engines) {
   if (Number.isInteger(value) && value >= 1) return value;
   return typeof value === 'string' && /^[1-9][0-9]{0,8}$/.test(value) ? Number(value) : null;
 }
+// The keys of `contributes` Coda once read and no longer does: a manifest still writing one was made for what Coda took away.
+const RETIRED_CONTRIBUTES = ['endpoints', 'groups', 'events'];
+// Those of them `contributes` writes, a manifest's or a version's registry metadata: what either is read with as its `retired`.
+export const retiredContributes = contributes => RETIRED_CONTRIBUTES.filter(key => Object.hasOwn(contributes ?? {}, key));
 // Whether a plugin runs on this machine (docs/plugins.md「兼容」): the one judgment reading a source, installing, the store and
 // the catalog take. Null when it does; else what it needs (`need`), what is missing (`missing`) and why, as the user is
 // told (`error`). `host`: this machine — its API Level (`level`), its backend's channel, the catalog beside the plugin and
 // Coda's own protocols (`defined`, as usesMissing takes them). A Level above this Coda's is Coda's to catch up with
-// (`coda`); short of that, a channel it is not for, or a protocol or permission group it uses or a protocol it implements
-// that is not here, is the plugin's to update (`update`): Coda no longer offers what it was made for.
+// (`coda`); short of that, a channel it is not for, a key of `contributes` Coda retired, or a protocol or permission group
+// it uses or a protocol it implements that is not here, is the plugin's to update (`update`): Coda no longer offers what it
+// was made for.
 export function compatibility(plugin, { catalog = new Map(), defined = () => null, ...here }) {
   const own = ownIncompatibility(plugin, here);
   if (own) return own;
@@ -124,10 +129,13 @@ export function compatibility(plugin, { catalog = new Map(), defined = () => nul
     : coda ? `本机的 Coda 已不提供协议 ${protocol}，插件需要更新` : `${used ? '用到' : '实现'}的协议 ${protocol} 不在这台机器上，也不随它一起装`;
   return { need: 'update', missing, error };
 }
-// What of that a plugin answers by itself, whatever else is here: the API Level it needs, the channels it is for.
+// What of that a plugin answers by itself, whatever else is here: the API Level it needs, the channels it is for, the keys of
+// `contributes` Coda retired it still writes (`retired`).
 export function ownIncompatibility(plugin, { level = API_LEVEL, channel = null }) {
   const wanted = plugin.engines?.coda ?? 0;
   if (wanted > level) return { need: 'coda', missing: { level: wanted }, error: `这个版本要 Coda API Level ≥ ${wanted}（本机 ${level}），请先升级 Coda` };
+  const retired = plugin.retired?.[0];
+  if (retired) return { need: 'update', missing: { contribution: retired }, error: `本机的 Coda 已不提供 contributes.${retired}，插件需要更新` };
   const channelProblem = pluginChannelProblem(plugin, channel);
   return channelProblem ? { need: 'update', missing: { channel }, error: channelProblem } : null;
 }

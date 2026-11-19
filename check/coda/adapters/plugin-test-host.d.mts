@@ -45,6 +45,9 @@ export interface CallOptions {
   onProgress?(value: Json): void;
 }
 
+/** Who is before the page that made a doing call: Coda's own client on this machine, or a device, with its name if known. */
+export type Caller = { local: true } | { device: string; name?: string };
+
 /** What a handler of a call is given beside its input. A handler of a query, and `resume`, have no `progress` nor `ask`. */
 export interface Context {
   /** This call's ID, the host's, unique: the same for the same caller's same request. */
@@ -75,6 +78,11 @@ export interface Context {
    * made before the process ended, its outcome waited on again.
    */
   call?: Coda['call'];
+  /**
+   * A doing call's, made from a plugin's page: who is before that page, as Coda knows it, never as the page says. None
+   * for a call a module (`coda.call`), a command (`coda call`) or a flow makes.
+   */
+  caller?: Caller;
 }
 
 /** Its return value is the result; what it throws, the failure (`coda.error`, or anything else as `handler_error`). */
@@ -283,7 +291,7 @@ export interface TestPlugin {
    * or `{ kind, commands }`, the operations in `commands` each implemented by a file of the plugin's (its path from `path`),
    * the rest its module's. Such a command is run as Coda runs it, its call in its environment as its `ctx` has it
    * (`CODA_RECORD_KIND`, `CODA_RECORD_ID`, `CODA_RECORD_KEY` of a record the plugin holds, `CODA_CALL_ID`, `CODA_DEADLINE`
-   * when it has one), but with no token: `coda progress`, `coda ask`, `coda query` and `coda self` in it are not answered
+   * when it has one, `CODA_CALLER`, the `caller` as JSON, when it has one), but with no token: `coda progress`, `coda ask`, `coda query` and `coda self` in it are not answered
    * by the test host.
    */
   protocolImplementations?: (string | ProtocolImplementation)[];
@@ -298,6 +306,8 @@ export interface TestCallOptions extends QueryOptions {
   onProgress?(value: Json): void;
   /** Answers a doing call's question (`ctx.ask`); without it, the question fails. */
   answer?(question: Json): Json | Promise<Json>;
+  /** A doing call's: made from a page this caller is before (`ctx.caller`, `CODA_CALLER`); without it, as a module's call. */
+  caller?: Caller;
 }
 
 export interface TestHost {
@@ -320,7 +330,7 @@ export interface TestHost {
    * `ctx.deadline`) or none: `canceled`, or the deadline past by the host's clock, its `ctx.signal` has gone off already
    * (`AbortError`, `TimeoutError`); its result, or its failure; with no `resume`, an `interrupted` failure of unknown effect.
    */
-  resume(record: Ref, operation: string, call?: { id?: string; input?: Json; progress?: Json | null; canceled?: boolean; deadline?: number | null }): Promise<Json>;
+  resume(record: Ref, operation: string, call?: { id?: string; input?: Json; progress?: Json | null; canceled?: boolean; deadline?: number | null; caller?: Caller }): Promise<Json>;
   /** Writes the plugin's settings again, as the backend does: `coda.settings.get` gives them, and `onChange` is told. */
   setSettings(settings: Json): Promise<void>;
   /** Delivers an event to the module as Coda does: to its handlers of the name (`coda.on`) now. */
