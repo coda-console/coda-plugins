@@ -1,0 +1,61 @@
+/* 好友页：只用 App 给的 --coda-* 变量，手机优先。 */
+:root {
+  font: var(--coda-font-size, 13px)/1.45 var(--coda-font, -apple-system, system-ui, sans-serif);
+  color: var(--coda-foreground, #1d1d1f); background: transparent;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+button:disabled { opacity: .5; cursor: default; }
+:focus-visible { outline: 2px solid var(--coda-accent, #0a84ff); outline-offset: 2px; border-radius: 6px; }
+.selectable { -webkit-user-select: text; user-select: text; }
+.mono { font-family: var(--coda-mono, ui-monospace, Menlo, monospace); font-size: .92em; }
+.secondary { color: var(--coda-secondary, #6e6e73); }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.spacer { flex: 1 1 auto; }
+
+.page { max-width: 760px; margin: 0 auto; padding: 12px 16px 24px; }
+section { margin-top: 20px; }
+section:first-child { margin-top: 0; }
+h2 { display: flex; align-items: center; gap: 6px; margin: 0 0 8px; font-size: 1em; font-weight: 600; }
+.count { padding: 0 6px; border-radius: 8px; font-size: .85em; background: var(--coda-fill, rgba(120, 120, 128, .12)); color: var(--coda-secondary, #6e6e73); }
+.card { padding: 12px; border-radius: var(--coda-radius-card, 12px); background: var(--coda-card, rgba(120, 120, 128, .08)); border: 1px solid var(--coda-separator, rgba(60, 60, 67, .18)); display: flex; flex-direction: column; gap: 10px; }
+.hint { margin: 0; color: var(--coda-secondary, #6e6e73); font-size: .92em; }
+.error { margin: 0; color: var(--coda-red, #ff3b30); overflow-wrap: anywhere; }
+.ok { margin: 0; color: var(--coda-green, #34c759); }
+.progress { margin: 0; color: var(--coda-secondary, #6e6e73); }
+.empty { margin: 0; color: var(--coda-secondary, #6e6e73); }
+
+.line { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
+label.field { display: flex; flex-direction: column; gap: 4px; flex: 1 1 140px; min-width: 0; }
+label.field > span { color: var(--coda-secondary, #6e6e73); font-size: .92em; }
+input, select, textarea { width: 100%; min-width: 0; padding: 7px 9px; border-radius: var(--coda-radius, 8px); border: 1px solid var(--coda-separator, rgba(60, 60, 67, .18)); background: var(--coda-background, transparent); }
+textarea { min-height: 84px; resize: vertical; }
+.btn { padding: 7px 14px; border-radius: var(--coda-radius, 8px); border: 0; font-weight: 600; background: var(--coda-accent, #0a84ff); color: #fff; }
+.btn.quiet { background: var(--coda-fill, rgba(120, 120, 128, .12)); color: var(--coda-foreground, #1d1d1f); }
+.btn.danger { background: color-mix(in srgb, var(--coda-red, #ff3b30) 14%, transparent); color: var(--coda-red, #ff3b30); }
+.btn.small { padding: 3px 10px; font-weight: 500; font-size: .92em; }
+details > summary { cursor: pointer; color: var(--coda-secondary, #6e6e73); }
+details[open] > summary { margin-bottom: 10px; }
+.fields { display: flex; flex-wrap: wrap; gap: 10px; }
+
+.identity { align-items: center; }
+.key { font-weight: 600; }
+.swatches { display: flex; gap: 8px; flex-wrap: wrap; }
+.swatch { width: 26px; height: 26px; border-radius: 50%; border: 2px solid transparent; padding: 0; }
+.swatch[aria-pressed="true"] { border-color: var(--coda-foreground, #1d1d1f); }
+
+.list { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--coda-separator, rgba(60, 60, 67, .18)); }
+.row { padding: 10px 0; border-bottom: 1px solid var(--coda-separator, rgba(60, 60, 67, .18)); display: flex; flex-direction: column; gap: 6px; }
+.avatar { width: 38px; height: 38px; flex: none; border-radius: 50%; display: grid; place-items: center; font-size: 1.25em; font-weight: 600; color: #fff; }
+.who { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
+.title { font-weight: 600; }
+.badge { padding: 1px 7px; border-radius: 6px; font-size: .88em; white-space: nowrap; background: var(--coda-fill, rgba(120, 120, 128, .12)); color: var(--coda-secondary, #6e6e73); }
+.badge.bound { background: color-mix(in srgb, var(--coda-green, #34c759) 16%, transparent); color: var(--coda-green, #34c759); }
+.badge.pending { background: color-mix(in srgb, var(--coda-orange, #ff9500) 16%, transparent); color: var(--coda-orange, #ff9500); }
+.badge.conflict { background: color-mix(in srgb, var(--coda-red, #ff3b30) 16%, transparent); color: var(--coda-red, #ff3b30); }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.c-blue { background: var(--coda-blue, #0a84ff); } .c-orange { background: var(--coda-orange, #ff9500); } .c-green { background: var(--coda-green, #34c759); }
+.c-purple { background: var(--coda-purple, #af52de); } .c-pink { background: var(--coda-pink, #ff2d55); } .c-teal { background: var(--coda-teal, #30b0c7); }
+.c-gray { background: var(--coda-tertiary, #8e8e93); }
