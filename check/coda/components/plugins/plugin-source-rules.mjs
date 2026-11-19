@@ -72,8 +72,8 @@ export function repoIdentity(repo) {
   return github ? `github.com/${github[1].toLowerCase()}` : repo.replace(/\.git$/, '');
 }
 // Whether two sources name the same package, at whatever version, or the same directory of the same repository, at whatever
-// commit: a built-in plugin and a version of it from where it comes from. A built-in package's copy names both, the
-// directory being the one its package says it is published from (components/plugins/plugin-rules.mjs dependencyPlugins).
+// commit: a package of the store and the plugin installed from it or from where it is published. A package read from npm
+// names both, the directory being the one its package says it is published from (components/plugins/plugin-rules.mjs publishedFrom).
 export const sameSource = (a, b) => !!a?.package && a.package === b?.package
   || !!(a?.repo && b?.repo) && repoIdentity(a.repo) === repoIdentity(b.repo) && (a.path ?? '') === (b.path ?? '');
 // Installed again from the same directory, another commit keeps the one it replaces as `previous`, so that going back is
@@ -97,6 +97,11 @@ export const fromElsewhere = source => source?.kind === 'git' || source?.kind ==
 // the integrity of its tarball, which names that tarball and no other. The one it had before likewise (`previousKey`).
 export const versionKey = source => source.kind === 'npm' ? createHash('sha256').update(source.integrity).digest('hex').slice(0, 40) : source.commit;
 export const previousKey = source => !source.previous ? null : source.kind === 'npm' ? versionKey({ kind: 'npm', integrity: source.previous.integrity }) : source.previous;
+// Whether `source` is going back from the one `installed`: its `previous`, from the same place (as nextSource keeps it) —
+// the same package at that version and integrity, or the same repository and directory at that commit.
+export const goesBack = (installed, source) => installed?.kind === source.kind && !!installed.previous && (source.kind === 'npm'
+  ? installed.package === source.package && installed.previous.version === source.version && installed.previous.integrity === source.integrity
+  : installed.repo === source.repo && installed.path === source.path && installed.previous === source.commit);
 
 // ---- npm ----
 // A package as npm names it (`name`, `@scope/name`) and the version of it wanted: one version, a dist-tag, or (empty) the
@@ -248,13 +253,10 @@ export function npmPackages(manifest, lock) {
     return { name, version: typeof version === 'string' ? version : String(range), ...(optional ? { optional: true } : {}) };
   });
 }
-// An installed built-in plugin (including an update from its own source) reserves its ID. Uninstalling frees the name;
-// an installed replacement from another source keeps it across refreshes and updates.
-export function builtinProblem(id, source, builtin, installed) {
-  const copy = builtin.get(id), row = installed.get(id);
-  if (!copy || !row || sameSource(copy.source, source)) return null;
-  if (fromElsewhere(row.source) && !sameSource(copy.source, row.source)) return null;
-  return `与内置插件 ${id} 同名${copy.source?.repo || copy.source?.package ? '，来源不同' : ''}，请先卸载内置插件再安装`;
+// A plugin from a repository or npm never takes the ID of one Coda ships (`builtin`), installed or not, nor Coda's own.
+export function builtinProblem(id, builtin) {
+  if (id === 'coda') return 'coda 是 Coda 自己的 ID';
+  return builtin.has(id) ? `${id} 是 Coda 自带插件的 ID` : null;
 }
 // What only one plugin may declare, as said to the user: what a component's contribution point says (its `claim`: an
 // agent, which sessions name by its ID alone; a concurrency group, which any process takes by its name; Git's credentials
@@ -265,12 +267,12 @@ export const claims = plugin => [...[...CONTRIBUTION_POINTS.values()].flatMap(po
   ...(plugin.views ?? []).flatMap(v => (v.handles ?? []).map(kind => `打开 ${kind} 引用`)),
   ...Object.values(plugin.extensionPoints ?? {}).filter(p => p.contributes).map(p => `扩展点 contributes.${p.contributes}`)];
 // Why a plugin cannot sit beside those this machine has (`catalog`: built-in and installed, by ID; `builtin`: the plugins
-// Coda ships, by ID), or null: an installed built-in one's ID from another source (builtinProblem), what a component's
+// Coda ships, by ID), or null: a built-in one's ID or Coda's own (builtinProblem), what a component's
 // contribution point lets only a built-in plugin bring (its `builtinOnly`, of the plugin read: why, none when it brings none
 // of it), or what only one plugin may declare (claims), a protocol or an event of one, another plugin declares. What it needs of the others — the plugins it depends on,
 // the points it plugs into or writes for (plugin-extensions.mjs offerProblem) — is checked once all of them are there.
-export function catalogProblem(plugin, catalog, builtin, installed) {
-  const named = builtinProblem(plugin.id, plugin.source, builtin, installed);
+export function catalogProblem(plugin, catalog, builtin) {
+  const named = builtinProblem(plugin.id, builtin);
   if (named) return named;
   if (plugin.source?.kind !== 'builtin') for (const point of CONTRIBUTION_POINTS.values()) {
     const only = point.builtinOnly?.(plugin);
@@ -385,13 +387,15 @@ export function candidate({ path, manifest, plugin, problem, fallback }, { catal
   const id = plugin?.id ?? (typeof manifestId(manifest) === 'string' ? manifestId(manifest) : fallback);
   const row = installed.get(id), along = plugin ? together(plugin, { catalog, installed, siblings, defined }) : [];
   const missing = along.filter(each => each.from === 'missing').map(each => each.id);
+  // One coming along from the source is installed as it is (components/plugins/plugins.mjs installFrom): judged by its ID the same.
+  const reserved = along.filter(each => each.from === 'source').map(each => [each.id, builtinProblem(each.id, builtin)]).find(([, why]) => why);
   // What this machine has once it is installed, those installed with it among them: the points it may write for.
   const after = plugin ? catalogAfter(plugin, { catalog, siblings }) : catalog;
   const incompatible = plugin ? installingIncompatibility(after, installed, id, { channel, level, defined }) : null;
   return { path, id, displayName: plugin?.displayName ?? (typeof manifest?.displayName === 'string' ? manifest.displayName : id),
     description: plugin?.description ?? (typeof manifest?.description === 'string' ? manifest.description : ''), version: plugin?.version ?? '',
-    installed: row ? row.source ?? builtin.get(id)?.source ?? { kind: 'builtin' } : null,
-    problem: problem ?? incompatible?.error ?? (plugin ? catalogProblem(plugin, catalog, builtin, installed) ?? offerProblem(plugin, after) : null)
+    installed: row ? row.source ?? { kind: 'builtin' } : null,
+    problem: problem ?? incompatible?.error ?? (plugin ? catalogProblem(plugin, catalog, builtin) ?? offerProblem(plugin, after) : null) ?? (reserved ? reserved.join('：') : null)
       ?? (missing.length ? `要一起装的 ${missing.join('、')} 不在这台机器上${plugin.source?.kind === 'npm' ? '' : '，也不在这个提交里'}` : null),
     ...(!problem && incompatible ? { incompatible } : {}), together: along.filter(each => each.from !== 'missing'),
     ...(plugin ? { contributes: contributions(plugin, after, defined) } : {}) };
