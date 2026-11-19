@@ -50,7 +50,7 @@ Coda 插件页的「商店」列出 Coda 自带的插件，以及 npm 上 `@coda
 - **改它们先在这里提 PR、合并**，发布流程发出新版本就完了：不用给 Coda 开改依赖的 PR，各台 Coda 自己更新（默认自动更新插件，也可在「设置 › 插件」点「检查更新」）。
 - **改了哪个插件就升哪个插件的 `version`**（`plugins/<id>/` 下任何文件，含 `package-lock.json`；只改 `test/` 不用）：Coda 的插件页与遥测按版本认插件。
   CI 在 PR 上运行 `node scripts/check-versions.mjs origin/<目标分支>` 核对；Dependabot 升 CLI、SDK 的 PR 也要补一个升版本的提交。
-- 只有 `@coda-console/<id>` 这个包能用这些名字。
+- Coda 自带插件的 ID 和 `coda`，外部插件不能用。
 - 测的是插件自己代码的用例在 `test/plugins/<id>/`；把 Coda 与入口合在一起测的（启动 Coda 后端、写进 Coda 的存储）留在 Coda，对它装的 npm 包跑。
   `review` 是一个流程，要 Coda 的流程引擎才跑得起来，它的用例都在 Coda。
 
