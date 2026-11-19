@@ -118,6 +118,13 @@ test('名片清洗：去控制字符、截断、颜色只认 #RRGGBB、缺字段
   for (const bad of [null, undefined, {}, { body: null }, { body: 'x' }, 7]) assert.deepEqual(sanitizeProfile(bad), { name: null, emoji: null, color: null });
 });
 
+test('名片颜色：好友插件的命名色板和 #RRGGBB 通过，其他一律丢弃', () => {
+  for (const color of ['blue', 'orange', 'green', 'purple', 'pink', 'teal', 'gray']) assert.equal(sanitizeProfile({ body: { color } }).color, color);
+  assert.equal(sanitizeProfile({ body: { color: ' Blue ' } }).color, null, '命名色只认小写原样，大小写不对不当作色板');
+  assert.equal(sanitizeProfile({ body: { color: '#ABCDEF' } }).color, '#abcdef');
+  for (const color of ['javascript:alert(1)', 'red', 'blue; background:url(x)', 'var(--x)', '#fff', '__proto__', 'constructor', '']) assert.equal(sanitizeProfile({ body: { color } }).color, null, color);
+});
+
 test('密钥短码取 ed25519: 后 8 位', () => {
   assert.equal(shortAuthor(`ed25519:${'0123456789abcdef'.repeat(4)}`), '01234567');
   assert.equal(shortAuthor(null), '未知');

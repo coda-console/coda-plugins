@@ -93,16 +93,19 @@ function blocksOf(list, clock) {
 
 const CONTROL = /[\p{Cc}\u{2028}\u{2029}\u{061C}\u{200E}\u{200F}\u{202A}-\u{202E}\u{2066}-\u{2069}]/gu;
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+// 好友插件（@coda-console/friends）发布的命名主题色。
+export const NAMED_COLORS = ['blue', 'orange', 'green', 'purple', 'pink', 'teal', 'gray'];
 export function cleanText(value, max) {
   if (typeof value !== 'string') return null;
   const text = value.replace(CONTROL, ' ').replace(/\s+/g, ' ').trim();
   const chars = Array.from(text);
   return chars.length ? chars.slice(0, max).join('').trim() || null : null;
 }
-/** 好友名片记录（kind `profile`）的 body 里能展示的部分：名字 ≤ 40 字、emoji ≤ 8 字、颜色只认 #RRGGBB。 */
+/** 好友名片记录（kind `profile`）的 body 里能展示的部分：名字 ≤ 40 字、emoji ≤ 8 字、颜色只认命名色板（blue、orange…）和 #RRGGBB。 */
 export function sanitizeProfile(record) {
   const body = record && typeof record === 'object' && record.body && typeof record.body === 'object' ? record.body : {};
-  const color = typeof body.color === 'string' && HEX_COLOR.test(body.color.trim()) ? body.color.trim().toLowerCase() : null;
+  const raw = typeof body.color === 'string' ? body.color.trim() : '';
+  const color = HEX_COLOR.test(raw) || NAMED_COLORS.includes(raw) ? raw.toLowerCase() : null;
   return { name: cleanText(body.name, 40), emoji: cleanText(body.emoji, 8), color };
 }
 /** `ed25519:` 后的前 8 位，名片缺失时顶替名字。 */

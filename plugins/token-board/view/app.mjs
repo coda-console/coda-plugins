@@ -7,6 +7,9 @@ const root = document.getElementById('root');
 const RANGES = [{ id: 'today', label: '今天' }, { id: '7d', label: '近 7 天' }, { id: '30d', label: '近 30 天' }];
 const PARTS = [['input', '输入'], ['output', '输出'], ['cacheRead', '缓存读'], ['cacheWrite', '缓存写']];
 const SAFE_COLOR = /^#[0-9a-fA-F]{6}$/;
+// 好友插件的命名主题色，换成固定色值再用；#RRGGBB 原样用，其他一律不用。
+const NAMED_COLORS = { blue: '#3b82f6', orange: '#f97316', green: '#22c55e', purple: '#a855f7', pink: '#ec4899', teal: '#14b8a6', gray: '#6b7280' };
+const colorOf = value => (Object.hasOwn(NAMED_COLORS, value) ? NAMED_COLORS[value] : SAFE_COLOR.test(value ?? '') ? value : null);
 
 const saved = coda.getState?.() ?? {};
 let range = RANGES.find(r => r.id === saved?.range)?.id ?? null;
@@ -170,7 +173,8 @@ function entry(e) {
   const open = expanded.has(e.author);
   const name = e.name ?? `${e.shortId}…`;
   const avatar = h('span', { class: 'avatar' }, e.emoji ?? '👤');
-  if (e.color && SAFE_COLOR.test(e.color)) avatar.style.background = `color-mix(in srgb, ${e.color} 28%, transparent)`;
+  const color = colorOf(e.color);
+  if (color) avatar.style.background = `color-mix(in srgb, ${color} 28%, transparent)`;
   const sub = !e.shared ? '还没有分享' : e.totalTokens || e.turns ? `${tokens(e.input)} 入 · ${tokens(e.output)} 出 · 缓存 ${tokens(e.cacheRead + e.cacheWrite)} · ${count(e.turns)} 回合` : `${rangeLabel()}没有用量`;
   return h('li', { class: 'row' },
     h('button', { class: 'head', 'aria-expanded': open ? 'true' : 'false', onclick: () => { if (open) expanded.delete(e.author); else expanded.add(e.author); render(); } },
