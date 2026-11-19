@@ -7,13 +7,21 @@
 // (FAKE_AGY_EXTRA_MODEL adds `extra`). `agy --version` says FAKE_AGY_VERSION (1.5.9); each native session/new is a line
 // `new <cwd>` in the file FAKE_AGY_LOG, after FAKE_AGY_DELAY ms; FAKE_AGY_FAIL_MODEL is a model it refuses to switch to,
 // FAKE_AGY_SIGNED_OUT has session/new answer -32000, FAKE_AGY_BAD_LEVEL is a model whose thinking level it says is `ultra`,
-// which is not one of the model's.
+// which is not one of the model's. `agy models` lists each model and level as agy does (`<id>-<level>\t<name>`, its progress
+// line on the standard error), a line `models` in FAKE_AGY_LOG_MODELS each time; FAKE_AGY_MODELS_FAIL has it fail.
 import { appendFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 
 if (process.argv[2] === '--version') { console.log(process.env.FAKE_AGY_VERSION ?? '1.5.9'); process.exit(0); }
 const MODES = ['default', 'accept-edits', 'auto', 'plan'];
 const LEVELS = { m: ['low', 'medium', 'high'], xh: ['low', 'medium', 'high', 'xhigh'], none: null, ...(process.env.FAKE_AGY_EXTRA_MODEL && { extra: ['low'] }) };
+if (process.argv[2] === 'models') {
+  if (process.env.FAKE_AGY_LOG_MODELS) appendFileSync(process.env.FAKE_AGY_LOG_MODELS, 'models\n');
+  process.stderr.write('Fetching available models...\n');
+  if (process.env.FAKE_AGY_MODELS_FAIL) { process.stderr.write('Error: not signed in\n'); process.exit(1); }
+  for (const [model, levels] of Object.entries(LEVELS).reverse()) for (const level of levels ?? [null]) process.stdout.write(level ? `${model}-${level}\t模型 ${model} (${level})\n` : `${model}\t模型 ${model}\n`);
+  process.exit(0);
+}
 const modes = new Map();
 const models = new Map();
 const asking = new Map();

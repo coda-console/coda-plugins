@@ -99,7 +99,7 @@
     "id": "changes",
     "displayName": "变更",
     "description": "看会话改了哪些文件",
-    "version": "1.0.3",
+    "version": "1.1.0",
     "category": "工作流程",
     "icon": {
       "symbol": "plusminus",
@@ -118,7 +118,6 @@
         "changes"
       ]
     },
-    "main": "main.mjs",
     "workflows": [],
     "services": [],
     "agents": [],
@@ -1001,7 +1000,7 @@
     "id": "workflows",
     "displayName": "工作流",
     "description": "流程模板、运行进度与流程图",
-    "version": "1.0.5",
+    "version": "1.1.0",
     "category": "工作流程",
     "icon": {
       "symbol": "flowchart.fill",
@@ -1019,20 +1018,19 @@
         "read",
         "workflows"
       ],
-      "coda/plugin@1": [
+      "coda/project@1": [
         "read"
       ],
       "coda/workflow@1": [
-        "read",
         "run",
         "configure"
       ],
       "coda/workflow-run@1": [
         "read",
-        "control"
+        "control",
+        "task"
       ]
     },
-    "main": "main.mjs",
     "workflows": [],
     "services": [],
     "agents": [],
@@ -1340,7 +1338,7 @@
     "id": "composer",
     "displayName": "输入框模式",
     "description": "交接、子会话、! 命令、Ultra 与循环",
-    "version": "12.0.0",
+    "version": "12.2.0",
     "category": "工作流程",
     "icon": {
       "symbol": "character.cursor.ibeam",
@@ -1351,8 +1349,8 @@
       "kind": "builtin",
       "package": "@coda-console/composer",
       "tag": "latest",
-      "version": "12.0.0",
-      "integrity": "sha512-z791eL8Rb7UPF1RAmwWDy69DXA6d0oa+kMyMKeAhwrpOWGpEPz4u2KelhyuL3BwhmX46MFM/byqFOgjffDYX1g==",
+      "version": "12.2.0",
+      "integrity": "sha512-kU/c1ACDNCLNGtclKXDebNXjyrvlubbxkR3VQDL7iyUNA3Ic/S/xSP2o1VQJM937+fbtJOSd2/ND51szrnFJlg==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/composer"
     },
@@ -1934,7 +1932,7 @@
     "id": "review",
     "displayName": "PR 生命流程",
     "description": "PR 从检查、评审到批准合并；简易开发",
-    "version": "4.0.0",
+    "version": "4.2.0",
     "category": "工作流程",
     "icon": {
       "symbol": "checkmark.bubble.fill",
@@ -1945,8 +1943,8 @@
       "kind": "builtin",
       "package": "@coda-console/review",
       "tag": "latest",
-      "version": "4.0.0",
-      "integrity": "sha512-+gtDCqQ6yOjeIh31actweYsWBHe4dbThMTPD2bsHpuD3E8iFgLTBs0a1pCNQGMb8C0JJLLnh4KLhKk24599pEw==",
+      "version": "4.2.0",
+      "integrity": "sha512-6dBPujNw968CvJW+A1kSfTG/GjAReUzpnFixWLeRpbbtuWqcNartzVDqyxj7LVCHtBdJbaF1YzA/xfFjO0BkJg==",
       "repo": "https://github.com/coda-console/coda-plugins.git",
       "path": "plugins/review"
     },

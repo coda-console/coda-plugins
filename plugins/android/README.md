@@ -22,7 +22,7 @@
 
 ## 设置
 
-修改设置后无须重启：`android.name`、`android.address`、`android.machines` 变化时，插件用新值重发整条组记录，旧组名随之消失，记录 ID 不变。
+修改设置后无须重启：`android.name`、`android.address`、`android.machines` 变化时，插件用新值重发整条组记录，旧组名随之消失，记录 ID 不变。设备正被借用时改 `android.name` 不生效（Coda 不允许改正在借出的组），归还后再保存一次设置。
 
 | 设置 | 默认值与作用 |
 | --- | --- |
