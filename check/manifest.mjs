@@ -11,7 +11,7 @@ import { inflateSync } from 'node:zlib';
 import './coda/application/contributions.mjs';
 import shipped from './coda/builtin.json' with { type: 'json' };
 import { manifestProblem } from '@coda-console/protocol/validate';
-import { offerProblem } from './coda/components/plugins/plugin-extensions.mjs';
+import { offerProblem, protocolDefinition, usesProblem } from './coda/components/plugins/plugin-extensions.mjs';
 import { choosesModelProviders, pluginEnv, readPlugin, resolveSettings } from './coda/components/plugins/plugin-rules.mjs';
 import { panelDeclarations } from './coda/resources/plugins/resources/panels/rules.mjs';
 
@@ -88,7 +88,6 @@ export function checkManifest(dir, say) {
   const settingCount = Object.keys(plugin.properties).length, names = list => list.map(x => x.name).join('、');
   if (settingCount) say.pass('manifest.settings', `设置 ${settingCount} 项`);
   if (plugin.workflows.length || plugin.capabilities.length) say.pass('manifest.capabilities', `流程 ${plugin.workflows.join('、') || '无'}，能力 ${plugin.capabilities.join('、') || '无'}`);
-  if (plugin.events?.length) say.pass('manifest.events', `发布的事件 ${names(plugin.events)}`);
   if (plugin.commands.length) say.pass('manifest.commands', `会话 PATH 上的命令 ${names(plugin.commands)}`);
   if (plugin.services.length) say.pass('manifest.services', `开启随包服务 ${plugin.services.join('、')}：没有已安装插件开启的服务不运行`);
   if (plugin.setup) say.pass('manifest.setup', '设置动作（contributes.setup）：一行命令；检查不运行它（可能装软件）');
@@ -108,6 +107,23 @@ export function checkManifest(dir, say) {
   const found = besideAll(dir, plugin.dependencies);
   const offered = offerProblem(plugin, new Map([...builtin, ...found]));
   if (offered) say.fail('manifest.offers', offered);
+  // The events its own protocols define (protocol definitions' `events`), and the permission groups of protocols it uses (`uses`; a
+  // group with `events` is subscribing to all of them), as far as the protocols are here: its own, Coda's core, or a plugin's beside it.
+  for (const definition of plugin.protocols ?? [])
+    for (const [name, event] of Object.entries(definition.events ?? {})) say.pass('manifest.events', `协议 ${definition.name} 定义的事件 ${name}：starts ${event.starts ?? true}，ends ${event.ends ?? false}`);
+  const protocols = new Map([...builtin, ...found, [plugin.id, plugin]]);
+  for (const [kind, groups] of Object.entries(plugin.uses ?? {})) {
+    const definition = protocolDefinition(kind, protocols, () => undefined);
+    // A group the definition lacks is Coda's to refuse (usesProblem, as it does at install); a definition not here is only said.
+    const problem = definition && usesProblem({ ...plugin, uses: { [kind]: groups } }, protocols, () => undefined);
+    if (problem) say.fail('manifest.uses', problem);
+    else for (const group of groups) {
+      const events = definition?.permissions[group].events;
+      if (!definition) say.info('manifest.events', `用到 ${kind} 的权限组 ${group}：协议定义不在本地，列不出事件`);
+      else if (events) say.pass('manifest.events', `用到 ${kind} 的事件组 ${group}：${events.join('、')}`);
+      else say.pass('manifest.events', `用到 ${kind} 的权限组 ${group}：不含事件`);
+    }
+  }
   // Its resource types, or the panels before them, as the resources plugin reads what is written for its point once that is
   // of the point's schema: one declaring types has those alone.
   const format = plugin.offers?.resources ? 'resources' : 'panels', what = format === 'resources' ? '资源类型' : '面板';

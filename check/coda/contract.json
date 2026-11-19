@@ -3,7 +3,7 @@
   "packages": {
     "@0dep/piso": "5.2.0",
     "@agentclientprotocol/sdk": "2.6.0",
-    "@coda-console/protocol": "6.12.0",
+    "@coda-console/protocol": "git+https://github.com/coda-console/coda-protocol.git#130a4d43e8c670bd6988513f48ede4d326fe8ac4",
     "ajv": "8.20.0",
     "yaml": "2.9.1"
   },
