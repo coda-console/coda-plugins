@@ -51,16 +51,24 @@ const tryMerge = tip => {
 const removeTemp = () => { if (git('ls-remote', '--heads', 'origin', `refs/heads/${state.temp}`)) git('push', 'origin', '--delete', `refs/heads/${state.temp}`); };
 
 // 评审账本（README.md「评审」）：state.findings 只记必须修，编号 #1、#2……，之后几轮沿用；status 为 open、resolved、withdrawn、superseded（完整评审作废）、
-// declined（主 Agent 在退回意见里定了不改，流程自己关掉，不再交评审者）。state.reviewed 是上次评过的 head，state.outcome 是这次交付的评审结果，state.notes 是历次退回意见。
+// declined（主 Agent 在退回意见里定了不改，流程自己关掉，不再交评审者）。state.reviewed 是上次评成的 head，换人或合并需求分支时清掉（到下一次评成为止都是完整评审），state.outcome 是这次交付的评审结果，state.notes 是历次退回意见。
 const FLAG = { contract: '对外契约', scope: '任务范围' };
 const flat = text => String(text ?? '').replace(/\s*[\r\n]+\s*/g, ' ');
 const open = () => (state.findings ?? []).filter(f => f.status === 'open');
-const mustLine = f => `- ${f.id} ${flat(f.title)}${f.location ? `（${flat(f.location)}）` : ''}${FLAG[f.kind] ? `〔评审者认为涉及${FLAG[f.kind]}〕` : ''}`;
-// 交给评审者的任务书：原文后附主 Agent 历次的退回意见，只作参考。
-const reviewTask = () => !state.notes?.length ? state.task : `${state.task}
+const findingLine = f => `- ${f.id} ${flat(f.title)}${f.location ? `（${flat(f.location)}）` : ''}`;
+// 复评坚持的条目后面跟评审者给的理由（现在的代码还缺什么）。
+const mustLine = f => `${findingLine(f)}${FLAG[f.kind] ? `〔评审者认为涉及${FLAG[f.kind]}〕` : ''}${f.reason ? `\n  现在的代码还缺：${flat(f.reason)}` : ''}`;
+// 交给评审者的任务书：原文后附主 Agent 历次的退回意见，只作参考；评审者只看到意见里的编号，所以定了不改、已经关闭的条目另列标题和位置。
+const reviewTask = () => {
+  const declined = (state.findings ?? []).filter(f => f.status === 'declined');
+  return !state.notes?.length ? state.task : `${state.task}
 
 下面是主 Agent 历次「退回修改」的意见（原文，按先后），其中写明不改的已经关闭，不要再提：
-${state.notes.map((note, i) => `第 ${i + 1} 次：\n${note}`).join('\n\n')}`;
+${state.notes.map((note, i) => `第 ${i + 1} 次：\n${note}`).join('\n\n')}${declined.length ? `
+
+主 Agent 定了不改、已经关闭的条目（编号对应上面意见里的编号）：
+${declined.map(findingLine).join('\n')}` : ''}`;
+};
 // 主 Agent 的「退回修改」：同一执行会话按备注修，之后复评。备注里单独一行写的「#编号 不改」就此关掉那条：
 // 行首只允许空白或列表符号 -、*，「不改」后面是行尾，或「：」「:」「，」「,」接理由；句子中间提到的不算。
 const sendBack = note => {
@@ -76,10 +84,12 @@ const sendBack = note => {
 // 审查卡的「评审结论」：必须修逐条（一句加位置），小问题、原有问题只给条数。
 const reviewText = reviewer => {
   const o = state.outcome;
+  // 复评没评成：上一轮还开着的必须修照旧列出，注明这一轮没有重新核实。
+  const unverified = () => { const must = open(); return state.full || !must.length ? '' : `\n上一轮还开着的必须修（这一轮没有重新核实）：\n${must.map(mustLine).join('\n')}`; };
   if (!reviewer) return '没填评审者，这一块不评审。';
   if (state.checks?.head !== state.executor.head) return '项目检查没通过，这次交付没有评审。';
-  if (o.lost) return `没评成：调用 review-commit 没有成功，原因见本运行 coda://workflow-runs/${env.GITHUB_RUN_ID} 的「评审这次交付」（workflow_status）。`;
-  if (!o.report) return `没评成：${o.line}`;
+  if (o.lost) return `没评成：调用 review-commit 没有成功，原因见本运行 coda://workflow-runs/${env.GITHUB_RUN_ID} 的「评审这次交付」（workflow_status）。${unverified()}`;
+  if (!o.report) return `没评成：${o.line}${unverified()}`;
   const must = open();
   return [o.line, `必须修 ${must.length} 条${must.length ? '：' : '。'}`, ...must.map(mustLine), `小问题 ${o.nit} 条，原有问题 ${o.existing} 条。`,
     ...o.flagged.length ? [`其中评审者认为涉及对外契约或任务范围的：${o.flagged.map(t => `「${flat(t)}」`).join('、')}`] : [],
@@ -184,7 +194,10 @@ switch (action) {
     else {
       const ledger = state.findings ??= [], findings = JSON.parse(env.FINDINGS);
       if (state.full) for (const f of ledger) if (f.status === 'open') f.status = 'superseded';
-      for (const { id, status } of JSON.parse(env.RESOLUTIONS)) if (status !== 'upheld') ledger.find(f => f.id === id).status = status;
+      for (const { id, status, reason } of JSON.parse(env.RESOLUTIONS)) {
+        const f = ledger.find(f => f.id === id);
+        if (status === 'upheld') f.reason = reason; else f.status = status;
+      }
       for (const { level, kind, title, location, detail } of findings.filter(f => f.level === 'must')) ledger.push({ id: `#${ledger.length + 1}`, level, kind, title, location, detail, status: 'open' });
       state.round = (state.round ?? 0) + 1;
       const report = join(env.CODA_ARTIFACTS, `review-${state.round}.md`);
@@ -232,8 +245,8 @@ switch (action) {
     } else if (choice === 'revise') sendBack(note);
     else {
       state.feedback = choice === 'sync' ? `${syncText(state.branch)}${note.trim() ? `\n\n主 Agent 的备注：\n${note}` : ''}` : note;
-      // 换人从需求分支 head 重做、合并需求分支会带进别的块：之后的评审都是完整评审。
-      if (choice === 'sync' || choice === 'swap') state.rereview = false;
+      // 换人从需求分支 head 重做、合并需求分支会带进别的块：之后的评审都是完整评审，直到有一次评成。
+      if (choice === 'sync' || choice === 'swap') delete state.reviewed;
     }
     save();
     output('route', blocked ? 'review' : stuck ? 'stuck' : choice === 'sync' ? 'revise' : choice);
@@ -273,7 +286,7 @@ switch (action) {
       // 合并后的树和需求分支 head 的树相同：交付没有可合入的内容，不生成空提交，交回执行者。
       if (merged.tree && merged.tree === git('rev-parse', `${tip}^{tree}`)) {
         state.feedback = `这次交付相对需求分支 ${state.branch} 没有改动，没有可以合入的内容：先对照需求分支确认这一项的改动都已提交到当前分支，补上后再回报。`;
-        state.rereview = false;
+        delete state.reviewed;
         save();
         output('route', 'sync');
         break;
@@ -285,7 +298,7 @@ switch (action) {
     }
     if (!commit) {
       state.feedback = syncText(state.branch, files);
-      state.rereview = false;
+      delete state.reviewed;
       save();
       output('route', 'sync');
       break;
