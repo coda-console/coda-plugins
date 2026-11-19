@@ -7,6 +7,7 @@
 import { CORE_PROTOCOLS } from '@coda-console/protocol/protocol';
 import { pointProblem, valueProblem } from '@coda-console/protocol/validate';
 import { requireCondition as check } from '../../domain/errors.mjs';
+import { payloadProblem } from '../protocols/protocol-events.mjs';
 
 const code = 'invalid_plugin';
 
@@ -141,13 +142,45 @@ export function installingIncompatibility(catalog, installed, id, here) {
   }
   return null;
 }
+// Whether plugin `plugin` (its catalog entry) defines kind `kind` or implements it: what it may reach of it and the events it may publish.
+export const ownsProtocol = (plugin, kind) =>
+  (plugin.protocols ?? []).some(one => one.name === kind) || (plugin.protocolImplementations ?? []).some(one => one.kind === kind);
+// What an event is about: `<kind>:<ID>`, at most 500 characters.
+const SUBJECT = /^(?=.{3,500}$)[a-z][a-z0-9_-]*:\S+$/;
+// Why plugin `plugin` (its catalog entry) may not publish (by `how`: publish-event, coda event, coda.emit) event `name`
+// about `subject`, saying `payload`, or null — `event` the event of that name on this machine (components/protocols/
+// protocol-events.mjs), or none: it is one of a protocol the plugin defines or implements and not Coda's own (`codaOnly`:
+// application/host-protocols.mjs; a plugin implementing coda/thread@1 publishes no session's), about a subject it names (not a
+// session's: `thread:` is Coda's), saying a JSON object its payload schema has, no more than 100 KB of it and nothing of
+// `coda` (Coda's, beside it in a run). Where it is published is the backend's to check, as the backend and the plugin host
+// for a plugin's tests (adapters/plugin-test-host.mjs) both check the rest.
+export function publishedProblem(how, plugin, event, { name, subject, payload }) {
+  if (!event || !ownsProtocol(plugin, event.kind)) return `插件 ${plugin.id} 定义或实现的协议里没有事件 ${name}`;
+  if (event.codaOnly) return `插件 ${plugin.id} 不能发布事件 ${name}：它是 Coda 自己的协议 ${event.kind} 的，只由 Coda 发布`;
+  if (typeof subject !== 'string' || !SUBJECT.test(subject) || subject.startsWith('thread:'))
+    return `${how} 的 subject 须为「<种类>:<标识>」（如 pull_request:<地址>），不超过 500 个字符；thread: 是会话的，由 Coda 发布`;
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return `${how} 的 payload 须为 JSON 对象`;
+  if (JSON.stringify(payload).length > 100_000) return `${how} 的 payload 不能超过 100 KB`;
+  if (Object.hasOwn(payload, 'coda')) return `${how} 的 payload 顶层不能有 coda，那是 Coda 的`;
+  const problem = payloadProblem(event, payload);
+  return problem && `${how} 的 payload ${problem}`;
+}
+// The events plugin `plugin` (its catalog entry) subscribes to: those of the event groups it uses of the protocols this
+// machine has with `plugins` (the catalog) and Coda's own (`defined`, as `protocolDefinition` takes them). What its module
+// may handle (`coda.on`), as the backend delivers them (./plugin-events.mjs) and the plugin host for a plugin's tests has it.
+export function subscribed(plugin, plugins, defined) {
+  return Object.entries(plugin.uses ?? {}).flatMap(([kind, groups]) => {
+    const permissions = protocolDefinition(kind, plugins, defined)?.permissions ?? {};
+    return groups.flatMap(group => permissions[group]?.events ?? []);
+  });
+}
 // Why plugin `plugin` (its catalog entry) may not reach kind `kind` as `need` says — an operation of it (`{ operation }`),
 // a stream of its records (`{ stream }`), or reading its records (`'read'`; writing them is the implementer's alone) —
 // `definition` its protocol's (`protocolDefinition`), or null (docs/plugins.md「用到的权限」). The plugin that implements or
 // defines the kind may; any other, a built-in one too, only by a group of the kind's it uses that has the operation or the
 // stream, or reads its records. An operation or a stream in no group is open to no plugin.
 export function usesRefusal(plugin, kind, need, definition) {
-  if ((plugin.protocols ?? []).some(one => one.name === kind) || (plugin.protocolImplementations ?? []).some(one => one.kind === kind)) return null;
+  if (ownsProtocol(plugin, kind)) return null;
   const groups = Object.entries(definition?.permissions ?? {}), used = new Set(plugin.uses?.[kind] ?? []);
   const covers = ([, group]) => typeof need === 'string' ? group[need] === true
     : need.stream !== undefined ? (group.streams ?? []).includes(need.stream) : (group.operations ?? []).includes(need.operation);

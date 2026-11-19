@@ -8,13 +8,14 @@
 // `open { instance, plugin, view, context, caller }`, `query { plugin, request, deadline }`, `run { plugin, call }` and
 // `resume { plugin, call }`, and `cancel { id, reason }` of any of them, `mode { plugin, mode, hook, context }` (a request
 // each), and `message`, `callProgress { id, value }` (a `call`'s progress, by the request's ID), `context`, `close { instance, … }`, `changed { watch, events }`, `settingsChanged { plugin,
-// settings }` (a notice, no answer: the plugin's own settings, as `Plugins.setSettings` wrote them), and `output`, `exited`
+// settings }` (a notice, no answer: the plugin's own settings, as `Plugins.setSettings` wrote them), `event { plugin, event }`
+// (a notice: an event it subscribes to, adapters/plugin-events.mjs), and `output`, `exited`
 // of a process it started (adapters/process-relay.mjs). To it: `post { instance, message }`, `change { instance,
 // collection, type, id, object }`, `unwatch { watch }`, `cancel { id }` of a `query` or a `question`, `progress { run,
 // value }` of a `run`, `drained`, `kill` of a process, and the requests `environment { of, project }`, `settings`
 // (the plugin's own, as they are now), `watch { collection, selector }`, `tell { session, text }`, `part { part, method,
 // args }`, `provider { method, args }`, `serviceRegister { id, port, secret }`, `serviceUnregister { id }`, `query { record,
-// operation, input, timeout, deadline }`, `call { record, operation, input, id, timeout, deadline, under, progress }`, `spawn { under, process, command, args, cwd, env, name }`, each with the
+// operation, input, timeout, deadline }`, `emit { name, data, subject, project }`, `call { record, operation, input, id, timeout, deadline, under, progress }`, `spawn { under, process, command, args, cwd, env, name }`, each with the
 // module's `token`, by which the backend knows the plugin it is of, never by what it names; and `question { run,
 // question }` and `input` of a process. A query's
 // failure crosses as `failureOf` says it, as one that did nothing (`none`); a run's end, and a resume's, as its outcome, or a resume's as null when the
@@ -25,6 +26,7 @@ import { pluginServices } from './plugin-stream-services.mjs';
 import { pathToFileURL } from 'node:url';
 import { callingAPI, canceled, codaError, failed, failureOf, givenUp, providerAPI, queryingAPI } from './provider-api.mjs';
 import { queryId } from './plugin-command.mjs';
+import { pluginEvents } from './plugin-events.mjs';
 
 export function pluginModules({ send }) {
   // This machine's Coda, as `start` gives it: its address only. Each module reaches it with its own plugin's token, given
@@ -205,6 +207,8 @@ export function pluginModules({ send }) {
     const environment = (project = null, options = {}) => asks('environment', { of: options?.plugin ?? null, project });
     // The listeners of `settings.onChange`: this plugin's own settings only, told as they are written.
     const settingsChanges = new Set();
+    // The events it publishes and those it subscribes to (adapters/plugin-events.mjs).
+    const events = pluginEvents(plugin, asks, fire);
     // A query through the backend's unified call, the caller this plugin by its token.
     const querying = queryingAPI({ send: (request, signal) => asks('query', request, signal), plugin, operations });
     // A doing call through the call kernel, from this plugin's address (docs/plugins.md「做事的调用」).
@@ -285,8 +289,10 @@ export function pluginModules({ send }) {
       // Coda's own collections, as a page watches the module's (`threads`: the sessions this machine lists), or a kind's
       // records by its protocol's name.
       watch: watching,
+      // Events (docs/plugins.md「事件」): `emit` one of its plugin's protocols, `on` one it subscribes to.
+      ...events.api,
     });
-    return { coda, views, protocols, operations, services, querying, calling, spawnFor, settingsChanges };
+    return { coda, views, protocols, operations, services, querying, calling, spawnFor, settingsChanges, events };
   }
 
   // Loaded once, as the backend activates it (`activate`, the first time anything of it is needed); what else comes for it
@@ -449,6 +455,11 @@ export function pluginModules({ send }) {
       const made = await loading.get(plugin)?.catch(() => null);
       if (made) fire(made.settingsChanges, settings);
     },
+    // An event the plugin subscribes to (`coda.on`), as the backend delivers it to a module activated already.
+    async event({ plugin, event }) {
+      const made = await loading.get(plugin)?.catch(() => null);
+      made?.events.deliver(event);
+    },
     close({ instance }) {
       const shown = instances.get(instance);
       if (shown) { instances.delete(instance); fire(shown.listeners.close); }
@@ -491,8 +502,8 @@ export function pluginModules({ send }) {
   let stopping = null;
   const stop = () => stopping ??= Promise.allSettled([...processes.values()].map(entry => entry.interrupt())
     .concat([...loading.values()].map(async loaded => {
-    const { module, services, settingsChanges } = await loaded;
-    settingsChanges.clear();
+    const { module, services, settingsChanges, events } = await loaded;
+    settingsChanges.clear(); events.clear();
     await services.close(false);
     if (typeof module?.deactivate === 'function') await module.deactivate();
   })));

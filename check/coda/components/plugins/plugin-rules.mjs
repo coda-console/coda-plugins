@@ -24,8 +24,6 @@ import { claims, COMMIT, INTEGRITY, NPM_VERSION, npmPluginId, repoAddress, sourc
 import { CONTRIBUTION_POINTS } from './contribution-points.mjs';
 
 const ID = /^[a-z][a-z0-9-]{0,39}$/;
-// The domains of the events Coda publishes itself; a plugin's are of a domain of its own (schemas/events.json).
-export const CODA_EVENT_DOMAINS = ['workflow', 'session', 'user'];
 // Plugins that ship with Coda, as VS Code's built-in extensions ship with it: updated with Coda itself.
 export const BUILTIN_DIR = fileURLToPath(new URL('../../resources/plugins/', import.meta.url));
 // The package the backend runs from (the runtime clone's, or the release's), whose npm dependencies may be built-in plugins
