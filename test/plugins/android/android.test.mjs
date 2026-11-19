@@ -174,7 +174,8 @@ test('组记录按插件整份替换，不写 status：状态归 Coda，别的�
 
 test('activate：先登记 lend、return，再写记录；借还照原样做并答 {}；停用后撤掉', async t => {
   const dir = state(t), machine = 'f9bf79a1-61c3-40ce-b656-aec1bc7c60b8';
-  const host = phoneHost([]), { coda } = host, order = [];
+  const host = createTestHost({ plugin: { id: 'android', protocolImplementations: [GROUP] }, settings: { 'android.machines': [{ id: machine }] } });
+  const { coda } = host, order = [];
   t.after(() => host.close());
   const calls = [], fake = { settings: structuredClone(before) };
   const run = async lines => {
@@ -184,7 +185,7 @@ test('activate：先登记 lend、return，再写记录；借还照原样做并�
     return lines[0].startsWith('getprop ') || lines[0].startsWith('ip ') ? properties(lines) : '';
   };
   const record = { kind: GROUP, id: null };
-  await activate({ ...coda, plugin: { ...coda.plugin, state: dir }, settings: { get: async () => ({ 'android.machines': [{ id: machine }] }) },
+  await activate({ ...coda, plugin: { ...coda.plugin, state: dir }, 
     handle: (...args) => { order.push(`handle ${args[1]}`); return coda.handle(...args); },
     replace: (...args) => { order.push('replace'); return coda.replace(...args); } }, run);
   assert.deepEqual(order, ['handle lend', 'handle return', 'replace']);
@@ -201,4 +202,62 @@ test('activate：先登记 lend、return，再写记录；借还照原样做并�
   assert.ok(calls.some(lines => lines === CLEAN_UP));
   deactivate();
   await assert.rejects(() => host.call(record, 'lend', { holder }), { code: 'not_found' });
+});
+
+test('改 android.name、android.machines 后用新值重发：记录 ID 不变，旧名随全集替换消失；停用后不再重发', async t => {
+  const dir = state(t), machine = 'f9bf79a1-61c3-40ce-b656-aec1bc7c60b8';
+  const host = createTestHost({ plugin: { id: 'android', protocolImplementations: [GROUP] }, settings: {} });
+  t.after(() => host.close());
+  const rows = () => host.coda.list(GROUP, { scope: 'local' });
+  // The listeners of `onChange` are not waited for by the host: the rows are read again until they show the change.
+  const after = async (change, ready) => {
+    await host.setSettings(change);
+    for (let tries = 0; tries < 100; tries++) {
+      const found = await rows();
+      if (ready(found[0].spec)) return found;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    return rows();
+  };
+  await activate({ ...host.coda, plugin: { ...host.coda.plugin, state: dir } }, properties);
+  let [first, ...more] = await rows();
+  assert.deepEqual([first.spec.name, first.spec.reach, more.length], ['device:xiaomi', undefined, 0]);
+  let [row, ...rest] = await after({ 'android.name': 'phone' }, spec => spec.name === 'device:phone');
+  assert.deepEqual([row.id, row.spec.name, rest.length], [first.id, 'device:phone', 0]);
+  const reach = { scope: 'machines', machines: [machine] };
+  [row, ...rest] = await after({ 'android.name': 'phone', 'android.machines': [{ id: machine }] }, spec => spec.reach);
+  assert.deepEqual([row.id, row.spec.name, row.spec.reach, row.spec.links, rest.length],
+    [first.id, 'device:phone', reach, [{ protocol: 'adb', endpoint: '192.168.1.7:5555', reach }], 0]);
+  [row, ...rest] = await after({ 'android.name': 'phone' }, spec => !spec.reach);
+  assert.deepEqual([row.id, row.spec.reach, row.spec.links, rest.length], [first.id, undefined, undefined, 0]);
+  deactivate();
+  [row] = await after({ 'android.name': 'later' }, spec => spec.name === 'device:later');
+  assert.equal(row.spec.name, 'device:phone');
+});
+
+test('设置连着变两次：第一次的 wlan0 查询挂住，第二次先保存，放行后记录仍是第二次的组名与名单', async t => {
+  const dir = state(t), machine = 'f9bf79a1-61c3-40ce-b656-aec1bc7c60b8';
+  const host = createTestHost({ plugin: { id: 'android', protocolImplementations: [GROUP] }, settings: {} });
+  t.after(() => host.close());
+  let release, asked;
+  const hung = new Promise(resolve => { release = resolve; });
+  const reached = new Promise(resolve => { asked = resolve; });
+  const run = async lines => {
+    if (!lines[0].startsWith('ip ')) return properties(lines);
+    asked();
+    await hung;
+    return '192.168.1.7';
+  };
+  await activate({ ...host.coda, plugin: { ...host.coda.plugin, state: dir } }, run);
+  await host.setSettings({ 'android.name': 'one', 'android.machines': [{ id: machine }] });
+  await reached;
+  await host.setSettings({ 'android.name': 'two' });
+  // Time for the second to publish first, were it not made to wait.
+  const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+  await wait(100);
+  release();
+  await wait(100);
+  const [row, ...rest] = await host.coda.list(GROUP, { scope: 'local' });
+  assert.deepEqual([row.spec.name, row.spec.reach, row.spec.links, rest.length], ['device:two', undefined, undefined, 0]);
+  deactivate();
 });

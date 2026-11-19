@@ -1,12 +1,14 @@
 # 安卓手机
 
+0.4.1：改 `android.name`、`android.address`、`android.machines` 后立即用新值重发组记录，不再要重启插件（原先只在激活时读一次设置，改了组名不变，要重载插件宿主才生效）。
+
 0.4.0（接口破坏性变更）：本体与链路合成一条 `coda/group@1` 记录，不再写 `coda/entity@1`、`coda/link@1`；借出、归还改为记录上的 `lend`、`return` 操作（`coda.handle('coda/group@1', …)`），不再用 `coda.resources.handle`；设置读 `coda.settings.get`。`android.name` 现在是不含空白的设备名，组名为 `device:<设备名>`，默认取 `ro.product.device`（原先取型号 `ro.product.model`，有空格，当不了组名），型号改放 `attributes.model`。需要先带这套记录的 Coda。只给预览渠道。
 
 升级注意：原先的本体、链路记录由 Coda 的迁移删去，借着的手机不接续；组名由 `entity:<UUID>` 改为 `device:<设备名>`，请在 xiaomi 上把 `android.name` 设成 `xiaomi`（与 testbed 的写法一致），testbed 的 `testbed.entities` 不再用。
 
-版本 0.4.0。只装在 xiaomi（Mi 10 Pro）的 Debian chroot 后端，插件宿主须为 root，能用 `nsenter -t 1 -m -- sh` 执行 Android 命令。不依赖 host 插件，也不把手机登记为构建执行环境；无运行时依赖。
+版本 0.4.1。只装在 xiaomi（Mi 10 Pro）的 Debian chroot 后端，插件宿主须为 root，能用 `nsenter -t 1 -m -- sh` 执行 Android 命令。不依赖 host 插件，也不把手机登记为构建执行环境；无运行时依赖。
 
-启动时写一条 `coda/group@1`（key 为 `device`），保管方就是 xiaomi。记录 ID 由宿主按后端、插件、种类和 key 派生，每次启动相同，插件不生成也不保存；插件只写 `spec`，`status`（`free`、`lending`、`held`、`returning`、`failed` 与持有方）归 Coda。勿在两个实例同时声明。记录的 `spec`：
+启动时、设置变化时写一条 `coda/group@1`（key 为 `device`），保管方就是 xiaomi。记录 ID 由宿主按后端、插件、种类和 key 派生，每次启动相同，插件不生成也不保存；插件只写 `spec`，`status`（`free`、`lending`、`held`、`returning`、`failed` 与持有方）归 Coda。勿在两个实例同时声明。记录的 `spec`：
 
 | 字段 | 内容 |
 | --- | --- |
@@ -20,7 +22,7 @@
 
 ## 设置
 
-修改设置后重启插件生效。
+修改设置后无须重启：`android.name`、`android.address`、`android.machines` 变化时，插件用新值重发整条组记录，旧组名随之消失，记录 ID 不变。
 
 | 设置 | 默认值与作用 |
 | --- | --- |
