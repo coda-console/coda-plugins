@@ -1,6 +1,7 @@
 // Types of what a plugin's module queries and answers by (docs/plugins.md「调用」, coda#2749 3.1 and 第 7 节), and of the test
 // host (plugin-test-host.mjs), and of the records (coda#2749 3.7). All on the trial surface: they may change from one
 // version of Coda to the next. Only these members of `coda` are typed here; the others are not yet.
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Readable, Writable } from 'node:stream';
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
@@ -45,8 +46,12 @@ export interface CallOptions {
   onProgress?(value: Json): void;
 }
 
-/** Who is before the page that made a doing call: Coda's own client on this machine, or a device, with its name if known. */
-export type Caller = { local: true } | { device: string; name?: string };
+/**
+ * Who is before the page that made a doing call: Coda's own client on this machine, or a device, with its name if known.
+ * A call forwarded to the backend that holds the record has no `local` but the `machine` it was made from (that one's ID),
+ * a device kept as it is: so `{ machine }` or `{ machine, device, name? }`.
+ */
+export type Caller = { local: true } | { device: string; name?: string } | { machine: string; device?: string; name?: string };
 
 /** What a handler of a call is given beside its input. A handler of a query, and `resume`, have no `progress` nor `ask`. */
 export interface Context {
@@ -271,6 +276,56 @@ export interface Coda {
    * subject. What it throws is logged; the event is not given again.
    */
   on(name: string, fn: (event: Event) => void): Disposable;
+  /** Trial. The plugin itself: its ID, its directory, and its state directory on this backend (`null` when the backend has no state root). */
+  plugin: Readonly<{ id: string; path: string; state: string | null }>;
+  /**
+   * Trial. Local streaming services: `register` serves `id` on this machine (an HTTP handler, given the caller as Coda
+   * names it), done once Coda has it; the handle's `dispose()` withdraws it and closes its connections.
+   */
+  services: Readonly<{
+    register(id: string, handler: (request: IncomingMessage, response: ServerResponse, caller: Readonly<{ [key: string]: Json }>) => void | Promise<void>): Promise<{ dispose(): Promise<void> }>;
+  }>;
+  /** Trial. The plugin's own pages: `register` the provider of a view the manifest declares (`contributes.views`); its `open` is called each time one is opened. */
+  views: Readonly<{ register(id: string, provider: { open(view: ViewInstance): void | Promise<void> }): { dispose(): void } }>;
+  /** Trial. Protocol contributions and the records' services: a contributor to another protocol's records, a record's service as this machine reaches it, and an upload of this machine's. */
+  protocols: Readonly<{
+    register(kind: string, key: string, handler: (object: Json, key: string) => Json | Promise<Json>): Disposable;
+    resolve(record: Ref, service: string): Promise<{ resource: Ref; url: string; headers: Record<string, string> }>;
+    upload(id: string): Promise<{ id: string; name: string; size: number; path: string; mime?: string; duration?: number; [key: string]: Json | undefined }>;
+  }>;
+  /** Trial. Tells a session's agent something, told with its next turn and waking nothing; `told` is `false` for a session archived. */
+  tell(session: string, text: string): Promise<{ told: boolean }>;
+  /** Trial. This machine's Coda API as its clients reach it (the path after `/v1/`): GET without a body, POST with one; the answer is JSON. */
+  api(path: string, body?: Json): Promise<Json>;
+  /** Trial. What Coda gives every process of the plugin's, for one the module starts itself; `plugin` is another installed plugin's, for a command of its the module runs. */
+  environment(project?: string | null, options?: { plugin?: string }): Promise<Record<string, string>>;
+  /** Trial. Runs an installed plugin's environment setup again, asked as this plugin; the test host's fails (`unsupported`). */
+  pluginSetup: Readonly<{ retry(plugin: string): Promise<Json> }>;
+}
+
+/** A page of the plugin's, opened, as its view provider's `open` is given it. */
+export interface ViewInstance {
+  /** This opening's ID. */
+  id: string;
+  /** The view's ID. */
+  view: string;
+  /** What the page was opened beside: the session's ID, and the `args` of the button or card that opened it; `null` for none. */
+  context: { session: string | null; args: Json | null };
+  /** Who opened it: this machine's client (`{ local: true }`) or a device. */
+  caller: { local?: boolean; device?: string; name?: string };
+  /** Sends the page a message; `false` once the page is gone. */
+  postMessage(message: Json): boolean;
+  /** A collection handed to the page: `set` and `delete` give whether the page was told anything. */
+  collection(name: string): {
+    set(id: string, object: { [key: string]: Json }): boolean;
+    delete(id: string): boolean;
+    get(id: string): { [key: string]: Json } | undefined;
+    keys(): string[];
+  };
+  /** Each returns a handle that stops it. */
+  onMessage(fn: (message: Json) => void): Disposable;
+  onContext(fn: (context: ViewInstance['context']) => void): Disposable;
+  onClose(fn: () => void): Disposable;
 }
 
 /** A protocol a plugin implements, some of its operations by commands: operation name to the file that implements it. */
@@ -312,7 +367,7 @@ export interface TestCallOptions extends QueryOptions {
 
 export interface TestHost {
   /** The plugin's `coda`, for its module's `activate`. */
-  coda: Coda & Record<string, unknown>;
+  coda: Coda;
   /**
    * Calls the plugin's module as a caller would: a query, or a doing call, which ends as its handler ends it. An operation
    * one of its commands implements is run as Coda runs it: its input on standard input, its exit code first, its output
@@ -340,6 +395,8 @@ export interface TestHost {
    * protocol the plugin defines or implements, not one of Coda's own, as its payload schema has it.
    */
   emitted: Omit<Event, 'publisher'>[];
+  /** What the module has registered so far: its operations (`coda.handle`), its own queries' names (`coda.self.handle`) and the events it handles (`coda.on`). */
+  registered(): { operations: { kind: string; operation: string }[]; self: string[]; events: string[] };
   close(): Promise<unknown>;
 }
 

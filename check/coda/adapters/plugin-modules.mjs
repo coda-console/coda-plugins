@@ -1,7 +1,7 @@
 // The plugin host's modules (docs/plugins.md「插件宿主」): each plugin's that has a `main`, loaded the first time anything
 // of it is needed, or when the backend says to, and given a `coda` of its own. What the runner (adapters/plugin-host-runner.mjs)
 // runs over Node's IPC channel with the backend, and the test host (adapters/plugin-test-host.mjs) over a channel of its own:
-// `send(message)` to the backend, `receive(message)` from it. `adopt(plugin, token)`: a plugin's `coda` made with no module
+// `send(message)` to the backend, `receive(message)` from it. `adopt(plugin, token, parts?)`: a plugin's `coda` made with no module
 // loaded, for whoever holds it to activate a module with; `stop()`: each module loaded ends what it started (`deactivate`).
 //
 // From the backend: `start { api: { url }, parts }`, `activate { plugin, token }` (before anything else of the plugin's),
@@ -508,10 +508,19 @@ export function pluginModules({ send }) {
     await services.close(false);
     if (typeof module?.deactivate === 'function') await module.deactivate();
   })));
-  function adopt(plugin, token) {
-    const made = codaFor(plugin, [], token);
+  const adopted = new Map();
+  function adopt(plugin, token, provided = []) {
+    const made = codaFor(plugin, provided, token);
+    adopted.set(plugin.id, made);
     loading.set(plugin.id, Promise.resolve(made));
     return made.coda;
   }
-  return { receive, stop, adopt };
+  // What an adopted plugin's module has registered: its operations (`handle`), its own queries (`self.handle`: kept under
+  // `self`) and the events it handles (`on`).
+  function registered(plugin) {
+    const { operations, events } = adopted.get(plugin.id), kept = [...operations.keys()].map(id => JSON.parse(id));
+    return { operations: kept.filter(([kind]) => kind !== 'self').map(([kind, operation]) => ({ kind, operation })),
+      self: kept.filter(([kind]) => kind === 'self').map(([, name]) => name), events: events.names() };
+  }
+  return { receive, stop, adopt, registered };
 }

@@ -98,7 +98,7 @@ export function implementsMissing(plugin, plugins, defined) {
 }
 // This Coda's API Level (docs/plugins.md「兼容」): what it offers plugins, counted. A manifest's `engines.coda` names the least
 // a plugin needs; one naming none needs 0, which any Coda has.
-export const API_LEVEL = 2;
+export const API_LEVEL = 3;
 // The API Level a package's registry metadata asks for in its `engines`: a positive integer, or its digits as text (what
 // npm's registry may make of one); undefined when it asks for none, null when it is anything else. A manifest read from
 // its directory has the schema's shape (plugin-rules.mjs readPlugin).

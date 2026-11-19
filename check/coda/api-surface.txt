@@ -1,0 +1,335 @@
+# Coda 对插件开放的面与 API Level：集合，任何变化都算动了骨架。由 node scripts/skeleton.mjs update 生成，规则见脚本开头。
+1 bridge window.coda.args
+1 bridge window.coda.back
+1 bridge window.coda.call
+1 bridge window.coda.choose
+1 bridge window.coda.close
+1 bridge window.coda.copy
+1 bridge window.coda.deliver
+1 bridge window.coda.describe
+1 bridge window.coda.float
+1 bridge window.coda.get
+1 bridge window.coda.getState
+1 bridge window.coda.header
+1 bridge window.coda.inline
+1 bridge window.coda.items
+1 bridge window.coda.keyboard
+1 bridge window.coda.layout
+1 bridge window.coda.lib
+1 bridge window.coda.list
+1 bridge window.coda.machine
+1 bridge window.coda.machines
+1 bridge window.coda.on
+1 bridge window.coda.open
+1 bridge window.coda.place
+1 bridge window.coda.platform
+1 bridge window.coda.plugin
+1 bridge window.coda.postMessage
+1 bridge window.coda.query
+1 bridge window.coda.relay
+1 bridge window.coda.screens
+1 bridge window.coda.scroll
+1 bridge window.coda.scrollTo
+1 bridge window.coda.self
+1 bridge window.coda.session
+1 bridge window.coda.setState
+1 bridge window.coda.toolbar
+1 bridge window.coda.view
+1 bridge window.coda.warm
+1 bridge window.coda.watch
+1 coda/agent@1
+1 coda/agent@1 read
+1 coda/agent@1 read records
+1 coda/agent@1 spawn
+1 coda/agent@1 spawn operation spawn
+1 coda/card@1
+1 coda/composer@1
+1 coda/composer@1 read
+1 coda/composer@1 read records
+1 coda/environment@1
+1 coda/environment@1 read
+1 coda/environment@1 read operation list
+1 coda/environment@1 read operation read
+1 coda/environment@1 read records
+1 coda/group@1
+1 coda/group@1 read
+1 coda/group@1 read records
+1 coda/plugin@1
+1 coda/plugin@1 read
+1 coda/plugin@1 read records
+1 coda/project@1
+1 coda/project@1 read
+1 coda/project@1 read operation branches
+1 coda/project@1 read records
+1 coda/run@1
+1 coda/run@1 cancel
+1 coda/run@1 cancel operation cancel
+1 coda/run@1 read
+1 coda/run@1 read records
+1 coda/session@1
+1 coda/session@1 post
+1 coda/session@1 post operation post
+1 coda/session@1 read
+1 coda/session@1 read operation read
+1 coda/session@1 read records
+1 coda/submission@1
+1 coda/thread@1
+1 coda/thread@1 append-draft
+1 coda/thread@1 append-draft operation append-draft
+1 coda/thread@1 changes
+1 coda/thread@1 changes operation changes
+1 coda/thread@1 changes stream diff
+1 coda/thread@1 read
+1 coda/thread@1 read records
+1 coda/thread@1 workflows
+1 coda/thread@1 workflows operation workflows
+1 coda/thread@1 workspace
+1 coda/thread@1 workspace operation workspace
+1 coda/workflow-run@1
+1 coda/workflow-run@1 control
+1 coda/workflow-run@1 control operation cancel
+1 coda/workflow-run@1 control operation message
+1 coda/workflow-run@1 control operation renew
+1 coda/workflow-run@1 control operation resume
+1 coda/workflow-run@1 read
+1 coda/workflow-run@1 read operation graph
+1 coda/workflow-run@1 read operation history
+1 coda/workflow-run@1 read operation private
+1 coda/workflow-run@1 read operation recent
+1 coda/workflow-run@1 read operation requirement
+1 coda/workflow-run@1 read records
+1 coda/workflow-run@1 read stream log
+1 coda/workflow-run@1 task
+1 coda/workflow-run@1 task operation task
+1 coda/workflow@1
+1 coda/workflow@1 configure
+1 coda/workflow@1 configure operation save-settings
+1 coda/workflow@1 read
+1 coda/workflow@1 read operation settings
+1 coda/workflow@1 read records
+1 coda/workflow@1 run
+1 coda/workflow@1 run operation run
+1 manifest activationEvents
+1 manifest categories
+1 manifest coda
+1 manifest coda.channels
+1 manifest contributes
+1 manifest contributes.agents
+1 manifest contributes.capabilities
+1 manifest contributes.commands
+1 manifest contributes.composerModes
+1 manifest contributes.configuration
+1 manifest contributes.environment
+1 manifest contributes.extensionPoints
+1 manifest contributes.extensions
+1 manifest contributes.gitCredentials
+1 manifest contributes.instructions
+1 manifest contributes.mcpServers
+1 manifest contributes.modelProviders
+1 manifest contributes.path
+1 manifest contributes.processes
+1 manifest contributes.protocolImplementations
+1 manifest contributes.protocols
+1 manifest contributes.repositories
+1 manifest contributes.services
+1 manifest contributes.setup
+1 manifest contributes.skills
+1 manifest contributes.views
+1 manifest description
+1 manifest displayName
+1 manifest engines
+1 manifest engines.coda
+1 manifest extensionDependencies
+1 manifest icon
+1 manifest id
+1 manifest main
+1 manifest name
+1 manifest uses
+1 manifest version
+1 stable manifest categories
+1 stable manifest contributes.agents[].command
+1 stable manifest contributes.agents[].configFiles[]
+1 stable manifest contributes.agents[].displayName
+1 stable manifest contributes.agents[].icon.dark
+1 stable manifest contributes.agents[].icon.light
+1 stable manifest contributes.agents[].icon.template
+1 stable manifest contributes.agents[].id
+1 stable manifest contributes.agents[].modes.auto
+1 stable manifest contributes.agents[].modes.full
+1 stable manifest contributes.agents[].modes.note
+1 stable manifest contributes.agents[].modes.title
+1 stable manifest contributes.agents[].modes.unset
+1 stable manifest contributes.agents[].setupHint
+1 stable manifest contributes.agents[].skillsDir
+1 stable manifest contributes.commands[].command
+1 stable manifest contributes.commands[].name
+1 stable manifest contributes.configuration.properties.*
+1 stable manifest contributes.configuration.properties.*.additionalProperties.properties.*
+1 stable manifest contributes.configuration.properties.*.additionalProperties.properties.*.default
+1 stable manifest contributes.configuration.properties.*.additionalProperties.properties.*.description
+1 stable manifest contributes.configuration.properties.*.additionalProperties.properties.*.enum
+1 stable manifest contributes.configuration.properties.*.additionalProperties.properties.*.format
+1 stable manifest contributes.configuration.properties.*.additionalProperties.properties.*.format values coda-model-provider
+1 stable manifest contributes.configuration.properties.*.additionalProperties.properties.*.format values coda-model-url
+1 stable manifest contributes.configuration.properties.*.additionalProperties.properties.*.minimum
+1 stable manifest contributes.configuration.properties.*.additionalProperties.properties.*.modelApi
+1 stable manifest contributes.configuration.properties.*.additionalProperties.properties.*.modelKey
+1 stable manifest contributes.configuration.properties.*.additionalProperties.properties.*.order
+1 stable manifest contributes.configuration.properties.*.additionalProperties.properties.*.title
+1 stable manifest contributes.configuration.properties.*.additionalProperties.properties.*.type
+1 stable manifest contributes.configuration.properties.*.additionalProperties.properties.*.writeOnly
+1 stable manifest contributes.configuration.properties.*.additionalProperties.type
+1 stable manifest contributes.configuration.properties.*.default
+1 stable manifest contributes.configuration.properties.*.description
+1 stable manifest contributes.configuration.properties.*.order
+1 stable manifest contributes.configuration.properties.*.title
+1 stable manifest contributes.configuration.properties.*.type
+1 stable manifest contributes.configuration.title
+1 stable manifest contributes.environment.*
+1 stable manifest contributes.setup.command
+1 stable manifest contributes.skills[]
+1 stable manifest contributes.views[].entry
+1 stable manifest contributes.views[].icon
+1 stable manifest contributes.views[].id
+1 stable manifest contributes.views[].in[]
+1 stable manifest contributes.views[].in[] values side
+1 stable manifest contributes.views[].title
+1 stable manifest description
+1 stable manifest displayName
+1 stable manifest engines.coda
+1 stable manifest icon.color
+1 stable manifest icon.symbol
+1 stable manifest id
+1 stable manifest main
+1 stable manifest name
+1 stable manifest uses.*[]
+1 stable manifest version
+1 stable view root.classes
+1 stable view root.classes values coda-dark
+1 stable view root.classes values coda-ios
+1 stable view root.classes values coda-light
+1 stable view root.classes values coda-mac
+1 stable view root.cssVariables
+1 stable view root.cssVariables values --coda-accent
+1 stable view root.cssVariables values --coda-background
+1 stable view root.cssVariables values --coda-card
+1 stable view root.cssVariables values --coda-fill
+1 stable view root.cssVariables values --coda-font
+1 stable view root.cssVariables values --coda-font-size
+1 stable view root.cssVariables values --coda-foreground
+1 stable view root.cssVariables values --coda-hover
+1 stable view root.cssVariables values --coda-mono
+1 stable view root.cssVariables values --coda-orange
+1 stable view root.cssVariables values --coda-outline
+1 stable view root.cssVariables values --coda-radius
+1 stable view root.cssVariables values --coda-radius-card
+1 stable view root.cssVariables values --coda-secondary
+1 stable view root.cssVariables values --coda-secondary-background
+1 stable view root.cssVariables values --coda-selection
+1 stable view root.cssVariables values --coda-separator
+1 stable view root.cssVariables values --coda-tertiary
+1 stable view window
+1 stable view window events message
+1 stable view window.coda.args
+1 stable view window.coda.back
+1 stable view window.coda.close
+1 stable view window.coda.copy
+1 stable view window.coda.getState
+1 stable view window.coda.on
+1 stable view window.coda.on events back
+1 stable view window.coda.on events context
+1 stable view window.coda.on events theme
+1 stable view window.coda.on events toolbar
+1 stable view window.coda.on events visibility
+1 stable view window.coda.open
+1 stable view window.coda.open targets args
+1 stable view window.coda.open targets view
+1 stable view window.coda.platform
+1 stable view window.coda.postMessage
+1 stable view window.coda.setState
+1 stable view window.coda.toolbar
+1 stable view window.coda.toolbar fields icon
+1 stable view window.coda.toolbar fields id
+1 stable view window.coda.toolbar fields kind
+1 stable view window.coda.toolbar fields label
+1 stable view window.coda.toolbar fields on
+1 stable view window.coda.toolbar kinds button
+1 stable view window.coda.toolbar kinds toggle
+2 bridge window.coda.refresh
+2 manifest contributes.records
+2 manifest contributes.self
+3 definition description
+3 definition events
+3 definition events.description
+3 definition events.ends
+3 definition events.payload
+3 definition events.starts
+3 definition name
+3 definition operations
+3 definition operations.description
+3 definition operations.idempotent
+3 definition operations.input
+3 definition operations.result
+3 definition operations.run
+3 definition operations.safe
+3 definition operations.timeout
+3 definition permissions
+3 definition permissions.events
+3 definition permissions.operations
+3 definition permissions.read
+3 definition permissions.streams
+3 definition permissions.title
+3 definition permissions.trial
+3 definition plural
+3 definition spec
+3 definition status
+3 definition streams
+3 definition streams.description
+3 definition streams.input
+3 definition title
+3 module coda.api
+3 module coda.call
+3 module coda.delete
+3 module coda.emit
+3 module coda.environment
+3 module coda.error
+3 module coda.get
+3 module coda.handle
+3 module coda.list
+3 module coda.on
+3 module coda.plugin
+3 module coda.plugin.id
+3 module coda.plugin.path
+3 module coda.plugin.state
+3 module coda.pluginSetup
+3 module coda.pluginSetup.retry
+3 module coda.protocols
+3 module coda.protocols.register
+3 module coda.protocols.resolve
+3 module coda.protocols.upload
+3 module coda.put
+3 module coda.query
+3 module coda.replace
+3 module coda.self
+3 module coda.self.handle
+3 module coda.services
+3 module coda.services.register
+3 module coda.settings
+3 module coda.settings.get
+3 module coda.settings.onChange
+3 module coda.spawn
+3 module coda.tell
+3 module coda.views
+3 module coda.views.register
+3 module coda.watch
+3 module ctx.ask
+3 module ctx.call
+3 module ctx.caller
+3 module ctx.deadline
+3 module ctx.id
+3 module ctx.progress
+3 module ctx.query
+3 module ctx.record
+3 module ctx.signal
+3 module ctx.spawn
+level 3
