@@ -16,8 +16,8 @@ test('parseInvite reads a JSON object and generates a short linkId when missing'
 });
 
 test('parseInvite reads URLs and multi-line key=value text', () => {
-  const url = parseInvite('coda-friend://x?control=https%3A%2F%2Fc.example&authKey=k1&linkId=L1&hostname=h');
-  assert.deepEqual(url, { control: 'https://c.example', authKey: 'k1', linkId: 'L1', hostname: 'h' });
+  const url = parseInvite('coda-friend://x?control=https%3A%2F%2Fc.example&authKey=k1&linkId=l1&hostname=h');
+  assert.deepEqual(url, { control: 'https://c.example', authKey: 'k1', linkId: 'l1', hostname: 'h' });
   const web = parseInvite('https://invite.example/join?authKey=k2&control=https://c2.example');
   assert.equal(web.control, 'https://c2.example');
   const host = parseInvite('coda-friend://c3.example/path?authKey=k3');
@@ -37,6 +37,8 @@ test('parseInvite explains what is wrong, in Chinese', () => {
   assert.throws(() => parseInvite('{"control":"c","authKey":"   "}'), /缺少 authKey/);
   assert.throws(() => parseInvite('{"control":"c","authKey":"a\\u0000b"}'), /不合法的字符/);
   assert.throws(() => parseInvite('control=c\nauthKey=k\nlinkId=bad id!'), /linkId/);
+  for (const bad of ['Upper', 'a.b', '-x', '_x', 'a'.repeat(65)]) assert.throws(() => parseInvite(JSON.stringify({ control: 'c', authKey: 'k', linkId: bad })), /linkId/, bad);
+  assert.equal(parseInvite(JSON.stringify({ control: 'c', authKey: 'k', linkId: `a${'b'.repeat(63)}` })).linkId.length, 64);
   assert.throws(() => parseInvite(JSON.stringify({ control: 'c', authKey: 'k'.repeat(501) })), /太长/);
   assert.throws(() => checked({ control: 'c' }), /缺少 authKey/);
 });

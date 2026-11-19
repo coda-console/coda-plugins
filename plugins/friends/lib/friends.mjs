@@ -6,9 +6,9 @@ export const PROFILE_KIND = 'profile';
 export const PROFILE_ID = 'self';
 const MAX_NAME = 40, MAX_EMOJI = 8;
 // 邀请各字段的上限，与 coda/accord@1 的 accept 输入一致。
-const LIMITS = { control: 500, authKey: 500, linkId: 100, scope: 200, hostname: 100, peerNode: 100 };
+const LIMITS = { control: 500, authKey: 500, linkId: 64, scope: 200, hostname: 100, peerNode: 100 };
 const LABELS = { control: '入网地址 control', authKey: '入网码 authKey', linkId: 'linkId', scope: 'scope', hostname: 'hostname', peerNode: 'peerNode' };
-const LINK_ID = /^[A-Za-z0-9._-]{1,100}$/;
+const LINK_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const ALIASES = { controlurl: 'control', control_url: 'control', authkey: 'authKey', auth_key: 'authKey', linkid: 'linkId', link_id: 'linkId',
   link: 'linkId', peernode: 'peerNode', peer_node: 'peerNode' };
 const CONTROL_CHARS = /[\p{Cc}\u2028\u2029]/gu;
@@ -91,7 +91,7 @@ export function checked(input) {
   if (!invite.control) fail('邀请缺少 control（入网地址）');
   if (!invite.authKey) fail('邀请缺少 authKey（入网码）');
   for (const [name, max] of Object.entries(LIMITS)) if (invite[name] && length(invite[name]) > max) fail(`${LABELS[name]} 太长（最多 ${max} 字）`);
-  if (invite.linkId && !LINK_ID.test(invite.linkId)) fail('linkId 只能含字母、数字、点、下划线和连字符');
+  if (invite.linkId && !LINK_ID.test(invite.linkId)) fail('linkId 须以小写字母或数字开头，只能含小写字母、数字、下划线和连字符，最长 64 位');
   invite.linkId ??= `f-${[...globalThis.crypto.getRandomValues(new Uint8Array(4))].map(n => n.toString(16).padStart(2, '0')).join('')}`;
   return invite;
 }

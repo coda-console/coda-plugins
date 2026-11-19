@@ -151,6 +151,7 @@ async function submitInvite() {
   clearInvite();
   invite.button.disabled = true;
   say(invite.message, '正在接受邀请，加入对方的通道…', 'progress');
+  const peerNode = input.peerNode;
   let node;
   try {
     ({ node } = await coda.call(LOCAL, 'accept', input));
@@ -158,7 +159,7 @@ async function submitInvite() {
   input = null;
   say(invite.message, '已加入通道，正在与对方互认…', 'progress');
   try {
-    await coda.call(LOCAL, 'handshake', { node });
+    await coda.call(LOCAL, 'handshake', { node, ...(peerNode ? { peerNode } : {}) });
     say(invite.message, '好友已添加并完成互认', 'ok');
   } catch (e) { say(invite.message, `已加入通道，但互认暂未完成（${e.message}）。可稍后在好友列表点「互认」重试`, 'error'); }
   invite.button.disabled = false;
