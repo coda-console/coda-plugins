@@ -2,6 +2,7 @@
 <!-- 监督开发（README.md「监督开发」）：一个需求一次运行、一条需求分支 req/<运行 ID>。主 Agent 在「需求进行中」派块（callActivity 调 piece，一次一块）往需求分支里提改动，
      不找用户；提交验收后需求分支先跟上目标分支，再开 PR 进目标分支，依次项目检查、整体评审（一位整体评审者，一次运行只评一次）、设备验收、合并前检查、GitHub 检查，
      之后由用户批准一次（开了自动合并、这次运行评成过且整体评审没出过必须修时不出批准卡），用合并提交合并，再运行勾选的合并后流程（挂点 merged）。
+     结束时的输出 afterMerge 写明合并后流程的结果：都成功（逐项列出）或没有要跑的，发起会话据此知道合并后的流程已全部结束；有一项没成功时运行失败，错误里写明是哪一项。
      收尾的任何失败和「暂不合并」都带着原因回到「需求进行中」。BPMN 2.0，由 Coda 执行（docs/workflows.md）。 -->
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="develop-definitions" targetNamespace="https://coda.pub/plugins/composer">
@@ -16,7 +17,7 @@
       <coda:input name="executor" label="执行者" type="agent" description="每一块的默认执行者，主 Agent 派块时可在备注里换；提交验收时跟上目标分支的解冲突也交它；不填则每块都要在备注里写" />
       <coda:input name="executor2" label="备用执行者" type="agent" description="每一块审查卡上「换备用执行者重做」的默认接手人，主 Agent 派块时可在备注里换；不填则不能换人" />
       <coda:input name="reviewer" label="评审者" type="agent" description="评每一块的交付，主 Agent 派块时可在备注里换；不填不评" />
-      <coda:input name="overallReviewer" label="整体评审者" type="agent" description="提交验收、项目检查通过后评一次整条需求分支：这次运行还没评过时才评，只合进了一块（跟上目标分支的块不算）且它评成过时跳过；不填不评" />
+      <coda:input name="overallReviewer" label="整体评审者" type="agent" description="提交验收、项目检查通过后评一次整条需求分支：这次运行还没评过时才评，只合进了一块（跟上目标分支的块不算）且它评成过时跳过；提交验收时勾「重新整体评审」则一定评；不填不评" />
       <coda:input name="autoMerge" label="检查和评审通过后自动合并" type="boolean" default="false" description="合并前检查和 GitHub 检查通过（开了设备验收的也已通过）就直接合并，不出批准卡，合并后的流程不自动跑；这次运行一次都没评成过（整体评审没评成、合进的块也没都评成）或整体评审出过必须修时照常出批准卡，需求交付的成员照常进待交付" />
       <coda:input name="base" label="目标分支" default="" description="留空用仓库默认分支" />
     </extensionElements>
@@ -507,7 +508,7 @@ PR：{{pr.url}}</documentation>
     <sequenceFlow id="merge-merged-choice" sourceRef="after-merge" targetRef="merged-choice" />
     <!-- 合并后：成员需求运行与自动合并都不运行合并后的流程；独立交付运行批准卡上勾的（only），它们要的文字卡上没写的先交主 Agent 逐项写。 -->
     <exclusiveGateway id="merged-choice" name="是否运行合并后的流程" default="merged-fill-choice" />
-    <sequenceFlow id="merged-only" sourceRef="merged-choice" targetRef="done"><conditionExpression xsi:type="tFormalExpression">=inputs.delivery != "" or overall.auto = true or approval-result.only = "[]"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="merged-only" sourceRef="merged-choice" targetRef="done-none"><conditionExpression xsi:type="tFormalExpression">=inputs.delivery != "" or overall.auto = true or approval-result.only = "[]"</conditionExpression></sequenceFlow>
     <sequenceFlow id="merged-fill-choice" sourceRef="merged-choice" targetRef="fill-choice" />
     <exclusiveGateway id="fill-choice" name="是否有没写的文字" default="fill-skip" />
     <sequenceFlow id="fill-needed" sourceRef="fill-choice" targetRef="fill"><conditionExpression xsi:type="tFormalExpression">=approval-result.missing != ""</conditionExpression></sequenceFlow>
@@ -541,8 +542,24 @@ PR：{{pr.url}}
         <coda:param name="commit" value="=merge.commit" /><coda:param name="inputs" value="=merged-inputs.inputs" />
       </extensionElements>
     </serviceTask>
-    <sequenceFlow id="run-merged-done" sourceRef="run-merged" targetRef="done" />
-    <endEvent id="done-none" name="已完成" coda:status="已完成，没有要跑的合并后流程" coda:notify='=if inputs.delivery != "" then true else approve.options.notify'><extensionElements><coda:output name="pr" value="=pr.url" /><coda:output name="commit" value="=merge.commit" /><coda:output name="notify" value='=if inputs.delivery != "" then true else approve.options.notify' /></extensionElements></endEvent>
-    <endEvent id="done" name="已完成" coda:notify='=if inputs.delivery != "" or overall.auto = true then true else approve.options.notify'><extensionElements><coda:output name="pr" value="=pr.url" /><coda:output name="commit" value="=merge.commit" /><coda:output name="notify" value='=if inputs.delivery != "" or overall.auto = true then true else approve.options.notify' /></extensionElements></endEvent>
+    <sequenceFlow id="run-merged-done" sourceRef="run-merged" targetRef="after-run" />
+    <!-- 结束时交给发起会话的消息里有输出 afterMerge，写明合并后的流程已全部结束：跑了的（run-workflows 有一项没成功就让运行失败，错误里写明是哪一项，所以走到这里都成功）逐项列出，
+         没跑任何合并后的流程的几条路（没勾、补填时都选了不跑、归属需求交付、自动合并）都到 done-none，写没有运行。 -->
+    <scriptTask id="after-run" name="记下合并后流程的结果" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements>
+        <coda:env name="RUNS" value="=run-merged.runs" /><coda:env name="JOINERS" value="=joiners.list" />
+        <coda:output name="line" />
+      </extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" ran</script>
+    </scriptTask>
+    <sequenceFlow id="after-run-done" sourceRef="after-run" targetRef="done" />
+    <endEvent id="done-none" name="已完成" coda:status="已完成，没有要跑的合并后流程" coda:notify='=if inputs.delivery != "" or overall.auto = true then true else approve.options.notify'>
+      <extensionElements><coda:output name="pr" value="=pr.url" /><coda:output name="commit" value="=merge.commit" /><coda:output name="notify" value='=if inputs.delivery != "" or overall.auto = true then true else approve.options.notify' />
+        <coda:output name="afterMerge" value="没有运行合并后的流程，没有什么要再等的" /></extensionElements>
+    </endEvent>
+    <endEvent id="done" name="已完成" coda:notify='=if inputs.delivery != "" or overall.auto = true then true else approve.options.notify'>
+      <extensionElements><coda:output name="pr" value="=pr.url" /><coda:output name="commit" value="=merge.commit" /><coda:output name="notify" value='=if inputs.delivery != "" or overall.auto = true then true else approve.options.notify' />
+        <coda:output name="afterMerge" value="=after-run.line" /></extensionElements>
+    </endEvent>
   </process>
 </definitions>

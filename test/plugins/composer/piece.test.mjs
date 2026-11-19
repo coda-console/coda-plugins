@@ -780,7 +780,8 @@ test('退回之后复评：只评上次评过的提交之后的变动，带上�
   const again = f.run('gate-passed', { RUNS: '[]' }).outputs, second = f.state().executor.head;
   assert.deepEqual([again.base, again.head], [first, second], '复评：base 是上次评过的 head');
   assert.deepEqual(JSON.parse(again.previous), [{ id: '#1', ...MUST }], '定了不改的 #2 已关掉，不交评审者');
-  assert.equal(again.task, `${f.env.TASK}\n\n下面是主 Agent 历次「退回修改」的意见（原文，按先后），其中写明不改的已经关闭，不要再提：\n第 1 次：\n修 #1\n#2 不改：调用方已经跟着改了`);
+  // 定了不改的条目带上标题和位置：评审者在意见里只看得到编号。
+  assert.equal(again.task, `${f.env.TASK}\n\n下面是主 Agent 历次「退回修改」的意见（原文，按先后），其中写明不改的已经关闭，不要再提：\n第 1 次：\n修 #1\n#2 不改：调用方已经跟着改了\n\n主 Agent 定了不改、已经关闭的条目（编号对应上面意见里的编号）：\n- #2 改了输出格式（one:2）`);
   f.run('reviewed', verdict([{ ...MUST, title: '新问题', location: 'one:9' }], { RESOLUTIONS: JSON.stringify([{ id: '#1', status: 'resolved' }]) }));
   assert.deepEqual(f.state().findings.map(x => [x.id, x.status]), [['#1', 'resolved'], ['#2', 'declined'], ['#3', 'open']]);
   const review = f.run('review', { REVIEWER: 'true' }).outputs.review;
@@ -804,6 +805,65 @@ test('退回之后复评：只评上次评过的提交之后的变动，带上�
   assert.deepEqual([full.base, full.previous], [f.remote(BRANCH), '']);
   f.run('reviewed', verdict([]));
   assert.equal(f.state().findings.at(-1).status, 'superseded');
+});
+
+// 换人、让执行者合并需求分支（审查卡上选，或合入时试合并有冲突）之后，到有一次完整评审评成为止都按完整评审算，不带之前的发现：
+// 这次完整评审没评成、主 Agent 又退回时，不能拿换人或合并之前评过的提交当起点。
+test('换人或合并需求分支之后完整评审没评成、主 Agent 再退回：仍是完整评审，不带之前的发现；评成之后再退回才从它评过的提交复评', t => {
+  const incomplete = { DECISION: 'INCOMPLETE', LINE: '评审没有完成：没有合格的 review 代码块' };
+  const ways = {
+    sync: f => { assert.equal(f.decide('sync'), 'revise'); f.task('one', 'merged', BRANCH); f.run('revise'); },
+    swap: f => { assert.equal(f.decide('swap', '换人', 'true'), 'swap'); f.task('redo', 'redo'); f.run('swap', { EXECUTOR: JSON.stringify({ agent: 'backup' }) }); },
+    land: f => {
+      f.advance('one', 'other piece'); assert.equal(f.decide('land'), 'land'); assert.equal(f.run('land').outputs.route, 'sync');
+      f.task('one', 'resolved', BRANCH); f.run('revise');
+    },
+  };
+  for (const [way, change] of Object.entries(ways)) {
+    const f = fixture(t); f.task('one', 'first'); f.run('execute'); f.delivered();
+    f.run('reviewed', verdict([MUST]));
+    const old = f.state().reviewed;
+    change(f); f.run('gate');
+    const full = f.run('gate-passed', { RUNS: '[]' }).outputs;
+    assert.deepEqual([full.base, full.previous], [f.remote(BRANCH), ''], `${way}：之后的第一次评审是完整评审`);
+    f.run('reviewed', verdict([], incomplete));
+    assert.equal(f.run('review', { REVIEWER: 'true' }).outputs.review, '没评成：评审没有完成：没有合格的 review 代码块', `${way}：完整评审没评成，不列之前的发现`);
+    // 没评成之后再退回：还是完整评审，不能从换人或合并之前评过的提交算起，也不带之前的发现。
+    assert.equal(f.decide('revise', '再改一下'), 'revise'); f.task('one', 'again'); f.run('revise'); f.run('gate');
+    const next = f.run('gate-passed', { RUNS: '[]' }).outputs;
+    assert.notEqual(next.base, old, way);
+    assert.deepEqual([next.base, next.previous], [f.remote(BRANCH), ''], `${way}：没评成之后再退回仍是完整评审`);
+    // 完整评审评成了，之前的作废；再退回才是复评，从这次评成的提交算起。
+    f.run('reviewed', verdict([]));
+    assert.equal(f.state().findings[0].status, 'superseded', way);
+    assert.equal(f.decide('revise', '再退一次'), 'revise'); f.task('one', 'more'); f.run('revise'); f.run('gate');
+    const rereview = f.run('gate-passed', { RUNS: '[]' }).outputs;
+    assert.deepEqual([rereview.base, rereview.previous], [next.head, '[]'], `${way}：评成之后的退回是复评`);
+  }
+});
+
+test('复评没评成（评审者出错、超时、答复不合格，或调用没成）：审查卡仍列出上一轮还开着的必须修，注明这一轮没有重新核实；评成的复评在坚持的条目后写理由', t => {
+  const f = fixture(t); f.task('one', 'first'); f.run('execute'); f.delivered();
+  f.run('reviewed', verdict([MUST, CONTRACT, { ...MUST, title: '第三条', location: 'one:3' }]));
+  assert.equal(f.decide('revise', '修 #1、#2\n#3 不改：不影响'), 'revise'); f.task('one', 'fixed'); f.run('revise'); f.run('gate'); f.run('gate-passed', { RUNS: '[]' });
+  const listed = '\n上一轮还开着的必须修（这一轮没有重新核实）：\n- #1 漏了失败路径（one:1）\n- #2 改了输出格式（one:2）〔评审者认为涉及对外契约〕';
+  f.run('reviewed', verdict([], { DECISION: 'INCOMPLETE', LINE: '评审没有完成：没有合格的 review 代码块' }));
+  assert.equal(f.run('review', { REVIEWER: 'true' }).outputs.review, `没评成：评审没有完成：没有合格的 review 代码块${listed}`, '评审没完成；定了不改的 #3 不列');
+  f.run('review-lost');
+  const lost = f.run('review', { REVIEWER: 'true' }).outputs.review;
+  assert.match(lost, /^没评成：调用 review-commit 没有成功，原因见本运行 coda:\/\/workflow-runs\/pr-run-1 的「评审这次交付」（workflow_status）。/);
+  assert.ok(lost.endsWith(listed), lost);
+  // 项目检查没过时没有评审，不列；没有开着的必须修时也不列。
+  f.run('gate'); f.run('gate-failed');
+  assert.equal(f.run('review', { REVIEWER: 'true' }).outputs.review, '项目检查没通过，这次交付没有评审。');
+
+  // 评成的复评：坚持的条目后面是评审者给的理由（现在的代码还缺什么），解决了的不再列。
+  const g = fixture(t); g.task('one', 'first'); g.run('execute'); g.delivered();
+  g.run('reviewed', verdict([MUST, CONTRACT]));
+  g.decide('revise', '修 #1、#2'); g.task('one', 'fixed'); g.run('revise'); g.run('gate'); g.run('gate-passed', { RUNS: '[]' });
+  g.run('reviewed', verdict([], { DECISION: 'REQUEST_CHANGES', RESOLUTIONS: JSON.stringify([{ id: '#1', status: 'upheld', reason: '失败时\n还是没有退出码' }, { id: '#2', status: 'resolved' }]) }));
+  assert.deepEqual(g.state().findings.map(x => [x.id, x.status]), [['#1', 'open'], ['#2', 'resolved']]);
+  assert.equal(g.run('review', { REVIEWER: 'true' }).outputs.review.split('\n').slice(0, 4).join('\n'), '评审结论一句话\n必须修 1 条：\n- #1 漏了失败路径（one:1）\n  现在的代码还缺：失败时 还是没有退出码');
 });
 
 test('合进需求分支时输出 reviewed：最后一次交付有评成的评审才是 true；没评审者、没评成、评的是之前的交付都是 false', t => {

@@ -204,11 +204,11 @@ switch (action) {
   case 'check-failed':
     back(`${env.STEP}未通过，需求分支 head ${state.head}。\n运行：coda://workflow-runs/${env.GITHUB_RUN_ID}\n请用 workflow_status 查看本运行「${env.STEP}」及其调用的失败流程，读取错误和日志；派一块修好后再提交验收。`);
     break;
-  // 项目检查有了结论，定这次评不评：填了整体评审者、不是只合进了一块且它评成过、这次运行还没评过（或这次勾了「重新整体评审」）。evidence 是交给评审者的已有验证。
+  // 项目检查有了结论，定这次评不评：填了整体评审者，且这次勾了「重新整体评审」，或既不是只合进了一块且它评成过、这次运行也还没评过。evidence 是交给评审者的已有验证。
   case 'overall-plan':
     delete state.outcome;
     save();
-    output('review', String(env.REVIEWER === 'true' && !(state.landed.length === 1 && piecesReviewed()) && (!state.overall || state.again)));
+    output('review', String(env.REVIEWER === 'true' && (state.again || !(state.landed.length === 1 && piecesReviewed()) && !state.overall)));
     output('evidence', `项目检查：\n${checksText(state.checks, state.head)}`);
     break;
   // 调用 review-commit 本身没成（出错边界）：记为没评成。
@@ -293,6 +293,13 @@ switch (action) {
   case 'inputs':
     outputFilled();
     break;
+  // 合并后的流程都成功（run-workflows 有一项没成功就让运行失败）：结束时交给发起会话的一句话，各项用批准卡上勾选项的名字，拿不到用流程名。
+  // 没跑任何合并后的流程的结束直接写在流程定义里，措辞同 review 插件的简易开发。
+  case 'ran': {
+    const names = new Map(JSON.parse(env.JOINERS).map(joiner => [joiner.id, joiner.name]));
+    output('line', `合并后的流程已全部结束，不用再等：${JSON.parse(env.RUNS).map(run => `${names.get(run.workflow) ?? run.workflow}：成功`).join('；')}`);
+    break;
+  }
   // 用合并提交进目标分支：目标分支的 first-parent 历史里一个需求一个提交，需求分支里每个块一个提交。
   case 'merge': {
     const commit = mergedCommit(state.pr, state.head) ?? mergePr(state.pr, state.head, 'merge');
