@@ -1,0 +1,53 @@
+{
+  "name": "@coda-console/friends",
+  "id": "friends",
+  "displayName": "好友",
+  "description": "管理 Accord 身份、个人名片与熟人好友通道",
+  "icon": { "symbol": "person.2.fill", "color": "blue" },
+  "version": "0.1.0",
+  "categories": [
+    "Skills 与工具"
+  ],
+  "engines": {
+    "coda": 5
+  },
+  "main": "main.mjs",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "uses": {
+    "coda/accord@1": [
+      "read",
+      "publish",
+      "manage"
+    ]
+  },
+  "contributes": {
+    "views": [
+      {
+        "id": "friends",
+        "title": "好友",
+        "entry": "view/index.html",
+        "in": [
+          "page"
+        ],
+        "icon": "person.2.fill",
+        "frame": "document"
+      }
+    ]
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coda-console/coda-plugins.git",
+    "directory": "plugins/friends"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "main.mjs",
+    "lib",
+    "view"
+  ]
+}
