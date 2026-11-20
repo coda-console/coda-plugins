@@ -1,4 +1,4 @@
-// host 6.0.0 and testbed 4.0.0 reached one at a time, from the versions before them, as the backend judges a catalog (API Level 6:
+// host 6.0.1 and testbed 4.0.0 reached one at a time, from the versions before them, as the backend judges a catalog (API Level 6:
 // one plugin installed at a time, the whole installed catalog checked each time): the compatibility of Coda's own, mirrored in check/coda.
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -37,29 +37,28 @@ function install(installed, next) {
   return null;
 }
 
-test('host and testbed upgrade one at a time from the versions before: host first passes, testbed first is refused until host is up', t => {
+test('from the versions before, on this Coda: host 6.0.1 waits for the old testbed to go, the new testbed for host; both new ones pass', t => {
   const oldHost = earlier(t, 'host', { version: '5.1.0', contributes: { protocolImplementations, extensionPoints: { kinds: { description: 'host-sim 的其他 --kind' } } } });
   const oldTestbed = earlier(t, 'testbed', { version: '3.1.0', extensionDependencies: ['host'],
     contributes: { protocolImplementations, extensions: { 'host/kinds': { command: 'testbed-sim' } } } });
   const [host, testbed] = [current('host'), current('testbed')];
   const installed = new Map([[oldHost.id, oldHost], [oldTestbed.id, oldTestbed]]);
-  assert.equal(install(new Map(), oldHost), null);
-  assert.equal(install(new Map([[oldHost.id, oldHost]]), oldTestbed), null);
-
-  // The old testbed still plugged into `kinds`: host 6.0.0 keeps the point, so it passes.
-  assert.equal(install(installed, host), null);
+  // host 6.0.1 no longer has the point the old testbed plugs into: refused while it is installed (both stay as they were, working).
+  assert.match(install(installed, host), /不是 host 声明的扩展点/);
   // The new testbed with the old host, which has no host/kind@1: refused, until host is up.
   assert.match(install(installed, testbed), /host\/kind@1 不在这台机器上/);
-  assert.equal(install(new Map([[host.id, host], [oldTestbed.id, oldTestbed]]), testbed), null);
   // Both new ones, in the order they may come.
   assert.equal(install(new Map([[host.id, host]]), testbed), null);
+  assert.equal(install(new Map([[testbed.id, testbed], [host.id, host]]), host), null);
 });
 
-test('without the transitional point, host 6.0.0 would be refused while the old testbed is installed', t => {
-  const oldTestbed = earlier(t, 'testbed', { version: '3.1.0', extensionDependencies: ['host'],
-    contributes: { protocolImplementations, extensions: { 'host/kinds': { command: 'testbed-sim' } } } });
+test('from host 6.0.0, which kept the point for the upgrade, with testbed 4.0.0 installed: host 6.0.1 passes', t => {
+  const transitional = earlier(t, 'host', { version: '6.0.0', contributes: { protocolImplementations, extensionPoints: { kinds: { description: '过渡' } },
+    protocols: current('host').protocols } });
+  const testbed = current('testbed');
+  assert.equal(install(new Map([[transitional.id, transitional]]), testbed), null);
   const host = current('host');
-  assert.deepEqual(Object.keys(host.extensionPoints), ['kinds']);
+  assert.equal(host.extensionPoints?.kinds, undefined);
   assert.deepEqual(host.protocols.map(one => one.name), ['host/kind@1']);
-  assert.match(install(new Map([[oldTestbed.id, oldTestbed]]), { ...host, extensionPoints: {} }), /不是 host 声明的扩展点/);
+  assert.equal(install(new Map([[transitional.id, transitional], [testbed.id, testbed]]), host), null);
 });

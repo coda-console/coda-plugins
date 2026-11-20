@@ -4,7 +4,7 @@
   "displayName": "宿主资源",
   "description": "Xcode、模拟器的排队名额",
   "icon": { "symbol": "hammer.fill", "color": "gray" },
-  "version": "6.0.0",
+  "version": "6.0.1",
   "engines": {
     "coda": 6
   },
@@ -36,11 +36,6 @@
         "command": "\"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/host-sim.mjs\""
       }
     ],
-    "extensionPoints": {
-      "kinds": {
-        "description": "过渡：host-sim 的其他 --kind 已改走 host/kind@1，这个点只为旧版测试机与旧版 codex 能逐个升级而留，coda 删旧槽位之前由 host 6.0.1 删掉"
-      }
-    },
     "protocols": [
       {
         "name": "host/kind@1",
