@@ -1,6 +1,6 @@
-// A device-code login as the `sign-in` operation of `coda/resource@1` runs it, for the codex plugin and codex-accounts, which
-// carries a copy of this file (the codex installed beside it may be older and have none; a test holds the two the same): the
-// entry says how to start the CLI that prints the device link and code (`start()`, a child process with its output piped),
+// A device-code login as the `sign-in` operation of `coda/resource@1` runs it, for this machine's own login and, with「多账号」on,
+// for a managed account (login.mjs): the entry says how to start the CLI that prints the device link and code (`start()`, a
+// child process with its output piped),
 // and this reports them (`coda progress`, awaited before the login is settled), gives the login 20 seconds to print them,
 // ends it with its CLI, and settles it: `{}` when the CLI ended well and nothing failed, else one line, the first reason
 // noted, else the last line the CLI said.

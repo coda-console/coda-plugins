@@ -12,7 +12,6 @@ import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { checkPlugin } from '../../check/index.mjs';
 import { claudeBinary } from '../../plugins/claude/scripts/sign-in.mjs';
-import { codexCli } from '../../plugins/codex-accounts/scripts/app-server.mjs';
 import { pluginDir, resolveFrom } from './plugin.mjs';
 import { pluginEnv, run } from './command.mjs';
 
@@ -99,10 +98,6 @@ describe('the plugins here', () => {
       `import { createRequire } from 'node:module'; console.log(createRequire(${JSON.stringify(adapter)}).resolve('@openai/codex/package.json'))`], { encoding: 'utf8' }).trim();
     assert.equal(relative(pluginDir('codex'), codex), join('node_modules', '@openai', 'codex', 'package.json'));
     assert.equal(JSON.parse(readFileSync(codex, 'utf8')).version, manifest('codex').dependencies['@openai/codex']);
-  });
-  test('codex-accounts runs the Codex of the codex plugin it depends on', () => {
-    const cli = codexCli({ CODA_PLUGIN_DEPENDENCIES: JSON.stringify({ codex: pluginDir('codex') }) });
-    assert.equal(relative(pluginDir('codex'), cli), join('node_modules', '@openai', 'codex', 'bin', 'codex.js'));
   });
   test('the Claude sign-in finds the CLI beside the plugin\'s own Claude SDK', () => {
     const binary = claudeBinary();

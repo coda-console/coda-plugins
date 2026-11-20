@@ -1,5 +1,5 @@
-// Coda owns the login UI (the `sign-in` operation, sign-in.mjs, runs this). Codex prints the device link/code and owns OAuth. Each attempt has a private home;
-// only a completed, checked login is committed to the plugin's store.
+// With「多账号」on, Coda's login (the `sign-in` operation, sign-in.mjs, through cli.mjs) runs this. Codex prints the device
+// link/code and owns OAuth. Each attempt has a private home; only a completed, checked login is committed to the managed accounts.
 import { spawn } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -16,7 +16,7 @@ try {
   if (cancelled) throw new Error('登录已取消');
   const env = accountEnv(home);
   const code = await new Promise((resolve, reject) => {
-    child = spawn(process.execPath, [codexCli(env), 'login', '--device-auth', ...fileCredentials], { env, cwd: home, stdio: ['ignore', 'pipe', 'pipe'] });
+    child = spawn(process.execPath, [codexCli(), 'login', '--device-auth', ...fileCredentials], { env, cwd: home, stdio: ['ignore', 'pipe', 'pipe'] });
     child.stdout.pipe(process.stdout); child.stderr.pipe(process.stderr);
     child.once('error', () => reject(new Error('无法启动 Codex 登录')));
     child.once('close', resolve);

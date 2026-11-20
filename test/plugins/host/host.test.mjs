@@ -13,7 +13,7 @@ import { pluginDir } from '../plugin.mjs';
 import { barePath, manifest, pluginEnv, run } from '../command.mjs';
 import { resourceRecords } from '@coda-console/plugin-check/resources';
 import { activate, deactivate } from '../../../plugins/host/main.mjs';
-import { createTestHost } from '../../../check/coda/adapters/plugin-test-host.mjs';
+import { createTestHost, TEST_OWNER } from '../../../check/coda/adapters/plugin-test-host.mjs';
 
 const dir = pluginDir('host');
 function temporary(t) {
@@ -47,7 +47,7 @@ if (args[0] === 'delete' && args[1] !== 'STUCK') fs.writeFileSync(${JSON.stringi
 test('the slots are the group record the module writes, the capacity that of the setting, and the manifest declares no groups', async t => {
   assert.equal(manifest('host').contributes.groups, undefined);
   assert.deepEqual(manifest('host').contributes.protocolImplementations, ['coda/group@1', 'coda/resource@1']);
-  const host = createTestHost({ plugin: { id: 'host', protocolImplementations: ['coda/group@1'] }, settings: { 'host.capacity': 2 } });
+  const host = createTestHost({ plugin: { id: 'host', state: temporary(t), protocols: manifest('host').contributes.protocols, protocolImplementations: ['coda/group@1'] }, settings: { 'host.capacity': 2 } });
   t.after(() => host.close());
   const rows = () => host.coda.list('coda/group@1', { scope: 'local' });
   await activate(host.coda);
@@ -151,17 +151,72 @@ test('inside a slot host-sim runs at once, the command told the slot is held, an
   assert.deepEqual(registrations(state).map(({ udid, runId }) => [udid, runId]).sort(), [['FAKE-1', 'held-run'], ['FAKE-2', 'step-run']]);
 });
 
-test('another kind goes whole to the first command plugged into kinds, as that plugin\'s; none plugged in is refused', async t => {
-  const other = temporary(t);
-  writeFileSync(join(other, 'kind.sh'), 'echo "plugin=$CODA_PLUGIN_PATH state=$CODA_PLUGIN_STATE settings=$CODA_PLUGIN_SETTINGS args=$*"\nexit 5\n');
-  const kinds = { kinds: [{ command: `sh "${join(other, 'kind.sh')}"`, path: other, state: join(other, 'state'), settings: { 'testbed.blackscreen': {} } }] };
-  const handed = await hostSim('run --kind iphone-testbed -- true', { CODA_THREAD_ID: 'thread', CODA_PLUGIN_SETTINGS: JSON.stringify({ 'host.capacity': 2 }), CODA_PLUGIN_EXTENSIONS: JSON.stringify(kinds) });
-  assert.deepEqual([handed.code, handed.stdout], [5, `plugin=${other} state=${join(other, 'state')} settings=${JSON.stringify(kinds.kinds[0].settings)} args=run --kind iphone-testbed -- true\n`]);
-  delete kinds.kinds[0].settings;
-  const defaults = await hostSim('run --kind iphone-testbed -- true', { CODA_THREAD_ID: 'thread', CODA_PLUGIN_SETTINGS: '{"host.capacity":2}', CODA_PLUGIN_EXTENSIONS: JSON.stringify(kinds) });
-  assert.match(defaults.stdout, /settings=\{\} args=/);
-  const none = await hostSim('run --kind iphone-testbed -- true', { CODA_THREAD_ID: 'thread' });
-  assert.equal(none.code, 2); assert.match(none.stderr, /从商店装上「测试机」插件/);
+// The host-sim of a session, as Coda starts it: the plugin's state is where the module wrote kinds.json.
+const kindSim = (t, list, extra = {}) => {
+  const state = temporary(t), tools = temporary(t);
+  if (list) writeFileSync(join(state, 'kinds.json'), JSON.stringify(list));
+  // A command of another plugin's on the PATH, as Coda puts it there: what it was given and run with.
+  writeFileSync(join(tools, 'kind-sim'), '#!/bin/sh\necho "args=$* lease=$HOST_SIM_LEASE plugin=${CODA_PLUGIN_STATE:-none}"\ncat\nexit 5\n', { mode: 0o755 });
+  return hostSim('run --kind iphone-testbed -- true', { CODA_THREAD_ID: 'thread', CODA_PLUGIN_STATE: state, PATH: `${tools}:${process.env.PATH}`, ...extra });
+};
+
+test('another kind goes whole to the first command of kinds.json, found on the PATH, with the session\'s environment', async t => {
+  const handed = await kindSim(t, [{ plugin: 'testbed', command: 'kind-sim' }, { plugin: 'zed', command: 'absent-sim' }], { HOST_SIM_LEASE: 'coda-run:iphone-testbed' });
+  assert.deepEqual([handed.code, handed.stdout], [5, 'args=run --kind iphone-testbed -- true lease=coda-run:iphone-testbed plugin=none\n']);
+});
+
+test('another kind with no kinds.json, an empty list, or a command not on the PATH is refused, 2, as none handles it', async t => {
+  for (const [list, hint] of [[null, /从商店装上「测试机」插件/], [[], /从商店装上「测试机」插件/], [[{ plugin: 'testbed', command: 'absent-sim' }], /命令 absent-sim 不在 PATH 上/]]) {
+    const refused = await kindSim(t, list);
+    assert.equal(refused.code, 2); assert.match(refused.stderr, /没有插件处理 --kind iphone-testbed：/); assert.match(refused.stderr, hint);
+  }
+});
+
+test('the module writes kinds.json: [] to begin with, then the host/kind@1 records of this machine by plugin ID, as they change', async t => {
+  const { protocols } = manifest('host').contributes, state = temporary(t), file = join(state, 'kinds.json');
+  const read = () => existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : null;
+  const settled = async expected => { for (let i = 0; i < 100 && JSON.stringify(read()) !== JSON.stringify(expected); i++) await new Promise(done => setTimeout(done, 10)); assert.deepEqual(read(), expected); };
+  const record = (plugin, command, owner = TEST_OWNER) => ({ kind: 'host/kind@1', owner, id: `${plugin}-${owner}`, plugin, spec: { command } });
+  // Implementing its own kind here only lets the test write a record as another would.
+  const host = createTestHost({ plugin: { id: 'host', state, protocols, protocolImplementations: ['coda/group@1', 'host/kind@1'] }, settings: { 'host.capacity': 1 },
+    records: [record('zed', 'zed-sim'), record('far', 'far-sim', 'another-machine')] });
+  t.after(async () => { await deactivate(); host.close(); });
+  await activate(host.coda);
+  await settled([{ plugin: 'zed', command: 'zed-sim' }]);
+  await host.coda.put({ kind: 'host/kind@1', key: 'devices' }, { spec: { command: 'kind-sim' } });
+  await settled([{ plugin: 'host', command: 'kind-sim' }, { plugin: 'zed', command: 'zed-sim' }]);
+  await host.coda.delete({ kind: 'host/kind@1', key: 'devices' });
+  await settled([{ plugin: 'zed', command: 'zed-sim' }]);
+});
+
+test('a refresh of kinds.json that fails is that one\'s alone: the next notice reads and writes again', async t => {
+  const state = temporary(t), file = join(state, 'kinds.json');
+  const host = createTestHost({ plugin: { id: 'host', state, protocols: manifest('host').contributes.protocols, protocolImplementations: ['coda/group@1', 'host/kind@1'] }, settings: { 'host.capacity': 1 } });
+  t.after(async () => { await deactivate(); host.close(); });
+  // The module's coda, its reading of the records refused while `refuse` is set.
+  let refuse = true;
+  await activate({ ...host.coda, list: (...args) => refuse ? Promise.reject(new Error('refused')) : host.coda.list(...args) });
+  const errors = [], logged = console.error;
+  console.error = message => errors.push(message);
+  t.after(() => { console.error = logged; });
+  await host.coda.put({ kind: 'host/kind@1', key: 'devices' }, { spec: { command: 'kind-sim' } });
+  for (let i = 0; i < 100 && !errors.length; i++) await new Promise(done => setTimeout(done, 10));
+  assert.match(errors[0], /kinds\.json 失败：refused/);
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), []);
+  refuse = false;
+  await host.coda.put({ kind: 'host/kind@1', key: 'more' }, { spec: { command: 'more-sim' } });
+  for (let i = 0; i < 100 && JSON.parse(readFileSync(file, 'utf8')).length < 2; i++) await new Promise(done => setTimeout(done, 10));
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), [{ plugin: 'host', command: 'kind-sim' }, { plugin: 'host', command: 'more-sim' }]);
+});
+
+test('with no host/kind@1 record the module leaves kinds.json an empty list; the manifest declares the protocol and, for the upgrade from older versions, still the point kinds', async t => {
+  const { contributes } = manifest('host'), state = temporary(t);
+  assert.deepEqual(Object.keys(contributes.extensionPoints), ['kinds']);
+  assert.deepEqual(contributes.protocols.map(({ name, spec }) => [name, spec.properties.command.pattern]), [['host/kind@1', '^[a-z][a-z0-9-]{0,39}$']]);
+  const host = createTestHost({ plugin: { id: 'host', state, protocols: contributes.protocols, protocolImplementations: ['coda/group@1'] }, settings: { 'host.capacity': 1 } });
+  t.after(async () => { await deactivate(); host.close(); });
+  await activate(host.coda);
+  assert.deepEqual(JSON.parse(readFileSync(join(state, 'kinds.json'), 'utf8')), []);
 });
 
 // The step 执行 of 持锁执行 (.coda/capabilities/run-held.bpmn), as the step runner starts it: its outputs in GITHUB_OUTPUT.

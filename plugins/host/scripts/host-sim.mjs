@@ -5,10 +5,11 @@
 // command ends and 清点模拟器 if it did not. A slot is asked for by the session's agent itself, with workflow_run (持锁执行,
 // `run-held`): a session's command line cannot say whether a native subagent ran it, and one may not ask for a slot.
 // Anywhere else — a terminal, a step holding nothing — there is no slot to take: it is refused (#1054 第 4 期).
-// Another kind (a test device's name) is handed whole to what is plugged into this plugin's point `kinds` (the testbed
-// plugin's, the testbed plugin's README.md).
+// Another kind (a test device's name) is handed whole to the command of the first record of `host/kind@1` that this plugin's
+// module wrote to `kinds.json` in its state (the testbed plugin's, README.md), found on the PATH.
 import { spawn } from 'node:child_process';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { constants as system } from 'node:os';
 import { registerSimulator } from '../lib/simulators.mjs';
 
@@ -55,18 +56,19 @@ else if (command === 'run' && held) {
   fail('只能在 Coda 的会话或流程步骤里用：名额由 Coda 排，终端里直接运行不排队，也不执行', 1);
 }
 
-// A kind this plugin does not hold: run the first plugged-in command with its path, state and full resolved settings.
+// A kind this plugin does not hold: run the first command of kinds.json with the whole command line, as the session's own.
 function other() {
-  const [plugged] = JSON.parse(process.env.CODA_PLUGIN_EXTENSIONS || '{}').kinds ?? [];
-  if (!plugged) fail(`没有插件处理 --kind ${kind}：测试机要从商店装上「测试机」插件`, 2);
-  follow(['/bin/sh', '-c', `${plugged.command} "$@"`, 'host-sim', ...args], { ...session(), CODA_NODE: process.env.CODA_NODE,
-    CODA_PLUGIN_SETTINGS: JSON.stringify(plugged.settings ?? {}), CODA_PLUGIN_PATH: plugged.path, ...(plugged.state ? { CODA_PLUGIN_STATE: plugged.state } : {}) });
+  let list = [];
+  try { list = JSON.parse(readFileSync(join(process.env.CODA_PLUGIN_STATE, 'kinds.json'), 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  if (!list.length) fail(`没有插件处理 --kind ${kind}：测试机要从商店装上「测试机」插件`, 2);
+  follow([list[0].command, ...args], session(), `没有插件处理 --kind ${kind}：命令 ${list[0].command} 不在 PATH 上`);
 }
-// Runs it in the foreground, ending as it ends; a signal to this process goes on to it.
-function follow([program, ...rest], env) {
+// Runs it in the foreground, ending as it ends; a signal to this process goes on to it. `missing`: what to say, with 2, if the
+// program is not found.
+function follow([program, ...rest], env, missing) {
   const child = spawn(program, rest, { stdio: 'inherit', env });
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, () => child.kill(signal));
-  child.on('error', error => fail(error.message, 127));
+  child.on('error', error => error.code === 'ENOENT' && missing ? fail(missing, 2) : fail(error.message, 127));
   child.on('close', (code, signal) => process.exit(code ?? 128 + (system.signals[signal] ?? 0)));
 }
 function fail(message, code) { process.stderr.write(`host-sim：${message}\n`); process.exit(code); }

@@ -1,11 +1,6 @@
-// Once an account source owns the accounts, even the pre-existing Codex login entry adds to its managed store.
-import { spawn } from 'node:child_process';
-import { accountSource, sourceEnv } from '../agent/account-source.mjs';
+// The plugin's own Codex CLI, as the sign-in runs it. With「多账号」on (the setting `codex.multipleAccounts`), its login adds to
+// or updates the managed accounts instead (login.mjs).
+import { multipleAccounts } from './manager.mjs';
 
-const source = accountSource();
-if (source && process.argv[2] === 'login') {
-  const child = spawn('/bin/sh', ['-c', `${source.command} --login`], { env: sourceEnv(source), stdio: 'inherit' });
-  process.on('SIGTERM', () => child.kill('SIGTERM')); process.on('SIGINT', () => child.kill('SIGINT'));
-  child.on('error', () => { console.error('无法启动账号插件的登录'); process.exitCode = 1; });
-  child.on('close', code => { process.exitCode = code ?? 1; });
-} else await import('@openai/codex/bin/codex.js');
+if (multipleAccounts() && process.argv[2] === 'login') await import('./login.mjs');
+else await import('@openai/codex/bin/codex.js');

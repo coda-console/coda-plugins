@@ -3,7 +3,7 @@
   "id": "codex",
   "displayName": "Codex",
   "description": "用 OpenAI Codex 跑会话",
-  "version": "1.15.1",
+  "version": "2.0.0",
   "engines": {
     "coda": 6
   },
@@ -12,7 +12,8 @@
   ],
   "dependencies": {
     "@agentclientprotocol/codex-acp": "1.12.0",
-    "@openai/codex": "0.169.0"
+    "@openai/codex": "0.169.0",
+    "proper-lockfile": "4.1.2"
   },
   "overrides": {
     "@agentclientprotocol/codex-acp": {
@@ -59,6 +60,13 @@
           "title": "模型服务",
           "order": 1,
           "description": "勾选插件提供的模型服务（如 Magpie），每个服务各成一组，它列出的模型和 Codex 自己的模型一起出现在会话的模型里；选中哪个服务的模型，那个会话就走那个服务，Codex 自己的模型照旧。只列 OpenAI Responses 接口（openai-responses）的服务：Codex 不再支持 Chat Completions。"
+        },
+        "codex.multipleAccounts": {
+          "type": "boolean",
+          "title": "多账号",
+          "order": 2,
+          "default": false,
+          "description": "在 Coda 里管理多个 Codex 账号：资源页的「Codex」改为每个账号一行（首次打开时导入这台机器已有的 Codex 登录），可添加、切换、移除账号和使用完全重置；会话在开始和两轮之间换到所选的账号，令牌由插件续期。关着时用这台机器上 Codex 自己的登录。"
         }
       }
     },
@@ -76,12 +84,7 @@
         "kind": "coda/resource@1",
         "command": "scripts/resource.mjs"
       }
-    ],
-    "extensionPoints": {
-      "account-source": {
-        "description": "Codex 的账号与登录入口：来源给出当前账号和令牌，响应 --login，并提供账号与额度资源；接入后 Codex 自带的那一行不再显示。"
-      }
-    }
+    ]
   },
   "license": "MIT",
   "repository": {

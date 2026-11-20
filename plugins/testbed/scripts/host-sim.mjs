@@ -1,4 +1,4 @@
-// What this plugin plugs into the host plugin's `host-sim` (its point `kinds`, README.md):
+// This plugin's command `testbed-sim`, which the host plugin's `host-sim` hands a device kind to (the record `host/kind@1`, README.md):
 // `host-sim run|check --kind <设备名> …` for a test device, handed over whole. In a session doing that device's task, a
 // command is handed to the capability 在测试机上执行 and followed with `coda run`: Coda lends it the device the task holds
 // and runs it in the session's directory, with its environment. Inside that command (`HOST_SIM_LEASE=coda-run:<设备名>`),

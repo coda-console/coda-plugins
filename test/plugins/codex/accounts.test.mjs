@@ -1,7 +1,7 @@
 // From Coda's backend/test/codex-accounts.test.mjs at 9ffb9911, as plain node:test: its cases of the bridge alone. The bridge
-// with codex-accounts' source and a Codex CLI is in codex-accounts/accounts.test.mjs.
+// with the managed accounts and a Codex CLI is in multiple-accounts.test.mjs.
 // The codex plugin's account bridge (agent/accounts.mjs): between codex-acp and the app-server, it signs Codex in to the
-// account the source plugged into `account-source` chooses, at a session's boundaries.
+// account its source (with「多账号」on, the managed accounts) chooses, at a session's boundaries.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { PassThrough } from 'node:stream';
@@ -227,13 +227,16 @@ for (const outcome of ['release', 'fail']) {
 }
 
 // The bridge as a process, over a real child standing in for Codex's native program (`fake`, a script of its own): how it
-// ends is how the child ended. `ready` on stderr says the bridge has started and its signal handlers are in place.
+// ends is how the child ended. `ready` on stderr says the bridge has started and its signal handlers are in place. The
+// managed accounts' lock library is loaded, as it is once a lock has been taken: its exit handlers listen for signals too.
 const bridgeDir = mkdtempSync(join(tmpdir(), 'codex-bridge-'));
 process.on('exit', () => rmSync(bridgeDir, { recursive: true, force: true }));
 const bridgeScript = join(bridgeDir, 'bridge.mjs');
 writeFileSync(bridgeScript, `
 import { runAccountBridge } from ${JSON.stringify(pathToFileURL(new URL('../../../plugins/codex/agent/accounts.mjs', import.meta.url).pathname).href)};
 import { AppServer } from ${JSON.stringify(pathToFileURL(new URL('../../../plugins/codex/scripts/app-server.mjs', import.meta.url).pathname).href)};
+import { createRequire } from 'node:module';
+createRequire(${JSON.stringify(new URL('../../../plugins/codex/package.json', import.meta.url).pathname)})('proper-lockfile');
 const command = JSON.parse(process.argv[2]);
 runAccountBridge({ source: { close() {} }, makeServer: options => new AppServer({ ...options, command }) });
 process.stderr.write('ready\\n');

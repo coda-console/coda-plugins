@@ -1,21 +1,25 @@
-// This plugin owns its accounts. Each has a Codex home below CODA_PLUGIN_STATE; Codex performs OAuth and renews its
-// auth.json there. Only access tokens cross the account-source pipe. No external account manager or Python is needed.
+// The managed accounts of「多账号」(the setting `codex.multipleAccounts`). Each has a Codex home below CODA_PLUGIN_STATE/accounts;
+// Codex performs OAuth and renews its auth.json there. Only access tokens leave this module, for the account bridge
+// (agent/accounts.mjs). No external account manager or Python is needed.
 import { createHash, randomUUID } from 'node:crypto';
 import { chmodSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import lockfile from 'proper-lockfile';
 import { withAccountHome } from './codex.mjs';
 import { SignInAgain } from './quota.mjs';
 
 const ID = /^[a-f0-9]{64}$/;
+// Whether「多账号」is on: the plugin's settings as Coda hands them to its processes.
+export function multipleAccounts(env = process.env) {
+  try { return JSON.parse(env.CODA_PLUGIN_SETTINGS || '{}')['codex.multipleAccounts'] === true; } catch { return false; }
+}
 export const identity = account => createHash('sha256').update(account).digest('hex');
 export const paths = (env = process.env) => {
   if (!env.CODA_PLUGIN_STATE) throw new Error('Coda 没有提供插件状态目录');
-  return { state: env.CODA_PLUGIN_STATE, native: env.CODEX_HOME || join(homedir(), '.codex'), env };
+  return { state: join(env.CODA_PLUGIN_STATE, 'accounts'), native: env.CODEX_HOME || join(homedir(), '.codex'), env };
 };
-const unavailable = '账号登录已失效，请在「Codex 多账号」重新登录该账号';
-const missing = '此账号尚未在插件中登录，请在「Codex 多账号」重新登录';
+const unavailable = '账号登录已失效，请在「资源」重新登录该账号';
+const missing = '此账号尚未在插件中登录，请在「资源」重新登录';
 function privateDir(dir) {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   if (!lstatSync(dir).isDirectory() || lstatSync(dir).isSymbolicLink()) throw new Error('账号目录不可用');
@@ -38,6 +42,9 @@ function writeJSON(file, value) {
 // Index changes take the store lock first. Locks have a heartbeat and recover after an abruptly ended process.
 async function locked(key, at, work) {
   prepare(at);
+  // Loaded when a lock is first taken: its exit handlers (signal-exit, on SIGTERM and SIGINT) stay out of the processes that
+  // only ask whether「多账号」is on (the agent's entry, the CLI).
+  const { default: lockfile } = await import('proper-lockfile');
   let release;
   try { release = await lockfile.lock(join(at.state, 'locks', key), { realpath: false, stale: 10_000,
     retries: { retries: 20, minTimeout: 100, maxTimeout: 150, factor: 1 } }); }
@@ -65,7 +72,7 @@ export async function list(at = paths(), { recoverImport = false } = {}) {
       const auth = readJSON(join(at.native, 'auth.json'));
       if (auth?.tokens?.access_token && auth.tokens.refresh_token) login = readAuth(at.native);
     } catch (error) {
-      if (error.code !== 'ENOENT' && !recoverImport) throw new SignInAgain('无法导入已有 Codex 登录，请从「添加资源」登录 Codex 多账号');
+      if (error.code !== 'ENOENT' && !recoverImport) throw new SignInAgain('无法导入已有 Codex 登录，请从「添加资源」登录 Codex');
     }
     if (login) {
       const id = identity(login.tokens.chatgptAccountId);
@@ -88,6 +95,14 @@ export function selection(at = paths()) {
     if (selected !== null && selected !== 'native' && !ID.test(selected)) throw Error();
     return selected;
   } catch (error) { if (error.code === 'ENOENT') return null; throw new Error('读不了所选的账号'); }
+}
+// The account sessions are to use, as the account bridge asks for it: an error until one is chosen and signed in here.
+export async function chosen(at = paths()) {
+  const accounts = await list(at), account = selection(at);
+  if (account === null) throw new Error('请在「资源」添加或选择一个 Codex 账号');
+  const found = accounts.find(a => a.identity === account);
+  if (!found) throw new Error('所选账号尚未在插件中登录，请在「资源」重新登录该账号');
+  return { id: account, name: found.alias.slice(0, 80) };
 }
 export async function choose(account, at = paths()) {
   await list(at);
