@@ -9,12 +9,17 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { inflateSync } from 'node:zlib';
 import './coda/application/contributions.mjs';
-import { HOST_PROTOCOLS } from './coda/application/host-protocols.mjs';
+import { composerType, submissionType } from './coda/components/composers/schemas.mjs';
+import { groupType } from './coda/components/concurrency-groups/schemas.mjs';
 import shipped from './coda/builtin.json' with { type: 'json' };
 import { CORE_PROTOCOLS } from '@coda-console/protocol/protocol';
 import { manifestProblem } from '@coda-console/protocol/validate';
-import { offerProblem, ownIncompatibility, protocolDefinition, usesMissing } from './coda/components/plugins/plugin-extensions.mjs';
+import { ownIncompatibility, protocolDefinition, usesMissing } from './coda/components/plugins/plugin-extensions.mjs';
 import { choosesModelProviders, pluginEnv, readPlugin, resolveSettings } from './coda/components/plugins/plugin-rules.mjs';
+
+// Coda's own protocols, the definitions that are in the copy of its contract (check/coda): a composer's, its submission's and a
+// group's. The rest it defines are in the protocol package (CORE_PROTOCOLS) or not here, and a definition not here is only said.
+const HOST_PROTOCOLS = [composerType, submissionType, groupType];
 
 // The plugins Coda ships, by ID. Their files are Coda's, not here: none has a directory on this machine.
 const builtin = new Map(shipped.map(plugin => [plugin.id, { ...plugin, dir: undefined }]));
@@ -104,17 +109,14 @@ export function checkManifest(dir, say) {
       if (page && Math.min(page.width, page.height) < 64) say.warn('manifest.icon-page', `${icon.at} 的页面只有 ${page.width}×${page.height} pt：iOS 按 96 pt 光栅化图标、只缩不放，页面太小会画成一个点；照 Coda 自带图标按 256 px（192 pt）出图`);
     }
   });
-  // What it writes for other plugins' points (Coda's own keys aside) is of the types they declare: one no plugin Coda ships, and
-  // none it depends on beside it (directly or through another), declares is of no type.
+  // The plugins it depends on, directly or through another, found beside it.
   const found = besideAll(dir, plugin.dependencies);
-  const offered = offerProblem(plugin, new Map([...builtin, ...found]));
-  if (offered) say.fail('manifest.offers', offered);
   // The events its own protocols define (protocol definitions' `events`), and the permission groups of protocols it uses (`uses`; a
   // group with `events` is subscribing to all of them), as far as the protocols are here: its own, Coda's core, or a plugin's beside it.
   for (const definition of plugin.protocols ?? [])
     for (const [name, event] of Object.entries(definition.events ?? {})) say.pass('manifest.events', `协议 ${definition.name} 定义的事件 ${name}：starts ${event.starts ?? true}，ends ${event.ends ?? false}`);
   const protocols = new Map([...builtin, ...found, [plugin.id, plugin]]);
-  // Coda's own protocols, as Coda judges a plugin's `uses` against them (application/host-protocols.mjs).
+  // Coda's own protocols, as Coda judges a plugin's `uses` against them (HOST_PROTOCOLS above).
   const hosted = kind => HOST_PROTOCOLS.find(one => one.kind === kind);
   for (const [kind, groups] of Object.entries(plugin.uses ?? {})) {
     const definition = protocolDefinition(kind, protocols, hosted);
@@ -131,7 +133,7 @@ export function checkManifest(dir, say) {
       else say.pass('manifest.events', `用到 ${kind} 的权限组 ${group}：不含事件`);
     }
   }
-  // The keys of `contributes` Coda retired (`resources`, `panels`): a manifest still writing one is one Coda calls for an update
+  // The keys of `contributes` Coda retired (the list in check/coda/components/plugins/plugin-extensions.mjs, as it is): a manifest still writing one is one Coda calls for an update
   // (ownIncompatibility, of the retired keys alone: the Level and the channel are another level's and the installing machine's).
   const retired = ownIncompatibility({ retired: plugin.retired }, {});
   if (retired) say.fail('manifest.retired', retired.error);

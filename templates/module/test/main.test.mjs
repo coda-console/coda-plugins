@@ -29,37 +29,21 @@ test('activating over notes already there leaves them as they are', async () => 
   await host.close();
 });
 
-test('add makes the note and publishes note_notes.added each time; the module counts the events it is given', async () => {
+test('add makes the note, same title the same note; the module counts the events it is given', async () => {
   const host = await started();
-  const input = { title: '买牛奶', body: '两盒', project: 'p1' };
-  assert.deepEqual(await host.call(note, 'add', input), { key: '买牛奶', notified: true });
+  const input = { title: '买牛奶', body: '两盒' };
+  assert.deepEqual(await host.call(note, 'add', input), { key: '买牛奶' });
   await host.call(note, 'add', input);
-  assert.equal(host.emitted.length, 2);
-  const [event] = host.emitted;
-  assert.equal(event.name, 'note_notes.added');
-  assert.equal(event.kind, NOTE);
-  assert.deepEqual(event.data, { key: '买牛奶', title: '买牛奶', body: '两盒' });
   assert.deepEqual((await host.call(note, 'find', { query: '牛奶' })).notes, [{ key: '买牛奶', title: '买牛奶' }]);
-  await host.emit({ ...event, publisher: 'notes' });
+  // An event is published by the command line or a workflow, not by the module: the test hands one to its `coda.on` handler.
+  await host.emit({ name: 'note_notes.added', kind: NOTE, subject: 'note:any', project: 'p1', data: { key: '买牛奶', title: '买牛奶', body: '两盒' }, publisher: 'notes' });
   assert.equal((await host.call(note, 'find')).seen, 1);
   await host.close();
 });
 
-test('an input over the limits is refused before anything is written or published', async () => {
+test('an input over the limits is refused before anything is written', async () => {
   const host = await started();
-  await assert.rejects(host.call(note, 'add', { title: '长', body: 'x'.repeat(10001), project: 'p1' }), { code: 'invalid_input' });
+  await assert.rejects(host.call(note, 'add', { title: '长', body: 'x'.repeat(10001) }), { code: 'invalid_input' });
   assert.deepEqual((await host.call(note, 'find')).notes.map(entry => entry.key), ['欢迎']);
-  assert.deepEqual(host.emitted, []);
-  await host.close();
-});
-
-test('add that cannot publish still saves the note, and says it did not tell anyone', async () => {
-  const host = createTestHost({ plugin: { protocols: contributes.protocols, protocolImplementations: contributes.protocolImplementations, uses } });
-  const coda = { ...host.coda, emit: async () => { throw host.coda.error('invalid_input', '项目 nope 不存在'); } };
-  await activate(coda);
-  const added = await host.call(note, 'add', { title: '买牛奶', body: '两盒', project: 'nope' });
-  assert.deepEqual(added, { key: '买牛奶', notified: false, reason: added.reason });
-  assert.match(String(added.reason), /项目 nope 不存在/);
-  assert.deepEqual((await host.call(note, 'find')).notes.map(entry => entry.key).sort(), ['买牛奶', '欢迎']);
   await host.close();
 });
