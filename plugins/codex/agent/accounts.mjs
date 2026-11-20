@@ -1,20 +1,24 @@
-// The account bridge: what codex-acp runs as its Codex (`CODEX_PATH`, set by entry.mjs) when another plugin is plugged
-// into Codex's `account-source` point (account-source.mjs). Between codex-acp and the real app-server, it signs the
-// app-server in to the account the source has chosen, by handing it the source's tokens; they stay on this private pipe,
-// below ACP and the session's journal. Nothing chosen, Codex keeps this machine's own login.
+// The account bridge: what codex-acp runs as its Codex (`CODEX_PATH`, set by entry.mjs) when「多账号」is on (the setting
+// `codex.multipleAccounts`). Between codex-acp and the real app-server, it signs the app-server in to the managed account
+// chosen (scripts/manager.mjs, the source), by handing it that account's tokens; they stay on this private pipe, below ACP and
+// the session's journal. A source that says nothing is chosen (`null`) leaves Codex on this machine's own login.
 // The choice takes effect where nothing is under way: as a session starts and between turns (the native thread and turn
 // entry points ask the source each time). A turn whose account cannot be taken fails and says why, rather than going out
 // on the one before; one under way finishes on the account it began with.
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AppServer } from '../scripts/app-server.mjs';
-import { AccountSource, accountSource } from './account-source.mjs';
+import { chosen, tokens } from '../scripts/manager.mjs';
 import { readLines } from './lines.mjs';
+
+// The managed accounts, read anew each time they are asked, so a switch on the resources page reaches the session at its
+// next boundary. `refresh: true` asks for a rejected access token to be renewed, even before its expiry.
+const managed = { selected: () => chosen(), tokens: (account, { refresh = false } = {}) => tokens(account, undefined, { refresh }), close() {} };
 
 class AccountError extends Error {}
 const failed = (account, error) => new AccountError(`没能换到所选的 Codex 账号${account ? ` ${account.name}` : ''}：${error?.message || '凭据不可用'}。去「资源」重新选择或登录`);
 
-export function startAccountBridge({ source = new AccountSource(accountSource()), makeServer = options => new AppServer(options), input = process.stdin,
+export function startAccountBridge({ source = managed, makeServer = options => new AppServer(options), input = process.stdin,
   output = value => process.stdout.write(`${JSON.stringify(value)}\n`) } = {}) {
   let initialized = false, initializeId, applied = null, accountId = null, problem = null, queue = Promise.resolve(), closing = false;
   const active = new Map(), starting = new Map();
@@ -130,6 +134,9 @@ export function runAccountBridge(options) {
     if (result.error) process.stderr.write(`Codex 无法启动：${result.error.code || result.error.message}\n`);
     if (result.signal) {
       for (const signal of signals) process.off(signal, stop);
+      // The managed accounts' locks (proper-lockfile, through signal-exit) listen for it too and would end the process with
+      // the exit code instead; a lock left behind is taken over once stale.
+      process.removeAllListeners(result.signal);
       process.exitCode = 1;
       process.kill(process.pid, result.signal);
     } else process.exit(result.code ?? 1);

@@ -1,15 +1,20 @@
 // A private connection to the Codex CLI's app-server, as this machine's Codex sessions are signed in: the plugin's own CLI
 // (its `@openai/codex` dependency, the one codex-acp runs) in its own home (`CODEX_HOME`, or ~/.codex).
 // Codex reads and renews that login itself; nothing of it passes through here, unless a login is handed to it (the account
-// bridge, agent/accounts.mjs, which also takes what Codex says and asks of its client: `onMessage`).
+// bridge, agent/accounts.mjs, which also takes what Codex says and asks of its client: `onMessage`). With「多账号」on, a managed
+// account's own home is given as `env` and `cwd`, and `args` add to `app-server` (scripts/codex.mjs).
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { readLines } from '../agent/lines.mjs';
 
+// The plugin's own Codex CLI.
+export const codexCli = () => fileURLToPath(import.meta.resolve('@openai/codex/bin/codex.js'));
+
 export class AppServer {
-  constructor({ env = process.env, command = [process.execPath, new URL(import.meta.resolve('@openai/codex/bin/codex.js')).pathname, 'app-server'],
+  constructor({ env = process.env, cwd, args = [], command = [process.execPath, codexCli(), 'app-server', ...args],
     timeoutMs = 15_000, onMessage = null } = {}) {
     this.pending = new Map(); this.next = 0; this.timeoutMs = timeoutMs; this.onMessage = onMessage;
-    this.child = spawn(command[0], command.slice(1), { env, stdio: ['pipe', 'pipe', 'ignore'] });
+    this.child = spawn(command[0], command.slice(1), { env, cwd, stdio: ['pipe', 'pipe', 'ignore'] });
     this.child.stdin.on('error', () => {});
     readLines(this.child.stdout).on('line', line => {
       let message; try { message = JSON.parse(line); } catch { return; }

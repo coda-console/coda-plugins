@@ -1,25 +1,28 @@
-// The complete plugin lifecycle through the commands Coda runs: no external manager, Python, network or real login.
+// From codex-accounts 2.4.1's test/plugins/codex-accounts/accounts.test.mjs, now that its account management is the codex
+// plugin's「多账号」(the setting `codex.multipleAccounts`): the complete lifecycle of the managed accounts through the commands
+// Coda runs, no external manager, Python, network or real login.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, writeFile, symlink, utimes } from 'node:fs/promises';
+import { copyFile, mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, writeFile, symlink, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { resourceRecords, resourceRecordsProblem } from '@coda-console/plugin-check/resources';
-import { identity, list, tokens, selection, choose, remove, saveLogin } from '../../../plugins/codex-accounts/scripts/manager.mjs';
-import { SignInAgain, resources } from '../../../plugins/codex-accounts/scripts/quota.mjs';
-import { AccountSource } from '../../../plugins/codex/agent/account-source.mjs';
+import { identity, list, tokens, selection, chosen, choose, remove, saveLogin } from '../../../plugins/codex/scripts/manager.mjs';
+import { SignInAgain, managedResources as resources } from '../../../plugins/codex/scripts/quota.mjs';
 import { endWait, fakeCoda, manifest, operation, pluginEnv, probed } from '../command.mjs';
 import { pluginDir } from '../plugin.mjs';
-import { substituted } from '../substitute.mjs';
+import { substitute, substituted } from '../substitute.mjs';
 
 // The operation's file, as the manifest names it: the record offers the sign-in, which is run by this.
-const signInCommand = manifest('codex-accounts').contributes.protocolImplementations.find(one => one.kind === 'coda/resource@1').commands['sign-in'];
-const sourceCommand = manifest('codex-accounts').contributes.extensions['codex/account-source'].command;
+const signInCommand = manifest('codex').contributes.protocolImplementations.find(one => one.kind === 'coda/resource@1').commands['sign-in'];
 const fixture = fileURLToPath(new URL('./codex-fixture.mjs', import.meta.url));
+// The Codex the manager starts in this process, as in the plugin's commands: the fixture.
+substitute({ '@openai/codex/bin/codex.js': fixture });
+const on = JSON.stringify({ 'codex.multipleAccounts': true });
 const jwt = value => `x.${Buffer.from(JSON.stringify(value)).toString('base64url')}.x`;
 const auth = (account, exp = Date.now() / 1000 + 3600) => ({ auth_mode: 'chatgpt', tokens: {
   access_token: jwt({ exp, 'https://api.openai.com/auth': { chatgpt_account_id: account, chatgpt_plan_type: 'pro' } }),
@@ -29,35 +32,35 @@ const auth = (account, exp = Date.now() / 1000 + 3600) => ({ auth_mode: 'chatgpt
 const problem = value => resourceRecordsProblem([{ key: 'accounts', spec: { type: 'accounts', title: 'Codex', ...value } }]);
 async function until(fn) { for (let i = 0; i < 1000; i++) { if (await fn()) return; await delay(10); } throw Error('timed out'); }
 async function setup(t) {
-  const dir = await realpath(await mkdtemp(join(tmpdir(), 'coda-owned-accounts-'))), state = join(dir, 'state'), native = join(dir, 'native'), log = join(dir, 'events.jsonl');
-  await mkdir(state); await mkdir(native);
+  const dir = await realpath(await mkdtemp(join(tmpdir(), 'coda-owned-accounts-'))), plugin = join(dir, 'state'), native = join(dir, 'native'), log = join(dir, 'events.jsonl');
+  // The managed accounts are kept below the plugin's state directory.
+  const state = join(plugin, 'accounts');
+  await mkdir(state, { recursive: true }); await mkdir(native);
   t.after(() => rm(dir, { recursive: true, force: true }));
-  const at = { state, native };
-  const env = extra => pluginEnv('codex-accounts', { ...substituted({ '@openai/codex/bin/codex.js': fixture }),
-    CODA_PLUGIN_STATE: state, CODEX_HOME: native, CODA_PLUGIN_DEPENDENCIES: JSON.stringify({ codex: pluginDir('codex') }), FAKE_LOG: log, ...extra });
-  // The record the plugin writes, as its command prints it.
-  const record = async extra => (await resourceRecords(pluginDir('codex-accounts'), { env: env(extra) }))[0];
+  const env = extra => pluginEnv('codex', { ...substituted({ '@openai/codex/bin/codex.js': fixture }),
+    CODA_PLUGIN_STATE: plugin, CODA_PLUGIN_SETTINGS: on, CODEX_HOME: native, FAKE_LOG: log, ...extra });
+  // Where the manager keeps them, and what the Codex it starts is given (`extra`, to the fixture).
+  const at = { state, native, env: env() }, atWith = extra => ({ ...at, env: env(extra) });
+  // The managed accounts' record, as the plugin's command prints it.
+  const record = async extra => (await resourceRecords(pluginDir('codex'), { env: env(extra) })).find(one => one.key === 'accounts');
   // An action of a button, as Coda runs the `act` operation.
-  const act = (action, args, extra) => operation(t, 'codex-accounts', 'scripts/act.mjs', env(extra), { action, args });
+  const act = (action, args, extra) => operation(t, 'codex', 'scripts/act.mjs', env(extra), { action, args });
   // The sign-in as Coda runs it, with a `coda` that notes what it reports: how it ended, what it printed, and what it reported.
   const login = async (account, extra) => {
     // A silent login's wait for its link ends when the test says, once the login has read what the CLI said (not by the clock).
     const watch = { ack: join(dir, 'ack'), gate: join(dir, 'gate') }, made = env({ FAKE_ACCOUNT: account, ...extra });
-    const coda = await fakeCoda(dir, extra?.FAKE_SILENT ? probed(made, watch) : made), run = operation(t, 'codex-accounts', signInCommand, coda.env);
+    const coda = await fakeCoda(dir, extra?.FAKE_SILENT ? probed(made, watch) : made), run = operation(t, 'codex', signInCommand, coda.env);
     if (extra?.FAKE_SILENT) await endWait(watch, 'Contacting OpenAI...');
     return { code: await run.ended, stdout: run.stdout, stderr: run.stderr, reported: await coda.calls() };
   };
   const home = account => join(state, 'accounts', identity(account));
   const events = async () => existsSync(log) ? (await readFile(log, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse) : [];
-  const source = (extra = {}) => {
-    const source = new AccountSource({ command: sourceCommand, path: pluginDir('codex-accounts'), state },
-      { env: { ...env(extra), CODA_PLUGIN_PATH: pluginDir('codex'), CODA_PLUGIN_DEPENDENCIES: undefined } });
-    t.after(() => source.close()); return source;
-  };
-  return { dir, state, native, at, env, record, act, login, home, events, source };
+  // What the account bridge asks of the managed accounts (agent/accounts.mjs), with `extra` given to the Codex it starts.
+  const source = (extra = {}) => ({ selected: () => chosen(atWith(extra)), tokens: (account, { refresh = false } = {}) => tokens(account, atWith(extra), { refresh }) });
+  return { dir, plugin, state, native, at, env, record, act, login, home, events, source };
 }
 
-test('a clean installation offers Coda login without an external account library or native-login option', async t => {
+test('turned on, a clean machine offers Coda login without an external account library or native-login option', async t => {
   const f = await setup(t);
   assert.deepEqual(await list(f.at), []);
   const { key, spec } = await f.record();
@@ -120,21 +123,9 @@ test('device login adds accounts, re-login updates by identity, and failed login
   assert.ok(!(first.stdout + first.stderr + JSON.stringify(first.reported)).includes('PRIVATE-REFRESH')); assert.ok(!JSON.stringify(await list(f.at)).includes('PRIVATE-REFRESH'));
 });
 
-test('the sign-in starts beside an older codex that has no device login of its own: it carries the same one, to the byte', async t => {
-  assert.equal(await readFile(join(pluginDir('codex-accounts'), 'scripts', 'device-login.mjs'), 'utf8'),
-    await readFile(join(pluginDir('codex'), 'scripts', 'device-login.mjs'), 'utf8'), 'the copy follows the codex plugin\'s');
-  const f = await setup(t), old = join(f.dir, 'codex-1.14.4');
-  await mkdir(join(old, 'scripts'), { recursive: true });
-  await writeFile(join(old, 'package.json'), JSON.stringify({ name: '@coda-console/codex', id: 'codex', version: '1.14.4' }));
-  const signed = await f.login('first', { CODA_PLUGIN_DEPENDENCIES: JSON.stringify({ codex: old }) });
-  assert.equal(signed.code, 0, signed.stderr); assert.equal(signed.stdout, '{}\n');
-  assert.deepEqual(signed.reported, [{ command: 'progress', input: { url: 'https://auth.openai.com/codex/device', code: 'ABCD-12345' } }]);
-  assert.equal(selection(f.at), identity('first'));
-});
-
 test('cancelling device login cleans its attempt and leaves no account behind', async t => {
   const f = await setup(t), confirmation = join(f.dir, 'never-confirmed');
-  const coda = await fakeCoda(f.dir, f.env({ FAKE_CONFIRM: confirmation })), run = operation(t, 'codex-accounts', 'scripts/sign-in.mjs', coda.env);
+  const coda = await fakeCoda(f.dir, f.env({ FAKE_CONFIRM: confirmation })), run = operation(t, 'codex', 'scripts/sign-in.mjs', coda.env);
   await until(async () => (await coda.calls()).length);
   // Coda ends the whole group: the login's own cleanup is waited for.
   run.stop('SIGTERM'); assert.equal(await run.ended, 1);
@@ -249,9 +240,7 @@ test('the type\'s commands switch only to a checked account, reset its quota, an
 
 test('the real bridge imports and hands the managed account to Codex before a turn', async t => {
   const f = await setup(t); await writeFile(join(f.native, 'auth.json'), JSON.stringify(auth('existing')));
-  const extensions = { 'account-source': [{ plugin: 'codex-accounts', command: sourceCommand, path: pluginDir('codex-accounts'), state: f.state }] };
-  const bridge = spawn(process.execPath, [join(pluginDir('codex'), 'agent/accounts.mjs'), 'app-server'], {
-    env: { ...f.env(), CODA_PLUGIN_PATH: pluginDir('codex'), CODA_PLUGIN_EXTENSIONS: JSON.stringify(extensions) }, stdio: ['pipe', 'pipe', 'pipe'] });
+  const bridge = spawn(process.execPath, [join(pluginDir('codex'), 'agent/accounts.mjs'), 'app-server'], { env: f.env(), stdio: ['pipe', 'pipe', 'pipe'] });
   t.after(() => bridge.kill());
   let buffer = ''; const answers = [];
   bridge.stdout.on('data', chunk => { buffer += chunk; for (let end; (end = buffer.indexOf('\n')) >= 0;) { answers.push(JSON.parse(buffer.slice(0, end))); buffer = buffer.slice(end + 1); } });
@@ -264,24 +253,47 @@ test('the real bridge imports and hands the managed account to Codex before a tu
   assert.equal(selection(f.at), identity('existing')); assert.ok(!JSON.stringify(answers).includes('PRIVATE-REFRESH'));
 });
 
-test('installing the source hides the built-in quota board, guards stale resets, and delegates its login entry', async t => {
+test('turned on, the own login shows none and its reset is gone, its login entry adds an account; turned off, the own login is back', async t => {
   const f = await setup(t), original = JSON.stringify(auth('existing'));
   await writeFile(join(f.native, 'auth.json'), original);
-  const codex = pluginDir('codex');
-  const extensions = { 'account-source': [{ plugin: 'codex-accounts', command: sourceCommand, path: pluginDir('codex-accounts'), state: f.state }] };
-  const env = { ...f.env(), CODA_PLUGIN_PATH: pluginDir('codex'), CODA_PLUGIN_EXTENSIONS: JSON.stringify(extensions) };
-  const hidden = (await resourceRecords(codex, { env }))[0].spec;
-  assert.deepEqual(hidden.resources, []); assert.equal(hidden.signIn.installed, true, 'its login stays offered');
-  assert.deepEqual(await f.events(), [], 'hidden native board never queries the old login');
+  const codex = pluginDir('codex'), env = f.env();
+  const [own, accounts, ...more] = await resourceRecords(codex, { env });
+  assert.deepEqual([own.key, accounts.key, more], ['login', 'accounts', []]);
+  assert.deepEqual(own.spec.resources, []); assert.equal(own.spec.signIn.installed, true, 'its login stays offered');
+  assert.deepEqual(accounts.spec.resources.map(r => r.name), ['existing@example.com'], 'the existing login is imported as the first account');
+  assert.ok((await f.events()).every(e => e.home !== f.native), 'the own login is never queried');
+  // A reset of the own login's row is one of a managed account's, which names none.
   const staleReset = operation(t, 'codex', 'scripts/act.mjs', env, { action: 'reset', args: { creditId: 'old-credit' } });
-  assert.equal(await staleReset.ended, 1); assert.match(staleReset.stderr, /已由账号插件接管/); assert.deepEqual(await f.events(), []);
+  assert.deepEqual([await staleReset.ended, staleReset.stderr.trim()], [1, '没有指明用哪个账号的哪一次完全重置']);
+  assert.equal((await f.events()).some(e => e.method === 'account/rateLimitResetCredit/consume'), false);
   const coda = await fakeCoda(f.dir, { ...env, FAKE_ACCOUNT: 'second' }), delegated = operation(t, 'codex', 'scripts/sign-in.mjs', coda.env);
   assert.equal(await delegated.ended, 0, delegated.stderr);
   assert.deepEqual((await coda.calls()).map(call => [call.command, call.input.code]), [['progress', 'ABCD-12345']], 'the link and code reach Coda through the plugin\'s own CLI');
   assert.deepEqual((await list(f.at)).map(a => a.alias), ['existing@example.com', 'second@example.com']);
   assert.equal(await readFile(join(f.native, 'auth.json'), 'utf8'), original);
-  const restored = (await resourceRecords(codex, { env: { ...env, CODA_PLUGIN_EXTENSIONS: '{}' } }))[0].spec;
-  assert.equal(restored.resources[0].name, 'existing@example.com');
+  const off = await resourceRecords(codex, { env: { ...env, CODA_PLUGIN_SETTINGS: '{}' } });
+  assert.deepEqual(off.map(one => [one.key, one.spec.resources[0].name]), [['login', 'existing@example.com']]);
+  // Nor does it take the managed accounts' actions.
+  const select = operation(t, 'codex', 'scripts/act.mjs', { ...env, CODA_PLUGIN_SETTINGS: '{}' }, { action: 'select', args: { account: identity('second') } });
+  assert.deepEqual([await select.ended, select.stderr.trim()], [1, '不认识的动作：select']);
+});
+
+test('turned off, a reset left on a managed account\'s row is refused before anything is redeemed', async t => {
+  const f = await setup(t); assert.equal((await f.login('first')).code, 0);
+  const off = { CODA_PLUGIN_SETTINGS: '{}' };
+  const stale = f.act('reset', { account: identity('first'), creditId: 'c1' }, off);
+  assert.deepEqual([await stale.ended, stale.stderr.trim()], [1, '多账号已关闭，这个账号的操作不可用']);
+  assert.equal((await f.events()).some(e => e.method === 'account/rateLimitResetCredit/consume'), false, 'neither with this machine\'s login nor the account\'s');
+});
+
+test('installed where the path has a space (Application Support), the managed accounts start the plugin\'s Codex', async t => {
+  const f = await setup(t), spaced = join(f.dir, 'Application Support', 'codex.mjs');
+  await mkdir(join(f.dir, 'Application Support')); await copyFile(fixture, spaced);
+  const there = substituted({ '@openai/codex/bin/codex.js': spaced });
+  const signed = await f.login('first', there);
+  assert.equal(signed.code, 0, signed.stderr);
+  const { spec } = await f.record(there);
+  assert.deepEqual(spec.resources.map(r => [r.name, r.values.some(v => v.value === '剩余 50%')]), [['first@example.com', true]]);
 });
 
 test('an unreadable old login does not prevent signing in directly through the plugin', async t => {
@@ -306,7 +318,7 @@ test('what only signing in again cures is on the account\'s row, with the sign-i
   const credentials = join(f.home('first'), 'auth.json'), good = await readFile(credentials, 'utf8');
   await writeFile(credentials, '{broken');
   const unreadable = (await f.record()).spec;
-  assert.match(unreadable.resources[0].error, /账号登录已失效，请在「Codex 多账号」重新登录该账号/);
+  assert.match(unreadable.resources[0].error, /账号登录已失效，请在「资源」重新登录该账号/);
   assert.equal(unreadable.signIn.installed, true);
   await writeFile(credentials, good);
   // Anything else: the network, a server's error, a store that cannot be read.
@@ -315,7 +327,7 @@ test('what only signing in again cures is on the account\'s row, with the sign-i
   await assert.rejects(f.record(), { message: '读不了插件保存的账号列表' });
 });
 
-test('the device login of the codex plugin it depends on settles this one too: no link in time ends it with what Codex said, nothing kept', async t => {
+test('the device login of the own login settles this one too: no link in time ends it with what Codex said, nothing kept', async t => {
   const f = await setup(t), login = await f.login('first', { FAKE_SILENT: '1' });
   assert.equal(login.code, 1); assert.equal(login.stdout, '');
   assert.equal(login.stderr.trim(), 'Contacting OpenAI...');

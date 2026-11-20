@@ -119,7 +119,7 @@ test('the record and the full reset run the plugin\'s Codex CLI in the machine\'
   const reset = (answers, args, action = 'reset') => operation(t, 'codex', 'scripts/act.mjs', env(answers), { action, args });
   const [read] = await resourceRecords(pluginDir('codex'), { env: env({ 'account/read': signedIn, 'account/rateLimits/read': limits }) });
   assert.deepEqual([read.key, read.spec.type, read.spec.title], ['login', 'login', 'Codex']);
-  assert.deepEqual(read.spec.signIn, { installed: true, installable: false, note: '接入账号插件后，登录会添加或更新插件管理的账号。' });
+  assert.deepEqual(read.spec.signIn, { installed: true, installable: false, note: '打开「多账号」后，登录会添加或更新多账号里的账号。' });
   assert.deepEqual(read.spec.resources[0].buttons.map(b => [b.action, b.args]), [['reset', { creditId: 'first' }]]);
   const reads = await asked();
   assert.deepEqual(reads.map(a => a.method), ['initialize', 'initialized', 'account/read', 'account/rateLimits/read']);

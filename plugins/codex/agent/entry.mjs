@@ -5,14 +5,14 @@
 // async questions asked as cards whose answers it is given within the same turn (questions.mjs); its context compactions told as
 // `compaction_update` (compaction.mjs); what of Codex is not adapted
 // is told to Coda (unrecognized.mjs); the models of the model service chosen in Coda join Codex's own (providers.mjs). What Coda wants of Codex beyond ACP is set here: the mode a session starts in, and
-// which Codex program runs, through the account bridge when another plugin chooses the account (accounts.mjs).
+// which Codex program runs, through the account bridge when「多账号」chooses the account (accounts.mjs).
 import { createRequire, registerHooks } from 'node:module';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { accountSource } from './account-source.mjs';
+import { multipleAccounts } from '../scripts/manager.mjs';
 import { readLines } from './lines.mjs';
 import { orderedCodexTitles } from './titles.mjs';
 import { continuedCodexSubagents } from './subagents.mjs';
@@ -43,10 +43,10 @@ function codexVersion() {
   if (own) return /\d+\.\d+\.\d+[\w.+-]*/.exec(spawnSync(own, ['--version'], { encoding: 'utf8', timeout: 3000 }).stdout ?? '')?.[0] ?? null;
   try { return JSON.parse(readFileSync(createRequire(import.meta.url).resolve('@openai/codex/package.json'), 'utf8')).version; } catch { return null; }
 }
-// Another plugin plugged into Codex's `account-source` point chooses the account (accounts.mjs): codex-acp then runs the
-// account bridge as its Codex, through a small program written into this plugin's state, named for what it runs. A Codex
+// With「多账号」on (the setting `codex.multipleAccounts`) the managed account chosen is the one (accounts.mjs): codex-acp then
+// runs the account bridge as its Codex, through a small program written into this plugin's state, named for what it runs. A Codex
 // program of the connection's own (`CODEX_PATH`) keeps its own login.
-if (!env.CODEX_PATH && accountSource(env) && env.CODA_PLUGIN_STATE) {
+if (!env.CODEX_PATH && multipleAccounts(env) && env.CODA_PLUGIN_STATE) {
   const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
   const program = `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(fileURLToPath(new URL('./accounts.mjs', import.meta.url)))} "$@"\n`;
   const shim = join(env.CODA_PLUGIN_STATE, `account-bridge-${createHash('sha256').update(program).digest('hex').slice(0, 12)}`);

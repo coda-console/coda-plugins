@@ -2,7 +2,6 @@
   "antigravity 插件": ["plugins/antigravity/"],
   "claude 插件": ["plugins/claude/"],
   "codex 插件": ["plugins/codex/"],
-  "codex-accounts 插件": ["plugins/codex-accounts/"],
   "composer 插件": ["plugins/composer/"],
   "cursor 插件": ["plugins/cursor/"],
   "git 插件": ["plugins/git/"],
