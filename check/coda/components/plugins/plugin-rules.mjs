@@ -27,8 +27,8 @@ const ID = /^[a-z][a-z0-9-]{0,39}$/;
 // Plugins that ship with Coda, as VS Code's built-in extensions ship with it: updated with Coda itself.
 export const BUILTIN_DIR = fileURLToPath(new URL('../../resources/plugins/', import.meta.url));
 // What the plugins' base reads of `contributes` itself, the general types schemas/plugin.json names; any other key is a
-// contribution point's (contribution-points.mjs), or for a point another plugin declares to take it (the resources
-// plugin's `panels`), refused when neither does.
+// contribution point's (contribution-points.mjs), or for a point another plugin declares to take it, refused when
+// neither does.
 export const CONTRIBUTES = TYPES;
 // The shortest a kind's records are given again by its command on their own (`contributes.records`' `every`).
 const EVERY_LEAST = 60_000;
@@ -232,7 +232,7 @@ export function publishedFrom(repository) {
 }
 
 // ---- Its processes ----
-// What Coda gives each process it runs for a plugin (docs/plugins.md「插件进程的环境」) — its agents', its panels', the steps
+// What Coda gives each process it runs for a plugin (docs/plugins.md「插件进程的环境」) — its agents', the steps
 // of its workflows, the commands it puts on sessions' PATH —, beside the environment the process runs in: Coda's own Node,
 // the plugin's directory and its state on this backend (`stateDir(id)`, none without one), its settings as they apply
 // (`settings`), what installed plugins plug into its points and where the plugins it depends on are, whose files (an npm

@@ -291,7 +291,6 @@
 3 module coda.call
 3 module coda.delete
 3 module coda.emit
-3 module coda.environment
 3 module coda.error
 3 module coda.get
 3 module coda.handle
