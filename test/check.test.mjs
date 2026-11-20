@@ -94,14 +94,23 @@ describe('this repository', () => {
     const read = async contributes => (await checkPlugin(plugin({ manifest: { contributes } }), { manifestOnly: true })).report;
     const known = await read({ skills: [] }), other = await read({ menus: [] });
     assert.deepEqual(failed(known), []);
-    assert.deepEqual(failed(other), ['manifest.offers']);
+    assert.deepEqual(failed(other), ['manifest.read']);
     assert.match(other.failures[0].message, /menus/);
   });
-  // `resources` and `panels` are keys Coda retired (retiredContributes of the synced contract): a manifest still writing one is one it
-  // calls for an update, as it says it.
-  for (const key of ['resources', 'panels']) test(`a manifest still writing contributes.${key} is retired, and Coda calls for an update`, async () => {
+  // The keys Coda retired (retiredContributes of the synced contract, `extensionPoints` and `extensions` among them): a manifest
+  // still writing one is one it calls for an update, as it says it.
+  for (const key of ['resources', 'panels', 'extensionPoints', 'extensions']) test(`a manifest still writing contributes.${key} is retired, and Coda calls for an update`, async () => {
     const { report } = await checkPlugin(plugin({ manifest: { contributes: { [key]: [{ id: 'usage', title: '用量', command: 'true' }] } } }), { manifestOnly: true });
     assert.equal(report.failures.find(f => f.rule === 'manifest.retired')?.message, `本机的 Coda 已不提供 contributes.${key}，插件需要更新`);
+  });
+  // `self` and `processes` were brought back (Level 8): writing one is no call for an update.
+  test('a manifest writing contributes.self or contributes.processes is not retired', async () => {
+    for (const [contributes, files] of [[{ self: { ask: 'ask.sh' } }, { 'ask.sh': '#!/bin/sh\n' }], [{ processes: ['daemon'] }, {}]]) {
+      const dir = plugin({ manifest: { engines: { coda: 8 }, contributes }, files });
+      if (files['ask.sh']) chmodSync(join(dir, 'ask.sh'), 0o755);
+      const { report } = await checkPlugin(dir, { manifestOnly: true });
+      assert.deepEqual(report.failures.map(f => `${f.rule}: ${f.message}`), [], JSON.stringify(contributes));
+    }
   });
   test('a plugin reached through a symbolic link is measured from the real repository', async () => {
     const link = join(mkdtempSync(join(tmpdir(), 'coda-plugin-check-link-')), 'repo');
@@ -520,12 +529,12 @@ describe('manifests Coda does not take', () => {
       ['用到 liar/deploy@1 的权限组 watch：协议定义不在本地，列不出事件']);
   });
   test('a group of a protocol Coda defines is judged against Coda\'s own definition', async () => {
-    const { report } = await checkPlugin(plugin({ manifest: { uses: { 'coda/thread@1': ['read'] } } }), { manifestOnly: true });
+    const { report } = await checkPlugin(plugin({ manifest: { uses: { 'coda/composer@1': ['read'] } } }), { manifestOnly: true });
     assert.deepEqual(failed(report), []);
-    assert.deepEqual(report.items.filter(item => item.rule === 'manifest.events').map(item => item.message), ['用到 coda/thread@1 的权限组 read：不含事件']);
-    const wrong = await checkPlugin(plugin({ manifest: { uses: { 'coda/thread@1': ['raed'] } } }), { manifestOnly: true });
+    assert.deepEqual(report.items.filter(item => item.rule === 'manifest.events').map(item => item.message), ['用到 coda/composer@1 的权限组 read：不含事件']);
+    const wrong = await checkPlugin(plugin({ manifest: { uses: { 'coda/composer@1': ['raed'] } } }), { manifestOnly: true });
     assert.deepEqual(failed(wrong.report), ['manifest.uses']);
-    assert.match(wrong.report.items.find(item => item.rule === 'manifest.uses').message, /用到的协议 coda\/thread@1 没有权限组 raed/);
+    assert.match(wrong.report.items.find(item => item.rule === 'manifest.uses').message, /用到的协议 coda\/composer@1 没有权限组 raed/);
   });
   test('a setup action and services are taken, and the setup action is not run', async () => {
     const { report } = await checkPlugin(plugin({ manifest: { contributes: { setup: { command: 'exec false' }, services: ['space'] } } }), { manifestOnly: true });
@@ -563,11 +572,11 @@ describe('manifests Coda does not take', () => {
     await manifestFails({ manifest: { contributes: { configuration: { properties: { 'liar.providers': { ...providers, additionalProperties: { ...providers.additionalProperties,
       properties: { ...providers.additionalProperties.properties, key: secret } } } } } } } }, 'manifest.read', /密文设置（writeOnly）只能是没有 format、enum 与默认值的文本/);
   });
-  // Concurrency groups are coda/group@1 records, no longer of the manifest: `groups` is a key no type of Coda's takes.
-  test('a groups key is no type of Coda\'s', () => manifestFails({ manifest: { contributes: { groups: [{ name: 'liar', capacity: 'liar.capacity' }],
-    configuration: { properties: { 'liar.capacity': { type: 'integer', default: 1 } } } } } }, 'manifest.offers', /groups 不是 Coda 的类型/));
-  // Endpoints went with `window.coda.request`: like `groups`, a key no type of Coda's takes.
-  test('an endpoints key is no type of Coda\'s', () => manifestFails({ manifest: { contributes: { endpoints: [] } } }, 'manifest.offers', /endpoints 不是 Coda 的类型/));
+  // Concurrency groups are coda/group@1 records, no longer of the manifest: `groups` is a key Coda retired.
+  test('a groups key is retired', () => manifestFails({ manifest: { contributes: { groups: [{ name: 'liar', capacity: 'liar.capacity' }],
+    configuration: { properties: { 'liar.capacity': { type: 'integer', default: 1 } } } } } }, 'manifest.retired', /contributes\.groups/));
+  // Endpoints went with `window.coda.request`: like `groups`, a key Coda retired.
+  test('an endpoints key is retired', () => manifestFails({ manifest: { contributes: { endpoints: [] } } }, 'manifest.retired', /contributes\.endpoints/));
   // Coda reads these (docs/plugins.md); the checker does not refuse a plugin for bringing them.
   test('Skills, variables, PATH, MCP servers, views and model services are contributions Coda takes', async () => {
     const contributes = { skills: [], environment: {}, path: [], mcpServers: {}, views: [], modelProviders: [] };
@@ -577,18 +586,6 @@ describe('manifests Coda does not take', () => {
   test('commands of its own are taken', async () => {
     const { report } = await checkPlugin(plugin({ manifest: { contributes: { commands: [{ name: 'liar-run', command: 'exec true' }] } } }), { manifestOnly: true });
     assertPasses(report, ['manifest.commands']);
-  });
-  // A type is declared by a plugin it depends on through another as well: the checker looks for each beside it, once.
-  test('a key of contributes a plugin it depends on through another declares is of that type', async () => {
-    const top = mkdtempSync(join(tmpdir(), 'coda-plugin-check-chain-'));
-    temps.push(top);
-    const write = (id, manifest) => { mkdirSync(join(top, id)); writeFileSync(join(top, id, 'package.json'), JSON.stringify({ name: id, version: '1.0.0', ...manifest })); };
-    write('provider', { contributes: { extensionPoints: { widgets: { description: '小部件', contributes: 'widgets', title: '小部件' } } } });
-    write('base', { extensionDependencies: ['provider'], contributes: {} });
-    write('reader', { extensionDependencies: ['base'], contributes: { widgets: [{ id: 'clock' }] } });
-    write('stray', { contributes: { widgets: [{ id: 'clock' }] } });
-    assert.deepEqual(failed((await checkPlugin(join(top, 'reader'), { manifestOnly: true })).report), []);
-    assert.deepEqual(failed((await checkPlugin(join(top, 'stray'), { manifestOnly: true })).report), ['manifest.offers']);
   });
   // Of the plugins it depends on, one of the same repository is there (as Coda installs it along); one Coda ships has its
   // directory in Coda, not here, even with a plugin of its ID from another source beside it: Coda picks its own.
@@ -947,7 +944,7 @@ describe('engines.coda against what the plugin uses', () => {
     chmodSync(join(dir, 'ask.sh'), 0o755);
     const { report } = await checkPlugin(dir, { manifestOnly: true });
     assert.deepEqual(failed(report), ['manifest.level']);
-    assert.match(report.failures[0].message, /^用到 manifest contributes\.self（Level 2），engines\.coda 至少写 2（现写 1）$/);
+    assert.match(report.failures[0].message, /^用到 manifest contributes\.self（Level 8），engines\.coda 至少写 8（现写 1）$/);
   });
   test('a group of `uses` of a later Level than engines.coda fails', async () => {
     const dir = modulePlugin({ manifest: { engines: { coda: 1 }, contributes: {}, uses: { 'coda/thread@1': ['read'] } } });

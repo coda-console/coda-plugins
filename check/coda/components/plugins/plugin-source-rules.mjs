@@ -7,7 +7,7 @@
 import { createHash } from 'node:crypto';
 import { normalize } from 'node:path';
 import { requireCondition as check } from '../../domain/errors.mjs';
-import { installingIncompatibility, offerPoint, offeredCommands, offerProblem, protocolDefinition, withDependencies } from './plugin-extensions.mjs';
+import { installingIncompatibility, protocolDefinition, withDependencies } from './plugin-extensions.mjs';
 import { CONTRIBUTION_POINTS } from './contribution-points.mjs';
 import { definedEvents, eventsProblem } from '../protocols/protocol-events.mjs';
 
@@ -260,24 +260,18 @@ export function builtinProblem(id, builtin) {
 }
 // What only one plugin may declare, as said to the user: what a component's contribution point says (its `claim`: an
 // agent, which sessions name by its ID alone; a concurrency group, which any process takes by its name; Git's credentials
-// for an address; a composer mode's name and the character typed to enter one), opening a kind of reference (a view's
-// `handles`) and a key of `contributes` a point takes. A command, as a Skill or a variable, is a project's: one two plugins
+// for an address; a composer mode's name and the character typed to enter one) and opening a kind of reference (a view's
+// `handles`). A command, as a Skill or a variable, is a project's: one two plugins
 // of a project bring is neither's there (components/plugins/plugins.mjs launch).
 export const claims = plugin => [...[...CONTRIBUTION_POINTS.values()].flatMap(point => point.claim?.(plugin) ?? []),
-  ...(plugin.views ?? []).flatMap(v => (v.handles ?? []).map(kind => `打开 ${kind} 引用`)),
-  ...Object.values(plugin.extensionPoints ?? {}).filter(p => p.contributes).map(p => `扩展点 contributes.${p.contributes}`)];
+  ...(plugin.views ?? []).flatMap(v => (v.handles ?? []).map(kind => `打开 ${kind} 引用`))];
 // Why a plugin cannot sit beside those this machine has (`catalog`: built-in and installed, by ID; `builtin`: the plugins
-// Coda ships, by ID), or null: a built-in one's ID or Coda's own (builtinProblem), what a component's
-// contribution point lets only a built-in plugin bring (its `builtinOnly`, of the plugin read: why, none when it brings none
-// of it), or what only one plugin may declare (claims), a protocol or an event of one, another plugin declares. What it needs of the others — the plugins it depends on,
-// the points it plugs into or writes for (plugin-extensions.mjs offerProblem) — is checked once all of them are there.
+// Coda ships, by ID), or null: a built-in one's ID or Coda's own (builtinProblem), or what only one plugin may declare
+// (claims), a protocol or an event of one, another plugin declares. What it needs of the others — the plugins it depends
+// on — is checked once all of them are there.
 export function catalogProblem(plugin, catalog, builtin) {
   const named = builtinProblem(plugin.id, builtin);
   if (named) return named;
-  if (plugin.source?.kind !== 'builtin') for (const point of CONTRIBUTION_POINTS.values()) {
-    const only = point.builtinOnly?.(plugin);
-    if (only) return only;
-  }
   const own = claims(plugin), twice = own.find((claim, i) => own.indexOf(claim) !== i);
   if (twice) return `${twice} 在插件里声明了两次`;
   for (const claim of own) {
@@ -311,28 +305,22 @@ export function together(plugin, { catalog, installed, siblings, defined = () =>
       : siblings.has(each) ? { id: each, from: 'source', path: siblings.get(each).path, ...shown(siblings.get(each).plugin) } : { id: each, from: 'missing' });
 }
 // The catalog once a plugin from a source is installed: this machine's, what of the same commit is installed with it
-// (what it needs, directly or through another, as together finds it), and it. Not the other plugins of the commit: what
-// it and those write for points is confirmed as the points installed say.
+// (what it needs, directly or through another, as together finds it), and it. Not the other plugins of the commit.
 export function catalogAfter(plugin, { catalog, siblings }) {
   const known = new Map([...[...siblings].map(([sibling, at]) => [sibling, at.plugin]), ...catalog, [plugin.id, plugin]]);
   const along = withDependencies(known, plugin.id).filter(each => each !== plugin.id && !catalog.has(each) && siblings.has(each));
   return new Map([...catalog, ...along.map(each => [each, siblings.get(each).plugin]), [plugin.id, plugin]]);
 }
-// What installing it brings, as the confirmation lists it: every command it runs, word for word (those it plugs into
-// another plugin's points too, which that plugin runs — those it writes for a point under a key of `contributes`, where
-// the point says, the catalog beside it (`catalog`) declaring it —, those it puts on every session's PATH, those
+// What installing it brings, as the confirmation lists it: every command it runs, word for word (those it puts on every
+// session's PATH, those
 // answering clients' requests, those implementing operations of its protocols (by kind, operation and file), those giving
 // the records of its kinds and answering its own queries, and the one that makes each
 // machine ready for it, run as it is installed or updated), what a component's contribution point confirms (its
 // `confirm`: its agents and the commands it puts on sessions' PATH, the Agent Skills it lays into projects, the MCP
 // servers their agents start and what it tells every agent; the groups it brings, what it calls its capabilities; the
-// modes it puts the composer in), what it calls its workflows and how many settings; and the permission groups it uses of
+// modes it puts the composer in; each address it answers Git for and the command listing repositories to choose from), what it calls its workflows and how many settings; and the permission groups it uses of
 // others' protocols, as those define them in the catalog beside it or Coda does (`defined`: plugin-extensions.mjs protocolDefinition).
 export function contributions(plugin, catalog = new Map(), defined = () => null) {
-  const offers = Object.entries(plugin.offers ?? {}).flatMap(([key, raw]) => {
-    const found = offerPoint(new Map([...catalog, [plugin.id, plugin]]), key);
-    return found ? [{ plugin: found.plugin.id, point: found.point, title: found.declared.title, ...offeredCommands(raw, found.declared) }] : [];
-  });
   return {
     // The variables it gives what starts in the projects it applies to, each with its value as written, and the
     // directories it puts on their PATH.
@@ -351,10 +339,6 @@ export function contributions(plugin, catalog = new Map(), defined = () => null)
     ...(plugin.views?.length ? { views: plugin.views.map(v => ({ id: v.id, title: v.title, ...(v.in ? { in: v.in } : {}), ...(v.icon ? { icon: v.icon } : {}), ...(v.handles ? { handles: v.handles } : {}), ...(v.readout ? { readout: v.readout } : {}),
       ...(v.checkout ? { checkout: v.checkout } : {}), ...(v.provides ? { provides: v.provides } : {}) })) } : {}),
     ...Object.assign({}, ...[...CONTRIBUTION_POINTS.values()].map(point => point.confirm?.(plugin))),
-    extensions: plugin.extensions.map(e => ({ plugin: e.plugin, point: e.point, command: e.command })),
-    // What it writes for points under keys of `contributes`: by point, how many and the
-    // commands in them, each with what it is for.
-    ...(offers.length ? { offers } : {}),
     ...(plugin.setup ? { setup: { command: plugin.setup.command } } : {}),
     workflows: plugin.workflows, settings: Object.keys(plugin.properties).length,
     // What each machine installs for it from npm, as read from its repository (components/plugins/plugin-sources.mjs inspect).
@@ -389,13 +373,13 @@ export function candidate({ path, manifest, plugin, problem, fallback }, { catal
   const missing = along.filter(each => each.from === 'missing').map(each => each.id);
   // One coming along from the source is installed as it is (components/plugins/plugins.mjs installFrom): judged by its ID the same.
   const reserved = along.filter(each => each.from === 'source').map(each => [each.id, builtinProblem(each.id, builtin)]).find(([, why]) => why);
-  // What this machine has once it is installed, those installed with it among them: the points it may write for.
+  // What this machine has once it is installed, those installed with it among them.
   const after = plugin ? catalogAfter(plugin, { catalog, siblings }) : catalog;
   const incompatible = plugin ? installingIncompatibility(after, installed, id, { channel, level, defined }) : null;
   return { path, id, displayName: plugin?.displayName ?? (typeof manifest?.displayName === 'string' ? manifest.displayName : id),
     description: plugin?.description ?? (typeof manifest?.description === 'string' ? manifest.description : ''), version: plugin?.version ?? '',
     installed: row ? row.source ?? { kind: 'builtin' } : null,
-    problem: problem ?? incompatible?.error ?? (plugin ? catalogProblem(plugin, catalog, builtin) ?? offerProblem(plugin, after) : null) ?? (reserved ? reserved.join('：') : null)
+    problem: problem ?? incompatible?.error ?? (plugin ? catalogProblem(plugin, catalog, builtin) : null) ?? (reserved ? reserved.join('：') : null)
       ?? (missing.length ? `要一起装的 ${missing.join('、')} 不在这台机器上${plugin.source?.kind === 'npm' ? '' : '，也不在这个提交里'}` : null),
     ...(!problem && incompatible ? { incompatible } : {}), together: along.filter(each => each.from !== 'missing'),
     ...(plugin ? { contributes: contributions(plugin, after, defined) } : {}) };
