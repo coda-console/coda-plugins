@@ -1,10 +1,10 @@
 {
-  "commit": "b3a5b6a5efe3d691cd65941413410fea7bfe2fda",
+  "commit": "54365d425202b30d8f400338a0ee2a3504b12522",
   "apiLevel": 6,
   "packages": {
     "@0dep/piso": "5.2.0",
     "@agentclientprotocol/sdk": "2.6.0",
-    "@coda-console/protocol": "git+https://github.com/coda-console/coda-protocol.git#afba218805870387f9e8d395c5b665e850c1ab90",
+    "@coda-console/protocol": "6.17.0",
     "ajv": "8.20.0",
     "yaml": "2.9.1"
   },
@@ -60,7 +60,7 @@
     "check/coda/resources/plugins/resources/panels/panels.mjs": "37ffc6a4ede3e4612cd13cf1a973a90892f8ce7e8a0f055e7cfe86313aae5224",
     "check/coda/resources/plugins/resources/panels/rules.mjs": "a433d4e84138937297ec31a8912aab7bd48bba4b66da3a10978edb1367613c96",
     "check/coda/resources/plugins/resources/panels/sign-in.mjs": "6eb016ef9a7f8aa03e0f4b2fa35ce139b8b1ff0deb4ec6e6a34139aed4f2841a",
-    "check/coda/builtin.json": "719f05b31fb48bd37a68f4ae8b84fa0f515ac1c6ab5fe3a9906d5240434298bd",
+    "check/coda/builtin.json": "d42d66c67aa3a9dee8239146ef797617d6502b45f48e0557a7db899e12a5737c",
     "check/coda/api-surface.txt": "babddd7c7fb1b897874d86deed1d42f07ded67b2fff60e75a9c0b8c4749581ea"
   }
 }
