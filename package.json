@@ -29,7 +29,7 @@
   "dependencies": {
     "@0dep/piso": "5.2.0",
     "@agentclientprotocol/sdk": "2.6.0",
-    "@coda-console/protocol": "git+https://github.com/coda-console/coda-protocol.git#afba218805870387f9e8d395c5b665e850c1ab90",
+    "@coda-console/protocol": "6.17.0",
     "ajv": "8.20.0",
     "yaml": "2.9.1"
   },
