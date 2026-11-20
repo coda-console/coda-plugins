@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, test } from 'node:test';
@@ -44,6 +44,20 @@ describe('init', () => {
     assert.equal(JSON.parse(read(dir, 'package.json')).name, dir);
     const { report } = await checkPlugin(join(top, dir), { manifestOnly: true });
     assert.deepEqual(report.failures, []);
+  });
+  test('the resource template is a record command and an act command, named after the directory, and passes the check including its record', async () => {
+    const made = init(join(top, 'my-uptime'), '--template', 'resource');
+    assert.equal(made.status, 0, made.stderr);
+    const manifest = JSON.parse(read('my-uptime', 'package.json'));
+    assert.equal(manifest.name, 'my-uptime');
+    assert.deepEqual(Object.keys(manifest.contributes).sort(), ['protocolImplementations', 'records']);
+    assert.deepEqual(manifest.contributes.records, [{ kind: 'coda/resource@1', command: 'scripts/resource.mjs' }]);
+    assert.deepEqual(manifest.contributes.protocolImplementations, [{ kind: 'coda/resource@1', commands: { act: 'scripts/act.mjs' } }]);
+    for (const file of ['scripts/resource.mjs', 'scripts/act.mjs']) assert.notEqual(statSync(join(top, 'my-uptime', file)).mode & 0o111, 0, `${file} is executable`);
+    assert.equal(existsSync(join(top, 'my-uptime/scripts/mark.mjs')), false);
+    const { report } = await checkPlugin(join(top, 'my-uptime'));
+    assert.deepEqual(report.failures, []);
+    assert.ok(report.items.some(item => item.rule === 'resource.read' && item.status === 'pass'));
   });
   test('two plugins made from the module template pass together, each with an event of its own', async () => {
     const events = [];

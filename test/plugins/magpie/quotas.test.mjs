@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { barePath, manifest, pluginEnv } from '../command.mjs';
-import { resourceRecords } from '../../../check/resources.mjs';
+import { resourceRecords } from '@coda-console/plugin-check/resources';
 import { pluginDir } from '../plugin.mjs';
 
 // The gateway's answer to /v1/magpie/quotas, as Magpie gives it (internal/provider/quotas.go).

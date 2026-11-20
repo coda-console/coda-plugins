@@ -1,12 +1,11 @@
 // The contract check of one plugin directory: the manifest and its workflows, its module if it has one, then each agent's handshake (and with `live`, a
-// turn) and each resource type's (or panel's) reading. The manifest is checked against Coda's schemas of its types and its workflows against Coda's
+// turn) and the reading of its resource records. The manifest is checked against Coda's schemas of its types and its workflows against Coda's
 // dialect of BPMN (both the protocol's), the rest by Coda's own code (check/coda/), run where a plugin is written.
 import { resolve } from 'node:path';
 import { checkAgent } from './agent.mjs';
 import { checkLevel } from './level.mjs';
 import { checkManifest } from './manifest.mjs';
 import { checkModule } from './module.mjs';
-import { checkPanel } from './panel.mjs';
 import { checkResources, RESOURCE } from './resources.mjs';
 import { checkWorkflows } from './workflows.mjs';
 import { Report } from './report.mjs';
@@ -22,12 +21,11 @@ export async function checkPlugin(dir, { agent: only = null, manifestOnly = fals
   if (only && !agents.length) report.scope('manifest').fail('options.agent', `清单里没有能检查的 Agent ${only}`);
   const resources = plugin.plugin.records?.some(one => one.kind === RESOURCE);
   if (manifestOnly) {
-    if (agents.length || plugin.panels.length || resources) report.scope('handshake').skip('options.manifest', '只查清单（--manifest）：不启动 Agent、不读资源');
+    if (agents.length || resources) report.scope('handshake').skip('options.manifest', '只查清单（--manifest）：不启动 Agent、不读资源');
     return { report, plugin };
   }
   if (plugin.plugin.main) await checkModule({ checked: plugin, say: report.scope('module'), note: report.scope('note'), limit: limits?.activate });
   for (const agent of agents) await checkAgent({ agent, checked: plugin, live, prompt, limits, say: level => report.scope(level, `Agent ${agent.id}`) });
-  if (!only) for (const panel of plugin.panels) await checkPanel({ panel, checked: plugin, say: report.scope('handshake', `${panel.format === 'resources' ? '资源类型' : '面板'} ${panel.id}`) });
   if (!only && resources) await checkResources({ checked: plugin, say: report.scope('handshake', `资源记录 ${RESOURCE}`) });
   return { report, plugin };
 }

@@ -11,7 +11,7 @@ import { runFinished } from '../../../plugins/host/lib/simulator-status.mjs';
 import { registerSimulator, registrations } from '../../../plugins/host/lib/simulators.mjs';
 import { pluginDir } from '../plugin.mjs';
 import { barePath, manifest, pluginEnv, run } from '../command.mjs';
-import { resourceRecords } from '../../../check/resources.mjs';
+import { resourceRecords } from '@coda-console/plugin-check/resources';
 import { activate, deactivate } from '../../../plugins/host/main.mjs';
 import { createTestHost } from '../../../check/coda/adapters/plugin-test-host.mjs';
 

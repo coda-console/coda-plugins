@@ -352,7 +352,7 @@ export function contributions(plugin, catalog = new Map(), defined = () => null)
       ...(v.checkout ? { checkout: v.checkout } : {}), ...(v.provides ? { provides: v.provides } : {}) })) } : {}),
     ...Object.assign({}, ...[...CONTRIBUTION_POINTS.values()].map(point => point.confirm?.(plugin))),
     extensions: plugin.extensions.map(e => ({ plugin: e.plugin, point: e.point, command: e.command })),
-    // What it writes for points under keys of `contributes` (the resources plugin's panels): by point, how many and the
+    // What it writes for points under keys of `contributes`: by point, how many and the
     // commands in them, each with what it is for.
     ...(offers.length ? { offers } : {}),
     ...(plugin.setup ? { setup: { command: plugin.setup.command } } : {}),

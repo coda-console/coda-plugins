@@ -2,7 +2,7 @@
 // may plug into a point one of them declares for it (`contributes.extensionPoints` there, `contributes.extensions` here).
 // Coda checks the names and hands each plugin what is plugged into its points, as declared: what passes between the two
 // is the extended plugin's own contract, which Coda neither reads nor shapes. A point may instead take what any plugin
-// writes under a key of its `contributes` (`contributes` there, as the resources plugin's `panels`): of the schema the point
+// writes under a key of its `contributes` (`contributes` there): of the schema the point
 // declares, kept as written, for the declaring plugin to read, only the commands in it listed where installing confirms them.
 import { CORE_PROTOCOLS } from '@coda-console/protocol/protocol';
 import { pointProblem, valueProblem } from '@coda-console/protocol/validate';
@@ -109,7 +109,7 @@ export function wantedLevel(engines) {
   return typeof value === 'string' && /^[1-9][0-9]{0,8}$/.test(value) ? Number(value) : null;
 }
 // The keys of `contributes` Coda once read and no longer does: a manifest still writing one was made for what Coda took away.
-const RETIRED_CONTRIBUTES = ['endpoints', 'groups', 'events'];
+const RETIRED_CONTRIBUTES = ['endpoints', 'groups', 'events', 'resources', 'panels'];
 // Those of them `contributes` writes, a manifest's or a version's registry metadata: what either is read with as its `retired`.
 export const retiredContributes = contributes => RETIRED_CONTRIBUTES.filter(key => Object.hasOwn(contributes ?? {}, key));
 // Whether a plugin runs on this machine (docs/plugins.md「兼容」): the one judgment reading a source, installing, the store and

@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { resourceRecords, resourceRecordsProblem } from '../../../check/resources.mjs';
+import { resourceRecords, resourceRecordsProblem } from '@coda-console/plugin-check/resources';
 import { identity, list, tokens, selection, choose, remove, saveLogin } from '../../../plugins/codex-accounts/scripts/manager.mjs';
 import { SignInAgain, resources } from '../../../plugins/codex-accounts/scripts/quota.mjs';
 import { AccountSource } from '../../../plugins/codex/agent/account-source.mjs';

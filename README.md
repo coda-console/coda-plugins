@@ -3,7 +3,7 @@
 Coda 的公开插件仓库，和给插件作者用的契约检查。Agent 插件（Codex、Claude、Kimi、Grok、OpenCode 与 Codex 多账号）和 PR 生命流程也在这里维护，用户在 Coda 的商店里安装。
 
 Coda 是一个多 Agent 客户端（Mac、iPhone 与运行在你机器上的后端）。Agent 与资源页上的资源都以插件接入：
-插件是一个目录，清单就是它的 `package.json`（`contributes.agents`、`contributes.resources` 等，照 VS Code 扩展的写法）；
+插件是一个目录，清单就是它的 `package.json`（`contributes.agents`、`contributes.records` 等，照 VS Code 扩展的写法）；
 Agent 讲 [ACP](https://agentclientprotocol.com)，外加 Coda 的 Agent 活动报告 `_coda/wait`，见 [接入协议](https://github.com/coda-console/coda-protocol/blob/main/docs/agent-protocol.md)。
 插件清单的类型、它们的 schema 与接入协议都在协议包 `@coda-console/protocol`（[coda-console/coda-protocol](https://github.com/coda-console/coda-protocol)）里；本仓库文中与代码注释说的 `docs/agent-protocol.md` 指那里的那份。
 
@@ -28,7 +28,7 @@ plugins/token-board/     Token 消耗榜：看本机的 Token 用量，可选向
 plugins/testbed/         测试机：长插在 Mac 上的 iPhone、iPad 只经 use-testbed 使用，排到后装 App、交给会话操作、用完切黑屏；依赖宿主资源
 plugins/composer/        输入框模式与开发流程：监督开发（一个需求一条需求分支，主 Agent 把一块块改动合进需求分支，用户批准一次）与需求交付；Ultra 名单引用 composer.templates
 templates/agent/         最小的 Agent 插件：手写 ACP 的回声 Agent，演示会话指令、插话、Agent 活动与自主轮次
-templates/resource/      最小的资源插件：一个资源、两个读数、一个按钮
+templates/resource/      最小的资源插件：一条记录命令、一条 `act` 命令，一个资源、两个读数、一个按钮
 templates/module/        带模块的插件：自己的协议（一个查询、一个做事的操作、一个事件），模块登记操作、写记录、发布并订阅事件，附测试
 bin/、check/             契约检查（仓库根的 package.json 就是它，@coda-console/plugin-check）；check/coda/ 是 Coda 同步来的规则副本，不要手改
 test/                    检查包的测试；test/plugins/ 是各插件的测试（插件目录里只放运行要用的文件）
@@ -417,7 +417,7 @@ Dependabot（`.github/dependabot.yml`）每周为它们各开一个 PR，连同 
 
 1. **仓库**填 `coda-console/coda-plugins`（或 `https://github.com/coda-console/coda-plugins`）；**版本**留空是默认分支，也可以填分支、标签或完整的提交号。
 2. **读取**：Coda 拉取那个提交，把仓库根与两层以内 `package.json` 带 `contributes` 的目录各列成一个插件——这个仓库里是 `plugins/` 下的各个插件与三个模板。已装的外部插件（如商店里装的 `@coda-console/<id>`）可以用这里的同名插件替换；Coda 真正自带的插件（Coda 资源目录里的那些）的 ID 外部不能占用，装不了同名的。
-3. 选一个，确认里逐条列出它会运行的命令（Agent 的 `command`、资源的命令与动作），确认就是批准：这些命令以你的账户在空间里每台机器上运行，Coda 不做隔离，只装你信任的来源。
+3. 选一个，确认里逐条列出它会运行的命令（Agent 的 `command`、资源的记录命令与 `act` 等命令），确认就是批准：这些命令以你的账户在空间里每台机器上运行，Coda 不做隔离，只装你信任的来源。
 
 **Coda 只认提交**：安装时钉在读取到的那个提交上，每台机器各自取同一个提交。「检查更新」用记下的仓库与版本再读一次，提交变了才有更新；
 上一个提交留着，可以回退。清单里的 `version` 只作显示，不参与比较——改了行为就把它加一，方便人看。这个仓库不打标签、不发 release；发 npm 的方式见下面的「npm 发布」。
@@ -442,7 +442,7 @@ Agent 模板里 Agent 的 `id` 不随目录名变，按需自己改。
 - `name` 是包名；另写 `id` 时以它为 Coda 插件 ID，否则以 `name` 为 ID。ID 只能用小写字母、数字和 `-`，以字母开头，至多 40 个字符。
   本仓库的包名是 `@coda-console/<id>`，设置名与 Agent ID 仍使用原来的插件 ID。可以与已装的外部插件同名（用别的来源替换它）；不能与 Coda 自带的插件（Coda 资源目录里的那些）同名：这是安装时的规矩，Coda 拒绝装与自带插件同 ID 的外部插件。契约检查不因同 ID 判失败，`manifest.name` 只提示一句「Coda 也自带这个 ID」。
 - `displayName`、`description`、`version` 显示在安装确认与插件页。
-- `contributes` 只能有 Coda 认识的贡献：`agents`、`resources`（旧的 `panels` 仍认）、`configuration`、`capabilities`、`instructions`、`extensionPoints`、`extensions`、`commands`、`services`、`setup`；读不懂的键一律报错，不会被悄悄忽略。
+- `contributes` 只能有 Coda 认识的贡献：`agents`、`records`、`protocolImplementations`、`configuration`、`capabilities`、`instructions`、`extensionPoints`、`extensions`、`commands`、`services`、`setup`；读不懂的键一律报错，不会被悄悄忽略。
 - `setup` 是插件的设置动作：`{ "command": "…" }`，一行、不超过 4000 字（与资源命令同样的规则），没有别的键。
 
 **从仓库安装的限制**：带 npm 依赖（`dependencies`、`optionalDependencies`）就要把 `package-lock.json` 一起提交，Coda 在插件的版本目录里
@@ -460,7 +460,7 @@ Agent 模板里 Agent 的 `id` 不随目录名变，按需自己改。
 | `modes` | 可省：`title`、`unset`、`note` 是模式选择的标题与说明；`auto`、`full` 是这个 Agent 的「自动审批」「全部放行」各是哪个 ACP 模式 |
 | `skillsDir`、`configFiles`、`setupHint` | 可省：Agent 在工作副本里找 skills 的目录；它读模型列表的配置文件（变了 Coda 重读）；用不了时给用户的一句话 |
 
-Agent 进程的环境是会话的环境再加插件进程的那组变量（资源的命令与动作、放在会话 `PATH` 上的命令也一样；继承来的同名变量先去掉，一个插件的进程拿不到别的插件的）：
+Agent 进程的环境是会话的环境再加插件进程的那组变量（资源的记录命令与 act 命令、放在会话 `PATH` 上的命令也一样；继承来的同名变量先去掉，一个插件的进程拿不到别的插件的）：
 `CODA_NODE`（Coda 后端自己的 Node，插件自带的入口用它运行，不在 Agent 的 `PATH` 上）、`CODA_PLUGIN_PATH`（插件目录，从仓库装的是它钉住的版本目录）、
 `CODA_PLUGIN_STATE`（插件在这台机器上的状态目录，跨会话、跨版本保留）、`CODA_PLUGIN_SETTINGS`（插件设置的 JSON）、
 `CODA_PLUGIN_EXTENSIONS`（别的插件接在它扩展点上的东西，没有就不设）、`CODA_PLUGIN_DEPENDENCIES`（它依赖的插件的目录，没有就不设）、
@@ -481,22 +481,27 @@ Agent 进程的环境是会话的环境再加插件进程的那组变量（资�
 - Coda 关会话是对 Agent 的进程组发 SIGTERM，0.8 秒后 SIGKILL：收到 SIGTERM 要尽快退出。
 - 一轮之外的审批与提问 Coda 一律拒绝，除非正有活动在 `handling`（那是一轮自主轮次）。
 
-**资源**（`contributes.resources`，例子见 `templates/resource`）：一项一个资源类型，`id`、`title`（类型名，如「CPU」「Claude」：资源页上只写它，不写插件）、
-`command`，可选 `maxAge`、`hidden`（默认不显示，在「显示的资源」里打开）、`actions`、`signIn`。`command` 用 `sh -c` 运行，标准输出是 `{ "resources": [...] }`，至多 50 个资源：
+**资源**（`coda/resource@1`，例子见 `templates/resource`）：插件写资源记录，资源页只读记录、调操作。清单里两处：
+`contributes.records` 里 `{ "kind": "coda/resource@1", "command": "scripts/resource.mjs" }`（可选 `every`，不短于 `PT1M`，按周期重跑），
+`contributes.protocolImplementations` 里 `{ "kind": "coda/resource@1", "commands": { "act": "scripts/act.mjs" } }`（`act`、`sign-in`、`install` 有哪个写哪个）。
+`contributes.resources`、`contributes.panels` 已退役：清单里还写着的插件，Coda 判「需要更新」，检查报 `manifest.retired`。
+
+- **记录命令**：Coda 以插件身份在插件目录里运行它（`{}` 在标准输入，`CODA_RECORD_KIND`，30 秒），标准输出是这个插件在这台机器上这一类的整组记录
+  `[{ key, spec }]`，每条不超过 64 KiB，key 不重复；`spec.type` 等于 `key`，`spec.title`（类型名，如「CPU」「Claude」：资源页上只写它，不写插件）与 `spec.resources`，至多 50 个资源。
+  命令失败（非零退出，原因写在标准错误的最后一行）时 Coda 保留上一份记录，资源页写「更新失败：原因」。
+- **资源**：
 
 | 字段 | 内容 |
 | --- | --- |
 | `name` | 可省：资源的名字（账号、磁盘、设备），一行不超过 80 字；类型只有一个资源时不写 |
 | `identity` | 可省：它是哪个外部身份（如 `codex:<哈希>`）：几台机器、几个插件说同一个身份时资源页只显示一行 |
-| `values` | 至多 8 个读数，每个可选 `label`（只有一个读数时不写）、`value`、`fraction`（0–1，**还剩多少**，不知道就不写）、`time`（ISO 8601，如额度何时恢复），`value` 与 `fraction` 至少有一个 |
+| `values` | 必写，至多 8 个读数，每个可选 `label`（只有一个读数时不写）、`value`、`fraction`（0–1，**还剩多少**，不知道就不写）、`time`（ISO 8601，如额度何时恢复），`value` 与 `fraction` 至少有一个 |
 | `error` | 可省：哪里不对，一行不超过 80 字 |
-| `actions` | 至多 8 个按钮，每个 `label` 和 `action`（须是这个类型声明的动作）、`view`（插件的视图）或 `url`（`https://` 网页）之一，可选 `args`、`disabled`、`confirm` |
+| `buttons` | 必写，至多 8 个按钮，每个 `label` 和 `action`（调 `act` 操作）、`view`（插件的视图）或 `url`（`https://` 网页）之一，可选 `args`（序列化后不超过 4096 字节）、`disabled`、`confirm` |
 
 `name` 与 `values` 至少有一个。没有副标题、说明行或整段文字：资源页上只有类型名、名字、读数与按钮，要说明的写进插件自己的文档或视图。
-只在打开资源页或点「刷新」时读，30 秒没结束或输出超过 1 MiB 就停下；读不懂的键算这次读取失败。`resources` 为空的类型不显示。
-命令的环境是后端的环境（不带会话 ID）加上插件进程的那组变量（同上），`PATH` 最前面是 Coda 后端的 `node`；`CODA_GROUPS_STATE` 是这一刻这个后端各并发组的占用与排队
-（`{now, groups}`）；动作另有 `CODA_PANEL_ARGS`（按钮的 `args`）。
-动作至多跑 10 分钟，成功后 Coda 立即重读这个类型。之前的写法 `contributes.panels`（`{ "items": [...] }`，卡片与说明行）Coda 仍读，当作资源显示、说明文字丢掉；新插件写 `resources`。
+- **`act` 命令**：点按钮（并确认）后 Coda 运行它，`{ action, args }` 在标准输入里，至多 10 分钟；成功就在标准输出写 `{}`，失败退出 1、原因写在标准错误的最后一行；不认识的动作要让调用失败。
+- 命令的环境是后端的环境（不带会话 ID）加上插件进程的那组变量（同上），`PATH` 最前面是 Coda 后端的 `node`；`CODA_GROUPS_STATE` 是这一刻这个后端各并发组的占用与排队（`{now, groups}`）。
 
 ## npm 发布
 
@@ -525,7 +530,7 @@ npm 包设置里的 Publishing access 保持 npm 的默认设置，不另行收�
 
 ## 契约检查
 
-扮演 Coda 去读一个插件目录：清单对 Coda 的类型 schema 校验，流程按 Coda 的流程方言读，Agent 照 Coda 的样子启动、说 Coda 说的话，资源类型（或旧的面板）由 Coda 的资源插件模块读一次。
+扮演 Coda 去读一个插件目录：清单对 Coda 的类型 schema 校验，流程按 Coda 的流程方言读，Agent 照 Coda 的样子启动、说 Coda 说的话，写资源记录的插件，它的记录命令照宿主的样子跑一次，输出照协议校验。
 插件写的合乎它用到的类型就对：清单的通用键只在协议包 `@coda-console/protocol`（[coda-console/coda-protocol](https://github.com/coda-console/coda-protocol)）的 schema 里，
 `agents`、`skills`、`mcpServers` 等业务键由 Coda 里读它的一方登记成贡献点（schema 与读法，`check/coda/application/contributions.mjs` 先于读清单加载），都由 Coda 自己用的同一个校验器判，
 检查包不另写规则。`check/coda/` 是 Coda 文件的原样副本（见[契约副本](#契约副本)），检查包手写的只有怎样扮演 Coda、怎样判。
@@ -539,11 +544,11 @@ node bin/check.mjs <插件目录> [--agent <id>] [--manifest] [--live] [--prompt
 npx github:coda-console/coda-plugins#<提交> <插件目录>
 ```
 
-插件自己的测试用检查包的出口：`@coda-console/plugin-check/test-host`（`createTestHost`，Coda 自己的 `coda`、`ctx` 构造）与 `@coda-console/plugin-check/types`（类型），不必直接依赖协议包。
+插件自己的测试用检查包的出口：`@coda-console/plugin-check/test-host`（`createTestHost`，Coda 自己的 `coda`、`ctx` 构造）、`@coda-console/plugin-check/resources`（`resourceRecords`、`resourceRecordsProblem`，见下）与 `@coda-console/plugin-check/types`（类型），不必直接依赖协议包。
 
 写 `coda/resource@1` 记录的插件（`contributes.records` 里有这一种）握手一级还会照宿主的样子跑一次它的记录命令（插件目录里、`{}` 在标准输入、`CODA_RECORD_KIND`、30 秒），
 输出照协议的 schema 与宿主的上限校验：是 `[{ key, spec }]`、key 不重复、`spec.type` 等于 `key`、每条不超过 64 KiB、按钮的 `args` 序列化后不超过 4096 字节；规则 `resource.read`、`resource.output`。
-记录里的动作（`act`、`sign-in`、`install`）不运行。插件自己的测试用 `check/resources.mjs`（代替 `check/panel.mjs` 的 `readResources`）：
+记录里的动作（`act`、`sign-in`、`install`）不运行。插件自己的测试从 `@coda-console/plugin-check/resources` 导入（不要按文件路径导 `check/resources.mjs`）：
 `await resourceRecords(插件目录, { env })` 跑清单里 `coda/resource@1` 的记录命令，返回它打印的记录，不合则抛出原因（`env` 是测试给的进程环境，不给就用本进程的，`CODA_PLUGIN_PATH` 为插件目录）；
 `resourceRecordsProblem(输出)` 判手头已有的输出，返回 `null` 或哪里不对。
 记录命令读不到数据时的规则：Coda 在命令失败（非零退出）时保留上一份记录、资源页显示「更新失败：原因」，所以只有「重新登录才能恢复」的错才打印带 `error` 和 `signIn` 的记录（凭据缺失、过期、无效，认证文件读不了或内容坏了；有登录却没有 CLI 也算，登录入口会装它）；没登录、没账号不是错，照常打印有效记录、带 `signIn`；其余读失败（网络、超时、5xx、响应读不懂、本地登记损坏、查询失败）一律以非零退出，原因写在标准错误的最后一行，不要打印一条只有错误的记录去顶掉上一份好读数。
@@ -551,9 +556,9 @@ npx github:coda-console/coda-plugins#<提交> <插件目录>
 
 | 级 | 要不要登录 | 查什么 |
 | --- | --- | --- |
-| 清单（总是） | 不要 | `package.json` 的通用键对协议 schema 校验（`manifestProblem`），再照 Coda 读成插件（`readPlugin`：登记的贡献点各按自己的 schema 查、读，ID、设置名在 ID 之下）；其余写给别的插件扩展点的键，要有 Coda 自带的或旁边依赖的插件声明这个类型。资源类型与旧的面板按资源插件给扩展点 `resources`、`panels` 带的 schema 查。`.coda/workflows/` 里的每个流程（含能力）按协议的流程方言读（`workflowProblem`）：不是 BPMN、认不出的 `coda:` 属性或元素、没有的动作或动作不接受的参数都算失败。另有只提醒的：分类、版本、图标页面太小、旧的 Agent ID `claude`。还算 `engines.coda` 该写几（读 `check/coda/api-surface.txt`）：清单的键、`contributes.<键>`、`uses` 的协议与权限组、自己协议定义里的键，以及插件目录里 `.mjs`/`.js`（不含 `node_modules`）的 `coda.<成员>`、`ctx.<成员>` 与页面里的 `window.coda.<成员>`；要的 Level 取最大的，清单写的 `engines.coda` 比清单、`uses`、定义的项小算失败，比文本扫出的项小只提醒，没写只提醒并给出该写的值。用到的试行面（`trial` 的权限组、模块接口）列在「说明」里，一行一项 |
+| 清单（总是） | 不要 | `package.json` 的通用键对协议 schema 校验（`manifestProblem`），再照 Coda 读成插件（`readPlugin`：登记的贡献点各按自己的 schema 查、读，ID、设置名在 ID 之下）；其余写给别的插件扩展点的键，要有 Coda 自带的或旁边依赖的插件声明这个类型。清单还写着退役的 `contributes.resources`、`contributes.panels` 的，照 Coda 的判断（`ownIncompatibility`）算失败（`manifest.retired`）。`.coda/workflows/` 里的每个流程（含能力）按协议的流程方言读（`workflowProblem`）：不是 BPMN、认不出的 `coda:` 属性或元素、没有的动作或动作不接受的参数都算失败。另有只提醒的：分类、版本、图标页面太小、旧的 Agent ID `claude`。还算 `engines.coda` 该写几（读 `check/coda/api-surface.txt`）：清单的键、`contributes.<键>`、`uses` 的协议与权限组、自己协议定义里的键，以及插件目录里 `.mjs`/`.js`（不含 `node_modules`）的 `coda.<成员>`、`ctx.<成员>` 与页面里的 `window.coda.<成员>`；要的 Level 取最大的，清单写的 `engines.coda` 比清单、`uses`、定义的项小算失败，比文本扫出的项小只提醒，没写只提醒并给出该写的值。用到的试行面（`trial` 的权限组、模块接口）列在「说明」里，一行一项 |
 | 模块（有 `main`；`--manifest` 不跑） | 不要 | 清单之后、握手之前：用 `createTestHost({ plugin, settings })` 起 Coda 自己的 `coda`（状态目录是临时的），`import(main)` 后调 `activate(host.coda)`，10 秒没完成或抛错算失败（带堆栈第一行）；`host.registered()` 与清单两个方向对：清单的 `protocolImplementations` 写了、定义里有、又不由 `commands` 实现的操作，模块没 `coda.handle` 算失败，模块登记了定义里没有的操作也算失败（Coda 自己的协议里 `codaOnly` 的操作只由 Coda 回答，不要求登记）；`coda.on` 订了不在自己事件组里的名字，测试宿主当场抛 `forbidden`：按被拒的事件名在已知的协议定义（Coda 自己的、自己的、依赖的）里查它归谁，查到了（它的组不在 `uses` 里）算失败，另有无关的依赖缺定义也一样；查不到，而 `uses` 里有协议的定义不在本地（依赖没放在旁边），归属可能取决于缺的定义，报「未完成核对」，不判插件错；`coda.get`/`coda.list` 遇到测试宿主没有的记录类型，先按已知定义判断：协议有定义却没有记录（只含事件）、或 `uses` 没给读记录的权限（`usesRefusal`，如只申请了事件组）算失败；有记录又已获授权的，测试宿主登记不了别的插件的记录类型（登记进自己的协议会让模块也能发它的事件），报「未完成核对」，之后的调用没有核对；协议在 `uses` 里而定义不在本地的同样报「未完成核对」。`activate` 成功之后才调模块导出的 `deactivate`（抛错、或与 `activate` 一样 10 秒没完成都算失败）；`activate` 失败、超时或「未完成核对」时不调，只靠 `host.close()` 收掉模块起的进程（`deactivate` 之后同样收）。`activate` 最终抛出的错，检查包用包了一层的 `coda` 认出它是哪个成员出的：成员是测试宿主没有后端的几个之一（`coda.watch`、`coda.services.register`、`coda.tell`、`coda.api`、`coda.environment`、`coda.protocols.resolve`、`coda.protocols.upload`、`coda.pluginSetup.retry`），错误又正是测试宿主为这个成员答的那一条（错误码与固定说法都对上）时不算失败：「说明」里写明模块一级只验到这里，登记不与清单比对，模块一级报「未完成核对」（清单写的协议没有定义时同样）；别的都算激活失败：同一成员的别的错（回调、筛选条件不合法等），别的成员的错，包括回 `unsupported` 的（比如 `coda.query` 调非只读操作） |
-| 握手（默认） | 不要 | `sh -c` 启动 `command`（环境是 Coda 的 `pluginEnv` 给的：`CODA_NODE`、`CODA_PLUGIN_PATH`、临时的 `CODA_PLUGIN_STATE`、设置默认值的 `CODA_PLUGIN_SETTINGS`；依赖的插件在旁边（同一个父目录里同名的目录）时 `CODA_PLUGIN_DEPENDENCIES` 给它的目录，Coda 自带的不在这里、不给），发与 Coda 相同的 `initialize`，要求 `protocolVersion` 为 1；能力声明的 `_meta.coda` 与顶层插话声明交协议 schema 校验；检查会话指令能力（`sessionCapabilities.systemPrompt`，没声明也通过，由 Coda 在第一轮送入）；声明了的 `session/new` 带会话指令，给出会话与当前模型，配置选项的 `_meta.coda.default` 交协议校验；错误里声明的执行失败也查协议 schema，回 -32000 记为未登录、跳过后面的检查（不算失败）；像 Coda 一样对进程组发 SIGTERM，5 秒内要退出（超过 0.8 秒提醒）；另起一个进程，关掉标准输入后 5 秒内不退出只提醒；声明了配置探测（`_meta.coda.probe`）的，再另起进程发带探测标记的 `session/new`（要给非空的 `sessionId`；标记不是 `true` 的要回 -32602）：逐个模型用 `category: model` 的配置项切换（只有 `models` 的用 `session/set_model`），每次要返回该模型完整的配置、思考档位在它自己的选项里并能设回（标了 `_meta.coda.default` 的设回那一项），不存在的模型与配置项要报错，`session/prompt` 要回 -32602，声明了 `session/close` 的另开一个虚拟会话关掉，要回 `{}`、之后它的请求回 -32002，探测期间不干活；断线后新进程的 `session/load`、`session/resume` 要回 -32002，`session/list`（带探测的 `cwd`，沿 `nextCursor` 翻完；每页、每个会话条目合 ACP schema，`sessionId` 非空，`nextCursor` 只能是字符串或 null；重复的游标或超过 100 页算失败）不列出这个虚拟会话，没声明的跳过。资源类型（或旧的面板）由 Coda 资源插件的 `Panels` 读一次（30 秒），输出合格式 |
+| 握手（默认） | 不要 | `sh -c` 启动 `command`（环境是 Coda 的 `pluginEnv` 给的：`CODA_NODE`、`CODA_PLUGIN_PATH`、临时的 `CODA_PLUGIN_STATE`、设置默认值的 `CODA_PLUGIN_SETTINGS`；依赖的插件在旁边（同一个父目录里同名的目录）时 `CODA_PLUGIN_DEPENDENCIES` 给它的目录，Coda 自带的不在这里、不给），发与 Coda 相同的 `initialize`，要求 `protocolVersion` 为 1；能力声明的 `_meta.coda` 与顶层插话声明交协议 schema 校验；检查会话指令能力（`sessionCapabilities.systemPrompt`，没声明也通过，由 Coda 在第一轮送入）；声明了的 `session/new` 带会话指令，给出会话与当前模型，配置选项的 `_meta.coda.default` 交协议校验；错误里声明的执行失败也查协议 schema，回 -32000 记为未登录、跳过后面的检查（不算失败）；像 Coda 一样对进程组发 SIGTERM，5 秒内要退出（超过 0.8 秒提醒）；另起一个进程，关掉标准输入后 5 秒内不退出只提醒；声明了配置探测（`_meta.coda.probe`）的，再另起进程发带探测标记的 `session/new`（要给非空的 `sessionId`；标记不是 `true` 的要回 -32602）：逐个模型用 `category: model` 的配置项切换（只有 `models` 的用 `session/set_model`），每次要返回该模型完整的配置、思考档位在它自己的选项里并能设回（标了 `_meta.coda.default` 的设回那一项），不存在的模型与配置项要报错，`session/prompt` 要回 -32602，声明了 `session/close` 的另开一个虚拟会话关掉，要回 `{}`、之后它的请求回 -32002，探测期间不干活；断线后新进程的 `session/load`、`session/resume` 要回 -32002，`session/list`（带探测的 `cwd`，沿 `nextCursor` 翻完；每页、每个会话条目合 ACP schema，`sessionId` 非空，`nextCursor` 只能是字符串或 null；重复的游标或超过 100 页算失败）不列出这个虚拟会话，没声明的跳过。写 `coda/resource@1` 记录的，记录命令跑一次（30 秒），输出照协议的 schema 与宿主的上限校验 |
 | 一轮（`--live`） | 要 | 声明了会话指令的经 `systemPrompt` 送入，没声明的在第一轮前加契约的 `instructionsBlock`；第一轮问会话指令里的检查词（一个随机词），回复里要有它；再发一轮提示词（默认「只回复 ok」）收到 `stopReason`；每条 `session/update` 先过 ACP SDK 的 schema，工具审核、用量与默认选项标记再过协议 schema；`_coda/wait` 用协议的 `agentMessageProblem` 校验形状，另查会话归属、登记与终态（子 Agent 不带 `childSessionId`、定时不带 `at` 只提醒）；扩展形状问题按现有规则报告协议返回的「位置：说明」；远端绑定码请求先查协议参数再查本会话归属；执行失败的形状交协议校验，重试预算照 Coda 策略；审批与提问一律回拒绝，在一轮之外发来的算失败；再发一轮并 `session/cancel`，30 秒内要结束，读到取消后还在做事或拖过 5 秒才答复却不回 `cancelled` 算失败（见下）；有自主轮次的也取消一次；声明插话的，答复用协议的 `agentResultProblem` 校验，一轮结束后插话要回 `promptRequired` 且不自己另开一轮，一轮进行中插话要回 `injected` 或 `promptRequired`（`injected` 的那一轮照常回 `stopReason`）；声明 `loadSession` 的，新开进程 `session/load`（声明了的同样带会话指令）要成功，随后在新进程里再跑一轮也要收到 `stopReason` |
 
 **取消后的 `stopReason` 怎么判**：检查发 `session/cancel` 时紧跟一个只会得到 -32601 的探测请求（`_codaCheck/barrier`）。Agent 按顺序读，
@@ -562,7 +567,7 @@ npx github:coda-console/coda-plugins#<提交> <插件目录>
 答复先于读到取消写出（取消送到前这一轮已经结束），或读到取消时已经做完、随即答复的（如 Codex 做完后等标题时被取消），只记一条说明。
 
 `--manifest` 只查清单（什么也不运行）；`--agent <id>` 只查一个 Agent。退出码：0 通过，1 有失败，2 用法不对。
-资源的动作与插件的设置动作（`contributes.setup`）不运行（可能改动东西、装软件）；Coda 自己的 MCP 服务器不给（`mcpServers` 为空）。
+资源的 `act`、`sign-in`、`install` 命令与插件的设置动作（`contributes.setup`）不运行（可能改动东西、装软件）；Coda 自己的 MCP 服务器不给（`mcpServers` 为空）。
 检查给的会话指令不是 Coda 的全文，是一段替身加一句检查词。
 
 在自己插件仓库的 CI 里：
@@ -575,7 +580,7 @@ npx github:coda-console/coda-plugins#<提交> <插件目录>
 
 ## 契约副本
 
-Coda 主仓库不公开。它的插件规则（读清单、读面板、插件进程的环境、ACP 与 `_coda/wait` 的约定等，按 Coda `backend/src/` 下的路径放在 `check/coda/`）、
+Coda 主仓库不公开。它的插件规则（读清单、插件进程的环境、ACP 与 `_coda/wait` 的约定等，按 Coda `backend/src/` 下的路径放在 `check/coda/`）、
 它自带的插件（`check/coda/builtin.json`）都是 Coda 的原样副本，由 Coda 的部署流程 `sync-plugin-check`
 （脚本 `scripts/plugin-contract.mjs`）同步：它在分支 `sync/coda` 上给这里开 PR。**不要手改**；规则要改先改 Coda。
 `check/coda/contract.json` 记着同步自哪个提交、每个文件的 sha256 和副本用到的包的版本，CI 用它核对：

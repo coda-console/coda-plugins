@@ -1,6 +1,9 @@
-// 「运行时间」资源类型的取数命令：Coda 在打开资源页或点「刷新」时用 `sh -c` 运行它，标准输出就是资源的 JSON
-// （docs/plugins.md「资源」）。`node` 是 Coda 后端自己的 Node；只用 Node 自带的模块。
-// 读不懂的键会让这次读取失败；格式里没有说明性的字段，每个资源只有名字、读数、一行错误和按钮。
+#!/usr/bin/env node
+// 「运行时间」资源类型的记录命令（`coda/resource@1` 的记录，清单的 contributes.records）：Coda 在启动、更新、设置改动、
+// 动作之后与资源页打开、点「刷新」时运行它（清单里写 `every` 才另按周期运行）。标准输出是这个插件在这台机器上这一类的
+// 整组记录：`[{ key, spec }]`，key 是类型 ID，spec.type 与它相同。`node` 是 Coda 后端自己的 Node；只用 Node 自带的模块。
+// 读不懂的键会让这次写入失败；记录里没有说明性的字段，每个资源只有名字、读数、一行错误和按钮。
+// 命令失败（退出 1，标准错误的最后一行写原因）就保留 Coda 已有的记录，不写空的。
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { cpus, loadavg, uptime } from 'node:os';
@@ -19,7 +22,7 @@ const since = seconds => {
   const days = Math.floor(seconds / 86400), hours = Math.floor(seconds % 86400 / 3600), minutes = Math.floor(seconds % 3600 / 60);
   return days ? `${days} 天 ${hours} 小时` : hours ? `${hours} 小时 ${minutes} 分钟` : `${minutes} 分钟`;
 };
-// 按钮动作记下的时刻，存在插件的状态目录里（CODA_PLUGIN_STATE，跨读取、跨版本保留）。
+// 按钮动作（scripts/act.mjs）记下的时刻，存在插件的状态目录里（CODA_PLUGIN_STATE，跨读取、跨版本保留）。
 function marked() {
   try { return JSON.parse(readFileSync(join(process.env.CODA_PLUGIN_STATE, 'mark.json'), 'utf8')).at; } catch { return null; }
 }
@@ -32,4 +35,6 @@ const values = [
   { label: '已开机', value: since(up), time: new Date(Date.now() - up * 1000).toISOString() },
   ...(mark ? [{ label: '距上次记下', value: since((Date.now() - Date.parse(mark)) / 1000) }] : []),
 ];
-process.stdout.write(JSON.stringify({ resources: [{ values, actions: [{ label: '记下此刻', action: 'mark' }] }] }));
+// 按钮调 `act` 操作（scripts/act.mjs）做 `mark`；confirm 是执行前问的话。
+const buttons = [{ label: '记下此刻', action: 'mark', confirm: '记下此刻？\n之后显示距这次记下过了多久。' }];
+process.stdout.write(JSON.stringify([{ key: 'uptime', spec: { type: 'uptime', title: '运行时间', resources: [{ values, buttons }] } }]));

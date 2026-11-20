@@ -12,7 +12,7 @@
 // (a notice: an event it subscribes to, adapters/plugin-events.mjs), and `output`, `exited`
 // of a process it started (adapters/process-relay.mjs). To it: `post { instance, message }`, `change { instance,
 // collection, type, id, object }`, `unwatch { watch }`, `cancel { id }` of a `query` or a `question`, `progress { run,
-// value }` of a `run`, `drained`, `kill` of a process, and the requests `environment { of, project }`, `settings`
+// value }` of a `run`, `drained`, `kill` of a process, and the requests `settings`
 // (the plugin's own, as they are now), `watch { collection, selector }`, `tell { session, text }`, `part { part, method,
 // args }`, `provider { method, args }`, `serviceRegister { id, port, secret }`, `serviceUnregister { id }`, `query { record,
 // operation, input, timeout, deadline }`, `emit { name, data, subject, project }`, `call { record, operation, input, id, timeout, deadline, under, progress }`, `spawn { under, process, command, args, cwd, env, name }`, each with the
@@ -198,14 +198,13 @@ export function pluginModules({ send }) {
     return entry.value;
   };
 
-  // What a plugin's module is given: this plugin's own, and the environment of another's it runs a command of; and the parts
+  // What a plugin's module is given: this plugin's own; and the parts
   // others provide, each asking the backend under its name. `token`: this plugin's for this host process, brought with
   // every request it asks (`asks`).
   function codaFor(plugin, provided, token) {
     const views = new Map(), protocols = new Map(), operations = new Map();
     const asks = (method, params, signal = null, progress = null) => ask(method, { ...params, token }, signal, progress);
     const services = pluginServices(asks);
-    const environment = (project = null, options = {}) => asks('environment', { of: options?.plugin ?? null, project });
     // The listeners of `settings.onChange`: this plugin's own settings only, told as they are written.
     const settingsChanges = new Set();
     // The events it publishes and those it subscribes to (adapters/plugin-events.mjs).
@@ -277,10 +276,6 @@ export function pluginModules({ send }) {
         if (!response.ok) throw new Error(value?.error?.message ?? `Coda 回答 ${response.status}`);
         return value;
       },
-      // What Coda gives every process of the plugin's (docs/plugins.md「插件进程的环境」), for one the module starts itself
-      // (Node's child_process, as a VS Code extension starts its language server); `{ plugin }`, another installed plugin's,
-      // for a command of its the module runs.
-      environment,
       // This plugin's own settings (docs/plugins.md「设置」): as they are now, asked of the backend each time, and told to
       // `onChange` as they are written, while the module runs. Secrets are not among them.
       settings: Object.freeze({

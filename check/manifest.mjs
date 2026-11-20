@@ -13,9 +13,8 @@ import { HOST_PROTOCOLS } from './coda/application/host-protocols.mjs';
 import shipped from './coda/builtin.json' with { type: 'json' };
 import { CORE_PROTOCOLS } from '@coda-console/protocol/protocol';
 import { manifestProblem } from '@coda-console/protocol/validate';
-import { offerProblem, protocolDefinition, usesMissing } from './coda/components/plugins/plugin-extensions.mjs';
+import { offerProblem, ownIncompatibility, protocolDefinition, usesMissing } from './coda/components/plugins/plugin-extensions.mjs';
 import { choosesModelProviders, pluginEnv, readPlugin, resolveSettings } from './coda/components/plugins/plugin-rules.mjs';
-import { panelDeclarations } from './coda/resources/plugins/resources/panels/rules.mjs';
 
 // The plugins Coda ships, by ID. Their files are Coda's, not here: none has a directory on this machine.
 const builtin = new Map(shipped.map(plugin => [plugin.id, { ...plugin, dir: undefined }]));
@@ -63,7 +62,7 @@ function pageSize(data) {
 }
 
 // Checks the manifest in `dir` and reports under `say` (report.mjs). Returns what the later levels need — the plugin as Coda
-// reads it, its agents and the panels the resources plugin can read, its settings for every project, the directories of the
+// reads it, its agents, its settings for every project, the directories of the
 // plugins it depends on that are here, `definitionOf(kind)`, a protocol's definition as far as it is here (its own, Coda's
 // or a plugin's beside it; undefined if not), `definitions`, all of those that are here, and `env(stateDir)`, what Coda gives each of its processes —; null when it is no
 // plugin, or not of the types it names.
@@ -132,11 +131,10 @@ export function checkManifest(dir, say) {
       else say.pass('manifest.events', `用到 ${kind} 的权限组 ${group}：不含事件`);
     }
   }
-  // Its resource types, or the panels before them, as the resources plugin reads what is written for its point once that is
-  // of the point's schema: one declaring types has those alone.
-  const format = plugin.offers?.resources ? 'resources' : 'panels', what = format === 'resources' ? '资源类型' : '面板';
-  const panels = offered ? [] : panelDeclarations(plugin.offers?.[format]).map(panel => ({ ...panel, format }));
-  for (const panel of panels) say.pass('manifest.panels', `${what} ${panel.id}「${panel.title}」：动作 ${Object.keys(panel.actions).join('、') || '无'}${panel.signIn ? '，可从 Coda 登录' : ''}`);
+  // The keys of `contributes` Coda retired (`resources`, `panels`): a manifest still writing one is one Coda calls for an update
+  // (ownIncompatibility, of the retired keys alone: the Level and the channel are another level's and the installing machine's).
+  const retired = ownIncompatibility({ retired: plugin.retired }, {});
+  if (retired) say.fail('manifest.retired', retired.error);
 
   // What its processes are given (pluginEnv): the plugins it depends on, those beside it here; one Coda ships has its
   // directory in Coda, not here, even with one of its ID beside it (Coda picks its own), and one found nowhere is not named.
@@ -152,6 +150,6 @@ export function checkManifest(dir, say) {
   // The model services of a machine with none, for one that chooses them; the PATH has no directories of Coda's own here.
   const env = stateDir => pluginEnv({ catalog: given, installed, id: plugin.id, stateDir: id => id === plugin.id ? stateDir : null, settings,
     providers: choosesModelProviders(plugin) ? {} : null, userPath: process.env.PATH ?? '' });
-  return { id: plugin.id, manifest, plugin, agents: plugin.agents, panels, settings, dependencies, env, definitionOf: kind => protocolDefinition(kind, protocols, hosted),
+  return { id: plugin.id, manifest, plugin, agents: plugin.agents, settings, dependencies, env, definitionOf: kind => protocolDefinition(kind, protocols, hosted),
     definitions: [...Object.values(CORE_PROTOCOLS), ...HOST_PROTOCOLS, ...[...protocols.values()].flatMap(each => each.protocols ?? [])] };
 }

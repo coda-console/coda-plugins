@@ -1,7 +1,7 @@
 {
   "name": "@coda-console/plugin-check",
-  "version": "0.8.27",
-  "description": "Coda 插件的契约检查：扮演 Coda 读清单、启动 Agent 讲 ACP 与 _coda/wait、读资源类型（与旧的面板）。",
+  "version": "0.8.28",
+  "description": "Coda 插件的契约检查：扮演 Coda 读清单、启动 Agent 讲 ACP 与 _coda/wait、读资源记录。",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -13,7 +13,8 @@
   },
   "exports": {
     "./types": "./check/coda/adapters/plugin-test-host.d.mts",
-    "./test-host": "./check/coda/adapters/plugin-test-host.mjs"
+    "./test-host": "./check/coda/adapters/plugin-test-host.mjs",
+    "./resources": "./check/resources.mjs"
   },
   "bin": {
     "coda-plugin-check": "bin/check.mjs"
