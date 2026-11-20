@@ -1,4 +1,4 @@
-// What the checker starts and makes goes however it ends: the process groups of agents and panels it started (detached,
+// What the checker starts and makes goes however it ends: the process groups of agents and record commands it started (detached,
 // so a Ctrl-C at the terminal does not reach them), what stops those it had Coda's code start, and its temporary
 // directories. bin/check.mjs turns SIGINT and SIGTERM into an exit, which runs this.
 import { mkdtempSync, rmSync } from 'node:fs';

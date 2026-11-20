@@ -13,6 +13,7 @@ import { checkPlugin } from '../check/index.mjs';
 import { createTestHost } from '../check/coda/adapters/plugin-test-host.mjs';
 import { checkLevel, parseSurface } from '../check/level.mjs';
 import { checkManifest } from '../check/manifest.mjs';
+import { resourceRecords } from '../check/resources.mjs';
 import { NOT_PROVIDED } from '../check/module.mjs';
 import { Report } from '../check/report.mjs';
 import { agentCapabilitiesProblem, agentMessageProblem, agentResultProblem, agentValueProblem } from '@coda-console/protocol/agent';
@@ -65,11 +66,22 @@ describe('this repository', () => {
     assert.match(report.items.find(item => item.rule === 'live.waits').message, /登记 1 个（task ×1），自主轮次 1 次，都已结束/);
     assert.match(report.items.find(item => item.rule === 'live.autonomous').message, /两秒到了/);
   });
-  test('templates/resource reads as resources', async () => {
+  test('templates/resource gives a resource record Coda takes, and an act command that does its button\'s action', async () => {
     const { report } = await checkPlugin(at('templates/resource'), { live: true, limits });
-    assertPasses(report, ['manifest.name', 'manifest.panels', 'panel.read']);
-    assert.match(report.items.find(item => item.rule === 'manifest.panels').message, /资源类型 uptime「运行时间」：动作 mark/);
-    assert.match(report.items.find(item => item.rule === 'panel.read').message, /输出合资源格式：1 个资源，读数 2 个，按钮 1 个/);
+    assertPasses(report, ['manifest.name', 'resource.read']);
+    assert.match(report.items.find(item => item.rule === 'resource.read').message, /输出合 coda\/resource@1：1 条记录，1 个资源，读数 2 个，按钮 1 个/);
+    // The button names an action the act command does: it writes the state the record command reads, and refuses any other.
+    const [{ spec }] = await resourceRecords(at('templates/resource'));
+    const [{ action }] = spec.resources[0].buttons, state = mkdtempSync(join(tmpdir(), 'coda-plugin-check-act-'));
+    temps.push(state);
+    const act = name => spawnSync(process.execPath, [at('templates/resource/scripts/act.mjs')], { input: JSON.stringify({ action: name, args: {} }), encoding: 'utf8', env: { ...process.env, CODA_PLUGIN_STATE: state } });
+    const done = act(action);
+    assert.equal(done.status, 0, done.stderr);
+    assert.equal(done.stdout.trim(), '{}');
+    assert.match(readFileSync(join(state, 'mark.json'), 'utf8'), /"at":"\d{4}-/);
+    const refused = act('nope');
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /不认识的动作：nope/);
   });
   test('templates/module passes the manifest and the module level, its engines.coda the Level it needs', async () => {
     const { report } = await checkPlugin(at('templates/module'));
@@ -77,14 +89,19 @@ describe('this repository', () => {
     assert.match(report.items.find(item => item.rule === 'module.registered').message, /登记了 2 个操作/);
     assert.deepEqual(rules(report, 'warn'), []);
   });
-  // Coda's own types, and those the points of the plugins Coda ships declare (the resources plugin's `panels`), pass; another
-  // no plugin declares is of no type.
+  // Coda's own types pass; another no plugin declares is of no type.
   test('contributes takes what Coda takes, and refuses what nothing takes', async () => {
     const read = async contributes => (await checkPlugin(plugin({ manifest: { contributes } }), { manifestOnly: true })).report;
-    const known = await read({ panels: [], skills: [] }), other = await read({ menus: [] });
+    const known = await read({ skills: [] }), other = await read({ menus: [] });
     assert.deepEqual(failed(known), []);
     assert.deepEqual(failed(other), ['manifest.offers']);
     assert.match(other.failures[0].message, /menus/);
+  });
+  // `resources` and `panels` are keys Coda retired (retiredContributes of the synced contract): a manifest still writing one is one it
+  // calls for an update, as it says it.
+  for (const key of ['resources', 'panels']) test(`a manifest still writing contributes.${key} is retired, and Coda calls for an update`, async () => {
+    const { report } = await checkPlugin(plugin({ manifest: { contributes: { [key]: [{ id: 'usage', title: '用量', command: 'true' }] } } }), { manifestOnly: true });
+    assert.equal(report.failures.find(f => f.rule === 'manifest.retired')?.message, `本机的 Coda 已不提供 contributes.${key}，插件需要更新`);
   });
   test('a plugin reached through a symbolic link is measured from the real repository', async () => {
     const link = join(mkdtempSync(join(tmpdir(), 'coda-plugin-check-link-')), 'repo');
@@ -575,7 +592,7 @@ describe('manifests Coda does not take', () => {
   });
   // Of the plugins it depends on, one of the same repository is there (as Coda installs it along); one Coda ships has its
   // directory in Coda, not here, even with a plugin of its ID from another source beside it: Coda picks its own.
-  test("a panel's command gets what Coda gives a plugin's processes, and the directories of the plugins it depends on beside it", async () => {
+  test("a resource record command gets what Coda gives a plugin's processes, and the directories of the plugins it depends on beside it", async () => {
     const top = mkdtempSync(join(tmpdir(), 'coda-plugin-check-deps-')), dir = join(top, 'reader');
     temps.push(top);
     execFileSync('git', ['init', '-q', top]);
@@ -585,14 +602,15 @@ describe('manifests Coda does not take', () => {
     writeFileSync(join(top, 'github/package.json'), JSON.stringify({ name: 'github', version: '1.0.0', contributes: {} }));
     mkdirSync(dir);
     const seen = join(top, 'seen.json');
-    writeFileSync(join(dir, 'panel.mjs'), `import { writeFileSync } from 'node:fs';
+    writeFileSync(join(dir, 'resource.mjs'), `#!/usr/bin/env node
+      import { writeFileSync } from 'node:fs';
       const e = process.env;
       writeFileSync(${JSON.stringify(seen)}, JSON.stringify({ dependencies: JSON.parse(e.CODA_PLUGIN_DEPENDENCIES),
         settings: JSON.parse(e.CODA_PLUGIN_SETTINGS), groups: JSON.parse(e.CODA_GROUPS_STATE).groups, node: e.CODA_NODE, thread: e.CODA_THREAD_ID ?? null }));
-      console.log(JSON.stringify({ items: [] }));`);
-    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'reader', version: '1.0.0', extensionDependencies: ['base', 'github'], contributes: {
+      console.log(JSON.stringify([{ key: 'env', spec: { type: 'env', title: '环境', resources: [{ values: [{ value: 'ok' }], buttons: [] }] } }]));`, { mode: 0o755 });
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'reader', version: '1.0.0', engines: { coda: 6 }, extensionDependencies: ['base', 'github'], contributes: {
       configuration: { properties: { 'reader.size': { type: 'integer', default: 3 } } },
-      panels: [{ id: 'env', title: '环境', command: 'node "$CODA_PLUGIN_PATH/panel.mjs"' }] } }));
+      protocolImplementations: ['coda/resource@1'], records: [{ kind: 'coda/resource@1', command: 'resource.mjs' }] } }));
     // A check run from inside a session: neither its ID nor its plugin's variables reach the plugin's processes.
     const before = { CODA_THREAD_ID: process.env.CODA_THREAD_ID, CODA_PLUGIN_EXTENSIONS: process.env.CODA_PLUGIN_EXTENSIONS };
     Object.assign(process.env, { CODA_THREAD_ID: 'a-session', CODA_PLUGIN_EXTENSIONS: '{"x":[]}' });
@@ -604,33 +622,59 @@ describe('manifests Coda does not take', () => {
         groups: [], node: process.execPath, thread: null });
     } finally { for (const [key, value] of Object.entries(before)) if (value === undefined) delete process.env[key]; else process.env[key] = value; }
   });
-  test('a panel whose output Coda cannot read', async () => {
-    const dir = plugin({ files: { 'panel.mjs': `console.log(JSON.stringify({ items: [{ type: 'meter', label: '用量', fraction: 1.5 }] }))` },
-      manifest: { contributes: { panels: [{ id: 'usage', title: '用量', command: 'node "$CODA_PLUGIN_PATH/panel.mjs"' }] } } });
-    const { report } = await checkPlugin(dir, { agent: null, limits });
-    assert.ok(failed(report).includes('panel.output'), JSON.stringify(report.items, null, 1));
-    assert.match(report.failures.find(f => f.rule === 'panel.output').message, /fraction 须在 0–1 之间/);
+  // A plugin whose resource record command is the script `script` (executable, with its `#!`: `executable` makes it so).
+  const recorder = ({ script }) => plugin({ files: { 'resource.mjs': script },
+    manifest: { engines: { coda: 6 }, contributes: { protocolImplementations: ['coda/resource@1'], records: [{ kind: 'coda/resource@1', command: 'resource.mjs' }] } } });
+  const executable = dir => chmodSync(join(dir, 'resource.mjs'), 0o755);
+  const record = spec => `#!/usr/bin/env node\nconsole.log(JSON.stringify([{ key: 'usage', spec: { type: 'usage', title: '用量', resources: [${spec}] } }]))`;
+  test('a resource record whose output Coda cannot read', async () => {
+    const dir = recorder({ script: record("{ values: [{ label: '用量', fraction: 1.5 }], buttons: [] }") });
+    executable(dir);
+    const { report } = await checkPlugin(dir, { limits });
+    assert.ok(failed(report).includes('resource.output'), JSON.stringify(report.items, null, 1));
+    assert.match(report.failures.find(f => f.rule === 'resource.output').message, /输出不合 coda\/resource@1：.*fraction/);
   });
-  test('resources whose output Coda cannot read, or that explain themselves', async () => {
-    const dir = plugin({ files: { 'resources.mjs': `console.log(JSON.stringify({ resources: [{ name: '用量', subtitle: '本月' }] }))` },
-      manifest: { contributes: { resources: [{ id: 'usage', title: '用量', command: 'node "$CODA_PLUGIN_PATH/resources.mjs"' }] } } });
-    const { report } = await checkPlugin(dir, { agent: null, limits });
-    assert.match(report.failures.find(f => f.rule === 'panel.output').message, /输出不合资源格式：.*不支持的键：subtitle/);
+  test('a resource that explains itself is not of the protocol', async () => {
+    const dir = recorder({ script: record("{ name: '用量', subtitle: '本月', values: [], buttons: [] }") });
+    executable(dir);
+    const { report } = await checkPlugin(dir, { limits });
+    assert.match(report.failures.find(f => f.rule === 'resource.output').message, /subtitle/);
   });
-  test('a panel whose command fails says what the resources page shows', async () => {
-    const dir = plugin({ manifest: { contributes: { panels: [{ id: 'usage', title: '用量', command: 'echo 读不到用量 >&2; exit 3' }] } } });
-    const { report } = await checkPlugin(dir, { agent: null, limits });
-    assert.deepEqual(report.failures.filter(f => f.rule.startsWith('panel.')).map(f => f.message), ['读取没成功（退出码 3）：资源页显示「读不到用量」']);
+  test('records of another type than their key, or an array that is not one, fail the output', async () => {
+    for (const [script, expected] of [
+      [`#!/usr/bin/env node\nconsole.log(JSON.stringify([{ key: 'other', spec: { type: 'usage', title: '用量', resources: [] } }]))`, /spec\.type（usage）须与 key 相同/],
+      [`#!/usr/bin/env node\nconsole.log(JSON.stringify({ resources: [] }))`, /不是数组/]]) {
+      const dir = recorder({ script });
+      executable(dir);
+      assert.match((await checkPlugin(dir, { limits })).report.failures.find(f => f.rule === 'resource.output').message, expected);
+    }
+  });
+  test('a record command that fails says what it said, and the record Coda has stays', async () => {
+    const dir = recorder({ script: `#!/bin/sh\necho 读不到用量 >&2\nexit 3\n` });
+    executable(dir);
+    const { report } = await checkPlugin(dir, { limits });
+    const failures = report.failures.filter(f => f.rule.startsWith('resource.'));
+    assert.deepEqual(failures.map(f => f.rule), ['resource.read']);
+    assert.match(failures[0].message, /读取没成功：.*读不到用量/);
+  });
+  test('resourceRecords gives the records of a plugin and throws what is wrong with them', async () => {
+    const dir = recorder({ script: record("{ values: [{ value: '1' }], buttons: [] }") });
+    executable(dir);
+    assert.deepEqual(await resourceRecords(dir), [{ key: 'usage', spec: { type: 'usage', title: '用量', resources: [{ values: [{ value: '1' }], buttons: [] }] } }]);
+    const bad = recorder({ script: record("{ values: [], buttons: [] }") });
+    executable(bad);
+    await assert.rejects(resourceRecords(bad));
   });
 });
 
 describe('a check that is stopped', () => {
-  // A panel that says who it is and where its state is, then takes its time.
-  for (const signal of ['SIGINT', 'SIGTERM']) test(`${signal} while a panel is read leaves neither its process nor its state directory`, async () => {
+  // A record command that says who it is and where its state is, then takes its time.
+  for (const signal of ['SIGINT', 'SIGTERM']) test(`${signal} while a record is read leaves neither its process nor its state directory`, async () => {
     const dir = mkdtempSync(join(tmpdir(), 'coda-plugin-check-test-')), mark = join(dir, 'mark');
     temps.push(dir);
-    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'slow', version: '1.0.0',
-      contributes: { panels: [{ id: 'slow', title: '慢', command: `echo "$$ $CODA_PLUGIN_STATE" > '${mark}'; exec sleep 30` }] } }));
+    writeFileSync(join(dir, 'slow.sh'), `#!/bin/sh\necho "$$ $CODA_PLUGIN_STATE" > '${mark}'; exec sleep 30\n`, { mode: 0o755 });
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'slow', version: '1.0.0', engines: { coda: 6 },
+      contributes: { protocolImplementations: ['coda/resource@1'], records: [{ kind: 'coda/resource@1', command: 'slow.sh' }] } }));
     const checker = spawn(process.execPath, [at('bin/check.mjs'), dir], { stdio: 'ignore' });
     const exited = once(checker, 'exit');
     for (let i = 0; i < 1000 && !(existsSync(mark) && readFileSync(mark, 'utf8').endsWith('\n')); i++) await delay(10);
@@ -868,7 +912,7 @@ describe('the module level', () => {
   });
   test('the test host still answers what it lacks as the checker recognizes it', async () => {
     const asked = { watch: c => c.watch('other/x@1', () => {}), 'services.register': c => c.services.register('s', () => {}), tell: c => c.tell('s', 't'),
-      api: c => c.api('/x'), environment: c => c.environment(), 'protocols.resolve': c => c.protocols.resolve({ kind: 'a@1', id: 'b' }, 's'),
+      api: c => c.api('/x'), 'protocols.resolve': c => c.protocols.resolve({ kind: 'a@1', id: 'b' }, 's'),
       'protocols.upload': c => c.protocols.upload('u'), 'pluginSetup.retry': c => c.pluginSetup.retry('x') };
     assert.deepEqual(Object.keys(asked).sort(), Object.keys(NOT_PROVIDED).sort());
     const host = createTestHost({ plugin: { id: 'x', path: tmpdir(), state: null } });
