@@ -1,6 +1,6 @@
 // The 测试机 plugin's scripts, run as Coda runs them (plugins/testbed/README.md): its resources over the devices registered here
 // and their groups, the steps of use-testbed that find a device and put its black screen up, its part of host-sim (plugged
-// into the host plugin's point `kinds`) and the step of run-on-device. The flow around them is Coda's engine's to run.
+// handed to by the host plugin's host-sim: the command testbed-sim and the record host/kind@1) and the step of run-on-device. The flow around them is Coda's engine's to run.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -27,7 +27,7 @@ function registered(t, devices) {
 // The environment of a command of a plugin's, without what would say a device is held here: the tests may run inside one.
 const env = (extra = {}, id = 'testbed') => {
   const base = pluginEnv(id, { CODA_NODE: process.execPath, ...extra });
-  for (const name of ['HOST_SIM_LEASE', 'HOST_SIM_DEVICES', 'CODA_GROUPS', 'CODA_THREAD_ID', 'CODA_PLUGIN_EXTENSIONS']) if (!(name in extra)) delete base[name];
+  for (const name of ['HOST_SIM_LEASE', 'HOST_SIM_DEVICES', 'CODA_GROUPS', 'CODA_THREAD_ID']) if (!(name in extra)) delete base[name];
   return base;
 };
 // A step's script (scripts/<name>.mjs), its outputs in GITHUB_OUTPUT.
@@ -131,10 +131,18 @@ test('the black screen build takes a build slot through host-sim: a command on a
   assert.equal(slot.code, 1); assert.match(slot.stderr, /找不到描述文件：profile/);
 });
 
-// The testbed's host-sim, as the host plugin's host-sim hands a device kind to what is plugged into its point `kinds`.
-const kinds = state => JSON.stringify({ kinds: [{ command: manifest('testbed').contributes.extensions['host/kinds'].command, path: dir, state }] });
+// The testbed's host-sim, as the host plugin's host-sim hands a device kind to the command its record host/kind@1 names: found on the
+// PATH, where Coda puts the commands of the plugins (a stand-in of the command's, running its manifest's line as the testbed).
 const hostCommand = manifest('host').contributes.commands.find(c => c.name === 'host-sim').command;
-const hostSim = (args, extra) => run(`${hostCommand} ${args}`, env({ ...extra, CODA_PLUGIN_EXTENSIONS: kinds(extra.CODA_PLUGIN_STATE) }, 'host'));
+const testbedSim = manifest('testbed').contributes.commands.find(c => c.name === 'testbed-sim');
+function hostSim(args, extra) {
+  // Both in the testbed's state, which the test removes: the shim on the PATH, and the host plugin's own state with its kinds.json.
+  const state = extra.CODA_PLUGIN_STATE, tools = join(state, 'bin'), kindsState = join(state, 'host');
+  mkdirSync(tools, { recursive: true }); mkdirSync(kindsState, { recursive: true });
+  writeFileSync(join(tools, testbedSim.name), `#!/bin/sh\nexport CODA_NODE="${process.execPath}" CODA_PLUGIN_PATH="${dir}" CODA_PLUGIN_STATE="${state}"\nexec sh -c '${testbedSim.command} "$@"' testbed-sim "$@"\n`, { mode: 0o755 });
+  writeFileSync(join(kindsState, 'kinds.json'), JSON.stringify([{ plugin: 'testbed', command: testbedSim.name }]));
+  return run(`${hostCommand} ${args}`, env({ ...extra, CODA_PLUGIN_STATE: kindsState, PATH: `${tools}:${extra.PATH ?? process.env.PATH}` }, 'host'));
+}
 
 test('a session\'s host-sim for a device hands the command to run-on-device with what to run, where and with what', async t => {
   const state = registered(t, [phone]);
@@ -205,4 +213,15 @@ test('run-on-device cancelled ends as cancelled, its command stopped with it', a
   process.kill(-child.pid, 'SIGTERM');
   assert.equal(await ended, 143);
   assert.equal(readFileSync(output, 'utf8'), 'exit_code=143\n');
+});
+
+test('the manifest drops the extension, implements host/kind@1 by a record naming the command testbed-sim, which is scripts/host-sim.mjs', async () => {
+  const { contributes } = manifest('testbed');
+  assert.equal(contributes.extensions, undefined);
+  assert.ok(contributes.protocolImplementations.includes('host/kind@1'));
+  assert.deepEqual(contributes.commands, [{ name: 'testbed-sim', command: '"$CODA_NODE" "$CODA_PLUGIN_PATH/scripts/host-sim.mjs"' }]);
+  const { command } = contributes.records.find(record => record.kind === 'host/kind@1');
+  const printed = await run(`node "$CODA_PLUGIN_PATH/${command}"`, env());
+  assert.equal(printed.code, 0, printed.stderr);
+  assert.deepEqual(JSON.parse(printed.stdout), [{ key: 'devices', spec: { command: 'testbed-sim' } }]);
 });

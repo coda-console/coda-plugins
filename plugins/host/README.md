@@ -1,5 +1,7 @@
 # 宿主资源
 
+6.0.0（接口破坏性变更）：删清单里的扩展点 `kinds`，改定义协议 `host/kind@1`（spec 是 `{ command }`，PATH 上的命令名）；插件模块把本机这类记录写成状态目录里的 `kinds.json`（`[{ plugin, command }]`，按插件 ID 排，激活时先写成 `[]`），`host-sim` 读它转交。`engines.coda` 仍是 6，只给预览渠道。
+
 5.1.0：资源「构建名额」改由记录命令 `scripts/resource.mjs` 写 `coda/resource@1` 记录（类型 `slots`），不再是清单里的 `contributes.resources`。读不出名额数时（`coda resources group-owner host` 失败或超过 10 秒），命令以非零退出，原因写在标准错误的最后一行：Coda 保留上一份记录，资源页显示「更新失败：原因」。需要先带 `coda/resource@1` 的 Coda（API Level 6）。只给预览渠道。
 
 ## 名额与模拟器清点
@@ -37,7 +39,7 @@
 `host-sim` 是这个插件放在会话 `PATH` 上的[命令](https://github.com/coda-console/coda/blob/main/docs/plugins.md#命令)（`scripts/host-sim.mjs`），只在已占着的名额里用：持锁执行的命令里（`HOST_SIM_LEASE`），
 或占着组 `host` 的流程步骤里（`CODA_GROUPS`）。在会话里不在名额中调用 `host-sim run --kind build|simulator -- <命令>` 时拒绝（退出码 2），
 提示改由 Agent 用 `workflow_run` 调用 `run-held` 执行这条命令；所以经 `host-sim` 自己排队的项目脚本（`scripts/check.sh` 的编译范围、iOS 构建与测试入口）
-在会话里整条交给 `run-held` 执行，脚本本身不必改写。别的 `--kind`（测试机的设备名）交给接在本插件扩展点 `kinds` 上的插件（[测试机](../testbed/README.md)）。
+在会话里整条交给 `run-held` 执行，脚本本身不必改写。别的 `--kind`（测试机的设备名）交给 `host/kind@1` 记录给出的命令（见下文，[测试机](../testbed/README.md)的 `testbed-sim`）。
 
 **总时限**：`what=模拟器` 默认 60 分钟，其他 `run-held` 默认 30 分钟；从命令启动开始计时，不含排队。
 长批次在 `inputs` 显式给 `timeoutMinutes`，如 `{ "command": "bash scripts/ios-ui-test.sh", "cwd": "/path/to/project", "what": "模拟器", "timeoutMinutes": 120 }`。
@@ -82,8 +84,9 @@
 插件模块把组 `host` 写成一条记录，容量就是 `host.capacity`，设置改了记录随之改，所以项目流程的步骤写 `coda:group="host"`
 也按这个容量排（容量只取记录的，不取目录给的值）；步骤里看到 `CODA_GROUPS` 含 `host` 时，`host-sim` 同样视作已占着名额（`run` 直接执行、`check` 通过，`bind` 只记进本实例的 `simulator-registrations/`，由定时清点删除）。`run` 直接执行的命令带上 `HOST_SIM_LEASE=coda-group:host`，所以只看有没有 `HOST_SIM_LEASE` 的项目脚本在步骤里多走一次就照常往下，不会反复调用自己。项目脚本判断自己在不在名额里应问 `host-sim check`（Skill `host-slots`）：测试机上执行的命令也带 `HOST_SIM_LEASE`，占的却不是构建名额。已占着名额只说构建与模拟器，测试机的设备名另由[测试机插件](../testbed/README.md)借用：在构建名额里用设备名调用，同样交给测试机插件，只借给正在做那台设备任务的会话。
 
-**扩展点** `kinds`：`host-sim` 遇到 `build`、`simulator` 之外的 `--kind`，把整条命令交给接在这里的第一个命令（按插件 ID 排），参数原样附在后面；
-那条命令以接上它的插件的 `CODA_PLUGIN_PATH`、`CODA_PLUGIN_STATE` 运行，退出码就是 `host-sim` 的。没有插件接上时拒绝，提示装测试机插件。
+**设备种类** `host/kind@1`：`host-sim` 遇到 `build`、`simulator` 之外的 `--kind`，读本插件状态目录里的 `kinds.json`（插件模块按这类记录写的，`[{ plugin, command }]`，按插件 ID 排），
+把整条命令交给第一项的 `command`（从 `PATH` 上找），参数、标准输入输出原样，退出码就是 `host-sim` 的。文件还没有、列表为空、`PATH` 上找不到命令时拒绝（退出码 2），提示「没有插件处理 --kind <名>」。
+别的插件写这类记录（如[测试机](../testbed/README.md)）时，记录不设权限组，别的插件读不到。
 
 - 装上后对这台机器的所有项目生效（[安装、停用与卸载](https://github.com/coda-console/coda/blob/main/docs/plugins.md#安装停用与卸载)），可按 Tag 限定或在项目里停用。
 

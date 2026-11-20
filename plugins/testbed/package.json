@@ -4,7 +4,7 @@
   "displayName": "测试机",
   "description": "排队使用 iPhone、iPad 与安卓测试机",
   "icon": { "symbol": "iphone", "color": "gray" },
-  "version": "3.1.0",
+  "version": "4.0.0",
   "engines": {
     "coda": 6
   },
@@ -25,11 +25,12 @@
       "run-on-device",
       "resolve-testbed"
     ],
-    "extensions": {
-      "host/kinds": {
+    "commands": [
+      {
+        "name": "testbed-sim",
         "command": "\"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/host-sim.mjs\""
       }
-    },
+    ],
     "instructions": "用 iPhone/iPad 或安卓测试机：调用 workflow_run，workflow 为 use-testbed，inputs 给 device（设备名）或 select（如 platform=android）和 instructions；要装 App 再给 app（绝对路径）。拿到任务后用 host-sim run --kind <设备名> 操作，做完用 workflow_task 答复。",
     "configuration": {
       "title": "测试机",
@@ -51,12 +52,17 @@
     ],
     "protocolImplementations": [
       "coda/group@1",
-      "coda/resource@1"
+      "coda/resource@1",
+      "host/kind@1"
     ],
     "records": [
       {
         "kind": "coda/resource@1",
         "command": "scripts/resource.mjs"
+      },
+      {
+        "kind": "host/kind@1",
+        "command": "scripts/kind.mjs"
       }
     ]
   },

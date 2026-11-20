@@ -1,5 +1,7 @@
 # 测试机
 
+4.0.0（接口破坏性变更）：删清单里的 `extensions`，改写 `host/kind@1` 记录（命令 `scripts/kind.mjs`，key `devices`，spec 是 `{ "command": "testbed-sim" }`），并带命令 `testbed-sim`（就是原来的 `scripts/host-sim.mjs`）；宿主资源插件的 `host-sim` 遇到设备名，从 `PATH` 上找 `testbed-sim` 转交。`engines.coda` 仍是 6，只给预览渠道。
+
 3.1.0：资源「测试机」改由记录命令 `scripts/resource.mjs` 写 `coda/resource@1` 记录（类型 `devices`），不再是清单里的 `contributes.resources`。设备登记读不了时，命令以非零退出，原因写在标准错误的最后一行：Coda 保留上一份记录，资源页显示「更新失败：原因」。需要先带 `coda/resource@1` 的 Coda（API Level 6）。只给预览渠道。
 
 3.0.1：点名借设备（`device`）时，按 `coda resources group-owner` 的三种结果处理：只有「没有这台」（没有这个名字的记录，报「没有这台测试机」）和「本机够不着」（`reachable: false`，报设备在哪台机器（`location`）上、到那台上借，并附够得着它的机器 ID（`reachedBy`），安卓说「没有本机可达的 adb 链路」，iOS 说「本机够不着」）在排队前就结束；够得着的照常排队借。按池子借（`select`）不变。需要先带这种组主人回答的 Coda。只给预览渠道。
@@ -14,7 +16,7 @@
 
 iPhone、iPad 测试机由这个插件登记归属；安卓由保管方（android 插件）登记。每台设备是一个[并发组](https://github.com/coda-console/coda/blob/main/docs/workflows.md#并发组)，组名都是 `device:<设备名>`，容量 1；
 排到、装 App、交给会话写在它的能力 `use-testbed`（`.coda/capabilities/use-testbed.bpmn`）里，会话借用设备的命令走它的另一个能力 `run-on-device`。
-它依赖[宿主资源](../host/README.md)插件（`extensionDependencies`），接在那边的扩展点 `kinds` 上：会话里 `host-sim --kind <设备名>` 由它的 `scripts/host-sim.mjs` 处理。
+它依赖[宿主资源](../host/README.md)插件（`extensionDependencies`），写那边定义的记录 `host/kind@1`、带命令 `testbed-sim`：会话里 `host-sim --kind <设备名>` 由它的 `scripts/host-sim.mjs` 处理。
 从 Coda 的商店安装（npm 包 `@coda-console/testbed`），装它时一起装上宿主资源；给 Agent 的用法在 Skill `testbed`（`skills/testbed/SKILL.md`）。
 需要会话操作时调用 `use-testbed`。无需会话操作但需要独占设备的流程（如预览版直装、开发流程的设备验收），先调用 `resolve-testbed`（参数 device），读返回的 group、platform、adb（iOS 为空），再用 `hold-group` 占返回的 group（capacity 1）这一段，不自行拼组名，测试机会话排在它后面；流程负责自己的操作与收尾。
 
