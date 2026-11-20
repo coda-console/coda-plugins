@@ -9,7 +9,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { resourceRecords, runResourceCommand } from '../../../check/resources.mjs';
+import { resourceRecords, runResourceCommand } from '@coda-console/plugin-check/resources';
 import { fakeCoda, operation, pluginEnv } from '../command.mjs';
 import { pluginDir } from '../plugin.mjs';
 

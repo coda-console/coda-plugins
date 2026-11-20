@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { resourceRecords } from '../../../check/resources.mjs';
+import { resourceRecords } from '@coda-console/plugin-check/resources';
 import { authorization, bound } from '../../../plugins/claude/scripts/sign-in.mjs';
 import { endWait, fakeCoda, noted, operation, pluginEnv, probed } from '../command.mjs';
 import { pluginDir } from '../plugin.mjs';

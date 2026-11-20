@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, rm, access, mkdir, utimes } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
-import { resourceRecords, resourceRecordsProblem } from '../../../check/resources.mjs';
+import { resourceRecords, resourceRecordsProblem } from '@coda-console/plugin-check/resources';
 import { account, resource, windows } from '../../../plugins/kimi/scripts/quota.mjs';
 import { KimiUnavailable, kimiWeb } from '../../../plugins/kimi/scripts/web.mjs';
 import { barePath, pluginEnv } from '../command.mjs';

@@ -9,7 +9,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { resourceRecords } from '../../../check/resources.mjs';
+import { resourceRecords } from '@coda-console/plugin-check/resources';
 import { barePath, endWait, fakeCoda, operation, pluginEnv, probed } from '../command.mjs';
 import { pluginDir } from '../plugin.mjs';
 

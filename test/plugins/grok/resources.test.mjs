@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, writeFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { resourceRecords, resourceRecordsProblem } from '../../../check/resources.mjs';
+import { resourceRecords, resourceRecordsProblem } from '@coda-console/plugin-check/resources';
 import { grokAsk } from '../../../plugins/grok/scripts/ask.mjs';
 import { account, line, resources, windows } from '../../../plugins/grok/scripts/quota.mjs';
 import { barePath, pluginEnv } from '../command.mjs';

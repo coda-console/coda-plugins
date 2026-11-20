@@ -544,11 +544,11 @@ node bin/check.mjs <插件目录> [--agent <id>] [--manifest] [--live] [--prompt
 npx github:coda-console/coda-plugins#<提交> <插件目录>
 ```
 
-插件自己的测试用检查包的出口：`@coda-console/plugin-check/test-host`（`createTestHost`，Coda 自己的 `coda`、`ctx` 构造）与 `@coda-console/plugin-check/types`（类型），不必直接依赖协议包。
+插件自己的测试用检查包的出口：`@coda-console/plugin-check/test-host`（`createTestHost`，Coda 自己的 `coda`、`ctx` 构造）、`@coda-console/plugin-check/resources`（`resourceRecords`、`resourceRecordsProblem`，见下）与 `@coda-console/plugin-check/types`（类型），不必直接依赖协议包。
 
 写 `coda/resource@1` 记录的插件（`contributes.records` 里有这一种）握手一级还会照宿主的样子跑一次它的记录命令（插件目录里、`{}` 在标准输入、`CODA_RECORD_KIND`、30 秒），
 输出照协议的 schema 与宿主的上限校验：是 `[{ key, spec }]`、key 不重复、`spec.type` 等于 `key`、每条不超过 64 KiB、按钮的 `args` 序列化后不超过 4096 字节；规则 `resource.read`、`resource.output`。
-记录里的动作（`act`、`sign-in`、`install`）不运行。插件自己的测试用 `check/resources.mjs`：
+记录里的动作（`act`、`sign-in`、`install`）不运行。插件自己的测试从 `@coda-console/plugin-check/resources` 导入（不要按文件路径导 `check/resources.mjs`）：
 `await resourceRecords(插件目录, { env })` 跑清单里 `coda/resource@1` 的记录命令，返回它打印的记录，不合则抛出原因（`env` 是测试给的进程环境，不给就用本进程的，`CODA_PLUGIN_PATH` 为插件目录）；
 `resourceRecordsProblem(输出)` 判手头已有的输出，返回 `null` 或哪里不对。
 记录命令读不到数据时的规则：Coda 在命令失败（非零退出）时保留上一份记录、资源页显示「更新失败：原因」，所以只有「重新登录才能恢复」的错才打印带 `error` 和 `signIn` 的记录（凭据缺失、过期、无效，认证文件读不了或内容坏了；有登录却没有 CLI 也算，登录入口会装它）；没登录、没账号不是错，照常打印有效记录、带 `signIn`；其余读失败（网络、超时、5xx、响应读不懂、本地登记损坏、查询失败）一律以非零退出，原因写在标准错误的最后一行，不要打印一条只有错误的记录去顶掉上一份好读数。

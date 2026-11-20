@@ -13,7 +13,8 @@
   },
   "exports": {
     "./types": "./check/coda/adapters/plugin-test-host.d.mts",
-    "./test-host": "./check/coda/adapters/plugin-test-host.mjs"
+    "./test-host": "./check/coda/adapters/plugin-test-host.mjs",
+    "./resources": "./check/resources.mjs"
   },
   "bin": {
     "coda-plugin-check": "bin/check.mjs"
