@@ -1,6 +1,8 @@
 # 宿主资源
 
-6.0.0（接口破坏性变更）：删清单里的扩展点 `kinds`，改定义协议 `host/kind@1`（spec 是 `{ command }`，PATH 上的命令名）；插件模块把本机这类记录写成状态目录里的 `kinds.json`（`[{ plugin, command }]`，按插件 ID 排，激活时先写成 `[]`），`host-sim` 读它转交。`engines.coda` 仍是 6，只给预览渠道。
+6.0.0（接口破坏性变更）：不再靠扩展点 `kinds` 转交（声明暂留，见下），改定义协议 `host/kind@1`（spec 是 `{ command }`，PATH 上的命令名）；插件模块把本机这类记录写成状态目录里的 `kinds.json`（`[{ plugin, command }]`，按插件 ID 排，激活时先写成 `[]`），`host-sim` 读它转交。`engines.coda` 仍是 6，只给预览渠道。
+
+过渡：6.0.0 暂时仍在清单里声明扩展点 `kinds`（清单是 JSON，说明写在它的 `description` 里），为的是还接着它的旧版测试机、旧版 codex 能逐个升级；`host-sim` 不再读它，转交只走 `kinds.json`。coda 删旧槽位之前，由 host 6.0.1 删掉这个声明。
 
 5.1.0：资源「构建名额」改由记录命令 `scripts/resource.mjs` 写 `coda/resource@1` 记录（类型 `slots`），不再是清单里的 `contributes.resources`。读不出名额数时（`coda resources group-owner host` 失败或超过 10 秒），命令以非零退出，原因写在标准错误的最后一行：Coda 保留上一份记录，资源页显示「更新失败：原因」。需要先带 `coda/resource@1` 的 Coda（API Level 6）。只给预览渠道。
 

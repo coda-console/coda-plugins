@@ -209,9 +209,9 @@ test('a refresh of kinds.json that fails is that one\'s alone: the next notice r
   assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), [{ plugin: 'host', command: 'kind-sim' }, { plugin: 'host', command: 'more-sim' }]);
 });
 
-test('with no host/kind@1 record the module leaves kinds.json an empty list; the manifest declares the protocol and no extension point', async t => {
+test('with no host/kind@1 record the module leaves kinds.json an empty list; the manifest declares the protocol and, for the upgrade from older versions, still the point kinds', async t => {
   const { contributes } = manifest('host'), state = temporary(t);
-  assert.equal(contributes.extensionPoints, undefined);
+  assert.deepEqual(Object.keys(contributes.extensionPoints), ['kinds']);
   assert.deepEqual(contributes.protocols.map(({ name, spec }) => [name, spec.properties.command.pattern]), [['host/kind@1', '^[a-z][a-z0-9-]{0,39}$']]);
   const host = createTestHost({ plugin: { id: 'host', state, protocols: contributes.protocols, protocolImplementations: ['coda/group@1'] }, settings: { 'host.capacity': 1 } });
   t.after(async () => { await deactivate(); host.close(); });
