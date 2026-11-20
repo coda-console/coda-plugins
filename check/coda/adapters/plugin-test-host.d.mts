@@ -103,8 +103,6 @@ export interface Interrupted {
   progress: Json | null;
   /** Whether it was asked to be cancelled. */
   canceled: boolean;
-  /** The calls it made that have ended; not filled yet: a `resume` makes its calls again by their `id` to learn how they ended. */
-  children: { record: Ref; op: string; outcome: Json }[];
 }
 /**
  * Says how such a call ended, as a handler does, once a later process of the plugin's has the module activated: its
@@ -265,12 +263,6 @@ export interface Coda {
    */
   replace(kind: string, entries: (RecordValue & { key: string })[]): Promise<Entry[]>;
   /**
-   * Publishes an event of a protocol the plugin defines or implements, not one of Coda's own (those only Coda publishes),
-   * about `subject` in `project` (a project of this machine, by ID, the plugin applying there): done once Coda has checked
-   * it, its delivery not waited for; refused (`invalid_input`), nothing was published.
-   */
-  emit(name: string, data: { [key: string]: Json }, options: { subject: string; project: string }): Promise<void>;
-  /**
    * Handles an event the plugin subscribes to: one of an event group in its `uses`, any other throwing at once (`forbidden`).
    * Given each one published in a project the plugin applies in, at most once, while the module is activated; not sorted by
    * subject. What it throws is logged; the event is not given again.
@@ -399,11 +391,6 @@ export interface TestHost {
   setSettings(settings: Json): Promise<void>;
   /** Delivers an event to the module as Coda does: to its handlers of the name (`coda.on`) now. */
   emit(event: Event): Promise<void>;
-  /**
-   * The events the module published (`coda.emit`), in order, each checked as Coda checks it but for its project: of a
-   * protocol the plugin defines or implements, not one of Coda's own, as its payload schema has it.
-   */
-  emitted: Omit<Event, 'publisher'>[];
   /** What the module has registered so far: its operations (`coda.handle`), its own queries' names (`coda.self.handle`) and the events it handles (`coda.on`). */
   registered(): { operations: { kind: string; operation: string }[]; self: string[]; events: string[] };
   close(): Promise<unknown>;

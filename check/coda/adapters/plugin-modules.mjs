@@ -15,7 +15,7 @@
 // value }` of a `run`, `drained`, `kill` of a process, and the requests `settings`
 // (the plugin's own, as they are now), `watch { collection, selector }`, `tell { session, text }`, `part { part, method,
 // args }`, `provider { method, args }`, `serviceRegister { id, port, secret }`, `serviceUnregister { id }`, `query { record,
-// operation, input, timeout, deadline }`, `emit { name, data, subject, project }`, `call { record, operation, input, id, timeout, deadline, under, progress }`, `spawn { under, process, command, args, cwd, env, name }`, each with the
+// operation, input, timeout, deadline }`, `call { record, operation, input, id, timeout, deadline, under, progress }`, `spawn { under, process, command, args, cwd, env, name }`, each with the
 // module's `token`, by which the backend knows the plugin it is of, never by what it names; and `question { run,
 // question }` and `input` of a process. A query's
 // failure crosses as `failureOf` says it, as one that did nothing (`none`); a run's end, and a resume's, as its outcome, or a resume's as null when the
@@ -208,7 +208,7 @@ export function pluginModules({ send }) {
     // The listeners of `settings.onChange`: this plugin's own settings only, told as they are written.
     const settingsChanges = new Set();
     // The events it publishes and those it subscribes to (adapters/plugin-events.mjs).
-    const events = pluginEvents(plugin, asks, fire);
+    const events = pluginEvents(plugin, fire);
     // A query through the backend's unified call, the caller this plugin by its token.
     const querying = queryingAPI({ send: (request, signal) => asks('query', request, signal), plugin, operations });
     // A doing call through the call kernel, from this plugin's address (docs/plugins.md「做事的调用」).
@@ -285,7 +285,7 @@ export function pluginModules({ send }) {
       // Coda's own collections, as a page watches the module's (`threads`: the sessions this machine lists), or a kind's
       // records by its protocol's name.
       watch: watching,
-      // Events (docs/plugins.md「事件」): `emit` one of its plugin's protocols, `on` one it subscribes to.
+      // Events (docs/plugins.md「事件」): `on` one it subscribes to.
       ...events.api,
     });
     return { coda, views, protocols, operations, services, querying, calling, spawnFor, settingsChanges, events };
@@ -426,7 +426,7 @@ export function pluginModules({ send }) {
       return handling(plugin, call, id, async (handler, signal, made) => {
         if (!handler?.resume) return null;
         const { id: callId, record, operation: op, input, progress, canceled } = call;
-        return ending(() => handler.resume({ id: callId, record, op, input, progress, canceled, children: [] }, doingOf(call, signal, made, id)), signal);
+        return ending(() => handler.resume({ id: callId, record, op, input, progress, canceled }, doingOf(call, signal, made, id)), signal);
       }, call.halted);
     },
     // Called off: a query is let go at once, its handler's answer, if one comes, dropped by the backend; a doing call is

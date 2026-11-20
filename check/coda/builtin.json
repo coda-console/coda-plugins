@@ -26,9 +26,7 @@
     ],
     "gitCredentials": [],
     "views": [],
-    "dependencies": [],
-    "extensionPoints": {},
-    "extensions": []
+    "dependencies": []
   },
   {
     "id": "ask-user",
@@ -57,9 +55,7 @@
     ],
     "gitCredentials": [],
     "views": [],
-    "dependencies": [],
-    "extensionPoints": {},
-    "extensions": []
+    "dependencies": []
   },
   {
     "id": "change-setting",
@@ -88,9 +84,7 @@
     ],
     "gitCredentials": [],
     "views": [],
-    "dependencies": [],
-    "extensionPoints": {},
-    "extensions": []
+    "dependencies": []
   },
   {
     "id": "changes",
@@ -135,9 +129,7 @@
         "frame": "document"
       }
     ],
-    "dependencies": [],
-    "extensionPoints": {},
-    "extensions": []
+    "dependencies": []
   },
   {
     "id": "cliproxy",
@@ -203,9 +195,7 @@
         "command": "scripts/antigravity.mjs"
       }
     ],
-    "dependencies": [],
-    "extensionPoints": {},
-    "extensions": []
+    "dependencies": []
   },
   {
     "id": "diagnostics",
@@ -245,9 +235,7 @@
     "views": [],
     "dependencies": [
       "space"
-    ],
-    "extensionPoints": {},
-    "extensions": []
+    ]
   },
   {
     "id": "github",
@@ -1468,8 +1456,6 @@
       }
     ],
     "dependencies": [],
-    "extensionPoints": {},
-    "extensions": [],
     "environment": [
       {
         "name": "GIT_CONFIG_PARAMETERS",
@@ -1508,9 +1494,7 @@
     "capabilities": [],
     "gitCredentials": [],
     "views": [],
-    "dependencies": [],
-    "extensionPoints": {},
-    "extensions": []
+    "dependencies": []
   },
   {
     "id": "maintenance",
@@ -1586,9 +1570,7 @@
     "capabilities": [],
     "gitCredentials": [],
     "views": [],
-    "dependencies": [],
-    "extensionPoints": {},
-    "extensions": []
+    "dependencies": []
   },
   {
     "id": "resources",
@@ -1637,9 +1619,7 @@
         "frame": "document"
       }
     ],
-    "dependencies": [],
-    "extensionPoints": {},
-    "extensions": []
+    "dependencies": []
   },
   {
     "id": "secrets",
@@ -1669,9 +1649,7 @@
     ],
     "gitCredentials": [],
     "views": [],
-    "dependencies": [],
-    "extensionPoints": {},
-    "extensions": []
+    "dependencies": []
   },
   {
     "id": "session",
@@ -1725,9 +1703,7 @@
     "capabilities": [],
     "gitCredentials": [],
     "views": [],
-    "dependencies": [],
-    "extensionPoints": {},
-    "extensions": []
+    "dependencies": []
   },
   {
     "id": "space",
@@ -1773,15 +1749,13 @@
     "views": [],
     "dependencies": [
       "tailnet"
-    ],
-    "extensionPoints": {},
-    "extensions": []
+    ]
   },
   {
     "id": "tailnet",
     "displayName": "网络",
     "description": "空间里电脑互连的网络节点",
-    "version": "1.2.0",
+    "version": "1.3.0",
     "category": "机器与资源",
     "icon": {
       "symbol": "network",
@@ -1808,13 +1782,7 @@
     "capabilities": [],
     "gitCredentials": [],
     "views": [],
-    "dependencies": [],
-    "extensionPoints": {
-      "ports": {
-        "description": "要发布到 tailnet 上、或到达别的节点的端口：命令按插件自己的设置打印 { publish: [{ name, port }], reach: [{ name, port, machine }] }"
-      }
-    },
-    "extensions": []
+    "dependencies": []
   },
   {
     "id": "workflows",
@@ -1889,8 +1857,6 @@
         "frame": "canvas"
       }
     ],
-    "dependencies": [],
-    "extensionPoints": {},
-    "extensions": []
+    "dependencies": []
   }
 ]

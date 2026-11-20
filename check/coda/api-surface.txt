@@ -120,14 +120,11 @@
 1 manifest contributes.composerModes
 1 manifest contributes.configuration
 1 manifest contributes.environment
-1 manifest contributes.extensionPoints
-1 manifest contributes.extensions
 1 manifest contributes.gitCredentials
 1 manifest contributes.instructions
 1 manifest contributes.mcpServers
 1 manifest contributes.modelProviders
 1 manifest contributes.path
-1 manifest contributes.processes
 1 manifest contributes.protocolImplementations
 1 manifest contributes.protocols
 1 manifest contributes.repositories
@@ -257,7 +254,6 @@
 1 stable view window.coda.toolbar kinds toggle
 2 bridge window.coda.refresh
 2 manifest contributes.records
-2 manifest contributes.self
 3 definition description
 3 definition events
 3 definition events.description
@@ -290,7 +286,6 @@
 3 module coda.api
 3 module coda.call
 3 module coda.delete
-3 module coda.emit
 3 module coda.error
 3 module coda.get
 3 module coda.handle
@@ -352,4 +347,6 @@
 6 coda/resource@1 act operation sign-in
 6 coda/resource@1 read
 6 coda/resource@1 read records
-level 6
+8 manifest contributes.processes
+8 manifest contributes.self
+level 8

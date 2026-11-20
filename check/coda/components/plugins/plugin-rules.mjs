@@ -17,7 +17,7 @@ import { durationMs, isDuration } from '../../domain/duration.mjs';
 import { AGENT_ID } from '../../domain/values.mjs';
 import { THREAD_ENV, TOKEN_ENV } from '../../domain/session-env.mjs';
 import { iconFiles } from './plugin-icons.mjs';
-import { checkCatalog, extensionsFor, retiredContributes } from './plugin-extensions.mjs';
+import { API_LEVEL, checkCatalog, retiredContributes } from './plugin-extensions.mjs';
 import { contributionProblem, manifestProblem, TYPES } from '@coda-console/protocol/validate';
 import { ownedProtocolsProblem } from '@coda-console/protocol/protocol';
 import { claims, npmPluginId, repoAddress, sourcePath } from './plugin-source-rules.mjs';
@@ -27,8 +27,8 @@ const ID = /^[a-z][a-z0-9-]{0,39}$/;
 // Plugins that ship with Coda, as VS Code's built-in extensions ship with it: updated with Coda itself.
 export const BUILTIN_DIR = fileURLToPath(new URL('../../resources/plugins/', import.meta.url));
 // What the plugins' base reads of `contributes` itself, the general types schemas/plugin.json names; any other key is a
-// contribution point's (contribution-points.mjs), or for a point another plugin declares to take it, refused when
-// neither does.
+// contribution point's (contribution-points.mjs) or one Coda retired (plugin-extensions.mjs retiredContributes), refused
+// when it is none of these.
 export const CONTRIBUTES = TYPES;
 // The shortest a kind's records are given again by its command on their own (`contributes.records`' `every`).
 const EVERY_LEAST = 60_000;
@@ -102,6 +102,12 @@ export function readPlugin(dir, source, points = CONTRIBUTION_POINTS) {
   check(manifest && typeof manifest === 'object' && !Array.isArray(manifest), 'invalid_plugin', 'package.json 须为对象');
   const problem = manifestProblem(manifest, dir);
   check(!problem, 'invalid_plugin', problem);
+  // One still writing a key Coda retired needs an update (plugin-extensions.mjs compatibility): what else it writes for
+  // what Coda took away (what a retired extension point took) is not a key it got wrong. Nor is one asking for a Level above
+  // this Coda's (`engines.coda`): it may write what a later Coda takes, and is read for that Coda to be upgraded (`need: coda`).
+  const retired = retiredContributes(manifest.contributes);
+  const unknown = !retired.length && !((manifest.engines?.coda ?? 0) > API_LEVEL) && Object.keys(manifest.contributes ?? {}).find(key => !CONTRIBUTES.includes(key) && !points.get(key));
+  check(!unknown, 'invalid_plugin', `contributes 里的 ${unknown} 不是 Coda 的类型`);
   for (const point of points.values()) if (manifest.contributes?.[point.key] !== undefined) {
     const wrong = contributionProblem(point.schema, manifest, point.key, dir);
     check(!wrong, 'invalid_plugin', wrong);
@@ -113,7 +119,7 @@ export function readPlugin(dir, source, points = CONTRIBUTION_POINTS) {
   const contributes = manifest.contributes ?? {}, configuration = contributes.configuration ?? {};
   const protocolsProblem = ownedProtocolsProblem({ id, contributes: { protocols: contributes.protocols } });
   check(!protocolsProblem, 'invalid_plugin', protocolsProblem);
-  const records = recordCommands(contributes, dir), self = selfCommands(contributes, dir), retired = retiredContributes(contributes);
+  const records = recordCommands(contributes, dir), self = selfCommands(contributes, dir);
   const properties = Object.fromEntries(Object.entries(configuration.properties ?? {}).map(([key, value]) => {
     check(key.split('.')[0] === id, 'invalid_plugin', `设置名须以「${id}.」开头：${key}`);
     return [key, setting(value, key)];
@@ -121,8 +127,6 @@ export function readPlugin(dir, source, points = CONTRIBUTION_POINTS) {
   const files = sub => existsSync(join(dir, sub)) ? [...new Set(readdirSync(join(dir, sub)).map(f => /^(.+)\.bpmn$/.exec(f)?.[1]).filter(Boolean))].sort() : [];
   const required = configuration.required ?? [], activation = manifest.activationEvents ?? [], dependencies = manifest.extensionDependencies ?? [];
   const displayName = typeof manifest.displayName === 'string' ? manifest.displayName : id;
-  // What it writes under keys of `contributes` that are none of Coda's: for the points other plugins declare (checkCatalog).
-  const offers = Object.fromEntries(Object.entries(contributes).filter(([key]) => !CONTRIBUTES.includes(key) && !points.get(key)));
   const read = Object.assign({}, ...[...points.values()].map(point => point.read(contributes[point.key], dir)));
   const icon = pluginIcon(manifest.icon, dir) ?? [...points.values()].map(point => point.icon?.(read)).find(Boolean);
   return { id, displayName, description: typeof manifest.description === 'string' ? manifest.description : '', version: String(manifest.version ?? ''),
@@ -147,18 +151,11 @@ export function readPlugin(dir, source, points = CONTRIBUTION_POINTS) {
     ...(contributes.protocolImplementations?.length ? { protocolImplementations: implementations(contributes.protocolImplementations) } : {}),
     ...(records.length ? { records } : {}),
     ...(Object.keys(self).length ? { self } : {}),
-    ...(Object.keys(offers).length ? { offers } : {}),
-    dependencies: [...dependencies], extensionPoints: extensionPoints(contributes.extensionPoints, dir),
-    extensions: Object.entries(contributes.extensions ?? {}).map(([key, value]) => { const [plugin, point] = key.split('/'); return { plugin, point, command: value.command }; }),
+    dependencies: [...dependencies],
     ...(contributes.setup ? { setup: { command: contributes.setup.command } } : {}),
     ...(Object.keys(contributes.environment ?? {}).length ? { environment: Object.entries(contributes.environment).map(([name, value]) => ({ name, value })) } : {}),
     ...(contributes.path?.length ? { path: contributes.path.map(entry => pathEntry(entry)) } : {}) };
 }
-// Its extension points (schemas/extension-points.json), each with what it says of itself: the schema of what others write for
-// one, read from its file.
-const extensionPoints = (raw = {}, dir) => Object.fromEntries(Object.entries(raw).map(([name, value]) => [name, value.contributes === undefined
-  ? { description: value.description } : { description: value.description, contributes: value.contributes, title: value.title, commands: { ...(value.commands ?? {}) },
-    ...(value.schema ? { schema: JSON.parse(readFileSync(join(dir, value.schema), 'utf8')) } : {}) }]));
 // The directories it puts on the PATH of what starts in a project it applies to: one of its own (relative, as a Skill's),
 // or one in its state on the backend (`${CODA_PLUGIN_STATE}/…`), which its setup may make.
 function pathEntry(entry) {
@@ -235,20 +232,19 @@ export function publishedFrom(repository) {
 // What Coda gives each process it runs for a plugin (docs/plugins.md「插件进程的环境」) — its agents', the steps
 // of its workflows, the commands it puts on sessions' PATH —, beside the environment the process runs in: Coda's own Node,
 // the plugin's directory and its state on this backend (`stateDir(id)`, none without one), its settings as they apply
-// (`settings`), what installed plugins plug into its points and where the plugins it depends on are, whose files (an npm
-// package one of them brings) it may use, none of either when there is none; the files its secrets set there are in
+// (`settings`), and where the plugins it depends on are, whose files (an npm package one of them brings) it may use, none
+// when it depends on none; the files its secrets set there are in
 // (`secrets`, by setting), none when none is; whether this backend is its environment's own (`arbiter`); and the PATH
 // without Coda's own directories, for what it hands to a program that is not Coda's (`userPath`, adapters/installation.mjs).
 export const PLUGIN_VARIABLES = ['CODA_NODE', 'CODA_ARBITER', 'CODA_PLUGIN_PATH', 'CODA_PLUGIN_STATE', 'CODA_PLUGIN_SETTINGS', 'CODA_PLUGIN_SECRETS',
-  'CODA_PLUGIN_EXTENSIONS', 'CODA_PLUGIN_DEPENDENCIES', 'CODA_MODEL_PROVIDERS', 'CODA_USER_PATH'];
+  'CODA_PLUGIN_DEPENDENCIES', 'CODA_MODEL_PROVIDERS', 'CODA_USER_PATH'];
 // `providers`: the model services of this machine, for a plugin that chooses them (choosesModelProviders); none for any other.
-export function pluginEnv({ catalog, installed, id, stateDir = () => null, settingsOf = () => null, settings, secrets = {}, providers = null, arbiter = false, userPath = null }) {
-  const plugin = catalog.get(id), state = stateDir(id), points = extensionsFor(catalog, installed, id, stateDir, settingsOf);
+export function pluginEnv({ catalog, id, stateDir = () => null, settings, secrets = {}, providers = null, arbiter = false, userPath = null }) {
+  const plugin = catalog.get(id), state = stateDir(id);
   return { CODA_NODE: process.execPath, CODA_PLUGIN_PATH: plugin.dir, ...(state ? { CODA_PLUGIN_STATE: state } : {}),
     ...(userPath !== null ? { CODA_USER_PATH: userPath } : {}),
     CODA_PLUGIN_SETTINGS: JSON.stringify(settings), ...(Object.keys(secrets).length ? { CODA_PLUGIN_SECRETS: JSON.stringify(secrets) } : {}),
     ...(providers ? { CODA_MODEL_PROVIDERS: JSON.stringify(providers) } : {}),
-    ...(Object.keys(points).length ? { CODA_PLUGIN_EXTENSIONS: JSON.stringify(points) } : {}),
     ...(plugin.dependencies.length ? { CODA_PLUGIN_DEPENDENCIES: JSON.stringify(Object.fromEntries(plugin.dependencies.map(d => [d, catalog.get(d).dir]))) } : {}),
     ...(arbiter ? { CODA_ARBITER: '1' } : {}) };
 }

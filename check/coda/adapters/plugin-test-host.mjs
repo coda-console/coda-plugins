@@ -14,9 +14,8 @@
 //
 // What the module queries (`coda.query`, `ctx.query`) of a record of a protocol it implements its own handlers answer; of
 // another's, `call` given. A doing call it makes (`coda.call`, `ctx.call`) its own handlers answer, of a protocol it implements. Its settings (`coda.settings`) are those the test gives, or sets again with `setSettings`, which
-// tells the module's `onChange` as the backend does. The events it publishes (`coda.emit`) are kept for the test to read
-// (`emitted`); those the test delivers (`emit`) go to its handlers (`coda.on`), which may name only what it subscribes to by
-// its `uses`, as the backend has it. What it starts (`coda.spawn`, `ctx.spawn`) is a real child process of
+// tells the module's `onChange` as the backend does. The events the test delivers (`emit`) go to its handlers (`coda.on`),
+// which may name only what it subscribes to by its `uses`, as the backend has it. What it starts (`coda.spawn`, `ctx.spawn`) is a real child process of
 // the test's, its streams and its end relayed as the backend relays them (adapters/process-relay.mjs), with no token and
 // no entry in a registry: ended with the call or the module only as the test ends it, or as the host closes. The records
 // (`coda.get`, `list`, `watch`, `put`, `delete`, `replace`, coda#2749 3.7) are those it writes, on this one machine, by its
@@ -30,9 +29,7 @@ import { randomUUID } from 'node:crypto';
 import { ContractError } from '../domain/errors.mjs';
 import { ProtocolTypes } from '../components/protocols/types.mjs';
 import { commandOf, implementations } from '../components/plugins/plugin-rules.mjs';
-import { publishedProblem, subscribed } from '../components/plugins/plugin-extensions.mjs';
-import { protocolEvents } from '../components/protocols/protocol-events.mjs';
-import { HOST_PROTOCOLS } from '../application/host-protocols.mjs';
+import { subscribed } from '../components/plugins/plugin-extensions.mjs';
 import { checkGiven, checkHeld, checkKept, groupType, keptStatus } from '../components/concurrency-groups/schemas.mjs';
 import { validate } from '../components/protocols/types.mjs';
 import { LOCAL_KINDS, checkLabels, checkReplace, checkWrite, labelled, picked, readFilter, readRef, recordId, writeRef } from '../components/protocols/record-rules.mjs';
@@ -77,8 +74,6 @@ export function createTestHost({ plugin = {}, call = null, clock = new Clock(), 
   const catalog = new Map([[id, entry], [' ', { protocols }]]);
   const described = { id, path: plugin.path ?? process.cwd(), state: plugin.state ?? null, protocolImplementations: implemented,
     events: subscribed(entry, catalog, () => null) };
-  // The events the module published (`coda.emit`), in order.
-  const emitted = [];
   // Requests to the module waiting for its answer, the module's queries under way, and the doing calls handed to it, with what
   // their caller is told of them, by the request's ID each.
   const waiting = new Map(), querying = new Map(), runs = new Map();
@@ -201,18 +196,6 @@ export function createTestHost({ plugin = {}, call = null, clock = new Clock(), 
       });
     }
     if (message.method === 'settings') return reply({ result: JSON.parse(JSON.stringify(current)) });
-    // An event the module publishes, checked as the backend checks it (components/plugins/plugin-extensions.mjs
-    // `publishedProblem`) but for its project, which is none here: among the events of Coda's own protocols too, which
-    // only Coda publishes.
-    if (message.method === 'emit') {
-      return answered(() => {
-        const { token, name, data, ...about } = message.params, event = protocolEvents(catalog, HOST_PROTOCOLS).get(name);
-        const problem = publishedProblem('coda.emit', entry, event, { name, subject: about.subject, payload: data });
-        if (problem) throw refused('invalid_input', problem);
-        emitted.push(structuredClone({ name, kind: event.kind, ...about, data }));
-        return null;
-      });
-    }
     // A doing call's question, answered as its caller's `answer` says; one at a time, as the backend has it
     // (components/plugins/hosted-calls.mjs `question`).
     if (message.method === 'question') {
@@ -420,8 +403,6 @@ export function createTestHost({ plugin = {}, call = null, clock = new Clock(), 
     // An event delivered to the module as the backend delivers one (components/plugins/plugin-events.mjs), a copy of it: to
     // the handlers of its name (`coda.on`) now, none of it kept. `{ name, kind, subject, project, data, publisher }`.
     emit: event => modules.receive({ method: 'event', params: { plugin: described.id, event: structuredClone(event) } }),
-    // The events the module published (`coda.emit`), in order: `{ name, kind, subject, project, data }` each.
-    emitted,
     // What the module has registered so far: `{ operations: [{ kind, operation }], self: [name], events: [name] }`, by
     // `coda.handle`, `coda.self.handle` and `coda.on`.
     registered: () => modules.registered(described),
