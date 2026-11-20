@@ -541,6 +541,14 @@ npx github:coda-console/coda-plugins#<提交> <插件目录>
 
 插件自己的测试用检查包的出口：`@coda-console/plugin-check/test-host`（`createTestHost`，Coda 自己的 `coda`、`ctx` 构造）与 `@coda-console/plugin-check/types`（类型），不必直接依赖协议包。
 
+写 `coda/resource@1` 记录的插件（`contributes.records` 里有这一种）握手一级还会照宿主的样子跑一次它的记录命令（插件目录里、`{}` 在标准输入、`CODA_RECORD_KIND`、30 秒），
+输出照协议的 schema 与宿主的上限校验：是 `[{ key, spec }]`、key 不重复、`spec.type` 等于 `key`、每条不超过 64 KiB、按钮的 `args` 序列化后不超过 4096 字节；规则 `resource.read`、`resource.output`。
+记录里的动作（`act`、`sign-in`、`install`）不运行。插件自己的测试用 `check/resources.mjs`（代替 `check/panel.mjs` 的 `readResources`）：
+`await resourceRecords(插件目录, { env })` 跑清单里 `coda/resource@1` 的记录命令，返回它打印的记录，不合则抛出原因（`env` 是测试给的进程环境，不给就用本进程的，`CODA_PLUGIN_PATH` 为插件目录）；
+`resourceRecordsProblem(输出)` 判手头已有的输出，返回 `null` 或哪里不对。
+记录命令读不到数据时的规则：Coda 在命令失败（非零退出）时保留上一份记录、资源页显示「更新失败：原因」，所以只有「重新登录才能恢复」的错才打印带 `error` 和 `signIn` 的记录（凭据缺失、过期、无效，认证文件读不了或内容坏了；有登录却没有 CLI 也算，登录入口会装它）；没登录、没账号不是错，照常打印有效记录、带 `signIn`；其余读失败（网络、超时、5xx、响应读不懂、本地登记损坏、查询失败）一律以非零退出，原因写在标准错误的最后一行，不要打印一条只有错误的记录去顶掉上一份好读数。
+实现了 `coda/resource@1` 又带模块（`main`）的插件，模块一级不要求登记 `act`、`sign-in`、`install` 里清单没写命令的操作：这三个操作插件有哪个写哪个。
+
 | 级 | 要不要登录 | 查什么 |
 | --- | --- | --- |
 | 清单（总是） | 不要 | `package.json` 的通用键对协议 schema 校验（`manifestProblem`），再照 Coda 读成插件（`readPlugin`：登记的贡献点各按自己的 schema 查、读，ID、设置名在 ID 之下）；其余写给别的插件扩展点的键，要有 Coda 自带的或旁边依赖的插件声明这个类型。资源类型与旧的面板按资源插件给扩展点 `resources`、`panels` 带的 schema 查。`.coda/workflows/` 里的每个流程（含能力）按协议的流程方言读（`workflowProblem`）：不是 BPMN、认不出的 `coda:` 属性或元素、没有的动作或动作不接受的参数都算失败。另有只提醒的：分类、版本、图标页面太小、旧的 Agent ID `claude`。还算 `engines.coda` 该写几（读 `check/coda/api-surface.txt`）：清单的键、`contributes.<键>`、`uses` 的协议与权限组、自己协议定义里的键，以及插件目录里 `.mjs`/`.js`（不含 `node_modules`）的 `coda.<成员>`、`ctx.<成员>` 与页面里的 `window.coda.<成员>`；要的 Level 取最大的，清单写的 `engines.coda` 比清单、`uses`、定义的项小算失败，比文本扫出的项小只提醒，没写只提醒并给出该写的值。用到的试行面（`trial` 的权限组、模块接口）列在「说明」里，一行一项 |

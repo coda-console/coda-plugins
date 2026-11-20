@@ -3,7 +3,10 @@
   "id": "codex",
   "displayName": "Codex",
   "description": "用 OpenAI Codex 跑会话",
-  "version": "1.14.4",
+  "version": "1.15.1",
+  "engines": {
+    "coda": 6
+  },
   "categories": [
     "Agent"
   ],
@@ -59,22 +62,19 @@
         }
       }
     },
-    "resources": [
+    "protocolImplementations": [
       {
-        "id": "login",
-        "title": "Codex",
-        "command": "node \"$CODA_PLUGIN_PATH/scripts/resources.mjs\"",
-        "maxAge": "PT0S",
-        "actions": {
-          "reset": {
-            "command": "node \"$CODA_PLUGIN_PATH/scripts/reset.mjs\"",
-            "confirm": "使用一次完全重置？\n用最早到期的那一次。成功后消耗 1 次，无法撤销。"
-          }
-        },
-        "signIn": {
-          "command": "NO_COLOR=1 exec node \"$CODA_PLUGIN_PATH/scripts/cli.mjs\" login --device-auth",
-          "note": "接入账号插件后，登录会添加或更新插件管理的账号。"
+        "kind": "coda/resource@1",
+        "commands": {
+          "act": "scripts/act.mjs",
+          "sign-in": "scripts/sign-in.mjs"
         }
+      }
+    ],
+    "records": [
+      {
+        "kind": "coda/resource@1",
+        "command": "scripts/resource.mjs"
       }
     ],
     "extensionPoints": {

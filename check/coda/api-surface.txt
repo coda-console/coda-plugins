@@ -346,4 +346,11 @@
 5 coda/accord@1 read
 5 coda/accord@1 read operation records
 5 coda/accord@1 read records
-level 5
+6 coda/resource@1
+6 coda/resource@1 act
+6 coda/resource@1 act operation act
+6 coda/resource@1 act operation install
+6 coda/resource@1 act operation sign-in
+6 coda/resource@1 read
+6 coda/resource@1 read records
+level 6

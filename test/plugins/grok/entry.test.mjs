@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { agentValueProblem } from '@coda-console/protocol/agent';
 import { AgentProcess } from '../../../check/process.mjs';
 import { pluginDir } from '../plugin.mjs';
-import { MINIMUM, needed, older } from '../../../plugins/grok/scripts/setup.mjs';
+import { MINIMUM, needed, older } from '../../../plugins/grok/scripts/install.mjs';
 import { deleteSession } from '../../../plugins/grok/agent/delete.mjs';
 import { OTHER } from '../../../plugins/grok/agent/questions.mjs';
 import { promptUsage } from '../../../plugins/grok/agent/usage.mjs';

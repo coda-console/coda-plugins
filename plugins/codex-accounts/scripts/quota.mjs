@@ -3,6 +3,12 @@
 import { createHash } from 'node:crypto';
 
 const VALUES = 8, ACCOUNTS = 40, BYTES = 60 * 1024;
+// A failure that only signing in again cures: an account's login missing, expired, unreadable or another's (thrown by the
+// manager as this), or Codex saying its login is no good. Any other failure of a reading (the network, a timeout, a server's
+// error, a store that cannot be read) is not, and fails the command.
+export class SignInAgain extends Error {}
+export const needsSignIn = error => error instanceof SignInAgain
+  || /authentication required|not (logged|signed) in|unauthori[sz]ed|\b401\b|token[^.]*\b(expired|invalid|revoked)\b|auth\.json|failed to (load|read) auth/i.test(error?.message ?? '');
 const line = (value, max = 80) => typeof value === 'string' ? [...value.replace(/\s+/g, ' ').trim()].slice(0, max).join('') : '';
 const unixTime = value => typeof value === 'number' && Number.isFinite(new Date(value * 1000).getTime()) ? new Date(value * 1000).toISOString() : null;
 // A time in a figure's text, as a mark each client writes in its own time zone (Coda's docs/agent-protocol.md「文字里的时刻」).
@@ -30,14 +36,13 @@ function credits(result) {
   return { count: summary.availableCount, listed };
 }
 
-// A managed account, from its quota (`result`) or why it could not be read (`error`): the one sessions use says so first;
+// A managed account, from its quota (`result`) or why its login is no good (`error`, a line): the one sessions use says so first;
 // its windows, then its full resets left, timed by the one to expire first; switching to it, a full reset (the one to
 // expire first, named in its question) and removing it. The selection is a preference; running turns finish before
 // adopting it.
 export function resource(account, chosen, { result, error }) {
   const name = line(account.alias), values = chosen ? [{ label: '状态', value: '正在使用' }] : [];
-  const actions = chosen ? [] : [{ label: '切换使用', action: 'select', args: { account: account.identity } }];
-  let problem = error ? `暂时无法获取额度：${error}` : null;
+  const buttons = chosen ? [] : [{ label: '切换使用', action: 'select', args: { account: account.identity } }];
   if (!error) {
     const known = values.length;
     values.push(...windows(result));
@@ -45,18 +50,18 @@ export function resource(account, chosen, { result, error }) {
     if (resets) {
       const first = resets.listed[0], expires = first?.expiresAt == null ? null : unixTime(first.expiresAt);
       values.splice(VALUES - 1, Infinity, { label: '完全重置', value: `剩余 ${resets.count} 次`, ...(expires ? { time: expires } : {}) });
-      if (first && resets.count > 0) actions.push({ label: '使用完全重置', action: 'reset', args: { account: account.identity, creditId: first.id },
+      if (first && resets.count > 0) buttons.push({ label: '使用完全重置', action: 'reset', args: { account: account.identity, creditId: first.id },
         confirm: `使用 ${line(name, 60)} 的完全重置？\n用最早到期的那一次（${first.expiresAt == null ? '不会过期' : `${mark(first.expiresAt)} 到期`}）。成功后消耗 1 次，无法撤销。` });
     }
-    if (values.length === known) problem = '暂时无法获取额度：Codex 没有给出额度窗口';
+    if (values.length === known) throw new Error(`暂时无法获取额度：Codex 没有给出${line(name, 40)}的额度窗口`);
   }
-  actions.push({ label: '移除账号', action: 'remove', args: { account: account.identity },
+  buttons.push({ label: '移除账号', action: 'remove', args: { account: account.identity },
     confirm: `移除 ${line(name, 60)} 在插件中保存的登录？${chosen ? '\n移除后需要选择或添加账号才能继续会话。' : ''}` });
   // Who it is and in which workspace, as the Codex plugin says it (the manager's identity is the workspace's account ID
   // hashed): Coda's group view shows the same one once. None when its email is not known.
   const email = account.alias.includes('@') ? account.alias.trim().toLowerCase() : '';
   return { name, ...(email ? { identity: `codex:${createHash('sha256').update(`${email}\n${account.identity}`).digest('hex')}` } : {}),
-    values: values.slice(0, VALUES), ...(problem ? { error: line(problem) } : {}), actions };
+    values: values.slice(0, VALUES), ...(error ? { error: line(error) } : {}), buttons };
 }
 
 // Empty on a new machine: Coda offers the type's signIn under「添加资源」. Existing accounts can be added to or signed in
@@ -65,17 +70,22 @@ export function resource(account, chosen, { result, error }) {
 export async function resources(accounts, chosen, read, { at = 4 } = {}) {
   if (!accounts.length && chosen === null) return { resources: [] };
   const shown = accounts.slice(0, ACCOUNTS), readings = new Array(shown.length);
-  let next = 0;
+  let next = 0, failed;
   await Promise.all(Array.from({ length: Math.min(at, shown.length) }, async () => {
     for (let i; (i = next++) < shown.length;) {
       const account = shown[i];
-      let reading;
-      try { reading = { result: await read(account) }; } catch (error) { reading = { error: error.message }; }
-      readings[i] = resource(account, chosen === account.identity, reading);
+      try { readings[i] = resource(account, chosen === account.identity, { result: await read(account) }); }
+      catch (error) {
+        if (!needsSignIn(error)) { failed ??= error; continue; }
+        readings[i] = resource(account, chosen === account.identity, { error: error instanceof SignInAgain ? error.message : `登录已失效，请重新登录：${error.message}` });
+      }
     }
   }));
-  const out = chosen && !accounts.some(a => a.identity === chosen) ? [{ name: '所选账号', error: '尚未在插件中登录：重新登录它，或切换到其他账号' }] : [];
-  // Within what a reading may print (64 KiB).
+  // Every reading is ended first, so that none is left holding an account's lock.
+  if (failed) throw failed;
+  const out = chosen && !accounts.some(a => a.identity === chosen) ? [{ name: '所选账号', values: [], buttons: [], error: '尚未在插件中登录：重新登录它，或切换到其他账号' }] : [];
+  // The 当前选中的账号 when it is not signed in here comes first, as a row of its own; the record stays within 64 KiB, and
+  // rows past it are left out.
   let bytes = Buffer.byteLength(JSON.stringify(out));
   for (const each of readings) {
     const size = Buffer.byteLength(JSON.stringify(each)) + 1;
@@ -85,3 +95,7 @@ export async function resources(accounts, chosen, read, { at = 4 } = {}) {
   return { resources: out };
 }
 export const outcomes = { nothingToReset: '当前额度无需重置', alreadyRedeemed: '这次重置已被使用', noCredit: '这次重置已不可用' };
+
+// What the resources are when the accounts cannot be read for want of a login (an old one that cannot be imported, say): the one
+// row says why. The type's record is still written, so its sign-in stays offered, which is how to add an account without it.
+export const unreadable = error => ({ resources: [{ name: 'Codex 账号', values: [], buttons: [], error: line(error.message) }] });

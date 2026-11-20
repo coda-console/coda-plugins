@@ -11,7 +11,7 @@ import { dirname, join, relative, sep } from 'node:path';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { checkPlugin } from '../../check/index.mjs';
-import { claudeBinary } from '../../plugins/claude/scripts/login.mjs';
+import { claudeBinary } from '../../plugins/claude/scripts/sign-in.mjs';
 import { codexCli } from '../../plugins/codex-accounts/scripts/app-server.mjs';
 import { pluginDir, resolveFrom } from './plugin.mjs';
 import { pluginEnv, run } from './command.mjs';
@@ -104,25 +104,26 @@ describe('the plugins here', () => {
     const cli = codexCli({ CODA_PLUGIN_DEPENDENCIES: JSON.stringify({ codex: pluginDir('codex') }) });
     assert.equal(relative(pluginDir('codex'), cli), join('node_modules', '@openai', 'codex', 'bin', 'codex.js'));
   });
-  test('the Claude panel\'s login finds the CLI beside the plugin\'s own Claude SDK', () => {
+  test('the Claude sign-in finds the CLI beside the plugin\'s own Claude SDK', () => {
     const binary = claudeBinary();
     assert.ok(binary && relative(join(pluginDir('claude'), 'node_modules', '@anthropic-ai'), binary).split(sep)[0].startsWith('claude-agent-sdk-'), binary);
   });
   // Where each plugin's setup finds its CLI first, and what a recent enough one says to `--version`.
-  const ready = { kimi: ['.kimi-code/bin/kimi', 'kimi 2.1.1', 'Kimi CLI 2.1.1'], grok: ['.grok/bin/grok', 'grok 1.0.52', 'Grok CLI 1.0.52'],
-    opencode: ['.opencode/bin/opencode', 'opencode v2.1.4', 'OpenCode CLI 2.1.4'], cursor: ['.local/bin/cursor-agent', '2026.05.09-0afadcc', 'Cursor CLI 2026.05.09-0afadcc'],
-    antigravity: ['.local/bin/agy', '1.5.9', 'Antigravity CLI 1.5.9'] };
+  // The setups that are also the `install` operation of `coda/resource@1` (kimi, antigravity) print `{}` and say the CLI on standard error.
+  const ready = { kimi: ['.kimi-code/bin/kimi', 'kimi 2.1.1', ['{}', 'Kimi CLI 2.1.1']], grok: ['.grok/bin/grok', 'grok 1.0.52', ['Grok CLI 1.0.52', '']],
+    opencode: ['.opencode/bin/opencode', 'opencode v2.1.4', ['OpenCode CLI 2.1.4', '']], cursor: ['.local/bin/cursor-agent', '2026.05.09-0afadcc', ['Cursor CLI 2026.05.09-0afadcc', '']],
+    antigravity: ['.local/bin/agy', '1.5.9', ['{}', 'Antigravity CLI 1.5.9']] };
   test('a setup, run as Coda runs it, ends well and installs nothing when the machine\'s CLI is recent enough', async t => {
     // Magpie's makes sure of a gateway, not a CLI's version: test/plugins/magpie/.
     assert.deepEqual(plugins.filter(id => manifest(id).contributes.setup && id !== 'magpie').sort(), Object.keys(ready).sort(), 'codex and claude bring theirs as npm dependencies');
-    for (const [id, [binary, says, line]] of Object.entries(ready)) {
+    for (const [id, [binary, says, [out, err]]] of Object.entries(ready)) {
       const home = mkdtempSync(join(tmpdir(), `coda-${id}-setup-`));
       t.after(() => rmSync(home, { recursive: true, force: true }));
       mkdirSync(join(home, dirname(binary)), { recursive: true });
       writeFileSync(join(home, binary), `#!/bin/sh\n[ "$1" = --version ] && echo '${says}'\n`, { mode: 0o755 });
       // No curl on the PATH: an install would fail rather than reach the network.
       const ran = await run(manifest(id).contributes.setup.command, pluginEnv(id, { HOME: home, CODA_NODE: process.execPath, PATH: '/bin' }));
-      assert.deepEqual([ran.code, ran.stdout.trim(), ran.stderr], [0, line, ''], id);
+      assert.deepEqual([ran.code, ran.stdout.trim(), ran.stderr.trim()], [0, out, err], id);
     }
   });
 });

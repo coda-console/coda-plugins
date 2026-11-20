@@ -1,18 +1,16 @@
-// From Coda's backend/test/kimi.test.mjs at 9ffb9911, as plain node:test: its login and install through Coda's panels driven
-// here as Coda drives the panel's `signIn` commands.
-// The kimi plugin's「Kimi」panel: who is signed in and the quota, from the CLI's own local server (scripts/web.mjs, quota.mjs,
-// panel.mjs); signing in and installing with the CLI's own login and installer (scripts/login.sh, install.sh).
+// From Coda's backend/test/kimi.test.mjs at 9ffb9911, as plain node:test.
+// The kimi plugin's「Kimi」resources: who is signed in and the quota, from the CLI's own local server (scripts/web.mjs, quota.mjs,
+// the record command resource.mjs). Signing in and installing with the CLI's own login and installer: sign-in.test.mjs.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, rm, access, mkdir, utimes } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
-import { readResources } from '../../../check/panel.mjs';
+import { resourceRecords, resourceRecordsProblem } from '../../../check/resources.mjs';
 import { account, resource, windows } from '../../../plugins/kimi/scripts/quota.mjs';
 import { KimiUnavailable, kimiWeb } from '../../../plugins/kimi/scripts/web.mjs';
-import { declaredPanel, installed, pluginEnv, run, signIn } from '../command.mjs';
-
-const declared = declaredPanel('kimi');
+import { barePath, pluginEnv } from '../command.mjs';
+import { pluginDir } from '../plugin.mjs';
 async function root(t) { const dir = await mkdtemp(join(tmpdir(), 'coda-kimi-')); t.after(() => rm(dir, { recursive: true, force: true })); return dir; }
 
 // A Kimi CLI whose `kimi web` serves as the real one: it says where it listens with a token, answers the two paths, and
@@ -33,7 +31,9 @@ else {
     if (req.url === '/api/v1/oauth/userinfo') return res.end(JSON.stringify(mode === 'signed-out' ? { code: 0, data: { kind: 'error', status: 401, message: 'SECRET unauthorized' } }
       : mode === 'nameless' ? { code: 0, data: { kind: 'error', message: 'SECRET request timed out' } }
       : { code: 0, data: { kind: 'ok', userInfo: { userId: 'u1', nickname: ' 登月者0448 ', userLevelName: 'Allegretto', email: 'SECRET@example.com', phone: { number: 'SECRET' } } } }));
-    res.end(JSON.stringify(mode === 'expired' ? { code: 0, data: { kind: 'error', message: 'SECRET login expired' } }
+    if (mode === 'down') { res.statusCode = 503; return res.end(); }
+    res.end(JSON.stringify(mode === 'revoked' ? { code: 0, data: { kind: 'error', status: 401, message: 'SECRET unauthorized' } }
+      : mode === 'expired' ? { code: 0, data: { kind: 'error', message: 'SECRET login expired' } }
       : { code: 0, data: { kind: 'ok', quota: { usages: { limit5h: { usedRatio: 0.25, resetAt: '2026-10-13T05:00:00Z' } }, extraUsage: { totalCents: 2500, balanceCents: 400 } } } }));
   });
   server.listen(0, '127.0.0.1', () => {
@@ -69,9 +69,12 @@ test('the quota is what the plan has left, booster balance included; who is sign
   assert.deepEqual(account({ kind: 'ok', userInfo: { userId: 42, nickname: 'a', userLevelName: 'b' } }), { name: 'a', plan: 'b', id: '42' });
   assert.equal(account({ kind: 'error', status: 401 }), null, 'Kimi refuses the login');
   assert.throws(() => account({ kind: 'error', message: 'timed out' }), /没有说明/, 'a passing fault is not a sign-out');
-  const shown = resource({ name: '', plan: '' }, { error: 'Kimi 本地服务返回 500' });
-  assert.deepEqual(shown, { name: 'Kimi', values: [], error: '暂时无法获取额度：Kimi 本地服务返回 500' });
-  assert.deepEqual(readResources(JSON.stringify({ resources: [shown] }), declared), [{ ...shown, actions: [] }], 'a reading Coda takes');
+  // A quota that was not had, or is not there, is a reading that failed.
+  assert.throws(() => resource({ name: '', plan: '' }, { error: 'Kimi 本地服务返回 500' }), { message: '暂时无法获取额度：Kimi 本地服务返回 500' });
+  assert.throws(() => resource({ name: '', plan: '' }, { data: { kind: 'error' } }), { message: '暂时无法获取额度：Kimi 没有给出额度' });
+  const shown = resource({ name: '', plan: '' }, { data: { kind: 'ok', quota: { usages: { limit5h: { usedRatio: 0.5 } } } } });
+  assert.deepEqual(shown, { name: 'Kimi', values: [{ label: '5 小时', value: '剩余 50%', fraction: 0.5 }], buttons: [] });
+  assert.equal(resourceRecordsProblem([{ key: 'account', spec: { type: 'account', title: 'Kimi', resources: [shown] } }]), null, 'a reading the host takes');
 });
 
 test('the CLI\'s local server is started privately, asked each path with its token, and ended with its directory', async t => {
@@ -97,71 +100,61 @@ test('the type shows the login and its quota, asks who it is once per state of t
   const m = await machine(t, 'ok', { signedIn: false }), state = join(m.home, 'state');
   await mkdir(state);
   const read = async () => {
-    const result = await run(declared.command, pluginEnv('kimi', { HOME: m.home, KIMI_CODE_HOME: '', CODA_PLUGIN_STATE: state }));
-    assert.equal(result.code, 0, result.stderr);
-    readResources(result.stdout, declared);
-    return JSON.parse(result.stdout).resources;
+    const [record] = await resourceRecords(pluginDir('kimi'), { env: pluginEnv('kimi', { HOME: m.home, KIMI_CODE_HOME: '', CODA_PLUGIN_STATE: state }) });
+    assert.deepEqual([record.key, record.spec.type, record.spec.title], ['account', 'account', 'Kimi']);
+    assert.deepEqual(record.spec.signIn, { installed: true, installable: true, note: record.spec.signIn.note });
+    return record.spec.resources;
   };
   assert.deepEqual(await read(), [], 'no login here: offered under「添加资源」');
   const file = join(m.kimiHome, 'credentials/kimi-code.json');
   await mkdir(dirname(file)); await writeFile(file, '{}');
   assert.deepEqual(await read(), [{ name: '登月者0448', identity: 'kimi:u1', values: [
     { label: '5 小时', value: '剩余 75%', fraction: 0.75, time: '2026-10-13T05:00:00.000Z' },
-    { label: 'Extra Usage 余额', value: '剩余 16%', fraction: 0.16 }] }]);
+    { label: 'Extra Usage 余额', value: '剩余 16%', fraction: 0.16 }], buttons: [] }]);
   await read();
   assert.equal((await m.requests()).filter(r => r.url === '/api/v1/oauth/userinfo').length, 1, 'not asked again while the login stays as it was');
   const touch = async offset => utimes(file, new Date(), new Date(Date.now() + offset));
   // Kimi not saying who it is keeps the name seen last, but not the identity: the login changed, and the quota is of
-  // whoever it is now. A login it refuses shows nothing.
+  // whoever it is now. A login it refuses is a row saying so; a quota it does not give fails the reading.
   await m.setMode('nameless'); await touch(5000);
   const nameless = (await read())[0];
   assert.equal(nameless.name, '登月者0448');
   assert.equal(nameless.identity, undefined);
   await m.setMode('expired'); await touch(10000);
-  assert.deepEqual([(await read())[0].values, (await read())[0].error], [[], '暂时无法获取额度：Kimi 没有给出额度']);
+  await assert.rejects(read(), { message: '暂时无法获取额度：Kimi 没有给出额度' });
   await m.setMode('signed-out'); await touch(15000);
-  assert.deepEqual(await read(), []);
+  const refused = [{ name: 'Kimi', values: [], buttons: [], error: '登录已失效，请重新登录' }];
+  assert.deepEqual(await read(), refused);
+  // Refused as the quota is asked, with who it is known.
+  await m.setMode('revoked');
+  assert.deepEqual(await read(), refused);
   assert.ok(!JSON.stringify(await m.requests()).includes('SECRET@'), 'nothing of the account but what is shown');
 });
 
-// What `kimi login` 2.1.1 prints, then waits until the user confirms (a file here). It opens the link with whichever `open`
-// comes first on its PATH: this one records which, and never runs it.
-test('a Kimi login passes on its link and code, opens no browser on the machine, and is installed by its own installer at the version checked, touching nothing else', async t => {
-  const m = await machine(t, 'ok', { signedIn: false }), state = join(m.home, 'state');
-  await mkdir(state);
-  await writeFile(m.binary, `#!/bin/sh
-echo "$@" > "${m.home}/args"
-command -v open > "${m.home}/open"; command -v xdg-open >> "${m.home}/open"
-printf 'Opening browser for Kimi device login: https://www.kimi.com/code/authorize_device?user_code=AXWD-2GDC\\n' >&2
-printf 'If the browser did not open, paste the URL above and enter code: AXWD-2GDC\\nWaiting for authorization to complete…' >&2
-while [ ! -e "${m.home}/confirmed" ]; do sleep 0.02; done
-`, { mode: 0o755 });
-  // The installer is the CLI's own, fetched by bash: a bash here notes how it was run instead, and leaves a CLI of the
-  // version it was asked for.
-  const bin = join(m.home, 'fake-bin');
-  await mkdir(bin);
-  await writeFile(join(bin, 'bash'), `#!/bin/sh\nprintf '%s\\n' "$KIMI_NO_MODIFY_PATH" "$PATH" "$2" "$KIMI_VERSION" > "${m.home}/installed"
-printf '#!/bin/sh\\necho kimi %s\\n' "$KIMI_VERSION" > "${m.binary}" && chmod 755 "${m.binary}"\n`, { mode: 0o755 });
-  const env = pluginEnv('kimi', { HOME: m.home, PATH: `${bin}:${join(m.home, '.kimi-code/bin')}:/usr/bin:/bin`, CODA_PLUGIN_STATE: state, CODA_NODE: process.execPath });
-  assert.equal(installed(declared.signIn.installed, env), true);
-  const login = signIn(t, declared.signIn.command, env);
-  await login.printed(/Waiting for authorization/);
-  assert.match(login.output, /^Opening browser for Kimi device login: https:\/\/www\.kimi\.com\/code\/authorize_device\?user_code=AXWD-2GDC$/m);
-  assert.equal((await readFile(join(m.home, 'args'), 'utf8')).trim(), 'login');
-  const [open, xdgOpen] = (await readFile(join(m.home, 'open'), 'utf8')).trim().split('\n');
-  assert.deepEqual([dirname(open), dirname(xdgOpen)], [join(state, 'no-browser'), join(state, 'no-browser')]);
-  assert.equal(await readFile(open, 'utf8'), '#!/bin/sh\nexit 0\n');
-  await writeFile(join(m.home, 'confirmed'), '');
-  assert.equal(await login.ended, 0);
+test('a login without its CLI, or one that cannot be read, is one row saying so, and the sign-in is still in the record', async t => {
+  // The CLI is looked for in the machine's own directory of the test and on a PATH of this Node alone.
+  const records = async (m, extra = {}) => resourceRecords(pluginDir('kimi'), { env: { ...pluginEnv('kimi', { HOME: m.home, KIMI_CODE_HOME: '', ...extra }), PATH: await barePath(join(m.home, 'bare')) } }).then(([record]) => record.spec);
+  // No CLI: the sign-in is the way to get it.
+  const gone = await machine(t, 'ok');
+  await rm(gone.binary);
+  const none = await records(gone);
+  assert.deepEqual(none.resources, [{ name: 'Kimi', values: [], buttons: [], error: '这台机器上找不到 Kimi CLI，用「···」里的「重新登录」安装' }]);
+  assert.equal(none.signIn.installed, false);
+  // A login file that cannot even be looked at.
+  const odd = await machine(t, 'ok', { signedIn: false });
+  await writeFile(join(odd.home, 'file'), '');
+  const unreadable = await records(odd, { KIMI_CODE_HOME: join(odd.home, 'file') });
+  assert.deepEqual(unreadable.resources, [{ name: 'Kimi', values: [], buttons: [], error: '读不了 Kimi 的登录：ENOTDIR' }]);
+});
 
-  // The install button shows when there is no CLI. Without KIMI_VERSION the installer would put the latest, whose files the
-  // relay has not been checked against.
-  await rm(m.binary);
-  const result = await run(declared.signIn.install, env, { timeoutMs: 10_000 });
-  assert.deepEqual([result.code, result.stdout.trim()], [0, 'Kimi CLI 2.1.1'], result.stderr);
-  const [noModify, path, script, version] = (await readFile(join(m.home, 'installed'), 'utf8')).trim().split('\n');
-  assert.equal(noModify, '1');
-  assert.ok(!path.split(':').includes(join(m.home, '.kimi-code/bin')), 'its directory is left off PATH, so an older kimi is not renamed');
-  assert.equal(script, 'set -o pipefail; curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash');
-  assert.equal(version, '2.1.1');
+test('a CLI that cannot be asked, or whose server fails, after a reading that went well fails the command with the reason, keeping the record Coda has', async t => {
+  const m = await machine(t, 'ok'), state = join(m.home, 'state');
+  await mkdir(state);
+  const read = () => resourceRecords(pluginDir('kimi'), { env: pluginEnv('kimi', { HOME: m.home, KIMI_CODE_HOME: '', CODA_PLUGIN_STATE: state }) });
+  assert.equal((await read())[0].spec.resources[0].name, '登月者0448');
+  // The server answers 503 for the quota, then the CLI exits before it serves.
+  await m.setMode('down');
+  await assert.rejects(read(), { message: '暂时无法获取额度：Kimi 本地服务返回 503' });
+  await m.setMode('exit');
+  await assert.rejects(read(), { message: 'Kimi CLI 提前退出了' });
 });

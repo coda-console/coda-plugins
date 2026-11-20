@@ -3,7 +3,10 @@
   "id": "grok",
   "displayName": "Grok",
   "description": "用 Grok CLI 跑会话",
-  "version": "1.8.3",
+  "version": "1.9.1",
+  "engines": {
+    "coda": 6
+  },
   "categories": [
     "Agent"
   ],
@@ -31,18 +34,19 @@
         "setupHint": "请在「资源」里为运行机添加 Grok。"
       }
     ],
-    "resources": [
+    "protocolImplementations": [
       {
-        "id": "account",
-        "title": "Grok",
-        "command": "node \"$CODA_PLUGIN_PATH/scripts/resources.mjs\"",
-        "maxAge": "PT5M",
-        "signIn": {
-          "command": "g=\"$HOME/.grok/bin/grok\"; [ -x \"$g\" ] || g=grok; BROWSER=/usr/bin/true NO_COLOR=1 exec \"$g\" login --device-auth",
-          "installed": "test -x \"$HOME/.grok/bin/grok\" || command -v grok >/dev/null",
-          "install": "SHELL= PATH=\"$HOME/.grok/bin:$PATH\" exec bash -c 'set -o pipefail; curl -fsSL https://x.ai/cli/install.sh | bash'",
-          "note": "登录保存在这台机器的 Grok CLI 里，由它自己续期；可以用 X 账号确认。"
+        "kind": "coda/resource@1",
+        "commands": {
+          "sign-in": "scripts/sign-in.mjs",
+          "install": "scripts/install.mjs"
         }
+      }
+    ],
+    "records": [
+      {
+        "kind": "coda/resource@1",
+        "command": "scripts/resource.mjs"
       }
     ],
     "setup": {

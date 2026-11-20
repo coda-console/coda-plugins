@@ -8,15 +8,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { readResources } from '../../../check/panel.mjs';
+import { resourceRecords, resourceRecordsProblem } from '../../../check/resources.mjs';
 import { identity, list, tokens, selection, choose, remove, saveLogin } from '../../../plugins/codex-accounts/scripts/manager.mjs';
-import { resources } from '../../../plugins/codex-accounts/scripts/quota.mjs';
+import { SignInAgain, resources } from '../../../plugins/codex-accounts/scripts/quota.mjs';
 import { AccountSource } from '../../../plugins/codex/agent/account-source.mjs';
-import { declaredPanel, manifest, pluginEnv, run } from '../command.mjs';
+import { endWait, fakeCoda, manifest, operation, pluginEnv, probed } from '../command.mjs';
 import { pluginDir } from '../plugin.mjs';
 import { substituted } from '../substitute.mjs';
 
-const declared = declaredPanel('codex-accounts');
+// The operation's file, as the manifest names it: the record offers the sign-in, which is run by this.
+const signInCommand = manifest('codex-accounts').contributes.protocolImplementations.find(one => one.kind === 'coda/resource@1').commands['sign-in'];
 const sourceCommand = manifest('codex-accounts').contributes.extensions['codex/account-source'].command;
 const fixture = fileURLToPath(new URL('./codex-fixture.mjs', import.meta.url));
 const jwt = value => `x.${Buffer.from(JSON.stringify(value)).toString('base64url')}.x`;
@@ -24,7 +25,8 @@ const auth = (account, exp = Date.now() / 1000 + 3600) => ({ auth_mode: 'chatgpt
   access_token: jwt({ exp, 'https://api.openai.com/auth': { chatgpt_account_id: account, chatgpt_plan_type: 'pro' } }),
   id_token: jwt({ email: `${account}@example.com` }), refresh_token: `PRIVATE-REFRESH-${account}`, account_id: account,
 } });
-const takes = value => readResources(JSON.stringify(value), declared);
+// What the host finds wrong in a reading as the record of the type, or null.
+const problem = value => resourceRecordsProblem([{ key: 'accounts', spec: { type: 'accounts', title: 'Codex', ...value } }]);
 async function until(fn) { for (let i = 0; i < 1000; i++) { if (await fn()) return; await delay(10); } throw Error('timed out'); }
 async function setup(t) {
   const dir = await realpath(await mkdtemp(join(tmpdir(), 'coda-owned-accounts-'))), state = join(dir, 'state'), native = join(dir, 'native'), log = join(dir, 'events.jsonl');
@@ -33,8 +35,18 @@ async function setup(t) {
   const at = { state, native };
   const env = extra => pluginEnv('codex-accounts', { ...substituted({ '@openai/codex/bin/codex.js': fixture }),
     CODA_PLUGIN_STATE: state, CODEX_HOME: native, CODA_PLUGIN_DEPENDENCIES: JSON.stringify({ codex: pluginDir('codex') }), FAKE_LOG: log, ...extra });
-  const exec = (command, extra) => run(command, env(extra));
-  const login = (account, extra) => exec(declared.signIn.command, { FAKE_ACCOUNT: account, ...extra });
+  // The record the plugin writes, as its command prints it.
+  const record = async extra => (await resourceRecords(pluginDir('codex-accounts'), { env: env(extra) }))[0];
+  // An action of a button, as Coda runs the `act` operation.
+  const act = (action, args, extra) => operation(t, 'codex-accounts', 'scripts/act.mjs', env(extra), { action, args });
+  // The sign-in as Coda runs it, with a `coda` that notes what it reports: how it ended, what it printed, and what it reported.
+  const login = async (account, extra) => {
+    // A silent login's wait for its link ends when the test says, once the login has read what the CLI said (not by the clock).
+    const watch = { ack: join(dir, 'ack'), gate: join(dir, 'gate') }, made = env({ FAKE_ACCOUNT: account, ...extra });
+    const coda = await fakeCoda(dir, extra?.FAKE_SILENT ? probed(made, watch) : made), run = operation(t, 'codex-accounts', signInCommand, coda.env);
+    if (extra?.FAKE_SILENT) await endWait(watch, 'Contacting OpenAI...');
+    return { code: await run.ended, stdout: run.stdout, stderr: run.stderr, reported: await coda.calls() };
+  };
   const home = account => join(state, 'accounts', identity(account));
   const events = async () => existsSync(log) ? (await readFile(log, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse) : [];
   const source = (extra = {}) => {
@@ -42,15 +54,15 @@ async function setup(t) {
       { env: { ...env(extra), CODA_PLUGIN_PATH: pluginDir('codex'), CODA_PLUGIN_DEPENDENCIES: undefined } });
     t.after(() => source.close()); return source;
   };
-  return { dir, state, native, at, env, exec, login, home, events, source };
+  return { dir, state, native, at, env, record, act, login, home, events, source };
 }
 
 test('a clean installation offers Coda login without an external account library or native-login option', async t => {
   const f = await setup(t);
   assert.deepEqual(await list(f.at), []);
-  assert.ok(declared.signIn?.command); assert.equal(declared.signIn.installed, undefined);
-  const result = await f.exec(declared.command);
-  assert.equal(result.code, 0, result.stderr); assert.deepEqual(JSON.parse(result.stdout), { resources: [] });
+  const { key, spec } = await f.record();
+  assert.deepEqual([key, spec.type, spec.title, spec.resources], ['accounts', 'accounts', 'Codex', []]);
+  assert.deepEqual([spec.signIn.installed, spec.signIn.installable, spec.signIn.input], [true, false, undefined], 'Codex comes with the plugin; nothing to install');
   await assert.rejects(f.source().selected(), /添加或选择/);
   await assert.rejects(choose('native', f.at), /尚未在插件中登录/);
   assert.deepEqual(await f.events(), [], 'no Codex processes needed to show an empty store');
@@ -84,14 +96,15 @@ test('an old native selection is adopted, while an unavailable explicit account 
   await writeFile(join(g.state, 'selection.json'), JSON.stringify({ account: identity('previous') }));
   await list(g.at); assert.equal(selection(g.at), identity('previous'));
   await assert.rejects(g.source().selected(), /所选账号尚未/);
-  const view = JSON.parse((await g.exec(declared.command)).stdout);
-  assert.deepEqual(view.resources[0], { name: '所选账号', error: '尚未在插件中登录：重新登录它，或切换到其他账号' }); takes(view);
+  const { spec } = await g.record();
+  assert.deepEqual(spec.resources[0], { name: '所选账号', values: [], buttons: [], error: '尚未在插件中登录：重新登录它，或切换到其他账号' });
 });
 
 test('device login adds accounts, re-login updates by identity, and failed login preserves accounts and selection', async t => {
   const f = await setup(t);
   const first = await f.login('first', { OPENAI_API_KEY: 'UNRELATED-KEY', CODEX_ACCESS_TOKEN: 'UNRELATED-TOKEN' });
-  assert.equal(first.code, 0, first.stderr); assert.match(first.stdout, /https:\/\/auth.openai.com\/codex\/device/); assert.match(first.stdout, /ABCD-12345/);
+  assert.equal(first.code, 0, first.stderr); assert.equal(first.stdout, '{}\n');
+  assert.deepEqual(first.reported, [{ command: 'progress', input: { url: 'https://auth.openai.com/codex/device', code: 'ABCD-12345' } }]);
   assert.equal(selection(f.at), identity('first'));
   assert.equal((await f.login('second')).code, 0);
   assert.equal(selection(f.at), identity('first'), 'adding does not switch away from the selection');
@@ -104,17 +117,27 @@ test('device login adds accounts, re-login updates by identity, and failed login
   const events = await f.events();
   assert.ok(events.filter(e => e.mode === 'login').every(e => e.home.startsWith(f.state) && e.cwd === e.home && !e.inheritedCredentials));
   assert.ok(events.filter(e => e.mode === 'login').every(e => e.args.includes('cli_auth_credentials_store="file"')));
-  assert.ok(!first.stdout.includes('PRIVATE-REFRESH')); assert.ok(!JSON.stringify(await list(f.at)).includes('PRIVATE-REFRESH'));
+  assert.ok(!(first.stdout + first.stderr + JSON.stringify(first.reported)).includes('PRIVATE-REFRESH')); assert.ok(!JSON.stringify(await list(f.at)).includes('PRIVATE-REFRESH'));
+});
+
+test('the sign-in starts beside an older codex that has no device login of its own: it carries the same one, to the byte', async t => {
+  assert.equal(await readFile(join(pluginDir('codex-accounts'), 'scripts', 'device-login.mjs'), 'utf8'),
+    await readFile(join(pluginDir('codex'), 'scripts', 'device-login.mjs'), 'utf8'), 'the copy follows the codex plugin\'s');
+  const f = await setup(t), old = join(f.dir, 'codex-1.14.4');
+  await mkdir(join(old, 'scripts'), { recursive: true });
+  await writeFile(join(old, 'package.json'), JSON.stringify({ name: '@coda-console/codex', id: 'codex', version: '1.14.4' }));
+  const signed = await f.login('first', { CODA_PLUGIN_DEPENDENCIES: JSON.stringify({ codex: old }) });
+  assert.equal(signed.code, 0, signed.stderr); assert.equal(signed.stdout, '{}\n');
+  assert.deepEqual(signed.reported, [{ command: 'progress', input: { url: 'https://auth.openai.com/codex/device', code: 'ABCD-12345' } }]);
+  assert.equal(selection(f.at), identity('first'));
 });
 
 test('cancelling device login cleans its attempt and leaves no account behind', async t => {
   const f = await setup(t), confirmation = join(f.dir, 'never-confirmed');
-  const child = spawn('/bin/sh', ['-c', declared.signIn.command], { env: f.env({ FAKE_CONFIRM: confirmation }), detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
-  t.after(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch {} });
-  let output = ''; child.stdout.on('data', c => { output += c; });
-  const ended = new Promise(resolve => child.on('close', resolve));
-  await until(() => output.includes('ABCD-12345'));
-  process.kill(-child.pid, 'SIGTERM'); await ended;
+  const coda = await fakeCoda(f.dir, f.env({ FAKE_CONFIRM: confirmation })), run = operation(t, 'codex-accounts', 'scripts/sign-in.mjs', coda.env);
+  await until(async () => (await coda.calls()).length);
+  // Coda ends the whole group: the login's own cleanup is waited for.
+  run.stop('SIGTERM'); assert.equal(await run.ended, 1);
   assert.deepEqual(await list(f.at), []);
   assert.equal((await readdir(f.state)).some(n => n.startsWith('login-')), false);
 });
@@ -157,15 +180,16 @@ test('a stale credential lock recovers and unsafe auth files fail without exposi
   await assert.rejects(remove('../native', f.at), /没有指明/);
 });
 
-test('the resources are only the managed accounts, with a selection and removal action; failed quota stays on its own row', async () => {
+test('the resources are only the managed accounts, with a selection and removal action; a login no good stays on its own row', async () => {
   const accounts = [{ alias: 'work', identity: 'w', plan: 'pro' }, { alias: 'home', identity: 'h', plan: 'plus' }];
   const early = Date.UTC(2026, 9, 20, 1) / 1000;
   const read = async a => {
-    if (a.identity === 'h') throw Error('请重新登录');
+    if (a.identity === 'h') throw new SignInAgain('请重新登录');
     return { rateLimits: { primary: { usedPercent: 10, windowDurationMins: 300 } },
       rateLimitResetCredits: { availableCount: 1, credits: [{ id: 'c1', status: 'available', resetType: 'codexRateLimits', expiresAt: early }] } };
   };
-  const view = await resources(accounts, 'w', read), rows = takes(view);
+  const view = await resources(accounts, 'w', read), rows = view.resources;
+  assert.equal(problem(view), null, 'rows the host takes');
   assert.deepEqual(rows.map(r => r.name), ['work', 'home']);
   // Without an email who it is is not known: no identity for Coda's group view to merge on.
   assert.deepEqual(rows.map(r => r.identity), [undefined, undefined]);
@@ -178,32 +202,49 @@ test('the resources are only the managed accounts, with a selection and removal 
   // The one sessions use says so; the others offer switching to them. No plan beside the name.
   assert.deepEqual(rows[0].values, [{ label: '状态', value: '正在使用' }, { label: '5 小时', value: '剩余 90%', fraction: 0.9 },
     { label: '完全重置', value: '剩余 1 次', time: new Date(early * 1000).toISOString() }]);
-  assert.deepEqual(rows.map(r => r.actions.map(a => a.label)), [['使用完全重置', '移除账号'], ['切换使用', '移除账号']]);
-  assert.deepEqual(rows[0].actions[0].args, { account: 'w', creditId: 'c1' });
-  assert.equal(rows[1].error, '暂时无法获取额度：请重新登录');
+  assert.deepEqual(rows.map(r => r.buttons.map(a => a.label)), [['使用完全重置', '移除账号'], ['切换使用', '移除账号']]);
+  assert.deepEqual(rows[0].buttons[0].args, { account: 'w', creditId: 'c1' });
+  assert.equal(rows[1].error, '请重新登录');
+  // Codex saying the login is no good is told so; any other failure of a reading fails them all, once every reading is ended.
+  const refused = await resources(accounts, 'w', async a => { throw new Error('401 Unauthorized'); });
+  assert.deepEqual(refused.resources.map(r => r.error), ['登录已失效，请重新登录：401 Unauthorized', '登录已失效，请重新登录：401 Unauthorized']);
+  const ended = [];
+  await assert.rejects(resources(accounts, 'w', async a => { if (a.identity === 'w') throw new Error('503 Service Unavailable'); await delay(20); ended.push(a.identity); return {}; }, { at: 2 }), { message: '503 Service Unavailable' });
+  assert.deepEqual(ended, ['h'], 'the other reading was ended');
+  // A quota with nothing in it fails the reading, not a row that would replace the one shown; the resets alone are kept.
+  await assert.rejects(resources(accounts, 'w', async () => ({})), { message: '暂时无法获取额度：Codex 没有给出work的额度窗口' });
+  const resetsOnly = await resources(accounts, null, async () => ({ rateLimitResetCredits: { availableCount: 0, credits: [] } }));
+  assert.deepEqual(resetsOnly.resources.map(r => [r.values, r.error]), [[[{ label: '完全重置', value: '剩余 0 次' }], undefined], [[{ label: '完全重置', value: '剩余 0 次' }], undefined]]);
   const many = Array.from({ length: 60 }, (_, i) => ({ alias: `account-${i}`, identity: `i${i}`, plan: 'pro' }));
   const big = await resources(many, null, async () => ({ rateLimitResetCredits: { availableCount: 30, credits: Array.from({ length: 30 }, (_, i) =>
     ({ id: `c${i}`, status: 'available', resetType: 'codexRateLimits', expiresAt: early })) } }));
   assert.ok(Buffer.byteLength(JSON.stringify(big)) < 64 * 1024);
-  assert.equal(takes(big).length, 40, 'as many as a reading holds');
+  assert.equal(big.resources.length, 40, 'as many as a record holds');
+  assert.equal(problem(big), null);
 });
 
 test('the type\'s commands switch only to a checked account, reset its quota, and remove its credentials', async t => {
   const f = await setup(t); await f.login('first'); await f.login('second');
-  const read = await f.exec(declared.command); assert.equal(read.code, 0, read.stderr);
-  const view = JSON.parse(read.stdout); takes(view);
-  assert.ok(view.resources.every(r => r.values.some(v => v.value === '剩余 50%')));
-  const select = account => f.exec(declared.actions.select.command, { CODA_PANEL_ARGS: JSON.stringify({ account: identity(account) }) });
-  assert.equal((await select('second')).code, 0); assert.equal(selection(f.at), identity('second'));
-  const refused = await f.exec(declared.actions.select.command, { CODA_PANEL_ARGS: JSON.stringify({ account: identity('first') }), FAKE_REFUSE: '1' });
-  assert.equal(refused.code, 1); assert.equal(selection(f.at), identity('second'));
-  const reset = await f.exec(declared.actions.reset.command, { CODA_PANEL_ARGS: JSON.stringify({ account: identity('first'), creditId: 'c1' }) });
-  assert.equal(reset.code, 0, reset.stderr);
+  const { spec } = await f.record();
+  assert.ok(spec.resources.every(r => r.values.some(v => v.value === '剩余 50%')));
+  assert.deepEqual(spec.resources.map(r => r.buttons.map(b => b.action)), [['remove'], ['select', 'remove']], 'the first account is the one in use: only the other can be switched to');
+  const select = account => f.act('select', { account: identity(account) });
+  const selected = select('second');
+  assert.equal(await selected.ended, 0, selected.stderr); assert.equal(selected.stdout, '{}\n'); assert.equal(selection(f.at), identity('second'));
+  const refused = f.act('select', { account: identity('first') }, { FAKE_REFUSE: '1' });
+  assert.equal(await refused.ended, 1); assert.match(refused.stderr, /^切换失败：/); assert.equal(selection(f.at), identity('second'));
+  const reset = f.act('reset', { account: identity('first'), creditId: 'c1' });
+  assert.equal(await reset.ended, 0, reset.stderr);
   const resets = (await f.events()).filter(e => e.method === 'account/rateLimitResetCredit/consume');
   assert.deepEqual(resets.map(e => [e.credit, e.home]), [['c1', f.home('first')]]);
-  const removed = await f.exec(declared.actions.remove.command, { CODA_PANEL_ARGS: JSON.stringify({ account: identity('second') }) });
-  assert.equal(removed.code, 0, removed.stderr); assert.equal(selection(f.at), null);
+  const removed = f.act('remove', { account: identity('second') });
+  assert.equal(await removed.ended, 0, removed.stderr); assert.equal(selection(f.at), null);
   assert.equal(existsSync(f.home('second')), false); await assert.rejects(f.source().selected(), /添加或选择/);
+  // What it has no action for, or names no account for, is said in a line and changes nothing.
+  const unknown = f.act('launch', {});
+  assert.deepEqual([await unknown.ended, unknown.stderr.trim()], [1, '不认识的动作：launch']);
+  const unnamed = f.act('reset', {});
+  assert.deepEqual([await unnamed.ended, unnamed.stderr.trim()], [1, '没有指明用哪个账号的哪一次完全重置']);
 });
 
 test('the real bridge imports and hands the managed account to Codex before a turn', async t => {
@@ -226,26 +267,59 @@ test('the real bridge imports and hands the managed account to Codex before a tu
 test('installing the source hides the built-in quota board, guards stale resets, and delegates its login entry', async t => {
   const f = await setup(t), original = JSON.stringify(auth('existing'));
   await writeFile(join(f.native, 'auth.json'), original);
-  const native = declaredPanel('codex', 'login');
+  const codex = pluginDir('codex');
   const extensions = { 'account-source': [{ plugin: 'codex-accounts', command: sourceCommand, path: pluginDir('codex-accounts'), state: f.state }] };
   const env = { ...f.env(), CODA_PLUGIN_PATH: pluginDir('codex'), CODA_PLUGIN_EXTENSIONS: JSON.stringify(extensions) };
-  const hidden = await run(native.command, env);
-  assert.equal(hidden.code, 0, hidden.stderr); assert.deepEqual(JSON.parse(hidden.stdout), { resources: [] });
+  const hidden = (await resourceRecords(codex, { env }))[0].spec;
+  assert.deepEqual(hidden.resources, []); assert.equal(hidden.signIn.installed, true, 'its login stays offered');
   assert.deepEqual(await f.events(), [], 'hidden native board never queries the old login');
-  const staleReset = await run(native.actions.reset.command, { ...env, CODA_PANEL_ARGS: JSON.stringify({ creditId: 'old-credit' }) });
-  assert.equal(staleReset.code, 1); assert.match(staleReset.stderr, /已由账号插件接管/); assert.deepEqual(await f.events(), []);
-  const delegated = await run(native.signIn.command, { ...env, FAKE_ACCOUNT: 'second' });
-  assert.equal(delegated.code, 0, delegated.stderr);
+  const staleReset = operation(t, 'codex', 'scripts/act.mjs', env, { action: 'reset', args: { creditId: 'old-credit' } });
+  assert.equal(await staleReset.ended, 1); assert.match(staleReset.stderr, /已由账号插件接管/); assert.deepEqual(await f.events(), []);
+  const coda = await fakeCoda(f.dir, { ...env, FAKE_ACCOUNT: 'second' }), delegated = operation(t, 'codex', 'scripts/sign-in.mjs', coda.env);
+  assert.equal(await delegated.ended, 0, delegated.stderr);
+  assert.deepEqual((await coda.calls()).map(call => [call.command, call.input.code]), [['progress', 'ABCD-12345']], 'the link and code reach Coda through the plugin\'s own CLI');
   assert.deepEqual((await list(f.at)).map(a => a.alias), ['existing@example.com', 'second@example.com']);
   assert.equal(await readFile(join(f.native, 'auth.json'), 'utf8'), original);
-  const restored = await run(native.command, { ...env, CODA_PLUGIN_EXTENSIONS: '{}' });
-  assert.equal(restored.code, 0, restored.stderr); assert.equal(JSON.parse(restored.stdout).resources[0].name, 'existing@example.com');
+  const restored = (await resourceRecords(codex, { env: { ...env, CODA_PLUGIN_EXTENSIONS: '{}' } }))[0].spec;
+  assert.equal(restored.resources[0].name, 'existing@example.com');
 });
 
 test('an unreadable old login does not prevent signing in directly through the plugin', async t => {
   const f = await setup(t); await writeFile(join(f.native, 'auth.json'), '{broken');
   await assert.rejects(list(f.at), /无法导入已有/);
+  // The record is still written, with the reason on a row and the sign-in offered: the way out is entered from it.
+  const { spec } = await f.record();
+  assert.deepEqual(spec.resources.map(r => [r.name, r.values, r.buttons, r.error.startsWith('无法导入已有 Codex 登录')]), [['Codex 账号', [], [], true]]);
+  assert.deepEqual([spec.signIn.installed, spec.signIn.installable], [true, false]);
   const login = await f.login('first'); assert.equal(login.code, 0, login.stderr);
   assert.equal((await list(f.at))[0].alias, 'first@example.com');
   assert.equal(await readFile(join(f.native, 'auth.json'), 'utf8'), '{broken');
+});
+
+test('what only signing in again cures is on the account\'s row, with the sign-in in the record; any other failure after a reading that went well fails the command, with the reason', async t => {
+  const f = await setup(t); assert.equal((await f.login('first')).code, 0);
+  assert.equal((await f.record()).spec.resources[0].error, undefined);
+  // Codex saying the login is no good, and the account's own credentials gone bad.
+  const refused = (await f.record({ FAKE_RATE_ERROR: '401 Unauthorized' })).spec;
+  assert.equal(refused.resources[0].error, '登录已失效，请重新登录：401 Unauthorized');
+  assert.equal(refused.signIn.installed, true);
+  const credentials = join(f.home('first'), 'auth.json'), good = await readFile(credentials, 'utf8');
+  await writeFile(credentials, '{broken');
+  const unreadable = (await f.record()).spec;
+  assert.match(unreadable.resources[0].error, /账号登录已失效，请在「Codex 多账号」重新登录该账号/);
+  assert.equal(unreadable.signIn.installed, true);
+  await writeFile(credentials, good);
+  // Anything else: the network, a server's error, a store that cannot be read.
+  await assert.rejects(f.record({ FAKE_RATE_ERROR: '503 Service Unavailable' }), { message: '503 Service Unavailable' });
+  await writeFile(join(f.state, 'accounts.json'), '{broken');
+  await assert.rejects(f.record(), { message: '读不了插件保存的账号列表' });
+});
+
+test('the device login of the codex plugin it depends on settles this one too: no link in time ends it with what Codex said, nothing kept', async t => {
+  const f = await setup(t), login = await f.login('first', { FAKE_SILENT: '1' });
+  assert.equal(login.code, 1); assert.equal(login.stdout, '');
+  assert.equal(login.stderr.trim(), 'Contacting OpenAI...');
+  assert.deepEqual(login.reported, []);
+  assert.deepEqual(await list(f.at), [], 'no account');
+  assert.equal((await readdir(f.state)).some(n => n.startsWith('login-')), false, 'the attempt\'s private home is cleaned up');
 });

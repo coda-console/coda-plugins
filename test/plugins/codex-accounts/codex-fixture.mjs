@@ -16,6 +16,8 @@ const read = () => { try { return JSON.parse(readFileSync(authFile, 'utf8')); } 
 const fromToken = value => { try { return JSON.parse(Buffer.from(value.split('.')[1], 'base64url').toString())['https://api.openai.com/auth']; } catch { return null; } };
 log({ mode: process.argv[2], args: process.argv.slice(2), inheritedCredentials: !!(process.env.OPENAI_API_KEY || process.env.CODEX_API_KEY || process.env.CODEX_ACCESS_TOKEN) });
 if (process.argv[2] === 'login') {
+  // Saying nothing of a link, as a login stuck on the network does, until it is ended.
+  if (process.env.FAKE_SILENT) { console.log('Contacting OpenAI...'); await delay(60_000); }
   process.stdout.write('Open https://auth.openai.com/codex/device\n\nABCD-12345\n');
   if (process.env.FAKE_CONFIRM) while (!existsSync(process.env.FAKE_CONFIRM)) await delay(10);
   if (process.env.FAKE_LOGIN_FAIL) process.exit(1);
@@ -34,6 +36,7 @@ for await (const line of createInterface({ input: process.stdin })) {
     const current = read(), account = current?.tokens.account_id;
     if (account) writeFileSync(authFile, JSON.stringify(auth(process.env.FAKE_REFRESH_ACCOUNT ?? account, 'renewed')), { mode: 0o600 });
   }
+  if (m.method === 'account/rateLimits/read' && process.env.FAKE_RATE_ERROR) { process.stdout.write(JSON.stringify({ id: m.id, error: { message: process.env.FAKE_RATE_ERROR } }) + '\n'); continue; }
   const current = external ?? fromToken(read()?.tokens.access_token), accountId = current?.chatgpt_account_id;
   const result = m.method === 'account/read' ? { account: accountId ? { type: 'chatgpt', email: `${accountId}@example.com`, planType: 'pro' } : null,
     workspaceRouting: { chatgptAccountId: process.env.FAKE_REFUSE ? 'someone-else' : accountId } }

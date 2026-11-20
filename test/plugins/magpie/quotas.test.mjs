@@ -1,16 +1,15 @@
-// The Magpie plugin's resource type「Magpie」, run as Coda runs it from its manifest, from a copy of the plugin whose model
-// services point at a gateway the test stands in.
+// The Magpie plugin's `coda/resource@1` record of the type「Magpie」, run as Coda runs it from its manifest, from a copy of the
+// plugin whose model services point at a gateway the test stands in.
 import assert from 'node:assert/strict';
 import { cpSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { declaredPanel, manifest, pluginEnv, run } from '../command.mjs';
-import { readResources } from '../../../check/panel.mjs';
+import { pathToFileURL } from 'node:url';
+import { barePath, manifest, pluginEnv } from '../command.mjs';
+import { resourceRecords } from '../../../check/resources.mjs';
 import { pluginDir } from '../plugin.mjs';
-
-const declared = declaredPanel('magpie', 'quotas');
 
 // The gateway's answer to /v1/magpie/quotas, as Magpie gives it (internal/provider/quotas.go).
 const quotas = [
@@ -19,57 +18,89 @@ const quotas = [
     balance: '62033.82 credits', resets: { count: 2, until: '2026-10-29T18:44:32Z' } },
   { provider: 'workbuddy', name: 'WorkBuddy', kind: 'subscription', plan: 'Free', user: 'leavan', alias: '我的',
     windows: [{ name: 'Credits', used: 25, remaining: 75, display: '500 / 2000', limit: 2000, unit: 'credits' }] },
-  { provider: 'kimi', name: 'Kimi', kind: 'plan', windows: [{ name: 'Monthly', used: 0, remaining: 100, unlimited: true }],
-    error: 'the usage endpoint answered 502' },
+  { provider: 'kimi', name: 'Kimi', kind: 'plan', windows: [{ name: 'Monthly', used: 0, remaining: 100, unlimited: true }] },
 ];
 
-// The plugin, its model services moved to a gateway answering `answer` (none: nothing listens there).
-async function panel(t, answer) {
+// The plugin, its model services moved to a gateway answering `answer` (none: nothing listens there; `hang`: it never answers, and
+// the reading's 20 seconds end when the gateway has the request in hand, which a stand-in for its clock is told of, so that it
+// ends with the request on its way whatever the machine is doing). Nothing of the machine is on the PATH or
+// in the home directory but this Node. The record it prints, as the host takes it: `{ resources, title }` of its one record. `answer`
+// may be a list, the gateway's answers to the reads in turn (the last again after), of which `reads` are made; the last one's is given.
+async function record(t, answer, reads = 1) {
+  const answers = [answer].flat(), sequence = { at: 0 };
   let address = '127.0.0.1:9';
+  const home = mkdtempSync(join(tmpdir(), 'coda-magpie-quotas-')), gate = join(home, 'gate');
+  t.after(() => rmSync(home, { recursive: true, force: true }));
   if (answer) {
     const server = createServer((req, res) => {
       if (req.url !== '/v1/magpie/quotas') { res.statusCode = 404; res.end(); return; }
-      res.statusCode = answer.status ?? 200; res.end(JSON.stringify(answer.body ?? {}));
+      const answer = answers[Math.min(sequence.at++, answers.length - 1)];
+      if (answer.hang) { writeFileSync(gate, ''); return; }
+      res.statusCode = answer.status ?? 200; res.end(answer.raw ?? JSON.stringify(answer.body ?? {}));
     });
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-    t.after(() => server.close());
+    t.after(() => { server.closeAllConnections(); server.close(); });
     address = `127.0.0.1:${server.address().port}`;
   }
-  const home = mkdtempSync(join(tmpdir(), 'coda-magpie-quotas-'));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
-  const copy = join(home, 'plugin');
+  const copy = join(home, 'plugin'), preload = join(home, 'preload.mjs');
   cpSync(pluginDir('magpie'), copy, { recursive: true });
   const changed = manifest('magpie');
   for (const provider of changed.contributes.modelProviders) provider.url = provider.url.replace('127.0.0.1:3425', address);
   writeFileSync(join(copy, 'package.json'), JSON.stringify(changed));
-  return run(declared.command, { ...pluginEnv('magpie', { CODA_NODE: process.execPath }), CODA_PLUGIN_PATH: copy });
+  // The reading's time is a signal of the test's: it ends once the gateway has noted the request (the file `gate`).
+  writeFileSync(preload, `import { existsSync } from 'node:fs';
+const timeout = AbortSignal.timeout, budget = new AbortController();
+AbortSignal.timeout = ms => ms === 20_000 ? budget.signal : timeout.call(AbortSignal, ms);
+setInterval(() => { if (existsSync(process.env.TEST_GATE)) budget.abort(new DOMException('', 'TimeoutError')); }, 10).unref();
+`);
+  const env = { ...pluginEnv('magpie', { CODA_NODE: process.execPath }), CODA_PLUGIN_PATH: copy, HOME: home, PATH: await barePath(home),
+    ...answers.some(one => one?.hang) ? { TEST_GATE: gate, NODE_OPTIONS: `--import=${pathToFileURL(preload).href}` } : {} };
+  let records;
+  for (let i = 0; i < reads; i++) records = await resourceRecords(copy, { env });
+  assert.deepEqual(records.map(({ key, spec }) => [key, spec.type, spec.title]), [['quotas', 'quotas', 'Magpie']]);
+  return records[0].spec.resources;
 }
 
-test('each subscription Magpie serves is a resource: what is left of each window as the other plugins say it, its balance and resets, and why a reading failed', async t => {
-  const ran = await panel(t, { body: { object: 'list', data: quotas } });
-  assert.equal(ran.code, 0, ran.stderr);
+test('the manifest has the record command and no resource declaration, and the type has no timer', () => {
+  const { contributes, engines } = manifest('magpie');
+  assert.deepEqual(contributes.records, [{ kind: 'coda/resource@1', command: 'scripts/quotas.mjs' }]);
+  assert.deepEqual(contributes.protocolImplementations, ['coda/resource@1']);
+  assert.equal(contributes.resources, undefined);
+  assert.equal(engines.coda, 6);
+});
+
+test('each subscription Magpie serves is a resource: what is left of each window as the other plugins say it, its balance and resets', async t => {
   // Whose it is beside the service (its alias, else the user); no plan.
-  assert.deepEqual(readResources(ran.stdout, declared), [
+  assert.deepEqual(await record(t, { body: { object: 'list', data: quotas } }), [
     { name: 'Codex · a@example.com', values: [
       { label: '5 小时', value: '剩余 100%', fraction: 1 },
-      { label: '7 天', value: '剩余 63%', fraction: 0.63, time: '2026-10-29T17:13:02.000Z' },
+      { label: '7 天', value: '剩余 63%', fraction: 0.63, time: '2026-10-30T01:13:02+08:00' },
       { label: '余额', value: '62033.82 credits' },
-      { label: '可用重置', value: '2 次' }], actions: [] },
-    { name: 'WorkBuddy · 我的', values: [{ label: 'Credits', value: '剩余 75%', fraction: 0.75 }], actions: [] },
-    { name: 'Kimi', values: [{ label: '月度', value: '不限' }], error: 'the usage endpoint answered 502', actions: [] },
+      { label: '可用重置', value: '2 次' }], buttons: [] },
+    { name: 'WorkBuddy · 我的', values: [{ label: 'Credits', value: '剩余 75%', fraction: 0.75 }], buttons: [] },
+    { name: 'Kimi', values: [{ label: '月度', value: '不限' }], buttons: [] },
   ]);
 });
 
 test('with none, the type has nothing to show', async t => {
-  const ran = await panel(t, { body: { object: 'list', data: [] } });
-  assert.deepEqual([ran.code, JSON.parse(ran.stdout)], [0, { resources: [] }]);
+  assert.deepEqual(await record(t, { body: { object: 'list', data: [] } }), []);
 });
 
-test('a gateway that does not answer, or cannot say, fails the reading with why', async t => {
-  const down = await panel(t, null);
-  assert.equal(down.code, 1);
-  assert.match(down.stderr, /Magpie 网关没有在 http:\/\/127\.0\.0\.1:9 应答/);
-  const refused = await panel(t, { status: 500 });
-  assert.equal(refused.code, 1);
-  assert.match(refused.stderr, /Magpie 网关没能读出额度（HTTP 500）/);
+test('a gateway that does not answer, cannot say, answers what is not understood or never answers fails the command with the reason, keeping the last record', async t => {
+  const fails = (answer, message) => assert.rejects(record(t, answer), { message });
+  await fails(null, 'Magpie 网关没有在 http://127.0.0.1:9 应答');
+  await fails({ status: 500 }, 'Magpie 网关没能读出额度（HTTP 500）');
+  await fails({ raw: 'not json' }, /^Magpie 网关的答复读不了：/);
+  await fails({ body: {} }, 'Magpie 网关的答复读不了：没有额度列表');
+  await fails({ hang: true }, '读取超时');
+});
+
+test('a subscription the gateway could not read fails the command, naming it and saying why, though the gateway answered 200 and the others are fine', async t => {
+  const failed = { ...quotas[2], error: 'the usage endpoint answered 502' };
+  await assert.rejects(record(t, { body: { data: [quotas[0], failed, quotas[1]] } }), { message: 'Kimi 读不出额度：the usage endpoint answered 502' });
+  await assert.rejects(record(t, [{ body: { data: quotas } }, { body: { data: [{ ...quotas[0], error: 'timed out' }] } }], 2), { message: 'Codex · a@example.com 读不出额度：timed out' });
+});
+
+test('a gateway that fails after a read that went well fails the command, with the reason', async t => {
+  await assert.rejects(record(t, [{ body: { data: quotas } }, { status: 503 }], 2), { message: 'Magpie 网关没能读出额度（HTTP 503）' });
 });

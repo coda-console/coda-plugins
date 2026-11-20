@@ -4,7 +4,10 @@
   "displayName": "宿主资源",
   "description": "Xcode、模拟器的排队名额",
   "icon": { "symbol": "hammer.fill", "color": "gray" },
-  "version": "5.0.0",
+  "version": "5.1.0",
+  "engines": {
+    "coda": 6
+  },
   "coda": {
     "channels": [
       "preview"
@@ -14,18 +17,18 @@
     "机器与资源"
   ],
   "contributes": {
-    "resources": [
-      {
-        "id": "slots",
-        "title": "构建名额",
-        "command": "node \"$CODA_PLUGIN_PATH/scripts/resources.mjs\""
-      }
-    ],
     "capabilities": [
       "run-held"
     ],
     "protocolImplementations": [
-      "coda/group@1"
+      "coda/group@1",
+      "coda/resource@1"
+    ],
+    "records": [
+      {
+        "kind": "coda/resource@1",
+        "command": "scripts/resource.mjs"
+      }
     ],
     "commands": [
       {

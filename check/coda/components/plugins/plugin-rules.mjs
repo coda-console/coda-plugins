@@ -20,15 +20,12 @@ import { iconFiles } from './plugin-icons.mjs';
 import { checkCatalog, extensionsFor, retiredContributes } from './plugin-extensions.mjs';
 import { contributionProblem, manifestProblem, TYPES } from '@coda-console/protocol/validate';
 import { ownedProtocolsProblem } from '@coda-console/protocol/protocol';
-import { claims, COMMIT, INTEGRITY, NPM_VERSION, npmPluginId, repoAddress, sourcePath } from './plugin-source-rules.mjs';
+import { claims, npmPluginId, repoAddress, sourcePath } from './plugin-source-rules.mjs';
 import { CONTRIBUTION_POINTS } from './contribution-points.mjs';
 
 const ID = /^[a-z][a-z0-9-]{0,39}$/;
 // Plugins that ship with Coda, as VS Code's built-in extensions ship with it: updated with Coda itself.
 export const BUILTIN_DIR = fileURLToPath(new URL('../../resources/plugins/', import.meta.url));
-// The package the backend runs from (the runtime clone's, or the release's), whose npm dependencies may be built-in plugins
-// too (dependencyPlugins).
-const PACKAGE_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 // What the plugins' base reads of `contributes` itself, the general types schemas/plugin.json names; any other key is a
 // contribution point's (contribution-points.mjs), or for a point another plugin declares to take it (the resources
 // plugin's `panels`), refused when neither does.
@@ -212,18 +209,12 @@ export function mcpValues(plugin, settings, state, base) {
     return [{ name: server.name, command, args, env: Object.entries(env).map(([name, value]) => ({ name, value })) }];
   });
 }
-// The plugins Coda ships: those in `dir`, which come from nowhere else, and its npm dependencies that are plugins
-// (`dependencies`), each with where it comes from, which a version from that same place may stand in for (docs/plugins.md
-// 「内置插件的来源」).
-export function builtinPlugins(dir = BUILTIN_DIR, dependencies = dir === BUILTIN_DIR ? dependencyPlugins() : new Map()) {
+// The plugins Coda ships: those in `dir`, which come from nowhere else.
+export function builtinPlugins(dir = BUILTIN_DIR) {
   const plugins = new Map((existsSync(dir) ? readdirSync(dir, { withFileTypes: true }) : []).filter(d => d.isDirectory()).map(d => {
     const plugin = readPlugin(join(dir, d.name), { kind: 'builtin' });
     return [plugin.id, plugin];
   }));
-  for (const [id, plugin] of dependencies) {
-    check(!plugins.has(id), 'invalid_plugin', `插件 ${id} 同时存在于资源目录与 npm 依赖`);
-    plugins.set(id, plugin);
-  }
   // An agent, a group and Git's credentials for an address are one plugin's (components/plugins/plugin-source-rules.mjs claims).
   const owner = new Map();
   for (const plugin of plugins.values()) for (const claim of claims(plugin)) {
@@ -231,35 +222,6 @@ export function builtinPlugins(dir = BUILTIN_DIR, dependencies = dir === BUILTIN
     owner.set(claim, plugin.id);
   }
   return checkCatalog(plugins);
-}
-// A direct npm dependency declaring `contributes` is a bundled plugin (docs/plugins.md「npm 依赖中的插件」). npm installs its
-// files and dependencies; where it comes from is what the dependency pins: a version of a package from the registry, with
-// the integrity package-lock.json has of its tarball and the repository directory the package says it is published from,
-// or a commit of a Git repository. Installed from the start, unless `coda.optionalPlugins` of the backend's package.json
-// names it.
-export function dependencyPlugins(root = PACKAGE_ROOT) {
-  const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')), plugins = new Map();
-  const optional = new Set(manifest.coda?.optionalPlugins ?? []);
-  let lock;
-  for (const [name, spec] of Object.entries(manifest.dependencies ?? {})) {
-    const dir = join(root, 'node_modules', name), pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
-    if (!Object.hasOwn(pkg, 'contributes')) continue;
-    let source;
-    if (typeof spec === 'string' && NPM_VERSION.test(spec)) {
-      lock ??= JSON.parse(readFileSync(join(root, 'package-lock.json'), 'utf8')).packages ?? {};
-      const integrity = lock[`node_modules/${name}`]?.integrity;
-      check(typeof integrity === 'string' && INTEGRITY.test(integrity), 'invalid_plugin', `package-lock.json 里没有插件依赖 ${name} 的 sha512 完整性摘要`);
-      source = { kind: 'builtin', package: name, tag: 'latest', version: spec, integrity, ...publishedFrom(pkg.repository) };
-    } else {
-      const git = typeof spec === 'string' && /^git\+(.+)#([^#]+)$/.exec(spec);
-      check(git && COMMIT.test(git[2]), 'invalid_plugin', `插件依赖 ${name} 须写一个版本号，或用 Git 仓库地址与完整提交号固定版本`);
-      source = { kind: 'builtin', repo: repoAddress(git[1]), path: '', commit: git[2] };
-    }
-    const plugin = readPlugin(dir, source);
-    check(!plugins.has(plugin.id), 'invalid_plugin', `多个 npm 依赖声明了插件 ${plugin.id}`);
-    plugins.set(plugin.id, { ...plugin, defaultInstalled: !optional.has(name) });
-  }
-  return plugins;
 }
 // The repository directory a package says it is published from (`repository`: its address, and `directory` in it), as a
 // source names one; nothing where it says none Coda reads.

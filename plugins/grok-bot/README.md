@@ -1,5 +1,11 @@
 # Grok Bot
 
+0.9.2：记录命令读取到期时，已经发出的续期不随读取放弃：等它把新凭据（含轮换后的 refresh token）写完再退出，续期最晚在命令开始后 28 秒结束（宿主给 30 秒）。续期只有被明确拒绝（HTTP 400 / 401 / 403 或 `shouldLogout`）才算登录失效、记录写一行「请重新登录」；服务端出错（如 503，带它自己的状态码）或响应读不懂时命令以非零退出，Coda 保留上一份记录，本机凭据不变。
+
+0.9.1：读 401 响应体时调用已取消（如移除 Bot），不再当作 401 去续期；共用的续期失败时，即使所有等待方都已放弃也有处理，不再让插件进程退出。记录命令等标准输出写完再退出，宿主一时读不完也不会拿到半截 JSON。
+
+0.9.0：资源页的类型改成 `coda/resource@1`：记录命令 `scripts/resource.mjs`（登录文件读不了或被拒时写一行说明原因，登录入口照常在；别的读不到命令以非零退出，原因写在标准错误的最后一行，Coda 保留上一份记录），登录是操作 `sign-in`（`scripts/sign-in.mjs`，原 `login.mjs`），用 `coda progress` 报官方链接，报成功后才开始轮询、写凭据，报失败登录就失败、本机凭据不变。记录命令一次读取（账号、Bot 名单、等续期和续期后的重试）共用 20 秒的时间（宿主给 30 秒），超时命令以非零退出，标准错误的最后一行是「读取超时」。续期是各个调用共用的一次：某个调用取消（或这次读取超时）只放弃它自己的等待，不中止续期，别的 Bot 照常拿到新令牌。需要 API Level 6 的 Coda。
+
 0.8.0（接口破坏性变更）：记录的读写换成 Coda 的新接口（`coda.replace`、`coda.put`），不再用 `protocols.observe`、`put`、`update`、`setStatus`、`delete`、`publish`，也不再有 `revision` 条件写和插件自己的串行队列（宿主按插件依次写）。插件不再读回自己的记录：本机的 `coda/session@1` 里混着 Coda 自己和别的插件的会话，条目上也没有提供者，所以持有哪些由插件自己知道（登录账号与 Bot 名单），只对这些写和删。需要先带这套接口的 Coda（coda#2749）。只给预览渠道。
 
 0.7.0 `read`、`draft`、`post` 改用 `coda.handle` 登记，对应 Coda 宿主代管「做事的操作」（coda#2749）：`post` 发完才返回，不再写 `coda/run@1`，清单不再声明它，启动时也不再改写遗留运行。需要 Coda 先合并该改动；本版不再兼容旧写法。
@@ -10,7 +16,7 @@
 
 ## 登录与记录
 
-在资源页添加 Grok Bot，打开 `cursor.com/loginDeepControl` 官方链接确认（手机可能需要再点 Continue）。沿用 0.4.0 的 PKCE 链接、`/auth/poll` 轮询及 `/oauth/token` refresh_token 续期；不是 Grok CLI 的设备码登录，不读取桌面凭据。凭据写在插件数据目录的 `native-auth.json`，权限 0600。续期失败时资源页提示重新登录。
+在资源页添加 Grok Bot，打开 `cursor.com/loginDeepControl` 官方链接确认（手机可能需要再点 Continue）。沿用 0.4.0 的 PKCE 链接、`/auth/poll` 轮询及 `/oauth/token` refresh_token 续期；不是 Grok CLI 的设备码登录，不读取桌面凭据。凭据写在插件数据目录的 `native-auth.json`，权限 0600。续期被拒时资源页提示重新登录；续期时服务端出错或响应读不懂不算登录失效。
 
 Provider 每 30 秒重新读取登录及 Bot 名单；每个 Bot 自动建立一条记录，无选择下拉或会话命令。容器是登录账号，账号本人为 `self: true, kind: person`，Bot 为 `kind: agent`。
 

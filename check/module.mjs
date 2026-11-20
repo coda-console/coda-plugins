@@ -3,7 +3,7 @@
 // handshake, for a plugin with a `main`.
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { protocolHasRecords } from '@coda-console/protocol/protocol';
+import { protocolHasRecords, RESOURCE_PROTOCOL } from '@coda-console/protocol/protocol';
 import { usesRefusal } from './coda/components/plugins/plugin-extensions.mjs';
 import { createTestHost } from './coda/adapters/plugin-test-host.mjs';
 import { closing, temporary } from './leftovers.mjs';
@@ -113,8 +113,9 @@ function unfinished({ plugin, definitions, definitionOf }, e, from, absent, used
 }
 
 // What the manifest says it implements against what the module registered, both ways: an operation not implemented by a command
-// is the module's to register (but for those only Coda answers); one registered that the definition lacks is no operation of the
-// protocol. (A protocol the manifest does not implement is refused by the test host as the module registers: it fails `activate`.)
+// is the module's to register (but for those only Coda answers, and for `coda/resource@1`, whose operations a plugin offers one by
+// one: the manifest writes only those it has); one registered that the definition lacks is no operation of the protocol.
+// (A protocol the manifest does not implement is refused by the test host as the module registers: it fails `activate`.)
 function compare({ plugin, definitionOf }, { operations }, say) {
   const registered = new Set(operations.map(({ kind, operation }) => `${kind} ${operation}`));
   let problems = 0, incomplete = false;
@@ -123,7 +124,7 @@ function compare({ plugin, definitionOf }, { operations }, say) {
     if (!definition) { incomplete = true; say.warn('module.registered', `未完成核对：协议 ${kind} 的定义不在本地，查不了模块登记了它的哪些操作`); continue; }
     // `codaOnly`: Coda's own protocol's operation that Coda alone answers.
     for (const [operation, { codaOnly }] of Object.entries(definition.operations ?? {}))
-      if (!codaOnly && !Object.hasOwn(commands, operation) && !registered.has(`${kind} ${operation}`)) { problems++; say.fail('module.unregistered', `清单写了实现 ${kind} 的操作 ${operation}，模块没登记（coda.handle）`); }
+      if (!codaOnly && kind !== RESOURCE_PROTOCOL.name && !Object.hasOwn(commands, operation) && !registered.has(`${kind} ${operation}`)) { problems++; say.fail('module.unregistered', `清单写了实现 ${kind} 的操作 ${operation}，模块没登记（coda.handle）`); }
   }
   for (const { kind, operation } of operations) {
     const definition = definitionOf(kind);

@@ -22,7 +22,7 @@ Coda 会把它存成回复正文，像答到一半出错，其实这一轮还在
 ## 安装
 
 1. **运行机装 Antigravity CLI**：插件的设置动作（`scripts/setup.mjs`）在你安装或更新插件时于每台机器上运行：没有 `agy` 就用官方安装程序装上，
-   低于 1.5.9 就用 `agy update` 升级，新的不动；已有的 `agy` 跑不起来时只说明原因并失败，不替你删它。资源页「Antigravity」的「安装」也运行同一个设置动作。
+   低于 1.5.9 就用 `agy update` 升级，新的不动；已有的 `agy` 跑不起来时只说明原因并失败，不替你删它。资源页「Antigravity」的「安装」是操作 `install`，指向同一个 `scripts/setup.mjs`（结果 `{}`，说明写在标准错误）。
    也可以自己装：
 
    ```sh
@@ -69,7 +69,7 @@ Coda 会把它存成回复正文，像答到一半出错，其实这一轮还在
 | skills | 读工作副本的 `.agents/skills`（清单的 `skillsDir`） |
 | 上下文占用、标题 | Antigravity 报 `usage_update` 与会话标题更新 |
 | 模型列表何时重读 | `~/.gemini/antigravity-cli/settings.json` 变了时 |
-| 资源页 | 登录后显示一条「Antigravity」，读数是各模型组的每周、每 5 小时剩余比例与重置时间（如「Gemini 每周」「Claude and GPT 5 小时」，组与周期按报告动态给出），最后是 CLI 版本。额度来自官方的只读报告 `agy -p /usage --output-format json`（CLI 1.1.11 起支持，插件要求 1.5.9 及以上）：由 CLI 自己回答，不开会话、不花额度、不留对话，插件不读 token；这一次运行只设 `AGY_CLI_DISABLE_AUTO_UPDATE=true`，在系统临时目录里跑。整次读取给自己 25 秒（宿主只给 30 秒）：版本和额度都只用剩下的时间并留 1 秒输出，剩下不到 3 秒就不再查额度，直接写「暂时无法获取额度：读取超时」，版本照旧显示。读数最多 8 条：额度最多 7 条，CLI 版本始终在最后。读不到额度（退出非 0、超时、报告不是成功、没有可显示的桶）时那一条带「暂时无法获取额度：原因」（原因是 CLI stderr 的首行，没有才写退出码；整句不超过 80 字，只截原因），版本照旧显示；缺比例、不在 0–1 内或标了 `disabled` 的桶不显示。登录状态只查钥匙串条目在不在（macOS 用 `security find-generic-password -s gemini -a antigravity`，只查条目，不读内容），也不读邮箱；钥匙串问不出来时读数失败，不当作登出（Linux 的细节见下） |
+| 资源页 | 登录后显示一条「Antigravity」，读数是各模型组的每周、每 5 小时剩余比例与重置时间（如「Gemini 每周」「Claude and GPT 5 小时」，组与周期按报告动态给出），最后是 CLI 版本。额度来自官方的只读报告 `agy -p /usage --output-format json`（CLI 1.1.11 起支持，插件要求 1.5.9 及以上）：由 CLI 自己回答，不开会话、不花额度、不留对话，插件不读 token；这一次运行只设 `AGY_CLI_DISABLE_AUTO_UPDATE=true`，在系统临时目录里跑。整次读取给自己 25 秒（宿主只给 30 秒）：版本和额度都只用剩下的时间并留 1 秒输出，剩下不到 3 秒就不再查额度，命令失败，原因是「暂时无法获取额度：读取超时」。读数最多 8 条：额度最多 7 条，CLI 版本始终在最后。读不到额度（退出非 0、超时、报告不是成功、没有可显示的桶）时命令以非零退出，标准错误的最后一行是「暂时无法获取额度：原因」（原因是 CLI stderr 的首行，没有才写退出码），Coda 保留上一份记录，资源页显示「更新失败：原因」；缺比例、不在 0–1 内或标了 `disabled` 的桶不显示。登录状态只查钥匙串条目在不在（macOS 用 `security find-generic-password -s gemini -a antigravity`，只查条目，不读内容），也不读邮箱；钥匙串问不出来时命令同样以非零退出并写明原因，不当作登出（Linux 的细节见下）。记录命令是 `scripts/resource.mjs`，不定时（没有 `every`），资源页打开、点「刷新」和每个操作之后运行；登录了却找不到 CLI、或 CLI 低于所需版本时，记录照写：一行说明，登录与安装入口照常在；CLI 读不出版本则命令以非零退出。登录是操作 `sign-in`（`scripts/sign-in.mjs`）：运行 `agy acp --login`，把它打印的授权链接用 `coda progress` 报给 Coda（只认完整的行，两路输出各自成行；报完才算登录结束，报失败登录就失败；20 秒内没有链接就失败，原因是那时 CLI 说的最后一行），再用 `coda ask` 要授权码、写进 CLI 的标准输入；CLI 已退出就不再问，码交出后 CLI 说的话不传出 |
 
 ## 已知限制
 
@@ -87,7 +87,7 @@ Coda 会把它存成回复正文，像答到一半出错，其实这一轮还在
 | Coda 的 MCP 工具在 auto 下也要审批 | 无人值守的子会话、流程步骤调用它们会停下；「全部放行」下不会。要在 auto 下放行，写法是在运行机的 `~/.gemini/antigravity-cli/settings.json` 里加 `{"permissions": {"allow": ["mcp(coda/*)"]}}`，出处是官方[权限文档](https://antigravity.google/docs/permissions/)；插件不替你改这个文件 |
 | 压缩上下文不上报 Coda | Antigravity 会压缩上下文：`/compact` 在 `agy acp` 1.5.9 上实测会跑一次摘要，对话库里留下摘要步骤；二进制里也有按 token 阈值触发的压缩配置，自动压缩没有实测触发。但 ACP 流和 `acp-server` 日志都不报压缩（没有 `compaction_update`，也没有专门的通知或工具调用），唯一的痕迹在它私有的对话库里，入口不读它，也不从文本或用量反推。所以依赖压缩的功能（如 Ultra 压缩后重发说明）在它上面压缩后不生效 |
 | 额度耗尽 | 没有真实样本，不做失败分类，Coda 只看到 Antigravity 给的错误文字 |
-| 没有桌面会话的 Linux 登录 | 未实测：Linux 用 Secret Service（D-Bus），二进制里有「keyring 失败就落文件」的回退，但文件路径与触发条件没查清。资源页在 Linux 上用 `secret-tool lookup service gemini username antigravity` 查条目（属性名按 go-keyring 的写法，未在真机上试过），没有 `secret-tool`、查不到条目，或登录落在文件里时，资源页当作未登录（只是仍在「添加资源」里出现，会话不受影响）。装了 `secret-tool` 却联系不上 Secret Service（典型是没有会话 D-Bus 的无桌面机器，它带错误信息退出）时，资源页读数失败、保留上次的显示，首次读取就没有可保留的，也就无法从资源页添加：这样的机器在终端里运行 `agy acp --login` 登录 |
+| 没有桌面会话的 Linux 登录 | 未实测：Linux 用 Secret Service（D-Bus），二进制里有「keyring 失败就落文件」的回退，但文件路径与触发条件没查清。资源页在 Linux 上用 `secret-tool lookup service gemini username antigravity` 查条目（属性名按 go-keyring 的写法，未在真机上试过），没有 `secret-tool`、查不到条目，或登录落在文件里时，资源页当作未登录（只是仍在「添加资源」里出现，会话不受影响）。装了 `secret-tool` 却联系不上 Secret Service（典型是没有会话 D-Bus 的无桌面机器，它带错误信息退出）时，资源页读取失败，原因是「读不了 Secret Service」，在这样的机器上要在终端里运行 `agy acp --login` 登录 |
 | 第三方模型 | 账号里的 Claude、GPT-OSS 未实测 |
 | 配置探测 | Coda 读模型、思考档位与模式的目录时，入口用插件状态目录里的缓存（`$CODA_PLUGIN_STATE/catalog-v1.json`）答一个只在当前连接有效的虚拟会话（`coda-probe:` 开头，不接受 prompt、不能恢复、断线即释放）：**缓存命中时不建 Antigravity 会话**。缓存不按天数过期：距上次采集或比对满 1 小时后，下一次探测先跑一次 `agy models`（不建会话，约 2～3 秒，限时 8 秒），把它列出的模型（ID 与名称）和采集时记下的清单比对，一样就只记下比对时间（`catalog-v1.check.json`），不一样才重读；`agy models` 失败（未登录、断网、超时）时照旧用缓存，5 分钟后再比对，不因此重读；旧版插件留下的没有清单的缓存，在 `agy models` 第一次答上时重读一次。此外 agy 的路径或版本、`~/.gemini/antigravity-cli/settings.json` 变化、真实会话报的配置与缓存对不上时也重读。重读用一个独立的 `agy acp` 建一条空会话逐个模型读一遍（agy 1.5.9 删不了会话，这条会留在 `~/.gemini/antigravity-cli/conversations/`，会话 ID 记在 `catalog-v1.log`）。读失败时这次探测报错、不改用普通会话，同样的 agy 与设置 5 分钟内不再重读（未登录除外）；比对发现变化而重读失败时照旧用原缓存答。要支持配置探测的新版 Coda 才生效；旧版 Coda 每次探测仍各建一条空会话 |
 | 并发进程 | 不加 `--process-per-session`：Coda 交给 Agent 的 MCP 服务器都是 stdio，官方只对 HTTP MCP 要求这个参数 |

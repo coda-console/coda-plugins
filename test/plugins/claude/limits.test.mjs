@@ -7,13 +7,14 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readResources } from '../../../check/panel.mjs';
+import { resourceRecordsProblem } from '../../../check/resources.mjs';
 import { ClaudeSessionLimits, accountHash } from '../../../plugins/claude/agent/limits.mjs';
 import { resources } from '../../../plugins/claude/scripts/quota.mjs';
-import { declaredPanel } from '../command.mjs';
 
 const NOW = Date.parse('2026-10-08T00:00:00Z');
 const at = iso => Date.parse(iso) / 1000;
+// What the plugin's record command prints of a reading: the record of the type, which the host takes or not.
+const problem = read => resourceRecordsProblem([{ key: 'limits', spec: { type: 'limits', title: 'Claude', ...read } }]);
 async function root(t) { const dir = await mkdtemp(join(tmpdir(), 'coda-limits-')); t.after(() => rm(dir, { recursive: true, force: true })); return dir; }
 const event = { status: 'allowed_warning', rateLimitType: 'seven_day', utilization: 0.91, resetsAt: at('2026-10-12T00:00:00Z'),
   unifiedWindows: { five_hour: { utilization: 0.11, resetsAt: at('2026-10-08T03:00:00Z') }, seven_day: { utilization: 0.91, resetsAt: at('2026-10-12T00:00:00Z') } } };
@@ -107,7 +108,7 @@ test('the windows are kept across a restart, written only as one moves, and a fi
 });
 
 test('the「Claude」resource shows what the sessions reported, says when it all has passed, and nothing before anything was', async t => {
-  const dir = await root(t), path = join(dir, 'limits.json'), declared = declaredPanel('claude');
+  const dir = await root(t), path = join(dir, 'limits.json');
   let now = NOW;
   const limits = () => new ClaudeSessionLimits({ path, now: () => now });
   assert.deepEqual(resources(limits()), { resources: [] }, 'nothing reported: offered under「添加资源」 instead');
@@ -116,15 +117,15 @@ test('the「Claude」resource shows what the sessions reported, says when it all
   assert.deepEqual(read.resources, [{ values: [
     { label: '5 小时', value: '剩余 89%', fraction: 0.89, time: '2026-10-08T03:00:00.000Z' },
     { label: '7 天', value: '剩余 9%', fraction: 0.09, time: '2026-10-12T00:00:00.000Z' },
-  ] }]);
-  assert.deepEqual(readResources(JSON.stringify(read), declared), read.resources.map(r => ({ ...r, actions: [] })), 'a reading Coda takes');
+  ], buttons: [] }]);
+  assert.equal(problem(read), null, 'a reading the host takes');
   now = Date.parse('2026-10-13T00:00:00Z');
-  assert.deepEqual(resources(limits()).resources, [{ name: 'Claude', error: '额度记录已过期，会话再运行后更新' }]);
-  assert.equal(readResources(JSON.stringify(resources(limits())), declared).length, 1);
+  assert.deepEqual(resources(limits()).resources, [{ name: 'Claude', values: [], buttons: [], error: '额度记录已过期，会话再运行后更新' }]);
+  assert.equal(problem(resources(limits())), null);
 });
 
 test('the account the latest session starts as is the resource\'s identity, as a hash; what another account reports is not its', async t => {
-  const dir = await root(t), path = join(dir, 'limits.json'), declared = declaredPanel('claude');
+  const dir = await root(t), path = join(dir, 'limits.json');
   const limits = () => new ClaudeSessionLimits({ path, now: () => NOW });
   const a = accountHash(' Me@Example.com '), b = accountHash('other@example.com');
   limits().observe(event);
@@ -135,7 +136,7 @@ test('the account the latest session starts as is the resource\'s identity, as a
   const read = resources(limits());
   assert.equal(read.resources[0].identity, `claude:${accountHash('me@example.com')}`);
   assert.ok(!(await readFile(path, 'utf8')).includes('example.com'), 'the email itself is not kept');
-  assert.equal(readResources(JSON.stringify(read), declared)[0].values.length, 2, 'a reading Coda takes');
+  assert.equal(problem(read), null, 'a reading the host takes');
   // Another account's session starts while one of the first is still running: what the older one reports is not B's.
   limits().startedAs(b);
   limits().observe(event, a);

@@ -3,7 +3,10 @@
   "id": "claude",
   "displayName": "Claude",
   "description": "用 Claude Agent SDK 跑会话",
-  "version": "1.14.3",
+  "version": "1.15.0",
+  "engines": {
+    "coda": 6
+  },
   "categories": [
     "Agent"
   ],
@@ -61,17 +64,18 @@
         }
       }
     },
-    "resources": [
+    "protocolImplementations": [
       {
-        "id": "limits",
-        "title": "Claude",
-        "command": "node \"$CODA_PLUGIN_PATH/scripts/resources.mjs\"",
-        "signIn": {
-          "command": "exec node \"$CODA_PLUGIN_PATH/scripts/login.mjs\"",
-          "installed": "node \"$CODA_PLUGIN_PATH/scripts/login.mjs\" --installed",
-          "input": "authorizationCode",
-          "note": "登录保存在这台机器上，供 Claude SDK 使用；额度在会话运行后出现。这台机器若已配置 OAuth token、API key 或云服务商，会话仍优先用那些配置。"
+        "kind": "coda/resource@1",
+        "commands": {
+          "sign-in": "scripts/sign-in.mjs"
         }
+      }
+    ],
+    "records": [
+      {
+        "kind": "coda/resource@1",
+        "command": "scripts/resource.mjs"
       }
     ]
   },

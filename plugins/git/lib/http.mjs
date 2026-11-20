@@ -54,7 +54,7 @@ export function reply(res, status, value) {
 
 const ROUTE = /^\/repos\/([a-zA-Z0-9_-]{1,100})\/(info\/refs\?service=git-upload-pack|git-upload-pack)$/;
 
-export function smartHTTP({ lookup, environment }) {
+export function smartHTTP({ lookup }) {
   const children = new Set();
   // A request ending in 4xx or 5xx is logged once: status, reason, method, source (the raw path if it is not one), and the three headers
   // that decide it. Never the authorization header, cookies or the body.
@@ -83,21 +83,20 @@ export function smartHTTP({ lookup, environment }) {
         return send(req, res, 415, { error: '不接受压缩请求体' });
       const source = await lookup(match[1]);
       if (!source) return send(req, res, 404, { error: '源未登记或不可用' });
-      const env = await environment();
       const body = await readBody(req);
       if (discovery && body.length) return send(req, res, 400, { error: 'GET 不接受请求体' });
       const requested = wants(body);
-      const refs = (await git(source.path, ['for-each-ref', '--format=%(objectname) %(refname)', 'refs/heads/'], { env }))
+      const refs = (await git(source.path, ['for-each-ref', '--format=%(objectname) %(refname)', 'refs/heads/']))
         .split('\n').filter(Boolean).map(line => line.split(' '));
       const tips = [...new Set(refs.map(([oid]) => oid))];
       for (const oid of requested) {
         if (tips.includes(oid)) continue;
         // Normal fetch wants commits; a reachable ancestor is allowed, an unrelated hidden commit/blob is not.
-        if (await git(source.path, ['cat-file', '-t', oid], { env, accept: [0, 128] }) !== 'commit')
+        if (await git(source.path, ['cat-file', '-t', oid], { accept: [0, 128] }) !== 'commit')
           return send(req, res, 403, { error: '不允许的对象' });
         let reachable = false;
         for (const tip of tips) {
-          const base = await git(source.path, ['merge-base', oid, tip], { env, accept: [0, 1] });
+          const base = await git(source.path, ['merge-base', oid, tip], { accept: [0, 1] });
           if (base === oid) { reachable = true; break; }
         }
         if (!reachable) return send(req, res, 403, { error: '不允许的对象' });
@@ -105,19 +104,19 @@ export function smartHTTP({ lookup, environment }) {
       // A disposable bare view exports only approved refs, and cannot inherit repository http/uploadpack config,
       // replace refs, HEAD pointing at a hidden ref, hooks, or a repository's custom upload-pack command.
       dir = await mkdtemp(join(tmpdir(), 'coda-git-http-'));
-      const format = await git(source.path, ['rev-parse', '--show-object-format'], { env });
-      await git(dir, ['init', '--bare', `--object-format=${format}`, '--template='], { env });
-      const objects = await git(source.path, ['rev-parse', '--path-format=absolute', '--git-path', 'objects'], { env });
+      const format = await git(source.path, ['rev-parse', '--show-object-format']);
+      await git(dir, ['init', '--bare', `--object-format=${format}`, '--template=']);
+      const objects = await git(source.path, ['rev-parse', '--path-format=absolute', '--git-path', 'objects']);
       if (/[\r\n]/.test(objects)) throw new Error('仓库对象路径不支持换行');
       await mkdir(join(dir, 'objects', 'info'), { recursive: true });
       await writeFile(join(dir, 'objects', 'info', 'alternates'), `${objects}\n`);
-      const shallowPath = await git(source.path, ['rev-parse', '--path-format=absolute', '--git-path', 'shallow'], { env });
+      const shallowPath = await git(source.path, ['rev-parse', '--path-format=absolute', '--git-path', 'shallow']);
       try { await writeFile(join(dir, 'shallow'), await readFile(shallowPath)); }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
-      if (refs.length) await git(dir, ['update-ref', '--stdin'], { env, input: refs.map(([oid, ref]) => `update ${ref} ${oid}\n`).join('') });
-      const head = await git(source.path, ['symbolic-ref', '-q', 'HEAD'], { env, accept: [0, 1] });
-      await git(dir, ['symbolic-ref', 'HEAD', refs.some(([, ref]) => ref === head) ? head : 'refs/heads/coda-unborn'], { env });
-      await bridge(req, res, { dir, env, body, discovery, children });
+      if (refs.length) await git(dir, ['update-ref', '--stdin'], { input: refs.map(([oid, ref]) => `update ${ref} ${oid}\n`).join('') });
+      const head = await git(source.path, ['symbolic-ref', '-q', 'HEAD'], { accept: [0, 1] });
+      await git(dir, ['symbolic-ref', 'HEAD', refs.some(([, ref]) => ref === head) ? head : 'refs/heads/coda-unborn']);
+      await bridge(req, res, { dir, body, discovery, children });
     } catch (error) {
       if (!res.destroyed) send(req, res, error.status ?? 500, { error: error.message });
     } finally { if (dir) await rm(dir, { recursive: true, force: true }); }
@@ -126,10 +125,10 @@ export function smartHTTP({ lookup, environment }) {
   return handler;
 }
 
-async function bridge(req, res, { dir, env, body, discovery, children }) {
+async function bridge(req, res, { dir, body, discovery, children }) {
   const child = spawn('git', ['-c', 'http.receivepack=false', '-c', 'http.uploadpack=true',
     '-c', `http.maxRequestBuffer=${MAX_REQUEST}`, 'http-backend'], {
-    env: gitEnvironment(env, { ...isolated, GIT_DIR: dir, GIT_HTTP_EXPORT_ALL: '1',
+    env: gitEnvironment(process.env, { ...isolated, GIT_DIR: dir, GIT_HTTP_EXPORT_ALL: '1',
       PATH_TRANSLATED: `${dir}/${discovery ? 'info/refs' : 'git-upload-pack'}`,
       PATH_INFO: discovery ? '/info/refs' : '/git-upload-pack', REQUEST_METHOD: req.method,
       QUERY_STRING: discovery ? 'service=git-upload-pack' : '', CONTENT_TYPE: req.headers['content-type'] ?? '',

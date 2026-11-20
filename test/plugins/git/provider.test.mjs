@@ -64,7 +64,7 @@ test('登记的源以名字为 key，ID 是宿主由它派生的，名字也写�
   assert.equal(get(h, id).key, 'source');
   assert.deepEqual(get(h, id).spec, { path: dir, name: 'source' });
   assert.deepEqual(get(h, id).status, { ready: true, url: `/v1/plugins/git/services/repository/repos/${id}` });
-  const repo = await provider.lookup(id), expected = await repository(dir, env);
+  const repo = await provider.lookup(id), expected = await repository(dir);
   assert.deepEqual([repo.path, repo.gitDir, repo.commonDir], [expected.path, expected.gitDir, expected.commonDir]);
   assert.deepEqual(JSON.parse(readFileSync(join(dir, '.git', 'coda-state', 'sources.json'), 'utf8')),
     { version: 2, sources: { source: { spec: { path: dir, name: 'source' }, identity: { path: expected.path, gitDir: expected.gitDir, commonDir: expected.commonDir } } } });
@@ -164,7 +164,7 @@ test('源符号链接换仓库后拒绝读取，重启仍须重新登记', async
   const again = await register(restarted, 'source', { path });
   assert.equal(again, id);
   assert.equal(get(h, again).status.ready, true);
-  assert.equal((await restarted.lookup(again)).path, (await repository(b, env)).path);
+  assert.equal((await restarted.lookup(again)).path, (await repository(b)).path);
 });
 
 for (const name of ['constructor', '__proto__']) test(`源名为 ${name} 也是普通名字：登记、删后重登、重启都认得`, async t => {
@@ -178,7 +178,7 @@ for (const name of ['constructor', '__proto__']) test(`源名为 ${name} 也是�
   await provider.stop();
   const restarted = new GitProvider(h.coda); t.after(() => restarted.stop()); await restarted.start();
   assert.equal(get(h, again).status.ready, true);
-  assert.equal((await restarted.lookup(again)).path, (await repository(dir, env)).path);
+  assert.equal((await restarted.lookup(again)).path, (await repository(dir)).path);
   assert.equal((await request(restarted, `/sources/${name}`, {}, { method: 'GET' })).value.id, again);
 });
 
@@ -203,7 +203,7 @@ test('启动时仓库不可用的源，修好后以相同 spec 再登记即重�
 test('启动时按 sources.json 整份给出登记的源：旧版留下、不带 key 的记录被删；旧格式的文件当作没有源', async t => {
   const a = await fixture(t), state = await mkdtemp(join(tmpdir(), 'coda-git-state-')), h = host(state);
   t.after(() => rm(state, { recursive: true, force: true }));
-  const file = join(state, 'sources.json'), identity = await repository(a, env);
+  const file = join(state, 'sources.json'), identity = await repository(a);
   const left = '7d2e9a14-3c5b-4f86-a1d0-c94b2e6f8a37';
   await writeFile(file, JSON.stringify({ gone: { path: identity.path, gitDir: identity.gitDir, commonDir: identity.commonDir } }));
   h.seed(SOURCE, left, { spec: { name: 'left', path: a }, status: { ready: true, url: `/v1/plugins/git/services/repository/repos/${left}` } });
@@ -223,7 +223,7 @@ test('启动时按 sources.json 整份给出登记的源：旧版留下、不带
 test('旧格式的文件按空处理，登记名恰好叫 sources 的也是：不崩，不迁移', async t => {
   const a = await fixture(t), state = await mkdtemp(join(tmpdir(), 'coda-git-state-')), h = host(state);
   t.after(() => rm(state, { recursive: true, force: true }));
-  const identity = await repository(a, env);
+  const identity = await repository(a);
   await writeFile(join(state, 'sources.json'), JSON.stringify({ sources: { path: identity.path, gitDir: identity.gitDir, commonDir: identity.commonDir } }));
   const provider = new GitProvider(h.coda); t.after(() => provider.stop()); await provider.start();
   assert.equal(provider.sources.size, 0); assert.equal(h.objects.size, 0);
@@ -279,7 +279,7 @@ test('已就绪的源改路径时 replace 被拒：文件、内存不变，宿�
   assert.equal(readFileSync(file, 'utf8'), before); assert.equal(provider.sources.get('source').spec.path, dir);
   assert.deepEqual(get(h, id).spec, { name: 'source', path: dir });
   assert.equal(get(h, id).status.ready, true); assert.equal(get(h, id).status.url, status.url);
-  assert.equal((await provider.lookup(id)).path, (await repository(dir, env)).path);
+  assert.equal((await provider.lookup(id)).path, (await repository(dir)).path);
 });
 
 test('start 完就能取上次留下的源：首次核对都做完才开服务', async t => {

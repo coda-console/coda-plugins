@@ -1,8 +1,9 @@
+#!/usr/bin/env node
 // The plugin's setup (`contributes.setup`), which Coda runs on each machine when the user installs or updates the plugin: it
-// ends well once the machine can run the agent; the「Kimi」resource type's install runs it too. Without a Kimi CLI that runs, or
+// ends well once the machine can run the agent; the `install` operation of `coda/resource@1` (the「Kimi」type's) runs it too. Without a Kimi CLI that runs, or
 // with one older than MINIMUM (the file layout the relay reads, agent/observe.mjs), Kimi's own installer (install.sh) puts that
 // version (KIMI_VERSION) in ~/.kimi-code/bin, where the agent looks first; a newer one is kept. Why the machine is not ready
-// is said in one line on standard error.
+// is said in one line on standard error; the result, when it is, is `{}`.
 import { spawnSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -40,5 +41,6 @@ if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToP
   }
   const after = needed(kimiBinary());
   if (after.action !== 'none') { console.error(after.reason); process.exit(1); }
-  console.log(`Kimi CLI ${after.version}`);
+  console.error(`Kimi CLI ${after.version}`);
+  console.log('{}');
 }

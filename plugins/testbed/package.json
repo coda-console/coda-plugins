@@ -4,7 +4,10 @@
   "displayName": "测试机",
   "description": "排队使用 iPhone、iPad 与安卓测试机",
   "icon": { "symbol": "iphone", "color": "gray" },
-  "version": "3.0.1",
+  "version": "3.1.0",
+  "engines": {
+    "coda": 6
+  },
   "coda": {
     "channels": [
       "preview"
@@ -17,13 +20,6 @@
     "host"
   ],
   "contributes": {
-    "resources": [
-      {
-        "id": "devices",
-        "title": "测试机",
-        "command": "node \"$CODA_PLUGIN_PATH/scripts/resources.mjs\""
-      }
-    ],
     "capabilities": [
       "use-testbed",
       "run-on-device",
@@ -54,7 +50,14 @@
       "skills/testbed"
     ],
     "protocolImplementations": [
-      "coda/group@1"
+      "coda/group@1",
+      "coda/resource@1"
+    ],
+    "records": [
+      {
+        "kind": "coda/resource@1",
+        "command": "scripts/resource.mjs"
+      }
     ]
   },
   "license": "MIT",

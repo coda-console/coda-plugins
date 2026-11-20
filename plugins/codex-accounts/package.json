@@ -4,7 +4,10 @@
   "displayName": "Codex 多账号",
   "description": "管理多个 Codex 账号与额度",
   "icon": { "symbol": "person.2.fill", "color": "teal" },
-  "version": "2.3.1",
+  "version": "2.4.1",
+  "engines": {
+    "coda": 6
+  },
   "categories": ["模型与账号"],
   "extensionDependencies": [
     "codex"
@@ -15,29 +18,19 @@
         "command": "exec node \"$CODA_PLUGIN_PATH/scripts/source.mjs\""
       }
     },
-    "resources": [
+    "protocolImplementations": [
       {
-        "id": "accounts",
-        "title": "Codex",
-        "command": "node \"$CODA_PLUGIN_PATH/scripts/resources.mjs\"",
-        "maxAge": "PT5M",
-        "actions": {
-          "select": {
-            "command": "node \"$CODA_PLUGIN_PATH/scripts/select.mjs\""
-          },
-          "reset": {
-            "command": "node \"$CODA_PLUGIN_PATH/scripts/reset.mjs\"",
-            "confirm": "使用一次完全重置？\n用最早到期的那一次。成功后消耗 1 次，无法撤销。"
-          },
-          "remove": {
-            "command": "node \"$CODA_PLUGIN_PATH/scripts/remove.mjs\"",
-            "confirm": "移除此账号在插件中保存的登录？之后需要重新登录才能再次使用。"
-          }
-        },
-        "signIn": {
-          "command": "NO_COLOR=1 exec node \"$CODA_PLUGIN_PATH/scripts/login.mjs\"",
-          "note": "登录其他账号即可添加；登录已有账号会更新其凭据。首个账号会自动选用，之后在账号那一行的「···」里切换。"
+        "kind": "coda/resource@1",
+        "commands": {
+          "act": "scripts/act.mjs",
+          "sign-in": "scripts/sign-in.mjs"
         }
+      }
+    ],
+    "records": [
+      {
+        "kind": "coda/resource@1",
+        "command": "scripts/resource.mjs"
       }
     ]
   },

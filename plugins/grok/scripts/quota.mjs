@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 // What the「Grok」resource type shows (docs/plugins.md「内置插件：Grok」): who is signed in and the plan's coding credits, as the
 // CLI itself answers them (`_x.ai/auth/check_subscription`, `_x.ai/auth/info`, `_x.ai/billing`: what its `/usage` reads).
-const line = (value, max = 80) => typeof value === 'string' ? [...value.replace(/\s+/g, ' ').trim()].slice(0, max).join('') : '';
+export const line = (value, max = 80) => typeof value === 'string' ? [...value.replace(/\s+/g, ' ').trim()].slice(0, max).join('') : '';
 const instant = value => typeof value === 'string' && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null;
 
 // The name they gave xAI and their plan, never their email or tokens. Null when the CLI says no one is signed in: the
@@ -36,11 +36,12 @@ export function windows(document) {
   }
   return meters;
 }
-// The resources from what the CLI answered: the login, its name and its credits; none when no one is signed in.
+// The resources from what the CLI answered: the login, its name and its credits; a row saying so when the CLI says the login
+// is no good. Throws for an answer that cannot be understood or gives no credits.
 export function resources([subscription, info, billing]) {
   const who = account(subscription, info);
-  if (!who) return { resources: [] };
+  if (!who) return { resources: [{ name: 'Grok', values: [], buttons: [], error: '登录已失效，请重新登录' }] };
   const values = windows(billing);
-  return { resources: [{ name: who.name || 'Grok', ...(who.id ? { identity: `grok:${who.id}` } : {}), values,
-    ...(values.length ? {} : { error: '暂时无法获取额度：Grok 没有给出额度' }) }] };
+  if (!values.length) throw new Error('暂时无法获取额度：Grok 没有给出额度');
+  return { resources: [{ name: who.name || 'Grok', ...(who.id ? { identity: `grok:${who.id}` } : {}), values, buttons: [] }] };
 }

@@ -113,13 +113,13 @@ ACP 2.6.0 只使用默认 stable v1。逐项经过真实连接的解析测试：
   两处都有时取前者。已用比例是 0 到 1 的小数，超过 1 按剩余 0；重置时间是 Unix 秒。每个窗口只留最近一次，多个会话报告同一窗口时以后到的为准。
 - **显示**：没有会话报告过（没跑过 Claude 会话，或是 API key、Bedrock、Vertex 的会话，没有这些窗口）时输出为空，「Claude」出现在「添加资源」里。
   报告过就一个资源（不写名字：文件里只有账号的哈希），每个窗口一个读数（5 小时、7 天、Opus · 7 天、Sonnet · 7 天、Fable · 7 天，按这个顺序），条画剩余，时刻是重置时间。
-  过了重置时间的窗口不再显示（重置后用了多少这里看不到，既不当作用满也不当作清空）；全部过期时那一行写「额度记录已过期，会话再运行后更新」。每次打开都读文件。
+  过了重置时间的窗口不再显示（重置后用了多少这里看不到，既不当作用满也不当作清空）；全部过期时那一行写「额度记录已过期，会话再运行后更新」。记录命令 `scripts/resource.mjs` 每次运行都读文件。
 - **身份**：会话启动时 SDK 报出账号邮箱的，资源带身份 `claude:<邮箱的哈希>`（Coda 的资源页据此合并同一账号；文件里只存哈希）。
   它跟着最近启动的会话换账号：换了账号旧窗口作废，别的账号的旧会话再报来的额度不写入；拿不到邮箱的会话（如 setup token、API key）不带身份。
-- **登录**：`signIn` 运行 `scripts/login.mjs`，它启动插件依赖的 Claude SDK 自带的 `claude auth login --claudeai`（与会话用的是同一个，不用 `PATH` 上另一份 Claude），
+- **登录**：记录里的 `signIn` 对应操作 `sign-in`，由 `scripts/sign-in.mjs` 实现，它启动插件依赖的 Claude SDK 自带的 `claude auth login --claudeai`（与会话用的是同一个，不用 `PATH` 上另一份 Claude），
   运行机不打开浏览器（`BROWSER=/usr/bin/true`），也不导入环境里的 refresh token，而是发起新的网页登录。
-  只把 CLI 输出里官方的授权链接（`claude.ai/oauth/authorize` 或 `claude.com/cai/oauth/authorize`，带 `state` 与 `code_challenge`）交给 Coda，其余输出不传出（可能带着授权码）。
-  用户贴回的授权码须是 `<码>#<state>` 且 `state` 与这次的链接相符，才交给 CLI；不符就结束登录，写「授权码不对」。CLI 没登成时写固定的「Claude 登录没有完成，请重新登录。」，不回显它的输出。
+  只把 CLI 输出里官方的授权链接（`claude.ai/oauth/authorize` 或 `claude.com/cai/oauth/authorize`，带 `state` 与 `code_challenge`）用 `coda progress` 报给 Coda，其余输出不传出（可能带着授权码）；报完才算登录结束，报失败登录就失败；20 秒内没有链接、或 CLI 在拿到授权码之前就退出（也不再去问授权码），原因取 CLI 说的最后一行（授权码交给 CLI 之后它的输出不传出）。
+  随后 `coda ask` 要授权码（`{ input: authorizationCode }`），用户贴回的授权码须是 `<码>#<state>` 且 `state` 与这次的链接相符，才交给 CLI；不符就结束登录，写「授权码不对」。CLI 没登成时写固定的「Claude 登录没有完成，请重新登录。」，不回显它的输出。
   PKCE、令牌交换、凭据保存和续期都由 Claude CLI 负责，沿用服务账号的 `CLAUDE_CONFIG_DIR`。配置了 token 文件、OAuth token、API key 或云服务商时它们仍然优先，添加窗口里写明。
   SDK 0.3.296 的登录输出与原生二进制包布局是这里的版本边界，升级时复核。
 

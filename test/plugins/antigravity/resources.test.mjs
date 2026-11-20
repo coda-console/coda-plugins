@@ -1,19 +1,20 @@
 // The antigravity plugin's「Antigravity」resource: whether a login is there (the keychain entry, asked without its secret) and
-// the quota of each model group from the CLI's own usage report, and the CLI's version (scripts/agy.mjs, quota.mjs, resources.mjs); its login as Coda drives the panel's `signIn` command (Coda's
-// check/coda/resources/plugins/resources/panels/sign-in.mjs reads the link and passes the code on).
+// the quota of each model group from the CLI's own usage report, and the CLI's version (scripts/agy.mjs, quota.mjs, the record command
+// resource.mjs). Its sign-in: sign-in.test.mjs.
 import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, realpath, rm, writeFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { readResources } from '../../../check/panel.mjs';
-import { authorizationLink } from '../../../check/coda/resources/plugins/resources/panels/sign-in.mjs';
+import { resourceRecords } from '../../../check/resources.mjs';
 import { reading, signedIn, usageReport } from '../../../plugins/antigravity/scripts/agy.mjs';
 import { windows } from '../../../plugins/antigravity/scripts/quota.mjs';
-import { declaredPanel, installed, pluginEnv, run, signIn } from '../command.mjs';
+import { pluginEnv } from '../command.mjs';
+import { pluginDir } from '../plugin.mjs';
 
-const declared = declaredPanel('antigravity');
+// The record of the type, as the host takes it.
+const record = async env => (await resourceRecords(pluginDir('antigravity'), { env }))[0];
 const keychain = process.platform === 'darwin' ? 'security' : 'secret-tool';
 
 test('a login is the keychain entry being there; a keychain that cannot be asked is not a sign-out', () => {
@@ -61,26 +62,25 @@ exit ${usageExit}
 
 test('the type shows nothing without a login, and the quota of each model group and the CLI\'s version with one', async t => {
   const out = await machine(t, { login: false });
-  const none = await run(declared.command, out.env);
-  assert.equal(none.code, 0, none.stderr);
-  assert.deepEqual(JSON.parse(none.stdout), { resources: [] });
-  assert.deepEqual(readResources(none.stdout, declared), []);
+  const none = await record(out.env);
+  assert.deepEqual([none.key, none.spec.type, none.spec.title, none.spec.resources], ['account', 'account', 'Antigravity', []]);
 
   const m = await machine(t);
-  const result = await run(declared.command, m.env);
-  assert.equal(result.code, 0, result.stderr);
-  assert.deepEqual(readResources(result.stdout, declared), [{ name: 'Antigravity', actions: [], values: [
+  const result = await record(m.env);
+  assert.deepEqual(result.spec.resources, [{ name: 'Antigravity', buttons: [], values: [
     { label: 'Gemini 每周', value: '剩余 98%', fraction: 0.98, time: '2026-11-23T06:16:54.000Z' },
     { label: 'Gemini 5 小时', value: '剩余 97%', fraction: 0.97, time: '2026-11-16T11:16:54.000Z' },
     { label: 'Claude and GPT 每周', value: '剩余 100%', fraction: 1, time: '2026-11-23T08:37:53.000Z' },
     { label: 'Claude and GPT 5 小时', value: '剩余 100%', fraction: 1, time: '2026-11-16T13:37:53.000Z' },
     { label: 'CLI 版本', value: '1.5.9' }] }]);
+  // The sign-in asks for the code, and the CLI is there to sign in with.
+  assert.deepEqual(result.spec.signIn, { installed: true, installable: true, input: 'authorizationCode', note: result.spec.signIn.note });
   // The report is asked for as the CLI's own read-only one, from the temporary directory, with its update off for that run.
   const [args, update, cwd] = (await readFile(join(m.home, 'usage-args'), 'utf8')).trim().split('|');
   assert.equal(args, '-p /usage --output-format json');
   assert.equal(update, 'true');
   assert.equal(cwd, await realpath(tmpdir()));
-  assert.equal(JSON.stringify(JSON.parse(result.stdout)).includes('@'), false, 'no account is invented');
+  assert.equal(JSON.stringify(result).includes('@'), false, 'no account is invented');
 });
 
 test('the report gives one value for each bucket that says what is left, as the CLI\'s groups and windows name them', () => {
@@ -114,34 +114,28 @@ test('the usage report is the CLI\'s successful one, and anything else is why th
   assert.equal(given, 1234);
 });
 
-test('a quota that cannot be had is said, with the CLI\'s version still shown', async t => {
+test('a quota that cannot be had fails the command with the reason, also after a reading that went well: the record Coda has stays', async t => {
   for (const [what, options] of [
     ['an exit that failed', { usageExit: 1 }],
     ['a report that is not a success', { usage: JSON.stringify({ ...report, status: 'ERROR' }) }],
     ['a report with no bucket', { usage: JSON.stringify({ ...report, command: { name: 'usage', data: { groups: [] } } }) }],
     ['output that is not a report', { usage: 'hello' }]]) {
-    const result = await run(declared.command, (await machine(t, options)).env);
-    assert.equal(result.code, 0, `${what}: ${result.stderr}`);
-    const [resource] = readResources(result.stdout, declared);
-    assert.match(resource.error, /^暂时无法获取额度：/, what);
-    assert.deepEqual(resource.values, [{ label: 'CLI 版本', value: '1.5.9' }], what);
+    const m = await machine(t);
+    assert.equal((await record(m.env)).spec.resources[0].values.length, 5);
+    await writeFile(join(m.home, 'usage.json'), options.usage ?? JSON.stringify(report));
+    if (options.usageExit) await writeFile(join(m.home, '.local/bin/agy'), `#!/bin/sh\nif [ "$1" = --version ]; then echo 1.5.9; exit 0; fi\nexit ${options.usageExit}\n`, { mode: 0o755 });
+    await assert.rejects(record(m.env), { message: /^暂时无法获取额度：/ }, what);
   }
 });
 
-test('a long reason is cut to a line the reading takes, and the version is still shown', async t => {
+test('the reason of a CLI that fails is its own first line, whole', async t => {
   const m = await machine(t, { usageExit: 1 });
   await writeFile(join(m.home, '.local/bin/agy'), `#!/bin/sh
 if [ "$1" = --version ]; then echo 1.5.9; exit 0; fi
 echo "Error: failed to start the language server: could not find a usable network interface for the session" >&2
 exit 1
 `, { mode: 0o755 });
-  const result = await run(declared.command, m.env);
-  assert.equal(result.code, 0, result.stderr);
-  const [resource] = readResources(result.stdout, declared);
-  assert.equal([...resource.error].length, 80);
-  // The reason is cut, not the words before it, and the CLI's own words are the reason, not its exit code.
-  assert.match(resource.error, /^暂时无法获取额度：Error: failed to start the language server: could not find a usable net$/);
-  assert.deepEqual(resource.values, [{ label: 'CLI 版本', value: '1.5.9' }]);
+  await assert.rejects(record(m.env), { message: '暂时无法获取额度：Error: failed to start the language server: could not find a usable network interface for the session' });
 });
 
 // The reading has 25 seconds of the 30 Coda gives: the version and the quota are asked what is left of them less a second to
@@ -179,64 +173,41 @@ test('a report of more groups than a reading lists values is cut to 7, the versi
   assert.equal(windows({ command: { data: { groups } } }).length, 8);
   assert.ok(windows({ command: { data: { groups } } }).every(v => [...v.label].length <= 80));
   const m = await machine(t, { usage: JSON.stringify({ ...report, command: { name: 'usage', data: { groups } } }) });
-  const result = await run(declared.command, m.env);
-  assert.equal(result.code, 0, result.stderr);
-  const [resource] = readResources(result.stdout, declared);
+  const [resource] = (await record(m.env)).spec.resources;
   assert.equal(resource.values.length, 8);
   assert.deepEqual(resource.values.slice(0, 7).map(v => v.label.slice(0, 1)), ['A', 'A', 'B', 'B', 'C', 'C', 'D']);
   assert.deepEqual(resource.values[7], { label: 'CLI 版本', value: '1.5.9' });
   assert.equal(resource.error, undefined);
 });
 
-test('a login with a CLI that is old or gone is shown with what to do, and a CLI that cannot say its version fails the reading', async t => {
-  const old = await run(declared.command, (await machine(t, { version: '1.5.8' })).env);
-  assert.equal(old.code, 0, old.stderr);
-  assert.match(readResources(old.stdout, declared)[0].error, /低于所需的 1\.5\.9/);
-  assert.deepEqual(readResources(old.stdout, declared)[0].values.map(v => v.label), ['CLI 版本'], 'no quota is asked of a CLI too old');
-  const gone = await run(declared.command, (await machine(t, { version: '' })).env);
-  assert.equal(gone.code, 0, gone.stderr);
-  assert.match(readResources(gone.stdout, declared)[0].error, /找不到 Antigravity CLI/);
-  const mute = await run(declared.command, (await machine(t, { version: 'oops' })).env);
-  assert.equal(mute.code, 1);
-  assert.match(mute.stderr, /读不出 Antigravity CLI 的版本/);
+test('a login with a CLI that is old or gone is shown with what to do, and the sign-in is still in the record, offering the install', async t => {
+  const old = await record((await machine(t, { version: '1.5.8' })).env);
+  assert.match(old.spec.resources[0].error, /低于所需的 1\.5\.9/);
+  assert.deepEqual(old.spec.resources[0].values.map(v => v.label), ['CLI 版本'], 'no quota is asked of a CLI too old');
+  assert.deepEqual([old.spec.signIn.installed, old.spec.signIn.installable], [false, true]);
+  const gone = await record((await machine(t, { version: '' })).env);
+  assert.deepEqual(gone.spec.resources, [{ name: 'Antigravity', values: [], buttons: [], error: '这台机器上找不到 Antigravity CLI，请在运行机重新安装' }]);
+  assert.equal(gone.spec.signIn.installed, false);
 });
 
-// What `agy acp --login` prints with no terminal, with made-up state and challenge.
-const prompt = `Open this link in a browser to log in with Google:
-
-  https://accounts.google.com/o/oauth2/auth?access_type=offline&client_id=1.apps.googleusercontent.com&code_challenge=FAKE-challenge&code_challenge_method=S256&redirect_uri=https%3A%2F%2Fexample.com%2Fcallback&response_type=code&scope=openid+email&state=FAKE-state
-
-Then paste the authorization code, or the full URL of the page you land on, and press Enter:
-`;
-
-test('the login link is read as Coda reads it, asks for the code, and the code reaches the CLI', async t => {
-  assert.deepEqual(declared.signIn.input, 'authorizationCode');
-  const link = authorizationLink(prompt);
-  assert.equal(link.input, 'authorizationCode');
-  assert.equal(new URL(link.url).origin + new URL(link.url).pathname, 'https://accounts.google.com/o/oauth2/auth');
-  assert.equal(new URL(link.url).searchParams.get('state'), 'FAKE-state');
-  assert.equal(authorizationLink(prompt.slice(0, 60)), null, 'a line cut short is not read');
-
+test('a CLI that cannot say its version fails the command with the reason, also after a reading that went well', async t => {
   const m = await machine(t);
-  await writeFile(join(m.home, '.local/bin/agy'), `#!/bin/sh
-echo "$@|$BROWSER|$NO_COLOR" > "${m.home}/args"
-cat <<'EOT'
-${prompt}EOT
-read code
-echo "$code" > "${m.home}/code"
-echo "Logged in as me@example.com."
-`, { mode: 0o755 });
-  const login = signIn(t, declared.signIn.command, m.env);
-  await login.printed(/press Enter:/);
-  assert.deepEqual(authorizationLink(login.output), link);
-  login.write('4/0AFAKE-code\n');
-  assert.equal(await login.ended, 0);
-  assert.equal((await readFile(join(m.home, 'args'), 'utf8')).trim(), 'acp --login|/usr/bin/true|1');
-  assert.equal((await readFile(join(m.home, 'code'), 'utf8')).trim(), '4/0AFAKE-code');
+  assert.equal((await record(m.env)).spec.resources[0].values.at(-1).value, '1.5.9');
+  await writeFile(join(m.home, '.local/bin/agy'), '#!/bin/sh\necho oops\n', { mode: 0o755 });
+  await assert.rejects(record(m.env), { message: /^读不出 Antigravity CLI 的版本（.*\.local\/bin\/agy）$/ });
 });
 
-test('the login counts as installed only with a CLI new enough, and its install is the setup', async t => {
+test('the sign-in counts the CLI as installed only when it is new enough', async t => {
   for (const [version, expected] of [['1.5.9', true], ['1.6.0', true], ['1.5.8', false], ['', false]])
-    assert.equal(installed(declared.signIn.installed, (await machine(t, { version })).env), expected, version);
-  assert.equal(declared.signIn.install, 'exec "$CODA_NODE" "$CODA_PLUGIN_PATH/scripts/setup.mjs"');
+    assert.equal((await record((await machine(t, { version })).env)).spec.signIn.installed, expected, version);
+  // Also without a login, where the quota is not read: the CLI is asked its version alone.
+  for (const [version, expected] of [['1.5.9', true], ['1.5.8', false], ['', false]])
+    assert.equal((await record((await machine(t, { version, login: false })).env)).spec.signIn.installed, expected, `${version} without a login`);
+});
+
+test('a keychain that cannot be asked fails the command with the reason, also after a reading that went well: it is not a sign-out', async t => {
+  const m = await machine(t);
+  assert.equal((await record(m.env)).spec.resources[0].values.length, 5);
+  await writeFile(join(m.home, 'keychain', keychain), `#!/bin/sh\necho 'boom: no keychain' >&2\nexit ${process.platform === 'darwin' ? 36 : 2}\n`, { mode: 0o755 });
+  await assert.rejects(record(m.env), { message: /^读不了 ?(钥匙串|Secret Service)：/ });
 });
