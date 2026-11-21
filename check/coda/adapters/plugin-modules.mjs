@@ -263,18 +263,6 @@ export function pluginModules({ send }) {
       }),
       // Something for a session's agent to know, told with its next turn (docs/session-contracts.md「顺带告诉」).
       tell: (session, text) => asks('tell', { session, text }),
-      // This machine's Coda, as its clients reach it: GET without a body, POST with one.
-      async api(path, body) {
-        if (!api) throw new Error('Coda 还在启动，稍后再试');
-        const response = await fetch(`${api.url}/v1/${String(path).replace(/^\/+/, '')}`, {
-          method: body === undefined ? 'GET' : 'POST',
-          headers: { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
-          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-        });
-        const value = await response.json().catch(() => null);
-        if (!response.ok) throw new Error(value?.error?.message ?? `Coda 回答 ${response.status}`);
-        return value;
-      },
       // This plugin's own settings (docs/plugins.md「设置」): as they are now, asked of the backend each time, and told to
       // `onChange` as they are written, while the module runs. Secrets are not among them.
       settings: Object.freeze({

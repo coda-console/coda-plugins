@@ -287,8 +287,6 @@ export interface Coda {
   }>;
   /** Trial. Tells a session's agent something, told with its next turn and waking nothing; `told` is `false` for a session archived. */
   tell(session: string, text: string): Promise<{ told: boolean }>;
-  /** Trial. This machine's Coda API as its clients reach it (the path after `/v1/`): GET without a body, POST with one; the answer is JSON. */
-  api(path: string, body?: Json): Promise<Json>;
   /** Trial. Runs an installed plugin's environment setup again, asked as this plugin; the test host's fails (`unsupported`). */
   pluginSetup: Readonly<{ retry(plugin: string): Promise<Json> }>;
 }

@@ -7,13 +7,14 @@ import { derivedUUID } from '../../domain/values.mjs';
 
 // Where a kind's records are, said once for every kind (Protocols `register` reads it). The kinds only this machine keeps:
 // Coda's composers and what is submitted through them, the runs of its posts to sessions, and the kinds it serves whole
-// from its own tables: `coda/thread@1`, `coda/project@1`, `coda/card@1`, `coda/plugin@1`, `coda/usage@1`, `coda/accord@1` (this machine's friends and its key, each machine its own) and the workflows' `coda/workflow@1`
+// from its own tables: `coda/thread@1`, `coda/project@1`, `coda/card@1`, `coda/plugin@1`, `coda/usage@1`, `coda/accord@1` (this machine's friends and its key, each machine its own), `coda/machine@1` (the other
+// machines' projected from their entries in the record directory: mirror.mjs `projection`) and the workflows' `coda/workflow@1`
 // and `coda/workflow-run@1` (one of another backend is found by asking the space: mirror.mjs `place`). `coda/session@1` is shared (Coda's sessions are served beside
 // it, a plugin's external sessions are written in the record directory). They are never in the record directory, and no
 // plugin writes one. Every other kind, every one a plugin defines among them, is shared: its records are this machine's rows of
 // the record directory, which the other backends of a space copy.
 export const LOCAL_KINDS = new Set(['coda/composer@1', 'coda/submission@1', 'coda/run@1', 'coda/thread@1', 'coda/project@1', 'coda/card@1',
-  'coda/plugin@1', 'coda/usage@1', 'coda/accord@1', 'coda/workflow@1', 'coda/workflow-run@1']);
+  'coda/plugin@1', 'coda/usage@1', 'coda/accord@1', 'coda/machine@1', 'coda/workflow@1', 'coda/workflow-run@1']);
 export const mirrorPlural = kind => protocolShortName(kind);
 // A kind's records in the record directory are of its plural: the one its definition names, which only Coda's own
 // definitions do (the core protocols'; a plugin's definition's `plural` is dropped as it is

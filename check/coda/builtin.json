@@ -1576,7 +1576,7 @@
     "id": "resources",
     "displayName": "资源",
     "description": "各台电脑的账号、额度与负载",
-    "version": "3.0.0",
+    "version": "3.0.1",
     "category": "机器与资源",
     "icon": {
       "symbol": "gauge.with.dots.needle.67percent",
@@ -1596,6 +1596,9 @@
       "coda/resource@1": [
         "read",
         "act"
+      ],
+      "coda/machine@1": [
+        "read"
       ]
     },
     "main": "main.mjs",
