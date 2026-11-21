@@ -909,9 +909,10 @@ describe('the module level', () => {
   });
   test('the test host still answers what it lacks as the checker recognizes it', async () => {
     const asked = { watch: c => c.watch('other/x@1', () => {}), 'services.register': c => c.services.register('s', () => {}), tell: c => c.tell('s', 't'),
-      api: c => c.api('/x'), 'protocols.resolve': c => c.protocols.resolve({ kind: 'a@1', id: 'b' }, 's'),
+      'protocols.resolve': c => c.protocols.resolve({ kind: 'a@1', id: 'b' }, 's'),
       'protocols.upload': c => c.protocols.upload('u'), 'pluginSetup.retry': c => c.pluginSetup.retry('x') };
-    assert.deepEqual(Object.keys(asked).sort(), Object.keys(NOT_PROVIDED).sort());
+    // `api` is no longer a member of `coda` (API Level 9 removed it), so there is nothing to ask for it; NOT_PROVIDED still lists it.
+    assert.deepEqual(Object.keys(asked).sort(), Object.keys(NOT_PROVIDED).filter(member => member !== 'api').sort());
     const host = createTestHost({ plugin: { id: 'x', path: tmpdir(), state: null } });
     try {
       for (const [member, ask] of Object.entries(asked)) {
