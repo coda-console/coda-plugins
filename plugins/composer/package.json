@@ -4,7 +4,7 @@
   "displayName": "输入框模式",
   "description": "交接、子会话、! 命令、Ultra 与循环",
   "icon": { "symbol": "character.cursor.ibeam", "color": "blue" },
-  "version": "12.2.1",
+  "version": "12.2.2",
   "categories": [
     "工作流程"
   ],
@@ -72,7 +72,7 @@
         }
       }
     },
-    "instructions": "要把改动合进默认分支时，一个需求用 workflow_run 带 confirm: true 把开发流程（develop 或 simple）填好交用户确认，需求写在 message，develop 另给 title；用户开工后第一张任务随需求消息交给你，不要先改完再补开。需求是用户想一起验收、一起上线的一件事，只有必须先上线才能往下做时才拆成几个；小修走简易开发；每一块在「需求进行中」派。",
+    "instructions": "要把改动合进默认分支时，一个需求用 workflow_run 带 confirm: true 把开发流程（develop 或 simple）填好交用户确认，需求写在 message，develop 另给 title；开工后需求原文随「已开工」通知在下次叫醒时送到，别先改完再补开。需求是用户想一起验收、一起上线的一件事，只有必须先上线才能往下做时才拆成几个；小修走简易开发；每一块在「需求进行中」派。",
     "composerModes": [
       {
         "id": "handoff",
