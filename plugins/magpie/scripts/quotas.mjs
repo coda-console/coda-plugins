@@ -2,8 +2,9 @@
 // The `coda/resource@1` record of the「Magpie」type, printed once: what is left of each subscription, plan and balance Magpie
 // serves, as its gateway says (GET /v1/magpie/quotas), a resource each — every one Magpie has, those other types show too. A window is a value of what
 // is left and when it starts again, as the other plugins say it (`剩余 N%`, `7 天`); a balance and the resets left are a
-// value each. A subscription the gateway could not read, a gateway that does not answer, or one that cannot say, fails the command
-// (exit 1, the reason on the last line of its standard error), which keeps the record Coda has: Magpie has no login to offer.
+// value each; a subscription the gateway could not read says why on its row, the others as they are. A gateway that does not
+// answer, or one that cannot say, fails the command (exit 1, the reason on the last line of its standard error), which keeps
+// the record Coda has: Magpie has no login to offer.
 import { GATEWAY } from './setup.mjs';
 
 const line = text => String(text).slice(0, 80);
@@ -22,14 +23,13 @@ function value(window) {
 }
 
 // A quota: its service and whose it is (the alias given it, else the user), its windows, balance and resets, as many as a
-// resource has values. Throws, naming it, when the gateway could not read it.
+// resource has values, and what went wrong reading it (that one row only: the others are as they are).
 function resource(quota) {
   const values = [...(quota.windows ?? []).map(value),
     ...(quota.balance ? [{ label: '余额', value: line(quota.balance) }] : []),
     ...(quota.resets?.count ? [{ label: '可用重置', value: `${quota.resets.count} 次` }] : [])].slice(0, 8);
   const name = line([quota.name || quota.provider, quota.alias || quota.user].filter(Boolean).join(' · ')) || 'Magpie';
-  if (quota.error) throw new Error(`${name} 读不出额度：${quota.error}`);
-  return { name, values, buttons: [] };
+  return { name, values, buttons: [], ...(quota.error ? { error: line(quota.error).replace(/[\r\n]+/g, ' ') } : {}) };
 }
 
 // The whole reading (the request and its body) has 20 of the 30 seconds Coda allows, so that it ends with the reason rather

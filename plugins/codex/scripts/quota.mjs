@@ -124,23 +124,26 @@ export function managedResource(account, chosen, { result, error }) {
 
 // The managed accounts' resources, each read by `read` (at most `at` at once). Empty on a new machine: Coda offers the type's
 // signIn under「添加资源」. Existing accounts can be added to or signed in again from a row's「重新登录」. A selection of an account
-// not signed in here is a row of its own, saying so.
+// not signed in here is a row of its own, saying so. An account whose quota cannot be read for any other reason says so on its
+// row while another account's was read; when none was, the source is what is wrong, and the first of them throws.
 export async function managedResources(accounts, chosen, read, { at = 4 } = {}) {
   if (!accounts.length && chosen === null) return { resources: [] };
-  const shown = accounts.slice(0, ACCOUNTS), readings = new Array(shown.length);
-  let next = 0, failed;
+  const shown = accounts.slice(0, ACCOUNTS), readings = new Array(shown.length), unread = new Map();
+  let next = 0, ok = 0;
   await Promise.all(Array.from({ length: Math.min(at, shown.length) }, async () => {
     for (let i; (i = next++) < shown.length;) {
       const account = shown[i];
-      try { readings[i] = managedResource(account, chosen === account.identity, { result: await read(account) }); }
+      try { readings[i] = managedResource(account, chosen === account.identity, { result: await read(account) }); ok++; }
       catch (error) {
-        if (!needsSignIn(error)) { failed ??= error; continue; }
+        if (!needsSignIn(error)) { unread.set(i, error); continue; }
         readings[i] = managedResource(account, chosen === account.identity, { error: error instanceof SignInAgain ? error.message : `登录已失效，请重新登录：${error.message}` });
       }
     }
   }));
   // Every reading is ended first, so that none is left holding an account's lock.
-  if (failed) throw failed;
+  if (unread.size && !ok) throw unread.values().next().value;
+  const WHY = '暂时无法获取额度：';
+  for (const [i, { message }] of unread) readings[i] = managedResource(shown[i], chosen === shown[i].identity, { error: message.startsWith(WHY) ? message : WHY + message });
   const out = chosen && !accounts.some(a => a.identity === chosen) ? [{ name: '所选账号', values: [], buttons: [], error: '尚未在插件中登录：重新登录它，或切换到其他账号' }] : [];
   // The selected account when it is not signed in here comes first, as a row of its own; the record stays within 64 KiB, and
   // rows past it are left out.

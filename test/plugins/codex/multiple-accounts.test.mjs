@@ -196,14 +196,25 @@ test('the resources are only the managed accounts, with a selection and removal 
   assert.deepEqual(rows.map(r => r.buttons.map(a => a.label)), [['使用完全重置', '移除账号'], ['切换使用', '移除账号']]);
   assert.deepEqual(rows[0].buttons[0].args, { account: 'w', creditId: 'c1' });
   assert.equal(rows[1].error, '请重新登录');
-  // Codex saying the login is no good is told so; any other failure of a reading fails them all, once every reading is ended.
+  // Codex saying the login is no good is told so; any other failure of a reading is on its account's row while another was read,
+  // and fails the command when none was, once every reading is ended.
   const refused = await resources(accounts, 'w', async a => { throw new Error('401 Unauthorized'); });
   assert.deepEqual(refused.resources.map(r => r.error), ['登录已失效，请重新登录：401 Unauthorized', '登录已失效，请重新登录：401 Unauthorized']);
+  const good = { rateLimits: { primary: { usedPercent: 10, windowDurationMins: 300 } } };
   const ended = [];
   await assert.rejects(resources(accounts, 'w', async a => { if (a.identity === 'w') throw new Error('503 Service Unavailable'); await delay(20); ended.push(a.identity); return {}; }, { at: 2 }), { message: '503 Service Unavailable' });
   assert.deepEqual(ended, ['h'], 'the other reading was ended');
-  // A quota with nothing in it fails the reading, not a row that would replace the one shown; the resets alone are kept.
+  // One account's quota that cannot be read is its row's, while another's was: the others are as they are.
+  const partly = await resources(accounts, 'h', async a => { if (a.identity === 'w') throw new Error('503 Service Unavailable'); return good; });
+  assert.equal(problem(partly), null);
+  assert.deepEqual(partly.resources.map(r => [r.name, r.error]), [['work', '暂时无法获取额度：503 Service Unavailable'], ['home', undefined]]);
+  assert.deepEqual(partly.resources[0].buttons.map(b => b.label), ['切换使用', '移除账号']);
+  assert.deepEqual(partly.resources[1].values, [{ label: '状态', value: '正在使用' }, { label: '5 小时', value: '剩余 90%', fraction: 0.9 }]);
+  // A quota with nothing in it is the same; when none has anything the reading fails, not rows that would replace the ones shown.
+  const empty = await resources(accounts, null, async a => a.identity === 'w' ? {} : good);
+  assert.deepEqual(empty.resources.map(r => r.error), ['暂时无法获取额度：Codex 没有给出work的额度窗口', undefined]);
   await assert.rejects(resources(accounts, 'w', async () => ({})), { message: '暂时无法获取额度：Codex 没有给出work的额度窗口' });
+  // The resets alone are kept.
   const resetsOnly = await resources(accounts, null, async () => ({ rateLimitResetCredits: { availableCount: 0, credits: [] } }));
   assert.deepEqual(resetsOnly.resources.map(r => [r.values, r.error]), [[[{ label: '完全重置', value: '剩余 0 次' }], undefined], [[{ label: '完全重置', value: '剩余 0 次' }], undefined]]);
   const many = Array.from({ length: 60 }, (_, i) => ({ alias: `account-${i}`, identity: `i${i}`, plan: 'pro' }));

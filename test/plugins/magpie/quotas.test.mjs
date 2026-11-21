@@ -95,10 +95,12 @@ test('a gateway that does not answer, cannot say, answers what is not understood
   await fails({ hang: true }, '读取超时');
 });
 
-test('a subscription the gateway could not read fails the command, naming it and saying why, though the gateway answered 200 and the others are fine', async t => {
-  const failed = { ...quotas[2], error: 'the usage endpoint answered 502' };
-  await assert.rejects(record(t, { body: { data: [quotas[0], failed, quotas[1]] } }), { message: 'Kimi 读不出额度：the usage endpoint answered 502' });
-  await assert.rejects(record(t, [{ body: { data: quotas } }, { body: { data: [{ ...quotas[0], error: 'timed out' }] } }], 2), { message: 'Codex · a@example.com 读不出额度：timed out' });
+test('a subscription the gateway could not read is its row\'s error, one line, and the others are as they are: the command still ends 0', async t => {
+  const failed = { ...quotas[2], error: 'the usage endpoint\nanswered 502' }, other = { provider: 'opencode-zen', name: 'OpenCode Zen', kind: 'plan', error: 'balance is not offered' };
+  const [first, second, third, fourth] = await record(t, { body: { data: [quotas[0], other, quotas[1], failed] } });
+  assert.deepEqual([first.name, first.error, second.name, third.name, third.error, fourth.name], ['Codex · a@example.com', undefined, 'OpenCode Zen', 'WorkBuddy · 我的', undefined, 'Kimi']);
+  assert.deepEqual(second, { name: 'OpenCode Zen', values: [], buttons: [], error: 'balance is not offered' });
+  assert.deepEqual(fourth, { name: 'Kimi', values: [{ label: '月度', value: '不限' }], buttons: [], error: 'the usage endpoint answered 502' });
 });
 
 test('a gateway that fails after a read that went well fails the command, with the reason', async t => {
