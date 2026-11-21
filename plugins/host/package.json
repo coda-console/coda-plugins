@@ -4,9 +4,12 @@
   "displayName": "宿主资源",
   "description": "Xcode、模拟器的排队名额",
   "icon": { "symbol": "hammer.fill", "color": "gray" },
-  "version": "6.0.1",
+  "version": "6.0.2",
   "engines": {
     "coda": 6
+  },
+  "uses": {
+    "coda/workflow-run@1": ["read"]
   },
   "coda": {
     "channels": [

@@ -356,16 +356,20 @@ test('清点模拟器 never deletes when the plugin module is unavailable', asyn
   assert.equal(registrations(state).length, 1);
 });
 
-test('cleanup eligibility follows a fresh public run state, including reruns, and never guesses unknown states', async () => {
-  const runs = new Map(), coda = { api: async path => {
-    assert.match(path, /^workflow-runs\//);
-    const id = decodeURIComponent(path.slice('workflow-runs/'.length));
-    if (!runs.has(id)) throw new Error('运行不存在或宿主暂不可用');
-    return { runId: id, state: runs.get(id) };
+test('cleanup eligibility follows the run record read afresh, including reruns, and never guesses unknown states', async () => {
+  const runs = new Map(), coda = { get: async ref => {
+    assert.equal(ref.kind, 'coda/workflow-run@1');
+    return runs.has(ref.id) ? { kind: ref.kind, id: ref.id, status: { state: runs.get(ref.id) } } : null;
   } };
   runs.set('run', 'succeeded');
   assert.equal(await runFinished(coda, 'run'), true);
+  runs.set('run', 'failed');
+  assert.equal(await runFinished(coda, 'run'), true);
+  runs.set('run', 'cancelled');
+  assert.equal(await runFinished(coda, 'run'), true);
   runs.set('run', 'running');
+  assert.equal(await runFinished(coda, 'run'), false);
+  runs.set('run', 'waiting');
   assert.equal(await runFinished(coda, 'run'), false);
   runs.set('run', 'cancelling');
   assert.equal(await runFinished(coda, 'run'), false);
@@ -373,6 +377,10 @@ test('cleanup eligibility follows a fresh public run state, including reruns, an
   assert.equal(await runFinished(coda, 'run'), false);
   assert.equal(await runFinished(coda, null), false);
   await assert.rejects(runFinished(coda, 'missing'), /运行不存在/);
+});
+
+test('the manifest asks to read workflow run records', () => {
+  assert.deepEqual(manifest('host').uses, { 'coda/workflow-run@1': ['read'] });
 });
 
 test('持锁执行 fails a hung command with its idle reason once at the end', { timeout: 5000 }, async t => {

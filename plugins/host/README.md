@@ -1,5 +1,7 @@
 # 宿主资源
 
+6.0.2：判断运行是否已结束，改读 `coda/workflow-run@1` 记录，不再用模块的旧接口 `coda.api`（Coda 将删掉它）；清单加 `uses`。清理行为不变。`engines.coda` 仍是 6。
+
 6.0.1：删掉 6.0.0 为逐个升级暂留的扩展点 `kinds` 声明，转交只走 `host/kind@1`。
 
 6.0.0（接口破坏性变更）：不再靠扩展点 `kinds` 转交，改定义协议 `host/kind@1`（spec 是 `{ command }`，PATH 上的命令名）；插件模块把本机这类记录写成状态目录里的 `kinds.json`（`[{ plugin, command }]`，按插件 ID 排，激活时先写成 `[]`），`host-sim` 读它转交。`engines.coda` 仍是 6，只给预览渠道。
@@ -68,7 +70,7 @@
 还把 UDID 和登记运行 ID 写进本实例插件状态的 `simulator-registrations/`，每条登记独立保存，清理不会覆盖同时新增的登记。
 持锁命令通过 `HOST_SIM_RUN_ID` 传递运行 ID；普通流程步骤读 `GITHUB_RUN_ID`。
 按设置 `host.cleanSchedule` 的周期清点（整个实例只跑一次，`coda:scope="machine"`），**不申请名额、不进入 host 队列**。
-清理脚本用 `coda self run-finished` 问本插件模块（宿主按令牌认出是这个插件）；模块每次经公开 `coda.api("workflow-runs/<id>")` 读取运行终态，不缓存清理资格。
+清理脚本用 `coda self run-finished` 问本插件模块（宿主按令牌认出是这个插件）；模块每次读这次运行的 `coda/workflow-run@1` 记录（`coda.get`，记录 ID 就是运行 ID；清单 `uses` 写 `coda/workflow-run@1` 的 `read`），取 `status.state` 作运行终态，不缓存清理资格。
 运行须为成功、失败或已取消才删除；运行与子运行是否收尾完成、何时发布终态，由 Coda 运行模块判断。插件不读取宿主数据库或复刻名额收尾逻辑。
 运行中、取消收尾中、查不到运行、宿主接口不可用的都跳过。旧版 `simulators` 纯 UDID 登记没有归属，保留并记录原因，待人工确认闲置后处理。
 删除直接交给 `simctl delete`，不强制关机；使用中或删不掉的跳过、记日志并保留登记，下次再试，已经不在的算删完。不为删除与其他进程使用的罕见交错加锁。
