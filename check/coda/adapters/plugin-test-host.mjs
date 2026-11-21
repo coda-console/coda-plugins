@@ -84,9 +84,9 @@ export function createTestHost({ plugin = {}, call = null, clock = new Clock(), 
   const ending = new AbortController();
   // What the module sends the backend, taken after the turn it is sent in, as over a process's channel.
   const modules = pluginModules({ send: message => queueMicrotask(() => taken(message)) });
-  // `coda.pluginSetup`, a part the backend provides, is there as the module has it, but fails: the test host has no backend to ask.
-  const setup = () => ({ retry: async () => { throw refused('unsupported', '测试宿主不提供 coda.pluginSetup'); } });
-  const coda = modules.adopt(described, randomUUID(), [['pluginSetup', setup]]);
+  // `coda.pluginSetup` is there as the module has it, but fails: the test host has no backend to ask.
+  const setup = { retry: async () => { throw refused('unsupported', '测试宿主不提供 coda.pluginSetup'); } };
+  const coda = modules.adopt(described, randomUUID(), setup);
   // The records, by kind, each an entry (`{ owner, location, id, plugin, local, spec, status, labels?, version }`) by its holder and
   // ID, and the keys of those of each kind the plugin holds, by their IDs (record-rules.mjs `recordId`); and the module's
   // watches of them, by the watch's key, each with what it was last told.

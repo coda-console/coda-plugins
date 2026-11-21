@@ -1,5 +1,5 @@
 {
-  "commit": "6d506f8f293146efa3d7409f56d2869d96c32905",
+  "commit": "6b6dba1b6e1fc82c2a5703c7513a2612f7342051",
   "apiLevel": 8,
   "packages": {
     "@0dep/piso": "5.2.0",
@@ -11,17 +11,18 @@
   "files": {
     "check/coda/application/contributions.mjs": "30fb6eb01a4a26cc34df79655818a15aa6e846f34128752ca3c7a892939179da",
     "check/coda/components/protocols/protocol-events.mjs": "076f335287d0398c602ad6db286ab0001dc00ac42d32a23918a66ee37c3e9a2f",
-    "check/coda/components/protocols/record-rules.mjs": "c6bbafdaa869543ea4759be526ca8cf1ff5a03dad999f6ad724a602703c92a44",
+    "check/coda/components/protocols/record-rules.mjs": "9b3b8f4307a77f9beb658e62c11c9e8fa39ec6b3cc93516e845e7083e303df44",
     "check/coda/components/protocols/types.mjs": "283cd0f4516f10637d6fe257fe645ead87912219d471c06408d56617f244e1d1",
     "check/coda/adapters/provider-api.mjs": "70441ea2a417ede13e04113ec254496883be3186f291ef5ee65834f35009eb9e",
     "check/coda/adapters/call-limit.mjs": "7e86d95ff7b0a88955015904ec91ae55e78fad816d06f710d6e62af53ccbdeab",
     "check/coda/adapters/clock.mjs": "79733b9ac3807b3da147fe8b782318a1cb42d1d51b9c8b81a507c13c7a8025fd",
     "check/coda/adapters/plugin-command.mjs": "47bd580f7142780933315f64d4562d23a61f996b3f411cfb583333261b590ee8",
     "check/coda/adapters/plugin-events.mjs": "4435aabd04b072069bf8af58663c81130b42821faf4905133fbf523bc64f9f6d",
-    "check/coda/adapters/plugin-modules.mjs": "57aff9e5603edd81d75c92971b9b8f1c670bd8b040c4a023f66374bff7a4e0c0",
+    "check/coda/adapters/plugin-modules.mjs": "0ae151faa26c5682ace16c36d42c32f02986e16b15674a55dbadefd79766aa63",
+    "check/coda/adapters/plugin-setup-api.mjs": "82239b1572de05367c134c9a9f0491fa8cc54a56655dcc7b0e346227e0a900b1",
     "check/coda/adapters/plugin-stream-services.mjs": "1e92eb3dd9d844d4f2773a60bc2941aae3c9cda10d9e96e31de9f09f51e672e5",
     "check/coda/adapters/plugin-test-host.d.mts": "7cb271a61cdb8f704e21e003e70d9962308aeecc4f95ec1ff3bf92cdf134b6be",
-    "check/coda/adapters/plugin-test-host.mjs": "c31a3cbe3f946c271ff233b681893a0436ce01ae646f8e26f580b8aee82558a8",
+    "check/coda/adapters/plugin-test-host.mjs": "6cebdef12df571ad8bbd340844deeeb12e1a44af443c6038b43573944883334d",
     "check/coda/adapters/process-relay.mjs": "5d379bd7ad07138d69c7accbe769d71294843399539bdf1fab8b6a1ddf13b9d8",
     "check/coda/components/composers/contributions.mjs": "43d3e15fb1f63b7b5c20716030d9537613809ed5cc2fb466a3678bfa308f9f92",
     "check/coda/components/concurrency-groups/schemas.mjs": "3c422044c637dee10565fb1b8bdc75b9c6a31e3b600ed223b7e5e345e1baf092",
