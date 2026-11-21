@@ -1,10 +1,11 @@
 // The plugin host's modules (docs/plugins.md「插件宿主」): each plugin's that has a `main`, loaded the first time anything
 // of it is needed, or when the backend says to, and given a `coda` of its own. What the runner (adapters/plugin-host-runner.mjs)
 // runs over Node's IPC channel with the backend, and the test host (adapters/plugin-test-host.mjs) over a channel of its own:
-// `send(message)` to the backend, `receive(message)` from it. `adopt(plugin, token, parts?)`: a plugin's `coda` made with no module
-// loaded, for whoever holds it to activate a module with; `stop()`: each module loaded ends what it started (`deactivate`).
+// `send(message)` to the backend, `receive(message)` from it. `adopt(plugin, token, pluginSetup?)`: a plugin's `coda` made with no
+// module loaded, for whoever holds it to activate a module with, its `pluginSetup` the one given; `stop()`: each module loaded
+// ends what it started (`deactivate`).
 //
-// From the backend: `start { api: { url }, parts }`, `activate { plugin, token }` (before anything else of the plugin's),
+// From the backend: `start { api: { url } }`, `activate { plugin, token }` (before anything else of the plugin's),
 // `open { instance, plugin, view, context, caller }`, `query { plugin, request, deadline }`, `run { plugin, call }` and
 // `resume { plugin, call }`, and `cancel { id, reason }` of any of them, `mode { plugin, mode, hook, context }` (a request
 // each), and `message`, `callProgress { id, value }` (a `call`'s progress, by the request's ID), `context`, `close { instance, … }`, `changed { watch, events }`, `settingsChanged { plugin,
@@ -13,7 +14,7 @@
 // of a process it started (adapters/process-relay.mjs). To it: `post { instance, message }`, `change { instance,
 // collection, type, id, object }`, `unwatch { watch }`, `cancel { id }` of a `query` or a `question`, `progress { run,
 // value }` of a `run`, `drained`, `kill` of a process, and the requests `settings`
-// (the plugin's own, as they are now), `watch { collection, selector }`, `tell { session, text }`, `part { part, method,
+// (the plugin's own, as they are now), `watch { collection, selector }`, `tell { session, text }`, `pluginSetup { method,
 // args }`, `provider { method, args }`, `serviceRegister { id, port, secret }`, `serviceUnregister { id }`, `query { record,
 // operation, input, timeout, deadline }`, `call { record, operation, input, id, timeout, deadline, under, progress }`, `spawn { under, process, command, args, cwd, env, name }`, each with the
 // module's `token`, by which the backend knows the plugin it is of, never by what it names; and `question { run,
@@ -27,14 +28,12 @@ import { pathToFileURL } from 'node:url';
 import { callingAPI, canceled, codaError, failed, failureOf, givenUp, providerAPI, queryingAPI } from './provider-api.mjs';
 import { queryId } from './plugin-command.mjs';
 import { pluginEvents } from './plugin-events.mjs';
+import { pluginSetupAPI } from './plugin-setup-api.mjs';
 
 export function pluginModules({ send }) {
   // This machine's Coda, as `start` gives it: its address only. Each module reaches it with its own plugin's token, given
   // with `activate` and kept in its own `coda` only.
   let api = null;
-  // The parts of `coda` others provide (components/plugins/plugin-host.mjs provide), as `start` names them: each made of the
-  // calls it asks by what its module exports (`make`).
-  let parts = Promise.resolve([]);
   const loading = new Map(), instances = new Map(), asked = new Map(), watches = new Map();
   // The queries and doing calls being handled, by the backend's request: each called off with the reason the backend gives
   // (`cancel`).
@@ -198,10 +197,9 @@ export function pluginModules({ send }) {
     return entry.value;
   };
 
-  // What a plugin's module is given: this plugin's own; and the parts
-  // others provide, each asking the backend under its name. `token`: this plugin's for this host process, brought with
-  // every request it asks (`asks`).
-  function codaFor(plugin, provided, token) {
+  // What a plugin's module is given: this plugin's own, `pluginSetup` asking the backend unless another is given.
+  // `token`: this plugin's for this host process, brought with every request it asks (`asks`).
+  function codaFor(plugin, token, pluginSetup = null) {
     const views = new Map(), protocols = new Map(), operations = new Map();
     const asks = (method, params, signal = null, progress = null) => ask(method, { ...params, token }, signal, progress);
     const services = pluginServices(asks);
@@ -244,7 +242,8 @@ export function pluginModules({ send }) {
       put: (record, value) => write('putRecord', [record, value]),
       delete: record => write('deleteRecord', [record]),
       replace: (kind, entries) => write('replaceRecords', [kind, entries]),
-      ...Object.fromEntries(provided.map(([name, make]) => [name, Object.freeze(make((method, args) => asks('part', { part: name, method, args })))])),
+      // Another plugin's setup run again (docs/plugins.md「准备运行环境」).
+      pluginSetup: Object.freeze(pluginSetup ?? pluginSetupAPI((method, args) => asks('pluginSetup', { method, args }))),
       views: Object.freeze({
         register(id, provider) {
           if (typeof id !== 'string' || typeof provider?.open !== 'function') throw new TypeError('views.register(视图 ID, { open(view) })');
@@ -296,7 +295,7 @@ export function pluginModules({ send }) {
   function load(plugin, token) {
     if (!loading.has(plugin.id)) {
       const loaded = (async () => {
-        const made = codaFor(plugin, await parts, token);
+        const made = codaFor(plugin, token);
         try {
           const module = await import(pathToFileURL(join(plugin.path, plugin.main)).href);
           if (typeof module.activate !== 'function') throw new Error(`${plugin.main} 没有导出 activate`);
@@ -312,10 +311,7 @@ export function pluginModules({ send }) {
   const activated = plugin => loading.get(plugin.id) ?? Promise.reject(new Error(`插件 ${plugin.id} 还没有激活`));
 
   const handlers = {
-    start(params) {
-      api = params.api;
-      parts = Promise.all(params.parts.map(async ({ name, module, make }) => [name, (await import(module))[make]]));
-    },
+    start(params) { api = params.api; },
     // A plugin's module, loaded the first time anything of it is needed, or as soon as the backend has started.
     async activate({ plugin, token }) { await load(plugin, token); },
     async open({ instance, plugin, view, context, caller }) {
@@ -504,8 +500,8 @@ export function pluginModules({ send }) {
     if (typeof module?.deactivate === 'function') await module.deactivate();
   })));
   const adopted = new Map();
-  function adopt(plugin, token, provided = []) {
-    const made = codaFor(plugin, provided, token);
+  function adopt(plugin, token, pluginSetup = null) {
+    const made = codaFor(plugin, token, pluginSetup);
     adopted.set(plugin.id, made);
     loading.set(plugin.id, Promise.resolve(made));
     return made.coda;

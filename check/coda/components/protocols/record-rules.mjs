@@ -1,6 +1,7 @@
 // What a plugin's reads and writes of the records (coda#2749 3.7, `coda.get`, `list`, `put`, `replace`) are held to,
 // wherever they are answered: by the backend (./mirror.mjs, ./providers.mjs, ./protocols.mjs) and by a plugin's test host
 // (adapters/plugin-test-host.mjs).
+import { protocolShortName } from '@coda-console/protocol/protocol';
 import { requireCondition as check } from '../../domain/errors.mjs';
 import { derivedUUID } from '../../domain/values.mjs';
 
@@ -13,6 +14,13 @@ import { derivedUUID } from '../../domain/values.mjs';
 // the record directory, which the other backends of a space copy.
 export const LOCAL_KINDS = new Set(['coda/composer@1', 'coda/submission@1', 'coda/run@1', 'coda/thread@1', 'coda/project@1', 'coda/card@1',
   'coda/plugin@1', 'coda/usage@1', 'coda/accord@1', 'coda/workflow@1', 'coda/workflow-run@1']);
+export const mirrorPlural = kind => protocolShortName(kind);
+// A kind's records in the record directory are of its plural: the one its definition names, which only Coda's own
+// definitions do (the core protocols'; a plugin's definition's `plural` is dropped as it is
+// installed, providers.mjs `install`), else its short name. migrate-v254.mjs keeps a fixed copy of this rule.
+export const pluralOf = definition => definition.plural ?? mirrorPlural(definition.kind);
+/** What the directory says as it refuses a record over its size (coda-directory src/directory.mjs `put`). */
+export const TOO_LARGE = /^the record is \d+ bytes, more than \d+$/;
 // `list(kind, { scope?, id?, labels? })`: this machine's records (`local`) or this machine's and the others' (`available`,
 // unsaid), all of them, those of an ID, or those whose labels have each of these values (`labels`, as Kubernetes' equality
 // selector: nothing but equality).
