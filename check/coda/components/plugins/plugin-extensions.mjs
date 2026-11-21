@@ -4,6 +4,7 @@ import { CORE_PROTOCOLS } from '@coda-console/protocol/protocol';
 import { valueProblem } from '@coda-console/protocol/validate';
 import { requireCondition as check } from '../../domain/errors.mjs';
 import { payloadProblem } from '../protocols/protocol-events.mjs';
+import { LOCAL_KINDS } from '../protocols/record-rules.mjs';
 
 const code = 'invalid_plugin';
 
@@ -64,7 +65,7 @@ export function implementsMissing(plugin, plugins, defined) {
 }
 // This Coda's API Level (docs/plugins.md「兼容」): what it offers plugins, counted. A manifest's `engines.coda` names the least
 // a plugin needs; one naming none needs 0, which any Coda has.
-export const API_LEVEL = 8;
+export const API_LEVEL = 9;
 // The API Level a package's registry metadata asks for in its `engines`: a positive integer, or its digits as text (what
 // npm's registry may make of one); undefined when it asks for none, null when it is anything else. A manifest read from
 // its directory has the schema's shape (plugin-rules.mjs readPlugin).
@@ -150,11 +151,12 @@ export function subscribed(plugin, plugins, defined) {
 // Why plugin `plugin` (its catalog entry) may not reach kind `kind` as `need` says — an operation of it (`{ operation }`),
 // a stream of its records (`{ stream }`), or reading its records (`'read'`; writing them is the implementer's alone) —
 // `definition` its protocol's (`protocolDefinition`), or null (docs/plugins.md「用到的权限」). The plugin that implements or
-// defines the kind may; any other, a built-in one too, only by a group of the kind's it uses that has the operation or the
-// stream, or reads its records. An operation or a stream in no group is open to no plugin. `owned` false: by its uses
-// alone, implementing or defining the kind not counted.
+// defines the kind may, but for a kind Coda alone keeps (record-rules.mjs `LOCAL_KINDS`: its records Coda's own, no
+// plugin's), which a plugin saying it implements it does not make its; any other, a built-in one too, only by a group of
+// the kind's it uses that has the operation or the stream, or reads its records. An operation or a stream in no group is
+// open to no plugin. `owned` false: by its uses alone, implementing or defining the kind not counted.
 export function usesRefusal(plugin, kind, need, definition, owned = true) {
-  if (owned && ownsProtocol(plugin, kind)) return null;
+  if (owned && !LOCAL_KINDS.has(kind) && ownsProtocol(plugin, kind)) return null;
   const groups = Object.entries(definition?.permissions ?? {}), used = new Set(plugin.uses?.[kind] ?? []);
   const covers = ([, group]) => typeof need === 'string' ? group[need] === true
     : need.stream !== undefined ? (group.streams ?? []).includes(need.stream) : (group.operations ?? []).includes(need.operation);

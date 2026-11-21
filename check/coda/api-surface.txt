@@ -283,7 +283,6 @@
 3 definition streams.description
 3 definition streams.input
 3 definition title
-3 module coda.api
 3 module coda.call
 3 module coda.delete
 3 module coda.error
@@ -349,4 +348,7 @@
 6 coda/resource@1 read records
 8 manifest contributes.processes
 8 manifest contributes.self
-level 8
+9 coda/machine@1
+9 coda/machine@1 read
+9 coda/machine@1 read records
+level 9
