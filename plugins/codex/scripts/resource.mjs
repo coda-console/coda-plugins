@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // The `coda/resource@1` records of the「Codex」type, printed once: this machine's own login, and with「多账号」on (the setting
 // `codex.multipleAccounts`) the managed accounts, a type of their own, while this machine's own login shows none. Signing in
-// stays offered either way (the CLI comes with the plugin). A login that is gone, expired or unreadable is a row saying so; any
-// other failure to read (Codex not answering, the network, a server's error, a damaged store) fails the command (exit 1, the
-// reason on the last line of its standard error), which keeps the records Coda has.
+// stays offered either way (the CLI comes with the plugin). A login that is gone, expired or unreadable is a row saying so; so is,
+// with several accounts, one whose quota cannot be read while another's was. Any other failure to read (Codex not answering, the
+// network, a server's error, a damaged store, no account's quota had) fails the command (exit 1, the reason on the last line of
+// its standard error), which keeps the records Coda has.
 import { withAppServer } from './app-server.mjs';
 import { list, multipleAccounts, selection, withManagedAccount } from './manager.mjs';
 import { managedResources, managedUnreadable, needsSignIn, resources, unreadable } from './quota.mjs';
