@@ -262,6 +262,8 @@
 12 module coda.frames.write
 12 module coda.serve
 12 module coda.stream
+13 manifest optionalUses
+14 module coda.pointer
 2 bridge window.coda.refresh
 2 manifest contributes.records
 3 definition description
@@ -308,7 +310,6 @@
 3 module coda.pluginSetup.retry
 3 module coda.protocols
 3 module coda.protocols.register
-3 module coda.protocols.resolve
 3 module coda.protocols.upload
 3 module coda.put
 3 module coda.query
@@ -361,4 +362,4 @@
 9 coda/machine@1
 9 coda/machine@1 read
 9 coda/machine@1 read records
-level 12
+level 14

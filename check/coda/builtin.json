@@ -1467,7 +1467,7 @@
     "id": "guide",
     "displayName": "Coda 使用指南",
     "description": "让 Agent 会回答 Coda 怎么用",
-    "version": "1.0.16",
+    "version": "1.0.17",
     "category": "工作流程",
     "icon": {
       "symbol": "book.fill",

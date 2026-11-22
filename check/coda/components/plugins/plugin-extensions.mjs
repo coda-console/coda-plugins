@@ -65,7 +65,7 @@ export function implementsMissing(plugin, plugins, defined) {
 }
 // This Coda's API Level (docs/plugins.md「兼容」): what it offers plugins, counted. A manifest's `engines.coda` names the least
 // a plugin needs; one naming none needs 0, which any Coda has.
-export const API_LEVEL = 12;
+export const API_LEVEL = 14;
 // The API Level a package's registry metadata asks for in its `engines`: a positive integer, or its digits as text (what
 // npm's registry may make of one); undefined when it asks for none, null when it is anything else. A manifest read from
 // its directory has the schema's shape (plugin-rules.mjs readPlugin).
@@ -143,11 +143,13 @@ export function publishedProblem(how, plugin, event, { name, subject, payload })
 // machine has with `plugins` (the catalog) and Coda's own (`defined`, as `protocolDefinition` takes them). What its module
 // may handle (`coda.on`), as the backend delivers them (./plugin-events.mjs) and the plugin host for a plugin's tests has it.
 export function subscribed(plugin, plugins, defined) {
-  return Object.entries(plugin.uses ?? {}).flatMap(([kind, groups]) => {
+  return Object.keys({ ...plugin.uses, ...plugin.optionalUses }).flatMap(kind => {
     const permissions = protocolDefinition(kind, plugins, defined)?.permissions ?? {};
-    return groups.flatMap(group => permissions[group]?.events ?? []);
+    return [...usedOf(plugin, kind)].flatMap(group => permissions[group]?.events ?? []);
   });
 }
+// The permission groups plugin `plugin` (its catalog entry) names of kind `kind`, in `uses` or `optionalUses` (docs/plugins.md「用到的权限」).
+export const usedOf = (plugin, kind) => new Set([...(plugin.uses?.[kind] ?? []), ...(plugin.optionalUses?.[kind] ?? [])]);
 // Why plugin `plugin` (its catalog entry) may not reach kind `kind` as `need` says — an operation of it (`{ operation }`),
 // a stream of its records (`{ stream }`), or reading its records (`'read'`; writing them is the implementer's alone) —
 // `definition` its protocol's (`protocolDefinition`), or null (docs/plugins.md「用到的权限」). The plugin that implements or
@@ -157,13 +159,13 @@ export function subscribed(plugin, plugins, defined) {
 // open to no plugin. `owned` false: by its uses alone, implementing or defining the kind not counted.
 export function usesRefusal(plugin, kind, need, definition, owned = true) {
   if (owned && !LOCAL_KINDS.has(kind) && ownsProtocol(plugin, kind)) return null;
-  const groups = Object.entries(definition?.permissions ?? {}), used = new Set(plugin.uses?.[kind] ?? []);
+  const groups = Object.entries(definition?.permissions ?? {}), used = usedOf(plugin, kind);
   const covers = ([, group]) => typeof need === 'string' ? group[need] === true
     : need.stream !== undefined ? (group.streams ?? []).includes(need.stream) : (group.operations ?? []).includes(need.operation);
   if (groups.some(entry => used.has(entry[0]) && covers(entry))) return null;
   const what = typeof need === 'string' ? `读 ${kind} 的记录` : need.stream !== undefined ? `读 ${kind} 的流 ${need.stream}` : `调 ${kind} 的操作 ${need.operation}`;
   const group = groups.find(covers)?.[0];
-  return group ? `插件 ${plugin.id} 要${what}，须在清单的 uses 里写 ${kind} 的权限组 ${group}`
+  return group ? `插件 ${plugin.id} 要${what}，须在清单的 uses 或 optionalUses 里写 ${kind} 的权限组 ${group}`
     : `插件 ${plugin.id} 不能${what}：它不在 ${kind} 的任何权限组里，不对插件开放`;
 }
 // What installing a plugin installs: what it needs, before it, then it.

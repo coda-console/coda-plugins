@@ -142,15 +142,10 @@ export function callingAPI(send) {
   };
 }
 
-// What is left of `coda.protocols` beside `register` (adapters/plugin-modules.mjs): `resolve`, a record's service as this
-// machine reaches it, and `upload`, an upload of this machine a post to a session names.
-export function providerAPI({ call, connection }) {
+// What is left of `coda.protocols` beside `register` (adapters/plugin-modules.mjs): `upload`, an upload of this machine a
+// post to a session names.
+export function providerAPI({ call }) {
   return {
-    async resolve(ref, service) {
-      const { resource, path } = await call('resolve', [ref, service]);
-      const api = connection();
-      return { resource, url: `${api.url}${path}`, headers: { authorization: `Bearer ${api.token}` } };
-    },
     // `{ id, name, size, mime?, duration?, …, path }`.
     upload: id => call('upload', [id]),
   };

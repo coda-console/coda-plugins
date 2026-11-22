@@ -18,6 +18,20 @@ export type HandledRef = Ref & { key?: string };
 /** How much a call that failed did: nothing, some of it, or none can say. */
 export type Effects = 'none' | 'some' | 'unknown';
 
+/**
+ * A blob pointer, as `coda.pointer` makes it: which machine has the content (`owner`, its ID) and where there (`path`), with
+ * what its writer says of it. A reader takes it to Coda as it is; a pointer is not the content.
+ */
+export interface BlobPointer {
+  owner: string;
+  path: string;
+  name?: string;
+  size?: number;
+  mime?: string;
+  /** Of the whole content, lowercase hex. */
+  sha256?: string;
+}
+
 /** A failed call, as its caller sees it and as `coda.error` makes it. */
 export interface CallError extends Error {
   code: string;
@@ -280,6 +294,13 @@ export interface Coda {
     /** A body of the iterable's objects; with `heartbeatMs`, a blank line whenever nothing has been written for that long. */
     write(iterable: Iterable<{ [key: string]: Json }> | AsyncIterable<{ [key: string]: Json }>, options?: { heartbeatMs?: number }): ReadableStream<Uint8Array>;
   }>;
+  /**
+   * A pointer to content of one of the plugin's own services, on this machine: `path`, what is below the service, as it is
+   * (not encoded, segments between `/`); `extra`, what it says of the content. Throws a `TypeError` for no pointer: a service
+   * ID that is none, a path with an empty, `.` or `..` segment or a `\`, too long, an `extra` with anything else. Whether the
+   * service is registered is not asked.
+   */
+  pointer(service: string, path: string, extra?: { name?: string; size?: number; mime?: string; sha256?: string }): BlobPointer;
   /** This plugin's own settings. */
   settings: Settings;
   /**
@@ -327,10 +348,9 @@ export interface Coda {
   }>;
   /** Trial. The plugin's own pages: `register` the provider of a view the manifest declares (`contributes.views`); its `open` is called each time one is opened. */
   views: Readonly<{ register(id: string, provider: { open(view: ViewInstance): void | Promise<void> }): { dispose(): void } }>;
-  /** Trial. Protocol contributions and the records' services: a contributor to another protocol's records, a record's service as this machine reaches it, and an upload of this machine's. */
+  /** Trial. Protocol contributions: a contributor to another protocol's records, and an upload of this machine's. */
   protocols: Readonly<{
     register(kind: string, key: string, handler: (object: ProtocolObject, key: string) => Contribution | null | Promise<Contribution | null>): Disposable;
-    resolve(record: Ref, service: string): Promise<{ resource: Ref; url: string; headers: Record<string, string> }>;
     upload(id: string): Promise<{ id: string; name: string; size: number; path: string; mime?: string; duration?: number; [key: string]: Json | undefined }>;
   }>;
   /** Trial. Tells a session's agent something, told with its next turn and waking nothing; `told` is `false` for a session archived. */
@@ -401,6 +421,8 @@ export interface TestPlugin {
   processes?: string[];
   /** The permission groups it uses (`uses`), by protocol: its event groups are the events its `coda.on` may name. */
   uses?: Record<string, string[]>;
+  /** The same, optional (`optionalUses`): used when the protocol is on this machine, never a reason the plugin does not load. */
+  optionalUses?: Record<string, string[]>;
 }
 
 export interface TestCallOptions extends QueryOptions {
@@ -459,7 +481,7 @@ export function createTestHost(options?: {
   settings?: Json;
   /** What the calls' deadlines go by (`Clock` of clock.mjs), for a test to move; by default the wall clock. */
   clock?: { now(): number; at(time: number, fn: () => void): () => void; close(): void };
-  /** Answers the module's queries of records of protocols it does not implement. */
+  /** Answers the module's queries and doing calls of records of protocols it does not implement. */
   call?: (record: Ref, operation: string, input: Json, options: { signal: AbortSignal | null; deadline: number | null }) => Json | Promise<Json>;
   /**
    * Others' records the module reads: another machine's (`owner`, by default `other`; `location`, by default its owner;
@@ -468,8 +490,8 @@ export function createTestHost(options?: {
    * this machine (`TEST_OWNER`). The space's 64 KiB a record is not held to here.
    */
   records?: (Ref & RecordValue & { plugin?: string; owner?: string; location?: string })[];
-  /** Others' protocol definitions the plugin uses event groups of. */
+  /** Others' protocol definitions the plugin uses (`uses`, `optionalUses`): their event groups, and, for those with records, their kinds for `records`, `call` and the module's reads. The module still writes only the kinds it implements. */
   protocols?: object[];
 }): TestHost;
-/** This machine's backend in the test host: the `owner` and `location` of the records the module writes. */
+/** This machine's backend in the test host: the `owner` and `location` of the records the module writes, and the `owner` of its pointers. */
 export const TEST_OWNER: string;

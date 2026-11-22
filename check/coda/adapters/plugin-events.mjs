@@ -12,7 +12,7 @@ export function pluginEvents(plugin, fire) {
       // until it is disposed, or the module stops.
       on(name, fn) {
         if (typeof name !== 'string' || typeof fn !== 'function') throw new TypeError('on(事件名, fn)');
-        if (!subscribed.has(name)) throw codaError('forbidden', `插件 ${plugin.id} 没有订事件 ${name}：须在清单的 uses 里写含有它的事件组`, { effects: 'none' });
+        if (!subscribed.has(name)) throw codaError('forbidden', `插件 ${plugin.id} 没有订事件 ${name}：须在清单的 uses 或 optionalUses 里写含有它的事件组`, { effects: 'none' });
         // Each its own, however often the same `fn` is.
         const entry = { fn, disposed: false };
         if (!handlers.has(name)) handlers.set(name, new Set());
