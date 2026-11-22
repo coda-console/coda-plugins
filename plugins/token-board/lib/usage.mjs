@@ -236,9 +236,11 @@ export function cleanText(value, max) {
 /** 好友名片记录（kind `profile`）的 body 里能展示的部分：名字 ≤ 40 字、emoji ≤ 8 字、颜色只认命名色板（blue、orange…）和 #RRGGBB。 */
 export function sanitizeProfile(record) {
   const body = record && typeof record === 'object' && record.body && typeof record.body === 'object' ? record.body : {};
-  const raw = typeof body.color === 'string' ? body.color.trim() : '';
-  const color = HEX_COLOR.test(raw) || NAMED_COLORS.includes(raw) ? raw.toLowerCase() : null;
-  return { name: cleanText(body.name, 40), emoji: cleanText(body.emoji, 8), color };
+  return { name: cleanText(body.name, 40), emoji: cleanText(body.emoji, 8), color: cleanColor(body.color) };
+}
+function cleanColor(value) {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  return HEX_COLOR.test(raw) || NAMED_COLORS.includes(raw) ? raw.toLowerCase() : null;
 }
 /** `ed25519:` 后的前 8 位，名片缺失时顶替名字。 */
 export function shortAuthor(author) {
@@ -396,7 +398,8 @@ function remoteRows({ days, today }, from, to) {
  * - 好友（和自己的其他设备）按 `author` + `sourceId` 汇总：`dayRecords`（coda/token-day）与 `todayRecords`（coda/token-today）按窗口拼接，
  *   同一 (author, id) 只取版本最新的一条；某台机器有任何新版记录，就不再读它旧版的 `legacyUsageRecords`（coda/token-usage），只有旧版好友才回退读旧记录。
  * - `person` 只切本机桶：远端记录里没有人的标签。
- * - 只认 `selfAuthor` 和 `friends` 里出现过的作者；`profileRecords` 同一作者取版本最新的一条。
+ * - 只认 `selfAuthor` 和 `friends` 里出现过的作者；`profileRecords` 同一作者取版本最新的一条。`friends` 行若带 `note`（备注）、`profileName`、`title`、`emoji`、`color`，
+ *   名字取 备注 > 名片记录 > profileName > title，emoji 与颜色名片记录优先、缺了才用好友行的。
  * 按总 Token 降序，平局按回合数降序、再按 author 升序。
  */
 export function aggregateLeaderboard({ selfAuthor, selfSourceId, excludedSourceIds = [], localBuckets = [], legacyUsageRecords = [], dayRecords = [], todayRecords = [], profileRecords = [], friends = [], from, to, person }) {
@@ -446,8 +449,17 @@ export function aggregateLeaderboard({ selfAuthor, selfSourceId, excludedSourceI
     if (!profiles.has(record.author) || record.version > profiles.get(record.author).version) profiles.set(record.author, record);
   }
 
+  // 好友网关给的好友行自带备注和名片：备注最优先，其次名片记录，再回落好友行里的名片名、标题。
+  const friendRows = new Map();
+  for (const friend of friends) if (typeof friend?.author === 'string' && friend.author && !friendRows.has(friend.author)) friendRows.set(friend.author, friend);
   const entries = [...tallies].map(([author, tally]) => {
     const profile = profiles.has(author) ? sanitizeProfile(profiles.get(author)) : { name: null, emoji: null, color: null };
+    const friend = friendRows.get(author);
+    if (friend) {
+      profile.name = cleanText(friend.note, 40) ?? profile.name ?? cleanText(friend.profileName, 40) ?? cleanText(friend.title, 40);
+      profile.emoji ??= cleanText(friend.emoji, 8);
+      profile.color ??= cleanColor(friend.color);
+    }
     return { author, shortId: shortAuthor(author), self: author === selfAuthor, shared: author === selfAuthor || shared.has(author),
       ...profile, ...tally.result() };
   }).sort(compare);

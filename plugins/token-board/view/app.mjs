@@ -90,7 +90,7 @@ coda.on?.('toolbar', ({ id, on } = {}) => {
 let again = null;
 function later() { clearTimeout(again); again = setTimeout(() => { bridge.send({ type: 'hello' }); requestBoard(); }, 800); }
 try {
-  Promise.resolve(coda.watch('coda/accord@1', ({ type }) => { if (type === 'MODIFIED') later(); }, { id: 'local' })).catch(() => {});
+  Promise.resolve(coda.watch('friends/social@1', ({ type }) => { if (type === 'MODIFIED') later(); }, { id: 'local' })).catch(() => {});
 } catch {}
 setInterval(() => { if (document.visibilityState !== 'hidden') requestBoard(); }, 60_000);
 
@@ -107,6 +107,8 @@ function notes() {
   if (board?.truncated?.usage) lines.push('本机用量太零碎，部分时段没能取全，合计可能偏少');
   if (status?.lastError) lines.push(`同步失败：${status.lastError}`);
   if ((status?.syncState ?? board?.syncState) === 'needs_cert') lines.push('代签证书已过期，打开客户端续签后将自动补发统计');
+  if ((status?.syncState ?? board?.syncState) === 'paused') lines.push('好友插件已暂停此类数据的对外发布');
+  if ((status?.syncState ?? board?.syncState) === 'no_gateway') lines.push('未安装或未启用好友插件，暂只展示本机统计');
   return lines.length ? h('div', { class: 'notes' }, lines.map(line => h('p', { class: 'note' }, line))) : null;
 }
 
