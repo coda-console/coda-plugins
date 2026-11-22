@@ -7,7 +7,10 @@ export const BUCKET_MS = 600_000;           // 用量桶宽：UTC 十分钟
 export const DAY_MS = 86_400_000;
 export const MAX_USAGE_LIMIT = 500;          // coda/usage@1 一次最多给几个桶
 export const MAX_BODY_BYTES = 60 * 1024;     // Accord 记录体上限 64 KiB，留出余量
-export const USAGE_RECORD_KIND = 'coda/token-usage';
+export const USAGE_RECORD_KIND = 'coda/token-usage';   // 0.1.0 的每日记录：过渡期只读兼容与撤回
+export const DAY_ARCHIVE_KIND = 'coda/token-day';       // 月块日归档（UTC 日）
+export const TODAY_CURVE_KIND = 'coda/token-today';     // 48 小时滚动曲线（30 分钟槽位）
+export const SLOT_MS = 1_800_000;
 export const PROFILE_RECORD_KIND = 'profile';
 export const FIELDS = ['input', 'output', 'cacheRead', 'cacheWrite', 'turns', 'reportedTurns'];
 
@@ -89,6 +92,135 @@ function blocksOf(list, clock) {
   return { blocks: out(blocks, agents => out(agents, models => out(models, counts => counts))) };
 }
 
+// ——— 紧凑格式：月块日归档与 48 小时曲线（要分享出去的） ———
+
+// 一条计数就是 [input, output, cacheRead, cacheWrite, turns, reportedTurns]，6 个非负安全整数。
+const KEEPS = [Infinity, 32, 8, 2, 1, 0, 'total'];
+const sortedObject = (map, inner) => Object.fromEntries([...map].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([key, value]) => [key, inner(value)]));
+const zeroRow = () => FIELDS.map(() => 0);
+const addRow = (to, from) => { from.forEach((value, i) => { to[i] += value; }); return to; };
+
+// 桶按 keyOf(start) 分组成 Map<key, Map<agent, Map<model, 计数>>>，空桶不要。
+function collect(buckets, keyOf) {
+  const tree = new Map();
+  for (const bucket of buckets ?? []) {
+    if (!bucket || isEmpty(bucket) || !Number.isSafeInteger(bucket.start)) continue;
+    const key = keyOf(bucket.start);
+    if (!tree.has(key)) tree.set(key, new Map());
+    const agents = tree.get(key);
+    if (!agents.has(bucket.agent)) agents.set(bucket.agent, new Map());
+    const models = agents.get(bucket.agent);
+    models.set(bucket.model, addRow(models.get(bucket.model) ?? zeroRow(), FIELDS.map(field => counter(bucket[field]))));
+  }
+  return tree;
+}
+const treeObject = tree => sortedObject(tree, agents => sortedObject(agents, models => sortedObject(models, row => row)));
+// 每个 Agent 只留总量最大的 keep 个模型，其余并进 'other'；总量不变。
+function fold(tree, keep) {
+  if (keep === Infinity) return tree;
+  // 最终兜底：每格所有 Agent 和模型合成一条 { _: { _: 合计 } }。
+  if (keep === 'total') return new Map([...tree].map(([key, agents]) => [key, new Map([['_', new Map([['_', [...agents.values()].flatMap(models => [...models.values()]).reduce(addRow, zeroRow())]])]])]));
+  const totals = new Map();
+  for (const agents of tree.values()) for (const [agent, models] of agents) {
+    if (!totals.has(agent)) totals.set(agent, new Map());
+    for (const [model, row] of models) totals.get(agent).set(model, (totals.get(agent).get(model) ?? 0) + row[0] + row[1] + row[2] + row[3]);
+  }
+  const kept = new Map([...totals].map(([agent, models]) => [agent,
+    new Set([...models].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, keep).map(([model]) => model))]));
+  const out = new Map();
+  for (const [key, agents] of tree) {
+    const next = new Map();
+    for (const [agent, models] of agents) {
+      const merged = new Map();
+      for (const [model, row] of models) {
+        const name = kept.get(agent).has(model) ? model : 'other';
+        merged.set(name, addRow(merged.get(name) ?? zeroRow(), row));
+      }
+      next.set(agent, merged);
+    }
+    out.set(key, next);
+  }
+  return out;
+}
+// 先原样，放不下再逐步合并小模型、最后合成一条合计，直到 maxBytes 以内；合计也放不下（预算小得离谱）就抛错，不返回超限的记录体。
+function fitted(build, maxBytes) {
+  let body;
+  for (const keep of KEEPS) { body = build(keep); if (size(body) <= maxBytes) return body; }
+  throw new Error(`记录体即使合成合计也有 ${size(body)} 字节，超过 ${maxBytes} 字节的预算`);
+}
+
+// 一月的块：整月；放不下按半月（-1：1–15 日，-2：16–31 日）；再不行按周（-w1…-w5，每 7 日）。同一个月只用一种拆法，id 不会互相覆盖。
+const MONTH_PARTS = [() => '', day => (day <= 15 ? '-1' : '-2'), day => `-w${Math.ceil(day / 7)}`];
+
+/**
+ * 按 UTC 日打成月块日归档 `{ 'YYYY-MM[-1|-2|-wN]': { v: 2, days: { 'YYYY-MM-DD': { [agent]: { [model]: [6 个数] } } } } }`。
+ * 记录 id 是 `<sourceId>/<键>`。每块序列化后不超过 maxBytes：先拆半月、再拆周，仍超就合并小模型。
+ */
+export function buildArchiveBodies(buckets, { maxBytes = MAX_BODY_BYTES } = {}) {
+  const days = collect(buckets, utcDate);
+  const months = new Map();
+  for (const date of [...days.keys()].sort()) {
+    const month = date.slice(0, 7);
+    if (!months.has(month)) months.set(month, new Map());
+    months.get(month).set(date, days.get(date));
+  }
+  const bodies = {};
+  for (const [month, monthDays] of months) {
+    const build = chunk => keep => ({ v: 2, days: treeObject(fold(chunk, keep)) });
+    for (let level = 0; level < MONTH_PARTS.length; level++) {
+      const chunks = new Map();
+      for (const [date, tree] of monthDays) {
+        const suffix = MONTH_PARTS[level](Number(date.slice(8)));
+        if (!chunks.has(suffix)) chunks.set(suffix, new Map());
+        chunks.get(suffix).set(date, tree);
+      }
+      if (level < MONTH_PARTS.length - 1 && [...chunks.values()].some(chunk => size(build(chunk)(Infinity)) > maxBytes)) continue;
+      for (const [suffix, chunk] of chunks) bodies[`${month}${suffix}`] = fitted(build(chunk), maxBytes);
+      break;
+    }
+  }
+  return bodies;
+}
+
+/**
+ * 最近 windowHours 小时的滚动曲线 `{ v: 2, slotMs, windowStart, windowEnd, slots: { '<槽起点毫秒>': { [agent]: { [model]: [6 个数] } } } }`，
+ * 窗口 [windowStart, windowEnd) 对齐 slotMs 且包含 now 所在的槽。记录 id 就是 sourceId，每次覆盖。
+ * 超过 maxBytes 先降成 60 分钟槽，再合并小模型。
+ */
+export function buildTodayBody(buckets, { now, slotMs = SLOT_MS, windowHours = 48, maxBytes = MAX_BODY_BYTES } = {}) {
+  const build = (ms, keep) => {
+    const windowEnd = (Math.floor(now / ms) + 1) * ms, windowStart = windowEnd - windowHours * 3_600_000;
+    const inside = (buckets ?? []).filter(bucket => bucket?.start >= windowStart && bucket.start < windowEnd);
+    return { v: 2, slotMs: ms, windowStart, windowEnd, slots: treeObject(fold(collect(inside, at => Math.floor(at / ms) * ms), keep)) };
+  };
+  const coarse = slotMs < 3_600_000 ? 3_600_000 : slotMs;
+  const first = build(slotMs, Infinity);
+  if (size(first) <= maxBytes) return first;
+  return fitted(keep => build(coarse, keep), maxBytes);
+}
+
+/** 只留 person 名下的桶（includeUntagged 为真时，没打标的历史桶也算）；不指定 person 就是全部。 */
+export function filterBucketsByPerson(buckets, person, { includeUntagged = true } = {}) {
+  if (!person) return buckets;
+  return buckets.filter(bucket => bucket.person === person || (includeUntagged && !bucket.person));
+}
+
+// 撤回时重发的空记录体；和它一样的记录体就是上次撤回留下的。
+const WITHDRAWN = {
+  [USAGE_RECORD_KIND]: { blocks: {} },
+  [DAY_ARCHIVE_KIND]: { v: 2, days: {} },
+  [TODAY_CURVE_KIND]: { v: 2, slotMs: SLOT_MS, windowStart: 0, windowEnd: 0, slots: {} },
+};
+export const withdrawnBody = kind => structuredClone(WITHDRAWN[kind]);
+export const isWithdrawn = (kind, body) => JSON.stringify(body) === JSON.stringify(WITHDRAWN[kind]);
+/** 这条记录（kind、id）是不是 sourceId 这台机器发布的。 */
+export function ownedBySource(kind, id, sourceId) {
+  if (typeof id !== 'string') return false;
+  if (kind === USAGE_RECORD_KIND) return id.endsWith(`/${sourceId}`);
+  if (kind === DAY_ARCHIVE_KIND) return id.startsWith(`${sourceId}/`);
+  return id === sourceId;
+}
+
 // ——— 名片 ———
 
 const CONTROL = /[\p{Cc}\u{2028}\u{2029}\u{061C}\u{200E}\u{200F}\u{202A}-\u{202E}\u{2066}-\u{2069}]/gu;
@@ -147,6 +279,55 @@ export function readUsageRecord(record, { from, to }) {
   return { sourceId, rows };
 }
 
+const ARCHIVE_ID = /^([^\s/]{1,100})\/(\d{4})-(\d{2})(?:-(1|2|w[1-5]))?$/;
+const SOURCE_ID = /^[^\s/]{1,100}$/;
+const validRow = row => Array.isArray(row) && row.length === FIELDS.length && row.every(value => Number.isSafeInteger(value) && value >= 0);
+// { [agent]: { [model]: [6 个数] } } 摊平成行；不合格的丢掉。
+function rowsOf(agents) {
+  const rows = [];
+  if (!agents || typeof agents !== 'object') return rows;
+  for (const [agent, models] of Object.entries(agents)) {
+    if (!models || typeof models !== 'object') continue;
+    for (const [model, row] of Object.entries(models)) {
+      if (validRow(row)) rows.push({ agent: cleanText(agent, 100) ?? '?', model: cleanText(model, 200) ?? '?', ...Object.fromEntries(FIELDS.map((field, i) => [field, row[i]])) });
+    }
+  }
+  return rows;
+}
+const partRange = part => (part === '1' ? [1, 15] : part === '2' ? [16, 31] : part ? [Number(part[1]) * 7 - 6, Number(part[1]) * 7 + (part[1] === '5' ? 3 : 0)] : [1, 31]);
+
+/** 一条 `coda/token-day` 记录：`{ sourceId, days: [{ date, start（UTC 零点）, rows }] }`；id 或版本不对返回 null，日期不在 id 的月份与分块里的、计数不合格的丢掉。 */
+export function readArchiveRecord(record) {
+  const matched = ARCHIVE_ID.exec(String(record?.id ?? ''));
+  if (!matched || record.body?.v !== 2 || !record.body.days || typeof record.body.days !== 'object') return null;
+  const [, sourceId, year, month, part] = matched;
+  const [first, last] = partRange(part);
+  const days = [];
+  for (const [date, agents] of Object.entries(record.body.days)) {
+    const at = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+    if (!at || at[1] !== year || at[2] !== month) continue;
+    const start = Date.UTC(Number(year), Number(month) - 1, Number(at[3]));
+    if (utcDate(start) !== date || Number(at[3]) < first || Number(at[3]) > last) continue;
+    days.push({ date, start, rows: rowsOf(agents) });
+  }
+  return { sourceId, days };
+}
+
+/** 一条 `coda/token-today` 记录：`{ sourceId, slotMs, windowStart, windowEnd, slots: [{ start, rows }] }`；窗口、槽位对不齐或不在窗口内的丢掉。 */
+export function readTodayRecord(record) {
+  const id = String(record?.id ?? ''), body = record?.body;
+  if (!SOURCE_ID.test(id) || body?.v !== 2 || ![SLOT_MS, 3_600_000].includes(body.slotMs)) return null;
+  const { slotMs, windowStart, windowEnd } = body;
+  if (!Number.isSafeInteger(windowStart) || !Number.isSafeInteger(windowEnd) || windowStart % slotMs || windowEnd % slotMs || windowEnd <= windowStart || !body.slots || typeof body.slots !== 'object') return null;
+  const slots = [];
+  for (const [key, agents] of Object.entries(body.slots)) {
+    const start = /^\d{1,16}$/.test(key) ? Number(key) : NaN;
+    if (!Number.isSafeInteger(start) || start % slotMs || start < windowStart || start >= windowEnd) continue;
+    slots.push({ start, rows: rowsOf(agents) });
+  }
+  return { sourceId: id, slotMs, windowStart, windowEnd, slots };
+}
+
 // ——— 排行榜 ———
 
 const total = c => c.input + c.output + c.cacheRead + c.cacheWrite;
@@ -174,33 +355,89 @@ export function summarizeBuckets(buckets, { from, to }) {
   return tally.result();
 }
 
-/**
- * 熟人消耗榜。
- * - `selfAuthor` 用最新的 `localBuckets`，再并上同一作者名下其他 `sourceId`（别的设备）的记录；本机自己发布过的 `selfSourceId` 记录丢掉，不重复计。
- * - 好友按 `author` 汇总他所有 `sourceId` 的记录里落在 [from, to) 的部分；同一 (author, id) 只取版本最新的一条。
- * - 只认 `selfAuthor` 和 `friends` 里出现过的作者；`profileRecords` 同一作者取版本最新的一条。
- * 按总 Token 降序，平局按回合数降序、再按 author 升序。
- */
-export function aggregateLeaderboard({ selfAuthor, selfSourceId, localBuckets = [], friendUsageRecords = [], profileRecords = [], friends = [], from, to }) {
-  const friendAuthors = new Set(friends.map(friend => friend?.author).filter(author => typeof author === 'string' && author));
-  const known = new Set([...friendAuthors, ...(selfAuthor ? [selfAuthor] : [])]);
-
-  // 每个 (author, id) 取最新版本。
+// 每个 (author, id) 只取版本最新的一条，且只要某个 kind、认识的作者。
+function latestOf(records, kind, known) {
   const latest = new Map();
-  for (const record of friendUsageRecords) {
-    if (!record || record.kind !== USAGE_RECORD_KIND || !known.has(record.author)) continue;
+  for (const record of records) {
+    if (!record || record.kind !== kind || !known.has(record.author)) continue;
     const key = JSON.stringify([record.author, record.id]);
     if (!latest.has(key) || record.version > latest.get(key).version) latest.set(key, record);
   }
+  return [...latest.values()];
+}
+const localRows = (buckets, from, to) => buckets.filter(bucket => bucket.start >= from && bucket.start < to)
+  .map(bucket => ({ ...bucket, ...Object.fromEntries(FIELDS.map(field => [field, counter(bucket[field])])) }));
+
+// 一台远端机器（author + sourceId）在 [from, to) 里的行。逐个 UTC 日选来源：
+// - 这一日在查询窗口内的那一段 [max(from, 日零点), min(to, 日末))，完整落在曲线的 [windowStart, windowEnd) 里：取曲线槽位（精确到窗口边界）；
+// - 否则（曲线起点晚于这一段、曲线在这一段结束前就停了，也就是旧曲线）：取这一日的日归档，并排除这一日的曲线槽位，免得双计；
+//   日归档只有整日，按「这一日过半在窗口内」算进来（过半不在窗口内的，归档不算，当日曲线槽位照常取）；
+// - 没有日归档的日子，取曲线里落在窗口内的槽位。
+function remoteRows({ days, today }, from, to) {
+  const rows = [], archived = new Set();
+  for (const day of days) {
+    const dayEnd = day.start + DAY_MS;
+    if (day.start >= to || dayEnd <= from) continue;
+    if (today && today.windowStart <= Math.max(from, day.start) && today.windowEnd >= Math.min(to, dayEnd)) continue;
+    if (day.start + DAY_MS / 2 < from) continue;
+    archived.add(day.start);
+    rows.push(...day.rows.map(row => ({ ...row, start: day.start })));
+  }
+  for (const slot of today?.slots ?? []) {
+    if (slot.start >= from && slot.start < to && !archived.has(Math.floor(slot.start / DAY_MS) * DAY_MS)) rows.push(...slot.rows.map(row => ({ ...row, start: slot.start })));
+  }
+  return rows;
+}
+
+/**
+ * 熟人消耗榜。
+ * - `selfAuthor` 用最新的 `localBuckets`（可按 `person` 切片），再并上同一作者名下其他 `sourceId`（别的设备）的记录；
+ *   本机的 `selfSourceId` 和换成机器 ID 之前留下的 `excludedSourceIds` 在同作者记录里一律跳过，不重复计。
+ * - 好友（和自己的其他设备）按 `author` + `sourceId` 汇总：`dayRecords`（coda/token-day）与 `todayRecords`（coda/token-today）按窗口拼接，
+ *   同一 (author, id) 只取版本最新的一条；某台机器有任何新版记录，就不再读它旧版的 `legacyUsageRecords`（coda/token-usage），只有旧版好友才回退读旧记录。
+ * - `person` 只切本机桶：远端记录里没有人的标签。
+ * - 只认 `selfAuthor` 和 `friends` 里出现过的作者；`profileRecords` 同一作者取版本最新的一条。
+ * 按总 Token 降序，平局按回合数降序、再按 author 升序。
+ */
+export function aggregateLeaderboard({ selfAuthor, selfSourceId, excludedSourceIds = [], localBuckets = [], legacyUsageRecords = [], dayRecords = [], todayRecords = [], profileRecords = [], friends = [], from, to, person }) {
+  const friendAuthors = new Set(friends.map(friend => friend?.author).filter(author => typeof author === 'string' && author));
+  const known = new Set([...friendAuthors, ...(selfAuthor ? [selfAuthor] : [])]);
+  const excluded = new Set([selfSourceId, ...excludedSourceIds]);
+
   const tallies = new Map([...known].map(author => [author, new Tally()]));
   const shared = new Set();
-  if (selfAuthor) for (const bucket of localBuckets) if (bucket.start >= from && bucket.start < to) tallies.get(selfAuthor).add({ ...bucket, ...Object.fromEntries(FIELDS.map(field => [field, counter(bucket[field])])) });
-  for (const record of latest.values()) {
-    const read = readUsageRecord(record, { from, to });
-    if (!read) continue;
-    if (record.author === selfAuthor && read.sourceId === selfSourceId) continue;
-    shared.add(record.author);
-    for (const row of read.rows) tallies.get(record.author).add(row);
+  if (selfAuthor) for (const row of localRows(filterBucketsByPerson(localBuckets, person), from, to)) tallies.get(selfAuthor).add(row);
+
+  const sources = new Map();
+  const source = (author, sourceId) => {
+    if (author === selfAuthor && excluded.has(sourceId)) return null;
+    const key = JSON.stringify([author, sourceId]);
+    if (!sources.has(key)) sources.set(key, { author, days: [], today: null, current: false, legacy: [] });
+    return sources.get(key);
+  };
+  // 换拆法（整月 ↔ 半月 ↔ 周）时，新旧块可能同时被读到：同一 (author, sourceId, UTC 日) 只采用版本最大的那条记录里的。
+  const dayOwner = new Map();
+  for (const record of latestOf(dayRecords, DAY_ARCHIVE_KIND, known)) {
+    const read = readArchiveRecord(record), target = read && source(record.author, read.sourceId);
+    if (!target) continue;
+    target.current = true;
+    for (const day of read.days) {
+      const key = JSON.stringify([record.author, read.sourceId, day.date]);
+      if (!dayOwner.has(key) || record.version > dayOwner.get(key).version) dayOwner.set(key, { version: record.version, target, day });
+    }
+  }
+  for (const { target, day } of dayOwner.values()) target.days.push(day);
+  for (const record of latestOf(todayRecords, TODAY_CURVE_KIND, known)) {
+    const read = readTodayRecord(record), target = read && source(record.author, read.sourceId);
+    if (target) { target.current = true; target.today = read; }
+  }
+  for (const record of latestOf(legacyUsageRecords, USAGE_RECORD_KIND, known)) {
+    const read = readUsageRecord(record, { from, to }), target = read && source(record.author, read.sourceId);
+    if (target) target.legacy.push(...read.rows);
+  }
+  for (const target of sources.values()) {
+    shared.add(target.author);
+    for (const row of target.current ? remoteRows(target, from, to) : target.legacy) tallies.get(target.author).add(row);
   }
 
   const profiles = new Map();
@@ -216,6 +453,32 @@ export function aggregateLeaderboard({ selfAuthor, selfSourceId, localBuckets = 
   }).sort(compare);
   entries.forEach((entry, index) => { entry.rank = index + 1; });
   return { from, to, entries };
+}
+
+/**
+ * 当天曲线：[range.from, range.to) 按 slotMs 切成有序槽位（没用量的槽也在，值全 0），每槽 `{ start, totalTokens, input, output, cacheRead, cacheWrite, turns, reportedTurns }`。
+ * 本机用最新的 `localBuckets`（可按 `person` 切片），再并上同作者其他设备的 `todayRecords`（coda/token-today）；`selfSourceId` 与 `excludedSourceIds` 的一律跳过。
+ * 返回 `{ curve, byAuthor }`：`curve` 是本机作者（本机加其他设备）的曲线，`byAuthor` 是 selfAuthor 与 `friends` 各自的曲线。
+ * 外来槽位按槽起点落进包含它的输出槽；落在窗口外的丢掉。
+ */
+export function aggregateTodayCurve({ selfAuthor, selfSourceId, excludedSourceIds = [], localBuckets = [], todayRecords = [], friends = [], range, slotMs = SLOT_MS, person }) {
+  const { from, to } = range;
+  const authors = new Set([...friends.map(friend => friend?.author).filter(author => typeof author === 'string' && author), ...(selfAuthor ? [selfAuthor] : [])]);
+  const grid = () => { const slots = []; for (let start = from; start < to; start += slotMs) slots.push({ start, ...zero() }); return slots; };
+  const curves = new Map([...authors, null].map(author => [author, grid()]));
+  const place = (author, start, row) => {
+    if (start < from || start >= to) return;
+    add(curves.get(author)[Math.floor((start - from) / slotMs)], row);
+  };
+  for (const bucket of filterBucketsByPerson(localBuckets, person)) place(selfAuthor ?? null, bucket.start, Object.fromEntries(FIELDS.map(field => [field, counter(bucket[field])])));
+  const excluded = new Set([selfSourceId, ...excludedSourceIds]);
+  for (const record of latestOf(todayRecords, TODAY_CURVE_KIND, authors)) {
+    const read = readTodayRecord(record);
+    if (!read || (record.author === selfAuthor && excluded.has(read.sourceId))) continue;
+    for (const slot of read.slots) for (const row of slot.rows) place(record.author, slot.start, row);
+  }
+  const finish = slots => slots.map(slot => ({ start: slot.start, totalTokens: total(slot), ...Object.fromEntries(FIELDS.map(field => [field, slot[field]])) }));
+  return { curve: finish(curves.get(selfAuthor ?? null)), byAuthor: Object.fromEntries([...authors].map(author => [author, finish(curves.get(author))])) };
 }
 
 // ——— 时间范围 ———
