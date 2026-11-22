@@ -19,6 +19,8 @@ import { choosesModelProviders, pluginEnv, readPlugin, resolveSettings } from '.
 
 // Coda's own protocols, the definitions that are in the copy of its contract (check/coda): a composer's, its submission's and a
 // group's. The rest it defines are in the protocol package (CORE_PROTOCOLS) or not here, and a definition not here is only said.
+// A plugin ID, as Coda reads one (check/coda/components/plugins/plugin-rules.mjs).
+const PLUGIN_ID = /^[a-z][a-z0-9-]{0,39}$/;
 const HOST_PROTOCOLS = [composerType, submissionType, groupType];
 
 // The plugins Coda ships, by ID. Their files are Coda's, not here: none has a directory on this machine.
@@ -115,7 +117,17 @@ export function checkManifest(dir, say) {
   // group with `events` is subscribing to all of them), as far as the protocols are here: its own, Coda's core, or a plugin's beside it.
   for (const definition of plugin.protocols ?? [])
     for (const [name, event] of Object.entries(definition.events ?? {})) say.pass('manifest.events', `协议 ${definition.name} 定义的事件 ${name}：starts ${event.starts ?? true}，ends ${event.ends ?? false}`);
+  // The plugins of the protocols it only may use (`optionalUses`) beside it: for their definitions alone, never a dependency.
+  const optionalPeers = new Map();
+  for (const kind of Object.keys(plugin.optionalUses ?? {})) {
+    const id = kind.split('/')[0];
+    if (kind.startsWith('coda/') || !PLUGIN_ID.test(id) || builtin.has(id) || found.has(id) || id === plugin.id || optionalPeers.has(id)) continue;
+    const there = beside(dir, id);
+    if (there) optionalPeers.set(id, there);
+  }
+  // Its hard `uses` are judged against its dependencies alone; the optional peers only add to what `optionalUses` and the definitions it hands on see.
   const protocols = new Map([...builtin, ...found, [plugin.id, plugin]]);
+  const allProtocols = new Map([...builtin, ...optionalPeers, ...found, [plugin.id, plugin]]);
   // Coda's own protocols, as Coda judges a plugin's `uses` against them (HOST_PROTOCOLS above).
   const hosted = kind => HOST_PROTOCOLS.find(one => one.kind === kind);
   for (const [kind, groups] of Object.entries(plugin.uses ?? {})) {
@@ -131,6 +143,22 @@ export function checkManifest(dir, say) {
         if (!plugin.main) say.warn('manifest.events-main', `订了事件组 ${kind} ${group}，但没有 main，收不到事件`);
       }
       else say.pass('manifest.events', `用到 ${kind} 的权限组 ${group}：不含事件`);
+    }
+  }
+  // What it only may use: a group the definition lacks is worth a look, not a failure (the protocol may be a newer one).
+  for (const [kind, groups] of Object.entries(plugin.optionalUses ?? {})) {
+    const definition = protocolDefinition(kind, allProtocols, hosted);
+    for (const group of groups) {
+      if (!definition) { say.info('manifest.events', `可选用到 ${kind} 的权限组 ${group}：协议定义不在本地，列不出事件`); continue; }
+      if (!Object.hasOwn(definition.permissions ?? {}, group)) {
+        say.warn('manifest.optionalUses', `插件 ${plugin.id} 可选用到的协议 ${kind} 当前定义没有权限组 ${group}（可能拼写有误或需要更新的协议版本）`); continue;
+      }
+      const events = definition.permissions[group].events;
+      if (events) {
+        say.pass('manifest.events', `可选用到 ${kind} 的事件组 ${group}：${events.join('、')}`);
+        if (!plugin.main) say.warn('manifest.events-main', `可选订了事件组 ${kind} ${group}，但没有 main，收不到事件`);
+      }
+      else say.pass('manifest.events', `可选用到 ${kind} 的权限组 ${group}：不含事件`);
     }
   }
   // The keys of `contributes` Coda retired (the list in check/coda/components/plugins/plugin-extensions.mjs, as it is): a manifest still writing one is one Coda calls for an update
@@ -152,6 +180,6 @@ export function checkManifest(dir, say) {
   // The model services of a machine with none, for one that chooses them; the PATH has no directories of Coda's own here.
   const env = stateDir => pluginEnv({ catalog: given, installed, id: plugin.id, stateDir: id => id === plugin.id ? stateDir : null, settings,
     providers: choosesModelProviders(plugin) ? {} : null, userPath: process.env.PATH ?? '' });
-  return { id: plugin.id, manifest, plugin, agents: plugin.agents, settings, dependencies, env, definitionOf: kind => protocolDefinition(kind, protocols, hosted),
-    definitions: [...Object.values(CORE_PROTOCOLS), ...HOST_PROTOCOLS, ...[...protocols.values()].flatMap(each => each.protocols ?? [])] };
+  return { id: plugin.id, manifest, plugin, agents: plugin.agents, settings, dependencies, env, definitionOf: kind => protocolDefinition(kind, allProtocols, hosted),
+    definitions: [...Object.values(CORE_PROTOCOLS), ...HOST_PROTOCOLS, ...[...allProtocols.values()].flatMap(each => each.protocols ?? [])] };
 }

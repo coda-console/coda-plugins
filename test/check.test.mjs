@@ -536,6 +536,46 @@ describe('manifests Coda does not take', () => {
     assert.deepEqual(failed(wrong.report), ['manifest.uses']);
     assert.match(wrong.report.items.find(item => item.rule === 'manifest.uses').message, /用到的协议 coda\/composer@1 没有权限组 raed/);
   });
+  // A plugin `reader` that may use `liar/deploy@1` (of the plugin `liar` beside it unless `beside` is false) by `groups`, and does not depend on it.
+  const optionally = ({ groups = ['watch'], beside = true, manifest = {} } = {}) => {
+    const top = mkdtempSync(join(tmpdir(), 'coda-plugin-check-optional-'));
+    temps.push(top);
+    const write = (id, content) => { mkdirSync(join(top, id)); writeFileSync(join(top, id, 'package.json'), JSON.stringify({ name: id, version: '1.0.0', ...content })); };
+    if (beside) write('liar', { contributes: { protocols: [deploys] } });
+    write('reader', { engines: { coda: 13 }, categories: ['工作流程'], optionalUses: { 'liar/deploy@1': groups }, contributes: {}, ...manifest });
+    return join(top, 'reader');
+  };
+  test('what it may use optionally is said as what it uses is, and the plugin beside it is no dependency', async () => {
+    const checked = checkManifest(optionally(), new Report().scope('manifest'));
+    assert.deepEqual(checked.dependencies, {});
+    assert.equal(checked.definitionOf('liar/deploy@1').name, 'liar/deploy@1');
+    const { report } = await checkPlugin(optionally(), { manifestOnly: true });
+    assert.deepEqual(failed(report), []);
+    assert.deepEqual(messages(report, 'manifest.events'), ['可选用到 liar/deploy@1 的事件组 watch：deploy.started、deploy.ended']);
+    assert.deepEqual(rules(report, 'warn'), ['manifest.events-main']);
+    assert.deepEqual(messages(report, 'manifest.extensions'), []);
+  });
+  test('a sibling it does not depend on is not looked at by its hard uses, whatever its optionalUses reach', async () => {
+    const dir = optionally({ manifest: { uses: { 'liar/deploy@1': ['watc'] }, optionalUses: { 'liar/deploy@1': ['watch'] } } });
+    const checked = checkManifest(dir, new Report().scope('manifest'));
+    assert.deepEqual(checked.dependencies, {});
+    const { report } = await checkPlugin(dir, { manifestOnly: true });
+    assert.deepEqual(failed(report), []);
+    assert.deepEqual(messages(report, 'manifest.events'), ['用到 liar/deploy@1 的权限组 watc：协议定义不在本地，列不出事件', '可选用到 liar/deploy@1 的事件组 watch：deploy.started、deploy.ended']);
+  });
+  test('a group the protocol it may use lacks is a warning, not a failure', async () => {
+    const { report } = await checkPlugin(optionally({ groups: ['watc'] }), { manifestOnly: true });
+    assert.deepEqual(failed(report), []);
+    assert.deepEqual(rules(report, 'warn'), ['manifest.optionalUses']);
+    assert.match(messages(report, 'manifest.optionalUses')[0], /插件 reader 可选用到的协议 liar\/deploy@1 当前定义没有权限组 watc/);
+    assert.deepEqual(messages(report, 'manifest.events'), []);
+  });
+  test('a protocol it may use whose definition is not here is only said', async () => {
+    const { report } = await checkPlugin(optionally({ beside: false }), { manifestOnly: true });
+    assert.deepEqual(failed(report), []);
+    assert.deepEqual(rules(report, 'warn'), []);
+    assert.deepEqual(messages(report, 'manifest.events'), ['可选用到 liar/deploy@1 的权限组 watch：协议定义不在本地，列不出事件']);
+  });
   test('a setup action and services are taken, and the setup action is not run', async () => {
     const { report } = await checkPlugin(plugin({ manifest: { contributes: { setup: { command: 'exec false' }, services: ['space'] } } }), { manifestOnly: true });
     assertPasses(report, ['manifest.setup', 'manifest.services']);
@@ -839,18 +879,23 @@ describe('the module level', () => {
   const DEPLOY = { name: 'liar/deploy@1', title: '部署', spec: OBJECT, status: OBJECT, events: { 'deploy.started': { payload: { type: 'object' } } },
     permissions: { watch: { title: '看部署', events: ['deploy.started'] }, read: { title: '读部署', read: true } } };
   const EVENTS_ONLY = { name: DEPLOY.name, title: DEPLOY.title, events: DEPLOY.events, permissions: { watch: DEPLOY.permissions.watch } };
-  const reading = ({ main, beside = true, groups = ['watch'], definition = DEPLOY, more = {}, by = 'uses', engines = { coda: 3 } }) => {
+  const reading = ({ main, beside = true, groups = ['watch'], definition = DEPLOY, more = {}, by = 'uses', engines = { coda: 3 }, depends = ['liar'] }) => {
     const top = mkdtempSync(join(tmpdir(), 'coda-plugin-check-uses-'));
     temps.push(top);
     const write = (id, manifest) => { mkdirSync(join(top, id)); writeFileSync(join(top, id, 'package.json'), JSON.stringify({ name: id, version: '1.0.0', ...manifest })); };
     if (beside) write('liar', { contributes: { protocols: [definition] } });
-    write('reader', { main: 'main.mjs', engines, categories: ['工作流程'], extensionDependencies: ['liar'], [by]: { 'liar/deploy@1': groups, ...more }, contributes: {} });
+    write('reader', { main: 'main.mjs', engines, categories: ['工作流程'], extensionDependencies: depends, [by]: { 'liar/deploy@1': groups, ...more }, contributes: {} });
     writeFileSync(join(top, 'reader', 'main.mjs'), main);
     return join(top, 'reader');
   };
   const LIST = `export async function activate(coda) { await coda.list('liar/deploy@1'); }`;
   test('a coda.on of an event group it may use only optionally passes, as one of its uses does', async () => {
     const { report } = await checkPlugin(reading({ main: `export function activate(coda) { coda.on('deploy.started', () => {}); }`, by: 'optionalUses', engines: { coda: 13 } }));
+    assert.deepEqual(failed(report), []);
+    assert.deepEqual(rules(report, 'pass').filter(rule => rule.startsWith('module.')), ['module.activate', 'module.registered']);
+  });
+  test('a coda.on of an event group it may use optionally passes with a plugin beside it that it does not depend on', async () => {
+    const { report } = await checkPlugin(reading({ main: `export function activate(coda) { coda.on('deploy.started', () => {}); }`, by: 'optionalUses', engines: { coda: 13 }, depends: [] }));
     assert.deepEqual(failed(report), []);
     assert.deepEqual(rules(report, 'pass').filter(rule => rule.startsWith('module.')), ['module.activate', 'module.registered']);
   });
@@ -970,6 +1015,36 @@ describe('engines.coda against what the plugin uses', () => {
     const { report } = await checkPlugin(modulePlugin({ manifest: { engines: undefined } }), { manifestOnly: true });
     assert.deepEqual(failed(report), []);
     assert.match(messages(report, 'manifest.level')[0], /没写 engines\.coda：用到的项最高 Level 3.*"engines": \{ "coda": 3 \}/);
+  });
+  // A reader that may use `liar/deploy@1` (its `watch` group of Level 14 here, the group `trial` a trial one) beside it, by `engines.coda` `written`.
+  const OPTIONAL_SURFACE = 'level 14\n1 manifest engines.coda\n13 manifest optionalUses\n14 liar/deploy@1 watch\n';
+  const optionalLevel = (written, { uses = {} } = {}) => {
+    const top = mkdtempSync(join(tmpdir(), 'coda-plugin-check-level-'));
+    temps.push(top);
+    const write = (id, content) => { mkdirSync(join(top, id)); writeFileSync(join(top, id, 'package.json'), JSON.stringify({ name: id, version: '1.0.0', ...content })); };
+    const deploy = { name: 'liar/deploy@1', title: '部署', events: { 'deploy.started': { payload: { type: 'object' } } },
+      permissions: { watch: { title: '看部署', events: ['deploy.started'], trial: true } } };
+    write('liar', { contributes: { protocols: [deploy] } });
+    write('reader', { engines: { coda: written }, categories: ['工作流程'], optionalUses: { 'liar/deploy@1': ['watch'] }, uses, contributes: {} });
+    const report = new Report(), checked = checkManifest(join(top, 'reader'), report.scope('manifest'));
+    checkLevel({ checked, say: report.scope('manifest'), note: report.scope('note'), surface: parseSurface(OPTIONAL_SURFACE) });
+    return report;
+  };
+  test('optionalUses itself needs Level 13', () => {
+    const report = optionalLevel(12);
+    assert.deepEqual(failed(report), ['manifest.level']);
+    assert.match(report.failures[0].message, /^用到 manifest optionalUses（Level 13），engines\.coda 至少写 13（现写 12）$/);
+  });
+  test('what it may use of a later Level does not raise the Level it needs, and is remarked on', () => {
+    const report = optionalLevel(13);
+    assert.deepEqual(failed(report), []);
+    assertPasses(report, ['manifest.level']);
+    assert.deepEqual(messages(report, 'note.optional-level'), ['可选用到 liar/deploy@1 watch（Level 14），engines.coda 写 13：Coda 低于 Level 14 时这项自动不可用']);
+    assert.deepEqual(optionalLevel(14).items.filter(item => item.rule === 'note.optional-level'), []);
+  });
+  test('a trial group it may use is listed once, though it also uses it', () => {
+    assert.deepEqual(messages(optionalLevel(13), 'note.trial'), ['用到试行面：liar/deploy@1 的权限组 watch，随 Coda 版本可能变']);
+    assert.deepEqual(messages(optionalLevel(14, { uses: { 'liar/deploy@1': ['watch'] } }), 'note.trial'), ['用到试行面：liar/deploy@1 的权限组 watch，随 Coda 版本可能变']);
   });
   test('a plugin writing enough passes, and lists the trial surface it uses', async () => {
     const { report } = await checkPlugin(modulePlugin({ main: `export function activate(coda) { coda.tell('s', 'x'); }` }), { manifestOnly: true });
