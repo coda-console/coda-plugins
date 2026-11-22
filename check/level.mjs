@@ -64,7 +64,17 @@ export function checkLevel({ checked, say, note, surface = SURFACE }) {
     for (const item of read.filter(item => surface.get(item) > written)) say.warn('manifest.level-text', `文件里出现 ${item}（Level ${surface.get(item)}），engines.coda 写 ${written}：扫描文本得来，可能认错；没错的话至少写 ${surface.get(item)}`);
     if (!short && !read.some(item => surface.get(item) > written)) say.pass('manifest.level', `engines.coda ${written}，用到的项最高 Level ${need}`);
   }
-  for (const [kind, groups] of Object.entries(plugin.uses ?? {}))
-    for (const group of groups) if (checked.definitionOf(kind)?.permissions?.[group]?.trial) note.info('note.trial', `用到试行面：${kind} 的权限组 ${group}，随 Coda 版本可能变`);
+  // What it only may use does not raise the Level it needs: where Coda is older it is not offered, and the plugin goes without.
+  if (written !== undefined) for (const [kind, groups] of Object.entries(plugin.optionalUses ?? {})) {
+    const later = highest([kind, ...groups.map(group => `${kind} ${group}`)].filter(item => surface.get(item) > written));
+    if (later) note.info('note.optional-level', `可选用到 ${later}（Level ${surface.get(later)}），engines.coda 写 ${written}：Coda 低于 Level ${surface.get(later)} 时这项自动不可用`);
+  }
+  const tried = new Set();
+  for (const [kind, groups] of [...Object.entries(plugin.uses ?? {}), ...Object.entries(plugin.optionalUses ?? {})])
+    for (const group of groups) {
+      if (tried.has(`${kind} ${group}`) || !checked.definitionOf(kind)?.permissions?.[group]?.trial) continue;
+      tried.add(`${kind} ${group}`);
+      note.info('note.trial', `用到试行面：${kind} 的权限组 ${group}，随 Coda 版本可能变`);
+    }
   for (const item of [...certain, ...read].filter(item => item.startsWith('module '))) note.info('note.trial', `用到试行面：模块接口 ${item.slice('module '.length)}，随 Coda 版本可能变`);
 }
