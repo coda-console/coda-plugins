@@ -2,7 +2,7 @@
 // 记下每次查询与发布，能换身份与证书、一页页吐记录，并像 Coda 一样把变化告诉 watch。
 import { createTestHost } from '@coda-console/plugin-check/test-host';
 import assert from 'node:assert/strict';
-import { chmod, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -74,7 +74,7 @@ async function gateway(t, options = {}) {
   const [local] = await host.coda.list(SOCIAL, { scope: 'local' }), ref = { kind: SOCIAL, id: local.id };
   const call = (operation, input = {}) => host.call(ref, operation, input);
   const status = async () => (await host.coda.list(SOCIAL, { scope: 'local' }))[0].status;
-  const outbox = async () => JSON.parse(await readFile(join(dir, 'outbox.json'), 'utf8').catch(() => '{}'));
+  const outbox = async () => JSON.parse(await readFile(join(dir, 'outbox.json'), 'utf8').catch(() => '{}')).entries ?? {};
   return { dir, accord, host, call, status, outbox, publish: input => call('publish', input), retract: input => call('retract', input), self: (name, input) => host.self(name, input) };
 }
 const rejects = (promise, code = 'invalid_input') => assert.rejects(promise, error => error.code === code);
@@ -152,9 +152,9 @@ test('publish refuses the five reserved kinds; a good one is synced and its body
   assert.deepEqual(await g.publish({ kind: 'x', id: 'i', body: { b: 1, a: { d: 2, c: 3 } } }), { state: 'synced', author: A, version: 1 });
   assert.deepEqual(g.accord.calls, [{ kind: 'x', id: 'i', body: { b: 1, a: { d: 2, c: 3 } }, audience: ['public'] }]);
   const stored = await g.outbox();
-  assert.deepEqual(Object.keys(stored), ['x:i']);
-  assert.equal(stored['x:i'].state, 'synced');
-  assert.equal(stored['x:i'].lastAuthor, A);
+  assert.deepEqual(Object.keys(stored), ['p:x:i']);
+  assert.equal(stored['p:x:i'].state, 'synced');
+  assert.equal(stored['p:x:i'].lastAuthor, A);
   assert.equal(JSON.stringify(stored).includes('"body"'), false, 'no body is kept once it is synced');
 
   // 键序不同的同一内容、同一个作者：不再发。
@@ -169,14 +169,14 @@ test('publish refuses the five reserved kinds; a good one is synced and its body
   await g.accord.change({ author: B });
   assert.deepEqual(await g.publish({ kind: 'x', id: 'i', body: { v: 2 }, audience: [B] }), { state: 'synced', author: B, version: 1 });
   assert.equal(g.accord.calls.length, 4, 'the same content under another author is published again');
-  assert.equal((await g.outbox())['x:i'].lastAuthor, B);
+  assert.equal((await g.outbox())['p:x:i'].lastAuthor, B);
 });
 
 test('with no identity or an expired certificate a publish waits in the outbox with its body, and goes out by itself once the certificate is active', async t => {
   const g = await gateway(t, { author: null, certificate: null });
   assert.deepEqual(await g.publish({ kind: 'x', id: 'one', body: { n: 1 } }), { state: 'no_identity', author: null });
   assert.deepEqual(g.accord.calls, []);
-  assert.equal((await g.outbox())['x:one'].body.n, 1);
+  assert.equal((await g.outbox())['p:x:one'].body.n, 1);
   assert.equal((await g.status()).pendingCount, 1);
 
   await g.accord.change({ author: A, certificate: EXPIRED });
@@ -214,11 +214,11 @@ test('a failed publish waits in the outbox as queued and is sent by the next flu
   assert.deepEqual((await g.call('outbox')).items.map(item => [item.state, item.lastError]), [['queued', '连不上']]);
   g.accord.failure = Object.assign(new Error('太大'), { code: 'invalid_input' });
   assert.deepEqual(await g.publish({ kind: 'y', id: 'j', body: { v: 1 } }), { state: 'error', author: A, error: '太大' });
-  assert.deepEqual(Object.keys(await g.outbox()), ['x:i']);
+  assert.deepEqual(Object.keys(await g.outbox()), ['p:x:i']);
   g.accord.failure = null;
   await g.accord.change({ friends: [{ node: 'n1', author: F1, bound: true }] });
   await until(async () => (await g.status()).pendingCount === 0, '下一次变化冲洗掉排队的发布');
-  assert.equal((await g.outbox())['x:i'].state, 'synced');
+  assert.equal((await g.outbox())['p:x:i'].state, 'synced');
 });
 
 test('retract withdraws one record with an empty body and no audience, and forgets its outbox entry', async t => {
@@ -229,7 +229,7 @@ test('retract withdraws one record with an empty body and no audience, and forge
   await rejects(g.retract({ kind: 'binding' }));
   assert.deepEqual(await g.retract({ kind: 'x', id: 'i' }), { state: 'retracted', count: 1 });
   assert.deepEqual(g.accord.calls.at(-1), { kind: 'x', id: 'i', body: {}, audience: [] });
-  assert.deepEqual(Object.keys(await g.outbox()), ['x:k']);
+  assert.deepEqual(Object.keys(await g.outbox()), ['p:x:k']);
   // 之后同样的内容可以再发：条目没了，不会被当成已同步。
   assert.equal((await g.publish({ kind: 'x', id: 'i', body: { v: 1 } })).state, 'synced');
   assert.equal(g.accord.calls.at(-1).audience.length, 1);
@@ -267,8 +267,8 @@ test('retract without an id withdraws every record of the kind across pages, plu
   assert.deepEqual(g.accord.calls.filter(c => c.kind === 'x').map(c => c.id).sort(), ['r1', 'r2', 'r3', 'r4', 'r5']);
   assert.ok(g.accord.calls.filter(c => c.kind === 'x').every(c => c.audience.length === 0 && Object.keys(c.body).length === 0));
   assert.deepEqual(g.accord.records.filter(r => r.kind === 'x').map(r => r.id), ['theirs'], 'only this machine\'s own records were withdrawn');
-  assert.deepEqual(Object.keys(await g.outbox()), ['y:keep'], 'withdrawn entries are removed, the other kind is untouched and synced');
-  assert.equal((await g.outbox())['y:keep'].state, 'synced');
+  assert.deepEqual(Object.keys(await g.outbox()), ['p:y:keep'], 'withdrawn entries are removed, the other kind is untouched and synced');
+  assert.equal((await g.outbox())['p:y:keep'].state, 'synced');
 });
 
 test('retract of a whole kind with a live certificate withdraws it at once, and says so when Accord has more pages than it read', async t => {
@@ -288,7 +288,7 @@ test('with no identity a retract only clears the unsent publishes and queues not
   await g.publish({ kind: 'x', id: 'other', body: { v: 1 } });
   await g.accord.change({ author: null, certificate: null });
   assert.deepEqual(await g.retract({ kind: 'x', id: 'never-sent' }), { state: 'no_identity', count: 0 });
-  assert.deepEqual(Object.keys(await g.outbox()), ['x:other']);
+  assert.deepEqual(Object.keys(await g.outbox()), ['p:x:other']);
   assert.deepEqual(await g.retract({ kind: 'x' }), { state: 'no_identity', count: 0 });
   assert.deepEqual(await g.retract({ kind: 'x', id: 'sent-before' }), { state: 'no_identity', count: 0 });
   assert.deepEqual(await g.outbox(), {});
@@ -305,12 +305,12 @@ test('a record Accord already has is withdrawn through Accord even when the outb
     await g.self('policy.setKind', { kind: 'x', paused: true });
     assert.equal((await g.publish({ kind: 'x', id: 'a', body: { v: 2 } })).state, 'paused');
     assert.equal((await g.publish({ kind: 'x', id: 'b', body: { v: 1 } })).state, 'paused');
-    assert.equal((await g.outbox())['x:a'].lastSyncedHash, undefined);
+    assert.equal((await g.outbox())['p:x:a'].lastSyncedHash, undefined);
     const result = await g.retract(whole ? { kind: 'x' } : { kind: 'x', id: 'a' });
     assert.deepEqual(result, { state: 'retracted', count: whole ? 2 : 1 });
     assert.deepEqual(g.accord.calls, [{ kind: 'x', id: 'a', body: {}, audience: [] }], 'only a is withdrawn at Accord; b was never there');
     assert.deepEqual(g.accord.records, []);
-    assert.deepEqual(Object.keys(await g.outbox()), whole ? [] : ['x:b']);
+    assert.deepEqual(Object.keys(await g.outbox()), whole ? [] : ['p:x:b']);
     if (!whole) assert.deepEqual(g.accord.queries.at(-1), { kind: 'x', author: A, id: 'a', limit: 1 });
   }
 });
@@ -321,12 +321,12 @@ test('a withdrawal queued for one author is not signed by another: it waits for 
   g.accord.seed('x', ['r'], { author: B });
   await g.accord.change({ certificate: EXPIRED });
   assert.deepEqual(await g.retract({ kind: 'x', id: 'r' }), { state: 'needs_cert', count: 0, queued: 1 });
-  assert.equal((await g.outbox())[`retract:${A}:x:r`].targetAuthor, A);
+  assert.equal((await g.outbox())[`r:${A}:x:r`].targetAuthor, A);
   await g.accord.change({ author: B, certificate: ACTIVE });
   await new Promise(resolve => setTimeout(resolve, 40));
   assert.deepEqual(g.accord.calls, [], 'B never signs a withdrawal that was queued for A');
   assert.deepEqual(g.accord.records.map(r => [r.author, r.id]), [[A, 'r'], [B, 'r']]);
-  const kept = (await g.outbox())[`retract:${A}:x:r`];
+  const kept = (await g.outbox())[`r:${A}:x:r`];
   assert.deepEqual([kept.desired, kept.targetAuthor], ['retract', A]);
   assert.equal((await g.status()).pendingCount, 1);
   await g.accord.change({ author: A });
@@ -346,20 +346,20 @@ test('pausing a kind keeps its publishes in the outbox without calling Accord, a
 
   assert.deepEqual(await g.publish({ kind: 'x', id: 'i', body: { v: 1 } }), { state: 'paused', author: A });
   assert.deepEqual(g.accord.calls, [], 'a paused kind never reaches coda/accord@1 publish');
-  assert.equal((await g.outbox())['x:i'].body.v, 1);
+  assert.equal((await g.outbox())['p:x:i'].body.v, 1);
   assert.equal((await g.status()).pendingCount, 1);
   assert.equal((await g.publish({ kind: 'y', id: 'j', body: { v: 1 } })).state, 'synced', 'other kinds are not affected');
   const waiting = await g.call('outbox');
   assert.deepEqual([waiting.pausedKinds, waiting.pendingCount, waiting.items.filter(item => item.state === 'paused').length], [['x'], 1, 1]);
   // 暂停只拦发布：撤回照常。
   assert.deepEqual(await g.retract({ kind: 'x', id: 'i' }), { state: 'retracted', count: 1 });
-  assert.deepEqual(await g.outbox().then(Object.keys), ['y:j']);
+  assert.deepEqual(await g.outbox().then(Object.keys), ['p:y:j']);
 
   await g.publish({ kind: 'x', id: 'again', body: { v: 2 } });
   g.accord.calls.length = 0;
   assert.deepEqual(await g.self('policy.setKind', { kind: 'x', paused: false }), { pausedKinds: [] });
   assert.deepEqual(g.accord.calls, [{ kind: 'x', id: 'again', body: { v: 2 }, audience: ['public'] }]);
-  assert.equal((await g.outbox())['x:again'].state, 'synced');
+  assert.equal((await g.outbox())['p:x:again'].state, 'synced');
   assert.deepEqual(await g.status(), { author: A, certState: 'active', certUntil: 1_900_000_000, friendCount: 0, pendingCount: 0, pausedKinds: [] });
 });
 
@@ -399,7 +399,7 @@ test('deactivating while the identity is still being read starts no signature an
   finish();
   assert.equal((await signing).state, 'synced');
   const stored = await h.outbox();
-  assert.deepEqual([stored['x:i'].state, stored['x:i'].lastAuthor, 'body' in stored['x:i']], ['synced', A, false]);
+  assert.deepEqual([stored['p:x:i'].state, stored['p:x:i'].lastAuthor, 'body' in stored['p:x:i']], ['synced', A, false]);
 });
 
 test('the intent is written before signing, so a write that fails after the signature never leaves old content looking synced', async t => {
@@ -411,7 +411,7 @@ test('the intent is written before signing, so a write that fails after the sign
   await assert.rejects(g.publish({ kind: 'x', id: 'i', body: { v: 2 } }));
   await chmod(g.dir, 0o700);
   assert.deepEqual(g.accord.calls.map(c => c.body.v), [1, 1, 2], 'v2 did reach Accord');
-  const disk = (await g.outbox())['x:i'];
+  const disk = (await g.outbox())['p:x:i'];
   assert.deepEqual([disk.state, disk.body], ['queued', { v: 2 }]);
   g.accord.onCall = null;
   const again = await g.publish({ kind: 'x', id: 'i', body: { v: 1 } });
@@ -423,7 +423,7 @@ test('the intent is written before signing, so a write that fails after the sign
   await assert.rejects(g.retract({ kind: 'x', id: 'j' }));
   await chmod(g.dir, 0o700);
   g.accord.onCall = null;
-  assert.deepEqual([(await g.outbox())[`retract:${A}:x:j`].desired, g.accord.calls.at(-1).audience], ['retract', []]);
+  assert.deepEqual([(await g.outbox())[`r:${A}:x:j`].desired, g.accord.calls.at(-1).audience], ['retract', []]);
   assert.equal((await g.publish({ kind: 'x', id: 'j', body: { v: 1 } })).skipped, undefined);
 });
 
@@ -452,7 +452,7 @@ test('a withdrawal queued while the certificate was expired is checked against A
   await g.accord.change({ certificate: EXPIRED });
   assert.deepEqual(await g.retract({ kind: 'x', id: 'present' }), { state: 'needs_cert', count: 0, queued: 1 });
   assert.deepEqual(await g.retract({ kind: 'x', id: 'absent' }), { state: 'needs_cert', count: 0, queued: 1 });
-  assert.deepEqual(Object.keys(await g.outbox()).sort(), [`retract:${A}:x:absent`, `retract:${A}:x:present`]);
+  assert.deepEqual(Object.keys(await g.outbox()).sort(), [`r:${A}:x:absent`, `r:${A}:x:present`]);
   g.accord.queries.length = 0;
   await g.accord.change({ certificate: ACTIVE });
   await until(async () => (await g.status()).pendingCount === 0, '恢复后冲洗完');
@@ -473,7 +473,7 @@ test('a batch retract of a kind leaves another author\'s queued withdrawals alon
   assert.deepEqual(await g.retract({ kind: 'x' }), { state: 'retracted', count: 1 }, 'only B\'s own record is withdrawn; A\'s queued entry is not touched or counted');
   assert.deepEqual(g.accord.calls, [{ kind: 'x', id: 'r', body: {}, audience: [] }]);
   g.accord.calls.length = 0;
-  const kept = (await g.outbox())[`retract:${A}:x:r`];
+  const kept = (await g.outbox())[`r:${A}:x:r`];
   assert.deepEqual([kept.desired, kept.targetAuthor], ['retract', A]);
   await g.accord.change({ author: A });
   await until(async () => (await g.status()).pendingCount === 0, 'A 回来后补撤完成');
@@ -503,7 +503,7 @@ test('stopping while a flush is still asking Accord whether a withdrawal has any
   const g = await gateway(t);
   await g.accord.change({ certificate: EXPIRED });
   await g.retract({ kind: 'x', id: 'r' });
-  const key = `retract:${A}:x:r`, before = await readFile(join(g.dir, 'outbox.json'), 'utf8');
+  const key = `r:${A}:x:r`, before = await readFile(join(g.dir, 'outbox.json'), 'utf8');
   let release;
   g.accord.queryGate = new Promise(resolve => { release = resolve; });
   g.accord.queries.length = 0;
@@ -531,7 +531,7 @@ test('each author\'s queued withdrawals are kept apart: B can withdraw its own r
   g.accord.seed('x', ['same'], { author: B });
   assert.deepEqual(await g.retract({ kind: 'x' }), { state: 'retracted', count: 1 }, 'B\'s record; A\'s withdrawal is not counted');
   assert.deepEqual(g.accord.records.map(r => [r.author, r.id]), [[A, 'same']]);
-  assert.ok(`retract:${A}:x:same` in await g.outbox());
+  assert.ok(`r:${A}:x:same` in await g.outbox());
   const listed = await g.call('outbox');
   assert.ok(listed.items.some(item => item.desired === 'retract' && item.id === 'same'));
   assert.equal(listed.pendingCount, 1);
@@ -548,13 +548,13 @@ test('one withdrawal whose Accord lookup fails is kept as an error and the entri
   await g.accord.change({ certificate: EXPIRED });
   await g.retract({ kind: 'x', id: 'r' });
   await g.publish({ kind: 'x', id: 'p', body: { v: 1 } });
-  assert.deepEqual(Object.keys(await g.outbox()), [`retract:${A}:x:r`, 'x:p']);
+  assert.deepEqual(Object.keys(await g.outbox()), [`r:${A}:x:r`, 'p:x:p']);
   g.accord.queryFailure = new Error('查询失败');
   await g.accord.change({ certificate: ACTIVE });
-  await until(async () => (await g.status()).certState === 'active' && (await g.outbox())['x:p']?.state === 'synced', '后面的待发照常冲洗');
+  await until(async () => (await g.status()).certState === 'active' && (await g.outbox())['p:x:p']?.state === 'synced', '后面的待发照常冲洗');
   const stored = await g.outbox();
-  assert.deepEqual([stored[`retract:${A}:x:r`].state, stored[`retract:${A}:x:r`].lastError], ['error', '查询失败']);
-  assert.equal('body' in stored['x:p'], false);
+  assert.deepEqual([stored[`r:${A}:x:r`].state, stored[`r:${A}:x:r`].lastError], ['error', '查询失败']);
+  assert.equal('body' in stored['p:x:p'], false);
   assert.deepEqual(g.accord.calls, [{ kind: 'x', id: 'p', body: { v: 1 }, audience: ['public'] }]);
   await until(async () => (await g.status()).pendingCount === 0, '网关记录已刷新');
 });
@@ -564,10 +564,113 @@ test('a publish replaces the same author\'s queued withdrawal of that id, so the
   g.accord.seed('x', ['over']);
   await g.accord.change({ certificate: EXPIRED });
   await g.retract({ kind: 'x', id: 'over' });
-  assert.deepEqual(Object.keys(await g.outbox()), [`retract:${A}:x:over`]);
+  assert.deepEqual(Object.keys(await g.outbox()), [`r:${A}:x:over`]);
   assert.deepEqual(await g.publish({ kind: 'x', id: 'over', body: { v: 1 } }), { state: 'needs_cert', author: A });
-  assert.deepEqual(Object.keys(await g.outbox()), ['x:over']);
+  assert.deepEqual(Object.keys(await g.outbox()), ['p:x:over']);
   await g.accord.change({ certificate: ACTIVE });
   await until(async () => (await g.status()).pendingCount === 0, '恢复后只发新内容');
   assert.deepEqual(g.accord.calls, [{ kind: 'x', id: 'over', body: { v: 1 }, audience: ['public'] }]);
+});
+
+test('a withdrawal and a publish whose keys used to be the same string are both kept, in either order', async t => {
+  for (const withdrawFirst of [true, false]) {
+    const g = await gateway(t);
+    await g.accord.change({ certificate: EXPIRED });
+    const withdraw = () => g.retract({ kind: 'x', id: 'same' }), publish = () => g.publish({ kind: 'retract', id: `${A}:x:same`, body: { v: 1 } });
+    if (withdrawFirst) { await withdraw(); await publish(); } else { await publish(); await withdraw(); }
+    const stored = await g.outbox();
+    assert.deepEqual(Object.keys(stored).sort(), [`p:retract:${A}:x:same`, `r:${A}:x:same`].sort());
+    assert.deepEqual([stored[`r:${A}:x:same`].desired, stored[`p:retract:${A}:x:same`].desired], ['retract', 'publish']);
+    assert.ok(stored[`p:retract:${A}:x:same`].seq !== stored[`r:${A}:x:same`].seq);
+  }
+});
+
+for (const failure of ['no identity', 'identity unreadable']) {
+  test(`a publish queued while there is ${failure} replaces A's older withdrawal when A is back: only the new content goes out, other authors' withdrawals stay`, async t => {
+    const g = await gateway(t);
+    g.accord.seed('x', ['same']);
+    await g.accord.change({ author: B });
+    await g.publish({ kind: 'x', id: 'same', body: { v: 1 } });
+    await g.accord.change({ certificate: EXPIRED });
+    await g.retract({ kind: 'x', id: 'other' });
+    await g.accord.change({ author: A });
+    await g.retract({ kind: 'x', id: 'same' });
+    assert.ok(`r:${A}:x:same` in await g.outbox());
+
+    const get = g.accord.get;
+    if (failure === 'no identity') await g.accord.change({ author: null, certificate: null });
+    else g.accord.get = async () => { throw new Error('读不出身份'); };
+    const queued = await g.publish({ kind: 'x', id: 'same', body: { v: 2 } });
+    assert.equal(queued.state, failure === 'no identity' ? 'no_identity' : 'queued');
+    assert.ok(`r:${A}:x:same` in await g.outbox(), 'the old withdrawal survives until A is back');
+    g.accord.get = get;
+
+    g.accord.calls.length = 0;
+    await g.accord.change({ author: A, certificate: ACTIVE });
+    await until(async () => (await g.outbox())['p:x:same']?.state === 'synced', '新发布冲洗完成');
+    assert.deepEqual(g.accord.calls, [{ kind: 'x', id: 'same', body: { v: 2 }, audience: ['public'] }], 'the stale withdrawal is never signed');
+    const stored = await g.outbox();
+    assert.equal(stored['p:x:same'].lastAuthor, A);
+    assert.equal(`r:${A}:x:same` in stored, false);
+    assert.equal(`r:${B}:x:other` in stored, true);
+    assert.deepEqual(g.accord.records.map(r => [r.author, r.id, r.body]), [[B, 'same', { v: 1 }], [A, 'same', { v: 2 }]], "B's record untouched, A's is the new content");
+    await until(async () => (await g.status()).pendingCount === 1, "只剩 B 的待撤");
+  });
+}
+
+// A 先排下旧撤回，又在没有身份时排了更晚的新发布；之后 A 回来、证书可用。
+async function withStaleWithdrawal(t) {
+  const g = await gateway(t);
+  await g.accord.change({ certificate: EXPIRED });
+  await g.retract({ kind: 'x', id: 'same' });
+  await g.accord.change({ author: null, certificate: null });
+  assert.equal((await g.publish({ kind: 'x', id: 'same', body: { v: 2 } })).state, 'no_identity');
+  assert.ok(`r:${A}:x:same` in await g.outbox());
+  return g;
+}
+
+test('a publish Accord refuses outright leaves the older withdrawal it would have replaced on disk', async t => {
+  const g = await withStaleWithdrawal(t);
+  g.accord.failure = Object.assign(new Error('不合规'), { code: 'invalid_input' });
+  await g.accord.change({ author: A, certificate: ACTIVE });
+  await until(async () => (await g.outbox())['p:x:same']?.state === 'error', '新发布被拒');
+  assert.deepEqual(g.accord.calls, [{ kind: 'x', id: 'same', body: { v: 2 }, audience: ['public'] }], 'the withdrawal is held back, not signed');
+  assert.equal((await g.outbox())[`r:${A}:x:same`].desired, 'retract', 'and not discarded');
+});
+
+test("a publish Accord signs as another author than the one read at flush time clears that author's older withdrawal, not A's", async t => {
+  const g = await withStaleWithdrawal(t);
+  await g.accord.change({ author: A, certificate: ACTIVE });
+  g.accord.onCall = () => { g.accord.author = B; };
+  await until(async () => (await g.outbox())['p:x:same']?.state === 'synced', '新发布已同步');
+  const stored = await g.outbox();
+  assert.equal(stored['p:x:same'].lastAuthor, B);
+  assert.equal(stored[`r:${A}:x:same`].desired, 'retract', "A's withdrawal is kept");
+});
+
+test('deactivating while a flush is still reading the identity leaves the queued withdrawal and publish untouched', async t => {
+  const g = await withStaleWithdrawal(t);
+  const before = g.accord.gets, stored = await g.outbox();
+  let release;
+  g.accord.getGate = new Promise(resolve => { release = resolve; });
+  await g.accord.change({ author: A, certificate: ACTIVE });
+  await until(() => g.accord.gets > before, '冲洗在读身份');
+  deactivate();
+  g.accord.getGate = null;
+  release();
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.deepEqual(g.accord.calls, []);
+  assert.deepEqual(await g.outbox(), stored);
+});
+
+test('a withdrawal that a later publish of the same author already replaced and synced is dropped without being signed', async t => {
+  const g = await gateway(t);
+  await g.accord.change({ certificate: EXPIRED });
+  await g.retract({ kind: 'x', id: 'same' });
+  const stored = await g.outbox(), [retract] = Object.values(stored);
+  const synced = { seq: retract.seq + 1, kind: 'x', id: 'same', desired: 'publish', state: 'synced', hash: 'h', audience: ['public'], lastAuthor: A, lastSyncedHash: 'h', lastSyncedAt: 1 };
+  await writeFile(join(g.dir, 'outbox.json'), JSON.stringify({ seq: synced.seq, entries: { ...stored, 'p:x:same': synced } }));
+  await g.accord.change({ certificate: ACTIVE });
+  await until(async () => Object.keys(await g.outbox()).join() === 'p:x:same', '过期撤回被丢掉');
+  assert.deepEqual(g.accord.calls, []);
 });

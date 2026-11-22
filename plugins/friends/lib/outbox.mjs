@@ -69,15 +69,20 @@ const canonical = value => {
 export const canonicalHash = value => createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex');
 
 // ---- 条目与状态转换 ----
-// 发布条目按 `${kind}:${id}` 索引（kind 不含冒号），待撤条目按 `retract:${targetAuthor}:${kind}:${id}` 索引：
+// 发布条目按 `p:${kind}:${id}` 索引，待撤条目按 `r:${targetAuthor}:${kind}:${id}` 索引（kind 不含冒号，两类前缀互斥，键不会撞）：
 // 不同作者对同一个 (kind, id) 排下的待撤互不相干，也不挡着对方撤自己的记录。
-//   待发  { kind, id, desired: 'publish', state: queued|paused|no_identity|needs_cert, body, audience, hash, lastError?, + 上次同步的元数据 }
-//   已同步 { kind, id, desired: 'publish', state: 'synced', hash, audience, lastAuthor, lastSyncedHash, lastSyncedAt }（没有 body）
-//   待撤  { kind, id, desired: 'retract', state: queued|no_identity|needs_cert, targetAuthor, lastError?, + 上次同步的元数据 }
+// 每次写入发布或撤回的意图都领一个递增的整数 `seq`（落在条目里，不看系统时钟）：冲洗按它的先后执行，并据它判断旧撤回是否已被更晚的发布取代。
+//   待发  { seq, kind, id, desired: 'publish', state: queued|paused|no_identity|needs_cert, body, audience, hash, lastError?, + 上次同步的元数据 }
+//   已同步 { seq, kind, id, desired: 'publish', state: 'synced', hash, audience, lastAuthor, lastSyncedHash, lastSyncedAt }（没有 body）
+//   待撤  { seq, kind, id, desired: 'retract', state: queued|no_identity|needs_cert, targetAuthor, lastError?, + 上次同步的元数据 }
 //         targetAuthor 是排队时的作者：换了作者就不再替新作者撤，等原作者回来
 //   被拒  { …, state: 'error', lastError }：Accord 明确拒绝，不再自动重试；下一次发布或撤回同一条会替换它
-export const entryKey = (kind, id) => `${kind}:${id}`;
-export const retractKey = (author, kind, id) => `retract:${author}:${kind}:${id}`;
+export const entryKey = (kind, id) => `p:${kind}:${id}`;
+export const retractKey = (author, kind, id) => `r:${author}:${kind}:${id}`;
+// 序号计数器挂在整张表上（不可枚举，不算条目），随表一起写进 `outbox.json` 顶层：条目删了、发布被拒了，序号也不会倒退。
+const withSeq = (entries, seq) => Object.defineProperty(entries, 'seq', { value: seq, writable: true, configurable: true });
+/** 分配下一个意图序号：严格大于此前分配过的所有序号，随下一次写盘落地。 */
+export const nextSeq = entries => withSeq(entries, (entries.seq ?? 0) + 1).seq;
 export const keyOf = entry => entry.desired === 'retract' ? retractKey(entry.targetAuthor, entry.kind, entry.id) : entryKey(entry.kind, entry.id);
 /** 等着发出去的状态（被拒的 error 不算，已同步的也不算）。 */
 export const isPending = entry => ['queued', 'paused', 'no_identity', 'needs_cert'].includes(entry?.state);
@@ -90,11 +95,11 @@ export const canSkip = (prev, hash, author) =>
   !!author && prev?.desired === 'publish' && prev.state === 'synced' && prev.lastAuthor === author && prev.lastSyncedHash === hash;
 
 /** 一次发布的待发条目（带 body），保留上一次同步的元数据。 */
-export const queuePublish = (prev, { kind, id, body, audience }) =>
-  ({ kind, id, desired: 'publish', state: 'queued', body, audience, hash: canonicalHash({ body, audience }), ...synced(prev) });
+export const queuePublish = (prev, { kind, id, body, audience }, seq) =>
+  ({ seq, kind, id, desired: 'publish', state: 'queued', body, audience, hash: canonicalHash({ body, audience }), ...synced(prev) });
 
 /** 一次撤回的待撤条目：记下要撤的是哪个作者的记录，保留上一次同步的元数据。 */
-export const queueRetract = (prev, kind, id, targetAuthor) => ({ kind, id, desired: 'retract', state: 'queued', targetAuthor, ...synced(prev) });
+export const queueRetract = (prev, kind, id, targetAuthor, seq) => ({ seq, kind, id, desired: 'retract', state: 'queued', targetAuthor, ...synced(prev) });
 
 /** 换状态；`error` 是这次失败的原因，不给就清掉旧的。 */
 export function withState(entry, state, error) {
@@ -102,9 +107,9 @@ export function withState(entry, state, error) {
   return { ...rest, state, ...(error ? { lastError: error } : {}) };
 }
 
-/** 发布成功：释放 body，只留 `{ kind, id, desired, state: 'synced', hash, audience, lastAuthor, lastSyncedHash, lastSyncedAt }`。 */
+/** 发布成功：释放 body，只留 `{ seq, kind, id, desired, state: 'synced', hash, audience, lastAuthor, lastSyncedHash, lastSyncedAt }`。 */
 export const markSynced = (entry, author, now) =>
-  ({ kind: entry.kind, id: entry.id, desired: 'publish', state: 'synced', hash: entry.hash, audience: entry.audience, lastAuthor: author, lastSyncedHash: entry.hash, lastSyncedAt: now });
+  ({ seq: entry.seq, kind: entry.kind, id: entry.id, desired: 'publish', state: 'synced', hash: entry.hash, audience: entry.audience, lastAuthor: author, lastSyncedHash: entry.hash, lastSyncedAt: now });
 
 /** Accord 明确拒绝：不再留 body 和 audience，只留元数据与原因。 */
 export const markRejected = (entry, message) =>
@@ -118,15 +123,19 @@ export function holdState(entry, certState, pausedKinds) {
 
 // ---- 持久化 ----
 
-/** 读出整张表 `{ 'kind:id': 条目 }`；缺失、损坏、条目不成样子的都丢掉。 */
+/**
+ * 读出整张表 `{ 键: 条目 }`（磁盘上是 `{ seq, entries }`，旧版是直接平铺的条目）；键按条目内容重新规范（兼容旧键名），
+ * 缺失、损坏、条目不成样子的都丢掉。序号计数器取顶层 `seq` 与现存条目最大序号中较大的。
+ */
 export async function readOutbox(dir) {
-  const parsed = await readJson(dir, 'outbox.json'), entries = {};
+  const parsed = await readJson(dir, 'outbox.json'), entries = withSeq({}, 0);
   if (!isPlain(parsed)) return entries;
-  for (const [key, entry] of Object.entries(parsed)) {
+  const stored = isPlain(parsed.entries) ? parsed.entries : parsed;
+  for (const entry of Object.values(stored)) {
     if (isPlain(entry) && typeof entry.kind === 'string' && typeof entry.id === 'string' && ['publish', 'retract'].includes(entry.desired) && typeof entry.state === 'string'
-      && (entry.desired === 'publish' || typeof entry.targetAuthor === 'string') && key === keyOf(entry)) entries[key] = entry;
+      && (entry.desired === 'publish' || typeof entry.targetAuthor === 'string')) entries[keyOf(entry)] = entry;
   }
-  return entries;
+  return withSeq(entries, Math.max(Number.isSafeInteger(parsed.seq) ? parsed.seq : 0, ...Object.values(entries).map(entry => entry.seq ?? 0)));
 }
 
-export const writeOutbox = (dir, entries) => writeJson(dir, 'outbox.json', entries);
+export const writeOutbox = (dir, entries) => writeJson(dir, 'outbox.json', { seq: entries.seq ?? 0, entries });

@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { RESERVED_KINDS, canSkip, canonicalHash, certStateOf, checkId, checkKind, checkPublish, entryKey, holdState, isPending, markRejected, markSynced,
+import { RESERVED_KINDS, canSkip, canonicalHash, certStateOf, checkId, checkKind, checkPublish, entryKey, holdState, nextSeq, retractKey, isPending, markRejected, markSynced,
   queuePublish, queueRetract, readOutbox, withState, writeOutbox } from '../../../plugins/friends/lib/outbox.mjs';
 import { readPolicy, setKindPaused } from '../../../plugins/friends/lib/policy.mjs';
 
@@ -84,11 +84,11 @@ test('the canonical hash ignores key order at every depth and tells different co
 
 test('a publish that reaches Accord releases its body and keeps only what dedup needs; the same author and content is skipped, a new author is not', () => {
   const item = { kind: 'x', id: 'i', body: { v: 1 }, audience: ['public'] };
-  const pending = queuePublish(undefined, item);
-  assert.deepEqual(pending, { kind: 'x', id: 'i', desired: 'publish', state: 'queued', body: { v: 1 }, audience: ['public'], hash: canonicalHash({ body: item.body, audience: item.audience }) });
+  const pending = queuePublish(undefined, item, 1);
+  assert.deepEqual(pending, { seq: 1, kind: 'x', id: 'i', desired: 'publish', state: 'queued', body: { v: 1 }, audience: ['public'], hash: canonicalHash({ body: item.body, audience: item.audience }) });
   assert.ok(isPending(pending));
   const done = markSynced(pending, A, 1000);
-  assert.deepEqual(done, { kind: 'x', id: 'i', desired: 'publish', state: 'synced', hash: pending.hash, audience: ['public'], lastAuthor: A, lastSyncedHash: pending.hash, lastSyncedAt: 1000 });
+  assert.deepEqual(done, { seq: 1, kind: 'x', id: 'i', desired: 'publish', state: 'synced', hash: pending.hash, audience: ['public'], lastAuthor: A, lastSyncedHash: pending.hash, lastSyncedAt: 1000 });
   assert.equal('body' in done, false);
   assert.equal(isPending(done), false);
   assert.equal(canSkip(done, pending.hash, A), true);
@@ -105,8 +105,8 @@ test('a publish that reaches Accord releases its body and keeps only what dedup 
 
 test('a retract is a queued entry that keeps what was last synced; a rejection drops the body and stops being pending', () => {
   const done = markSynced(queuePublish(undefined, { kind: 'x', id: 'i', body: { v: 1 }, audience: [A] }), A, 7);
-  const retract = queueRetract(done, 'x', 'i', A);
-  assert.deepEqual(retract, { kind: 'x', id: 'i', desired: 'retract', state: 'queued', targetAuthor: A, lastAuthor: A, lastSyncedHash: done.hash, lastSyncedAt: 7 });
+  const retract = queueRetract(done, 'x', 'i', A, 2);
+  assert.deepEqual(retract, { seq: 2, kind: 'x', id: 'i', desired: 'retract', state: 'queued', targetAuthor: A, lastAuthor: A, lastSyncedHash: done.hash, lastSyncedAt: 7 });
   assert.deepEqual(withState(retract, 'needs_cert', '过期'), { ...retract, state: 'needs_cert', lastError: '过期' });
   assert.equal('lastError' in withState(withState(retract, 'queued', '断了'), 'queued'), false);
   const rejected = markRejected(queuePublish(done, { kind: 'x', id: 'i', body: { v: 2 }, audience: ['public'] }), '不允许');
@@ -128,15 +128,16 @@ test('what holds an entry back: a paused kind (publishes only), no identity, an 
   assert.equal(holdState(publish, 'no_identity', ['x']), 'paused');
 });
 
-test('the outbox file is read back by key, and a missing, broken or malformed file or entry is dropped', async t => {
+test('the outbox file is read back by key (renamed from the entry itself), and a missing, broken or malformed file or entry is dropped', async t => {
   const dir = await directory(t);
   assert.deepEqual(await readOutbox(dir), {});
-  const entry = queuePublish(undefined, { kind: 'x', id: 'a:b', body: { v: 1 }, audience: ['public'] });
+  const entry = queuePublish(undefined, { kind: 'x', id: 'a:b', body: { v: 1 }, audience: ['public'] }, 1);
   await writeOutbox(dir, { [entryKey('x', 'a:b')]: entry });
-  assert.deepEqual(await readOutbox(dir), { 'x:a:b': entry });
-  await writeFile(join(dir, 'outbox.json'), JSON.stringify({ 'x:a:b': entry, 'x:c': { kind: 'x', id: 'd', desired: 'publish', state: 'queued' }, 'x:e': { kind: 'x', id: 'e', desired: 'oops', state: 'queued' },
-    'x:f': 'text', 'y:g': null, __proto__: null }));
-  assert.deepEqual(Object.keys(await readOutbox(dir)), ['x:a:b']);
+  assert.deepEqual(await readOutbox(dir), { 'p:x:a:b': entry });
+  const retract = queueRetract(undefined, 'x', 'i', A, 2);
+  await writeFile(join(dir, 'outbox.json'), JSON.stringify({ 'x:a:b': entry, 'retract:old': retract, 'x:e': { kind: 'x', id: 'e', desired: 'oops', state: 'queued' },
+    'x:f': 'text', 'y:g': null, 'x:h': { kind: 'x', id: 'h', desired: 'retract', state: 'queued' }, __proto__: null }));
+  assert.deepEqual(await readOutbox(dir), { 'p:x:a:b': entry, [`r:${A}:x:i`]: retract }, 'old key names are renamed, malformed entries dropped');
   for (const text of ['{broken', '[]', 'null', '"x"']) {
     await writeFile(join(dir, 'outbox.json'), text);
     assert.deepEqual(await readOutbox(dir), {});
@@ -177,4 +178,37 @@ test('a policy write is stopped by its beforeWrite hook before anything is writt
   await assert.rejects(setKindPaused(dir, 'x', true, () => { throw new Error('停了'); }), /停了/);
   assert.deepEqual(await readPolicy(dir), { pausedKinds: [] });
   await assert.rejects(readFile(join(dir, 'policy.json')), { code: 'ENOENT' });
+});
+
+test('publish and withdrawal keys never collide, whichever of them is queued first', async t => {
+  const dir = await directory(t);
+  const retract = queueRetract(undefined, 'x', 'same', A, 1), publish = queuePublish(undefined, { kind: 'retract', id: `${A}:x:same`, body: {}, audience: ['public'] }, 2);
+  assert.notEqual(retractKey(A, 'x', 'same'), entryKey('retract', `${A}:x:same`));
+  for (const order of [[retract, publish], [publish, retract]]) {
+    await writeFile(join(dir, 'outbox.json'), JSON.stringify(Object.fromEntries(order.map(entry => [entry.desired === 'retract' ? 'whatever' : 'also', entry]))));
+    const read = await readOutbox(dir);
+    assert.deepEqual(Object.keys(read).sort(), [entryKey('retract', `${A}:x:same`), retractKey(A, 'x', 'same')].sort());
+    assert.equal(nextSeq(read), 3);
+  }
+  assert.equal(nextSeq({}), 1);
+});
+
+test('the sequence counter is kept at the top of the file, so it never goes back after entries are removed, and an old flat file starts it from its largest seq', async t => {
+  const dir = await directory(t);
+  const table = await readOutbox(dir);
+  assert.equal(nextSeq(table), 1);
+  const keep = queuePublish(undefined, { kind: 'x', id: 'a', body: {}, audience: ['public'] }, nextSeq(table));
+  const gone = queueRetract(undefined, 'x', 'b', A, nextSeq(table));
+  table[entryKey('x', 'a')] = keep;
+  table[retractKey(A, 'x', 'b')] = gone;
+  await writeOutbox(dir, table);
+  assert.deepEqual(JSON.parse(await readFile(join(dir, 'outbox.json'), 'utf8')).seq, 3);
+  delete table[retractKey(A, 'x', 'b')];
+  delete table[entryKey('x', 'a')];
+  await writeOutbox(dir, table);
+  const reloaded = await readOutbox(dir);
+  assert.deepEqual(Object.keys(reloaded), []);
+  assert.equal(nextSeq(reloaded), 4, 'removing every entry does not let the counter fall back');
+  await writeFile(join(dir, 'outbox.json'), JSON.stringify({ [entryKey('x', 'a')]: { ...keep, seq: 9 } }));
+  assert.equal(nextSeq(await readOutbox(dir)), 10);
 });

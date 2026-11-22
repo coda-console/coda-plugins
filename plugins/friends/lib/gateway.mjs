@@ -4,7 +4,7 @@
 import { PROFILE_KIND, mergeFriendRows, statusOf } from './friends.mjs';
 import { readNotes } from './notes.mjs';
 import { canSkip, canonicalHash, certStateOf, checkId, checkKind, checkPublish, entryKey, holdState, keyOf, retractKey, invalid, isPending, markRejected, markSynced,
-  queuePublish, queueRetract, readOutbox, withState, writeOutbox } from './outbox.mjs';
+  nextSeq, queuePublish, queueRetract, readOutbox, withState, writeOutbox } from './outbox.mjs';
 import { readPolicy, setKindPaused } from './policy.mjs';
 
 const ACCORD = { kind: 'coda/accord@1', id: 'local' };
@@ -80,7 +80,7 @@ export function createGateway(coda, dir) {
     if (!Object.values(outbox).some(isPending)) return;
     const [{ author, certState }, { pausedKinds }] = await Promise.all([accordState(), readPolicy(d)]);
     let changed = false;
-    for (const entry of Object.values(outbox)) {
+    for (const entry of Object.values(outbox).sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))) {
       live();
       if (!isPending(entry)) continue;
       const key = keyOf(entry), hold = holdState(entry, certState, pausedKinds);
@@ -92,6 +92,19 @@ export function createGateway(coda, dir) {
       // 没同步过的待撤条目，先确认本机在 Accord 里真有这条记录再签名；没有就清掉，不为从未发布的 id 生成墓碑。
       if (entry.desired === 'retract') {
         if (entry.targetAuthor !== author) continue;
+        // 同一条记录之后有更晚的发布，这条旧撤回已被取代：那条发布这位作者已经同步了，旧撤回直接删；还待发的，旧撤回先留着不执行，
+        // 等它发布成功时和 synced 一起落盘删除（被拒或中途停用，旧撤回就还在盘上）。
+        const later = outbox[entryKey(entry.kind, entry.id)];
+        if (later?.desired === 'publish' && (later.seq ?? 0) > (entry.seq ?? 0)) {
+          if (later.state === 'synced' && later.lastAuthor === author) {
+            live();
+            delete outbox[key];
+            await save(outbox);
+            changed = false;
+            continue;
+          }
+          if (isPending(later)) continue;
+        }
         if (entry.lastSyncedHash === undefined) {
           let held;
           try { held = await holds(entry.kind, author, entry.id); } catch (e) {
@@ -113,6 +126,10 @@ export function createGateway(coda, dir) {
       }
       const done = await attempt(entry, author);
       if (done.entry) outbox[key] = done.entry; else delete outbox[key];
+      if (done.state === 'synced') {
+        const old = outbox[retractKey(done.entry.lastAuthor, entry.kind, entry.id)];
+        if (old && (old.seq ?? 0) < (entry.seq ?? 0)) delete outbox[keyOf(old)];
+      }
       await persist(outbox);
       changed = false;
       if (done.state === 'needs_cert') break;
@@ -159,7 +176,7 @@ export function createGateway(coda, dir) {
       const d = stateDir(), key = entryKey(item.kind, item.id), outbox = await readOutbox(d), prev = outbox[key];
       let current;
       try { current = await accordState(); } catch (e) {
-        outbox[key] = withState(queuePublish(prev, item), 'queued', message(e));
+        outbox[key] = withState(queuePublish(prev, item, nextSeq(outbox)), 'queued', message(e));
         await save(outbox);
         return { state: 'queued', error: message(e) };
       }
@@ -168,7 +185,7 @@ export function createGateway(coda, dir) {
       // 新发布盖过这个作者排着的待撤，免得旧的待撤之后又把新内容撤了。
       const queuedRetract = author ? retractKey(author, item.kind, item.id) : null, prevRetract = outbox[queuedRetract];
       if (canSkip(prev, canonicalHash({ body: item.body, audience: item.audience }), author)) return { state: 'synced', skipped: true, author };
-      const entry = queuePublish(prev, item), hold = holdState(entry, certState, (await readPolicy(d)).pausedKinds);
+      const entry = queuePublish(prev, item, nextSeq(outbox)), hold = holdState(entry, certState, (await readPolicy(d)).pausedKinds);
       live();
       if (hold) {
         outbox[key] = withState(entry, hold);
@@ -248,7 +265,7 @@ export function createGateway(coda, dir) {
           if (superseded || prevRetract) { if (superseded) delete outbox[pubKey]; delete outbox[key]; count++; }
           continue;
         }
-        const entry = queueRetract(published?.lastAuthor === author ? published : prevRetract, kind, one, author);
+        const entry = queueRetract(published?.lastAuthor === author ? published : prevRetract, kind, one, author, nextSeq(outbox));
         if (superseded) delete outbox[pubKey];
         if (certState === 'active') { outbox[key] = entry; sends.push([one, superseded ? published : undefined, prevRetract]); } else { outbox[key] = withState(entry, certState); queued++; }
       }
