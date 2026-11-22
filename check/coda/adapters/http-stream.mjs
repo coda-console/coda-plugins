@@ -165,15 +165,20 @@ function byteRange(header, size) {
   return { start, end: asked[2] ? Math.min(Number(asked[2]), size - 1) : size - 1 };
 }
 
-// A file as HTTP clients read one: whole, or the range a player asks for as it streams (206, or 416 for one past the
-// end). `headers`: what describes it, its type and validators.
-export async function sendFile(req, res, path, size, headers) {
-  const range = byteRange(req.headers.range, size);
-  if (range && range.start > range.end) {
-    res.writeHead(416, { 'accept-ranges': 'bytes', 'content-range': `bytes */${size}` }); res.end(); return;
-  }
-  const { start, end } = range ?? { start: 0, end: size - 1 };
-  res.writeHead(range ? 206 : 200, { ...headers, 'accept-ranges': 'bytes', 'content-length': end - start + 1,
-    ...(range ? { 'content-range': `bytes ${start}-${end}/${size}` } : {}) });
+// How a file of `size` bytes is answered, asked with the Range header `range`: whole, or the range a player asks for as it
+// streams (206, or 416 for one past the end), its bytes `start` to `end`, none when `start` is past `end`. `headers`: what
+// describes it, its type and validators.
+export function ranged(range, size, headers = {}) {
+  const asked = byteRange(range, size);
+  if (asked && asked.start > asked.end) return { status: 416, headers: { 'accept-ranges': 'bytes', 'content-range': `bytes */${size}` }, ...asked };
+  const { start, end } = asked ?? { start: 0, end: size - 1 };
+  return { status: asked ? 206 : 200, headers: { ...headers, 'accept-ranges': 'bytes', 'content-length': end - start + 1,
+    ...(asked ? { 'content-range': `bytes ${start}-${end}/${size}` } : {}) }, start, end };
+}
+// A file as HTTP clients read one (`ranged`); or, asked with `HEAD`, the head alone, the file not read.
+export async function sendFile(req, res, path, size, described) {
+  const { status, headers, start, end } = ranged(req.headers.range, size, described);
+  res.writeHead(status, headers);
+  if (req.method === 'HEAD' || start > end) return void res.end();
   await pipeline(createReadStream(path, { start, end }), res);
 }

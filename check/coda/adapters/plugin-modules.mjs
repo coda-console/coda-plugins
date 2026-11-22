@@ -5,7 +5,7 @@
 // module loaded, for whoever holds it to activate a module with, its `pluginSetup` the one given; `stop()`: each module loaded
 // ends what it started (`deactivate`).
 //
-// From the backend: `start { api: { url } }`, `activate { plugin, token }` (before anything else of the plugin's),
+// From the backend: `start { owner }`, `activate { plugin, token }` (before anything else of the plugin's),
 // `open { instance, plugin, view, context, caller }`, `query { plugin, request, deadline }`, `run { plugin, call }` and
 // `resume { plugin, call }`, and `cancel { id, reason }` of any of them, `mode { plugin, mode, hook, context }` (a request
 // each), and `message`, `callProgress { id, value }` (a `call`'s progress, by the request's ID), `context`, `close { instance, … }`, `changed { watch, events }`, `settingsChanged { plugin,
@@ -25,6 +25,7 @@
 import { readFrames, writeFrames } from '@coda-console/protocol/frames';
 import { join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
+import { blobPointer } from './blob-pointer.mjs';
 import { handlerServer, pluginServices } from './plugin-stream-services.mjs';
 import { pathToFileURL } from 'node:url';
 import { callingAPI, canceled, codaError, failed, failureOf, givenUp, providerAPI, queryingAPI } from './provider-api.mjs';
@@ -33,9 +34,8 @@ import { pluginEvents } from './plugin-events.mjs';
 import { pluginSetupAPI } from './plugin-setup-api.mjs';
 
 export function pluginModules({ send }) {
-  // This machine's Coda, as `start` gives it: its address only. Each module reaches it with its own plugin's token, given
-  // with `activate` and kept in its own `coda` only.
-  let api = null;
+  // This backend's machine ID, as `start` gives it. A plugin's token, given with `activate`, is kept in its own `coda` only.
+  let owner = null;
   const loading = new Map(), instances = new Map(), asked = new Map(), watches = new Map();
   // The queries and doing calls being handled, by the backend's request: each called off with the reason the backend gives
   // (`cancel`).
@@ -239,6 +239,8 @@ export function pluginModules({ send }) {
       serve: services.serve, stream: services.stream,
       frames: Object.freeze({ read: readFrames, write: writeFrames }),
       services: services.api,
+      // A pointer to content of one of the plugin's own services (docs/plugins.md「Blob 指针」), the service registered or not.
+      pointer: (service, path, extra) => blobPointer(owner, plugin.id, service, path, extra),
       // `put({ kind, key }, { spec, status?, labels? })` made or replaced (a status not given kept), answered with its entry,
       // `delete({ kind, key })`, and `replace(kind, entries)`, every one of a kind the plugin holds given (`[{ key, spec,
       // status?, labels? }]`), those it no longer gives gone, answered with the entries given, in their order: each named by
@@ -260,7 +262,7 @@ export function pluginModules({ send }) {
         },
       }),
       protocols: Object.freeze({
-        ...providerAPI({ call: (method, args) => asks('provider', { method, args }), connection: () => api && { url: api.url, token } }),
+        ...providerAPI({ call: (method, args) => asks('provider', { method, args }) }),
         register(kind, key, handler) {
           if (typeof kind !== 'string' || !kind || typeof key !== 'string' || !key || typeof handler !== 'function') throw new TypeError('protocols.register(类型, key, handler)');
           const id = JSON.stringify([kind, key]);
@@ -307,7 +309,7 @@ export function pluginModules({ send }) {
   const activated = plugin => loading.get(plugin.id) ?? Promise.reject(new Error(`插件 ${plugin.id} 还没有激活`));
 
   const handlers = {
-    start(params) { api = params.api; },
+    start(params) { owner = params.owner; },
     // A plugin's module, loaded the first time anything of it is needed, or as soon as the backend has started.
     async activate({ plugin, token }) { await load(plugin, token); },
     async open({ instance, plugin, view, context, caller }) {

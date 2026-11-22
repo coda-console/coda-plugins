@@ -139,6 +139,8 @@ export function readPlugin(dir, source, points = CONTRIBUTION_POINTS) {
     // The permission groups of others' protocols it uses (docs/plugins.md「用到的权限」), by protocol: checked against the
     // catalog it is installed into, and whenever the catalog is read (plugin-extensions.mjs compatibility).
     ...(manifest.uses && Object.keys(manifest.uses).length ? { uses: structuredClone(manifest.uses) } : {}),
+    // The same, but optional (docs/plugins.md「用到的权限」): authorized like `uses`, never a reason it does not run here.
+    ...(manifest.optionalUses && Object.keys(manifest.optionalUses).length ? { optionalUses: structuredClone(manifest.optionalUses) } : {}),
     ...(manifest.main ? { main: posix.normalize(manifest.main) } : {}), ...(activation.includes('onStartupFinished') ? { startup: true } : {}),
     ...(required.length ? { required: [...required] } : {}), workflows: files('.coda/workflows'),
     services: [...(contributes.services ?? [])],

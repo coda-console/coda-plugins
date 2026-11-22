@@ -7,7 +7,7 @@
 import { createHash } from 'node:crypto';
 import { normalize } from 'node:path';
 import { requireCondition as check } from '../../domain/errors.mjs';
-import { installingIncompatibility, protocolDefinition, withDependencies } from './plugin-extensions.mjs';
+import { installingIncompatibility, protocolDefinition, usedOf, withDependencies } from './plugin-extensions.mjs';
 import { CONTRIBUTION_POINTS } from './contribution-points.mjs';
 import { definedEvents, eventsProblem } from '../protocols/protocol-events.mjs';
 
@@ -350,9 +350,9 @@ export function contributions(plugin, catalog = new Map(), defined = () => null)
 // one), and what the group lets it do, whether on trial; by protocol, then group. One its protocol does not define is
 // why it cannot be installed (plugin-extensions.mjs compatibility), not listed.
 function permissions(plugin, catalog, defined) {
-  return Object.entries(plugin.uses ?? {}).flatMap(([kind, groups]) => {
+  return Object.keys({ ...plugin.uses, ...plugin.optionalUses }).flatMap(kind => {
     const definition = protocolDefinition(kind, catalog, defined), declared = definition?.permissions ?? {};
-    return groups.filter(group => Object.hasOwn(declared, group)).map(group =>
+    return [...usedOf(plugin, kind)].filter(group => Object.hasOwn(declared, group)).map(group =>
       ({ kind, protocol: definition.title ?? kind, group, title: declared[group].title, trial: declared[group].trial === true }));
   }).sort((a, b) => a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : a.group < b.group ? -1 : a.group > b.group ? 1 : 0);
 }

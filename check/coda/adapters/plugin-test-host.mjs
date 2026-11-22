@@ -14,9 +14,9 @@
 //   await host.call({ kind: 'translator/service@1', id: 'default' }, 'translate', { text: 'x' });
 //
 // What the module queries (`coda.query`, `ctx.query`) of a record of a protocol it implements its own handlers answer; of
-// another's, `call` given. A doing call it makes (`coda.call`, `ctx.call`) its own handlers answer, of a protocol it implements. Its settings (`coda.settings`) are those the test gives, or sets again with `setSettings`, which
+// another's, `call` given. A doing call it makes (`coda.call`, `ctx.call`) its own handlers answer, of a protocol it implements; of another's, `call` given too. Its settings (`coda.settings`) are those the test gives, or sets again with `setSettings`, which
 // tells the module's `onChange` as the backend does. The events the test delivers (`emit`) go to its handlers (`coda.on`),
-// which may name only what it subscribes to by its `uses`, as the backend has it. What it starts (`coda.spawn`, `ctx.spawn`) is a real child process of
+// which may name only what it subscribes to by its `uses` and `optionalUses`, as the backend has it. What it starts (`coda.spawn`, `ctx.spawn`) is a real child process of
 // the test's, its streams and its end relayed as the backend relays them (adapters/process-relay.mjs), with no token and
 // no entry in a registry: ended with the call or the module only as the test ends it, or as the host closes. The records
 // (`coda.get`, `list`, `watch`, `put`, `delete`, `replace`, coda#2749 3.7) are those it writes, on this one machine, by its
@@ -30,7 +30,7 @@ import { randomUUID } from 'node:crypto';
 import { ContractError } from '../domain/errors.mjs';
 import { ProtocolTypes, streamInput } from '../components/protocols/types.mjs';
 import { commandOf, implementations } from '../components/plugins/plugin-rules.mjs';
-import { subscribed } from '../components/plugins/plugin-extensions.mjs';
+import { subscribed, usesRefusal } from '../components/plugins/plugin-extensions.mjs';
 import { checkGiven, checkHeld, checkKept, groupType, keptStatus } from '../components/concurrency-groups/schemas.mjs';
 import { validate } from '../components/protocols/types.mjs';
 import { LOCAL_KINDS, checkLabels, checkReplace, checkWrite, labelled, picked, readFilter, readRef, recordId, writeRef } from '../components/protocols/record-rules.mjs';
@@ -47,14 +47,15 @@ import { cancelOf, failed, failureOf, givenUp, outcomeOf } from './provider-api.
 const refused = (code, message) => new ContractError(code, message, { effects: 'none' });
 // What starts a command implementing an operation: a child of the test's, in a group of its own, registered nowhere.
 const unregistered = { spawn: (_owner, _entry, file, args, options) => spawn(file, args, { ...options, detached: true }), remove: () => {} };
-// This machine's backend, as the records the module writes name their holder, and where they are.
-export const TEST_OWNER = 'test-host';
+// This machine's backend, as the records the module writes name their holder and where they are, and its pointers
+// (`coda.pointer`) where their content is.
+export const TEST_OWNER = '7e57a057-0000-4000-8000-000000000000';
 const open = { type: 'object' };
 
 // `plugin`: the plugin under test as its manifest has it — its `id`, the `protocols` it defines, the
 // `protocolImplementations` it handles (a protocol's name, or `{ kind, commands }`) and the named `processes` it declares —
 // and its `path` and `state` directories.
-// `call(record, operation, input, { signal, deadline })`: what answers the module's queries of records of protocols it does not implement. `clock`: what
+// `call(record, operation, input, { signal, deadline })`: what answers the module's queries and doing calls of records of protocols it does not implement. `clock`: what
 // the calls' deadlines go by (adapters/clock.mjs), for a test to move. `settings`: the plugin's settings to begin with.
 // `records`: others' records the module reads, each `{ kind, id, spec, status?, labels?, plugin?, owner?, location? }`,
 // another machine's (`owner`, by default `other`; `plugin`, by default the plugin under test) or, `owner` this one's
@@ -66,15 +67,25 @@ export function createTestHost({ plugin = {}, call = null, clock = new Clock(), 
   // keeps out of the record directory, and the plugin's.
   const types = new ProtocolTypes();
   for (const { name, spec, status, operations = {}, streams = {} } of [...Object.values(CORE_PROTOCOLS), { ...groupType, name: groupType.kind },
-    ...(plugin.protocols ?? []).filter(protocolHasRecords)]) types.register({ kind: name, spec, status, operations, streams });
+    ...(plugin.protocols ?? []).filter(protocolHasRecords), ...protocols.filter(protocolHasRecords)]) types.register({ kind: name, spec, status, operations, streams });
   for (const kind of LOCAL_KINDS) if (!types.types.has(kind)) types.register({ kind, spec: open, status: open, operations: {} });
   const manifest = { protocolImplementations: implementations(plugin.protocolImplementations ?? []) };
   const implemented = manifest.protocolImplementations.map(entry => entry.kind);
   const operationOf = (kind, operation) => types.types.get(kind)?.operations.get(operation);
   // The plugin, and what the backend would have of it and of the other plugins as its catalog: its protocols, what it
   // implements and uses, and the others' protocols.
-  const id = plugin.id ?? 'test', entry = { id, protocols: plugin.protocols ?? [], protocolImplementations: manifest.protocolImplementations, uses: plugin.uses ?? {} };
+  const id = plugin.id ?? 'test', entry = { id, protocols: plugin.protocols ?? [], protocolImplementations: manifest.protocolImplementations, uses: plugin.uses ?? {}, optionalUses: plugin.optionalUses ?? {} };
   const catalog = new Map([[id, entry], [' ', { protocols }]]);
+  // What the module reaches of a protocol given in `protocols` (not one it defines or implements) its `uses` and `optionalUses` must allow, as the
+  // backend's `permit` has it (plugin-extensions.mjs usesRefusal): refused before anything is read or handed to `call`, once the
+  // protocol, as a kind of records or with the operation, is known (`not_found`).
+  const others = new Map(protocols.map(definition => [definition.name, definition]));
+  const permit = (kind, need) => {
+    if (!others.has(kind)) return;
+    if (need === 'read' ? !types.types.has(kind) : !operationOf(kind, need.operation)) throw refused('not_found', need === 'read' ? `没有协议：${kind}` : `没有这个操作：${kind}/${need.operation}`);
+    const problem = usesRefusal(entry, kind, need, others.get(kind));
+    if (problem) throw refused('forbidden', problem);
+  };
   const described = { id, path: plugin.path ?? process.cwd(), state: plugin.state ?? null, protocolImplementations: implemented,
     events: subscribed(entry, catalog, () => null) };
   // Requests to the module waiting for its answer, the module's queries under way, and the doing calls handed to it, with what
@@ -89,6 +100,7 @@ export function createTestHost({ plugin = {}, call = null, clock = new Clock(), 
   const ending = new AbortController();
   // What the module sends the backend, taken after the turn it is sent in, as over a process's channel.
   const modules = pluginModules({ send: message => queueMicrotask(() => taken(message)) });
+  modules.receive({ method: 'start', params: { owner: TEST_OWNER } });
   // `coda.pluginSetup` is there as the module has it, but fails: the test host has no backend to ask.
   const setup = { retry: async () => { throw refused('unsupported', '测试宿主不提供 coda.pluginSetup'); } };
   const coda = modules.adopt(described, randomUUID(), setup);
@@ -165,8 +177,8 @@ export function createTestHost({ plugin = {}, call = null, clock = new Clock(), 
     return Array.isArray(answer) ? answer.map(entry) : answer === null ? null : entry(answer);
   }
   const recordRequests = {
-    getRecord: ([ref]) => { const read = readRef(ref); return picked(listed(read.kind, { id: read.id })); },
-    listRecords: ([kind, filter]) => listed(kind, filter),
+    getRecord: ([ref]) => { const read = readRef(ref); permit(read.kind, 'read'); return picked(listed(read.kind, { id: read.id })); },
+    listRecords: ([kind, filter]) => { permit(kind, 'read'); return listed(kind, filter); },
     putRecord: ([ref, value]) => written(ref?.kind, ({ put }) => put(writeRef(ref).key, value)),
     deleteRecord: ([ref]) => written(ref?.kind, ({ remove }) => { remove(writeRef(ref).key); return null; }),
     replaceRecords: ([kind, entries]) => written(kind, ({ put, remove, mine }) => {
@@ -232,7 +244,9 @@ export function createTestHost({ plugin = {}, call = null, clock = new Clock(), 
     // A kind's records watched: each entry, by its holder and ID (`{ type, id, entry }` to the module's listeners).
     if (message.method === 'watch' && types.types.has(message.params?.collection)) {
       return answered(() => {
-        const { collection: kind, selector } = message.params, entries = listed(kind, selector);
+        const { collection: kind, selector } = message.params;
+        permit(kind, 'read');
+        const entries = listed(kind, selector);
         // Keyed as the module keys it: by the one plugin here.
         watching.set(JSON.stringify([kind, selector, described.id]), { kind, filter: selector, seen: new Map(entries.map(entry => [keyOf(entry), entry])) });
         return { items: entries.map(entry => ({ id: keyOf(entry), object: entry })), entries: true };
@@ -248,6 +262,10 @@ export function createTestHost({ plugin = {}, call = null, clock = new Clock(), 
       return Promise.resolve().then(() => {
         const found = operationOf(record?.kind, operation);
         if (found?.codaOnly) throw refused('forbidden', `${record.kind}/${operation} 只由 Coda 调用，插件不能调`);
+        if (found && !found.safe) permit(record.kind, { operation });
+        // Another's doing operation is `call`'s to answer, as another's query is.
+        if (found && !found.safe && !implemented.includes(record.kind) && call) return foreign(record, operation, input, found, { signal: controller.signal,
+          deadline: Math.min(timeout ? clock.now() + timeout : Infinity, deadline ?? Infinity) });
         if (!found || found.safe || !implemented.includes(record.kind)) throw refused('not_found', `测试宿主里没有做事的操作 ${record?.kind}/${operation} 的处理函数`);
         const left = deadline === null ? Infinity : deadline - clock.now(), within = Math.min(timeout ?? Infinity, left);
         return run(record, operation, input, found, { signal: controller.signal, timeout: within === Infinity ? null : within,
@@ -257,7 +275,7 @@ export function createTestHost({ plugin = {}, call = null, clock = new Clock(), 
     if (message.method !== 'query') return reply({ error: `测试宿主没有后端，不答 ${message.method}` });
     const { record, operation, input, timeout, deadline } = message.params, controller = new AbortController();
     querying.set(message.id, controller);
-    query(record, operation, input, { signal: controller.signal, deadline: Math.min(timeout ? clock.now() + timeout : Infinity, deadline ?? Infinity) })
+    Promise.resolve().then(() => { permit(record?.kind, { operation }); return query(record, operation, input, { signal: controller.signal, deadline: Math.min(timeout ? clock.now() + timeout : Infinity, deadline ?? Infinity) }); })
       .then(result => reply({ result }), error => reply({ error: failureOf(error) }))
       .finally(() => querying.delete(message.id));
   }
@@ -300,6 +318,26 @@ export function createTestHost({ plugin = {}, call = null, clock = new Clock(), 
       return result;
     } catch (error) {
       throw given() ?? Object.assign(limited.signal.aborted ? limited.signal.reason : error, { effects: 'none' });
+    } finally { limited.end(); }
+  }
+  // A doing call of another's protocol, answered by `call`: refused before it is handed over, it did nothing (`none`); once handed
+  // over, it fails as `call` fails it (its own `effects`, else unknown), or, called off, with the reason it was called off with.
+  async function foreign(record, operation, input, found, { signal, deadline }) {
+    const name = `${record.kind}/${operation}`, limited = limit(clock, found, { signal, deadline });
+    let handedOver = false;
+    try {
+      checkInput(found, name, input);
+      checkRequest({ record: recordFor(record), operation, input, requestId: randomUUID(), parent: { kind: 'plugin', id: described.id }, awaited: true });
+      if (limited.signal.aborted) throw limited.signal.reason;
+      handedOver = true;
+      const result = await Promise.race([call(record, operation, input, { signal: limited.signal, deadline: limited.deadline }), stopped(limited.signal)]);
+      checkResult(found, name, result);
+      return result;
+    } catch (error) {
+      const effects = handedOver ? 'unknown' : 'none';
+      if (signal?.aborted) throw givenUp(signal, effects);
+      if (limited.signal.aborted) throw givenUp(limited.signal, effects);
+      throw handedOver ? error : Object.assign(error, { effects });
     } finally { limited.end(); }
   }
   // Handed to the module as the plugin host hands it (`query`); called off, its handler's `ctx.signal` goes off with why.
