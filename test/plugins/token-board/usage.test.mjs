@@ -619,3 +619,27 @@ test('UTC+8 本地零点（前一 UTC 日 16:00 起）：归档因过半不在�
     assert.equal(entries.find(e => e.author === B).input, 5);
   });
 });
+
+test('榜单：好友行自带的备注优先于名片名，没有名片记录时回落好友行的 profileName / title / emoji / color（经清洗）；自己和既有 profileRecords 不受影响', () => {
+  const from = DAY0, to = DAY0 + DAY_MS;
+  const friends = [
+    { author: B, note: '  老王\u0007  ', profileName: '王二', title: '老王', emoji: '🐶', color: 'blue' },
+    { author: C, note: '', profileName: '', title: '好友 cccccccc', emoji: '', color: 'javascript:alert(1)' },
+  ];
+  const profile = (author, name, extra = {}) => ({ author, kind: 'profile', id: 'self', version: 1, body: { name, ...extra } });
+  const { entries } = aggregateLeaderboard({ selfAuthor: A, selfSourceId: 'me', friends, from, to, profileRecords: [profile(A, '我自己', { emoji: '🧑' }), profile(B, '名片里的王', { color: 'teal' })] });
+  const by = author => entries.find(e => e.author === author);
+  assert.equal(by(B).name, '老王', '备注优先于名片记录');
+  assert.equal(by(B).color, 'teal', '名片记录有的颜色优先');
+  assert.equal(by(B).emoji, '🐶', '名片记录没有 emoji，用好友行的');
+  assert.equal(by(A).name, '我自己');
+  assert.equal(by(A).emoji, '🧑');
+  // 没有名片记录、没有备注：回落 profileName，再回落 title；非法颜色丢掉。
+  const fallback = aggregateLeaderboard({ selfAuthor: A, selfSourceId: 'me', friends: [{ author: B, note: '', profileName: '王二', title: '王二' }, friends[1]], from, to }).entries;
+  assert.equal(fallback.find(e => e.author === B).name, '王二');
+  assert.equal(fallback.find(e => e.author === C).name, '好友 cccccccc');
+  assert.equal(fallback.find(e => e.author === C).color, null);
+  const named = aggregateLeaderboard({ selfAuthor: A, selfSourceId: 'me', friends: [{ author: B, profileName: '王二', title: '王二', color: 'orange' }], from, to, profileRecords: [profile(B, '记录名')] }).entries;
+  assert.equal(named.find(e => e.author === B).name, '记录名', '没有备注时名片记录优先于好友行的 profileName');
+  assert.equal(named.find(e => e.author === B).color, 'orange');
+});
