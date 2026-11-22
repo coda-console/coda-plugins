@@ -4,12 +4,13 @@
   "displayName": "好友",
   "description": "管理 Accord 身份、个人名片与熟人好友通道",
   "icon": { "symbol": "person.2.fill", "color": "blue" },
-  "version": "0.1.0",
+  "version": "0.2.0",
   "categories": [
     "Skills 与工具"
   ],
+  "type": "module",
   "engines": {
-    "coda": 5
+    "coda": 13
   },
   "main": "main.mjs",
   "activationEvents": [
@@ -34,6 +35,175 @@
         "icon": "person.2.fill",
         "frame": "document"
       }
+    ],
+    "protocols": [
+      {
+        "name": "friends/social@1",
+        "title": "好友社交网关",
+        "description": "业务无关的好友网关：读好友与好友分享的记录，向好友发布、撤回记录；签名与记录全部透传 coda/accord@1，没有身份或证书过期时在本机排队，恢复后自动补发。",
+        "spec": {
+          "type": "object",
+          "properties": { "version": { "const": 1 } },
+          "required": ["version"],
+          "additionalProperties": false
+        },
+        "status": {
+          "type": "object",
+          "properties": {
+            "author": { "type": ["string", "null"] },
+            "certState": { "enum": ["no_identity", "needs_cert", "active"] },
+            "certUntil": { "type": "integer", "minimum": 0 },
+            "friendCount": { "type": "integer", "minimum": 0 },
+            "pendingCount": { "type": "integer", "minimum": 0 },
+            "pausedKinds": { "type": "array", "items": { "type": "string" } }
+          },
+          "required": ["author", "certState", "friendCount", "pendingCount", "pausedKinds"],
+          "additionalProperties": false
+        },
+        "operations": {
+          "friends": {
+            "safe": true,
+            "input": {
+              "type": "object",
+              "properties": { "includePending": { "type": "boolean" } },
+              "additionalProperties": false
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "selfAuthor": { "type": ["string", "null"] },
+                "certState": { "enum": ["no_identity", "needs_cert", "active"] },
+                "friends": { "type": "array", "items": { "type": "object" } },
+                "truncated": { "type": "boolean" }
+              },
+              "required": ["selfAuthor", "certState", "friends", "truncated"],
+              "additionalProperties": false
+            }
+          },
+          "records": {
+            "safe": true,
+            "input": {
+              "type": "object",
+              "properties": {
+                "kind": { "type": "string", "minLength": 1 },
+                "author": { "type": "string" },
+                "id": { "type": "string", "minLength": 1, "maxLength": 256 },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 200 },
+                "cursor": { "type": "string" },
+                "includeAudience": { "type": "boolean" }
+              },
+              "required": ["kind"],
+              "additionalProperties": false
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "records": { "type": "array", "items": { "type": "object" } },
+                "truncated": { "type": "boolean" },
+                "nextCursor": { "type": "string" }
+              },
+              "required": ["records", "truncated"]
+            }
+          },
+          "publish": {
+            "idempotent": true,
+            "input": {
+              "type": "object",
+              "properties": {
+                "kind": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}(?:/[a-z][a-z0-9-]{0,63})?$" },
+                "id": { "type": "string", "minLength": 1, "maxLength": 256 },
+                "body": { "type": "object" },
+                "audience": {
+                  "type": "array",
+                  "items": { "type": "string", "pattern": "^(?:public|ed25519:[0-9a-f]{64})$" },
+                  "maxItems": 500,
+                  "default": ["public"]
+                }
+              },
+              "required": ["kind", "id", "body"],
+              "additionalProperties": false
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "state": { "enum": ["synced", "queued", "paused", "no_identity", "needs_cert", "error"] },
+                "skipped": { "type": "boolean" },
+                "author": { "type": ["string", "null"] },
+                "version": { "type": "integer", "minimum": 0 },
+                "error": { "type": "string" }
+              },
+              "required": ["state"],
+              "additionalProperties": false
+            }
+          },
+          "retract": {
+            "idempotent": true,
+            "input": {
+              "type": "object",
+              "properties": {
+                "kind": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}(?:/[a-z][a-z0-9-]{0,63})?$" },
+                "id": { "type": "string", "minLength": 1, "maxLength": 256 }
+              },
+              "required": ["kind"],
+              "additionalProperties": false
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "state": { "enum": ["retracted", "queued", "no_identity", "needs_cert", "error"] },
+                "count": { "type": "integer", "minimum": 0 },
+                "queued": { "type": "integer", "minimum": 0 },
+                "truncated": { "type": "boolean" },
+                "error": { "type": "string" }
+              },
+              "required": ["state", "count"],
+              "additionalProperties": false
+            }
+          },
+          "outbox": {
+            "safe": true,
+            "input": {
+              "type": "object",
+              "properties": { "kind": { "type": "string" } },
+              "additionalProperties": false
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "author": { "type": ["string", "null"] },
+                "certState": { "enum": ["no_identity", "needs_cert", "active"] },
+                "pausedKinds": { "type": "array", "items": { "type": "string" } },
+                "pendingCount": { "type": "integer", "minimum": 0 },
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "kind": { "type": "string" },
+                      "id": { "type": "string" },
+                      "desired": { "enum": ["publish", "retract"] },
+                      "state": { "type": "string" },
+                      "lastSyncedAt": { "type": "integer", "minimum": 0 },
+                      "lastError": { "type": "string" }
+                    },
+                    "required": ["kind", "id", "desired", "state"],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": ["author", "certState", "pausedKinds", "pendingCount", "items"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "permissions": {
+          "read": { "title": "查看好友列表与读取好友分享的记录", "read": true, "operations": ["friends", "records"] },
+          "publish": { "title": "通过好友网关发布、撤回记录与查看待发队列", "operations": ["publish", "retract", "outbox"] }
+        }
+      }
+    ],
+    "protocolImplementations": [
+      "friends/social@1"
     ]
   },
   "license": "MIT",

@@ -1,4 +1,4 @@
-// 好友模块：activate 里不碰 Accord，只登记备注的视图消息与 `coda self`；备注存在插件状态目录。
+// 好友模块：备注的视图消息与 `coda self`、社交网关的登记；备注存在插件状态目录。activate 里 Accord 只读本机记录、监听变化，不查询、不发布。
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -9,9 +9,11 @@ import { activate, deactivate } from '../../../plugins/friends/main.mjs';
 async function host(t, state) {
   const dir = state === undefined ? await mkdtemp(join(tmpdir(), 'friends-main-')) : state;
   if (state === undefined) t.after(() => rm(dir, { recursive: true, force: true }));
-  const self = new Map(), views = new Map(), disposed = [];
+  const self = new Map(), views = new Map(), operations = [], disposed = [];
   const never = name => () => { throw new Error(`activate must not call coda.${name}`); };
-  const coda = { plugin: { id: 'friends', path: '/x', state: dir }, query: never('query'), call: never('call'), watch: never('watch'),
+  const coda = { plugin: { id: 'friends', path: '/x', state: dir }, query: never('query'), call: never('call'),
+    get: async () => null, put: async () => ({}), watch: async () => ({ dispose: () => disposed.push('watch') }),
+    handle: (kind, operation) => { operations.push(`${kind}/${operation}`); return { dispose: () => disposed.push(`${kind}/${operation}`) }; },
     self: { handle: (name, fn) => { self.set(name, fn); return { dispose: () => disposed.push(name) }; } },
     views: { register: (id, provider) => { views.set(id, provider); return { dispose() {} }; } } };
   const open = () => {
@@ -19,15 +21,16 @@ async function host(t, state) {
     views.get('friends').open({ postMessage: m => { page.got.push(m); return true; }, onMessage: fn => { page.tell = fn; }, onClose() {} });
     return page;
   };
-  return { coda, dir, self, views, disposed, open };
+  return { coda, dir, self, views, operations, disposed, open };
 }
 const settled = () => new Promise(resolve => setTimeout(resolve, 30));
 
-test('activate registers the notes handlers and the view without touching Accord', async t => {
+test('activate registers the notes and policy handlers, the gateway operations and the view, without querying or publishing', async t => {
   const h = await host(t);
   t.after(deactivate);
   await activate(h.coda);
-  assert.deepEqual([...h.self.keys()].sort(), ['notes.delete', 'notes.list', 'notes.set']);
+  assert.deepEqual([...h.self.keys()].sort(), ['notes.delete', 'notes.list', 'notes.set', 'policy.get', 'policy.setKind']);
+  assert.deepEqual(h.operations.sort(), ['friends', 'outbox', 'publish', 'records', 'retract'].map(name => `friends/social@1/${name}`));
   assert.deepEqual([...h.views.keys()], ['friends']);
 });
 
@@ -70,6 +73,7 @@ test('without a state directory notes fail plainly, and deactivate disposes what
   await activate(h.coda);
   await assert.rejects(Promise.resolve().then(() => h.self.get('notes.list')({})), /状态目录/);
   deactivate();
-  assert.deepEqual(h.disposed.sort(), ['notes.delete', 'notes.list', 'notes.set']);
+  assert.deepEqual(h.disposed.sort(), ['friends/social@1/friends', 'friends/social@1/outbox', 'friends/social@1/publish', 'friends/social@1/records',
+    'friends/social@1/retract', 'notes.delete', 'notes.list', 'notes.set', 'policy.get', 'policy.setKind', 'watch']);
   deactivate();
 });
