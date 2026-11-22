@@ -3,9 +3,9 @@ import { writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { SOURCE } from './definitions.mjs';
 import { repository } from './git.mjs';
-import { smartHTTP, readBody, reply } from './http.mjs';
+import { smartHTTP, pathOf, readBody, reply } from './http.mjs';
 
-const url = id => `/v1/plugins/git/services/repository/repos/${id}`;
+const url = id => `/v1/records/${encodeURIComponent(SOURCE)}/${id}/streams/transport`;
 const sameRepository = (a, b) => a.path === b.path && a.gitDir === b.gitDir && a.commonDir === b.commonDir;
 
 export class GitProvider {
@@ -16,7 +16,7 @@ export class GitProvider {
     // one written; neither is in the file. `repositories` is by record ID.
     this.sources = new Map(); this.repositories = new Map(); this.managing = Promise.resolve();
     this.file = join(coda.plugin.state, 'sources.json');
-    this.http = smartHTTP({ lookup: id => this.lookup(id) });
+    this.http = smartHTTP({ lookup: (id, signal) => this.lookup(id, signal) }); this.served = [];
   }
   async start() {
     await mkdir(this.coda.plugin.state, { recursive: true });
@@ -28,8 +28,8 @@ export class GitProvider {
     await this.replace();
     // Served once checked: a source left ready by the last run is not refused meanwhile.
     await Promise.all([...this.sources.keys()].map(name => this.reconcile(name)));
-    this.service = await this.coda.services.register('repository', (req, res, caller) =>
-      req.url.startsWith('/repos/') ? this.http(req, res, caller) : this.manage(req, res, caller));
+    this.served.push(await this.coda.stream(SOURCE, 'transport', this.http));
+    this.served.push(await this.coda.serve('repository', (request, { caller }) => this.manage(request, caller)));
   }
   // Written in one step so that no other write of the file interleaves with it. What is saved is the next state: it is
   // `this.sources` only once the file has it.
@@ -65,31 +65,31 @@ export class GitProvider {
     await this.coda.put({ kind: SOURCE, key: name }, { spec: source.spec, status });
     source.status = status;
   }
-  async lookup(id) {
+  async lookup(id, signal) {
     const source = [...this.sources.values()].find(source => source.id === id), repo = this.repositories.get(id);
     if (!source || !repo || source.spec.path !== repo.pathSpec) return null;
     // Do not follow a registered path after it is replaced by a symlink to another repository.
-    const now = await repository(source.spec.path);
+    const now = await repository(source.spec.path, { signal });
     return sameRepository(now, repo) ? repo : null;
   }
-  async manage(req, res, caller) {
+  async manage(request, caller) {
     // Registration accepts filesystem paths: only a local Coda API caller can do this.
-    if (caller?.local !== true) return reply(res, 403, { error: '管理入口仅供本机调用' });
-    const match = /^\/sources\/([a-zA-Z0-9_-]{1,100})(?:\/(delete))?$/.exec(req.url);
-    if (!match) return reply(res, 404, { error: '未知管理路径' });
+    if (caller.local !== true) return reply(403, { error: '管理入口仅供本机调用' });
+    const match = /^\/sources\/([a-zA-Z0-9_-]{1,100})(?:\/(delete))?$/.exec(pathOf(request));
+    if (!match) return reply(404, { error: '未知管理路径' });
     const [, name, action] = match;
     try {
-      if (req.method === 'GET' && !action) {
+      if (request.method === 'GET' && !action) {
         const source = this.sources.get(name);
-        return reply(res, source ? 200 : 404, source ? { id: source.id, key: name, spec: source.spec, status: source.status } : { error: '对象不存在' });
+        return reply(source ? 200 : 404, source ? { id: source.id, key: name, spec: source.spec, status: source.status } : { error: '对象不存在' });
       }
-      if (req.method !== 'POST') return reply(res, 405, { error: '需要 GET 或 POST' });
-      const data = JSON.parse((await readBody(req, 65536)).toString() || '{}');
+      if (request.method !== 'POST') return reply(405, { error: '需要 GET 或 POST' });
+      const data = JSON.parse((await readBody(request, 65536)).toString() || '{}');
       // Registrations and deletions take turns, each reading the sources when its turn comes.
       const turn = this.managing.then(() => this.change(name, action, data));
       this.managing = turn.catch(() => {});
-      reply(res, 200, { kind: SOURCE, id: await turn });
-    } catch (error) { reply(res, error.status ?? 400, { error: error.message }); }
+      return reply(200, { kind: SOURCE, id: await turn });
+    } catch (error) { return reply(error.status ?? 400, { error: error.message }); }
   }
   // The file first, then the host's records. A `replace` the host refuses leaves nothing changed: the file and the sources are
   // back as they were. Once it is accepted the change stays, whatever a later `put` does.
@@ -115,6 +115,7 @@ export class GitProvider {
     return this.sources.get(name).id;
   }
   async stop() {
-    this.http.dispose(); await this.service?.dispose();
+    await Promise.all(this.served.map(served => served.dispose()));
+    await this.http.ended();
   }
 }

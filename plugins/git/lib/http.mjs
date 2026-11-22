@@ -1,18 +1,18 @@
 import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Readable } from 'node:stream';
+import { PassThrough, Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { git as runGit, gitEnvironment } from './git.mjs';
 
 const isolated = { GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_NO_REPLACE_OBJECTS: '1' };
-const git = (cwd, args, options) => runGit(cwd, args, { ...options, extra: isolated });
 
 export const MAX_REQUEST = 32 * 1024 * 1024;
-export async function readBody(req, limit = MAX_REQUEST) {
+export async function readBody({ body }, limit = MAX_REQUEST) {
   const chunks = []; let length = 0;
-  for await (const chunk of req) {
+  for await (const chunk of body ?? []) {
     length += chunk.length;
     if (length > limit) throw Object.assign(new Error('请求体过大'), { status: 413 });
     chunks.push(chunk);
@@ -46,45 +46,42 @@ export function wants(body) {
   return result;
 }
 
-export function reply(res, status, value) {
-  if (res.headersSent) { res.destroy(); return; }
-  res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-  res.end(JSON.stringify(typeof value?.error === 'string' ? { ...value, error: { message: value.error } } : value));
-}
+export const reply = (status, value) =>
+  Response.json(typeof value.error === 'string' ? { ...value, error: { message: value.error } } : value, { status, headers: { 'cache-control': 'no-store' } });
 
-const ROUTE = /^\/repos\/([a-zA-Z0-9_-]{1,100})\/(info\/refs\?service=git-upload-pack|git-upload-pack)$/;
+// What was asked, as it came: an empty query or a doubled slash is not the path without it.
+export const pathOf = request => request.url.slice(new URL(request.url).origin.length);
 
+const ROUTE = /^\/(info\/refs\?service=git-upload-pack|git-upload-pack)$/;
+
+// The stream `transport` of a source's record. Who may read it, Coda has judged.
 export function smartHTTP({ lookup }) {
-  const children = new Set();
-  // A request ending in 4xx or 5xx is logged once: status, reason, method, source (the raw path if it is not one), and the three headers
-  // that decide it. Never the authorization header, cookies or the body.
-  const send = (req, res, status, value) => {
-    if (status >= 400) {
-      const path = ROUTE.exec(req.url);
-      const header = name => req.headers[name] === undefined ? '无' : JSON.stringify(req.headers[name]);
-      console.error('[git http]', status, value.error, req.method, path ? `source=${path[1]}` : `path=${JSON.stringify(req.url)}`,
+  const exchanges = new Set();
+  // An exchange goes on past its answer, until the answer's body is over: what it started and its directory go with it. A
+  // request ending in 4xx or 5xx is logged once: status, reason, method, source (with the path if it is not one of the two),
+  // and the three headers that decide it. Never the authorization header, cookies or the body.
+  async function exchange(request, id, signal, respond) {
+    const path = pathOf(request), match = ROUTE.exec(path);
+    const refuse = (status, error) => {
+      const header = name => request.headers.has(name) ? JSON.stringify(request.headers.get(name)) : '无';
+      console.error('[git http]', status, error, request.method, `source=${id}`, ...(match ? [] : [`path=${JSON.stringify(path)}`]),
         `content-type=${header('content-type')}`, `content-encoding=${header('content-encoding')}`, `git-protocol=${header('git-protocol')}`);
-    }
-    reply(res, status, value);
-  };
-  const handler = async (req, res, caller) => {
+      respond(reply(status, { error }));
+    };
+    const git = (cwd, args, options) => runGit(cwd, args, { ...options, extra: isolated, signal });
     let dir;
     try {
-      if (!caller?.local && !['client', 'backend'].includes(caller?.role)) return send(req, res, 403, { error: '需要 Coda 鉴权身份' });
-      // Match the raw URL. Do not normalize encoded slashes, dot segments, extra queries or absolute paths.
-      const match = ROUTE.exec(req.url);
-      if (!match) return send(req, res, req.url.includes('receive-pack') ? 403 : 404, { error: '不允许的 Git 路径' });
-      const discovery = match[2].startsWith('info/');
-      if (req.method !== (discovery ? 'GET' : 'POST')) return send(req, res, 405, { error: '不允许的方法' });
-      if (req.headers['git-protocol'] !== 'version=2') return send(req, res, 400, { error: '需要 Git protocol v2' });
-      if (!discovery && req.headers['content-type'] !== 'application/x-git-upload-pack-request')
-        return send(req, res, 415, { error: '需要 upload-pack 请求' });
-      if (req.headers['content-encoding'] && req.headers['content-encoding'] !== 'identity')
-        return send(req, res, 415, { error: '不接受压缩请求体' });
-      const source = await lookup(match[1]);
-      if (!source) return send(req, res, 404, { error: '源未登记或不可用' });
-      const body = await readBody(req);
-      if (discovery && body.length) return send(req, res, 400, { error: 'GET 不接受请求体' });
+      if (!match) return refuse(path.includes('receive-pack') ? 403 : 404, '不允许的 Git 路径');
+      const discovery = match[1].startsWith('info/');
+      if (request.method !== (discovery ? 'GET' : 'POST')) return refuse(405, '不允许的方法');
+      if (request.headers.get('git-protocol') !== 'version=2') return refuse(400, '需要 Git protocol v2');
+      if (!discovery && request.headers.get('content-type') !== 'application/x-git-upload-pack-request')
+        return refuse(415, '需要 upload-pack 请求');
+      if (request.headers.has('content-encoding') && request.headers.get('content-encoding') !== 'identity')
+        return refuse(415, '不接受压缩请求体');
+      const source = await lookup(id, signal);
+      if (!source) return refuse(404, '源未登记或不可用');
+      const body = await readBody(request);
       const requested = wants(body);
       const refs = (await git(source.path, ['for-each-ref', '--format=%(objectname) %(refname)', 'refs/heads/']))
         .split('\n').filter(Boolean).map(line => line.split(' '));
@@ -93,13 +90,13 @@ export function smartHTTP({ lookup }) {
         if (tips.includes(oid)) continue;
         // Normal fetch wants commits; a reachable ancestor is allowed, an unrelated hidden commit/blob is not.
         if (await git(source.path, ['cat-file', '-t', oid], { accept: [0, 128] }) !== 'commit')
-          return send(req, res, 403, { error: '不允许的对象' });
+          return refuse(403, '不允许的对象');
         let reachable = false;
         for (const tip of tips) {
           const base = await git(source.path, ['merge-base', oid, tip], { accept: [0, 1] });
           if (base === oid) { reachable = true; break; }
         }
-        if (!reachable) return send(req, res, 403, { error: '不允许的对象' });
+        if (!reachable) return refuse(403, '不允许的对象');
       }
       // A disposable bare view exports only approved refs, and cannot inherit repository http/uploadpack config,
       // replace refs, HEAD pointing at a hidden ref, hooks, or a repository's custom upload-pack command.
@@ -116,38 +113,47 @@ export function smartHTTP({ lookup }) {
       if (refs.length) await git(dir, ['update-ref', '--stdin'], { input: refs.map(([oid, ref]) => `update ${ref} ${oid}\n`).join('') });
       const head = await git(source.path, ['symbolic-ref', '-q', 'HEAD'], { accept: [0, 1] });
       await git(dir, ['symbolic-ref', 'HEAD', refs.some(([, ref]) => ref === head) ? head : 'refs/heads/coda-unborn']);
-      await bridge(req, res, { dir, body, discovery, children });
+      await bridge(request, { dir, body, discovery, signal, respond });
     } catch (error) {
-      if (!res.destroyed) send(req, res, error.status ?? 500, { error: error.message });
+      if (signal.aborted) throw error;
+      refuse(error.status ?? 500, error.message);
     } finally { if (dir) await rm(dir, { recursive: true, force: true }); }
-  };
-  handler.dispose = () => { for (const child of children) child.kill('SIGKILL'); };
+  }
+  const handler = (request, { record, signal }) => new Promise((resolve, reject) => {
+    const running = exchange(request, record.id, signal, resolve).catch(reject).finally(() => exchanges.delete(running));
+    exchanges.add(running);
+  });
+  // Those under way, which its registration disposed of ends (their `signal`), over.
+  handler.ended = () => Promise.all(exchanges);
   return handler;
 }
 
-async function bridge(req, res, { dir, body, discovery, children }) {
+async function bridge(request, { dir, body, discovery, signal, respond }) {
+  signal.throwIfAborted();
+  // In a process group of its own: what it runs (upload-pack, pack-objects) is stopped with it.
   const child = spawn('git', ['-c', 'http.receivepack=false', '-c', 'http.uploadpack=true',
     '-c', `http.maxRequestBuffer=${MAX_REQUEST}`, 'http-backend'], {
+    detached: true,
     env: gitEnvironment(process.env, { ...isolated, GIT_DIR: dir, GIT_HTTP_EXPORT_ALL: '1',
       PATH_TRANSLATED: `${dir}/${discovery ? 'info/refs' : 'git-upload-pack'}`,
-      PATH_INFO: discovery ? '/info/refs' : '/git-upload-pack', REQUEST_METHOD: req.method,
-      QUERY_STRING: discovery ? 'service=git-upload-pack' : '', CONTENT_TYPE: req.headers['content-type'] ?? '',
-      CONTENT_LENGTH: String(body.length), HTTP_GIT_PROTOCOL: req.headers['git-protocol'], SERVER_PROTOCOL: 'HTTP/1.1' }),
+      PATH_INFO: discovery ? '/info/refs' : '/git-upload-pack', REQUEST_METHOD: request.method,
+      QUERY_STRING: discovery ? 'service=git-upload-pack' : '', CONTENT_TYPE: request.headers.get('content-type') ?? '',
+      CONTENT_LENGTH: String(body.length), HTTP_GIT_PROTOCOL: request.headers.get('git-protocol'), SERVER_PROTOCOL: 'HTTP/1.1' }),
   });
-  children.add(child);
   const closed = new Promise((resolve, reject) => { child.once('error', reject); child.once('close', code => resolve(code)); });
   closed.catch(() => {});
-  const abort = () => { if (!res.writableFinished) child.kill('SIGKILL'); };
-  res.on('close', abort);
+  const stop = () => { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* It did not start, or has exited. */ } };
+  signal.addEventListener('abort', stop);
   let stderr = '';
   child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-8192); });
   const fed = pipeline(Readable.from(body.length ? [body] : []), child.stdin);
   fed.catch(() => {});
+  let out;
   try {
-    let headers = Buffer.alloc(0), started = false;
+    let headers = Buffer.alloc(0);
     for await (const chunk of child.stdout) {
       let bytes = chunk;
-      if (!started) {
+      if (!out) {
         headers = Buffer.concat([headers, chunk]);
         const split = headers.indexOf('\r\n\r\n');
         if (split < 0) { if (headers.length > 16384) throw new Error('CGI 响应头过大'); continue; }
@@ -161,24 +167,18 @@ async function bridge(req, res, { dir, body, discovery, children }) {
           if (key === 'status') status = Number(value.split(' ')[0]);
           else if (['content-type', 'cache-control', 'expires', 'pragma'].includes(key)) values[key] = value;
         }
-        res.writeHead(status, values); started = true; bytes = headers.subarray(split + 4); headers = null;
+        out = new PassThrough(); bytes = headers.subarray(split + 4); headers = null;
+        respond(new Response(Readable.toWeb(out), { status, headers: values }));
       }
-      if (bytes.length && !res.write(bytes)) await drained(res);
+      if (bytes.length && !out.write(bytes)) await once(out, 'drain', { signal });
     }
     await fed;
-    if (await closed !== 0 || !started) throw new Error(`git http-backend: ${stderr || '响应未完成'}`);
-    res.end();
+    if (await closed !== 0 || !out) throw new Error(`git http-backend: ${stderr || '响应未完成'}`);
+    out.end();
+  } catch (error) {
+    stop(); out?.destroy(error);
+    throw error;
   } finally {
-    child.kill('SIGKILL'); await closed.catch(() => {}); children.delete(child); res.off('close', abort);
+    await closed.catch(() => {}); signal.removeEventListener('abort', stop);
   }
-}
-
-function drained(res) {
-  return new Promise((resolve, reject) => {
-    const cleanup = () => { res.off('drain', drain); res.off('close', close); };
-    const drain = () => { cleanup(); resolve(); };
-    const close = () => { cleanup(); reject(new Error('连接已关闭')); };
-    res.once('drain', drain); res.once('close', close);
-    if (res.destroyed) close();
-  });
 }

@@ -471,12 +471,11 @@ test('rebuilding the transcript mirror also rebuilds live state', async t => {
   assert.equal(status().activity, undefined);
   assert.equal(status().head, undefined);
 });
-test('session read, draft and post answer through the registered handlers and the resource record has no buttons', async t => {
+test('session read and post, and no draft, answer through the registered handlers and the resource record has no buttons', async t => {
   const f = await fixture(t), handle = (op, input, ctx) => f.handlers.get(`${SESSION}/${op}`)(input, ctx);
-  assert.deepEqual([...f.handlers.keys()].sort(), [`${SESSION}/draft`, `${SESSION}/post`, `${SESSION}/read`]);
+  assert.deepEqual([...f.handlers.keys()].sort(), [`${SESSION}/post`, `${SESSION}/read`]);
   // post is registered as a function, not an object carrying `resume`: a registered `resume` would change what users see after a restart.
   assert.equal(typeof f.handlers.get(`${SESSION}/post`), 'function');
-  assert.deepEqual(await handle('draft', { text: 'unsent' }), {});
   const ctx = call(f, 'handler-call');
   const result = await handle('post', { text: 'via handler' }, ctx);
   assert.equal(f.native.requests.filter(r => r.method === 'SendGrokBotUserMessage').length, 1);
