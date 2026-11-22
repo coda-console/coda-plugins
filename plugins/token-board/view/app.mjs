@@ -106,6 +106,7 @@ function notes() {
   if (board?.errors?.length) lines.push(...board.errors);
   if (board?.truncated?.usage) lines.push('本机用量太零碎，部分时段没能取全，合计可能偏少');
   if (status?.lastError) lines.push(`同步失败：${status.lastError}`);
+  if ((status?.syncState ?? board?.syncState) === 'needs_cert') lines.push('代签证书已过期，打开客户端续签后将自动补发统计');
   return lines.length ? h('div', { class: 'notes' }, lines.map(line => h('p', { class: 'note' }, line))) : null;
 }
 
@@ -116,7 +117,7 @@ function controls() {
     h('div', { class: 'card' },
       h('div', { class: 'pill' }, h('span', { class: on ? 'dot on' : 'dot' }), h('span', { class: 'strong' }, on ? '正在向好友分享每日汇总' : '没有向好友分享')),
       h('p', { class: 'hint' }, on
-        ? `每 10 分钟发布最近 7 天的汇总，只含按十分钟、Agent 和模型的 Token 数与回合数。${status?.lastSyncAt ? `上次同步 ${clock(status.lastSyncAt)}。` : ''}`
+        ? `每 10 分钟发布按日归档和最近 48 小时曲线，只含按 Agent 和模型的 Token 数与回合数。${status?.lastSyncAt ? `上次同步 ${clock(status.lastSyncAt)}。` : ''}`
         : '开启后好友才看得到你的用量，你也才能和他们排名；关闭会撤回已发布的记录。'),
       status?.notice ? h('p', { class: 'hint' }, status.notice) : null,
       h('div', { class: 'controls' },
