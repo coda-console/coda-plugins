@@ -16,3 +16,6 @@ export function requireCondition(condition, code, message) {
 
 // A remote request was conclusively refused. Other errors leave its outcome uncertain and can be retried.
 export const REFUSED = new Set(['forbidden', 'not_holder', 'not_found', 'invalid_input', 'invalid_state', 'idempotency_conflict', 'call_ended']);
+
+// The status an answer over HTTP says a failure of this code with.
+export const statusOf = code => code === 'service_unavailable' ? 503 : code === 'not_found' ? 404 : code === 'method_not_allowed' ? 405 : code.startsWith('invalid') ? 400 : 409;

@@ -9,3 +9,4 @@ import '../components/plugins/git-contributions.mjs';
 import '../components/composers/contributions.mjs';
 import '../components/plugins/process-contributions.mjs';
 import '../components/plugins/self-contributions.mjs';
+import '../components/plugins/update-contributions.mjs';

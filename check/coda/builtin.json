@@ -1500,7 +1500,7 @@
     "id": "maintenance",
     "displayName": "维护",
     "description": "定期清理旧记录和构建产物",
-    "version": "1.1.0",
+    "version": "1.2.0",
     "category": "工作流程",
     "icon": {
       "symbol": "wrench.adjustable.fill",
@@ -1554,11 +1554,14 @@
       },
       "maintenance.updatePlugins": {
         "type": "boolean",
-        "description": "后端启动后和刷新商店时，把这台机器上从 npm 或 Git 装的插件更新到它跟的标签或分支上的新版，只装兼容且更新的；回退过的插件停在那一版，再手动更新后才恢复。关掉时只更新在这台机器上已不兼容的插件。",
+        "description": "后端启动后、运行期间每小时一次和刷新商店时，把这台机器上从 npm 或 Git 装的插件更新到它跟的标签或分支上的新版，只装兼容且更新的；回退过的插件停在那一版，再手动更新后才恢复。关掉时只更新在这台机器上已不兼容的插件。",
         "title": "自动更新插件",
         "order": 7,
         "default": true
       }
+    },
+    "engines": {
+      "coda": 11
     },
     "workflows": [
       "clean-uploads",
@@ -1569,6 +1572,7 @@
     "commands": [],
     "capabilities": [],
     "gitCredentials": [],
+    "autoUpdateSetting": "maintenance.updatePlugins",
     "views": [],
     "dependencies": []
   },
@@ -1576,7 +1580,7 @@
     "id": "resources",
     "displayName": "资源",
     "description": "各台电脑的账号、额度与负载",
-    "version": "3.0.1",
+    "version": "3.1.0",
     "category": "机器与资源",
     "icon": {
       "symbol": "gauge.with.dots.needle.67percent",

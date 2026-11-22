@@ -15,15 +15,17 @@
 // collection, type, id, object }`, `unwatch { watch }`, `cancel { id }` of a `query` or a `question`, `progress { run,
 // value }` of a `run`, `drained`, `kill` of a process, and the requests `settings`
 // (the plugin's own, as they are now), `watch { collection, selector }`, `tell { session, text }`, `pluginSetup { method,
-// args }`, `provider { method, args }`, `serviceRegister { id, port, secret }`, `serviceUnregister { id }`, `query { record,
+// args }`, `provider { method, args }`, `serviceRegister { id, port, secret }`, `serviceUnregister { id }`, `handlerRegister` and `handlerUnregister`
+// of `{ service }` or `{ kind, name }`, the first with `port` and `secret` too (adapters/plugin-stream-services.mjs), `query { record,
 // operation, input, timeout, deadline }`, `call { record, operation, input, id, timeout, deadline, under, progress }`, `spawn { under, process, command, args, cwd, env, name }`, each with the
 // module's `token`, by which the backend knows the plugin it is of, never by what it names; and `question { run,
 // question }` and `input` of a process. A query's
 // failure crosses as `failureOf` says it, as one that did nothing (`none`); a run's end, and a resume's, as its outcome, or a resume's as null when the
 // module has none.
+import { readFrames, writeFrames } from '@coda-console/protocol/frames';
 import { join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
-import { pluginServices } from './plugin-stream-services.mjs';
+import { handlerServer, pluginServices } from './plugin-stream-services.mjs';
 import { pathToFileURL } from 'node:url';
 import { callingAPI, canceled, codaError, failed, failureOf, givenUp, providerAPI, queryingAPI } from './provider-api.mjs';
 import { queryId } from './plugin-command.mjs';
@@ -50,6 +52,8 @@ export function pluginModules({ send }) {
   // exited or the host stops.
   const processes = new Map();
   let nextProcess = 0;
+  // What serves the modules' handlers of `coda.serve` and `coda.stream`, until the host stops.
+  const handlerServing = handlerServer();
   // A doing call handed to its operation's handler (`run`, `resume`), as `fn(handler, signal, made)` hands it, its
   // `signal` going off as the backend calls it off (`cancel`), or, `halted` (as `cancel`'s reason crosses), before the
   // handler is called.
@@ -202,7 +206,7 @@ export function pluginModules({ send }) {
   function codaFor(plugin, token, pluginSetup = null) {
     const views = new Map(), protocols = new Map(), operations = new Map();
     const asks = (method, params, signal = null, progress = null) => ask(method, { ...params, token }, signal, progress);
-    const services = pluginServices(asks);
+    const services = pluginServices(asks, plugin, handlerServing);
     // The listeners of `settings.onChange`: this plugin's own settings only, told as they are written.
     const settingsChanges = new Set();
     // The events it publishes and those it subscribes to (adapters/plugin-events.mjs).
@@ -230,6 +234,10 @@ export function pluginModules({ send }) {
       call: calling.call,
       // A process of this module's own, until the module stops (docs/plugins.md「起进程」).
       spawn: spawnFor(null, null),
+      // The plugin's own bytes (docs/plugins.md「本机流式服务」), and those of the records it holds (「插件实现的流」), each a
+      // `(request, ctx) => Response`; and frame streams, read and written.
+      serve: services.serve, stream: services.stream,
+      frames: Object.freeze({ read: readFrames, write: writeFrames }),
       services: services.api,
       // `put({ kind, key }, { spec, status?, labels? })` made or replaced (a status not given kept), answered with its entry,
       // `delete({ kind, key })`, and `replace(kind, entries)`, every one of a kind the plugin holds given (`[{ key, spec,
@@ -480,13 +488,13 @@ export function pluginModules({ send }) {
   // Each module loaded ends what it started that is not in the host's group (`deactivate`, as VS Code's), once; the
   // processes the backend started for them are the backend's to end, and their handles here end at once.
   let stopping = null;
-  const stop = () => stopping ??= Promise.allSettled([...processes.values()].map(entry => entry.interrupt())
-    .concat([...loading.values()].map(async loaded => {
-    const { module, services, settingsChanges, events } = await loaded;
-    settingsChanges.clear(); events.clear();
-    await services.close(false);
-    if (typeof module?.deactivate === 'function') await module.deactivate();
-  })));
+  const stop = () => stopping ??= Promise.allSettled([handlerServing.close(), ...[...processes.values()].map(entry => entry.interrupt()),
+    ...[...loading.values()].map(async loaded => {
+      const { module, services, settingsChanges, events } = await loaded;
+      settingsChanges.clear(); events.clear();
+      await services.close(false);
+      if (typeof module?.deactivate === 'function') await module.deactivate();
+    })]);
   const adopted = new Map();
   function adopt(plugin, token, pluginSetup = null) {
     const made = codaFor(plugin, token, pluginSetup);
