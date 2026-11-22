@@ -53,11 +53,11 @@ export async function checkModule({ checked, say, note, limit = ACTIVATE_LIMIT }
   // Others' definitions of the protocols it uses, for the event groups its `coda.on` may name. The test host takes them for
   // those alone: its record types are Coda's, the plugin's own and its kinds that stay on this machine, so it cannot hand out a
   // dependency's records (registering the definitions among the plugin's own protocols would let it publish their events too).
-  const used = Object.keys(plugin.uses ?? {}).filter(kind => !plugin.protocols?.some(one => one.name === kind));
+  const used = Object.keys({ ...plugin.uses, ...plugin.optionalUses }).filter(kind => !plugin.protocols?.some(one => one.name === kind));
   const protocols = used.map(checked.definitionOf).filter(Boolean);
   const absent = used.filter(kind => !checked.definitionOf(kind));
   const host = createTestHost({ plugin: { id: plugin.id, path: plugin.dir, state: state.dir, protocols: plugin.protocols,
-    protocolImplementations: plugin.protocolImplementations, processes: plugin.processes, uses: plugin.uses }, settings: checked.settings, protocols });
+    protocolImplementations: plugin.protocolImplementations, processes: plugin.processes, uses: plugin.uses, optionalUses: plugin.optionalUses }, settings: checked.settings, protocols });
   const done = closing(() => host.close());
   const thrown = new Map();
   try {

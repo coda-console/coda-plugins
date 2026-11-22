@@ -839,16 +839,21 @@ describe('the module level', () => {
   const DEPLOY = { name: 'liar/deploy@1', title: '部署', spec: OBJECT, status: OBJECT, events: { 'deploy.started': { payload: { type: 'object' } } },
     permissions: { watch: { title: '看部署', events: ['deploy.started'] }, read: { title: '读部署', read: true } } };
   const EVENTS_ONLY = { name: DEPLOY.name, title: DEPLOY.title, events: DEPLOY.events, permissions: { watch: DEPLOY.permissions.watch } };
-  const reading = ({ main, beside = true, groups = ['watch'], definition = DEPLOY, more = {} }) => {
+  const reading = ({ main, beside = true, groups = ['watch'], definition = DEPLOY, more = {}, by = 'uses', engines = { coda: 3 } }) => {
     const top = mkdtempSync(join(tmpdir(), 'coda-plugin-check-uses-'));
     temps.push(top);
     const write = (id, manifest) => { mkdirSync(join(top, id)); writeFileSync(join(top, id, 'package.json'), JSON.stringify({ name: id, version: '1.0.0', ...manifest })); };
     if (beside) write('liar', { contributes: { protocols: [definition] } });
-    write('reader', { main: 'main.mjs', engines: { coda: 3 }, categories: ['工作流程'], extensionDependencies: ['liar'], uses: { 'liar/deploy@1': groups, ...more }, contributes: {} });
+    write('reader', { main: 'main.mjs', engines, categories: ['工作流程'], extensionDependencies: ['liar'], [by]: { 'liar/deploy@1': groups, ...more }, contributes: {} });
     writeFileSync(join(top, 'reader', 'main.mjs'), main);
     return join(top, 'reader');
   };
   const LIST = `export async function activate(coda) { await coda.list('liar/deploy@1'); }`;
+  test('a coda.on of an event group it may use only optionally passes, as one of its uses does', async () => {
+    const { report } = await checkPlugin(reading({ main: `export function activate(coda) { coda.on('deploy.started', () => {}); }`, by: 'optionalUses', engines: { coda: 13 } }));
+    assert.deepEqual(failed(report), []);
+    assert.deepEqual(rules(report, 'pass').filter(rule => rule.startsWith('module.')), ['module.activate', 'module.registered']);
+  });
   test('a coda.on of an event group of a dependency beside it passes; without the dependency the check is not completed', async () => {
     const main = `export function activate(coda) { coda.on('deploy.started', () => {}); }`;
     const beside = await checkPlugin(reading({ main }));
