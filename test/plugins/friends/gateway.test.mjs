@@ -543,8 +543,9 @@ test('each author\'s queued withdrawals are kept apart: B can withdraw its own r
   assert.deepEqual(g.accord.records, []);
 });
 
-test('one withdrawal whose Accord lookup fails is kept as an error and the entries after it are still flushed and the gateway record refreshed', async t => {
+test('one withdrawal whose Accord lookup fails stays queued and counted, the entries after it are still flushed, and the next flush finishes it', async t => {
   const g = await gateway(t);
+  g.accord.seed('x', ['r']);
   await g.accord.change({ certificate: EXPIRED });
   await g.retract({ kind: 'x', id: 'r' });
   await g.publish({ kind: 'x', id: 'p', body: { v: 1 } });
@@ -553,10 +554,16 @@ test('one withdrawal whose Accord lookup fails is kept as an error and the entri
   await g.accord.change({ certificate: ACTIVE });
   await until(async () => (await g.status()).certState === 'active' && (await g.outbox())['p:x:p']?.state === 'synced', '后面的待发照常冲洗');
   const stored = await g.outbox();
-  assert.deepEqual([stored[`r:${A}:x:r`].state, stored[`r:${A}:x:r`].lastError], ['error', '查询失败']);
+  assert.deepEqual([stored[`r:${A}:x:r`].state, stored[`r:${A}:x:r`].lastError], ['queued', '查询失败']);
   assert.equal('body' in stored['p:x:p'], false);
   assert.deepEqual(g.accord.calls, [{ kind: 'x', id: 'p', body: { v: 1 }, audience: ['public'] }]);
-  await until(async () => (await g.status()).pendingCount === 0, '网关记录已刷新');
+  await until(async () => (await g.status()).pendingCount === 1, '网关记录仍计入这条待撤');
+  g.accord.queryFailure = null;
+  await g.accord.change({ certificate: ACTIVE });
+  await until(async () => (await g.status()).pendingCount === 0, '恢复后补撤完成');
+  assert.deepEqual(g.accord.calls.slice(1), [{ kind: 'x', id: 'r', body: {}, audience: [] }]);
+  assert.equal(g.accord.records.some(record => record.id === 'r'), false);
+  assert.equal(`r:${A}:x:r` in await g.outbox(), false);
 });
 
 test('a publish replaces the same author\'s queued withdrawal of that id, so the old withdrawal cannot undo it later', async t => {

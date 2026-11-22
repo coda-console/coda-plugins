@@ -108,9 +108,9 @@ export function createGateway(coda, dir) {
         if (entry.lastSyncedHash === undefined) {
           let held;
           try { held = await holds(entry.kind, author, entry.id); } catch (e) {
-            // 一条查不出来，不拦着后面不相干的条目：它标成 error 留着，等人再撤一次。
+            // 一条查不出来是临时故障，不拦着后面不相干的条目：它留作 queued 并记下错误，下一次冲洗再试。
             if (stopped) return;
-            outbox[key] = withState(entry, 'error', message(e));
+            outbox[key] = withState(entry, 'queued', message(e));
             await persist(outbox);
             changed = false;
             continue;
