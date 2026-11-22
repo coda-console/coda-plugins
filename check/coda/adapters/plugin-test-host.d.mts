@@ -92,6 +92,35 @@ export interface Context {
 
 /** Its return value is the result; what it throws, the failure (`coda.error`, or anything else as `handler_error`). */
 export type Handler = (input: Json, ctx: Context) => Json | Promise<Json>;
+/**
+ * Who asks a service or a stream: this machine's own client or tools, a device, another backend of the space (the last hop,
+ * of one sent on), or a plugin (by its token, or from its page; a stream's only).
+ */
+export type StreamCaller = { local: true } | { device: string; role: 'client' | 'backend'; name?: string } | { plugin: string };
+/** What a handler of a service (`coda.serve`) is given beside its request. */
+export interface ServeContext {
+  caller: StreamCaller;
+  /** Goes off when the caller leaves before the answer is done; `request.signal` goes off with it. */
+  signal: AbortSignal;
+}
+/** What a handler of a record's stream (`coda.stream`) is given beside its request. */
+export interface StreamContext extends ServeContext {
+  /** The record the stream is of; with its `key` when it is this plugin's own. */
+  record: HandledRef;
+  /** Its parameters, from the query string, as the definition's `input` has them; none (`{}`) of an `http` stream. */
+  input: Record<string, string>;
+}
+/**
+ * Web standard, both ways: `request.url` has the path below the service or the stream and the query string as asked,
+ * `request.headers` those of content and negotiation, `request.body` (of any method but `GET` and `HEAD`) the bytes as they
+ * come, read no further ahead than the handler reads them. The `Response`'s status, headers of content and body are what the
+ * caller is answered, the body as it comes, its head with its first byte. Thrown before that, by the handler or the body it
+ * gave, a failure is the answer (`{ error: { code, message, effects } }`, as `coda.error` says it, or `handler_error`); after
+ * it, the connection is broken off.
+ */
+export type ServeHandler = (request: Request, ctx: ServeContext) => Response | Promise<Response>;
+export type StreamHandler = (request: Request, ctx: StreamContext) => Response | Promise<Response>;
+
 /** A doing call handed to a process of the plugin's that ended before its handler did. */
 export interface Interrupted {
   /** The call's ID, as its handler was given it (`ctx.id`). */
@@ -232,6 +261,25 @@ export interface Coda {
    * effect if it never started, of `unknown` if it started and could not be registered (killed with its group at once).
    */
   spawn(command: string, args?: string[], options?: SpawnOptions): Promise<Process>;
+  /**
+   * Serves the plugin's own bytes at `/v1/plugins/<plugin>/services/<id>/…`, any method a standard
+   * `Request` takes: all but `CONNECT`, `TRACE` and `TRACK`. Done once Coda has it; the handle's
+   * `dispose()` withdraws it and breaks off its exchanges. Throws for an ID a service of the plugin has already
+   * (`services.register`'s among them).
+   */
+  serve(id: string, handler: ServeHandler): Promise<{ dispose(): Promise<void> }>;
+  /**
+   * Implements a stream of the records this plugin holds of a protocol it implements, the stream one the protocol's definition
+   * has; otherwise it throws at once. Done once Coda has it; `dispose()` as `serve`'s.
+   */
+  stream(kind: string, name: string, handler: StreamHandler): Promise<{ dispose(): Promise<void> }>;
+  /** Frame streams: ndjson, one JSON object a line, a blank line a heartbeat. As `@coda-console/protocol/frames` has them. */
+  frames: Readonly<{
+    /** The frames of a body, heartbeats skipped; fails with `code` `truncated`, `too_large` (a line over `maxBytes`, by default 1 MiB) or `invalid`. */
+    read(stream: ReadableStream<Uint8Array>, options?: { maxBytes?: number }): AsyncIterableIterator<{ [key: string]: Json }>;
+    /** A body of the iterable's objects; with `heartbeatMs`, a blank line whenever nothing has been written for that long. */
+    write(iterable: Iterable<{ [key: string]: Json }> | AsyncIterable<{ [key: string]: Json }>, options?: { heartbeatMs?: number }): ReadableStream<Uint8Array>;
+  }>;
   /** This plugin's own settings. */
   settings: Settings;
   /**
@@ -271,7 +319,7 @@ export interface Coda {
   /** Trial. The plugin itself: its ID, its directory, and its state directory on this backend (`null` when the backend has no state root). */
   plugin: Readonly<{ id: string; path: string; state: string | null }>;
   /**
-   * Trial. Local streaming services: `register` serves `id` on this machine (an HTTP handler, given the caller as Coda
+   * Trial. To be withdrawn: use `serve`. Local streaming services: `register` serves `id` on this machine (an HTTP handler, given the caller as Coda
    * names it), done once Coda has it; the handle's `dispose()` withdraws it and closes its connections.
    */
   services: Readonly<{
@@ -379,6 +427,17 @@ export interface TestHost {
    * past 30 seconds, as a `timeout`.
    */
   self(name: string, input?: Json, options?: { signal?: AbortSignal }): Promise<Json>;
+  /**
+   * Asks a service the module serves (`coda.serve`), as a caller does, at `request`'s path and query: its `Response`, whatever
+   * its status. A failure it threw before its first byte is thrown, with its code; `not_found` for one not served. `request`'s
+   * `signal` going off, the caller leaves.
+   */
+  serve(id: string, request: Request, options?: { caller?: StreamCaller }): Promise<Response>;
+  /**
+   * Asks a record's stream the module implements (`coda.stream`), at what `request`'s path and query are below the stream,
+   * held to its shape and its parameters' schema as Coda does: its `Response`, or a failure, as `serve`.
+   */
+  stream(record: Ref, name: string, request: Request, options?: { caller?: StreamCaller }): Promise<Response>;
   /**
    * Hands a doing call left by an ended process to its operation's `resume`, as Coda does, with its `deadline` (epoch ms,
    * `ctx.deadline`) or none: `canceled`, or the deadline past by the host's clock, its `ctx.signal` has gone off already

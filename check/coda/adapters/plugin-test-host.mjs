@@ -5,7 +5,8 @@
 // caller does, and see a doing call's progress and answer its questions; and hand a doing call to its `resume` as the
 // backend does once the process that had it ended (`resume`); query what its module registered with `coda.self.handle` as its own
 // processes do (`self`); and call the operations its commands implement, run as the backend runs them
-// (adapters/plugin-command.mjs). How the backend hosts a doing call beyond that (handing it
+// (adapters/plugin-command.mjs); and ask the streams and services it implements, handed a web `Request` and answered its
+// `Response` (`stream`, `serve`). How the backend hosts a doing call beyond that (handing it
 // over, the grace after it is called off, when `resume` is called and for how long) is the backend's, and its tests'.
 //
 //   const host = createTestHost({ plugin: { id: 'translator', protocols, protocolImplementations: ['translator/service@1'] } });
@@ -27,7 +28,7 @@ import { CORE_PROTOCOLS, protocolHasRecords } from '@coda-console/protocol/proto
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { ContractError } from '../domain/errors.mjs';
-import { ProtocolTypes } from '../components/protocols/types.mjs';
+import { ProtocolTypes, streamInput } from '../components/protocols/types.mjs';
 import { commandOf, implementations } from '../components/plugins/plugin-rules.mjs';
 import { subscribed } from '../components/plugins/plugin-extensions.mjs';
 import { checkGiven, checkHeld, checkKept, groupType, keptStatus } from '../components/concurrency-groups/schemas.mjs';
@@ -37,7 +38,9 @@ import { canonical } from '../domain/values.mjs';
 import { checkInput, checkRequest, checkResult, limit, stopped } from './call-limit.mjs';
 import { Clock } from './clock.mjs';
 import { callEnv, fileCommand, queryCommand, queryId, settle, startPluginCommand } from './plugin-command.mjs';
+import { pickHeaders, REQUEST_HEADERS } from './http-stream.mjs';
 import { pluginModules } from './plugin-modules.mjs';
+import { askHandler } from './plugin-stream-services.mjs';
 import { checkNamed, relayProcess, unstarted } from './process-relay.mjs';
 import { cancelOf, failed, failureOf, givenUp, outcomeOf } from './provider-api.mjs';
 
@@ -62,8 +65,8 @@ export function createTestHost({ plugin = {}, call = null, clock = new Clock(), 
   // The protocols as the backend compiles them: Coda's own, those of its concurrency groups (RunGroups.attach), those it
   // keeps out of the record directory, and the plugin's.
   const types = new ProtocolTypes();
-  for (const { name, spec, status, operations = {} } of [...Object.values(CORE_PROTOCOLS), { ...groupType, name: groupType.kind },
-    ...(plugin.protocols ?? []).filter(protocolHasRecords)]) types.register({ kind: name, spec, status, operations });
+  for (const { name, spec, status, operations = {}, streams = {} } of [...Object.values(CORE_PROTOCOLS), { ...groupType, name: groupType.kind },
+    ...(plugin.protocols ?? []).filter(protocolHasRecords)]) types.register({ kind: name, spec, status, operations, streams });
   for (const kind of LOCAL_KINDS) if (!types.types.has(kind)) types.register({ kind, spec: open, status: open, operations: {} });
   const manifest = { protocolImplementations: implementations(plugin.protocolImplementations ?? []) };
   const implemented = manifest.protocolImplementations.map(entry => entry.kind);
@@ -77,8 +80,10 @@ export function createTestHost({ plugin = {}, call = null, clock = new Clock(), 
   // Requests to the module waiting for its answer, the module's queries under way, and the doing calls handed to it, with what
   // their caller is told of them, by the request's ID each.
   const waiting = new Map(), querying = new Map(), runs = new Map();
-  // The processes the module started, by the key it gave each, until they have exited.
-  const started = new Map();
+  // The processes the module started, by the key it gave each, until they have exited; and where the handlers it registered
+  // (`coda.serve`, `coda.stream`) are asked, as it told the backend.
+  const started = new Map(), handlers = new Map();
+  const handlerOf = ({ service, kind, name }) => JSON.stringify(service === undefined ? [kind, name] : [service]);
   let next = 0, current = JSON.parse(JSON.stringify(settings));
   // Goes off as the host closes: the commands running are killed with it.
   const ending = new AbortController();
@@ -195,6 +200,15 @@ export function createTestHost({ plugin = {}, call = null, clock = new Clock(), 
         return running.input(message.params);
       });
     }
+    // A handler registered, as the backend takes it: a stream its protocol's definition has.
+    if (message.method === 'handlerRegister') {
+      return answered(() => {
+        const { service, kind, name, port, secret } = message.params;
+        if (service === undefined && !types.types.get(kind)?.streams.has(name)) throw refused('not_found', `协议 ${kind} 没有流 ${name}`);
+        handlers.set(handlerOf(message.params), { port, token: secret });
+      });
+    }
+    if (message.method === 'handlerUnregister') return answered(() => { handlers.delete(handlerOf(message.params)); });
     if (message.method === 'settings') return reply({ result: JSON.parse(JSON.stringify(current)) });
     // A doing call's question, answered as its caller's `answer` says; one at a time, as the backend has it
     // (components/plugins/hosted-calls.mjs `question`).
@@ -346,6 +360,12 @@ export function createTestHost({ plugin = {}, call = null, clock = new Clock(), 
       }));
     } finally { runs.delete(id); unarm(); signal?.removeEventListener('abort', given); }
   }
+  // An exchange with a handler the module registered, asked over HTTP as the backend asks it (`askHandler`): of `request`,
+  // its method, the headers a handler is given, its body, and its signal.
+  function exchange(connection, request, { path, caller, of }) {
+    const body = ['GET', 'HEAD'].includes(request.method) ? null : request.body ?? new Blob([]).stream();
+    return askHandler(connection, { method: request.method, path, headers: pickHeaders(Object.fromEntries(request.headers), REQUEST_HEADERS), body, caller, of, signal: request.signal });
+  }
   // A doing call's result as the module's outcome says (`outcomeOf`); failed, thrown with its code; cancelled, thrown as
   // `canceled`.
   function ended(found, name, said) {
@@ -366,6 +386,29 @@ export function createTestHost({ plugin = {}, call = null, clock = new Clock(), 
       const found = operationOf(record?.kind, operation);
       if (found && !found.safe && implemented.includes(record.kind)) return run(record, operation, input, found, { signal, timeout, onProgress, answer, caller });
       return query(record, operation, input, { signal, deadline: timeout ? clock.now() + timeout : null });
+    },
+    // A request of a service the module serves (`coda.serve`), at `request`'s path and query: its `Response`, whatever its
+    // status, as its caller reads it; a failure it threw before its first byte, thrown as `call` throws one. `caller`: who
+    // asks (`ctx.caller`).
+    async serve(id, request, { caller = { local: true } } = {}) {
+      const connection = handlers.get(handlerOf({ service: id })), { pathname, search } = new URL(request.url);
+      if (!connection) throw refused('not_found', '插件没有登记这个流式服务');
+      return exchange(connection, request, { path: `${pathname}${search}`, caller });
+    },
+    // A request of a record's stream the module implements (`coda.stream`), at what `request`'s path and query are below the
+    // stream: held to its shape and its parameters' schema, its `Response`, or a failure, as `serve` has them, its `effects` as
+    // the backend says them (ProtocolCalls `open`).
+    async stream(record, name, request, { caller = { local: true } } = {}) {
+      const found = types.types.get(record?.kind)?.streams.get(name), { pathname, search } = new URL(request.url), suffix = pathname === '/' ? '' : pathname;
+      if (!found || !implemented.includes(record.kind)) throw refused('not_found', `插件没有实现流 ${record?.kind}/${name}`);
+      let handed = false;
+      try {
+        const input = streamInput(found, `${record.kind} 的流 ${name}`, { method: request.method, suffix, search });
+        const connection = handlers.get(handlerOf({ kind: record.kind, name }));
+        if (!connection) throw refused('not_found', `插件没有登记 ${record.kind} 的流 ${name}`);
+        handed = true;
+        return await exchange(connection, request, { path: `${suffix || '/'}${search}`, caller, of: { record: recordFor(record), input } });
+      } catch (error) { throw Object.assign(error, { effects: !handed || found.shape === 'read' ? 'none' : error.effects ?? 'unknown' }); }
     },
     // A query of the module's own (`coda self <名字>`, docs/plugins.md「只给自己用的查询」), handed to what it registered with
     // `coda.self.handle` as the backend hands it (components/plugins/plugin-host.mjs `querySelf`): its result, given 30 seconds by

@@ -1,5 +1,7 @@
 import Ajv2020 from 'ajv/dist/2020.js';
 import { parseProtocolName } from '@coda-console/protocol/protocol';
+import { checkInput } from '../../adapters/call-limit.mjs';
+import { ContractError, requireCondition } from '../../domain/errors.mjs';
 
 // Only JSON Schema rules: no coercion, custom keywords or executable constraints. Only the type's schemas
 // supply defaults. An absent field without a declared default stays absent.
@@ -19,11 +21,28 @@ export function validate(check, value, who) {
   if (!check(value)) throw new TypeError(`${who}: ${ajv.errorsText(check.errors)}`);
 }
 
+// The shapes of a stream (docs/plugins.md「记录的流」): the methods each is asked with, and whether the path below it and the
+// query string are its own subprotocol's (`http`) or there is no path and the query string is its parameters'.
+export const SHAPES = { read: { methods: ['GET'] }, write: { methods: ['POST'] }, http: { methods: ['GET', 'POST'], opaque: true } };
+// What a stream (as a type has it; `who`, as a refusal says it) is asked with: its parameters, none of an `http` one. Not
+// asked as its shape is, refused: by another method (`allow`, those it is), with a path below it it has none of, or with
+// parameters not of its schema.
+export function streamInput(stream, who, { method, suffix, search }) {
+  const { methods, opaque } = SHAPES[stream.shape];
+  if (!methods.includes(method)) throw Object.assign(new ContractError('method_not_allowed', `${who} 只收 ${methods.join('、')}`), { allow: methods.join(', ') });
+  requireCondition(opaque || suffix === '' || suffix === '/', 'not_found', `${who} 下面没有路径`);
+  const input = opaque ? {} : Object.fromEntries(new URLSearchParams(search));
+  if (!opaque) checkInput(stream, who, input);
+  return input;
+}
+
 export class ProtocolTypes {
   constructor() { this.types = new Map(); }
   // `side`: for one of Coda's own protocols, the side of the call kernel on each backend that does its doing operations
   // (`<backend ID>/<side>`, components/plugins/plugin-callers.mjs `route`); none for one a plugin implements.
-  register({ kind, title, spec, status, operations = {}, streams = {}, contributions = {}, participants = () => [], side }, registered = () => {}, replace = false) {
+  // `listed: false`: the kind's records are not in the second version of the clients' list (docs/client-architecture.md「第 2 版列表」);
+  // Coda's mark on its own definitions, which a plugin's kind never carries: it is listed.
+  register({ kind, title, spec, status, operations = {}, streams = {}, contributions = {}, participants = () => [], side, listed = true }, registered = () => {}, replace = false) {
     if (!parseProtocolName(kind) || (this.types.has(kind) && !replace)) throw new TypeError(`协议名无效或已登记：${kind}`);
     if (spec?.type !== 'object' || status?.type !== 'object') throw new TypeError(`${kind}: spec 与 status 须为对象 schema`);
     if (typeof participants !== 'function' || !object(contributions)) throw new TypeError(`${kind}: 需要 participants 与 contributions`);
@@ -46,13 +65,16 @@ export class ProtocolTypes {
         ...(operation.safe === true ? { safe: true } : {}), ...(operation.idempotent === true ? { idempotent: true } : {}),
         ...(operation.timeout ? { timeout: operation.timeout } : {}), ...(operation.codaOnly === true ? { codaOnly: true } : {}) });
     }
-    // Each stream (a record's read-only bytes, transport/record-streams.mjs) by its name, its parameters' schema: they come
-    // from the query string, all strings. A stream and an operation may share a name; each is its own.
+    // Each stream (a record's bytes, transport/record-streams.mjs) by its name: its parameters' schema, all strings as they
+    // come from the query string, its shape, whether its content is frames, and the subprotocol of an `http` one, the last
+    // two for whoever reads it. A stream and an operation may share a name; each is its own.
     if (!object(streams)) throw new TypeError(`${kind}: streams 须为对象`);
-    const readable = new Map();
+    const carried = new Map();
     for (const [name, stream] of Object.entries(streams)) {
       if (!/^[a-z][a-z0-9-]{0,63}$/.test(name) || !object(stream) || !stream.input) throw new TypeError(`${kind}.${name}: 流名或定义无效`);
-      readable.set(name, { input: compile(stream.input) });
+      const { shape = 'read', frames = false, subprotocol = null } = stream;
+      if (!Object.hasOwn(SHAPES, shape)) throw new TypeError(`${kind}.${name}: 没有这种形状的流：${shape}`);
+      carried.set(name, { input: compile(stream.input), shape, frames, subprotocol });
     }
     const properties = {};
     for (const [field, { merge, schema }] of Object.entries(contributions)) {
@@ -64,8 +86,8 @@ export class ProtocolTypes {
     }
     // Its title as defined (@coda-console/protocol definition.json). Its permission groups are judged as defined, not as
     // registered (components/plugins/plugin-extensions.mjs compatibility).
-    const type = { kind, ...(title ? { title } : {}), ...(side ? { side } : {}),
-      participants, contributions: structuredClone(contributions), operations: compiled, streams: readable,
+    const type = { kind, ...(title ? { title } : {}), ...(side ? { side } : {}), ...(listed === false ? { listed: false } : {}),
+      participants, contributions: structuredClone(contributions), operations: compiled, streams: carried,
       spec: compile(spec, defaults), status: compile(status, defaults),
       // Before supplementation only merge operands must be shaped correctly. Required fields and counts apply to the
       // complete spec, so a participant can supply a required list that the initial object does not have yet.

@@ -252,6 +252,16 @@
 1 stable view window.coda.toolbar fields on
 1 stable view window.coda.toolbar kinds button
 1 stable view window.coda.toolbar kinds toggle
+10 bridge window.coda.paste
+11 manifest contributes.autoUpdateSetting
+12 definition streams.frames
+12 definition streams.shape
+12 definition streams.subprotocol
+12 module coda.frames
+12 module coda.frames.read
+12 module coda.frames.write
+12 module coda.serve
+12 module coda.stream
 2 bridge window.coda.refresh
 2 manifest contributes.records
 3 definition description
@@ -351,4 +361,4 @@
 9 coda/machine@1
 9 coda/machine@1 read
 9 coda/machine@1 read records
-level 9
+level 12
