@@ -20,7 +20,6 @@ export const NOT_PROVIDED = {
   'services.register': { message: '测试宿主没有后端，不答 serviceRegister' },
   tell: { message: '测试宿主没有后端，不答 tell' },
   api: { message: 'Coda 还在启动，稍后再试' },
-  'protocols.resolve': { message: '测试宿主没有后端，不答 provider' },
   'protocols.upload': { message: '测试宿主没有后端，不答 provider' },
   'pluginSetup.retry': { code: 'unsupported', message: '测试宿主不提供 coda.pluginSetup' },
 };

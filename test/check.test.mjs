@@ -859,18 +859,19 @@ describe('the module level', () => {
     assert.deepEqual(rules(apart.report, 'warn').filter(rule => rule === 'module.registered'), ['module.registered']);
     assert.match(messages(apart.report, 'module.registered')[0], /^未完成核对：协议 liar\/deploy@1 的定义不在本地/);
   });
-  test('a coda.list of records it may read is not completed: the test host registers no record types of others', async () => {
-    for (const beside of [true, false]) {
-      const { report } = await checkPlugin(reading({ main: LIST, beside, groups: ['read'] }));
-      assert.deepEqual(failed(report), []);
-      assert.match(messages(report, 'module.registered')[0], beside ? /^未完成核对：测试宿主登记不了已获授权的记录类型 liar\/deploy@1/ : /^未完成核对：协议 liar\/deploy@1 的定义不在本地/);
-      assert.deepEqual(rules(report, 'pass').filter(rule => rule.startsWith('module.')), []);
-    }
+  test('a coda.list of records it may read passes with the dependency beside it, whose record types the test host has; without it the check is not completed', async () => {
+    const beside = (await checkPlugin(reading({ main: LIST, beside: true, groups: ['read'] }))).report;
+    assert.deepEqual(failed(beside), []);
+    assert.ok(rules(beside, 'pass').includes('module.activate'));
+    const alone = (await checkPlugin(reading({ main: LIST, beside: false, groups: ['read'] }))).report;
+    assert.deepEqual(failed(alone), []);
+    assert.match(messages(alone, 'module.registered')[0], /^未完成核对：协议 liar\/deploy@1 的定义不在本地/);
+    assert.deepEqual(rules(alone, 'pass').filter(rule => rule.startsWith('module.')), []);
   });
   test('a coda.list of records of a protocol it uses only for events fails: the group it asked for does not read', async () => {
     const { report } = await checkPlugin(reading({ main: LIST, groups: ['watch'] }));
     assert.deepEqual(failed(report), ['module.activate']);
-    assert.match(report.failures[0].message, /须在清单的 uses 里写 liar\/deploy@1 的权限组 read/);
+    assert.match(report.failures[0].message, /须在清单的 uses 或 optionalUses 里写 liar\/deploy@1 的权限组 read/);
   });
   test('a coda.list of a protocol of events only is the module\'s failure, not the test host\'s limit', async () => {
     const { report } = await checkPlugin(reading({ main: LIST, definition: EVENTS_ONLY }));
@@ -909,7 +910,6 @@ describe('the module level', () => {
   });
   test('the test host still answers what it lacks as the checker recognizes it', async () => {
     const asked = { watch: c => c.watch('other/x@1', () => {}), 'services.register': c => c.services.register('s', () => {}), tell: c => c.tell('s', 't'),
-      'protocols.resolve': c => c.protocols.resolve({ kind: 'a@1', id: 'b' }, 's'),
       'protocols.upload': c => c.protocols.upload('u'), 'pluginSetup.retry': c => c.pluginSetup.retry('x') };
     // `api` is no longer a member of `coda` (API Level 9 removed it), so there is nothing to ask for it; NOT_PROVIDED still lists it.
     assert.deepEqual(Object.keys(asked).sort(), Object.keys(NOT_PROVIDED).filter(member => member !== 'api').sort());
