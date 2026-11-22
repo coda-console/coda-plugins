@@ -33,7 +33,6 @@ export class Provider {
   async start() {
     this.handlers = [
       this.coda.handle(SESSION, 'read', (input, { record }) => this.read(record.key, input)),
-      this.coda.handle(SESSION, 'draft', () => ({})),
       this.coda.handle(SESSION, 'post', (input, ctx) => this.post(input, ctx)),
     ];
     await this.sync();

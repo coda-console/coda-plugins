@@ -2,9 +2,15 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { once } from 'node:events';
+import { createServer } from 'node:http';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import { createTestHost } from '../../../check/coda/adapters/plugin-test-host.mjs';
+import { statusOf } from '../../../check/coda/domain/errors.mjs';
 import { ProtocolTypes, validate } from '../../../check/coda/components/protocols/types.mjs';
 import { recordId, validKey } from '../records.mjs';
 import { SOURCE } from '../../../plugins/git/lib/definitions.mjs';
@@ -31,11 +37,43 @@ const sorted = value => Array.isArray(value) ? value.map(sorted)
 const same = (a, b) => JSON.stringify(sorted(a)) === JSON.stringify(sorted(b));
 export const packet = line => Buffer.from((Buffer.byteLength(line) + 4).toString(16).padStart(4, '0') + line);
 
+// The plugin test host, with what the plugin's manifest says of it.
+export function testHost(t, state) {
+  const { protocols, protocolImplementations } = manifest.contributes;
+  const host = createTestHost({ plugin: { id: 'git', state, protocols, protocolImplementations } });
+  t.after(() => host.close());
+  return host;
+}
+// A backend's entry to the streams of its records, for a real `git`: each request handed to the module's, answered as it answers.
+export async function gateway(t, host, { caller } = {}) {
+  const seen = [];
+  const server = createServer(async (req, res) => {
+    seen.push({ url: req.url, protocol: req.headers['git-protocol'] });
+    const [, kind, id, name, rest] = /^\/v1\/records\/([^/]+)\/([^/]+)\/streams\/([^/?]+)(.*)$/.exec(req.url);
+    const gone = new AbortController();
+    res.once('close', () => gone.abort());
+    try {
+      const response = await host.stream({ kind: decodeURIComponent(kind), id }, name, new Request(`http://stream${rest}`, { method: req.method,
+        headers: req.headers, signal: gone.signal, ...(req.method === 'GET' ? {} : { body: Readable.toWeb(req), duplex: 'half' }) }), { caller });
+      res.writeHead(response.status, Object.fromEntries(response.headers));
+      await pipeline(Readable.fromWeb(response.body), res);
+    } catch (error) {
+      if (res.headersSent) return void res.destroy();
+      res.writeHead(statusOf(error.code), { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { code: error.code, message: error.message } }));
+    }
+  });
+  t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  return { base: `http://127.0.0.1:${server.address().port}`, seen };
+}
+
 // The plugin's reconciliation runs against the synchronized host API and real Git. Storage/transport belong
 // to Coda's tests; this fixture keeps the records of the interface (`put`, `delete`, `replace` by the plugin's key, the ID
 // the host's, derived from it), whole as a plugin writes them. A `replace` without a status keeps the one held. `seed` puts a
-// record there as an earlier version left it, without a key.
-export function host(state) {
+// record there as an earlier version left it, without a key. The stream and the service it registers are the plugin test
+// host's (`served`).
+export function host(t, state) {
   const types = new ProtocolTypes(), objects = new Map(), plugin = 'git';
   for (const definition of manifest.contributes.protocols)
     types.register({ kind: definition.name, spec: definition.spec, status: definition.status, participants: () => [] });
@@ -64,8 +102,7 @@ export function host(state) {
     return items.map(({ key, ...value }) => write(kind, key, value));
   };
   const seed = (kind, id, value) => objects.set(`${kind}/${id}`, { kind, id, spec: value.spec, status: value.status ?? {}, labels: null, version: String(++version) });
-  const coda = { plugin: { id: plugin, state }, put, delete: remove, replace,
-    services: { register: async (_id, handler) => { coda.handler = handler; return { dispose() {} }; } },
-  };
-  return { coda, objects, seed, id: name => recordId(plugin, SOURCE, name) };
+  const served = testHost(t, state);
+  const coda = { plugin: { id: plugin, state }, put, delete: remove, replace, serve: served.coda.serve, stream: served.coda.stream };
+  return { coda, served, objects, seed, id: name => recordId(plugin, SOURCE, name) };
 }
