@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { agentValueProblem } from '@coda-console/protocol/agent';
-import { AgentProcess } from '../../../check/process.mjs';
+import { AgentProcess } from '../../helpers/agent.mjs';
 import { pluginDir, resolveFrom } from '../plugin.mjs';
 import { explainCodexError, codexFailureData, reportedCodexFailures } from '../../../plugins/codex/agent/errors.mjs';
 

@@ -6,7 +6,7 @@ import { createServer } from 'node:http';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { AgentProcess } from '../../../check/process.mjs';
+import { AgentProcess } from '../../helpers/agent.mjs';
 import { pluginDir } from '../plugin.mjs';
 
 const binary = process.env.OPENCODE_TEST_BINARY;

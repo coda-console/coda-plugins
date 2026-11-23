@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { AgentProcess } from '../../../check/process.mjs';
+import { AgentProcess } from '../../helpers/agent.mjs';
 import { manifest } from '../command.mjs';
 import { pluginDir } from '../plugin.mjs';
 

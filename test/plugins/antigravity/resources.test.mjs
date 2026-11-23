@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, realpath, rm, writeFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { resourceRecords } from '@coda-console/plugin-check/resources';
+import { resourceRecords } from '../../helpers/resources.mjs';
 import { reading, signedIn, usageReport } from '../../../plugins/antigravity/scripts/agy.mjs';
 import { windows } from '../../../plugins/antigravity/scripts/quota.mjs';
 import { pluginEnv } from '../command.mjs';

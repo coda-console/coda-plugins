@@ -30,7 +30,7 @@
   "dependencies": {
     "@0dep/piso": "5.2.0",
     "@agentclientprotocol/sdk": "2.6.0",
-    "@coda-console/protocol": "6.22.0",
+    "@coda-console/protocol": "6.23.0",
     "ajv": "8.20.0",
     "yaml": "2.9.1"
   },

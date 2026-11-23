@@ -2,8 +2,8 @@
 // as that call's review (docs/agent-protocol.md「工具调用的审核」).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { explain, schemas } from '../../helpers/agent.mjs';
 import { CodexReviews } from '../../../plugins/codex/agent/reviews.mjs';
-import { explain, schemas } from '../../../check/schema.mjs';
 
 const update = (sessionId, u) => ({ jsonrpc: '2.0', method: 'session/update', params: { sessionId, update: u } });
 // As codex-acp 1.12.0 says a check: started, then completed, the event itself as the call's input or output.

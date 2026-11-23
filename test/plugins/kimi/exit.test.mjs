@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { AgentProcess } from '../../../check/process.mjs';
+import { AgentProcess } from '../../helpers/agent.mjs';
 import { agentValueProblem } from '@coda-console/protocol/agent';
 import { pluginDir } from '../plugin.mjs';
 

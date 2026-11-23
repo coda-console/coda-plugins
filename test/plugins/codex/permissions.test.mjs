@@ -5,9 +5,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AgentProcess } from '../../../check/process.mjs';
-import { cleared } from '../../../check/coda/components/plugins/plugin-rules.mjs';
-import { clientCapabilities } from '../../../check/coda/domain/agent-protocol.mjs';
+import { AgentProcess, cleared, clientCapabilities } from '../../helpers/agent.mjs';
 import { pluginDir } from '../plugin.mjs';
 
 const quote = value => `'${value.replaceAll("'", "'\\''")}'`;

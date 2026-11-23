@@ -9,7 +9,7 @@ import { basename, join } from 'node:path';
 import { test } from 'node:test';
 import { pluginDir } from '../plugin.mjs';
 import { barePath, manifest, pluginEnv, run } from '../command.mjs';
-import { resourceRecords } from '@coda-console/plugin-check/resources';
+import { resourceRecords } from '../../helpers/resources.mjs';
 
 const dir = pluginDir('testbed');
 const phone = { id: 'iphone-testbed', name: 'iPhone13pm', udid: 'TEST-IPHONE', note: '登录着用户的 Apple 账号：不碰钱包与支付。' };
