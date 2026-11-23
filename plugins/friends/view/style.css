@@ -34,6 +34,8 @@ input, select, textarea { width: 100%; min-width: 0; padding: 7px 9px; border-ra
 textarea { min-height: 84px; resize: vertical; }
 .btn { padding: 7px 14px; border-radius: var(--coda-radius, 8px); border: 0; font-weight: 600; background: var(--coda-accent, #0a84ff); color: #fff; }
 .btn.quiet { background: var(--coda-fill, rgba(120, 120, 128, .12)); color: var(--coda-foreground, #1d1d1f); }
+.machines { display: flex; flex-wrap: wrap; gap: 8px; }
+.btn.quiet[aria-pressed="true"] { background: var(--coda-accent, #0a84ff); color: #fff; }
 .btn.danger { background: color-mix(in srgb, var(--coda-red, #ff3b30) 14%, transparent); color: var(--coda-red, #ff3b30); }
 .btn.small { padding: 3px 10px; font-weight: 500; font-size: .92em; }
 details > summary { cursor: pointer; color: var(--coda-secondary, #6e6e73); }
