@@ -130,6 +130,29 @@ test('what does not belong to an open call is not told: another command, a call 
   assert.deepEqual(sent, []);
 });
 
+test('a result with neither an exit code nor the cancelling does not end the task: the card\'s ACP update does', async t => {
+  const { sent, start, append, background } = setup(t);
+  start(['one', 'two'].map(command => acp('tool_call', 'in_progress', { command, id: command })));
+  append(running(1, 'one'), running(2, 'two'));
+  append(finished(1, `${'x'.repeat(1200)}\nCommand exited with code 0.`), finished(2, 'something agy has not said before'));
+  assert.deepEqual(sent.slice(2), [], 'neither exit code is in what is read');
+  background.observe(S, acp('tool_call_update', 'failed', { id: 'one', command: 'one', rawOutput: { output: 'x', exit_code: 1 } }));
+  background.observe(S, acp('tool_call_update', 'failed', { id: 'two', command: 'two', rawOutput: { output: 'x', exit_code: 3 } }));
+  await settle();
+  assert.deepEqual(sent.slice(2).map(({ waitId, state }) => [waitId, state]), [[`${S}/task-1`, 'failed'], [`${S}/task-2`, 'failed']]);
+});
+
+test('an optional field of the wrong type does not stop the task from being told, nor takes anything down with it', t => {
+  const { sent, start, append, background } = setup(t);
+  start([acp('tool_call', 'in_progress', { input: { toolSummary: { text: 'x' }, IsDaemon: {} } })]);
+  append(running(1, COMMAND));
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].title, COMMAND.split('\n')[0], 'the first line of the command');
+  assert.equal(agentMessageProblem('_coda/wait', sent[0]), null);
+  const broken = new Background({ send: () => { throw new Error('boom'); }, home: setup(t).home });
+  assert.doesNotThrow(() => { broken.observe(S, acp('tool_call', 'in_progress')); broken.scan(S); });
+});
+
 test('a step that quotes a finished task is not its end', t => {
   const { sent, start, append } = setup(t);
   start();
@@ -261,6 +284,21 @@ test('a turn that said something on ACP, or a late error: not a failure, whichev
   tool.background.begin(S);
   tool.append(input(2), apiError(3));
   assert.equal(tool.background.finish(S, true), UNAVAILABLE, 'the next turn said nothing: it is read again from the start');
+});
+
+test('an end that is not known is not a failure: a step being written, or a last line that is not a step, does not keep the 503 before it', t => {
+  const half = turn(t, input(1), apiError(2));
+  appendFileSync(half.file, JSON.stringify(answer(3)).slice(0, 40));
+  assert.equal(half.background.finish(S, true), null, 'the next step is half written');
+  appendFileSync(half.file, `${JSON.stringify(answer(3)).slice(40)}\n`);
+  assert.equal(half.background.finish(S, true), null, 'and whole, the answer is last');
+  const broken = turn(t, input(1), apiError(2));
+  appendFileSync(broken.file, '{"step_index":3,"source":"MODEL"\n');
+  assert.equal(broken.background.finish(S, true), null, 'the last whole line does not parse');
+  const after = turn(t, input(1), apiError(2));
+  appendFileSync(after.file, 'not json\n');
+  after.append(apiError(4, TIMEOUT));
+  assert.equal(after.background.finish(S, true), TIMEOUT, 'a line that is not a step, and a step after it');
 });
 
 test('no transcript, one that cannot be read, or steps of another shape: no failure, nothing thrown, and the next prompt is as before', t => {

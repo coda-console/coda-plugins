@@ -8,7 +8,7 @@
 //          The ACP call it belongs to is the one open `execute` call whose command is that description (when the step is cut, whose
 //          command has the two ends of it); none or several fit: not registered. The task id is not the toolCallId.
 //   end:   a SYSTEM step, "content=Task id \"<task id>\" finished with result:\nCommand exited with code N." or "was canceled with
-//          result:\nTool execution was canceled". The call's own ACP update that ends it, when it comes, ends the task, too.
+//          result:\nTool execution was canceled". The call's own ACP update that ends it, when it comes, ends the task, too. A result with neither an exit code (read from its first 1000 characters) nor the cancelling ends nothing: the call's ACP update does.
 // A command with `IsDaemon: true` is a server left running on purpose (T3 Code's reading of it, too): it is told with `awaited: false`.
 // Its card is left as agy says it: a call that launched a wait is shown by Coda as moved to the background, and neither it nor a
 // wait that is not awaited keeps the session from being at rest (docs/session-contracts.md「会话静止」), so no result is made up for it.
@@ -50,7 +50,7 @@ export class Background {
       const input = update.rawInput ?? update.args;
       if (update.kind !== 'execute' || typeof input?.CommandLine !== 'string' || TERMINAL.has(update.status)) return;
       session ??= this.open(sessionId);
-      session.calls.set(id, { command: input.CommandLine.trim(), summary: input.toolSummary, daemon: [true, 'true'].includes(input.IsDaemon) });
+      session.calls.set(id, { command: input.CommandLine.trim(), summary: typeof input.toolSummary === 'string' ? input.toolSummary : '', daemon: [true, 'true'].includes(input.IsDaemon) });
       this.watch(session);
       return;
     }
@@ -87,12 +87,16 @@ export class Background {
     let text = '', read = true;
     try { text = this.read(session); } catch { read = false; }
     for (const line of text.split('\n')) {
-      let step; try { step = JSON.parse(line); } catch { continue; }
-      if (!step || typeof step !== 'object') continue;
+      if (!line.trim()) continue;
+      let step; try { step = JSON.parse(line); } catch { step = null; }
+      // The last whole line that is not a step says that what the last step is cannot be told (`finish`).
+      session.unsure = !step || typeof step !== 'object';
+      if (session.unsure) continue;
       if (step.source === 'USER_EXPLICIT' && step.type === 'USER_INPUT') session.input = true;
       session.last = step;
       session.lastAfterInput = session.input;
-      if (typeof step.content === 'string') this.step(sessionId, session, step);
+      // What goes wrong with one step is skipped with that step.
+      if (typeof step.content === 'string') try { this.step(sessionId, session, step); } catch { /* this step only */ }
     }
     if (this.waits()) this.follow(session);
     this.watch(session);
@@ -105,6 +109,7 @@ export class Background {
     if (known) this.scan(sessionId);
     const session = known ?? this.open(sessionId);
     session.last = null;
+    session.unsure = false;
     session.input = false;
     session.spoke = false;
     session.prompting = true;
@@ -118,7 +123,8 @@ export class Background {
   }
 
   // The prompt is answered. With `endTurn`, the text of the upstream error the turn stopped on, or null: also when the transcript
-  // could not be read just now, or the turn said something, which an error agy got over does not.
+  // could not be read just now, its end is a step still being written or a line that is not a step (the last step is not known),
+  // or the turn said something, which an error agy got over does not.
   finish(sessionId, endTurn) {
     const session = this.sessions.get(sessionId);
     if (!session) return null;
@@ -126,7 +132,7 @@ export class Background {
     session.prompting = false;
     this.watch(session);
     const step = session.last;
-    return endTurn && read && !session.spoke && session.lastAfterInput && step?.source === 'SYSTEM' && step.type === 'ERROR_MESSAGE' && typeof step.error === 'string' ? step.error.trim() || null : null;
+    return endTurn && read && !session.rest.length && !session.unsure && !session.spoke && session.lastAfterInput && step?.source === 'SYSTEM' && step.type === 'ERROR_MESSAGE' && typeof step.error === 'string' ? step.error.trim() || null : null;
   }
 
   open(sessionId) {
@@ -134,7 +140,7 @@ export class Background {
     const file = join(dir, 'logs/transcript.jsonl');
     let offset = 0; try { offset = statSync(file).size; } catch { /* not there yet: all of it is new */ }
     const session = { id: sessionId, dir, file, offset, rest: Buffer.alloc(0), calls: new Map(), tasks: new Set(), timer: null,
-      last: null, input: false, lastAfterInput: false, spoke: false, prompting: false, known: new Set(), live: new Set(), seen: new Set() };
+      last: null, unsure: false, input: false, lastAfterInput: false, spoke: false, prompting: false, known: new Set(), live: new Set(), seen: new Set() };
     // The sub-agents and notes there already are belong to before.
     if (this.waits()) { session.known = new Set(children(dir).keys()); idled(dir, session.seen); }
     this.sessions.set(sessionId, session);
@@ -167,7 +173,9 @@ export class Background {
     const ended = step.source === 'SYSTEM' ? END.exec(step.content) : null;
     if (!ended || !session.tasks.has(ended[1])) return;
     const exit = EXIT.exec(step.content.slice(ended.index + ended[0].length, ended.index + ended[0].length + 1000));
-    this.end(session, ended[1], ended[2] === 'was canceled' ? 'cancelled' : exit && exit[1] !== '0' ? 'failed' : 'done');
+    // Only an exit code or the cancelling says how it ended; a result that has neither is left to the ACP update that ends the call.
+    if (ended[2] === 'was canceled') this.end(session, ended[1], 'cancelled');
+    else if (exit) this.end(session, ended[1], exit[1] === '0' ? 'done' : 'failed');
   }
 
   start(sessionId, session, taskId, rest) {
@@ -181,13 +189,14 @@ export class Background {
     const fits = [...session.calls].filter(([, call]) => !call.waitId && (cut ? call.command.startsWith(head) && call.command.endsWith(tail) : call.command === head));
     if (fits.length !== 1 || fits[0][0].length > 200) return;
     const [[toolCallId, call]] = fits;
-    call.waitId = taskId;
-    session.tasks.add(taskId);
     let log = join(session.dir, 'tasks', `${taskId.slice(taskId.lastIndexOf('/') + 1)}.log`);
     try { if (logged) log = fileURLToPath(logged[1]); } catch { /* keeps the one the layout gives */ }
-    this.send({ sessionId, waitId: taskId, kind: 'task', state: 'waiting', toolCallId,
+    const params = { sessionId, waitId: taskId, kind: 'task', state: 'waiting', toolCallId,
       title: (call.summary || call.command.split('\n')[0]).slice(0, 500), detail: call.command.slice(0, 4000),
-      ...(existsSync(log) && log.length <= 4096 ? { outputFile: log } : {}), ...(call.daemon ? { awaited: false } : {}) });
+      ...(existsSync(log) && log.length <= 4096 ? { outputFile: log } : {}), ...(call.daemon ? { awaited: false } : {}) };
+    call.waitId = taskId;
+    session.tasks.add(taskId);
+    this.send(params);
   }
 
   end(session, waitId, state) {
