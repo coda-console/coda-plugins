@@ -47,18 +47,7 @@ export function checkPublish({ kind, id, body, audience = ['public'] } = {}) {
   return { kind, id, body: JSON.parse(text), audience: [...audience] };
 }
 
-/**
- * 本机 Accord 记录（`coda/accord@1` 的 local）的证书状态：状态里写了 `certificate` 的按它判：null 没有身份，
- * `active` 为 true 才是可发布，其余要换证书；旧宿主不写这个键，有作者就当可发布（发布遇 invalid_state 再落到需要证书）。
- */
-export function certStateOf(accord) {
-  const status = accord?.status;
-  if (status && typeof status === 'object' && Object.hasOwn(status, 'certificate')) {
-    if (status.certificate === null) return 'no_identity';
-    return status.certificate?.active === true ? 'active' : 'needs_cert';
-  }
-  return accord?.spec?.author ? 'active' : 'no_identity';
-}
+export { certStateOf } from './friends.mjs';
 
 const canonical = value => {
   if (Array.isArray(value)) return value.map(canonical);
