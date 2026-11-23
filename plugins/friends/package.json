@@ -4,7 +4,7 @@
   "displayName": "好友",
   "description": "管理 Accord 身份、个人名片与熟人好友通道",
   "icon": { "symbol": "person.2.fill", "color": "blue" },
-  "version": "0.2.0",
+  "version": "0.3.0",
   "categories": [
     "Skills 与工具"
   ],
@@ -40,7 +40,7 @@
       {
         "name": "friends/social@1",
         "title": "好友社交网关",
-        "description": "业务无关的好友网关：读好友与好友分享的记录，向好友发布、撤回记录，设置可代签的社交名片 friends/card；签名与记录全部透传 coda/accord@1，没有身份或证书过期时在本机排队，恢复后自动补发。",
+        "description": "业务无关的好友网关：读好友与好友分享的记录，向好友发布、撤回记录，设置可代签的社交名片 friends/card，发私信 friends/dm、好友动态 friends/feed，并以 dm、feed 两条帧流实时跟随；签名与记录全部透传 coda/accord@1，没有身份或证书过期时在本机排队，恢复后自动补发。",
         "spec": {
           "type": "object",
           "properties": { "version": { "const": 1 } },
@@ -136,7 +136,7 @@
               "additionalProperties": false
             }
           },
-          "setCard": {
+          "set-card": {
             "idempotent": true,
             "input": {
               "type": "object",
@@ -171,6 +171,101 @@
               "type": "object",
               "properties": {
                 "state": { "enum": ["synced", "queued", "paused", "no_identity", "needs_cert", "error"] },
+                "skipped": { "type": "boolean" },
+                "author": { "type": ["string", "null"] },
+                "version": { "type": "integer", "minimum": 0 },
+                "error": { "type": "string" }
+              },
+              "required": ["state"],
+              "additionalProperties": false
+            }
+          },
+          "send-dm": {
+            "idempotent": true,
+            "input": {
+              "type": "object",
+              "properties": {
+                "to": { "type": "string", "pattern": "^ed25519:[0-9a-f]{64}$" },
+                "id": { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*[^\\s\\u0000-\\u001f\\u007f-\\u009f][^\\u0000-\\u001f\\u007f-\\u009f]*$", "description": "至多 200 个字符且 UTF-8 至多 256 字节，不含控制字符，去首尾空白后不能为空；省略由网关生成 UUID" },
+                "text": { "type": "string", "maxLength": 8000, "description": "至多 8000 个字符（码点，按原样计，含首尾空白），发布时去首尾空白" },
+                "attachments": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 4,
+                  "items": {
+                  "type": "object",
+                  "description": "内容寻址的图片指针（BlobPointer）：path 只收 content/<sha256>，sha256 须与 path 里的一致",
+                  "properties": {
+                    "owner": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+                    "path": { "type": "string", "pattern": "^content/[0-9a-f]{64}$" },
+                    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+                    "mime": { "type": "string", "minLength": 1, "maxLength": 128 },
+                    "size": { "type": "integer", "minimum": 0, "maximum": 5242880 },
+                    "name": { "type": "string", "minLength": 1, "maxLength": 200 }
+                  },
+                  "required": ["owner", "path", "sha256"],
+                  "additionalProperties": false
+                }
+                },
+                "replyTo": { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*[^\\s\\u0000-\\u001f\\u007f-\\u009f][^\\u0000-\\u001f\\u007f-\\u009f]*$", "description": "所回复私信的 id：与 id 同样至多 200 个字符且 UTF-8 至多 256 字节，不含控制字符" }
+              },
+              "required": ["to"],
+              "additionalProperties": false
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "state": { "enum": ["synced", "queued", "paused", "no_identity", "needs_cert", "error"] },
+                "id": { "type": "string" },
+                "skipped": { "type": "boolean" },
+                "author": { "type": ["string", "null"] },
+                "version": { "type": "integer", "minimum": 0 },
+                "error": { "type": "string" }
+              },
+              "required": ["state"],
+              "additionalProperties": false
+            }
+          },
+          "post-feed": {
+            "idempotent": true,
+            "input": {
+              "type": "object",
+              "properties": {
+                "id": { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*[^\\s\\u0000-\\u001f\\u007f-\\u009f][^\\u0000-\\u001f\\u007f-\\u009f]*$", "description": "至多 200 个字符且 UTF-8 至多 256 字节，不含控制字符，去首尾空白后不能为空；省略由网关生成 UUID" },
+                "text": { "type": "string", "maxLength": 8000, "description": "至多 8000 个字符（码点，按原样计，含首尾空白），发布时去首尾空白" },
+                "media": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 4,
+                  "items": {
+                  "type": "object",
+                  "description": "内容寻址的图片指针（BlobPointer）：path 只收 content/<sha256>，sha256 须与 path 里的一致",
+                  "properties": {
+                    "owner": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+                    "path": { "type": "string", "pattern": "^content/[0-9a-f]{64}$" },
+                    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+                    "mime": { "type": "string", "minLength": 1, "maxLength": 128 },
+                    "size": { "type": "integer", "minimum": 0, "maximum": 5242880 },
+                    "name": { "type": "string", "minLength": 1, "maxLength": 200 }
+                  },
+                  "required": ["owner", "path", "sha256"],
+                  "additionalProperties": false
+                }
+                },
+                "audience": {
+                  "type": "array",
+                  "items": { "type": "string", "pattern": "^(?:public|ed25519:[0-9a-f]{64})$" },
+                  "minItems": 1,
+                  "maxItems": 500
+                }
+              },
+              "additionalProperties": false
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "state": { "enum": ["synced", "queued", "paused", "no_identity", "needs_cert", "error"] },
+                "id": { "type": "string" },
                 "skipped": { "type": "boolean" },
                 "author": { "type": ["string", "null"] },
                 "version": { "type": "integer", "minimum": 0 },
@@ -240,9 +335,37 @@
             }
           }
         },
+        "streams": {
+          "dm": {
+            "shape": "read",
+            "frames": true,
+            "description": "私信的实时帧流：首帧 { type: 'snapshot', cursor, items }（按 createdAt 升序），之后每次变化一帧 { type: 'upsert', cursor, item } 或 { type: 'retract', cursor, author, id, peer }；peer 只看与这位好友的私信，after 给上次的 cursor 只补增量，续不上回到快照",
+            "input": {
+              "type": "object",
+              "properties": {
+                "peer": { "type": "string", "pattern": "^ed25519:[0-9a-f]{64}$" },
+                "after": { "type": "string", "minLength": 1, "maxLength": 128 }
+              },
+              "additionalProperties": false
+            }
+          },
+          "feed": {
+            "shape": "read",
+            "frames": true,
+            "description": "好友动态的实时帧流：首帧 { type: 'snapshot', cursor, items }（按 createdAt 降序），之后每次变化一帧 { type: 'upsert', cursor, item } 或 { type: 'retract', cursor, author, id }；author 只看这一位的，after 给上次的 cursor 只补增量，续不上回到快照",
+            "input": {
+              "type": "object",
+              "properties": {
+                "author": { "type": "string", "pattern": "^ed25519:[0-9a-f]{64}$" },
+                "after": { "type": "string", "minLength": 1, "maxLength": 128 }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
         "permissions": {
-          "read": { "title": "查看好友列表与读取好友分享的记录", "read": true, "operations": ["friends", "records"] },
-          "publish": { "title": "通过好友网关发布、撤回记录、设置社交名片与查看待发队列", "operations": ["publish", "setCard", "retract", "outbox"] }
+          "read": { "title": "查看好友列表、读取好友分享的记录与实时私信、动态", "read": true, "operations": ["friends", "records"], "streams": ["dm", "feed"] },
+          "publish": { "title": "通过好友网关发布、撤回记录、设置社交名片、发私信与动态、查看待发队列", "operations": ["publish", "set-card", "send-dm", "post-feed", "retract", "outbox"] }
         }
       }
     ],

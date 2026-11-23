@@ -9,11 +9,12 @@ import { activate, deactivate } from '../../../plugins/friends/main.mjs';
 async function host(t, state) {
   const dir = state === undefined ? await mkdtemp(join(tmpdir(), 'friends-main-')) : state;
   if (state === undefined) t.after(() => rm(dir, { recursive: true, force: true }));
-  const self = new Map(), views = new Map(), operations = [], disposed = [];
+  const self = new Map(), views = new Map(), operations = [], streams = [], disposed = [];
   const never = name => () => { throw new Error(`activate must not call coda.${name}`); };
   const coda = { plugin: { id: 'friends', path: '/x', state: dir }, query: never('query'), call: never('call'),
     get: async () => null, put: async () => ({}), watch: async () => ({ dispose: () => disposed.push('watch') }),
     handle: (kind, operation) => { operations.push(`${kind}/${operation}`); return { dispose: () => disposed.push(`${kind}/${operation}`) }; },
+    stream: async (kind, name) => { streams.push(`${kind}/${name}`); return { dispose: () => disposed.push(`stream ${kind}/${name}`) }; },
     self: { handle: (name, fn) => { self.set(name, fn); return { dispose: () => disposed.push(name) }; } },
     views: { register: (id, provider) => { views.set(id, provider); return { dispose() {} }; } } };
   const open = () => {
@@ -21,16 +22,17 @@ async function host(t, state) {
     views.get('friends').open({ postMessage: m => { page.got.push(m); return true; }, onMessage: fn => { page.tell = fn; }, onClose() {} });
     return page;
   };
-  return { coda, dir, self, views, operations, disposed, open };
+  return { coda, dir, self, views, operations, streams, disposed, open };
 }
 const settled = () => new Promise(resolve => setTimeout(resolve, 30));
 
-test('activate registers the notes and policy handlers, the gateway operations and the view, without querying or publishing', async t => {
+test('activate registers the notes and policy handlers, the gateway operations and streams and the view, without querying or publishing', async t => {
   const h = await host(t);
   t.after(deactivate);
   await activate(h.coda);
   assert.deepEqual([...h.self.keys()].sort(), ['notes.delete', 'notes.list', 'notes.set', 'policy.get', 'policy.setKind']);
-  assert.deepEqual(h.operations.sort(), ['friends', 'outbox', 'publish', 'records', 'retract', 'setCard'].map(name => `friends/social@1/${name}`));
+  assert.deepEqual(h.operations.sort(), ['friends', 'outbox', 'post-feed', 'publish', 'records', 'retract', 'send-dm', 'set-card'].map(name => `friends/social@1/${name}`));
+  assert.deepEqual(h.streams, ['friends/social@1/dm', 'friends/social@1/feed']);
   assert.deepEqual([...h.views.keys()], ['friends']);
 });
 
@@ -73,7 +75,8 @@ test('without a state directory notes fail plainly, and deactivate disposes what
   await activate(h.coda);
   await assert.rejects(Promise.resolve().then(() => h.self.get('notes.list')({})), /状态目录/);
   deactivate();
-  assert.deepEqual(h.disposed.sort(), ['friends/social@1/friends', 'friends/social@1/outbox', 'friends/social@1/publish', 'friends/social@1/records',
-    'friends/social@1/retract', 'friends/social@1/setCard', 'notes.delete', 'notes.list', 'notes.set', 'policy.get', 'policy.setKind', 'watch']);
+  assert.deepEqual(h.disposed.sort(), ['friends/social@1/friends', 'friends/social@1/outbox', 'friends/social@1/post-feed', 'friends/social@1/publish', 'friends/social@1/records',
+    'friends/social@1/retract', 'friends/social@1/send-dm', 'friends/social@1/set-card', 'notes.delete', 'notes.list', 'notes.set', 'policy.get', 'policy.setKind',
+    'stream friends/social@1/dm', 'stream friends/social@1/feed', 'watch']);
   deactivate();
 });
