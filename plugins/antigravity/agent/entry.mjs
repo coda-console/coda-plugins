@@ -14,12 +14,15 @@
 //    signal or a prompt unanswered, the log and the prompts still waiting say how (exit.mjs).
 // 5. agy's notice that it retries a model request ("⚠ API error (attempt N): ...", an agent_message_chunk) is not passed on: Coda
 //    would keep it as the reply's text, while the turn goes on. The entry writes it to its own stderr instead (retry.mjs).
+// 6. A command agy moves into the background is told to Coda as a `_coda/wait` task, from agy's own transcript of the session, read
+//    only, for a Coda that declares `_meta.coda.waits` (background.mjs). Nothing else of the relay changes.
 import { spawn } from 'node:child_process';
 import { agyBinary } from '../scripts/agy.mjs';
 import { createCatalog } from './catalog.mjs';
 import { PREFIX, Probes, probeMark } from './probe.mjs';
 import { describeExit, endedError } from './exit.mjs';
 import { retryNotice } from './retry.mjs';
+import { Background } from './background.mjs';
 
 const binary = agyBinary() ?? 'agy';
 const agy = spawn(binary, ['acp'], { stdio: ['pipe', 'pipe', 'pipe'] });
@@ -37,6 +40,8 @@ const catalog = createCatalog({ state: process.env.CODA_PLUGIN_STATE, binary });
 const probes = new Probes({ extraMode: { id: 'full', name: FULL_NAME, description: FULL_DESCRIPTION } });
 const answer = (id, reply) => process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, ...reply })}\n`);
 let stopping = false;
+let waits = false; // Coda declared `_meta.coda.waits` in `initialize`
+const background = new Background({ send: params => process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: '_coda/wait', params })}\n`) });
 
 // Only LF separates JSON messages; readline would also split literal Unicode line separators inside JSON strings.
 // A line that is not a JSON object passes through as it is. `change` returns false for a message that is not forwarded.
@@ -87,7 +92,8 @@ relay(process.stdin, agy.stdin, message => {
     return false;
   }
   if (method === 'session/prompt' && 'id' in message) prompts.add(id);
-  if (method === 'initialize' && 'id' in message) initializing.add(id);
+  if (method === 'initialize' && 'id' in message) { initializing.add(id); waits = !!params?.clientCapabilities?._meta?.coda?.waits; }
+  if (method === 'session/close' && typeof params?.sessionId === 'string') background.closeSession(params.sessionId);
   if (['session/new', 'session/load', 'session/resume'].includes(method)) { delete params?.additionalDirectories; sessionRequests.add(id); }
   if (method === 'session/set_mode' && typeof params?.sessionId === 'string') {
     switchMode(message, params.modeId);
@@ -108,7 +114,7 @@ relay(agy.stdout, process.stdout, message => {
     if (initializing.delete(id) && message.result?.agentCapabilities) {
       const capabilities = message.result.agentCapabilities;
       for (const key of ['sessionCapabilities', 'session_capabilities']) delete capabilities[key]?.additionalDirectories;
-      capabilities._meta = { ...capabilities._meta, coda: { ...capabilities._meta?.coda, probe: {} } };
+      capabilities._meta = { ...capabilities._meta, coda: { ...capabilities._meta?.coda, probe: {}, waits: {} } };
     }
     if (sessionRequests.delete(id) && message.result) {
       catalog.observe(message.result);
@@ -131,6 +137,7 @@ relay(agy.stdout, process.stdout, message => {
     process.stderr.write(`agy 重试模型请求，提示不转给 Coda：${notice.trim()}\n`);
     return false;
   }
+  if (waits && method === 'session/update' && ['tool_call', 'tool_call_update'].includes(update?.sessionUpdate) && typeof params.sessionId === 'string') background.observe(params.sessionId, update);
   if (method === 'session/update' && update?.sessionUpdate === 'current_mode_update') {
     if (!full.has(params.sessionId)) return;
     if (update.currentModeId === 'default') update.currentModeId = 'full'; else full.delete(params.sessionId);
@@ -151,6 +158,7 @@ const stop = () => {
 agy.stdin.on('error', () => {});
 agy.on('error', () => process.exit(1));
 agy.on('close', (code, signal) => {
+  if (!stopping) background.closeAll();
   if (!stopping && (code !== 0 || prompts.size)) {
     const message = describeExit({ code, signal, stderr });
     process.stderr.write(`${message}\n`);

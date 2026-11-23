@@ -2,7 +2,7 @@
 // answers a session request with the params it received. It also keeps a mode per session like agy (default, accept-edits,
 // auto, plan; anything else is -32602), and has four test-only methods: `fake/mode` has it announce a mode of its own,
 // `fake/refuse` has it refuse the next mode change of a session, and `fake/permission` has it ask the client for a
-// permission and answer with what comes back, and `fake/updates` has it send the given session updates and then answer.
+// permission and answer with what comes back, `fake/updates` has it send the given session updates and then answer, and `fake/exit` has it end with the given code.
 // Its models are as agy's are: `m` with low/medium/high thinking, `xh` with xhigh as well, `none` with no thinking level
 // (FAKE_AGY_EXTRA_MODEL adds `extra`). `agy --version` says FAKE_AGY_VERSION (1.5.9); each native session/new is a line
 // `new <cwd>` in the file FAKE_AGY_LOG, after FAKE_AGY_DELAY ms; FAKE_AGY_FAIL_MODEL is a model it refuses to switch to,
@@ -66,6 +66,7 @@ createInterface({ input: process.stdin }).on('line', line => {
   }
   else if (m.method === 'fake/refuse') { refusing.add(sessionId); send({ id: m.id, result: {} }); }
   else if (m.method === 'fake/updates') { for (const update of m.params.updates) send({ method: 'session/update', params: { sessionId, update } }); send({ id: m.id, result: {} }); }
+  else if (m.method === 'fake/exit') process.exit(m.params.code ?? 0);
   else if (m.method === 'fake/mode') { announce(sessionId, m.params.modeId); send({ id: m.id, result: {} }); }
   else if (m.method === 'fake/permission') { asking.set(`perm-${m.id}`, m.id); send({ id: `perm-${m.id}`, method: 'session/request_permission', params: { sessionId, toolCall: { toolCallId: 't' }, options: m.params.options } }); }
   else send({ id: m.id, result: { received: m.params } });

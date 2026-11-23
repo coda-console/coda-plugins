@@ -25,7 +25,7 @@ function start(t) {
 test('the entry takes additionalDirectories out of the capabilities agy declares and out of session requests', async t => {
   const { request } = start(t);
   const { agentCapabilities } = await request('initialize', { protocolVersion: 1, clientCapabilities: {} });
-  assert.deepEqual(agentCapabilities, { loadSession: true, sessionCapabilities: { list: {} }, session_capabilities: { list: {} }, _meta: { coda: { probe: {} } } });
+  assert.deepEqual(agentCapabilities, { loadSession: true, sessionCapabilities: { list: {} }, session_capabilities: { list: {} }, _meta: { coda: { probe: {}, waits: {} } } });
   const params = { cwd: '/work', mcpServers: [], additionalDirectories: ['/b-extra', '/c-extra'] };
   const { additionalDirectories, ...rest } = params;
   assert.deepEqual((await request('session/new', params)).received, rest);

@@ -1,9 +1,9 @@
 # Antigravity
 
 把 [Google Antigravity](https://antigravity.google/cli) 的 Agent 接进 Coda。清单经一个薄转发入口（`agent/entry.mjs`）启动运行机上的 `agy acp`（Antigravity CLI 的 ACP 服务），
-先找 `~/.local/bin/agy`，没有再用 PATH。每个会话一个进程，不登记等待项。
+先找 `~/.local/bin/agy`，没有再用 PATH。每个会话一个进程。
 
-入口改四处，其余消息原样双向转发。第一处：把 `initialize` 答复里的 `additionalDirectories` 能力去掉，Coda 就不再给它传附加目录；
+入口改五处，其余消息原样双向转发。第一处：把 `initialize` 答复里的 `additionalDirectories` 能力去掉，Coda 就不再给它传附加目录；
 `session/new`、`session/load`、`session/resume` 里若仍带 `additionalDirectories` 也删掉。原因：agy 1.5.9 收到附加目录后，
 没给 Cwd 的命令默认跑在**字典序最前的附加根**，而不是会话的工作副本（实测规律，不是上游的保证；数组顺序、`session/load` 都不改变它）；
 不传附加目录时命令就在工作副本里跑。
@@ -13,6 +13,8 @@
 第四处：agy 内部重试模型请求时会发一条 `agent_message_chunk`，整段文本形如 `⚠ API error (attempt 1): request failed: stream idle timeout (5m0s): context deadline exceeded`，
 Coda 会把它存成回复正文，像答到一半出错，其实这一轮还在跑。入口不转发这一种（整段去掉首尾空白后恰为单行此格式），原文写到插件自己的 stderr；
 多行或夹在正文里的同样字样照常转发。最终失败怎样结束这一轮未查到实例，入口不改它（不改报 `session/prompt` 错误）。
+
+第五处：agy 把跑得久的命令转到后台，ACP 上看不出来；入口只读 agy 自己的会话记录，把它们作为 `_coda/wait` 后台任务报给 Coda，见「已知限制」的「后台命令」。
 
 需要带会话指令兜底的 Coda（2026-11-13 部署版，coda#2500）或更新版本；旧版 Coda 不会给 Antigravity 送入会话指令。
 
@@ -80,7 +82,7 @@ Coda 会把它存成回复正文，像答到一半出错，其实这一轮还在
 | 会话指令 | Antigravity 只认私有的 `_meta.antigravity.systemPrompt`，不认 ACP 标准字段；插件不处理它，由 Coda 把指令作为单独一段放在新会话第一次非斜杠命令的用户输入前面，分量不如系统提示词 |
 | 插话 | 不声明：Antigravity 的原生插话会提前结束旧一轮的回复，由 Coda 停下这一轮再发出新消息 |
 | 额度的口径 | 报告按模型组给额度：同组模型共享每周与 5 小时限额，不是每个模型各算一份；报告里没有套餐名。第一次在某个目录运行 `/usage` 时，CLI 会在 `implicit/` 下留一个小文件；插件固定在系统临时目录运行，之后复用，不新增会话与项目记录 |
-| 等待项登记 `_coda/wait` | 不登记，会话底部不列它在等什么 |
+| 后台命令 `_coda/wait` | agy 的 `run_command` 等 `WaitMsBeforeAsync` 毫秒后把命令转后台：ACP 上那张 execute 卡一直 `in_progress`、没有内容，agy 1.5.15 的 ACP 没有任何后台提示（文字或字段）。入口在 Coda 声明 `_meta.coda.waits` 时，对有未结束 execute 调用的会话每秒只读追加读 `~/.gemini/antigravity-cli/brain/<会话>/.system_generated/logs/transcript.jsonl`（从该会话第一次出现 execute 调用时的文件末尾起，更早的不看），按下面两种记录登记与结案，其余不碰。**开始**：状态 `RUNNING` 的步骤，正文 `Tool is running as a background task with task id: <会话>/task-N` 与 `Task Description: <命令>`（任务号不是 ACP 的 `toolCallId`）；按命令对到仍未结束的 execute 调用：命令与描述完全相同；只有步骤带 `<truncated N bytes>` 标记（超长步骤的中段被 agy 换掉）时，才用命令的首尾分别对上标记前后两段；符合的调用不是恰好一个（没有，或同样的命令并发了几个）就不登记，保持纯 ACP。报 `waiting`：`waitId` 是任务号，`toolCallId` 是那次调用，标题是 agy 给的 `toolSummary`（没有就用命令首行），说明是命令，`outputFile` 是步骤里 `Task logs are available at:` 给的日志（步骤里没有就按目录布局推出 `.system_generated/tasks/task-N.log`），文件不存在就不带。**结束**：`SYSTEM` 步骤里 `Task id "…" finished with result:`（其后第一处 `Command exited with code N.` 非 0 报 `failed`，否则 `done`）或 `was canceled with result:`（`cancelled`）；那次调用的 ACP 更新先到也算，按 `rawOutput.exit_code` 判：0 或没有（`completed`）报 `done`，-1（agy 取消命令的样子）报 `cancelled`，其他非 0，或 `failed`，报 `failed`；谁先到算谁，终态只报一次，ACP 更新引起的报在那张卡自己的更新之后。命令带 `IsDaemon: true`（常驻进程）的报 `awaited: false`：显示，但不挡调用完成与会话静止；其余按要等的。原来那张 execute 卡照 agy 报的样子留着，入口不替它编结果：Coda 对带 `toolCallId` 的后台任务把那张卡显示为「已转入后台」，不收束成结果未确认，工具卡本身也不挡静止（Coda 的 docs/session-contracts.md「会话静止」）。`session/close`、或 agy 进程自己退出（不是 Coda 停它）时还没结案的报 `cancelled`。读不到文件、路径不存在、不是 JSON 或格式不认识、读失败都安静地退回纯 ACP 转发，不写 stdout、不影响会话；入口只读这个文件，不读 agy 的 SQLite。不报 `handling`（任务结束后 agy 自己唤醒模型续说，入口分不清那是哪一轮）；不声明 `stoppable`（ACP 没有停单个后台任务的方法，只能停这一轮，agy 取消命令后经 ACP 更新结案）。**会漏判**：Coda 没声明 `_meta.coda.waits`；会话记录不在 `~/.gemini/antigravity-cli/brain/` 下，或 agy 换了这两种记录的文字、字段；转后台时那次 ACP 调用的命令与记录里的描述对不上（改写过，或中段被截断后首尾太短认不出）；入口启动前已在后台的任务（`session/load` 恢复的旧任务不登记）；转后台的不是 `execute` 调用（子 Agent、`schedule`）；入口先于结案通知退出的任务（报 `cancelled`，不是真实结果）。记录只有 1.5.15 的样本；agy 升级后格式变了，表现是漏判，不是出错 |
 | Plan 模式 | 产出计划文件并要求审阅，审阅前不动手；plan 下只读的 shell 命令也按权限规则请求审批，这是 agy 的设计 |
 | 删除会话 | 不支持：agy 1.5.9 的 ACP 没有 `session/delete`（回 -32601），`session/close` 也不删除。在 agy 历史里留下零步空会话的只有两种：不支持配置探测的旧版 Coda 每次普通探测建的会话，和插件缓存采集目录时自己建的那条，见「配置探测」。插件不自己删文件：那会绕过 agy 的取消、摘要缓存和搜索索引，agy 运行中删也不安全；等上游提供删除接口再接 |
 | 附加目录 | 不交给 Antigravity：读工作副本外的附件、会话临时目录、skill 真实文件可能要审批；`.agents/skills` 的链接照旧 |
