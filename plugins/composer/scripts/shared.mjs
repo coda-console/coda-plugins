@@ -67,18 +67,23 @@ export const checksText = (record, head) => record?.head === head
   ? record.runs.map(r => `${r.workflow}: ${r.state} coda://workflow-runs/${r.runId}`).join('\n') || '此提交未声明项目检查流程。'
   : '此提交项目检查未通过。';
 
+// 区域声明（README.md「改动区域」）：commit 上 .coda/areas.json 的内容，没有这个文件就是没有区域。
+export const areasAt = commit => git('ls-tree', '--name-only', commit, '.coda/areas.json') ? JSON.parse(git('show', `${commit}:.coda/areas.json`)) : {};
+// 文件归入的区域：所有区域的前缀里最长的匹配，都不匹配是 undefined。PR 汇总的改动区域与契约的范围门禁用同一个归法。
+export const areaOf = (file, declared) => Object.entries(declared).flatMap(([area, list]) => list.map(prefix => [prefix, area]))
+  .filter(([prefix]) => file.startsWith(prefix)).sort((a, b) => b[0].length - a[0].length)[0]?.[1];
+
 // 改动区域（README.md「改动区域」）：base...head 的三点 diff（与 PR 的 Files changed 一致），按 head 上 .coda/areas.json 的最长前缀归区域。
 // 监督开发的 PR 汇总与块的审查卡用同一份。
 export const changes = (base, head) => {
-  const declared = git('ls-tree', '--name-only', head, '.coda/areas.json') ? JSON.parse(git('show', `${head}:.coda/areas.json`)) : {};
-  const prefixes = Object.entries(declared).flatMap(([area, list]) => list.map(prefix => [prefix, area])).sort((a, b) => b[0].length - a[0].length);
+  const declared = areasAt(head);
   const fields = git('diff', '--numstat', '-z', '-M', `${base}...${head}`).split('\0');
   const areas = {}, total = { files: 0, added: 0, deleted: 0 };
   for (let i = 0; i < fields.length - 1; i++) {
     const [added, deleted, name] = fields[i].split('\t');
     // 改名时 -z 输出旧路径和新路径两个字段，按新路径归类。
     const file = name || fields[i += 2];
-    const area = prefixes.find(([prefix]) => file.startsWith(prefix))?.[1] ?? (file.includes('/') ? file.split('/')[0] : '根目录');
+    const area = areaOf(file, declared) ?? (file.includes('/') ? file.split('/')[0] : '根目录');
     for (const group of [areas[area] ??= { files: 0, added: 0, deleted: 0 }, total]) {
       group.files++;
       group.added += added === '-' ? 0 : Number(added);
@@ -87,6 +92,32 @@ export const changes = (base, head) => {
   }
   const line = ({ files, added, deleted }) => `${files} 个文件 +${added} -${deleted}`;
   return [`改动：${line(total)}`, ...Object.entries(areas).sort(([, a], [, b]) => b.added + b.deleted - a.added - a.deleted).map(([area, group]) => `- ${area}：${line(group)}`)].join('\n');
+};
+
+// 契约（README.md「契约模式」）：监督开发开工时锁定的 JSON。只读也只校验 composer 用到的三个键 required、allowed、hooks（别的键如 approved 不管）：
+// 都得有，各是数组、元素是非空字符串；allowed 至少一项。返回 { contract }，不合规范返回 { error }（一句原因，写明哪个键、哪里不对）。
+export const readContract = text => {
+  let contract;
+  try { contract = JSON.parse(text); } catch { return { error: '不是合法的 JSON' }; }
+  if (typeof contract !== 'object' || contract === null || Array.isArray(contract)) return { error: '必须是 JSON 对象' };
+  for (const key of ['required', 'allowed', 'hooks']) {
+    if (!(key in contract)) return { error: `缺少 ${key}` };
+    if (!Array.isArray(contract[key])) return { error: `${key} 必须是数组` };
+    const bad = contract[key].findIndex(item => typeof item !== 'string' || item === '');
+    if (bad >= 0) return { error: `${key} 的第 ${bad + 1} 项必须是非空字符串` };
+  }
+  if (!contract.allowed.length) return { error: 'allowed 至少要有一项' };
+  return { contract };
+};
+
+// 范围门禁的判定（README.md「范围门禁」），不碰 Git：条目与 declared（base 上 .coda/areas.json 的区域）里某个区域名完全相同的是区域条目，命中归属这个区域的文件；
+// 否则是路径条目，以 / 结尾的是目录前缀，其余是完整文件路径。仓库根 .coda/ 下的文件不能被区域条目命中，只能被以 .coda/ 开头的路径条目命中。
+// 路径含 U+FFFD（git 输出的路径不是合法 UTF-8，被替换了字节）的改动文件不命中任何条目：一定越界，也不让任何 required 条目算改到。
+// 返回越界的改动文件（没被 allowed 任何一条命中）和没改到的 required 条目（没命中任何改动文件）。
+export const scopeViolations = ({ required, allowed }, declared, files) => {
+  const hit = (entry, file) => !file.includes('\uFFFD') && (Object.hasOwn(declared, entry) ? !file.startsWith('.coda/') && areaOf(file, declared) === entry
+    : entry.endsWith('/') ? file.startsWith(entry) : file === entry);
+  return { outside: files.filter(file => !allowed.some(entry => hit(entry, file))), missing: required.filter(entry => !files.some(file => hit(entry, file))) };
 };
 
 // PR 地址里的 host/owner/repo：给 gh 显式 --repo，它就只删除远端分支，不碰本地分支，分离 HEAD 也能用。
@@ -136,6 +167,13 @@ export function outputPicked(answer, joiners) {
   output('missing', [...missing.keys()].join(','));
   output('asks', [...missing.values()].map(m => `「${m.label}」：${m.for.map(joiner => joiner.name).join('、')}要`).join('\n'));
   output('needs', JSON.stringify(Object.fromEntries([...missing].map(([id, m]) => [id, m.for.map(joiner => joiner.id)]))));
+}
+
+// 自动合并不出批准卡，合成「合并」的答复（README「合并后的流程」）：只勾 hooks 白名单里的加入者，没写进白名单的一律不勾，即使它声明了默认勾选；
+// 没有要卡上文字的输入。unknown 是白名单里不是当前 head 上挂点 merged 加入者的名字（joiners 是 hook-joiners 的列表 JSON），known 是现有加入者的 ID。
+export function autoApproval(hooks, joiners) {
+  const known = (joiners ? JSON.parse(joiners) : []).map(joiner => joiner.id);
+  return { known, unknown: hooks.filter(id => !known.includes(id)), answer: { choice: 'merge', options: Object.fromEntries(hooks.map(id => [id, true])) } };
 }
 
 // 交给 run-workflows 的 inputs：卡上写了的，加主 Agent 在「填写合并后流程要的文字」里写的（FILLS，多实例按 MISSING 的顺序各一份）。
