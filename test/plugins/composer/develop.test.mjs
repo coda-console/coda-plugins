@@ -2,7 +2,7 @@
 // 网关条件用与引擎同版本的 FEEL 求值；脚本输出先照引擎把 "true"/"false" 变成布尔值。
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,6 +10,7 @@ import { test } from 'node:test';
 import { readWorkflow } from '@coda-console/protocol/workflow';
 import { evaluate } from 'feelin';
 import { evaluateTyped, typedOutputs } from './feel.mjs';
+import { readContract, scopeViolations } from '../../../plugins/composer/scripts/shared.mjs';
 
 const script = fileURLToPath(new URL('../../../plugins/composer/scripts/develop.mjs', import.meta.url));
 const workflow = readFileSync(new URL('../../../plugins/composer/.coda/workflows/develop.bpmn', import.meta.url), 'utf8');
@@ -289,7 +290,7 @@ test('提交验收开需求分支进目标分支的 PR：不带会话开，正�
   f.progress('submit', '汇报');
   const opened = f.run('pr').outputs;
   const summary = `汇报\n\n块：\n- ${first.slice(0, 12)} 输入框可以输入（coda://workflow-runs/piece-9）\n- ${head.slice(0, 12)} 补齐状态（coda://workflow-runs/piece-12）\n\n改动：2 个文件 +2 -0\n- 根目录：2 个文件 +2 -0`;
-  assert.deepEqual(opened, { checked: 'false', url: PR, head, base: f.remote('main'), branch: 'req/run-1', summary,
+  assert.deepEqual(opened, { checked: 'false', withContract: 'false', url: PR, head, base: f.remote('main'), branch: 'req/run-1', summary,
     task: '需求：输入框\n\n目标与完成标准：\n输入框可以输入\n\n主 Agent 的汇报：\n汇报' });
   assert.ok(!f.calls().some(c => c.args[1] === 'list' && c.args.includes('merged')), '块不开 PR，不从 GitHub 找');
   const created = f.calls().filter(c => c.args[1] === 'create');
@@ -642,7 +643,7 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   assert.equal(process.name, '监督开发'); assert.equal(process.kind, undefined); assert.equal(process.concurrency, undefined);
   assert.deepEqual(values(process).filter(v => v.$type === 'coda:Join').map(j => j.hook), ['develop'], '开发流程：加入挂点 develop');
   const inputs = Object.fromEntries(values(process).filter(v => v.$type === 'coda:Input').map(v => [v.name, v]));
-  assert.deepEqual(Object.keys(inputs), ['title', 'devices', 'device', 'hold', 'delivery', 'executor', 'executor2', 'reviewer', 'overallReviewer', 'autoMerge', 'base']);
+  assert.deepEqual(Object.keys(inputs), ['title', 'devices', 'device', 'hold', 'delivery', 'executor', 'executor2', 'reviewer', 'overallReviewer', 'autoMerge', 'base', 'contract']);
   assert.deepEqual(Object.values(inputs).filter(v => v.required), [], '用户在会话里开启时什么都不必填');
   for (const name of ['title', 'device', 'delivery', 'base']) assert.equal(inputs[name].default, '', name);
   for (const name of ['devices', 'autoMerge']) assert.deepEqual([inputs[name].type, inputs[name].default], ['boolean', 'false'], name);
@@ -675,8 +676,8 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   assert.equal(nodes.progress.assignee, undefined);
   assert.deepEqual(values(nodes.progress).map(v => [v.id, v.name, v.note]), [['submit', '提交验收', 'required'], ['piece', '派一块', 'required'], ['sync', '跟上目标分支', undefined], ['pause', '暂停', 'required'], ['abandon', '放弃', undefined]]);
   for (const [value, target] of [['progress', 'progress'], ['piece', 'piece'], ['pause', 'paused'], ['abandon', 'abandoned-flows'], ['submit', 'sync']]) assert.equal(route('after-progress', { 'progress-result': { route: value } }), target);
-  // 「提交验收」带勾选项「重新整体评审」：默认不勾，只在填了整体评审者时给出。
-  assert.deepEqual(values(nodes.progress)[0].options.map(o => [o.id, o.name, o.default, o.shown]), [['again', '重新整体评审', 'false', '=inputs.overallReviewer != null']]);
+  // 「提交验收」带勾选项「重新整体评审」：默认不勾，只在填了整体评审者时给出；「交用户批准」只在契约模式给出。
+  assert.deepEqual(values(nodes.progress)[0].options.map(o => [o.id, o.name, o.default, o.shown]), [['again', '重新整体评审', 'false', '=inputs.overallReviewer != null'], ['escalate', '交用户批准', 'false', '=inputs.contract != ""']]);
   const doc = nodes.progress.documentation[0].text;
   for (const text of ['「派一块」：备注第一行是这一块的标题', '其后是自足的任务书（背景、范围、验收要求）', '块里的任务交到这个会话', '写着合入的提交和块的运行', '块失败或你在块里选了放弃，也带着原因回到这里',
     '「跟上目标分支」', '以合并提交快进进需求分支', '写了附在固定任务后面', '一次只派一块：派出后等它结束才回到这里', '在备注最前面', '有执行者名单就从名单选',
@@ -748,7 +749,7 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   assert.deepEqual(evaluate(params('abandoned-flows').inputs.slice(1), { run: { id: 'run-1' }, req: { branch: 'req/abc' } }).value, { run: 'run-1', branch: 'req/abc' });
 
   // 收尾：PR → 项目检查（复用）→ 整体评审 → 设备验收 → 合并前检查 → GitHub 检查 → 待交付、批准或自动合并（顺序见「提交验收的顺序」那个用例）。
-  assert.equal(next('pr'), 'pr-fork');
+  assert.equal(next('pr'), 'gate-choice', '开 PR 之后先过契约模式的范围门禁（非契约模式绕过），再到预编与检查的分叉');
   // 需求分支 head 在检查的同时预编：只在随后会进设备验收时，不挡检查，失败也不算数。
   assert.deepEqual(elements.filter(e => e.sourceRef === nodes['pr-fork']).map(e => e.targetRef.id), ['reuse-checks', 'prebuild-choice']);
   for (const [devices, delivery, target] of [[true, '', 'prebuild'], [false, '', 'prebuilt'], [true, 'deliver-1', 'prebuilt']]) assert.equal(route('prebuild-choice', { inputs: { devices, delivery } }), target);
@@ -756,7 +757,7 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   assert.equal(params('prebuild').hook, 'prebuild');
   for (const device of ['', 'duo-testbed']) assert.deepEqual(evaluate(params('prebuild').inputs.slice(1), { inputs: { device } }).value, device ? { device } : {});
   for (const id of ['prebuild-done', 'prebuild-failed-done', 'prebuild-skip']) assert.equal(nodes[id].targetRef.id, 'prebuilt');
-  assert.deepEqual(params('checks'), { hook: 'check', commit: '=pr.head' });
+  assert.deepEqual(params('checks'), { hook: 'check', commit: '=pr.head', inputs: '=if pr.withContract then { contract: inputs.contract } else {}' });
   assert.equal(next('checks'), 'checks-passed');
   assert.equal(next('checks-passed'), 'overall-plan');
   assert.deepEqual(params('premerge'), { hook: 'premerge', commit: '=pr.head' });
@@ -777,7 +778,7 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   assert.equal(nodes['overall-failed'].attachedToRef.id, 'overall-call');
   assert.deepEqual([next('overall-failed'), next('overall-lost'), next('overall-call'), next('overall-reviewed')], ['overall-lost', 'overall', 'overall-reviewed', 'overall']);
   assert.deepEqual(params('overall-reviewed'), { DECISION: '=overall-call.decision', FINDINGS: '=overall-call.findings', LINE: '=overall-call.line', REPORT: '=overall-call.report' });
-  assert.deepEqual(params('overall'), { SUMMARY: '=pr.summary', AUTO: '=inputs.autoMerge', route: undefined, summary: undefined, auto: undefined, review: undefined, note: undefined });
+  assert.deepEqual(params('overall'), { SUMMARY: '=pr.summary', AUTO: '=inputs.autoMerge', CONTRACT: '=inputs.contract', route: undefined, summary: undefined, auto: undefined, review: undefined, note: undefined });
   for (const [value, target] of [['review', 'review'], ['accept', 'acceptance-choice']]) assert.equal(route('overall-route', { overall: { route: value } }), target);
   for (const id of ['overall-round', 'reviews', 'overall-triage', 'overall-fix', 'overall-rounds', 'reviewed']) assert.ok(!nodes[id], `${id} 已删`);
   assert.equal(nodes.review.assignee, undefined);
@@ -1087,7 +1088,7 @@ test('假宿主走一遍：两块的需求提交验收，整体评审有必须�
   ];
   let landed = 0;
   const run = await host(f, { title: '输入框', devices: false, device: '', hold: '', delivery: '', executor: { agent: 'codex' }, executor2: null, reviewer: { agent: 'kimi' },
-    overallReviewer: { agent: 'grok' }, autoMerge: true, base: '' }, '输入框可以输入', {
+    overallReviewer: { agent: 'grok' }, autoMerge: true, base: '', contract: '' }, '输入框可以输入', {
     progress: () => progress.shift(),
     piece: () => { const [title, file] = pieces[landed++]; return { commit: f.land(file, title, `${title}\n\nCoda-Piece: piece-${landed}`), run: `piece-${landed}` }; },
     checks: () => ({ runs: [{ workflow: 'test', state: 'succeeded', runId: 'c1' }] }),
@@ -1109,4 +1110,263 @@ test('假宿主走一遍：两块的需求提交验收，整体评审有必须�
   for (const text of ['做了什么\n- 输入框能输入，登录跳转修好', '整体评审的小问题（没有修，评审时需求分支 head', '- 变量名（one:1）', '项目检查、合并前检查、GitHub 检查已通过，整条需求分支在 ']) assert.ok(approveCard.includes(text), text);
   t.diagnostic(`「整体评审结论」卡：\n${overallCard}`);
   t.diagnostic(`「批准合并」卡：\n${approveCard}`);
+});
+
+// 契约模式（README.md「契约模式」）。
+const CONTRACT = JSON.stringify({ required: ['docs/a.md'], allowed: ['docs/'], approved: { skeleton: {} }, hooks: [] });
+const RUNS = JSON.stringify([{ workflow: 'test', state: 'succeeded', runId: 'c1' }]);
+const put = (f, path, text) => { mkdirSync(join(f.work, path, '..'), { recursive: true }); writeFileSync(join(f.work, path), text); };
+// 在需求分支上提交一批改动（edit 里改工作区），推到远端。
+const change = (f, edit, message = 'change') => {
+  f.git('fetch', '-q', 'origin', f.state().branch); f.git('switch', '-q', '--detach', 'FETCH_HEAD');
+  edit(); f.git('add', '-A'); f.git('commit', '-qm', message); f.git('push', '-q', 'origin', `HEAD:refs/heads/${f.state().branch}`);
+};
+// 提交验收（options 是勾选项）、跟上目标分支、开 PR，env 与流程里 coda:env 一致；返回 pr 的输出。
+const submitContract = (f, options = {}, contract = CONTRACT) => {
+  f.run('progress', { PROGRESS: JSON.stringify({ choice: 'submit', note: '汇报', options }) });
+  f.run('sync-base', { FIXER: 'true' });
+  return f.run('pr', { CONTRACT: contract }).outputs;
+};
+const gate = (f, pr, contract = CONTRACT, expected = 0) => f.run('gate', { CONTRACT: contract, BASE_COMMIT: pr.base, HEAD_COMMIT: pr.head }, expected).outputs;
+
+test('契约的解析与校验：必须是 JSON 对象，required、allowed、hooks 都有且是非空字符串的数组，allowed 至少一项；别的键不管', () => {
+  const good = { required: ['plugins/composer/README.md'], allowed: ['plugins/composer/', 'test/plugins/composer/'], approved: { skeleton: {} }, hooks: [] };
+  assert.deepEqual(readContract(JSON.stringify(good)), { contract: good });
+  assert.deepEqual(readContract(JSON.stringify({ required: [], allowed: ['a'], hooks: ['deploy'], approved: 3, 别的: null })).error, undefined, '别的键不读不校验，required、hooks 可以是空数组');
+  for (const [text, error] of [
+    ['{', '不是合法的 JSON'], ['', '不是合法的 JSON'],
+    ['[]', '必须是 JSON 对象'], ['"x"', '必须是 JSON 对象'], ['null', '必须是 JSON 对象'], ['3', '必须是 JSON 对象'],
+    [JSON.stringify({ allowed: ['a'], hooks: [] }), '缺少 required'],
+    [JSON.stringify({ required: [], hooks: [] }), '缺少 allowed'],
+    [JSON.stringify({ required: [], allowed: ['a'] }), '缺少 hooks'],
+    [JSON.stringify({ required: 'a', allowed: ['a'], hooks: [] }), 'required 必须是数组'],
+    [JSON.stringify({ required: [], allowed: { a: 1 }, hooks: [] }), 'allowed 必须是数组'],
+    [JSON.stringify({ required: [], allowed: ['a'], hooks: null }), 'hooks 必须是数组'],
+    [JSON.stringify({ required: ['a', ''], allowed: ['a'], hooks: [] }), 'required 的第 2 项必须是非空字符串'],
+    [JSON.stringify({ required: [], allowed: ['a', 3], hooks: [] }), 'allowed 的第 2 项必须是非空字符串'],
+    [JSON.stringify({ required: [], allowed: ['a'], hooks: [null] }), 'hooks 的第 1 项必须是非空字符串'],
+    [JSON.stringify({ required: [], allowed: [], hooks: [] }), 'allowed 至少要有一项'],
+  ]) assert.deepEqual(readContract(text), { error }, text);
+});
+
+test('契约模式开工校验：契约不合规范、没填整体评审者时 branch 非零退出、不建需求分支；留空与现在一样', t => {
+  const f = fixture(t);
+  const statePath = join(f.root, 'artifacts', 'develop.json');
+  const refused = (extra, why) => {
+    const result = f.run('branch', extra, 1);
+    assert.ok(result.stderr.includes(why), result.stderr);
+    assert.equal(f.remote('req/run-1'), '', '没建需求分支');
+    assert.equal(existsSync(statePath), false, '没写状态文件');
+  };
+  refused({ CONTRACT: JSON.stringify({ required: [], allowed: [], hooks: [] }), REVIEWER: 'true' }, '契约不合规范：allowed 至少要有一项');
+  refused({ CONTRACT: '{', REVIEWER: 'true' }, '契约不合规范：不是合法的 JSON');
+  refused({ CONTRACT, REVIEWER: 'false' }, '契约模式必须填整体评审者');
+  refused({ CONTRACT }, '契约模式必须填整体评审者');
+  assert.deepEqual(f.run('branch', { CONTRACT, REVIEWER: 'true' }).outputs, { title: '输入框', goal: '输入框可以输入', base: 'main', branch: 'req/run-1' });
+  assert.equal(f.remote('req/run-1'), f.remote('main'));
+  const g = fixture(t);
+  assert.deepEqual(g.run('branch', { CONTRACT: '', REVIEWER: 'false' }).outputs, { title: '输入框', goal: '输入框可以输入', base: 'main', branch: 'req/run-1' }, '留空不校验、不要求整体评审者');
+  assert.deepEqual(Object.keys(g.state()).sort(), ['base', 'branch', 'feedback', 'goal', 'report', 'title']);
+});
+
+test('范围门禁的判定：越界、没改到的必改项；区域条目与路径条目（目录前缀与完整文件路径）；仓库根 .coda/ 的文件区域条目命中不了', () => {
+  const declared = { 文档: ['docs/', 'README.md'], 仓库: ['scripts/', '.coda/'], 插件: ['plugins/composer/'] };
+  const check = (allowed, files, required = []) => scopeViolations({ required, allowed }, declared, files);
+  assert.deepEqual(check(['docs/'], ['docs/a.md', 'scripts/x.mjs'], ['docs/a.md', 'plugins/composer/README.md']), { outside: ['scripts/x.mjs'], missing: ['plugins/composer/README.md'] });
+  assert.deepEqual(check(['docs/'], []), { outside: [], missing: [] });
+  assert.deepEqual(check(['docs/'], ['docs/a.md'], ['docs/']), { outside: [], missing: [] });
+  // 区域条目：与区域名完全相同，命中归属这个区域的文件（最长前缀归属）；required 同样。
+  assert.deepEqual(check(['文档'], ['docs/a.md', 'README.md', 'scripts/x.mjs']), { outside: ['scripts/x.mjs'], missing: [] });
+  assert.deepEqual(check(['文档', '插件'], ['docs/a.md'], ['文档', '插件']), { outside: [], missing: ['插件'] });
+  assert.deepEqual(check(['docs/'], ['docs/a.md'], ['文档']), { outside: [], missing: [] }, 'required 的区域条目同样按区域命中，与 allowed 无关');
+  // 路径条目：以 / 结尾是目录前缀，否则是完整文件路径（不是前缀）。
+  assert.deepEqual(check(['docs'], ['docs/a.md']), { outside: ['docs/a.md'], missing: [] }, '没有 / 结尾的 docs 只命中名为 docs 的文件');
+  assert.deepEqual(check(['docs'], ['docs']), { outside: [], missing: [] });
+  assert.deepEqual(check(['docs/a.md'], ['docs/a.md', 'docs/a.md.bak', 'docs/b.md']), { outside: ['docs/a.md.bak', 'docs/b.md'], missing: [] });
+  assert.deepEqual(check(['docs/'], ['docs/x/y.md', 'docs.md', 'mydocs/a.md']), { outside: ['docs.md', 'mydocs/a.md'], missing: [] });
+  assert.deepEqual(check(['scripts/'], [], ['scripts/x.mjs']), { outside: [], missing: ['scripts/x.mjs'] });
+  // 都不在区域里的文件，区域条目命中不了；没有区域定义时所有条目都是路径条目。
+  assert.deepEqual(check(['文档'], ['other/x']), { outside: ['other/x'], missing: [] });
+  assert.deepEqual(scopeViolations({ required: ['文档'], allowed: ['文档'] }, {}, ['文档']), { outside: [], missing: [] }, '没有这个区域，「文档」就是路径条目');
+  // 仓库根 .coda/：区域条目命中不了（哪怕它属于区域），以 .coda/ 开头的路径条目才行。
+  assert.deepEqual(check(['仓库'], ['scripts/x.mjs', '.coda/areas.json', '.coda/workflows/a.bpmn'], ['仓库']), { outside: ['.coda/areas.json', '.coda/workflows/a.bpmn'], missing: [] });
+  assert.deepEqual(check(['.coda/'], ['.coda/areas.json', '.coda/workflows/a.bpmn', 'scripts/x.mjs']), { outside: ['scripts/x.mjs'], missing: [] });
+  assert.deepEqual(check(['.coda/areas.json'], ['.coda/areas.json', '.coda/other.json']), { outside: ['.coda/other.json'], missing: [] });
+  assert.deepEqual(check(['仓库'], ['.coda/areas.json'], ['仓库']), { outside: ['.coda/areas.json'], missing: ['仓库'] }, '只改 .coda/ 下的文件，区域条目的必改项也算没改到');
+  assert.deepEqual(check(['仓库', '.coda/'], ['.coda/areas.json'], ['.coda/']), { outside: [], missing: [] });
+  // 不在仓库根的 .coda/（如 plugins/composer/.coda/）不受这条限制。
+  assert.deepEqual(check(['插件'], ['plugins/composer/.coda/workflows/develop.bpmn'], ['插件']), { outside: [], missing: [] });
+  assert.deepEqual(check(['插件', 'plugins/composer/.coda/'], ['plugins/composer/.coda/workflows/develop.bpmn']), { outside: [], missing: [] });
+});
+
+test('范围门禁这一步：改名两侧都算改动文件，区域定义读 base 的，违例带清单回到进行中，通过记下 head，勾「交用户批准」有违例也往下走', t => {
+  const f = fixture(t);
+  put(f, 'old/a.txt', 'a'); put(f, 'docs/a.md', 'doc'); put(f, '.coda/areas.json', '{ "文档": ["docs/"], "仓库": ["scripts/", ".coda/"] }');
+  f.git('add', '-A'); f.git('commit', '-qm', 'seed'); f.git('push', '-q', 'origin', 'main');
+  f.run('branch', { CONTRACT, REVIEWER: 'true' });
+  change(f, () => {
+    mkdirSync(join(f.work, 'new')); f.git('mv', 'old/a.txt', 'new/a.txt'); put(f, 'docs/b.md', 'b'); put(f, 'src/x.txt', 'x');
+    put(f, '.coda/areas.json', '{ "文档": ["docs/"], "仓库": ["scripts/", ".coda/"], "源码": ["src/"] }');
+  });
+  const pr = submitContract(f);
+  const contract = (allowed, required = []) => JSON.stringify({ required, allowed, hooks: [] });
+  // 改名拆成一删一加：只放行新路径，旧路径越界；删除的文件也算改动文件。
+  assert.deepEqual(gate(f, pr, contract(['new/', '文档', '源码', '.coda/'])), { route: 'progress' });
+  assert.deepEqual(f.state().gate, { head: pr.head, outside: ['old/a.txt', 'src/x.txt'], missing: [] }, '「源码」不是 base 上的区域：head 上新加的区域不算，它按路径条目');
+  assert.equal(f.reason(), `范围门禁没过，需求分支 head ${pr.head}。\n越界的改动（不在契约的 allowed 内）：\n- old/a.txt\n- src/x.txt\n处理：派块把越界的改动拿掉、把必改项补上，再提交验收；确实需要越界，提交验收时勾「交用户批准」，由用户在批准卡上决定。`);
+  // 越界与没改到的必改项都写进原因；区域条目（含 head 上改了区域定义的 .coda/areas.json）不能命中仓库根 .coda/ 下的文件。
+  assert.deepEqual(gate(f, pr, contract(['new/', 'old/', '文档', 'src/', '仓库'], ['docs/c.md', '仓库'])), { route: 'progress' });
+  assert.deepEqual(f.state().gate, { head: pr.head, outside: ['.coda/areas.json'], missing: ['docs/c.md', '仓库'] });
+  assert.equal(f.reason(), `范围门禁没过，需求分支 head ${pr.head}。\n越界的改动（不在契约的 allowed 内）：\n- .coda/areas.json\n没改到的必改项（契约的 required）：\n- docs/c.md\n- 仓库\n处理：派块把越界的改动拿掉、把必改项补上，再提交验收；确实需要越界，提交验收时勾「交用户批准」，由用户在批准卡上决定。`);
+  assert.equal(f.calls().filter(c => c.args[1] === 'edit').length, 0, 'PR 留着不动');
+  // 通过：记下这个 head 过了门禁。
+  assert.deepEqual(gate(f, pr, contract(['new/', 'old/a.txt', '文档', 'src/x.txt', '.coda/areas.json'], ['new/a.txt', '文档'])), { route: 'pass' });
+  assert.deepEqual(f.state().gate, { head: pr.head, outside: [], missing: [] });
+  // 这次勾了「交用户批准」：违例照常算、记进状态文件，但不打回，回来的原因也清掉了。
+  submitContract(f, { escalate: true });
+  assert.equal(f.state().escalate, true);
+  assert.deepEqual(gate(f, pr, contract(['new/'], ['docs/c.md'])), { route: 'pass' });
+  assert.deepEqual(f.state().gate, { head: pr.head, outside: ['.coda/areas.json', 'docs/b.md', 'old/a.txt', 'src/x.txt'], missing: ['docs/c.md'] });
+  assert.equal(f.reason(), '');
+  // 每次提交验收重新取值：下一次不勾，有违例又打回。
+  submitContract(f);
+  assert.equal(f.state().escalate, false);
+  assert.equal(gate(f, pr, contract(['new/'])).route, 'progress');
+  // 契约坏了（流程里开工时已经校验过）：这一步也不放行。
+  assert.match(f.run('gate', { CONTRACT: '{', BASE_COMMIT: pr.base, HEAD_COMMIT: pr.head }, 1).stderr, /契约不合规范：不是合法的 JSON/);
+});
+
+test('范围门禁在流程里的位置：开 PR 之后、预编与项目检查之前；非契约模式绕过；违例回到进行中', async () => {
+  const flow = await definition(), { elements, nodes, values, params, route, next } = flow;
+  const into = id => elements.filter(e => e.$type === 'bpmn:SequenceFlow' && e.targetRef === nodes[id]).map(e => e.sourceRef.id).sort();
+  assert.equal(next('pr'), 'gate-choice');
+  assert.deepEqual(into('pr-fork'), ['after-gate', 'gate-choice'], '两条路都经 pr 到门禁，之后才分叉到预编与项目检查');
+  assert.deepEqual([into('gate-choice'), into('gate'), into('after-gate')], [['pr'], ['gate-choice'], ['gate']]);
+  assert.deepEqual(into('pr'), ['after-sync', 'after-sync-resolve'], '跟上目标分支的两条路都经 pr');
+  for (const [contract, target] of [['', 'pr-fork'], [CONTRACT, 'gate']]) assert.equal(route('gate-choice', { inputs: { contract } }), target);
+  assert.deepEqual(params('gate'), { CONTRACT: '=inputs.contract', BASE_COMMIT: '=pr.base', HEAD_COMMIT: '=pr.head', route: undefined });
+  assert.equal(nodes.gate.name, '范围门禁');
+  assert.equal(route('after-gate', { gate: { route: 'progress' } }), 'resume');
+  assert.equal(route('after-gate', { gate: { route: 'pass' } }), 'pr-fork');
+  const base = { 'progress-result': { route: 'submit' }, sync: { route: 'pr' }, pr: { checked: false }, gate: { route: 'pass' } };
+  assert.deepEqual(walk(flow, 'pr', { ...base, inputs: { contract: CONTRACT } }, ['checks']), ['pr', 'gate-choice', 'gate', 'after-gate', 'pr-fork', 'reuse-checks', 'checks']);
+  assert.deepEqual(walk(flow, 'pr', { ...base, inputs: { contract: '' } }, ['checks']), ['pr', 'gate-choice', 'pr-fork', 'reuse-checks', 'checks'], '非契约模式不多跑一步');
+  assert.equal(walk(flow, 'pr', { ...base, gate: { route: 'progress' }, inputs: { contract: CONTRACT } }, ['checks', 'resume']).at(-1), 'resume');
+  // 开工校验要的输入。
+  assert.deepEqual(params('req'), { TITLE: params('req').TITLE, GOAL: params('req').GOAL, BASE: '=inputs.base', CONTRACT: '=inputs.contract', REVIEWER: '=inputs.overallReviewer != null', title: undefined, goal: undefined, base: undefined, branch: undefined });
+  assert.deepEqual([params('pr').CONTRACT, params('checks-passed').CONTRACT], ['=inputs.contract', '=inputs.contract']);
+  const input = values(flow.process).find(v => v.$type === 'coda:Input' && v.name === 'contract');
+  assert.deepEqual([input.label, input.default, input.required], ['契约', '', undefined]);
+  for (const text of ['整份契约的 JSON', '留空不启用', 'required', 'allowed', 'hooks', 'approved']) assert.ok(input.description.includes(text), text);
+});
+
+test('契约只交给提交验收的项目检查：契约模式且没勾「交用户批准」时 inputs 是 { contract: 原文 }，其余为空；合并前检查、预编、块都不带', async () => {
+  const { params } = await definition();
+  const inputs = (contract, withContract) => evaluateTyped(params('checks').inputs.slice(1), { inputs: { contract }, pr: typedOutputs({ withContract }) });
+  assert.deepEqual(inputs(CONTRACT, 'true'), { contract: CONTRACT }, '原文原样，不重新序列化');
+  assert.deepEqual(inputs(CONTRACT, 'false'), {}, '勾了交用户批准：不带');
+  assert.deepEqual(inputs('', 'false'), {}, '非契约模式：不带');
+  assert.deepEqual(Object.keys(params('premerge')), ['hook', 'commit']);
+  assert.ok(!JSON.stringify(params('prebuild')).includes('contract'));
+  assert.ok(!JSON.stringify(params('piece')).includes('contract'), '块不传契约');
+});
+
+test('「交用户批准」：选项与说明只在契约模式出现', async () => {
+  const { nodes, values } = await definition();
+  const escalate = values(nodes.progress)[0].options.find(o => o.id === 'escalate');
+  assert.deepEqual([escalate.name, escalate.default], ['交用户批准', 'false']);
+  assert.ok(escalate.detail.includes('范围门禁有违例也不打回') && escalate.detail.includes('项目检查不按契约校验') && escalate.detail.includes('不自动合并'));
+  const shown = contract => evaluateTyped(escalate.shown.slice(1), { inputs: { contract } });
+  assert.deepEqual([shown(''), shown(CONTRACT)], [false, true]);
+  const render = contract => nodes.progress.documentation[0].text.replace(/{{([\s\S]*?)}}/g, (_, e) => { const v = evaluateTyped(e, { inputs: { ...KICKOFF, contract, delivery: '', devices: false }, req: { base: 'main' }, resume: { reason: '' } }); return v ?? ''; });
+  const plain = render(''), contracted = render(CONTRACT);
+  for (const word of ['契约模式', '范围门禁', '交用户批准']) assert.ok(!plain.includes(word), word);
+  assert.equal(contracted.replace(/\n契约模式：.*(?=\n)/, ''), plain, '契约模式只多这一段');
+  const added = /\n契约模式：(.*)(?=\n)/.exec(contracted)[1];
+  for (const text of ['范围门禁', 'allowed', 'required', '交用户批准', '不打回', '项目检查不按契约校验', '不自动合并', '批准卡']) assert.ok(added.includes(text), text);
+});
+
+test('交用户批准的这次提交：整理整体评审的 auto 一律为 false，汇总最前面写明并列出范围门禁的违例，PR 描述不带它；没勾照旧', t => {
+  const run = (f, extra) => f.run('overall', { AUTO: 'true', CONTRACT, ...extra }).outputs;
+  const prepare = (f, options, files) => {
+    f.run('branch', { CONTRACT, REVIEWER: 'true' });
+    for (const file of files) change(f, () => put(f, file, file), `块 ${file}\n\nCoda-Piece: piece-${file}`), f.run('piece-landed', { TITLE: file, COMMIT: 'c'.repeat(40), PIECE_RUN: `piece-${file}`, REVIEWED: 'true' });
+    const pr = submitContract(f, options);
+    assert.equal(gate(f, pr).route, 'pass');
+    f.run('overall-plan', { REVIEWER: 'true' });
+    return pr;
+  };
+  const banner = '【交用户批准】这次提交是主 Agent 交给用户批准的，项目检查没有按契约校验，不自动合并。\n范围门禁的违例：';
+  // 勾了、有违例：auto 为 false，不管整体评审评没评成。
+  const f = fixture(t), pr = prepare(f, { escalate: true }, ['one']);
+  const escalated = run(f, { SUMMARY: pr.summary });
+  assert.deepEqual([escalated.route, escalated.auto], ['accept', 'false']);
+  assert.equal(escalated.summary, `${banner}\n越界的改动（不在契约的 allowed 内）：\n- one\n没改到的必改项（契约的 required）：\n- docs/a.md\n\n${pr.summary}`);
+  f.run('overall-reviewed', reviewed([{ level: 'nit', title: '变量名', location: 'one:1' }]));
+  const minor = run(f, { SUMMARY: pr.summary });
+  assert.equal(minor.auto, 'false');
+  assert.ok(minor.summary.startsWith(banner) && minor.summary.includes('整体评审的小问题'), minor.summary);
+  const edit = f.calls().find(c => c.args[1] === 'edit');
+  assert.ok(edit.body.startsWith(pr.summary) && !edit.body.includes('交用户批准'), '说明只在批准卡和待交付卡的汇总里，不进 PR 描述');
+  // 勾了、没有违例：写明没有。
+  const g = fixture(t), clean = prepare(g, { escalate: true }, ['docs/a.md']);
+  g.run('overall-reviewed', reviewed([]));
+  const ok = run(g, { SUMMARY: clean.summary });
+  assert.deepEqual([ok.auto, ok.summary], ['false', `${banner}没有。\n\n${clean.summary}`]);
+  // 没勾：与非契约模式一样，auto 照 autoMerge 与评审判定，汇总不加说明。
+  const h = fixture(t), plain = prepare(h, {}, ['docs/a.md']);
+  h.run('overall-reviewed', reviewed([]));
+  assert.deepEqual([run(h, { SUMMARY: plain.summary }).auto, run(h, { SUMMARY: plain.summary }).summary], ['true', plain.summary]);
+  assert.equal(run(h, { SUMMARY: plain.summary, AUTO: 'false' }).auto, 'false');
+  // 非契约模式（没有 CONTRACT）即使状态里有 escalate 也不受影响。
+  assert.deepEqual([run(h, { SUMMARY: plain.summary, CONTRACT: '' }).auto, run(h, { SUMMARY: plain.summary, CONTRACT: '' }).summary], ['true', plain.summary]);
+});
+
+test('项目检查结果的复用区分带不带契约：同一个 head，不带契约通过的不能当带契约通过用，反过来也不行；同一模式照常复用', t => {
+  const f = fixture(t); f.run('branch', { CONTRACT, REVIEWER: 'true' }); change(f, () => put(f, 'docs/a.md', 'doc'));
+  const passed = () => f.run('checks-passed', { RUNS, CONTRACT });
+  const checked = options => submitContract(f, options).checked;
+  assert.equal(checked({}), 'false');
+  passed();
+  assert.equal(f.state().checks.contract, true, '记下这次通过时带了契约');
+  assert.equal(checked({}), 'true', '同一个 head、同样带契约：复用');
+  assert.equal(checked({ again: true }), 'true');
+  assert.equal(checked({ escalate: true }), 'false', '带契约通过的不能当作不带契约通过');
+  passed();
+  assert.equal(f.state().checks.contract, false, '勾了交用户批准：这次的项目检查没带契约');
+  assert.equal(checked({ escalate: true }), 'true', '同一个 head、同样不带契约：复用');
+  assert.equal(checked({}), 'false', '不带契约通过的不能当作带契约通过');
+  passed();
+  assert.equal(checked({}), 'true');
+  change(f, () => put(f, 'docs/b.md', 'more'));
+  assert.equal(checked({}), 'false', 'head 变了照旧重跑');
+  // 非契约模式：照旧按 head 复用。
+  const g = fixture(t); g.run('branch'); g.land('one', 'first'); g.progress('submit', '汇报');
+  assert.equal(g.run('pr').outputs.checked, 'false');
+  g.run('checks-passed', { RUNS });
+  assert.equal(g.run('pr').outputs.checked, 'true');
+});
+
+test('pr 输出的 withContract 是带不带契约的唯一判定：契约模式没勾为 true，契约模式勾了、非契约模式为 false', t => {
+  const f = fixture(t); f.run('branch', { CONTRACT, REVIEWER: 'true' }); change(f, () => put(f, 'docs/a.md', 'doc'));
+  assert.equal(submitContract(f).withContract, 'true');
+  assert.equal(submitContract(f, { again: true }).withContract, 'true');
+  assert.equal(submitContract(f, { escalate: true }).withContract, 'false');
+  assert.equal(submitContract(f).withContract, 'true', '每次提交验收重新取值');
+  const g = fixture(t); g.run('branch'); g.land('one', 'first'); g.progress('submit', '汇报');
+  assert.equal(g.run('pr').outputs.withContract, 'false');
+});
+
+test('范围门禁：.gitmodules 里写了 ignore = all 的子模块，只更新指针的提交也算改动文件', t => {
+  const f = fixture(t);
+  const link = sha => f.git('update-index', '--add', '--cacheinfo', `160000,${sha},vendor/lib`);
+  put(f, '.gitmodules', '[submodule "vendor/lib"]\n\tpath = vendor/lib\n\turl = ../lib.git\n\tignore = all\n');
+  f.git('add', '.gitmodules'); link('1'.repeat(40)); f.git('commit', '-qm', 'submodule'); f.git('push', '-q', 'origin', 'main');
+  f.run('branch', { CONTRACT, REVIEWER: 'true' });
+  change(f, () => link('2'.repeat(40)));
+  const pr = submitContract(f);
+  assert.equal(f.git('diff', '--name-only', `${pr.base}...${pr.head}`), '', 'ignore = all 下普通 diff 看不到指针变化');
+  assert.equal(gate(f, pr, JSON.stringify({ required: [], allowed: ['docs/'], hooks: [] })).route, 'progress');
+  assert.deepEqual(f.state().gate, { head: pr.head, outside: ['vendor/lib'], missing: [] });
+  assert.equal(gate(f, pr, JSON.stringify({ required: ['vendor/lib'], allowed: ['vendor/lib'], hooks: [] })).route, 'pass');
 });
