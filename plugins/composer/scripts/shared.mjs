@@ -112,10 +112,11 @@ export const readContract = text => {
 
 // 范围门禁的判定（README.md「范围门禁」），不碰 Git：条目与 declared（base 上 .coda/areas.json 的区域）里某个区域名完全相同的是区域条目，命中归属这个区域的文件；
 // 否则是路径条目，以 / 结尾的是目录前缀，其余是完整文件路径。仓库根 .coda/ 下的文件不能被区域条目命中，只能被以 .coda/ 开头的路径条目命中。
+// 路径含 U+FFFD（git 输出的路径不是合法 UTF-8，被替换了字节）的改动文件不命中任何条目：一定越界，也不让任何 required 条目算改到。
 // 返回越界的改动文件（没被 allowed 任何一条命中）和没改到的 required 条目（没命中任何改动文件）。
 export const scopeViolations = ({ required, allowed }, declared, files) => {
-  const hit = (entry, file) => Object.hasOwn(declared, entry) ? !file.startsWith('.coda/') && areaOf(file, declared) === entry
-    : entry.endsWith('/') ? file.startsWith(entry) : file === entry;
+  const hit = (entry, file) => !file.includes('\uFFFD') && (Object.hasOwn(declared, entry) ? !file.startsWith('.coda/') && areaOf(file, declared) === entry
+    : entry.endsWith('/') ? file.startsWith(entry) : file === entry);
   return { outside: files.filter(file => !allowed.some(entry => hit(entry, file))), missing: required.filter(entry => !files.some(file => hit(entry, file))) };
 };
 

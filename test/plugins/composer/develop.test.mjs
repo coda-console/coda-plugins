@@ -677,8 +677,8 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   assert.equal(nodes.progress.assignee, undefined);
   assert.deepEqual(values(nodes.progress).map(v => [v.id, v.name, v.note]), [['submit', '提交验收', 'required'], ['piece', '派一块', 'required'], ['sync', '跟上目标分支', undefined], ['pause', '暂停', 'required'], ['abandon', '放弃', undefined]]);
   for (const [value, target] of [['progress', 'progress'], ['piece', 'piece'], ['pause', 'paused'], ['abandon', 'abandoned-flows'], ['submit', 'sync']]) assert.equal(route('after-progress', { 'progress-result': { route: value } }), target);
-  // 「提交验收」带勾选项「重新整体评审」：默认不勾，只在填了整体评审者时给出；「交用户批准」只在契约模式给出。
-  assert.deepEqual(values(nodes.progress)[0].options.map(o => [o.id, o.name, o.default, o.shown]), [['again', '重新整体评审', 'false', '=inputs.overallReviewer != null'], ['escalate', '交用户批准', 'false', '=inputs.contract != ""']]);
+  // 「提交验收」带勾选项「重新整体评审」：默认不勾，只在填了整体评审者时给出；「交用户批准」只在契约模式、且不是需求交付的成员（delivery 为空）时给出。
+  assert.deepEqual(values(nodes.progress)[0].options.map(o => [o.id, o.name, o.default, o.shown]), [['again', '重新整体评审', 'false', '=inputs.overallReviewer != null'], ['escalate', '交用户批准', 'false', '=inputs.contract != "" and inputs.delivery = ""']]);
   const doc = nodes.progress.documentation[0].text;
   for (const text of ['「派一块」：备注第一行是这一块的标题', '其后是自足的任务书（背景、范围、验收要求）', '块里的任务交到这个会话', '写着合入的提交和块的运行', '块失败或你在块里选了放弃，也带着原因回到这里',
     '「跟上目标分支」', '以合并提交快进进需求分支', '写了附在固定任务后面', '一次只派一块：派出后等它结束才回到这里', '在备注最前面', '有执行者名单就从名单选',
@@ -1167,8 +1167,8 @@ const change = (f, edit, message = 'change') => {
   edit(); f.git('add', '-A'); f.git('commit', '-qm', message); f.git('push', '-q', 'origin', `HEAD:refs/heads/${f.state().branch}`);
 };
 // 提交验收（options 是勾选项）、跟上目标分支、开 PR，env 与流程里 coda:env 一致；返回 pr 的输出。
-const submitContract = (f, options = {}, contract = CONTRACT) => {
-  f.run('progress', { PROGRESS: JSON.stringify({ choice: 'submit', note: '汇报', options }) });
+const submitContract = (f, options = {}, contract = CONTRACT, env = {}) => {
+  f.run('progress', { PROGRESS: JSON.stringify({ choice: 'submit', note: '汇报', options }), ...env });
   f.run('sync-base', { FIXER: 'true' });
   return f.run('pr', { CONTRACT: contract }).outputs;
 };
@@ -1242,6 +1242,9 @@ test('范围门禁的判定：越界、没改到的必改项；区域条目与�
   // 不在仓库根的 .coda/（如 plugins/composer/.coda/）不受这条限制。
   assert.deepEqual(check(['插件'], ['plugins/composer/.coda/workflows/develop.bpmn'], ['插件']), { outside: [], missing: [] });
   assert.deepEqual(check(['插件', 'plugins/composer/.coda/'], ['plugins/composer/.coda/workflows/develop.bpmn']), { outside: [], missing: [] });
+  // 路径含 U+FFFD（无法按 UTF-8 解码）：哪怕与 allowed 的完整路径条目、目录前缀条目字面相符也越界，required 的同名条目也不算命中；别的文件照旧。
+  assert.deepEqual(check(['bad-\uFFFD', 'bad/', 'docs/'], ['bad-\uFFFD', 'bad/x-\uFFFD', 'docs/a.md'], ['bad-\uFFFD', 'bad/']), { outside: ['bad-\uFFFD', 'bad/x-\uFFFD'], missing: ['bad-\uFFFD', 'bad/'] });
+  assert.deepEqual(check(['文档'], ['docs/a-\uFFFD.md', 'docs/b.md'], ['文档']), { outside: ['docs/a-\uFFFD.md'], missing: [] }, '区域条目同样命中不了，别的文件照常命中');
 });
 
 test('范围门禁这一步：改名两侧都算改动文件，区域定义读 base 的，违例带清单回到进行中，通过记下 head，勾「交用户批准」有违例也往下走', t => {
@@ -1279,6 +1282,24 @@ test('范围门禁这一步：改名两侧都算改动文件，区域定义读 b
   assert.equal(gate(f, pr, contract(['new/'])).route, 'progress');
   // 契约坏了（流程里开工时已经校验过）：这一步也不放行。
   assert.match(f.run('gate', { CONTRACT: '{', BASE_COMMIT: pr.base, HEAD_COMMIT: pr.head }, 1).stderr, /契约不合规范：不是合法的 JSON/);
+});
+
+test('范围门禁这一步：路径含非法 UTF-8 字节的改动一定越界、不让必改项算改到，原因里列出它并注明', t => {
+  const f = fixture(t);
+  f.run('branch', { CONTRACT, REVIEWER: 'true' });
+  const base = f.remote('main');
+  // 有的文件系统（macOS）不允许非法 UTF-8 的文件名：用 git 底层命令直接造出路径为 bad-\xFF 的提交。
+  const plumbing = (args, input) => { const r = spawnSync('git', args, { cwd: f.work, env: f.env, input }); assert.equal(r.status, 0, String(r.stderr)); return r.stdout; };
+  const blob = plumbing(['hash-object', '-w', '--stdin'], 'x').toString().trim();
+  const tree = plumbing(['mktree', '-z'], Buffer.concat([plumbing(['ls-tree', '-z', base]), Buffer.from(`100644 blob ${blob}\tbad-`), Buffer.from([0xff, 0])])).toString().trim();
+  const head = plumbing(['commit-tree', tree, '-p', base, '-m', 'bad path']).toString().trim();
+  f.git('push', '-q', 'origin', `${head}:refs/heads/${f.state().branch}`);
+  const contract = JSON.stringify({ required: ['bad-\uFFFD'], allowed: ['bad-\uFFFD', 'docs/'], hooks: [] });
+  assert.deepEqual(f.run('gate', { CONTRACT: contract, BASE_COMMIT: base, HEAD_COMMIT: head }).outputs, { route: 'progress' });
+  assert.deepEqual(f.state().gate, { head, outside: ['bad-\uFFFD'], missing: ['bad-\uFFFD'] });
+  const reason = f.reason();
+  assert.ok(reason.includes('越界的改动（不在契约的 allowed 内）：\n- bad-\uFFFD（路径无法按 UTF-8 解码）\n'), reason);
+  assert.ok(reason.includes('没改到的必改项（契约的 required）：\n- bad-\uFFFD\n处理：'), '必改项那一行不加注明');
 });
 
 test('范围门禁在流程里的位置：开 PR 之后、预编与项目检查之前；非契约模式绕过；违例回到进行中', async () => {
@@ -1321,15 +1342,20 @@ test('「交用户批准」：选项与说明只在契约模式出现', async ()
   const escalate = values(nodes.progress)[0].options.find(o => o.id === 'escalate');
   assert.deepEqual([escalate.name, escalate.default], ['交用户批准', 'false']);
   assert.ok(escalate.detail.includes('范围门禁有违例也不打回') && escalate.detail.includes('项目检查不按契约校验') && escalate.detail.includes('不自动合并'));
-  const shown = contract => evaluateTyped(escalate.shown.slice(1), { inputs: { contract } });
+  const shown = (contract, delivery = '') => evaluateTyped(escalate.shown.slice(1), { inputs: { contract, delivery } });
   assert.deepEqual([shown(''), shown(CONTRACT)], [false, true]);
-  const render = (contract, extra = {}) => nodes.progress.documentation[0].text.replace(/{{([\s\S]*?)}}/g, (_, e) => { const v = evaluateTyped(e, { inputs: { ...KICKOFF, ...extra, contract, delivery: '', devices: false }, req: { base: 'main' }, resume: { reason: '' } }); return v ?? ''; });
+  assert.deepEqual([shown(CONTRACT, 'deliver-run-1'), shown('', 'deliver-run-1')], [false, false], '需求交付的成员没有「交用户批准」');
+  const render = (contract, extra = {}) => nodes.progress.documentation[0].text.replace(/{{([\s\S]*?)}}/g, (_, e) => { const v = evaluateTyped(e, { inputs: { ...KICKOFF, delivery: '', ...extra, contract, devices: false }, req: { base: 'main' }, resume: { reason: '' } }); return v ?? ''; });
   // 没填整体评审者、没开自动合并时，契约模式只多下面这一段；整体评审与自动合并的说明按模式分开写，下面单独断言。
   const plain = render('', { overallReviewer: null }), contracted = render(CONTRACT, { overallReviewer: null });
   for (const word of ['契约模式', '范围门禁', '交用户批准']) assert.ok(!plain.includes(word), word);
   assert.equal(contracted.replace(/\n契约模式：.*(?=\n)/, ''), plain, '契约模式只多这一段');
   const added = /\n契约模式：(.*)(?=\n)/.exec(contracted)[1];
   for (const text of ['范围门禁', 'allowed', 'required', '交用户批准', '不打回', '项目检查不按契约校验', '不自动合并', '批准卡']) assert.ok(added.includes(text), text);
+  // 需求交付的成员：契约模式的说明照样有范围门禁，但不提「交用户批准」。
+  const member = render(CONTRACT, { overallReviewer: null, delivery: 'deliver-run-1' }), memberAdded = /\n契约模式：(.*)(?=\n)/.exec(member)[1];
+  for (const text of ['范围门禁', 'allowed', 'required', '回到这里', '改回范围内']) assert.ok(memberAdded.includes(text), text);
+  assert.ok(!member.includes('交用户批准'), '成员的说明里没有「交用户批准」');
   // 整体评审与自动合并的说明：非契约模式照旧，契约模式按 head 写。
   const [p, c] = [render('', { autoMerge: true }), render(CONTRACT, { autoMerge: true })];
   for (const text of ['这次运行还没整体评审过时由整体评审者评一次整条需求分支', '只合进了一块且它评成过时跳过', '这次运行一次都没评成过、或整体评审出过必须修时照常由用户批准']) assert.ok(p.includes(text) && !c.includes(text), text);
@@ -1374,6 +1400,25 @@ test('交用户批准的这次提交：整理整体评审的 auto 一律为 fals
   assert.equal(run(h, { SUMMARY: plain.summary, AUTO: 'false' }).auto, 'false');
   // 非契约模式（没有 CONTRACT）即使状态里有 escalate 也不受影响。
   assert.deepEqual([run(h, { SUMMARY: plain.summary, CONTRACT: '' }).auto, run(h, { SUMMARY: plain.summary, CONTRACT: '' }).summary], ['true', plain.summary]);
+});
+
+test('需求交付的成员运行（delivery 非空）没有「交用户批准」：答复里传了 escalate 也记为没勾，门禁有违例回到进行中、项目检查带契约、汇总没有批准说明', t => {
+  const f = fixture(t);
+  f.run('branch', { CONTRACT, REVIEWER: 'true' }); change(f, () => put(f, 'other.txt', 'x'));
+  const pr = submitContract(f, { escalate: true }, CONTRACT, { DELIVERY: 'deliver-run-1' });
+  assert.equal(pr.withContract, 'true');
+  assert.deepEqual([f.state().escalate, f.state().member], [false, true]);
+  assert.deepEqual(gate(f, pr), { route: 'progress' });
+  const reason = f.reason();
+  assert.ok(reason.includes('- other.txt') && reason.endsWith('再提交验收。') && !reason.includes('交用户批准'), reason);
+  f.run('overall-plan', { REVIEWER: 'true' });
+  const overall = f.run('overall', { AUTO: 'true', CONTRACT, SUMMARY: pr.summary }).outputs;
+  assert.deepEqual([overall.auto, overall.summary], ['false', pr.summary], '汇总最前面没有「交用户批准」的说明');
+  // 独立的需求运行（没有 DELIVERY）同样的答复照旧记为勾了。
+  const g = fixture(t);
+  g.run('branch', { CONTRACT, REVIEWER: 'true' }); change(g, () => put(g, 'other.txt', 'x'));
+  assert.equal(submitContract(g, { escalate: true }, CONTRACT, { DELIVERY: '' }).withContract, 'false');
+  assert.deepEqual([g.state().escalate, g.state().member], [true, false]);
 });
 
 test('项目检查结果的复用区分带不带契约：同一个 head，不带契约通过的不能当带契约通过用，反过来也不行；同一模式照常复用', t => {

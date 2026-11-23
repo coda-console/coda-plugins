@@ -64,9 +64,9 @@ const pieces = (base, head) => {
 
 // 这次提交验收的项目检查是否带契约：契约模式，且这次没勾「交用户批准」。
 const withContract = () => contracted && state.escalate !== true;
-// 范围门禁的违例清单，回到进行中的原因与交用户批准的说明共用。
+// 范围门禁的违例清单，回到进行中的原因与交用户批准的说明共用；无法按 UTF-8 解码的路径注明原因。
 const violationText = ({ outside, missing }) => [
-  outside.length && `越界的改动（不在契约的 allowed 内）：\n${outside.map(file => `- ${file}`).join('\n')}`,
+  outside.length && `越界的改动（不在契约的 allowed 内）：\n${outside.map(file => `- ${file}${file.includes('\uFFFD') ? '（路径无法按 UTF-8 解码）' : ''}`).join('\n')}`,
   missing.length && `没改到的必改项（契约的 required）：\n${missing.map(entry => `- ${entry}`).join('\n')}`,
 ].filter(Boolean).join('\n');
 
@@ -154,7 +154,8 @@ switch (action) {
     const missing = piece.error ? `${piece.error}这一块没有派出去。`
       : !note.trim() && { submit: '提交验收必须在备注中写给用户的改动汇报。', pause: '暂停必须在备注中写为什么暂停、等什么。' }[choice];
     if (!missing) {
-      if (choice === 'submit') Object.assign(state, { report: note, again: options.again === true, escalate: options.escalate === true });
+      // 「交用户批准」只有独立的需求运行有：需求交付的成员（delivery 非空）一律记为没勾，也记下是成员，门禁回到进行中的处理文字据此不提它。
+      if (choice === 'submit') Object.assign(state, { report: note, again: options.again === true, member: Boolean(env.DELIVERY), escalate: !env.DELIVERY && options.escalate === true });
       state.feedback = '';
       save();
     }
@@ -223,7 +224,7 @@ switch (action) {
     const { outside, missing } = scopeViolations({ required, allowed }, areasAt(base), files);
     state.gate = { head, outside, missing };
     const violated = outside.length > 0 || missing.length > 0;
-    if (violated && state.escalate !== true) back(`范围门禁没过，需求分支 head ${head}。\n${violationText(state.gate)}\n处理：派块把越界的改动拿掉、把必改项补上，再提交验收；确实需要越界，提交验收时勾「交用户批准」，由用户在批准卡上决定。`);
+    if (violated && state.escalate !== true) back(`范围门禁没过，需求分支 head ${head}。\n${violationText(state.gate)}\n处理：派块把越界的改动拿掉、把必改项补上，再提交验收${state.member ? '。' : '；确实需要越界，提交验收时勾「交用户批准」，由用户在批准卡上决定。'}`);
     else save();
     output('route', violated && state.escalate !== true ? 'progress' : 'pass');
     break;
