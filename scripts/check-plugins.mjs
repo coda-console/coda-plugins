@@ -15,7 +15,8 @@ export async function pluginProblems(dir, id) {
   let manifest;
   try { manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')); }
   catch (e) { return [`plugins/${id}/package.json：${e.message}`]; }
-  const problem = manifestProblem(manifest, dir);
+  const problem = manifest?.contributes && typeof manifest.contributes === 'object' && !Array.isArray(manifest.contributes) && Object.keys(manifest.contributes).length
+    ? manifestProblem(manifest, dir) : '缺少 contributes（须为非空对象）';
   if (problem) problems.push(`plugins/${id}/package.json：${problem}`);
   for (const kind of ['workflows', 'capabilities']) {
     const folder = join(dir, '.coda', kind);
