@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { agentMessageProblem } from '@coda-console/protocol/agent';
 import { Background } from '../../../plugins/antigravity/agent/background.mjs';
-import { COMMAND, CALL, S, SUMMARY, acp, canceled, finished, running, stopped } from './background-fixture.mjs';
+import { CHILD, COMMAND, CALL, PROMPT, ROLE, S, SUMMARY, TIMEOUT, UNAVAILABLE, acp, answer, apiError, canceled, denied, finished, idle, input, launched, record, reported, running, stopped, taskResult } from './background-fixture.mjs';
 
 // A home with agy's directories of the session, and a Background over it that records what it tells Coda.
 export function setup(t, { transcript = true } = {}) {
@@ -179,4 +179,254 @@ test('the session ending, or agy ending, ends what is still in the background as
   background.closeSession(S); background.closeAll(); background.scan(S);
   append(finished(1));
   assert.equal(sent.length, 4);
+});
+
+// The turn that ACP ends with end_turn, and what its last step in the transcript says.
+const turn = (t, ...steps) => {
+  const c = setup(t);
+  c.background.begin(S);
+  c.append(...steps);
+  return c;
+};
+
+test('end_turn with an upstream error as the last step since the prompt is a failure: its text, however many steps came before', t => {
+  const { background } = turn(t, input(1), answer(2), apiError(3), apiError(4, TIMEOUT));
+  assert.equal(background.finish(S, true), TIMEOUT);
+  const second = turn(t, input(1), { ...apiError(2), error: `  ${UNAVAILABLE}\n` });
+  assert.equal(second.background.finish(S, true), UNAVAILABLE, 'trimmed');
+});
+
+test('a turn that ends well is not a failure: an answer last, an error agy got over, a denied tool, a stop, another step, an error with no text', t => {
+  assert.equal(turn(t, input(1), answer(2)).background.finish(S, true), null, 'the answer is last');
+  assert.equal(turn(t, input(1), apiError(2), answer(3)).background.finish(S, true), null, 'agy retried and the model answered');
+  assert.equal(turn(t, input(1), denied(2)).background.finish(S, true), null, 'a tool call with an error is not an upstream error');
+  assert.equal(turn(t, input(1), apiError(2)).background.finish(S, false), null, 'the turn was stopped or refused, not ended');
+  assert.equal(turn(t, input(1), { ...apiError(2), source: 'MODEL' }).background.finish(S, true), null);
+  assert.equal(turn(t, input(1), { ...apiError(2), type: 'SYSTEM_MESSAGE' }).background.finish(S, true), null);
+  assert.equal(turn(t, input(1), { ...apiError(2), error: undefined }).background.finish(S, true), null);
+  assert.equal(turn(t, input(1), apiError(2, '  ')).background.finish(S, true), null);
+});
+
+test('only the steps since the prompt count: the error of an earlier turn is not this turn\'s, nor is a session not seen', t => {
+  const { background, append, dir } = setup(t);
+  appendFileSync(join(dir, 'logs/transcript.jsonl'), `${JSON.stringify(apiError(1))}\n`);
+  background.begin(S);
+  assert.equal(background.finish(S, true), null, 'written before the first prompt');
+  background.begin(S);
+  append(input(2), apiError(3));
+  assert.equal(background.finish(S, true), UNAVAILABLE);
+  background.begin(S);
+  assert.equal(background.finish(S, true), null, 'a turn that wrote nothing has no step of its own');
+  assert.equal(background.finish('another', true), null);
+});
+
+test('an error that arrives between prompts is not carried into the next turn', t => {
+  const { background, append } = setup(t);
+  background.begin(S);
+  assert.equal(background.finish(S, true), null);
+  append(apiError(1));
+  background.begin(S);
+  append(answer(2));
+  assert.equal(background.finish(S, true), null);
+});
+
+test('an error is the turn\'s only after the turn\'s user input: one of the turn before, written once the prompt began, is not', t => {
+  const late = setup(t);
+  late.background.begin(S);
+  late.append(apiError(1));
+  assert.equal(late.background.finish(S, true), null, 'the 503 of the turn before, and this turn wrote and said nothing');
+  const stale = setup(t);
+  stale.background.begin(S);
+  stale.append(apiError(1), input(2));
+  assert.equal(stale.background.finish(S, true), null, 'the input is the last step');
+  const own = setup(t);
+  own.background.begin(S);
+  own.append(apiError(1), input(2), apiError(3));
+  assert.equal(own.background.finish(S, true), UNAVAILABLE, 'the turn\'s own, after its input');
+  own.background.begin(S);
+  own.append(input(4), answer(5));
+  assert.equal(own.background.finish(S, true), null);
+});
+
+test('a turn that said something on ACP, or a late error: not a failure, whichever way the transcript lags', t => {
+  // The error agy got over is the last step it has written so far, or the one of the turn before is written after this prompt began.
+  const text = turn(t, input(1), apiError(2));
+  text.background.spoke(S);
+  assert.equal(text.background.finish(S, true), null, 'a reply text went out');
+  const tool = setup(t);
+  tool.background.begin(S);
+  tool.background.spoke(S);
+  tool.append(apiError(1));
+  assert.equal(tool.background.finish(S, true), null, 'a tool that succeeded, and an error written only now');
+  tool.background.begin(S);
+  tool.append(input(2), apiError(3));
+  assert.equal(tool.background.finish(S, true), UNAVAILABLE, 'the next turn said nothing: it is read again from the start');
+});
+
+test('no transcript, one that cannot be read, or steps of another shape: no failure, nothing thrown, and the next prompt is as before', t => {
+  const missing = setup(t, { transcript: false });
+  missing.background.begin(S);
+  assert.equal(missing.background.finish(S, true), null);
+  const locked = setup(t);
+  locked.background.begin(S);
+  locked.append(apiError(1));
+  appendFileSync(locked.file, `${JSON.stringify(answer(2))}\n`);
+  chmodSync(locked.file, 0o000);
+  assert.equal(locked.background.finish(S, true), null, 'the error read earlier is not enough when the read at the end fails: the answer may be behind it');
+  const odd = setup(t);
+  odd.background.begin(S);
+  appendFileSync(odd.file, 'not json\n[1]\nnull\n{"error":5,"source":"SYSTEM","type":"ERROR_MESSAGE"}\n');
+  assert.equal(odd.background.finish(S, true), null);
+  assert.equal(odd.sent.length, 0);
+});
+
+const put = (file, value) => { mkdirSync(join(file, '..'), { recursive: true }); writeFileSync(file, JSON.stringify(value)); };
+const brain = home => join(home, '.gemini/antigravity-cli/brain');
+// The files of the sub-agent CHILD of the session: its record and its launch, and what lands in the session's inbox.
+const children = (c, file = `${CHILD}.json`) => ({
+  record: (value = record(), name = file) => put(join(c.dir, 'subagents', name), value),
+  launch: (value = launched()) => put(join(brain(c.home), CHILD, '.system_generated/messages/30de1bb0.json'), value),
+  inbox: (name, value) => put(join(c.dir, 'messages', `${name}.json`), value),
+});
+
+test('a sub-agent agy starts is told as one that is waited for: its role, its session, the launch as the description', t => {
+  const c = setup(t);
+  c.background.begin(S);
+  const files = children(c);
+  files.record(); files.launch();
+  c.background.scan(S);
+  const [wait] = c.sent;
+  assert.deepEqual(wait, { sessionId: S, waitId: CHILD, kind: 'subagent', state: 'waiting', awaited: false, title: ROLE, childSessionId: CHILD, detail: PROMPT });
+  assert.equal(agentMessageProblem('_coda/wait', wait), null);
+  c.background.scan(S);
+  assert.equal(c.sent.length, 1, 'once');
+});
+
+test('a sub-agent is found while the prompt is answered, by the clock, and afterwards for as long as it lives', async t => {
+  const c = setup(t);
+  c.background.interval = 20;
+  c.background.begin(S);
+  children(c).record();
+  const until = async count => { for (let i = 0; i < 100 && c.sent.length < count; i++) await new Promise(resolve => setTimeout(resolve, 20)); };
+  await until(1);
+  assert.equal(c.sent[0]?.state, 'waiting');
+  assert.equal(c.background.finish(S, true), null);
+  children(c).inbox('1', idle());
+  await until(2);
+  assert.deepEqual(c.sent[1], { sessionId: S, waitId: CHILD, state: 'done' });
+  assert.equal(c.background.sessions.get(S).timer, null, 'nothing left to wait for, nothing read');
+});
+
+test('a sub-agent ends as done when the system says it is idle, as cancelled when it is killed; what it sends, and what a command leaves, ends nothing', t => {
+  const c = setup(t);
+  c.background.begin(S);
+  const files = children(c);
+  files.record(); c.background.scan(S);
+  files.inbox('a', taskResult());
+  c.background.scan(S);
+  assert.equal(c.sent.length, 1, 'a command that finished is not a sub-agent that answered');
+  files.inbox('b', reported(1, CHILD, 'Still working: the diff of v0.3.33 is read, the report follows.'));
+  c.background.scan(S);
+  assert.equal(c.sent.length, 1, 'a child that is alive and says it is still working');
+  files.inbox('c', reported());
+  c.background.scan(S);
+  assert.equal(c.sent.length, 1, 'nor does its report, which is not told from progress');
+  files.inbox('d', idle());
+  c.background.scan(S);
+  files.inbox('e', idle());
+  c.background.scan(S);
+  assert.deepEqual(c.sent.slice(1), [{ sessionId: S, waitId: CHILD, state: 'done' }], 'once');
+
+  const killed = setup(t);
+  killed.background.begin(S);
+  const other = children(killed);
+  other.record(); killed.background.scan(S);
+  other.record(record('SUBAGENT_STATE_KILLED')); killed.background.scan(S);
+  assert.deepEqual(killed.sent.slice(1), [{ sessionId: S, waitId: CHILD, state: 'cancelled' }]);
+  other.inbox('late', idle()); killed.background.scan(S);
+  assert.equal(killed.sent.length, 2);
+});
+
+test('a state agy has not been seen to write ends nothing, whether the sub-agent is new or running: only the idle note or KILLED does', t => {
+  const c = setup(t);
+  c.background.begin(S);
+  const files = children(c);
+  files.record(); c.background.scan(S);
+  files.record(record('SUBAGENT_STATE_IDLE')); c.background.scan(S);
+  assert.equal(c.sent.length, 1);
+  const other = 'c0ffee00-0000-4000-8000-000000000201';
+  files.record(record('SUBAGENT_STATE_FINISHED', other), `${other}.json`); c.background.scan(S);
+  assert.equal(c.sent.length, 1, 'a record first seen in a state that is not ALIVE is not told');
+  files.inbox('i', idle()); c.background.scan(S);
+  assert.deepEqual(c.sent.at(-1), { sessionId: S, waitId: CHILD, state: 'done' });
+});
+
+test('the sub-agents and reports from before the first prompt are not told; a record that is already over, or an inbox message not whole yet, are not either', t => {
+  const c = setup(t);
+  const files = children(c);
+  files.record(); files.inbox('old', idle());
+  c.background.begin(S);
+  c.background.scan(S);
+  files.record(record('SUBAGENT_STATE_KILLED', 'c0ffee00-0000-4000-8000-000000000001'), 'c0ffee00-0000-4000-8000-000000000001.json');
+  put(join(c.dir, 'subagents', 'c0ffee00-0000-4000-8000-000000000002.json'), { conversationId: 'c0ffee00-0000-4000-8000-000000000002' });
+  writeFileSync(join(c.dir, 'subagents', 'c0ffee00-0000-4000-8000-000000000003.json'), '{"conversationId":');
+  writeFileSync(join(c.dir, 'subagents', 'notes.txt'), 'x');
+  put(join(c.dir, 'subagents', 'c0ffee00-0000-4000-8000-000000000004.json'), record('SUBAGENT_STATE_ALIVE', 'another'));
+  c.background.scan(S);
+  assert.deepEqual(c.sent, []);
+  const live = 'c0ffee00-0000-4000-8000-000000000005';
+  files.record(record('SUBAGENT_STATE_ALIVE', live), `${live}.json`);
+  writeFileSync(join(c.dir, 'messages', 'half.json'), `{"sender":"${live}"`);
+  c.background.scan(S);
+  assert.equal(c.sent.length, 1);
+  writeFileSync(join(c.dir, 'messages', 'half.json'), JSON.stringify(idle(2, live)));
+  c.background.scan(S);
+  assert.deepEqual(c.sent[1], { sessionId: S, waitId: live, state: 'done' });
+});
+
+test('a sub-agent without a launch message, or without a role, is told all the same; a Coda that takes no _coda/wait is told nothing, and reads no more than the transcript', t => {
+  const c = setup(t);
+  c.background.begin(S);
+  put(join(c.dir, 'subagents', `${CHILD}.json`), { conversationId: CHILD, subagentDescriptor: { typeName: 'research' }, state: 'SUBAGENT_STATE_ALIVE' });
+  c.background.scan(S);
+  assert.deepEqual(c.sent, [{ sessionId: S, waitId: CHILD, kind: 'subagent', state: 'waiting', awaited: false, title: 'research', childSessionId: CHILD }]);
+
+  const home = mkdtempSync(join(tmpdir(), 'antigravity-background-'));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const sent = [];
+  const background = new Background({ send: params => sent.push(params), home, waits: () => false });
+  background.begin(S);
+  put(join(brain(home), S, '.system_generated/subagents', `${CHILD}.json`), record());
+  background.scan(S);
+  assert.deepEqual(sent, []);
+  assert.equal(background.sessions.get(S).timer, null);
+  background.closeAll();
+});
+
+test('the session closing ends a sub-agent still working as cancelled, and then nothing more is told', t => {
+  const c = setup(t);
+  c.background.begin(S);
+  children(c).record();
+  c.background.scan(S);
+  c.background.closeSession(S);
+  assert.deepEqual(c.sent.slice(1), [{ sessionId: S, waitId: CHILD, state: 'cancelled' }]);
+  c.background.closeAll(); c.background.scan(S);
+  assert.equal(c.sent.length, 2);
+});
+
+test('a record with fields of the wrong type is told as well as it can be, or skipped, and the others are told: nothing is thrown', t => {
+  const c = setup(t);
+  c.background.begin(S);
+  const id = n => `c0ffee00-0000-4000-8000-00000000010${n}`;
+  const odd = [{ subagentDescriptor: { role: 5, typeName: ['x'] } }, { subagentDescriptor: 'research' }, { subagentDescriptor: null }, { subagentDescriptor: { role: {}, typeName: 'research' } }];
+  odd.forEach((fields, n) => put(join(c.dir, 'subagents', `${id(n)}.json`), { conversationId: id(n), state: 'SUBAGENT_STATE_ALIVE', ...fields }));
+  put(join(c.dir, 'subagents', `${id(9)}.json`), record('SUBAGENT_STATE_ALIVE', id(9)));
+  put(join(c.dir, 'messages', 'odd.json'), 5);
+  put(join(c.dir, 'messages', 'odd2.json'), { sender: 'system', content: { text: 'x' } });
+  mkdirSync(join(brain(c.home), id(9), '.system_generated/messages'), { recursive: true });
+  put(join(brain(c.home), id(9), '.system_generated/messages/odd.json'), [1]);
+  c.background.scan(S);
+  assert.deepEqual(c.sent.map(({ waitId, title }) => [waitId, title]), [[id(0), id(0)], [id(1), id(1)], [id(2), id(2)], [id(3), 'research'], [id(9), ROLE]]);
+  assert.equal(c.sent.every(params => agentMessageProblem('_coda/wait', params) === null), true);
+  assert.equal(c.background.finish(S, true), null);
 });
