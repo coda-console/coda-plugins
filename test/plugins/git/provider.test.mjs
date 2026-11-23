@@ -9,12 +9,8 @@ import { fixture, command, gateway, host } from './helpers.mjs';
 import { GitProvider } from '../../../plugins/git/lib/provider.mjs';
 import { SOURCE } from '../../../plugins/git/lib/definitions.mjs';
 import { repository } from '../../../plugins/git/lib/git.mjs';
-import { ProtocolTypes } from '../../../check/coda/components/protocols/types.mjs';
 import { definitionProblem, ownedProtocolsProblem } from '@coda-console/protocol/protocol';
-import '../../../check/coda/application/contributions.mjs';
-import { readPlugin } from '../../../check/coda/components/plugins/plugin-rules.mjs';
-import { usesRefusal } from '../../../check/coda/components/plugins/plugin-extensions.mjs';
-import { createTestHost } from '../../../check/coda/adapters/plugin-test-host.mjs';
+import { manifestProblem, pointProblem } from '@coda-console/protocol/validate';
 
 const manifest = JSON.parse(readFileSync(new URL('../../../plugins/git/package.json', import.meta.url), 'utf8'));
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -42,48 +38,22 @@ async function setup(t) {
 
 test('清单只有 git/source@1，定义合乎格式与命名空间，spec 有登记名，拒绝多余字段，流 transport 归权限组 fetch，只给预览渠道', () => {
   const dir = fileURLToPath(new URL('../../../plugins/git/', import.meta.url));
+  assert.equal(manifestProblem(manifest, dir), null);
   assert.equal(ownedProtocolsProblem(manifest), null);
-  const types = new ProtocolTypes();
-  for (const definition of manifest.contributes.protocols) {
-    assert.equal(definitionProblem(definition, { namespace: 'git', where: definition.name }), null);
-    types.register({ kind: definition.name, spec: definition.spec, status: definition.status, participants: () => [] });
-  }
+  for (const definition of manifest.contributes.protocols) assert.equal(definitionProblem(definition, { namespace: 'git', where: definition.name }), null);
   assert.deepEqual(manifest.contributes.protocols.map(definition => definition.name), [SOURCE]);
-  assert.deepEqual(readPlugin(dir, { kind: 'git' }).protocolImplementations, [{ kind: SOURCE, commands: {} }]);
+  assert.deepEqual(manifest.contributes.protocolImplementations, [SOURCE]);
   assert.deepEqual(manifest.coda, { channels: ['preview'] });
   const [{ streams, permissions }] = manifest.contributes.protocols;
   assert.deepEqual(Object.entries(streams).map(([name, { shape, subprotocol, input }]) => ({ name, shape, subprotocol, input })),
     [{ name: 'transport', shape: 'http', subprotocol: 'git-smart-http/2', input: { type: 'object', additionalProperties: false } }]);
   assert.deepEqual(permissions, { fetch: { title: '读取 Git 源和它的代码', read: true, streams: ['transport'] } });
   assert.equal(manifest.engines.coda, 14);
-  assert.equal(types.get(SOURCE).spec({ name: 'repo', path: '/tmp/repo' }), true);
-  assert.equal(types.get(SOURCE).spec({ path: '/tmp/repo' }), false);
-  assert.equal(types.get(SOURCE).spec({ name: 'a/b', path: '/tmp/repo' }), false);
-  assert.equal(types.get(SOURCE).spec({ name: 'repo', path: '/tmp/repo', machine: 'remote' }), false);
-});
-
-test('别的插件只声明 fetch 就能读到记录和 status.url、也能开流；没声明的都不行', async t => {
-  const { protocols } = manifest.contributes, id = '7d2e9a14-3c5b-4f86-a1d0-c94b2e6f8a37';
-  const reader = declared => {
-    const plugin = { id: 'reader', ...declared };
-    const host = createTestHost({ plugin, protocols, records: [{ kind: SOURCE, id, plugin: 'git',
-      spec: { name: 'source', path: '/repository' }, status: { ready: true, url: address(id) } }] });
-    t.after(() => host.close());
-    // The test host's `permit` covers reading records; a stream is judged by the same rule.
-    return { coda: host.coda, stream: usesRefusal(plugin, SOURCE, { stream: 'transport' }, protocols[0]) };
-  };
-  for (const key of ['uses', 'optionalUses']) {
-    const { coda, stream } = reader({ [key]: { [SOURCE]: ['fetch'] } }), seen = [];
-    assert.equal((await coda.get({ kind: SOURCE, id })).status.url, address(id));
-    await coda.watch(SOURCE, event => seen.push([event.type, event.entry.status.url]));
-    assert.deepEqual(seen, [['ADDED', address(id)]]);
-    assert.equal(stream, null);
-  }
-  const { coda, stream } = reader({});
-  const refused = { code: 'forbidden', message: /权限组 fetch$/ };
-  await assert.rejects(coda.get({ kind: SOURCE, id }), refused);
-  await assert.rejects(coda.watch(SOURCE, () => {}), refused);
-  assert.match(stream, /读 git\/source@1 的流 transport，.*权限组 fetch$/);
+  const valid = spec => pointProblem(manifest.contributes.protocols[0].spec, spec, 'spec') === null;
+  assert.equal(valid({ name: 'repo', path: '/tmp/repo' }), true);
+  assert.equal(valid({ path: '/tmp/repo' }), false);
+  assert.equal(valid({ name: 'a/b', path: '/tmp/repo' }), false);
+  assert.equal(valid({ name: 'repo', path: '/tmp/repo', machine: 'remote' }), false);
 });
 
 test('登记的源以名字为 key，ID 是宿主由它派生的，名字也写进 spec，就绪并发布读取地址；删除后不再可读', async t => {

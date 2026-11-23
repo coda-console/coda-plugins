@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { resolveDevice } from '../../../plugins/testbed/scripts/resolve-device.mjs';
-import { createTestHost } from '../../../check/coda/adapters/plugin-test-host.mjs';
+import { createMockCoda } from '../../helpers/mock-coda.mjs';
 
 const endpoint = '192.168.1.7:5555';
 const adb = { protocol: 'adb', endpoint, reach: { scope: 'machines', machines: ['mac'] } };
@@ -35,7 +35,7 @@ test('an Android group this machine reaches no adb link of, and a name nobody ha
 const group = (name, platform, owner = 'machine-b') => ({ kind: 'coda/group@1', id: `id-${name}`, owner, location: owner === 'machine-b' ? 'xiaomi' : owner,
   spec: { name: `device:${name}`, capacity: 1, attributes: { platform } } });
 async function ownerOf(records, reachable) {
-  const host = createTestHost({ plugin: { id: 'testbed', protocolImplementations: ['coda/group@1'] }, records });
+  const host = createMockCoda({ plugin: { id: 'testbed', protocolImplementations: ['coda/group@1'] }, records });
   const entries = await host.coda.list('coda/group@1', { scope: 'available' });
   await host.close();
   return name => {

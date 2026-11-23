@@ -12,10 +12,9 @@ import { NativeAuth } from '../../../plugins/grok-bot/lib/auth.mjs';
 import { decode } from '../../../plugins/grok-bot/lib/transcript.mjs';
 import { FakeNative } from './native-fixture.mjs';
 import { temporary } from './helpers.mjs';
-import { ProtocolTypes, validate } from '../../../check/coda/components/protocols/types.mjs';
 import { SESSION_PROTOCOL } from '@coda-console/protocol/protocol';
+import { pointProblem } from '@coda-console/protocol/validate';
 import { recordId, validKey } from '../records.mjs';
-const types = new ProtocolTypes();
 // Test the 5.7.0 activity contract while Coda's synced checker still pins 5.6.0.
 // coda-protocol 5114657bff89056ffe94fd8988478b0a8b2f37b4, session.json status.activity.
 const sessionProtocol = structuredClone(SESSION_PROTOCOL);
@@ -28,7 +27,8 @@ sessionProtocol.status.properties.activity = {
   required: ['participant', 'text'],
   additionalProperties: false,
 };
-for (const d of [sessionProtocol]) types.register({ ...d, kind: d.name, participants: () => [] });
+// The value is checked against the protocol's schema; what is wrong is the assertion's message.
+const validate = (schema, value, who) => assert.equal(pointProblem(schema, value, who), null);
 const until = async fn => { for (let i=0; i<200; i++) { if (fn()) return; await delay(5); } assert.fail('condition timed out'); };
 // The records of the new interface (`put`, `delete`, `replace`), kept whole as a plugin writes them. A plugin gives only its
 // key; the host derives the ID from the plugin, the kind and the key, so a record has the plugin that holds it and `replace`
@@ -38,7 +38,7 @@ function host(root) {
   const fails = op => { if (failing === op) { failing = null; throw new Error('宿主没有收'); } };
   const at = (kind, id) => `${kind}/${id}`;
   const check = (kind, key, { spec, status = {} }) => {
-    assert.ok(validKey(key), `key ${key}`); validate(types.get(kind).spec, spec, 'spec'); validate(types.get(kind).status, status, 'status');
+    assert.ok(validKey(key), `key ${key}`); validate(sessionProtocol.spec, spec, 'spec'); validate(sessionProtocol.status, status, 'status');
   };
   const save = (kind, key, { spec, status = {} }) => {
     const id = recordId(self, kind, key);
@@ -200,7 +200,7 @@ test('read latest/before/after, edits, stable head and no Routine mirror', async
   page=await f.provider.read(f.key(),{after:'0:2'});
   assert.deepEqual(page.messages[0].about,{message:'0:a',change:'edit'});
   assert.equal(page.messages[0].text,'edited');
-  validate(types.get(SESSION).operations.get('read').result,page,'read');
+  validate(sessionProtocol.operations.read.result,page,'read');
   f.native.emit({agentStateChanged:{agentId:'inspector',families:['automations','subagents']}});
   f.native.emit(f.native.row('routine',{kind:'routine',text:'done'},4)); await delay(30);
   assert.equal(f.provider.records.get(f.key()).status.head,'0:3');

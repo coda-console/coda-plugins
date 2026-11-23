@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { device, declaration, links, CLEAN_UP, HOME_AND_SLEEP } from '../../../plugins/android/lib/android.mjs';
 import { activate, deactivate, declare } from '../../../plugins/android/main.mjs';
-import { TEST_OWNER, createTestHost } from '../../../check/coda/adapters/plugin-test-host.mjs';
+import { TEST_OWNER, createMockCoda } from '../../helpers/mock-coda.mjs';
 import { NAMESPACES, changes, command, notDone, parseList } from '../../../plugins/android/lib/settings.mjs';
 
 function state(t) {
@@ -143,7 +143,7 @@ test('地址设置为空且 wlan0 没有 IPv4 时拒绝声明链路', async () =
 });
 
 const GROUP = 'coda/group@1';
-const phoneHost = records => createTestHost({ plugin: { id: 'android', protocolImplementations: [GROUP] }, records });
+const phoneHost = records => createMockCoda({ plugin: { id: 'android', protocolImplementations: [GROUP] }, records });
 
 test('组记录按插件整份替换，不写 status：状态归 Coda，别的插件的记录原样留着，重名冲突被拒', async t => {
   const machine = 'f9bf79a1-61c3-40ce-b656-aec1bc7c60b8';
@@ -174,7 +174,7 @@ test('组记录按插件整份替换，不写 status：状态归 Coda，别的�
 
 test('activate：先登记 lend、return，再写记录；借还照原样做并答 {}；停用后撤掉', async t => {
   const dir = state(t), machine = 'f9bf79a1-61c3-40ce-b656-aec1bc7c60b8';
-  const host = createTestHost({ plugin: { id: 'android', protocolImplementations: [GROUP] }, settings: { 'android.machines': [{ id: machine }] } });
+  const host = createMockCoda({ plugin: { id: 'android', protocolImplementations: [GROUP] }, settings: { 'android.machines': [{ id: machine }] } });
   const { coda } = host, order = [];
   t.after(() => host.close());
   const calls = [], fake = { settings: structuredClone(before) };
@@ -206,7 +206,7 @@ test('activate：先登记 lend、return，再写记录；借还照原样做并�
 
 test('改 android.name、android.machines 后用新值重发：记录 ID 不变，旧名随全集替换消失；停用后不再重发', async t => {
   const dir = state(t), machine = 'f9bf79a1-61c3-40ce-b656-aec1bc7c60b8';
-  const host = createTestHost({ plugin: { id: 'android', protocolImplementations: [GROUP] }, settings: {} });
+  const host = createMockCoda({ plugin: { id: 'android', protocolImplementations: [GROUP] }, settings: {} });
   t.after(() => host.close());
   const rows = () => host.coda.list(GROUP, { scope: 'local' });
   // The listeners of `onChange` are not waited for by the host: the rows are read again until they show the change.
@@ -237,7 +237,7 @@ test('改 android.name、android.machines 后用新值重发：记录 ID 不变�
 
 test('设置连着变两次：第一次的 wlan0 查询挂住，第二次先保存，放行后记录仍是第二次的组名与名单', async t => {
   const dir = state(t), machine = 'f9bf79a1-61c3-40ce-b656-aec1bc7c60b8';
-  const host = createTestHost({ plugin: { id: 'android', protocolImplementations: [GROUP] }, settings: {} });
+  const host = createMockCoda({ plugin: { id: 'android', protocolImplementations: [GROUP] }, settings: {} });
   t.after(() => host.close());
   let release, asked;
   const hung = new Promise(resolve => { release = resolve; });

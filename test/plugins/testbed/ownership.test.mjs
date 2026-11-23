@@ -6,10 +6,10 @@ import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import { setTimeout } from 'node:timers/promises';
 import { activate, deactivate } from '../../../plugins/testbed/main.mjs';
-import { TEST_OWNER, createTestHost } from '../../../check/coda/adapters/plugin-test-host.mjs';
+import { TEST_OWNER, createMockCoda } from '../../helpers/mock-coda.mjs';
 
 const GROUP = 'coda/group@1';
-const testbedHost = records => createTestHost({ plugin: { id: 'testbed', protocolImplementations: [GROUP] }, records });
+const testbedHost = records => createMockCoda({ plugin: { id: 'testbed', protocolImplementations: [GROUP] }, records });
 const phone = { id: 'phone', name: 'Phone', udid: 'UDID', note: 'local runner required' };
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), 'testbed-ownership-'));
