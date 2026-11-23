@@ -1,8 +1,8 @@
 // Token 消耗榜页面：本机的用量概览，和好友的消耗榜。数据都由模块（main.mjs）读好、算好，经页面消息送来；页面不直接读记录。
 // 好友的昵称、模型名等外来文字只经 textContent / 文本节点渲染，从不拼进 innerHTML。
-import { Bridge } from 'coda-view://lib/v1/bridge.js';
+import { createMachineBridge, pickMachine, reachableMachines } from '../lib/view-machine.mjs';
 
-const coda = window.coda, bridge = new Bridge();
+const coda = window.coda;
 const root = document.getElementById('root');
 const RANGES = [{ id: 'today', label: '今天' }, { id: '7d', label: '近 7 天' }, { id: '30d', label: '近 30 天' }];
 const PARTS = [['input', '输入'], ['output', '输出'], ['cacheRead', '缓存读'], ['cacheWrite', '缓存写']];
@@ -13,6 +13,9 @@ const colorOf = value => (Object.hasOwn(NAMED_COLORS, value) ? NAMED_COLORS[valu
 
 const saved = coda.getState?.() ?? {};
 let range = RANGES.find(r => r.id === saved?.range)?.id ?? null;
+let currentMachine = pickMachine(coda, saved?.machine);
+// 每次选机自增（A → B → A 也不同）：旧机器的订阅回调、在途的发送失败，凭它丢弃。
+let selectionGen = 0;
 let status = null, board = null, loading = false, seq = 0, acting = false;
 const expanded = new Set();
 
@@ -45,17 +48,31 @@ function requestBoard() {
   bridge.send({ type: 'board', range, id: ++seq });
   render();
 }
-bridge.on('status', d => {
-  status = d;
-  if (!range) { range = RANGES.find(r => r.id === d.range)?.id ?? '7d'; declareHeader(); requestBoard(); }
-  acting = false;
-  render();
+const handlers = {
+  status(d) {
+    status = d;
+    if (!range) { range = RANGES.find(r => r.id === d.range)?.id ?? '7d'; declareHeader(); requestBoard(); }
+    acting = false;
+    render();
+  },
+  board(d) {
+    if (d.id !== seq) return;
+    board = d; loading = false; render();
+  },
+  error(d) { loading = false; acting = false; status = { ...(status ?? {}), notice: d.message }; render(); },
+};
+const bridge = createMachineBridge({
+  coda,
+  getMachine: () => currentMachine,
+  getEpoch: () => selectionGen,
+  onMessage: d => handlers[d.type]?.(d),
+  onError(error, msg, machine, gen) {
+    if (gen !== selectionGen) return;
+    loading = false; acting = false;
+    status = { ...(status ?? {}), notice: `发送失败：${error?.message ?? error}` };
+    render();
+  },
 });
-bridge.on('board', d => {
-  if (d.id !== seq) return;
-  board = d; loading = false; render();
-});
-bridge.on('error', d => { loading = false; acting = false; status = { ...(status ?? {}), notice: d.message }; render(); });
 
 function act(message) { acting = true; render(); bridge.send(message); }
 const setShare = on => act({ type: 'set-share', on });
@@ -69,7 +86,7 @@ function declareHeader() {
 }
 coda.on?.('header', ({ id }) => {
   if (!RANGES.some(r => r.id === id)) return;
-  range = id; coda.setState?.({ range: id }); board = null; requestBoard();
+  range = id; saveState(); board = null; requestBoard();
 });
 let toolbarKey = '';
 function declareToolbar() {
@@ -87,18 +104,45 @@ coda.on?.('toolbar', ({ id, on } = {}) => {
 });
 
 // 好友表变动或收到好友的新记录，Coda 通知一次，榜单跟着刷新；用量本身不会推送，另有定时刷新。
-let again = null;
+let again = null, watching = null;
 function later() { clearTimeout(again); again = setTimeout(() => { bridge.send({ type: 'hello' }); requestBoard(); }, 800); }
-try {
-  Promise.resolve(coda.watch('friends/social@1', ({ type }) => { if (type === 'MODIFIED') later(); }, { id: 'local' })).catch(() => {});
-} catch {}
+function watchFriends() {
+  watching?.then(w => w?.dispose?.(), () => {});
+  const mine = currentMachine, gen = selectionGen;
+  watching = Promise.resolve(coda.watch('friends/social@1', ({ type }) => { if (type === 'MODIFIED' && gen === selectionGen) later(); }, { id: 'local' }, mine ? { machine: mine } : undefined));
+  watching.catch(() => {});
+}
+try { watchFriends(); } catch {}
+const saveState = () => coda.setState?.({ range, machine: currentMachine });
+
+function switchMachine(id) {
+  if (id === currentMachine) return;
+  currentMachine = id;
+  selectionGen++;
+  saveState();
+  seq++; status = null; board = null; loading = false; acting = false;
+  clearTimeout(again);
+  try { watchFriends(); } catch {}
+  bridge.send({ type: 'hello' });
+  requestBoard();
+}
 setInterval(() => { if (document.visibilityState !== 'hidden') requestBoard(); }, 60_000);
 
 // ——— 画面 ———
 function render() {
   declareToolbar();
-  const children = [notes(), controls(), local(), leaderboard()];
+  const children = [machineBar(), notes(), controls(), local(), leaderboard()];
   root.replaceChildren(h('div', { class: 'page' }, children));
+}
+
+function machineBar() {
+  const machines = reachableMachines(coda);
+  if (machines.length < 2) return null;
+  return h('div', { class: 'machines' }, machines.map(m => {
+    const button = h('button', { class: 'btn', 'aria-pressed': String(m.id === currentMachine), onclick: () => switchMachine(m.id) });
+    button.textContent = m.name || m.id;
+    return button;
+  }));
 }
 
 function notes() {
