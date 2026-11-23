@@ -61,6 +61,7 @@ export const MESSAGES = {
   'system/task_summary': internal,
   'system/session_metadata': internal,
   'system/dev_intent': internal,
+  'system/permission_check_status': internal,
   active_goal: internal,
   autocompact_state: internal,
   command_lifecycle: internal,
