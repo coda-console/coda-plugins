@@ -1196,6 +1196,7 @@ test('集成（真 gateway.mjs）：无身份开启分享同步 → 手动撤回
     query: async () => ({ records: [], truncated: false }),
     put: async (ref, value) => { status = value.status; },
     handle: (kind, name, fn) => { handlers[name] = fn; return { dispose() {} }; },
+    stream: async () => ({ dispose() {} }),
     watch: async (kind, fn) => { onChange = fn; return { dispose() {} }; },
   };
   const gateway = createGateway(gatewayCoda, gwDir);

@@ -8,6 +8,7 @@
 //   await activate(host.coda);
 //   await host.call({ kind, id }, 'lend', { holder });
 import { isDeepStrictEqual } from 'node:util';
+import { readFrames, writeFrames } from '@coda-console/protocol/frames';
 import { pointProblem } from '@coda-console/protocol/validate';
 import { recordId, validKey } from '../plugins/records.mjs';
 
@@ -147,6 +148,8 @@ export function createMockCoda({ plugin = {}, settings = {}, records = [], proto
     stream: (kind, name, fn) => streams.add(`${kind}/${name}`, fn),
     // `(request, { caller, signal }) => Response`
     serve: (service, fn) => services.add(service, fn),
+    frames: Object.freeze({ read: readFrames, write: writeFrames }),
+    error: (code, message, options) => fail(code, message, options?.effects),
   };
 
   // 处理函数的 signal：登记撤销，或调用方走掉（请求的 signal 响）。
@@ -177,12 +180,14 @@ export function createMockCoda({ plugin = {}, settings = {}, records = [], proto
       if (!found) throw fail('not_found', `插件没有登记 self ${name}`);
       return structuredClone(await found.fn(structuredClone(input), { signal: found.ended.signal }) ?? null);
     },
-    // 一个记录的流：协议定义里有这个流，方法只收 GET、POST（http 形状）。
+    // 一个记录的流：协议定义里有这个流，方法只收 GET、POST（http 形状）；read 形状的参数取自查询串，按定义的 input 校验。
     async stream(record, name, request, { caller = { local: true } } = {}) {
       const definition = definitions.get(record?.kind)?.streams?.[name], found = streams.get(`${record?.kind}/${name}`);
       if (!definition || !found) throw fail('not_found', `插件没有登记 ${record?.kind} 的流 ${name}`);
       if (!['GET', 'POST'].includes(request.method)) throw fail('method_not_allowed', `${record.kind} 的流 ${name} 只收 GET、POST`);
-      return ask(found, request, { record: recordFor(record), input: {}, caller });
+      const input = (definition.shape ?? 'read') === 'read' ? Object.fromEntries(new URL(request.url).searchParams) : {};
+      check(definition.input, input, '参数');
+      return ask(found, request, { record: recordFor(record), input, caller });
     },
     async serve(service, request, { caller = { local: true } } = {}) {
       const found = services.get(service);

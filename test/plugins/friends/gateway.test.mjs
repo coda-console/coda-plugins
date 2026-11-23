@@ -7,6 +7,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { activate, deactivate } from '../../../plugins/friends/main.mjs';
+import { createGateway } from '../../../plugins/friends/lib/gateway.mjs';
+import { readFrames, writeFrames } from '@coda-console/protocol/frames';
+import { normalizeDmInput, normalizeFeedInput } from '../../../plugins/friends/lib/social-streams.mjs';
+import { definitionProblem } from '@coda-console/protocol/protocol';
+import { pointProblem } from '@coda-console/protocol/validate';
 
 const manifest = JSON.parse(await readFile(new URL('../../../plugins/friends/package.json', import.meta.url), 'utf8'));
 const SOCIAL = 'friends/social@1';
@@ -68,14 +73,16 @@ function accordFake({ author = A, certificate = ACTIVE, friends = [], pageSize =
 async function gateway(t, options = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'friends-gateway-'));
   const accord = accordFake(options), host = createMockCoda({ plugin: { id: 'friends', state: dir, protocols: manifest.contributes.protocols, protocolImplementations: manifest.contributes.protocolImplementations } });
-  t.after(async () => { deactivate(); await host.close(); await rm(dir, { recursive: true, force: true }); });
+  // 测试开过的流先收掉：断言失败时没人读完它们，不收的话心跳定时器会让进程一直挂着。
+  const streams = [];
+  t.after(async () => { for (const one of streams) await one.frames.return(); deactivate(); await host.close(); await rm(dir, { recursive: true, force: true }); });
   // 网关用到的 Accord 读写走替身；写自己的网关记录、登记处理函数走测试宿主。
   await activate({ ...host.coda, get: ref => ref.kind === 'coda/accord@1' ? accord.get() : host.coda.get(ref), query: accord.query, call: accord.call, watch: accord.watch });
   const [local] = await host.coda.list(SOCIAL, { scope: 'local' }), ref = { kind: SOCIAL, id: local.id };
   const call = (operation, input = {}) => host.call(ref, operation, input);
   const status = async () => (await host.coda.list(SOCIAL, { scope: 'local' }))[0].status;
   const outbox = async () => JSON.parse(await readFile(join(dir, 'outbox.json'), 'utf8').catch(() => '{}')).entries ?? {};
-  return { dir, accord, host, call, status, outbox, publish: input => call('publish', input), retract: input => call('retract', input), self: (name, input) => host.self(name, input) };
+  return { dir, accord, host, ref, streams, call, status, outbox, publish: input => call('publish', input), retract: input => call('retract', input), self: (name, input) => host.self(name, input) };
 }
 const rejects = (promise, code = 'invalid_input') => assert.rejects(promise, error => error.code === code);
 
@@ -104,7 +111,8 @@ test('friends merges the friend table with the paged profiles and the local note
   assert.deepEqual([result.selfAuthor, result.certState, result.truncated], [A, 'active', false]);
   assert.deepEqual(result.friends.map(row => [row.node, row.status, row.title, row.profileName, row.emoji, row.color, row.note]),
     [['n2', 'bound', '小二', '小二', '', 'gray', ''], ['n1', 'bound', '老王', '小一', '🐱', 'blue', '老王']]);
-  assert.deepEqual(g.accord.queries.map(q => [q.kind, q.limit, q.cursor]), [['profile', 200, undefined], ['profile', 200, '2']]);
+  assert.deepEqual(g.accord.queries.filter(q => q.kind === 'profile').map(q => [q.kind, q.limit, q.cursor]), [['profile', 200, undefined], ['profile', 200, '2']]);
+  assert.deepEqual(g.accord.queries.filter(q => q.kind === 'friends/card').map(q => [q.limit, q.cursor]), [[200, undefined]]);
   const all = await g.call('friends', { includePending: true });
   assert.deepEqual(all.friends.map(row => [row.node, row.status]), [['n3', 'pending'], ['n2', 'bound'], ['n1', 'bound']]);
 });
@@ -114,7 +122,7 @@ test('friends stops at a cursor it has seen and says it is truncated; with no id
   g.accord.loop = true;
   const result = await g.call('friends');
   assert.equal(result.truncated, true);
-  assert.equal(g.accord.queries.length, 2, 'the second page repeats the cursor, so there is no third');
+  assert.equal(g.accord.queries.length, 4, 'each kind\'s second page repeats the cursor, so there is no third');
   g.accord.queries.length = 0;
   await g.accord.change({ author: null, certificate: null, friends: [] });
   const none = await g.call('friends', { includePending: true });
@@ -680,4 +688,490 @@ test('a withdrawal that a later publish of the same author already replaced and 
   await g.accord.change({ certificate: ACTIVE });
   await until(async () => Object.keys(await g.outbox()).join() === 'p:x:same', '过期撤回被丢掉');
   assert.deepEqual(g.accord.calls, []);
+});
+
+const OWNER = '0123abcd-4567-89ef-0123-456789abcdef', HASH = 'ab'.repeat(32);
+const AVATAR = { owner: OWNER, path: `content/${HASH}`, sha256: HASH, mime: 'image/png', size: 1024 };
+
+test('set-card publishes the cleaned friends/card self record to the public, clears an avatar with null, and refuses a bad pointer', async t => {
+  const g = await gateway(t);
+  assert.deepEqual(await g.call('set-card', { name: ' 小明 ', emoji: '🙂', color: 'teal', avatar: AVATAR }), { state: 'synced', author: A, version: 1 });
+  assert.deepEqual(g.accord.calls, [{ kind: 'friends/card', id: 'self', body: { name: '小明', emoji: '🙂', color: 'teal', avatar: AVATAR }, audience: ['public'] }]);
+  assert.equal((await g.outbox())['p:friends/card:self'].state, 'synced');
+  assert.deepEqual(await g.call('set-card', { name: '小明', emoji: '🙂', color: 'teal', avatar: AVATAR }), { state: 'synced', skipped: true, author: A });
+  assert.deepEqual(await g.call('set-card', { name: '小明', avatar: null }), { state: 'synced', author: A, version: 2 });
+  assert.deepEqual(g.accord.calls.at(-1).body, { name: '小明', avatar: null });
+  for (const avatar of [{ ...AVATAR, path: `uploads/${OWNER}` }, { ...AVATAR, path: 'plugins/friends/services/x/a.png' }, { ...AVATAR, sha256: 'cd'.repeat(32) },
+    { ...AVATAR, size: 5 * 1024 * 1024 + 1 }, { ...AVATAR, extra: 1 }, { ...AVATAR, name: ' \u0007 ' }]) await rejects(g.call('set-card', { name: '小明', avatar }));
+  await rejects(g.call('set-card', { name: '' }));
+  await rejects(g.call('set-card', { name: '小明', color: 'red' }));
+  assert.equal(g.accord.calls.length, 2, 'a refused card never reaches Accord');
+});
+
+test('set-card waits in the outbox while the certificate is expired and goes out once it is active again', async t => {
+  const g = await gateway(t, { certificate: EXPIRED });
+  assert.deepEqual(await g.call('set-card', { name: '小明', avatar: AVATAR }), { state: 'needs_cert', author: A });
+  assert.deepEqual(g.accord.calls, []);
+  assert.deepEqual((await g.outbox())['p:friends/card:self'].body, { name: '小明', avatar: AVATAR });
+  await g.accord.change({ certificate: ACTIVE });
+  await until(async () => (await g.status()).pendingCount === 0, '证书恢复后补发名片');
+  assert.deepEqual(g.accord.calls, [{ kind: 'friends/card', id: 'self', body: { name: '小明', avatar: AVATAR }, audience: ['public'] }]);
+  assert.equal((await g.outbox())['p:friends/card:self'].state, 'synced');
+});
+
+test('friends reads profiles and friends/card records, falls back to the card field by field and gives each row its avatar', async t => {
+  const g = await gateway(t, { friends: [{ node: 'n1', author: F1, bound: true, updatedAt: 2 }, { node: 'n2', author: F2, bound: true, updatedAt: 1 }, { node: 'n3', author: F3, bound: true, updatedAt: 0 }] });
+  g.accord.records.push({ author: F1, kind: 'profile', id: 'self', version: 1, body: { name: '小一' } },
+    { author: F1, kind: 'friends/card', id: 'self', version: 3, body: { name: '卡一', emoji: '🐱', avatar: AVATAR } },
+    { author: F2, kind: 'friends/card', id: 'self', version: 1, body: { name: '卡二', color: 'green' } },
+    { author: F3, kind: 'friends/card', id: 'self', version: 1, body: { name: '卡三', avatar: { ...AVATAR, path: 'uploads/x' } } });
+  const result = await g.call('friends');
+  assert.equal(result.truncated, false);
+  assert.deepEqual(result.friends.map(row => [row.node, row.profileName, row.emoji, row.color, row.avatar]),
+    [['n1', '小一', '🐱', 'gray', AVATAR], ['n2', '卡二', '', 'green', null], ['n3', '卡三', '', 'gray', null]]);
+});
+
+test('set-card takes an emoji of up to 8 code points, as the card itself does, and refuses 9', async t => {
+  const g = await gateway(t);
+  assert.equal((await g.call('set-card', { name: '小明', emoji: '🙂'.repeat(8) })).state, 'synced');
+  assert.equal(g.accord.calls.at(-1).body.emoji, '🙂'.repeat(8));
+  await rejects(g.call('set-card', { name: '小明', emoji: '🙂'.repeat(9) }));
+  assert.equal(g.accord.calls.length, 1);
+  // 协议 schema 自己就判到 8：调用方照 schema 填的，处理函数不会再拒。
+  const input = manifest.contributes.protocols[0].operations['set-card'].input;
+  assert.equal(pointProblem(input, { name: '小明', emoji: '🙂'.repeat(8) }, 'set-card'), null);
+  assert.notEqual(pointProblem(input, { name: '小明', emoji: '🙂'.repeat(9) }, 'set-card'), null);
+});
+
+// ---- 私信 friends/dm、动态 friends/feed 与它们的实时流 ----
+
+test('the protocol definition is valid, and its new operations and streams belong to the read and publish groups', () => {
+  const [definition] = manifest.contributes.protocols;
+  assert.equal(definitionProblem(definition, { namespace: 'friends', where: definition.name }), null);
+  assert.equal(manifest.version, '0.3.0');
+  assert.deepEqual(definition.permissions.read.streams, ['dm', 'feed']);
+  assert.deepEqual(definition.permissions.publish.operations, ['publish', 'set-card', 'send-dm', 'post-feed', 'retract', 'outbox']);
+  for (const name of ['send-dm', 'post-feed']) assert.equal(definition.operations[name].idempotent, true);
+  assert.deepEqual(Object.entries(definition.streams).map(([name, { shape, frames }]) => [name, shape, frames]), [['dm', 'read', true], ['feed', 'read', true]]);
+  // schema 与处理函数的边界一致：8000 字、4 个附件、id 200 字、audience 非空。
+  const { 'send-dm': dm, 'post-feed': feed } = definition.operations;
+  assert.equal(pointProblem(dm.input, { to: B, text: 'x'.repeat(8000) }, 'send-dm'), null);
+  assert.notEqual(pointProblem(dm.input, { to: B, text: 'x'.repeat(8001) }, 'send-dm'), null);
+  assert.notEqual(pointProblem(dm.input, { to: B, attachments: Array(5).fill(AVATAR) }, 'send-dm'), null);
+  assert.notEqual(pointProblem(dm.input, { to: B, text: 'x', id: 'x'.repeat(201) }, 'send-dm'), null);
+  assert.notEqual(pointProblem(feed.input, { text: 'x', audience: [] }, 'post-feed'), null);
+  assert.equal(pointProblem(feed.input, { text: 'x', audience: Array(500).fill(B) }, 'post-feed'), null);
+});
+
+test('send-dm publishes to exactly the one friend, says which id it used, skips a retry of the same id and is withdrawn by retract', async t => {
+  const g = await gateway(t);
+  const sent = await g.call('send-dm', { to: B, id: 'm1', text: ' 你好 ', attachments: [AVATAR], replyTo: 'm0' });
+  assert.deepEqual(sent, { state: 'synced', author: A, version: 1, id: 'm1' });
+  const [call] = g.accord.calls;
+  assert.deepEqual({ ...call, body: { ...call.body, createdAt: 0 } }, { kind: 'friends/dm', id: 'm1', body: { to: B, text: '你好', attachments: [AVATAR], replyTo: 'm0', createdAt: 0 }, audience: [B] });
+  assert.ok(Number.isSafeInteger(call.body.createdAt));
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.deepEqual(await g.call('send-dm', { to: B, id: 'm1', text: '你好', attachments: [AVATAR], replyTo: 'm0' }), { state: 'synced', skipped: true, author: A, id: 'm1' },
+    'the retry reuses the createdAt Accord already has, so it is the same message');
+  assert.equal(g.accord.calls.length, 1);
+  const fresh = await g.call('send-dm', { to: B, text: '没给 id' });
+  assert.match(fresh.id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.equal(g.accord.calls.at(-1).id, fresh.id);
+  assert.deepEqual(await g.retract({ kind: 'friends/dm', id: 'm1' }), { state: 'retracted', count: 1 });
+  assert.deepEqual(g.accord.calls.at(-1), { kind: 'friends/dm', id: 'm1', body: {}, audience: [] });
+});
+
+test('send-dm refuses the public, oneself, an empty message, a bad pointer and text over 8000 code points before anything is signed', async t => {
+  const g = await gateway(t);
+  for (const input of [{ to: 'public', text: 'x' }, { to: '', text: 'x' }, { to: A, text: 'x' }, { to: B }, { to: B, text: '   ' }, { to: B, attachments: [] },
+    { to: B, attachments: [{ ...AVATAR, path: 'uploads/x' }] }, { to: B, text: '😀'.repeat(8001) }, { to: B, text: 'x', id: ' ' }, { to: B, text: 'x', extra: 1 }])
+    await rejects(g.call('send-dm', input));
+  assert.equal((await g.call('send-dm', { to: B, text: '😀'.repeat(8000) })).state, 'synced');
+  assert.equal(g.accord.calls.length, 1);
+  assert.deepEqual(await g.outbox().then(entries => Object.keys(entries).filter(key => key.startsWith('p:friends/dm:')).length), 1);
+});
+
+test('send-dm waits in the outbox while the certificate is expired, a retry keeps its createdAt, and it goes out once the certificate is back', async t => {
+  const g = await gateway(t, { certificate: EXPIRED });
+  assert.deepEqual(await g.call('send-dm', { to: B, id: 'm1', text: '晚点到' }), { state: 'needs_cert', author: A, id: 'm1' });
+  const queued = (await g.outbox())['p:friends/dm:m1'];
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.deepEqual(await g.call('send-dm', { to: B, id: 'm1', text: '晚点到' }), { state: 'needs_cert', author: A, id: 'm1' });
+  assert.deepEqual((await g.outbox())['p:friends/dm:m1'].body, queued.body);
+  assert.deepEqual(g.accord.calls, []);
+  await g.accord.change({ certificate: ACTIVE });
+  await until(async () => (await g.status()).pendingCount === 0, '证书恢复后补发私信');
+  assert.deepEqual(g.accord.calls, [{ kind: 'friends/dm', id: 'm1', body: queued.body, audience: [B] }]);
+});
+
+test('post-feed goes to the public by default or to a chosen set of friends, refuses an empty audience and bad media, and is withdrawn by retract', async t => {
+  const g = await gateway(t);
+  assert.deepEqual(await g.call('post-feed', { id: 'p1', text: '今天天气好' }), { state: 'synced', author: A, version: 1, id: 'p1' });
+  assert.deepEqual(g.accord.calls.at(-1).audience, ['public']);
+  assert.deepEqual(await g.call('post-feed', { id: 'p2', media: [AVATAR], audience: [B, F1, B] }), { state: 'synced', author: A, version: 1, id: 'p2' });
+  assert.deepEqual([g.accord.calls.at(-1).audience, g.accord.calls.at(-1).body.media, g.accord.calls.at(-1).body.text], [[B, F1], [AVATAR], '']);
+  for (const input of [{ text: 'x', audience: [] }, { text: 'x', audience: ['friends'] }, {}, { media: [{ ...AVATAR, sha256: 'cd'.repeat(32) }] }, { media: Array(5).fill(AVATAR) }])
+    await rejects(g.call('post-feed', input));
+  assert.equal(g.accord.calls.length, 2);
+  assert.deepEqual(await g.retract({ kind: 'friends/feed', id: 'p2' }), { state: 'retracted', count: 1 });
+  assert.deepEqual(g.accord.calls.at(-1), { kind: 'friends/feed', id: 'p2', body: {}, audience: [] });
+});
+
+// 开一条流：参数走查询串，像真实宿主一样；返回读帧的迭代器与能中止请求的 controller。
+async function openStream(g, name, query = {}) {
+  const url = new URL(`http://coda.test/streams/${name}`), controller = new AbortController();
+  for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value);
+  const response = await g.host.stream(g.ref, name, new Request(url, { signal: controller.signal }));
+  const one = { response, frames: readFrames(response.body), controller };
+  g.streams.push(one);
+  return one;
+}
+const next = (frames, what = '下一帧') => Promise.race([frames.next().then(step => step.done ? null : step.value),
+  new Promise((_, reject) => setTimeout(() => reject(new Error(`等不到：${what}`)), 2000))]);
+const dmRecord = (author, id, version, body, local) => ({ author, kind: 'friends/dm', id, version, body, local });
+const short = item => [item.author === A ? 'A' : item.author === B ? 'B' : 'F', item.id, item.version];
+
+function seedDms(accord) {
+  accord.records.push(
+    dmRecord(A, 'm1', 1, { to: B, text: '旧', createdAt: 10 }, true), dmRecord(A, 'm1', 2, { to: B, text: '改过', createdAt: 10 }, true),
+    dmRecord(B, 'r1', 1, { to: A, text: '回你', createdAt: 20 }, false),
+    dmRecord(B, 'r2', 1, { to: A, text: '撤了', createdAt: 5 }, false), dmRecord(B, 'r2', 2, {}, false),
+    dmRecord(F1, 'y', 1, { to: A, text: 'F1 说', createdAt: 15 }, false),
+    dmRecord(F1, 'x', 1, { to: B, text: '串线：F1 发给 B 的', createdAt: 1 }, false),
+    dmRecord(B, 'z', 1, { to: F1, text: '串线：B 发给 F1 的', createdAt: 2 }, false));
+}
+
+test('the dm stream answers ndjson whose first frame is a deduplicated, sorted snapshot, filtered by peer, without cross-talk', async t => {
+  const g = await gateway(t, { pageSize: 3 });
+  seedDms(g.accord);
+  const all = await openStream(g, 'dm');
+  assert.equal(all.response.status, 200);
+  assert.deepEqual([all.response.headers.get('content-type'), all.response.headers.get('cache-control')], ['application/x-ndjson', 'no-store']);
+  const snapshot = await next(all.frames);
+  assert.equal(snapshot.type, 'snapshot');
+  assert.match(snapshot.cursor, /^[0-9a-f-]{36}:\d+$/);
+  assert.deepEqual(snapshot.items.map(short), [['A', 'm1', 2], ['F', 'y', 1], ['B', 'r1', 1]]);
+  assert.deepEqual(snapshot.items[0], { author: A, id: 'm1', version: 2, local: true, peer: B, to: B, text: '改过', attachments: [], createdAt: 10 });
+  const withB = await openStream(g, 'dm', { peer: B });
+  assert.deepEqual((await next(withB.frames)).items.map(short), [['A', 'm1', 2], ['B', 'r1', 1]]);
+  await assert.rejects(openStream(g, 'dm', { peer: 'public' }), error => error.code === 'invalid_input');
+  await assert.rejects(openStream(g, 'dm', { other: 'x' }), error => error.code === 'invalid_input');
+  for (const one of [all, withB]) await one.frames.return();
+});
+
+test('the dm stream pushes upserts and retracts as Accord changes and as this machine sends, only to the subscribers they concern', async t => {
+  const g = await gateway(t, { pageSize: 50 });
+  seedDms(g.accord);
+  const withB = await openStream(g, 'dm', { peer: B }), withF1 = await openStream(g, 'dm', { peer: F1 });
+  const first = await next(withB.frames);
+  await next(withF1.frames);
+  g.accord.records.push(dmRecord(B, 'r3', 1, { to: A, text: '在吗', createdAt: 30 }, false), dmRecord(F1, 'x2', 1, { to: B, text: '串线', createdAt: 31 }, false));
+  await g.accord.change({});
+  const upsert = await next(withB.frames, 'B 的新消息');
+  assert.equal(upsert.type, 'upsert');
+  assert.deepEqual(short(upsert.item), ['B', 'r3', 1]);
+  assert.notEqual(upsert.cursor, first.cursor);
+  g.accord.records.push(dmRecord(B, 'r1', 2, {}, false));
+  await g.accord.change({});
+  const [epoch, seq] = upsert.cursor.split(':');
+  assert.deepEqual(await next(withB.frames, 'B 撤回'), { type: 'retract', author: B, id: 'r1', peer: B, cursor: `${epoch}:${Number(seq) + 1}` });
+  await g.call('send-dm', { to: B, id: 'm2', text: '我在' });
+  const mine = await next(withB.frames, '本机发出的私信');
+  assert.deepEqual([mine.type, mine.item.author, mine.item.id, mine.item.peer, mine.item.local], ['upsert', A, 'm2', B, true]);
+  await g.call('send-dm', { to: F1, id: 'm3', text: '给 F1' });
+  const forF1 = await next(withF1.frames, 'F1 的会话');
+  assert.deepEqual([forF1.type, forF1.item.id, forF1.item.peer], ['upsert', 'm3', F1], 'F1 saw neither B\'s messages nor the cross-talk');
+  for (const one of [withB, withF1]) await one.frames.return();
+});
+
+test('reconnecting with a good cursor replays only the missed changes, withdrawals included, and nothing twice', async t => {
+  const g = await gateway(t, { pageSize: 50 });
+  seedDms(g.accord);
+  const first = await openStream(g, 'dm', { peer: B });
+  const { cursor } = await next(first.frames);
+  first.controller.abort();
+  assert.equal(await next(first.frames, '中止后流结束'), null);
+  g.accord.records.push(dmRecord(B, 'r1', 2, {}, false), dmRecord(B, 'r3', 1, { to: A, text: '断线时发的', createdAt: 30 }, false), dmRecord(F1, 'y2', 1, { to: A, text: '别的会话', createdAt: 31 }, false));
+  const again = await openStream(g, 'dm', { peer: B, after: cursor });
+  const retract = await next(again.frames), upsert = await next(again.frames);
+  assert.deepEqual([retract.type, retract.author, retract.id], ['retract', B, 'r1']);
+  assert.deepEqual([upsert.type, ...short(upsert.item)], ['upsert', 'B', 'r3', 1]);
+  g.accord.records.push(dmRecord(B, 'r4', 1, { to: A, text: '之后的', createdAt: 40 }, false));
+  await g.accord.change({});
+  const later = await next(again.frames);
+  assert.deepEqual([later.type, later.item.id], ['upsert', 'r4'], 'the next frame is the new message, not a repeat');
+  const caughtUp = await openStream(g, 'dm', { peer: B, after: later.cursor });
+  g.accord.records.push(dmRecord(B, 'r5', 1, { to: A, text: '再一条', createdAt: 50 }, false));
+  await g.accord.change({});
+  assert.deepEqual((await next(caughtUp.frames)).item.id, 'r5', 'an up-to-date cursor gets no snapshot and no replay');
+  for (const one of [again, caughtUp]) await one.frames.return();
+});
+
+test('a cursor from another epoch, from the future, malformed or pushed out of the ring buffer falls back to a full snapshot', async t => {
+  const g = await gateway(t, { pageSize: 200 });
+  seedDms(g.accord);
+  const first = await openStream(g, 'dm');
+  const { cursor } = await next(first.frames);
+  await first.frames.return();
+  const [epoch, seq] = cursor.split(':');
+  for (const after of ['00000000-0000-4000-8000-000000000000:1', `${epoch}:${Number(seq) + 100}`, 'garbage']) {
+    const one = await openStream(g, 'dm', { after });
+    const frame = await next(one.frames);
+    assert.deepEqual([frame.type, frame.cursor, frame.items.length], ['snapshot', cursor, 3], after);
+    await one.frames.return();
+  }
+  for (let i = 0; i < 501; i++) g.accord.records.push(dmRecord(B, `n${i}`, 1, { to: A, text: `第 ${i} 条`, createdAt: 100 + i }, false));
+  const overflow = await openStream(g, 'dm', { after: cursor });
+  const frame = await next(overflow.frames);
+  assert.deepEqual([frame.type, frame.items.length, frame.cursor], ['snapshot', 504, `${epoch}:${Number(seq) + 501}`]);
+  await overflow.frames.return();
+});
+
+test('the feed stream gives the newest first, keeps only the highest version, filters by author and pushes changes', async t => {
+  const g = await gateway(t, { pageSize: 50 });
+  const post = (author, id, version, body, local = false) => ({ author, kind: 'friends/feed', id, version, body, local });
+  g.accord.records.push(post(B, 'p1', 1, { text: '旧', createdAt: 1 }), post(B, 'p1', 2, { text: '新', media: [AVATAR], createdAt: 1 }),
+    post(F1, 'p2', 1, { text: 'F1', createdAt: 5 }), post(B, 'p3', 1, { text: '撤', createdAt: 9 }), post(B, 'p3', 2, {}));
+  const all = await openStream(g, 'feed'), byB = await openStream(g, 'feed', { author: B });
+  const snapshot = await next(all.frames);
+  assert.deepEqual(snapshot.items.map(short), [['F', 'p2', 1], ['B', 'p1', 2]]);
+  assert.deepEqual(snapshot.items[1], { author: B, id: 'p1', version: 2, local: false, text: '新', media: [AVATAR], createdAt: 1 });
+  assert.deepEqual((await next(byB.frames)).items.map(short), [['B', 'p1', 2]]);
+  await g.call('post-feed', { id: 'mine', text: '我的动态' });
+  const mine = await next(all.frames);
+  assert.deepEqual([mine.type, mine.item.author, mine.item.id, mine.item.local], ['upsert', A, 'mine', true]);
+  g.accord.records.push(post(B, 'p1', 3, {}));
+  await g.accord.change({});
+  const gone = await next(byB.frames);
+  assert.deepEqual([gone.type, gone.author, gone.id], ['retract', B, 'p1'], 'B\'s subscriber skipped A\'s post and got B\'s withdrawal');
+  assert.deepEqual([(await next(all.frames)).type], ['retract']);
+  for (const one of [all, byB]) await one.frames.return();
+});
+
+test('a stream whose caller leaves ends cleanly and stops being refreshed; deactivate ends every open stream', async t => {
+  const g = await gateway(t, { pageSize: 50 });
+  seedDms(g.accord);
+  const one = await openStream(g, 'dm');
+  await next(one.frames);
+  one.controller.abort();
+  assert.equal(await next(one.frames, '调用方走掉后流结束'), null);
+  const before = g.accord.queries.length;
+  await g.accord.change({});
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(g.accord.queries.filter(q => q.kind === 'friends/dm').length, g.accord.queries.slice(0, before).filter(q => q.kind === 'friends/dm').length,
+    'no subscriber left, so a change reads no dm records');
+  const dm = await openStream(g, 'dm'), feed = await openStream(g, 'feed');
+  await next(dm.frames);
+  await next(feed.frames);
+  deactivate();
+  assert.equal(await next(dm.frames, 'deactivate 后 dm 结束'), null);
+  assert.equal(await next(feed.frames, 'deactivate 后 feed 结束'), null);
+  await rejects(g.host.stream(g.ref, 'dm', new Request('http://coda.test/streams/dm')), 'not_found');
+});
+
+// ---- 边界与流生命周期的回归 ----
+
+// 直接建网关（不经 main.mjs）：要看实时流此刻的订阅者数，和 frames.write 手上还在走的心跳定时器（`heartbeats()`）。
+async function direct(t, options = {}) {
+  const dir = await mkdtemp(join(tmpdir(), 'friends-gateway-')), streams = [], pending = new Set();
+  const timers = {
+    setTimeout(fn, ms) { const handle = setTimeout(() => { pending.delete(handle); fn(); }, ms); pending.add(handle); return handle; },
+    clearTimeout(handle) { pending.delete(handle); clearTimeout(handle); },
+  };
+  const accord = accordFake(options), host = createMockCoda({ plugin: { id: 'friends', state: dir, protocols: manifest.contributes.protocols } });
+  const frames = { ...host.coda.frames, write: (iterable, more) => writeFrames(iterable, { ...more, timers }) };
+  const gw = createGateway({ ...host.coda, frames, get: ref => ref.kind === 'coda/accord@1' ? accord.get() : host.coda.get(ref), query: accord.query, call: accord.call, watch: accord.watch }, dir);
+  t.after(async () => { for (const one of streams) await one.frames.return(); gw.stop(); await host.close(); await rm(dir, { recursive: true, force: true }); });
+  await gw.start();
+  const [local] = await host.coda.list(SOCIAL, { scope: 'local' });
+  return { gw, accord, host, ref: { kind: SOCIAL, id: local.id }, streams, heartbeats: () => pending.size };
+}
+// 读完一份分片快照：各片的 items 拼起来，直到 more 为 false。
+async function wholeSnapshot(frames) {
+  const parts = [];
+  for (;;) {
+    const frame = await next(frames, '快照分片');
+    assert.equal(frame.type, 'snapshot');
+    parts.push(frame);
+    if (!frame.more) return { cursor: frame.cursor, items: parts.flatMap(part => part.items), parts };
+  }
+}
+
+test('a snapshot bigger than the 1 MiB frame limit is sent in pieces that the default readFrames reads whole', async t => {
+  const g = await gateway(t, { pageSize: 200 });
+  for (let i = 0; i < 40; i++) g.accord.records.push(dmRecord(B, `big${i}`, 1, { to: A, text: '😀'.repeat(8000), createdAt: i }, false));
+  const one = await openStream(g, 'dm');
+  const { items, parts } = await wholeSnapshot(one.frames);
+  assert.ok(parts.length > 4, `${parts.length} pieces`);
+  assert.deepEqual(items.map(item => item.id), Array.from({ length: 40 }, (_, i) => `big${i}`));
+  assert.ok(parts.every(part => part.cursor === parts[0].cursor));
+  assert.ok(items.every(item => item.text === '😀'.repeat(8000)));
+  const empty = await openStream(g, 'feed'), frame = await next(empty.frames);
+  assert.match(frame.cursor, /^[0-9a-f-]{36}:0$/);
+  assert.deepEqual(frame, { type: 'snapshot', cursor: frame.cursor, items: [], more: false }, 'an empty snapshot is one frame saying more: false');
+});
+
+test('a live stream reads every page; a truncated or failed read never reaches the hub, and with no complete read yet a new stream fails before its first byte', async t => {
+  const g = await gateway(t, { pageSize: 2 });
+  g.accord.loop = true;
+  await assert.rejects(openStream(g, 'dm'), error => error.code === 'unavailable');
+  g.accord.loop = false;
+  g.accord.queryFailure = new Error('Accord 暂时不可用');
+  await assert.rejects(openStream(g, 'dm'), error => error.code === 'unavailable');
+  g.accord.queryFailure = null;
+  for (let i = 0; i < 120; i++) g.accord.records.push(dmRecord(B, `p${i}`, 1, { to: A, text: `${i}`, createdAt: i }, false));
+  const one = await openStream(g, 'dm');
+  assert.equal((await wholeSnapshot(one.frames)).items.length, 120, 'all 60 pages, past the 50 a friends read stops at');
+  // 截断的一次读（只给空页）若当真，会把 120 条全撤掉；它被丢下，下一帧是之后真正的新消息。
+  g.accord.loop = true;
+  const before = g.accord.queries.length;
+  await g.accord.change({});
+  await until(() => g.accord.queries.length > before, '截断的那次读');
+  const late = await openStream(g, 'dm');
+  assert.equal((await wholeSnapshot(late.frames)).items.length, 120, 'a stream joining meanwhile gets the last complete projection');
+  g.accord.loop = false;
+  g.accord.records.push(dmRecord(B, 'new', 1, { to: A, text: '新的', createdAt: 999 }, false));
+  await g.accord.change({});
+  const frame = await next(one.frames, '新消息');
+  assert.deepEqual([frame.type, frame.item?.id], ['upsert', 'new']);
+});
+
+test('a message sent again under the same id to another friend is withdrawn from the old conversation, live and on reconnect', async t => {
+  const g = await gateway(t, { pageSize: 50 });
+  await g.call('send-dm', { to: B, id: 'm1', text: '发错人了' });
+  const withB = await openStream(g, 'dm', { peer: B }), withF1 = await openStream(g, 'dm', { peer: F1 });
+  const { cursor } = await wholeSnapshot(withB.frames);
+  await wholeSnapshot(withF1.frames);
+  assert.equal((await g.call('send-dm', { to: F1, id: 'm1', text: '发错人了' })).state, 'synced');
+  assert.deepEqual(await next(withB.frames, 'B 那边撤回'), { type: 'retract', author: A, id: 'm1', peer: B, cursor: cursor.replace(/\d+$/, n => `${Number(n) + 1}`) });
+  const moved = await next(withF1.frames, 'F1 那边收到');
+  assert.deepEqual([moved.type, moved.item.id, moved.item.peer, moved.item.to], ['upsert', 'm1', F1, F1]);
+  const again = await openStream(g, 'dm', { peer: B, after: cursor });
+  const replay = await next(again.frames, '重连补发撤回');
+  assert.deepEqual([replay.type, replay.id, replay.peer], ['retract', 'm1', B]);
+});
+
+test('a message queued with no identity is never signed to oneself: when the identity bound turns out to be its recipient the flush marks it refused', async t => {
+  const g = await gateway(t, { author: null, certificate: null });
+  assert.deepEqual(await g.call('send-dm', { to: A, id: 'm1', text: '给未来的自己' }), { state: 'no_identity', author: null, id: 'm1' });
+  await g.accord.change({ author: A, certificate: ACTIVE });
+  await until(async () => (await g.outbox())['p:friends/dm:m1']?.state === 'error', '补发时拒签给自己的私信');
+  assert.match((await g.outbox())['p:friends/dm:m1'].lastError, /自己/);
+  assert.deepEqual(g.accord.calls, []);
+  assert.equal((await g.status()).pendingCount, 0);
+});
+
+test('a retry reuses the createdAt kept as lastCreatedAt once synced; without it, a failed lookup is a retryable error and never a new timestamp', async t => {
+  const g = await gateway(t);
+  await g.call('send-dm', { to: B, id: 'm1', text: '一次' });
+  const createdAt = g.accord.calls[0].body.createdAt, synced = (await g.outbox())['p:friends/dm:m1'];
+  assert.deepEqual([synced.state, synced.lastCreatedAt, synced.body], ['synced', createdAt, undefined]);
+  g.accord.queryFailure = new Error('Accord 暂时不可用');
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.deepEqual(await g.call('send-dm', { to: B, id: 'm1', text: '一次' }), { state: 'synced', skipped: true, author: A, id: 'm1' }, 'no lookup needed');
+  // 已在 Accord 里、队列里却没有的一条（如换了机器）：查不出来就报错，不重签。
+  g.accord.records.push(dmRecord(A, 'old', 1, { to: B, text: '早就发了', createdAt: 5 }, true));
+  await rejects(g.call('send-dm', { to: B, id: 'old', text: '早就发了' }), 'unavailable');
+  await rejects(g.call('post-feed', { id: 'old', text: 'x' }), 'unavailable');
+  assert.equal(g.accord.calls.length, 1);
+  g.accord.queryFailure = null;
+  assert.equal((await g.call('send-dm', { to: B, id: 'old', text: '早就发了' })).state, 'synced');
+  assert.equal(g.accord.calls.at(-1).body.createdAt, 5, 'once the lookup works the stored createdAt is used');
+  assert.equal((await g.call('send-dm', { to: B, text: '没给 id 的不用查' })).state, 'synced');
+});
+
+test('the schema and the handler agree on the id bytes and the text length: 86 Han characters pass the schema and are refused plainly, 8000 code points and a space by both', async t => {
+  const g = await gateway(t);
+  const { 'send-dm': dm, 'post-feed': feed } = manifest.contributes.protocols[0].operations;
+  assert.equal(pointProblem(dm.input, { to: B, text: 'x', id: '好'.repeat(86) }, 'send-dm'), null, 'JSON Schema counts characters, not bytes');
+  await rejects(g.call('send-dm', { to: B, text: 'x', id: '好'.repeat(86) }));
+  await rejects(g.call('post-feed', { text: 'x', id: '好'.repeat(86) }));
+  await rejects(g.call('send-dm', { to: B, text: 'x', replyTo: '好'.repeat(86) }));
+  assert.equal((await g.call('send-dm', { to: B, text: 'x', id: '好'.repeat(85) })).state, 'synced');
+  for (const [input, value] of [[dm.input, { to: B, text: `${'😀'.repeat(8000)} ` }], [feed.input, { text: `${'😀'.repeat(8000)} ` }]])
+    assert.notEqual(pointProblem(input, value, 'x'), null);
+  for (const [input, value] of [[dm.input, { to: B, text: 'x', id: 'a\u0000b' }], [dm.input, { to: B, text: 'x', replyTo: 'a\nb' }], [feed.input, { text: 'x', id: '\u0007' }]])
+    assert.notEqual(pointProblem(input, value, 'x'), null, 'the schema refuses control characters too');
+  assert.equal(g.accord.calls.length, 1);
+});
+
+test('a stream opened and never read is released the moment its caller aborts or the gateway stops, its heartbeat timer cleared with it', async t => {
+  const g = await direct(t);
+  await openStream(g, 'dm');
+  const feed = await openStream(g, 'feed');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual([g.gw.subscriberCount(), g.heartbeats()], [{ dm: 1, feed: 1 }, 2], 'both first frames wait unread behind backpressure, each with a heartbeat timer');
+  feed.controller.abort();
+  assert.deepEqual([g.gw.subscriberCount(), g.heartbeats()], [{ dm: 1, feed: 0 }, 1]);
+  await openStream(g, 'feed');
+  assert.equal(g.heartbeats(), 2);
+  g.gw.stop();
+  assert.deepEqual([g.gw.subscriberCount(), g.heartbeats()], [{ dm: 0, feed: 0 }, 0]);
+});
+
+test('cancelling the response body of an idle stream finishes at once and releases its subscription', async t => {
+  const g = await direct(t);
+  const url = 'http://coda.test/streams/dm', response = await g.host.stream(g.ref, 'dm', new Request(url));
+  const reader = response.body.getReader(), first = await reader.read();
+  assert.equal(JSON.parse(new TextDecoder().decode(first.value)).type, 'snapshot');
+  reader.releaseLock();
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(g.gw.subscriberCount().dm, 1, 'idle, waiting for a change');
+  await Promise.race([response.body.cancel(), new Promise((_, reject) => setTimeout(() => reject(new Error('取消没有立刻完成')), 500))]);
+  assert.deepEqual([g.gw.subscriberCount().dm, g.heartbeats()], [0, 0]);
+});
+
+test('the schema and the normalizer refuse the same ids and replyTos: blank ones and ones with control characters, at the schema already', () => {
+  const { 'send-dm': dm, 'post-feed': feed } = manifest.contributes.protocols[0].operations;
+  const samples = [' ', '   ', '\t', '\u3000', '\u2028', 'a\u0000b', 'a\nb', '\u0007', '\u0085x', 'x\u009f', 'x', ' m1 ', '好', '\u2028x', 'a b', '\u3000好'];
+  const takes = fn => { try { fn(); return true; } catch { return false; } };
+  const at = { selfAuthor: A, now: 1 };
+  const cases = [
+    [dm.input, value => ({ to: B, text: 'x', id: value }), input => normalizeDmInput(input, at)],
+    [dm.input, value => ({ to: B, text: 'x', replyTo: value }), input => normalizeDmInput(input, at)],
+    [feed.input, value => ({ text: 'x', id: value }), input => normalizeFeedInput(input, at)],
+  ];
+  for (const [schema, build, normalize] of cases) for (const value of samples) {
+    const input = build(value), bySchema = pointProblem(schema, input, 'x') === null;
+    assert.equal(bySchema, takes(() => normalize(input)), JSON.stringify(input));
+  }
+  assert.deepEqual(samples.map(value => pointProblem(dm.input, { to: B, text: 'x', id: value }, 'x') === null),
+    [false, false, false, false, false, false, false, false, false, false, true, true, true, true, true, true]);
+});
+
+test('switching the identity resets the dm hub: an open stream of the old author ends, and a failed read never hands the new author the old one\'s messages', async t => {
+  const g = await gateway(t, { pageSize: 50 });
+  g.accord.records.push(dmRecord(A, 'secret', 1, { to: F1, text: 'A 写给 F1 的', createdAt: 1 }, true), dmRecord(F1, 'hi', 1, { to: A, text: 'F1 写给 A 的', createdAt: 2 }, false));
+  const old = await openStream(g, 'dm');
+  const before = await wholeSnapshot(old.frames);
+  assert.deepEqual(before.items.map(item => item.id), ['secret', 'hi']);
+  // 切到 B 的同时 Accord 查不了：换 hub 时关掉 A 的流，B 那份读不出来就不算就绪。
+  g.accord.queryFailure = new Error('Accord 暂时不可用');
+  await g.accord.change({ author: B });
+  assert.equal(await next(old.frames, '旧作者的流结束'), null);
+  await assert.rejects(openStream(g, 'dm'), error => error.code === 'unavailable', 'nothing cached is B\'s yet');
+  g.accord.queryFailure = null;
+  const fresh = await openStream(g, 'dm', { after: before.cursor });
+  const snapshot = await wholeSnapshot(fresh.frames);
+  assert.deepEqual(snapshot.items, [], 'none of A\'s conversations are B\'s');
+  assert.notEqual(snapshot.cursor.split(':')[0], before.cursor.split(':')[0], 'a new epoch, so A\'s cursor starts over');
+  // 读不出本机作者时也不复用缓存。
+  const getFails = Object.assign(new Error('读不到 Accord'), { code: 'unavailable' });
+  const get = g.accord.get;
+  g.accord.get = async () => { throw getFails; };
+  await assert.rejects(openStream(g, 'dm'), error => error.code === 'unavailable');
+  g.accord.get = get;
+});
+
+test('a retry by another author under the same id does not take the createdAt the first author synced, but its own from Accord', async t => {
+  const g = await gateway(t);
+  await g.call('send-dm', { to: F1, id: 'm1', text: '同一个 id' });
+  const first = g.accord.calls[0].body.createdAt;
+  assert.equal((await g.outbox())['p:friends/dm:m1'].lastCreatedAt, first);
+  await g.accord.change({ author: B });
+  g.accord.records.push(dmRecord(B, 'm1', 1, { to: F1, text: '同一个 id', createdAt: 42 }, true));
+  const queries = g.accord.queries.length;
+  assert.equal((await g.call('send-dm', { to: F1, id: 'm1', text: '同一个 id' })).state, 'synced');
+  assert.equal(g.accord.calls.at(-1).body.createdAt, 42);
+  assert.ok(g.accord.queries.slice(queries).some(q => q.kind === 'friends/dm' && q.author === B && q.id === 'm1'), 'looked up under B');
 });
