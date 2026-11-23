@@ -3,7 +3,7 @@
   "id": "antigravity",
   "displayName": "Antigravity",
   "description": "用 Antigravity CLI 跑会话",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "engines": {
     "coda": 6
   },

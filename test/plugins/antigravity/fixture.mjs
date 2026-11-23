@@ -2,14 +2,16 @@
 // answers a session request with the params it received. It also keeps a mode per session like agy (default, accept-edits,
 // auto, plan; anything else is -32602), and has four test-only methods: `fake/mode` has it announce a mode of its own,
 // `fake/refuse` has it refuse the next mode change of a session, and `fake/permission` has it ask the client for a
-// permission and answer with what comes back, and `fake/updates` has it send the given session updates and then answer.
+// permission and answer with what comes back, `fake/updates` has it send the given session updates and then answer, and `fake/exit` has it end with the given code.
 // Its models are as agy's are: `m` with low/medium/high thinking, `xh` with xhigh as well, `none` with no thinking level
 // (FAKE_AGY_EXTRA_MODEL adds `extra`). `agy --version` says FAKE_AGY_VERSION (1.5.9); each native session/new is a line
 // `new <cwd>` in the file FAKE_AGY_LOG, after FAKE_AGY_DELAY ms; FAKE_AGY_FAIL_MODEL is a model it refuses to switch to,
 // FAKE_AGY_SIGNED_OUT has session/new answer -32000, FAKE_AGY_BAD_LEVEL is a model whose thinking level it says is `ultra`,
-// which is not one of the model's. `agy models` lists each model and level as agy does (`<id>-<level>\t<name>`, its progress
+// which is not one of the model's. A `session/prompt` is answered `end_turn` (or its params' `stopReason`), after it has appended the steps of
+// FAKE_AGY_TURN ({file, steps, files, updates}) to the transcript file, and written the JSON of `files` (path -> value). `agy models` lists each model and level as agy does (`<id>-<level>\t<name>`, its progress
 // line on the standard error), a line `models` in FAKE_AGY_LOG_MODELS each time; FAKE_AGY_MODELS_FAIL has it fail.
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { createInterface } from 'node:readline';
 
 if (process.argv[2] === '--version') { console.log(process.env.FAKE_AGY_VERSION ?? '1.5.9'); process.exit(0); }
@@ -64,8 +66,13 @@ createInterface({ input: process.stdin }).on('line', line => {
     if (configId === 'model') models.set(sessionId, value);
     send({ id: m.id, result: { configOptions: configOptions(sessionId) } });
   }
+  else if (m.method === 'session/prompt') {
+    if (process.env.FAKE_AGY_TURN) { const { file, steps = [], files = {}, updates = [] } = JSON.parse(process.env.FAKE_AGY_TURN); for (const update of updates) send({ method: 'session/update', params: { sessionId, update } }); for (const step of steps) appendFileSync(file, `${JSON.stringify(step)}\n`); for (const [path, value] of Object.entries(files)) { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, JSON.stringify(value)); } }
+    send({ id: m.id, result: { received: m.params, stopReason: m.params.stopReason ?? 'end_turn' } });
+  }
   else if (m.method === 'fake/refuse') { refusing.add(sessionId); send({ id: m.id, result: {} }); }
   else if (m.method === 'fake/updates') { for (const update of m.params.updates) send({ method: 'session/update', params: { sessionId, update } }); send({ id: m.id, result: {} }); }
+  else if (m.method === 'fake/exit') process.exit(m.params.code ?? 0);
   else if (m.method === 'fake/mode') { announce(sessionId, m.params.modeId); send({ id: m.id, result: {} }); }
   else if (m.method === 'fake/permission') { asking.set(`perm-${m.id}`, m.id); send({ id: `perm-${m.id}`, method: 'session/request_permission', params: { sessionId, toolCall: { toolCallId: 't' }, options: m.params.options } }); }
   else send({ id: m.id, result: { received: m.params } });

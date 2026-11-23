@@ -14,19 +14,26 @@
 //    signal or a prompt unanswered, the log and the prompts still waiting say how (exit.mjs).
 // 5. agy's notice that it retries a model request ("⚠ API error (attempt N): ...", an agent_message_chunk) is not passed on: Coda
 //    would keep it as the reply's text, while the turn goes on. The entry writes it to its own stderr instead (retry.mjs).
+// 6. A command agy moves into the background, and a sub-agent it starts, is told to Coda as a `_coda/wait`, from agy's own files of the
+//    session, read only, for a Coda that declares `_meta.coda.waits` (background.mjs, subagents.mjs).
+// 7. A prompt agy answers `end_turn` while the last step of the turn in its transcript is an upstream error is answered with that error
+//    instead (failure.mjs), unless the turn already said something on ACP (a reply text, a tool that succeeded) or the transcript could
+//    not be read. Nothing else of the relay changes.
 import { spawn } from 'node:child_process';
 import { agyBinary } from '../scripts/agy.mjs';
 import { createCatalog } from './catalog.mjs';
 import { PREFIX, Probes, probeMark } from './probe.mjs';
 import { describeExit, endedError } from './exit.mjs';
 import { retryNotice } from './retry.mjs';
+import { Background } from './background.mjs';
+import { failedError } from './failure.mjs';
 
 const binary = agyBinary() ?? 'agy';
 const agy = spawn(binary, ['acp'], { stdio: ['pipe', 'pipe', 'pipe'] });
 let stderr = '';
 agy.stderr.on('data', chunk => { process.stderr.write(chunk); stderr = (stderr + chunk).slice(-2048); });
-// The ids of the prompts Coda has asked and agy has not answered yet.
-const prompts = new Set();
+// The prompts Coda has asked and agy has not answered yet: request id -> session.
+const prompts = new Map();
 const initializing = new Set();
 const sessionRequests = new Set();
 const configRequests = new Map(); // request id -> { sessionId, was }: a set_config_option, whose answer lists the options; `was` for a mode switch, undone if agy refuses it
@@ -37,6 +44,8 @@ const catalog = createCatalog({ state: process.env.CODA_PLUGIN_STATE, binary });
 const probes = new Probes({ extraMode: { id: 'full', name: FULL_NAME, description: FULL_DESCRIPTION } });
 const answer = (id, reply) => process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, ...reply })}\n`);
 let stopping = false;
+let waits = false; // Coda declared `_meta.coda.waits` in `initialize`
+const background = new Background({ waits: () => waits, send: params => process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: '_coda/wait', params })}\n`) });
 
 // Only LF separates JSON messages; readline would also split literal Unicode line separators inside JSON strings.
 // A line that is not a JSON object passes through as it is. `change` returns false for a message that is not forwarded.
@@ -86,8 +95,12 @@ relay(process.stdin, agy.stdin, message => {
     if ('id' in message) answer(id, probes.handle(method, params));
     return false;
   }
-  if (method === 'session/prompt' && 'id' in message) prompts.add(id);
-  if (method === 'initialize' && 'id' in message) initializing.add(id);
+  if (method === 'session/prompt' && 'id' in message) {
+    prompts.set(id, params?.sessionId);
+    if (typeof params?.sessionId === 'string') background.begin(params.sessionId);
+  }
+  if (method === 'initialize' && 'id' in message) { initializing.add(id); waits = !!params?.clientCapabilities?._meta?.coda?.waits; }
+  if (method === 'session/close' && typeof params?.sessionId === 'string') background.closeSession(params.sessionId);
   if (['session/new', 'session/load', 'session/resume'].includes(method)) { delete params?.additionalDirectories; sessionRequests.add(id); }
   if (method === 'session/set_mode' && typeof params?.sessionId === 'string') {
     switchMode(message, params.modeId);
@@ -104,11 +117,19 @@ relay(process.stdin, agy.stdin, message => {
 relay(agy.stdout, process.stdout, message => {
   const { method, params, id } = message;
   if (!method) {
-    prompts.delete(id);
+    if (prompts.has(id)) {
+      const failure = background.finish(prompts.get(id), message.result?.stopReason === 'end_turn');
+      prompts.delete(id);
+      if (failure) {
+        process.stderr.write(`agy 答 end_turn，但会话记录里这一轮最后一步是上游错误，改作这一轮的错误：${failure}\n`);
+        delete message.result;
+        message.error = failedError(failure);
+      }
+    }
     if (initializing.delete(id) && message.result?.agentCapabilities) {
       const capabilities = message.result.agentCapabilities;
       for (const key of ['sessionCapabilities', 'session_capabilities']) delete capabilities[key]?.additionalDirectories;
-      capabilities._meta = { ...capabilities._meta, coda: { ...capabilities._meta?.coda, probe: {} } };
+      capabilities._meta = { ...capabilities._meta, coda: { ...capabilities._meta?.coda, probe: {}, waits: {} } };
     }
     if (sessionRequests.delete(id) && message.result) {
       catalog.observe(message.result);
@@ -131,6 +152,8 @@ relay(agy.stdout, process.stdout, message => {
     process.stderr.write(`agy 重试模型请求，提示不转给 Coda：${notice.trim()}\n`);
     return false;
   }
+  if (method === 'session/update' && typeof params?.sessionId === 'string' && (update?.sessionUpdate === 'agent_message_chunk' || (['tool_call', 'tool_call_update'].includes(update?.sessionUpdate) && update.status === 'completed'))) background.spoke(params.sessionId);
+  if (waits && method === 'session/update' && ['tool_call', 'tool_call_update'].includes(update?.sessionUpdate) && typeof params.sessionId === 'string') background.observe(params.sessionId, update);
   if (method === 'session/update' && update?.sessionUpdate === 'current_mode_update') {
     if (!full.has(params.sessionId)) return;
     if (update.currentModeId === 'default') update.currentModeId = 'full'; else full.delete(params.sessionId);
@@ -151,10 +174,11 @@ const stop = () => {
 agy.stdin.on('error', () => {});
 agy.on('error', () => process.exit(1));
 agy.on('close', (code, signal) => {
+  if (!stopping) background.closeAll();
   if (!stopping && (code !== 0 || prompts.size)) {
     const message = describeExit({ code, signal, stderr });
     process.stderr.write(`${message}\n`);
-    for (const id of prompts) answer(id, { error: endedError(message) });
+    for (const id of prompts.keys()) answer(id, { error: endedError(message) });
   }
   process.stdout.write('', () => process.exit(stopping ? 0 : code ?? 1));
 });

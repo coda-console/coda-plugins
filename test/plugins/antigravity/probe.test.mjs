@@ -91,7 +91,7 @@ const withoutId = ({ sessionId, ...rest }) => rest;
 test('initialize declares the probe capability beside what agy declares', async t => {
   const { entry } = machine(t);
   const { agentCapabilities } = await entry().init();
-  assert.deepEqual(agentCapabilities._meta, { coda: { probe: {} } });
+  assert.deepEqual(agentCapabilities._meta, { coda: { probe: {}, waits: {} } });
   assert.equal(agentCapabilities.loadSession, true);
   assert.equal(agentCapabilities.sessionCapabilities.delete, undefined, 'no native delete is claimed');
 });
