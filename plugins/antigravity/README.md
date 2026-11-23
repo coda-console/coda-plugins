@@ -17,7 +17,7 @@ Coda 会把它存成回复正文，像答到一半出错，其实这一轮还在
 需要带会话指令兜底的 Coda（2026-11-13 部署版，coda#2500）或更新版本；旧版 Coda 不会给 Antigravity 送入会话指令。
 
 要求 Antigravity CLI **1.5.9 及以上**：`agy acp` 从 1.5.0 才有，Auto 模式与模式保持的修复在 1.5.4，上下文用量在 1.5.8；
-插件的核对（握手、`--live`）都跑在 1.5.9 上。
+插件的核对（`--agent` 握手、`--live` 一轮）都跑在 1.5.9 上。
 
 ## 安装
 
@@ -95,8 +95,10 @@ Coda 会把它存成回复正文，像答到一半出错，其实这一轮还在
 ## 验收
 
 ```sh
-node bin/check.mjs plugins/antigravity            # 握手：protocolVersion 1，session/new 给出会话与当前模型；资源读数合格式
-node bin/check.mjs plugins/antigravity --live     # 一轮：会话指令、回复、取消、session/load
+coda plugin check plugins/antigravity                     # 默认只读静态校验：清单、贡献点、BPMN 等，不执行插件代码
+coda plugin check plugins/antigravity --resources         # 执行资源记录命令，读数合格式
+coda plugin check plugins/antigravity --agent             # Agent 握手：protocolVersion 1，session/new 给出会话与当前模型
+coda plugin check plugins/antigravity --agent --live      # 完整对话轮次：会话指令、回复、取消、session/load
 ```
 
 然后在 Coda 里：发一句话收到回复；选 plan 出计划文件并停在审阅；选 default 跑一个要审批的命令，Mac 与 iPhone 都出卡片；选 auto 跑安全命令不再询问；选「全部放行」跑 `rm -rf`、写工作区外文件、调 MCP 工具都不出卡片，再切回 default 又出卡片；

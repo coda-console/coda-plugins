@@ -9,9 +9,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { createTestHost } from '../../../check/coda/adapters/plugin-test-host.mjs';
-import { statusOf } from '../../../check/coda/domain/errors.mjs';
-import { ProtocolTypes, validate } from '../../../check/coda/components/protocols/types.mjs';
+import { pointProblem } from '@coda-console/protocol/validate';
+import { createMockCoda } from '../../helpers/mock-coda.mjs';
 import { recordId, validKey } from '../records.mjs';
 import { SOURCE } from '../../../plugins/git/lib/definitions.mjs';
 const exec = promisify(execFile);
@@ -35,12 +34,13 @@ export async function fixture(t) {
 const sorted = value => Array.isArray(value) ? value.map(sorted)
   : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, sorted(value[key])])) : value;
 const same = (a, b) => JSON.stringify(sorted(a)) === JSON.stringify(sorted(b));
+const STATUS = { invalid_input: 400, forbidden: 403, not_found: 404, method_not_allowed: 405 };
 export const packet = line => Buffer.from((Buffer.byteLength(line) + 4).toString(16).padStart(4, '0') + line);
 
-// The plugin test host, with what the plugin's manifest says of it.
+// The in-memory `coda` with what the plugin's manifest says of it.
 export function testHost(t, state) {
   const { protocols, protocolImplementations } = manifest.contributes;
-  const host = createTestHost({ plugin: { id: 'git', state, protocols, protocolImplementations } });
+  const host = createMockCoda({ plugin: { id: 'git', state, protocols, protocolImplementations } });
   t.after(() => host.close());
   return host;
 }
@@ -59,7 +59,7 @@ export async function gateway(t, host, { caller } = {}) {
       await pipeline(Readable.fromWeb(response.body), res);
     } catch (error) {
       if (res.headersSent) return void res.destroy();
-      res.writeHead(statusOf(error.code), { 'content-type': 'application/json' });
+      res.writeHead(STATUS[error.code] ?? 500, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: { code: error.code, message: error.message } }));
     }
   });
@@ -71,18 +71,16 @@ export async function gateway(t, host, { caller } = {}) {
 // The plugin's reconciliation runs against the synchronized host API and real Git. Storage/transport belong
 // to Coda's tests; this fixture keeps the records of the interface (`put`, `delete`, `replace` by the plugin's key, the ID
 // the host's, derived from it), whole as a plugin writes them. A `replace` without a status keeps the one held. `seed` puts a
-// record there as an earlier version left it, without a key. The stream and the service it registers are the plugin test
-// host's (`served`).
+// record there as an earlier version left it, without a key. The stream and the service it registers are the
+// in-memory `coda`'s (`served`).
 export function host(t, state) {
-  const types = new ProtocolTypes(), objects = new Map(), plugin = 'git';
-  for (const definition of manifest.contributes.protocols)
-    types.register({ kind: definition.name, spec: definition.spec, status: definition.status, participants: () => [] });
+  const definitions = new Map(manifest.contributes.protocols.map(definition => [definition.name, definition])), objects = new Map(), plugin = 'git';
   let version = 0;
   const entry = object => ({ owner: 'self', location: 'test', id: object.id, ...(object.key !== undefined ? { key: object.key } : {}),
     local: true, spec: object.spec, status: object.status, labels: object.labels, version: object.version });
   const check = (kind, key, value) => {
-    assert.ok(validKey(key), `key ${key}`); const type = types.get(kind);
-    validate(type.spec, value.spec, 'spec'); validate(type.status, value.status ?? {}, 'status');
+    assert.ok(validKey(key), `key ${key}`); const definition = definitions.get(kind);
+    for (const problem of [pointProblem(definition.spec, value.spec, 'spec'), pointProblem(definition.status, value.status ?? {}, 'status')]) assert.equal(problem, null);
   };
   const write = (kind, key, value) => {
     const id = recordId(plugin, kind, key), at = `${kind}/${id}`, old = objects.get(at), status = value.status ?? old?.status ?? {};

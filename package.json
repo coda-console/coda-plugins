@@ -1,7 +1,8 @@
 {
-  "name": "@coda-console/plugin-check",
+  "name": "coda-plugins",
   "version": "0.8.34",
-  "description": "Coda 插件的契约检查：扮演 Coda 读清单、启动 Agent 讲 ACP 与 _coda/wait、读资源记录。",
+  "private": true,
+  "description": "Coda 官方插件仓库的测试根：插件在 plugins/*，各自发布为 @coda-console/* 包。",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -11,33 +12,12 @@
   "engines": {
     "node": ">=24"
   },
-  "exports": {
-    "./types": "./check/coda/adapters/plugin-test-host.d.mts",
-    "./test-host": "./check/coda/adapters/plugin-test-host.mjs",
-    "./resources": "./check/resources.mjs"
-  },
-  "bin": {
-    "coda-plugin-check": "bin/check.mjs"
-  },
-  "files": [
-    "bin",
-    "check",
-    "templates"
-  ],
   "scripts": {
     "test": "node --test 'test/**/*.test.mjs'"
   },
-  "dependencies": {
-    "@0dep/piso": "5.2.0",
-    "@agentclientprotocol/sdk": "2.6.0",
-    "@coda-console/protocol": "6.22.0",
-    "ajv": "8.20.0",
-    "yaml": "2.9.1"
-  },
-  "publishConfig": {
-    "access": "public"
-  },
   "devDependencies": {
+    "@agentclientprotocol/sdk": "2.6.0",
+    "@coda-console/protocol": "6.23.0",
     "feelin": "8.2.0",
     "typescript": "6.0.3"
   }

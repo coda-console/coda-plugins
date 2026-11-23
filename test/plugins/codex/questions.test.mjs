@@ -6,8 +6,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AgentProcess } from '../../../check/process.mjs';
-import { clientCapabilities } from '../../../check/coda/domain/agent-protocol.mjs';
+import { AgentProcess, clientCapabilities } from '../../helpers/agent.mjs';
 import { CodexQuestions, codexAsyncMessage, shownCodexAsyncMessages } from '../../../plugins/codex/agent/questions.mjs';
 import { pluginEnv } from '../command.mjs';
 import { pluginDir, resolveFrom } from '../plugin.mjs';

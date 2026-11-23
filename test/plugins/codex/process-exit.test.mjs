@@ -7,7 +7,7 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AgentProcess } from '../../../check/process.mjs';
+import { AgentProcess } from '../../helpers/agent.mjs';
 import { followCodexProcessExit } from '../../../plugins/codex/agent/process-exit.mjs';
 import { CodexWaits } from '../../../plugins/codex/agent/waits.mjs';
 import { agentValueProblem } from '@coda-console/protocol/agent';

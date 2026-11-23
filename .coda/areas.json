@@ -17,6 +17,5 @@
   "testbed 插件": ["plugins/testbed/"],
   "测试": ["test/"],
   "文档": ["docs/", "README.md"],
-  "仓库脚本与流程": ["scripts/", "check/", "bin/", ".github/", ".coda/"],
-  "模板": ["templates/"]
+  "仓库脚本与流程": ["scripts/", ".github/", ".coda/"]
 }

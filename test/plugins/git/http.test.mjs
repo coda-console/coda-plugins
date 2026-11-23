@@ -294,10 +294,11 @@ for (const [how, end] of Object.entries(ENDS)) {
   });
 
   test(`${how}时，http-backend 还没有回答的，连同它起的一起停下、删掉临时目录`, { timeout: 60_000 }, async t => {
-    const dir = await fixture(t), { ask } = await source(t, dir), ran = watchedGit(t, 'http-backend', 'tail -f /dev/null & wait');
+    const dir = await fixture(t), { ask } = await source(t, dir), ran = watchedGit(t, 'http-backend', 'tail -f /dev/null & echo "$$ tail-started" >> "$(dirname "$0")/log"; wait');
     t.mock.method(console, 'error', () => {});
     const gone = new AbortController(), refused = assert.rejects(ask(DISCOVERY, { signal: gone.signal }));
-    await until(t, () => ran('http-backend'));
+    // Cancelled only once the grandchild is started: a group killed while its shell is still forking misses it.
+    await until(t, () => ran('tail-started'));
     await end(t, () => gone.abort());
     await refused;
     await until(t, () => !running(-ran('http-backend')));

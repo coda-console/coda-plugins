@@ -1,6 +1,6 @@
 // 好友社交网关 friends/social@1，在测试宿主里整段跑：模块照真实方式激活、操作经协议校验调用；本机 Accord（coda/accord@1）是个替身，
 // 记下每次查询与发布，能换身份与证书、一页页吐记录，并像 Coda 一样把变化告诉 watch。
-import { createTestHost } from '@coda-console/plugin-check/test-host';
+import { createMockCoda } from '../../helpers/mock-coda.mjs';
 import assert from 'node:assert/strict';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -67,7 +67,7 @@ function accordFake({ author = A, certificate = ACTIVE, friends = [], pageSize =
 
 async function gateway(t, options = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'friends-gateway-'));
-  const accord = accordFake(options), host = createTestHost({ plugin: { id: 'friends', state: dir, protocols: manifest.contributes.protocols, protocolImplementations: manifest.contributes.protocolImplementations } });
+  const accord = accordFake(options), host = createMockCoda({ plugin: { id: 'friends', state: dir, protocols: manifest.contributes.protocols, protocolImplementations: manifest.contributes.protocolImplementations } });
   t.after(async () => { deactivate(); await host.close(); await rm(dir, { recursive: true, force: true }); });
   // 网关用到的 Accord 读写走替身；写自己的网关记录、登记处理函数走测试宿主。
   await activate({ ...host.coda, get: ref => ref.kind === 'coda/accord@1' ? accord.get() : host.coda.get(ref), query: accord.query, call: accord.call, watch: accord.watch });

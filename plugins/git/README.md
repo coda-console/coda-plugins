@@ -60,12 +60,12 @@ git -c protocol.version=2 fetch "<本机 Coda 后端地址><status.url>" refs/he
 
 ## 检查与发布
 
-脚本级测试在 `test/plugins/git/`，使用真实 Git 与临时仓库、检查包的测试宿主（`host.serve`、`host.stream`）；`git fetch` 经一个本机 HTTP 替身，它把 `/v1/records/…/streams/transport/…` 的请求交给 `host.stream`。provider 测试的记录用同步的替身，登记、删除、启动都在调用返回时完成，不启动 Coda 后端。运行：
+脚本级测试在 `test/plugins/git/`，使用真实 Git 与临时仓库、测试宿主（`host.serve`、`host.stream`）；`git fetch` 经一个本机 HTTP 替身，它把 `/v1/records/…/streams/transport/…` 的请求交给 `host.stream`。provider 测试的记录用同步的替身，登记、删除、启动都在调用返回时完成，不启动 Coda 后端。运行：
 
 ```sh
 node --test 'test/plugins/git/*.test.mjs'
-node bin/check.mjs plugins/git --manifest
-node scripts/check-contract.mjs
+coda plugin check plugins/git            # 默认只读静态校验：清单、贡献点、来源与锁文件等，不执行插件代码
+coda plugin check plugins/git --module   # 另试跑模块的 activate / deactivate
 ```
 
 真实 Coda 插件宿主与跨机取源码不能用脚本测试替代，装上后在真机验。新包首发依照仓库根 README「npm 发布」：维护者 `npm login` 后执行 bootstrap 配置信任，再由 main 的 `publish.yml` 发布 `0.2.0`。本步骤不修改 Coda 的版本钉选或默认安装。

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
 // What the tests' own stand-in hosts of records (git's, grok-bot's) share: the host's ID of a record and the key it takes. A
-// plugin's tests of concurrency groups use the plugin test host of check/coda instead (adapters/plugin-test-host.mjs).
+// plugin's tests of concurrency groups use the in-memory `coda` of test/helpers/mock-coda.mjs instead.
 // The host's ID of a record: a UUID from the backend, the plugin, the kind and the key, the same each time.
 export function recordId(plugin, kind, key) {
   const b = createHash('sha256').update(JSON.stringify(['backend:test', plugin, kind, key])).digest().subarray(0, 16);

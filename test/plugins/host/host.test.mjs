@@ -11,9 +11,9 @@ import { runFinished } from '../../../plugins/host/lib/simulator-status.mjs';
 import { registerSimulator, registrations } from '../../../plugins/host/lib/simulators.mjs';
 import { pluginDir } from '../plugin.mjs';
 import { barePath, manifest, pluginEnv, run } from '../command.mjs';
-import { resourceRecords } from '@coda-console/plugin-check/resources';
+import { resourceRecords } from '../../helpers/resources.mjs';
 import { activate, deactivate } from '../../../plugins/host/main.mjs';
-import { createTestHost, TEST_OWNER } from '../../../check/coda/adapters/plugin-test-host.mjs';
+import { createMockCoda, TEST_OWNER } from '../../helpers/mock-coda.mjs';
 
 const dir = pluginDir('host');
 function temporary(t) {
@@ -47,7 +47,7 @@ if (args[0] === 'delete' && args[1] !== 'STUCK') fs.writeFileSync(${JSON.stringi
 test('the slots are the group record the module writes, the capacity that of the setting, and the manifest declares no groups', async t => {
   assert.equal(manifest('host').contributes.groups, undefined);
   assert.deepEqual(manifest('host').contributes.protocolImplementations, ['coda/group@1', 'coda/resource@1']);
-  const host = createTestHost({ plugin: { id: 'host', state: temporary(t), protocols: manifest('host').contributes.protocols, protocolImplementations: ['coda/group@1'] }, settings: { 'host.capacity': 2 } });
+  const host = createMockCoda({ plugin: { id: 'host', state: temporary(t), protocols: manifest('host').contributes.protocols, protocolImplementations: ['coda/group@1'] }, settings: { 'host.capacity': 2 } });
   t.after(() => host.close());
   const rows = () => host.coda.list('coda/group@1', { scope: 'local' });
   await activate(host.coda);
@@ -178,7 +178,7 @@ test('the module writes kinds.json: [] to begin with, then the host/kind@1 recor
   const settled = async expected => { for (let i = 0; i < 100 && JSON.stringify(read()) !== JSON.stringify(expected); i++) await new Promise(done => setTimeout(done, 10)); assert.deepEqual(read(), expected); };
   const record = (plugin, command, owner = TEST_OWNER) => ({ kind: 'host/kind@1', owner, id: `${plugin}-${owner}`, plugin, spec: { command } });
   // Implementing its own kind here only lets the test write a record as another would.
-  const host = createTestHost({ plugin: { id: 'host', state, protocols, protocolImplementations: ['coda/group@1', 'host/kind@1'] }, settings: { 'host.capacity': 1 },
+  const host = createMockCoda({ plugin: { id: 'host', state, protocols, protocolImplementations: ['coda/group@1', 'host/kind@1'] }, settings: { 'host.capacity': 1 },
     records: [record('zed', 'zed-sim'), record('far', 'far-sim', 'another-machine')] });
   t.after(async () => { await deactivate(); host.close(); });
   await activate(host.coda);
@@ -191,7 +191,7 @@ test('the module writes kinds.json: [] to begin with, then the host/kind@1 recor
 
 test('a refresh of kinds.json that fails is that one\'s alone: the next notice reads and writes again', async t => {
   const state = temporary(t), file = join(state, 'kinds.json');
-  const host = createTestHost({ plugin: { id: 'host', state, protocols: manifest('host').contributes.protocols, protocolImplementations: ['coda/group@1', 'host/kind@1'] }, settings: { 'host.capacity': 1 } });
+  const host = createMockCoda({ plugin: { id: 'host', state, protocols: manifest('host').contributes.protocols, protocolImplementations: ['coda/group@1', 'host/kind@1'] }, settings: { 'host.capacity': 1 } });
   t.after(async () => { await deactivate(); host.close(); });
   // The module's coda, its reading of the records refused while `refuse` is set.
   let refuse = true;
@@ -213,7 +213,7 @@ test('with no host/kind@1 record the module leaves kinds.json an empty list; the
   const { contributes } = manifest('host'), state = temporary(t);
   assert.equal(contributes.extensionPoints, undefined);
   assert.deepEqual(contributes.protocols.map(({ name, spec }) => [name, spec.properties.command.pattern]), [['host/kind@1', '^[a-z][a-z0-9-]{0,39}$']]);
-  const host = createTestHost({ plugin: { id: 'host', state, protocols: contributes.protocols, protocolImplementations: ['coda/group@1'] }, settings: { 'host.capacity': 1 } });
+  const host = createMockCoda({ plugin: { id: 'host', state, protocols: contributes.protocols, protocolImplementations: ['coda/group@1'] }, settings: { 'host.capacity': 1 } });
   t.after(async () => { await deactivate(); host.close(); });
   await activate(host.coda);
   assert.deepEqual(JSON.parse(readFileSync(join(state, 'kinds.json'), 'utf8')), []);

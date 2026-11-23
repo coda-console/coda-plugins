@@ -8,8 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { AgentProcess } from '../../../check/process.mjs';
-import { clientCapabilities } from '../../../check/coda/domain/agent-protocol.mjs';
+import { AgentProcess, clientCapabilities } from '../../helpers/agent.mjs';
 import { CodexUnrecognized, codexAgentMessage, codexUnrecognizedItem, codexUnrecognizedNotification, reportedCodexUnrecognized, rolloutTools }
   from '../../../plugins/codex/agent/unrecognized.mjs';
 import known from '../../../plugins/codex/agent/known-tools.json' with { type: 'json' };

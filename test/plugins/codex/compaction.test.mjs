@@ -4,8 +4,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AgentProcess } from '../../../check/process.mjs';
-import { clientCapabilities } from '../../../check/coda/domain/agent-protocol.mjs';
+import { AgentProcess, clientCapabilities } from '../../helpers/agent.mjs';
 import { codexCompactionEnded, codexCompactionUpdate, reportedCodexCompactions } from '../../../plugins/codex/agent/compaction.mjs';
 import { pluginEnv } from '../command.mjs';
 import { pluginDir, resolveFrom } from '../plugin.mjs';

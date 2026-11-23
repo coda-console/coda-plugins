@@ -8,10 +8,10 @@ import { appendFile, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/prom
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { instructionsBlock } from '../../helpers/agent.mjs';
 import { kimiSession } from '../../../plugins/kimi/agent/observe.mjs';
 import { KimiWaits, nextFire, nextRun } from '../../../plugins/kimi/agent/waits.mjs';
 import { KimiRelay } from '../../../plugins/kimi/agent/relay.mjs';
-import { instructionsBlock } from '../../../check/coda/domain/agent-protocol.mjs';
 import { MINIMUM, needed } from '../../../plugins/kimi/scripts/setup.mjs';
 
 const SESSION = 'session-test';

@@ -75,8 +75,9 @@ Cursor 不可用或打折的 Coda 功能：
 ## 验收（有账号后补）
 
 ```sh
-node bin/check.mjs plugins/cursor            # 握手：protocolVersion 1，session/new 给出会话与当前模型
-node bin/check.mjs plugins/cursor --live     # 一轮：回复、取消、session/load
+coda plugin check plugins/cursor                 # 默认只读静态校验：清单、贡献点、BPMN 等，不执行插件代码
+coda plugin check plugins/cursor --agent         # Agent 握手：protocolVersion 1，session/new 给出会话与当前模型
+coda plugin check plugins/cursor --agent --live  # 完整对话轮次：回复、取消、session/load
 ```
 
 然后在 Coda 里：发一句话收到回复；选「工作模式」plan 出计划，确认不卡住；跑一个要审批的命令，Mac 与 iPhone 都出卡片；重启后端后接着聊（`session/load`）。

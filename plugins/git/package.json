@@ -4,7 +4,7 @@
   "displayName": "Git 源",
   "description": "登记本机 Git 源，提供只读 smart HTTP",
   "icon": { "symbol": "arrow.triangle.branch", "color": "orange" },
-  "version": "0.9.0",
+  "version": "0.9.1",
   "coda": { "channels": ["preview"] },
   "categories": ["机器与资源"],
   "type": "module",

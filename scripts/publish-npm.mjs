@@ -15,7 +15,7 @@ const REPO = 'coda-console/coda-plugins';
 const WORKFLOW = 'publish.yml';
 
 export function packages(root = ROOT) {
-  return ['.', ...readdirSync(join(root, 'plugins')).sort().map(id => `plugins/${id}`)].map(path => {
+  return readdirSync(join(root, 'plugins')).sort().map(id => `plugins/${id}`).map(path => {
     const dir = resolve(root, path), manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
     if (!/^@coda-console\/[a-z][a-z0-9-]*$/.test(manifest.name) || manifest.publishConfig?.access !== 'public')
       throw new Error(`${path} 没有公开的 @coda-console 包名`);

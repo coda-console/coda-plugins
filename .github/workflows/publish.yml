@@ -23,9 +23,8 @@ jobs:
       - run: npm ci
       - run: node scripts/install-plugins.mjs
       - run: npm test
-      - run: node scripts/check-contract.mjs
-      - name: Validate plugin manifests
-        run: for dir in plugins/*/; do node bin/check.mjs "$dir" --manifest; done
+      - name: Validate plugin manifests and workflows
+        run: node scripts/check-plugins.mjs
       - name: Inspect npm archives
         run: node scripts/publish-npm.mjs --dry-run
   publish:
