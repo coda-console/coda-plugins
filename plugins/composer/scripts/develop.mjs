@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { waitForGitHubChecks } from './github-checks.mjs';
-import { agentArgs, areasAt, changes, checksText, fail, gh, git, mergedCommit, mergePr, openPr, output, outputFilled, outputPicked, readContract, resumeText, scopeViolations, talk } from './shared.mjs';
+import { agentArgs, areasAt, autoApproval, changes, checksText, fail, gh, git, mergedCommit, mergePr, openPr, output, outputFilled, outputPicked, readContract, resumeText, scopeViolations, talk } from './shared.mjs';
 
 const env = process.env, action = process.argv[2];
 const statePath = join(env.CODA_ARTIFACTS, 'develop.json');
@@ -96,7 +96,8 @@ ${files.map(file => `- ${file}`).join('\n')}
 跑和冲突相关的测试后提交合并提交。回报冲突了哪些文件、各自怎么解决的、跑了什么。`;
 
 // 整体评审（README.md「整体评审」）：state.overall 是这次运行最近一次评完的结果（有它就是评过了），state.outcome 是这次提交验收的评审结果（没评就没有），
-// state.overallMust 记这次运行的整体评审出没出过必须修；state.landed 是合进的块，state.reviewedPieces 是最后一次交付评成了的块（这两样和 overall 定评不评、能不能自动合并）。
+// 非契约模式用 state.overallMust 记这次运行的整体评审出没出过必须修；state.landed 是合进的块，state.reviewedPieces 是最后一次交付评成了的块（这两样和 overall 在非契约模式定评不评、能不能自动合并）。
+// 契约模式只看 state.overall 的 head 与当前 head：定评不评、能不能自动合并都不看这几样。
 // 合进需求分支的块（至少一块）最后一次交付都评成过。
 const piecesReviewed = () => state.landed.length > 0 && state.landed.every(run => state.reviewedPieces?.includes(run));
 const flat = text => String(text ?? '').replace(/\s*[\r\n]+\s*/g, ' ');
@@ -239,11 +240,12 @@ switch (action) {
   case 'check-failed':
     back(`${env.STEP}未通过，需求分支 head ${state.head}。\n运行：coda://workflow-runs/${env.GITHUB_RUN_ID}\n请用 workflow_status 查看本运行「${env.STEP}」及其调用的失败流程，读取错误和日志；派一块修好后再提交验收。`);
     break;
-  // 项目检查有了结论，定这次评不评：填了整体评审者，且这次勾了「重新整体评审」，或既不是只合进了一块且它评成过、这次运行也还没评过。evidence 是交给评审者的已有验证。
+  // 项目检查有了结论，定这次评不评：填了整体评审者，且这次勾了「重新整体评审」，或——契约模式——需求分支 head 与最近一次评完的整体评审的 head 不同，
+  // ——非契约模式——既不是只合进了一块且它评成过、这次运行也还没评过。evidence 是交给评审者的已有验证。
   case 'overall-plan':
     delete state.outcome;
     save();
-    output('review', String(env.REVIEWER === 'true' && (state.again || !(state.landed.length === 1 && piecesReviewed()) && !state.overall)));
+    output('review', String(env.REVIEWER === 'true' && (state.again || (contracted ? state.overall?.head !== state.head : !(state.landed.length === 1 && piecesReviewed()) && !state.overall))));
     output('evidence', `项目检查：\n${checksText(state.checks, state.head)}`);
     break;
   // 调用 review-commit 本身没成（出错边界）：记为没评成。
@@ -266,7 +268,8 @@ switch (action) {
     break;
   }
   // 评不评都经过这里：这次评了、有必须修或没评成交主 Agent（review），否则往下走（accept）。最近一次评完的小问题、原有问题写进汇总，
-  // 有就更新 PR 描述；auto 是自动合并的唯一判定：开了 autoMerge，这次运行评成过（整体评审，或合进的每一块都评成过），且整体评审没出过必须修。
+  // 有就更新 PR 描述；auto 是自动合并的唯一判定：开了 autoMerge，且——非契约模式——这次运行评成过（整体评审，或合进的每一块都评成过）、整体评审没出过必须修；
+  // ——契约模式——没勾「交用户批准」，范围门禁是在当前 head 上算的且没有违例，最近一次评完的整体评审就是当前 head 且没有必须修（旧提交上出过的必须修不再粘住），且这次提交没有发起了却没评成的评审（o 存在且没评成）。
   case 'overall': {
     const o = state.outcome, done = state.overall;
     const at = done && done.head !== state.head ? `，评审时需求分支 head ${done.head.slice(0, 12)}` : '';
@@ -283,7 +286,8 @@ switch (action) {
     const summary = escalated ? `【交用户批准】这次提交是主 Agent 交给用户批准的，项目检查没有按契约校验，不自动合并。\n范围门禁的违例：${state.gate.outside.length || state.gate.missing.length ? `\n${violationText(state.gate)}` : '没有。'}\n\n${body}` : body;
     output('route', o && (o.lost || !o.report || o.must.length) ? 'review' : 'accept');
     output('summary', summary);
-    output('auto', String(!escalated && env.AUTO === 'true' && Boolean(done || piecesReviewed()) && !state.overallMust));
+    const gate = state.gate, scoped = gate?.head === state.head && !gate.outside.length && !gate.missing.length;
+    output('auto', String(!escalated && env.AUTO === 'true' && (contracted ? scoped && done?.head === state.head && !done.must.length && !(o && (o.lost || !o.report)) : Boolean(done || piecesReviewed()) && !state.overallMust)));
     output('review', o ? overallText(o) : '');
     output('note', !done ? '' : done.head === state.head ? '，整条需求分支已整体评审' : `，整条需求分支在 ${done.head.slice(0, 12)} 时整体评审过`);
     break;
@@ -321,9 +325,13 @@ switch (action) {
     break;
   }
   // 批准卡：「暂不合并」带着原因回到进行中；「合并」记下勾了哪些合并后的流程（shared.mjs outputPicked）。
+  // 自动合并（env.AUTO 即 overall.auto，只按它判，不读批准卡的答复：早先的批准卡可能留着旧答复）不出卡，由 shared.mjs autoApproval 合成答复：
+  // 只勾白名单（契约模式取契约的 hooks，非契约模式为空）里的加入者；白名单里有不是当前 head 上挂点 merged 加入者的名字就不合并，带着原因回到进行中。
   case 'approval': {
-    const answer = JSON.parse(env.APPROVAL);
-    if (answer.choice === 'stop') back(`用户选了暂不合并：\n${answer.note ?? ''}`);
+    const auto = env.AUTO === 'true' && autoApproval(contracted ? contractOf().hooks : [], env.JOINERS);
+    const answer = !auto ? JSON.parse(env.APPROVAL) : auto.unknown.length ? { choice: 'stop' } : auto.answer;
+    if (auto && answer.choice === 'stop') back(`自动合并没有合并：契约的 hooks 里有名字不是需求分支 head 上挂点 merged 的加入者：${auto.unknown.join('、')}。\n当前 head 上挂点 merged 的加入者：${auto.known.join('、') || '没有'}。\n处理：让需求分支上有这些加入者（项目的流程加入挂点 merged）后再提交验收；契约开工时已锁定，写错了的名字只能由用户重新开工，或提交验收时勾「交用户批准」，由用户在批准卡上决定。`);
+    else if (answer.choice === 'stop') back(`用户选了暂不合并：\n${answer.note ?? ''}`);
     output('route', answer.choice === 'stop' ? 'stop' : 'merge');
     outputPicked(answer, env.JOINERS);
     break;

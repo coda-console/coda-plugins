@@ -624,7 +624,7 @@ test('合并后的流程都成功：结束时的 afterMerge 按批准卡上的�
   const runs = [{ workflow: 'deploy', runId: 'r1', state: 'succeeded' }, { workflow: 'publish-preview', runId: 'r2', state: 'succeeded' }, { workflow: 'unlisted', runId: 'r3', state: 'succeeded' }];
   const joiners = [{ id: 'deploy', name: '部署' }, { id: 'publish-preview', name: '发布预览版' }];
   assert.deepEqual(f.run('ran', { RUNS: JSON.stringify(runs), JOINERS: JSON.stringify(joiners) }).outputs, { line: '合并后的流程已全部结束，不用再等：部署：成功；发布预览版：成功；unlisted：成功' });
-  // 没跑的路：没勾、归属需求交付、自动合并（留着之前批准卡的答复也一样）都不经 run-merged，直接到写着「没有运行」的结束。
+  // 没跑的路：没勾、归属需求交付、自动合并时白名单为空（留着之前批准卡的答复也一样）都不经 run-merged，直接到写着「没有运行」的结束。
   const { nodes, route, next } = await definition();
   const end = context => {
     let step = 'merged-choice';
@@ -634,7 +634,8 @@ test('合并后的流程都成功：结束时的 afterMerge 按批准卡上的�
   const picked = { 'approval-result': { only: '["deploy"]', missing: '' } };
   assert.equal(end({ inputs: { delivery: '' }, overall: { auto: false }, 'approval-result': { only: '[]', missing: '' } }), 'done-none', '没勾');
   assert.equal(end({ inputs: { delivery: 'deliver-1' }, overall: { auto: false }, ...picked }), 'done-none', '归属需求交付');
-  assert.equal(end({ inputs: { delivery: '' }, overall: { auto: true }, ...picked }), 'done-none', '自动合并');
+  assert.equal(end({ inputs: { delivery: '' }, overall: { auto: true }, 'approval-result': { only: '[]', missing: '' }, approve: { options: { notify: false } } }), 'done-none', '自动合并，白名单为空');
+  assert.equal(end({ inputs: { delivery: '' }, overall: { auto: true }, ...picked, 'merged-inputs': { only: '["deploy"]' } }), 'done', '自动合并，白名单非空：照样跑');
   assert.equal(end({ inputs: { delivery: '' }, overall: { auto: false }, ...picked, 'merged-inputs': { only: '["deploy"]' } }), 'done', '勾了：跑完才到 done');
 });
 
@@ -719,18 +720,21 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   assert.deepEqual(params('progress-result').FIXER, '=inputs.executor != null');
   // 填了整体评审者，提交验收的说明里写怎么评；批准卡写评没评过的是「整理整体评审」的 note。
   const overallSaid = [...doc.matchAll(/{{(.*?)}}/gs)].find(m => m[1].includes('inputs.overallReviewer'))[1];
-  assert.equal(evaluate(overallSaid, { inputs: { overallReviewer: null } }).value, '');
-  assert.equal(evaluate(overallSaid, { inputs: { overallReviewer: { agent: 'c' } } }).value, '这次运行还没整体评审过时由整体评审者评一次整条需求分支（只合进了一块且它评成过时跳过；勾「重新整体评审」就当没评过），有必须修或没评成时交你看结论，');
+  assert.equal(evaluate(overallSaid, { inputs: { overallReviewer: null, contract: '' } }).value, '');
+  assert.equal(evaluate(overallSaid, { inputs: { overallReviewer: { agent: 'c' }, contract: CONTRACT } }).value, '需求分支 head 与最近一次评完的整体评审的 head 不同时由整体评审者评整条需求分支（head 没变不重评；勾「重新整体评审」一定评），有必须修或没评成时交你看结论，');
+  assert.equal(evaluate(overallSaid, { inputs: { overallReviewer: { agent: 'c' }, contract: '' } }).value, '这次运行还没整体评审过时由整体评审者评一次整条需求分支（只合进了一块且它评成过时跳过；勾「重新整体评审」就当没评过），有必须修或没评成时交你看结论，');
   const reasonLine = [...doc.matchAll(/{{(.*?)}}/gs)].find(m => m[1].includes('resume.reason'))[1];
   assert.equal(evaluate(reasonLine, { resume: { reason: '' } }).value, '');
   assert.equal(evaluate(reasonLine, { resume: { reason: '合并前检查未通过' } }).value, '回到进行中的原因：\n合并前检查未通过\n');
   // 收尾按是否归属需求交付分段写：成员运行没有用户的批准卡和「暂不合并」。
   const ending = [...doc.matchAll(/{{(.*?)}}/gs)].find(m => m[1].includes('inputs.delivery'))[1];
-  const own = evaluate(ending, { inputs: { delivery: '', devices: true } }).value, member = evaluate(ending, { inputs: { delivery: 'deliver-1', devices: true } }).value;
+  const own = evaluate(ending, { inputs: { delivery: '', devices: true, contract: '' } }).value, member = evaluate(ending, { inputs: { delivery: 'deliver-1', devices: true, contract: '' } }).value;
   assert.equal(own, '再交用户设备验收，然后跑合并前检查与 GitHub 检查，通过后由用户批准合并（合并提交）。任何失败和用户的「暂不合并」都带着原因回到这里。');
-  assert.equal(evaluate(ending, { inputs: { delivery: '', devices: false } }).value, '然后跑合并前检查与 GitHub 检查，通过后由用户批准合并（合并提交）。任何失败和用户的「暂不合并」都带着原因回到这里。');
-  assert.equal(evaluate(ending, { inputs: { delivery: '', devices: false, autoMerge: true } }).value,
+  assert.equal(evaluate(ending, { inputs: { delivery: '', devices: false, contract: '' } }).value, '然后跑合并前检查与 GitHub 检查，通过后由用户批准合并（合并提交）。任何失败和用户的「暂不合并」都带着原因回到这里。');
+  assert.equal(evaluate(ending, { inputs: { delivery: '', devices: false, autoMerge: true, contract: '' } }).value,
     '然后跑合并前检查与 GitHub 检查，通过后直接合并（合并提交；这次运行一次都没评成过、或整体评审出过必须修时照常由用户批准）。任何失败和用户的「暂不合并」都带着原因回到这里。', '自动合并不看填没填整体评审者');
+  assert.equal(evaluate(ending, { inputs: { delivery: '', devices: false, autoMerge: true, contract: CONTRACT } }).value,
+    '然后跑合并前检查与 GitHub 检查，通过后，范围门禁在当前 head 上没有违例、整体评审评在当前 head 上且没有必须修、这次没勾「交用户批准」时直接合并（合并提交，合并后只跑契约 hooks 里列的流程，没列的不跑），否则由用户批准合并（合并提交）。任何失败和用户的「暂不合并」都带着原因回到这里。', '契约模式的自动合并按当前 head 写');
   assert.equal(member, '然后跑合并前检查与 GitHub 检查，通过后进入「待交付」，由需求交付运行 deliver-1 统一验收、批准，没有用户的「暂不合并」。任何失败和待交付的「退回修改」都带着原因回到这里。');
   assert.equal(nodes.paused.assignee, 'user');
   assert.deepEqual(values(nodes.paused).map(v => [v.id, v.name]), [['continue', '继续'], ['abandon', '放弃']]);
@@ -770,7 +774,7 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
     assert.equal(next(task), 'resume', `${step}失败回到进行中`);
   }
   // 整体评审：「定整体评审」说评才调一次 review-commit（一位整体评审者，评整条需求分支，不增量复评）；评不评、评没评成都经过「整理整体评审」。
-  assert.deepEqual(params('overall-plan'), { REVIEWER: '=inputs.overallReviewer != null', review: undefined, evidence: undefined });
+  assert.deepEqual(params('overall-plan'), { REVIEWER: '=inputs.overallReviewer != null', CONTRACT: '=inputs.contract', review: undefined, evidence: undefined });
   assert.equal(next('overall-plan'), 'overall-choice');
   for (const [review, target] of [[true, 'overall-call'], [false, 'overall']]) assert.equal(route('overall-choice', { 'overall-plan': { review } }), target);
   assert.equal(nodes['overall-call'].calledElement, 'review-commit');
@@ -797,15 +801,16 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   assert.equal(tell('text', { inputs: { delivery: 'deliver-1' }, overall: { auto: true } }), '需求「输入框」：用户设备验收通过，接下来跑合并前检查与 GitHub 检查，通过后进入需求交付验收。');
   assert.equal(tell('key'), 'run-1:device:head-1');
   assert.equal(next('tell-device'), 'premerge');
-  assert.equal(route('delivery-choice', { inputs: { delivery: '' } }), 'auto-merge-choice');
-  assert.equal(route('auto-merge-choice', { inputs: { delivery: '' } }), 'joiners');
+  assert.equal(route('delivery-choice', { inputs: { delivery: '' } }), 'joiners', '不属于需求交付：先列出合并后的流程，再分流');
+  assert.equal(route('auto-merge-choice', { overall: { auto: false } }), 'approve');
+  assert.equal(route('auto-merge-choice', { overall: { auto: true } }), 'approval-result', '自动合并：不出批准卡');
   assert.equal(route('delivery-choice', { inputs: { delivery: 'deliver-1' } }), 'delivery');
   assert.deepEqual(values(nodes.delivery).map(v => [v.id, v.name]), [['revise', '退回修改'], ['merge', '放行合并']]);
   for (const [value, target] of [['delivery', 'delivery'], ['progress', 'resume'], ['merge', 'merge']]) assert.equal(route('after-delivery', { 'delivery-result': { route: value } }), target);
   // 批准卡：勾选项是项目在需求分支 head 上加入挂点 merged 的流程，卡上只有数据，不写引导。
   assert.equal(nodes.joiners.action, 'hook-joiners');
   assert.deepEqual(params('joiners'), { hook: 'merged', commit: '=pr.head' });
-  assert.equal(next('joiners'), 'approve');
+  assert.equal(next('joiners'), 'auto-merge-choice');
   assert.equal(nodes.approve.assignee, 'user');
   assert.deepEqual(values(nodes.approve).map(v => [v.id, v.note]), [['merge', undefined], ['stop', 'required']]);
   assert.deepEqual(values(nodes.approve)[0].options.map(o => [o.$type, o.value ?? o.id, o.default]), [['coda:OptionList', '=joiners.list', undefined], ['coda:Option', 'notify', 'true']]);
@@ -816,7 +821,7 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   assert.doesNotMatch(face, /勾选|默认|发布说明|暂不合并|部署/);
   const envs = id => Object.fromEntries(values(nodes[id]).filter(v => v.$type === 'coda:Env').map(v => [v.name, v.value]));
   const outputs = id => values(nodes[id]).filter(v => v.$type === 'coda:Output').map(v => v.name);
-  assert.deepEqual(envs('approval-result'), { APPROVAL: '=approve', JOINERS: '=joiners.list' });
+  assert.deepEqual(envs('approval-result'), { APPROVAL: '=approve', JOINERS: '=joiners.list', AUTO: '=overall.auto', CONTRACT: '=inputs.contract' });
   assert.deepEqual(outputs('approval-result'), ['route', 'only', 'picked', 'inputs', 'missing', 'asks', 'needs']);
   for (const [value, target] of [['stop', 'resume'], ['merge', 'merge']]) assert.equal(route('after-approval', { 'approval-result': { route: value } }), target);
   assert.equal(route('after-merge', { merge: { route: 'conflict' } }), 'resume');
@@ -824,17 +829,17 @@ test('需求运行的定义：输入、进行中的三种答复、暂停卡、�
   assert.ok(!elements.some(e => e.id === 'stopped'), '暂不合并不再结束运行');
   for (const id of ['kinds', 'write-notes', 'notes-result', 'deploy', 'publish-preview', 'publish-release']) assert.ok(!nodes[id], id);
 
-  // 合并后：成员运行不跑；独立交付只跑勾了的，没写的文字先交主 Agent 逐项写。
-  for (const delivery of ['', 'deliver-1']) for (const only of ['[]', '["deploy","publish-preview"]']) for (const missing of ['', 'notes']) {
-    const visited = [], context = { inputs: { delivery }, 'approval-result': { only, missing } };
+  // 合并后：成员运行不跑；独立交付只跑勾了的（自动合并时是白名单里的，与批准卡上勾的一样处理），没写的文字先交主 Agent 逐项写。
+  for (const delivery of ['', 'deliver-1']) for (const only of ['[]', '["deploy","publish-preview"]']) for (const missing of ['', 'notes']) for (const auto of [false, true]) {
+    const visited = [], context = { inputs: { delivery }, overall: { auto }, 'approval-result': { only, missing } };
     let step = 'merged-choice';
     while (nodes[step].$type !== 'bpmn:EndEvent') {
       visited.push(step);
       step = nodes[step].$type === 'bpmn:ExclusiveGateway' ? route(step, context) : next(step);
     }
     const runs = !delivery && only !== '[]';
-    assert.deepEqual(visited.filter(id => !nodes[id].$type.endsWith('Gateway')), runs ? [...(missing ? ['fill'] : []), 'merged-inputs', 'run-merged', 'after-run'] : [], `${delivery}|${only}|${missing}`);
-    assert.equal(step, runs ? 'done' : 'done-none', `${delivery}|${only}|${missing}`);
+    assert.deepEqual(visited.filter(id => !nodes[id].$type.endsWith('Gateway')), runs ? [...(missing ? ['fill'] : []), 'merged-inputs', 'run-merged', 'after-run'] : [], `${delivery}|${only}|${missing}|${auto}`);
+    assert.equal(step, runs ? 'done' : 'done-none', `${delivery}|${only}|${missing}|${auto}`);
   }
   const loop = nodes.fill.loopCharacteristics;
   assert.deepEqual([loop.isSequential, loop.inputElement], [true, 'input']);
@@ -1033,37 +1038,77 @@ test('提交验收的顺序：跟上目标分支、开 PR、项目检查、整�
   assert.deepEqual(walk(flow, 'overall', { ...escalated, 'review-result': { route: 'progress' } }, ['resume', 'premerge']).at(-1), 'resume');
 });
 
-test('自动合并：开了且这次运行的整体评审没出过必须修（overall.auto）就在合并前检查和 GitHub 检查之后直接合并、不跑合并后的流程；出过必须修照常出批准卡；成员运行照旧进待交付', async () => {
+test('自动合并：满足条件（overall.auto）就在合并前检查和 GitHub 检查、列出合并后的流程之后不出批准卡，直接到「读取批准」合成答复再合并；其余照常出批准卡；成员运行照旧进待交付', async () => {
   const flow = await definition(), { nodes, values, route } = flow;
   const stops = ['merge', 'approve', 'delivery'];
-  const at = (auto, inputs = {}) => walk(flow, 'overall-route', { overall: { route: 'accept', auto }, inputs: { devices: false, delivery: '', ...inputs }, acceptance: { route: 'passed' } }, stops);
+  const at = (auto, inputs = {}) => walk(flow, 'overall-route', { overall: { route: 'accept', auto }, 'approval-result': { route: 'merge' }, inputs: { devices: false, delivery: '', ...inputs }, acceptance: { route: 'passed' } }, stops);
   const merged = at(true);
-  assert.deepEqual([merged.at(-1), merged.includes('premerge'), merged.includes('github-checks'), merged.includes('joiners')], ['merge', true, true, false]);
+  assert.deepEqual([merged.at(-1), merged.includes('premerge'), merged.includes('github-checks'), merged.includes('approve')], ['merge', true, true, false]);
+  assert.deepEqual(merged.slice(merged.indexOf('github-checks')), ['github-checks', 'delivery-choice', 'joiners', 'auto-merge-choice', 'approval-result', 'after-approval', 'merge'], '先列出加入者，再分流，自动合并不经批准卡');
   assert.equal(at(true, { devices: true }).at(-1), 'merge', '设备验收通过之后');
-  assert.equal(at(false).at(-1), 'approve', '出过必须修');
-  assert.equal(at(true, { delivery: 'deliver-1' }).at(-1), 'delivery');
+  const manual = at(false);
+  assert.deepEqual(manual.slice(manual.indexOf('github-checks')), ['github-checks', 'delivery-choice', 'joiners', 'auto-merge-choice', 'approve'], '不自动合并：照旧出批准卡');
+  const member = at(true, { delivery: 'deliver-1' });
+  assert.deepEqual(member.slice(member.indexOf('github-checks')), ['github-checks', 'delivery-choice', 'delivery'], '需求交付的成员：不列加入者，进待交付，路不变');
   // 判定只在「整理整体评审」的 auto；收尾各处只引用它。
-  for (const text of [nodes['auto-merge-needed'].conditionExpression.body, nodes['merged-only'].conditionExpression.body, nodes.done.notify, values(nodes.done).find(v => v.name === 'notify').value]) {
+  for (const text of [nodes['auto-merge-needed'].conditionExpression.body, nodes.done.notify, values(nodes.done).find(v => v.name === 'notify').value]) {
     assert.ok(text.includes('overall.auto = true') && !text.includes('inputs.autoMerge'), text);
   }
-  // 自动合并后不跑合并后的流程（哪怕留着之前批准卡的答复），照常通知。
-  const stale = { approve: { options: { notify: false } }, 'approval-result': { only: '["deploy"]', missing: '' }, inputs: { delivery: '' } };
-  assert.equal(route('merged-choice', { ...stale, overall: { auto: true } }), 'done-none');
-  assert.equal(route('merged-choice', { ...stale, overall: { auto: false } }), 'fill-choice');
+  assert.ok(!nodes['merged-only'].conditionExpression.body.includes('overall.auto'), '是否运行合并后的流程只看成员与 only');
+  assert.equal(nodes['merged-only'].conditionExpression.body, '=inputs.delivery != "" or approval-result.only = "[]"');
+  // 自动合并时白名单非空照样到 run-merged；留着之前批准卡的答复不影响，照常通知。
+  const stale = { approve: { options: { notify: false } }, inputs: { delivery: '' }, overall: { auto: true } };
+  assert.equal(route('merged-choice', { ...stale, 'approval-result': { only: '["deploy"]', missing: '' } }), 'fill-choice');
+  assert.equal(route('merged-choice', { ...stale, 'approval-result': { only: '[]', missing: '' } }), 'done-none');
+  assert.equal(route('merged-choice', { ...stale, inputs: { delivery: 'deliver-1' }, 'approval-result': { only: '["deploy"]' } }), 'done-none', '成员运行不跑');
   for (const expression of ['done', 'done-none'].flatMap(id => [nodes[id].notify, values(nodes[id]).find(v => v.name === 'notify').value])) {
-    assert.equal(evaluate(expression.slice(1), { ...stale, overall: { auto: true } }).value, true);
+    assert.equal(evaluate(expression.slice(1), stale).value, true);
     assert.equal(evaluate(expression.slice(1), { ...stale, overall: { auto: false } }).value, false, '批准卡上没勾通知');
   }
+});
+
+// 自动路径上批准卡没有执行过，读它得到空值：自动路径会求值的表达式在上下文里不给 approve（也不给 fill 等没执行的节点）时不抛错、结果正确。
+test('自动路径上没执行过的节点读到空值：approval-result 的环境变量、merged-choice 条件、结束事件的 notify、fill 的说明、tell-device 都不出错', async () => {
+  const flow = await definition(), { nodes, values, params, route } = flow;
+  const expect = (expression, context) => { const result = evaluate(expression.slice(1), context); assert.deepEqual(result.problems ?? [], [], expression); return result.value; };
+  const joiners = { list: [{ id: 'deploy', name: '部署' }] };
+  const context = { inputs: { delivery: '', contract: CONTRACT, devices: false, autoMerge: true }, overall: { auto: true }, joiners, pr: { head: 'h', url: PR }, req: { title: '输入框' }, run: { id: 'run-1' }, merge: { commit: 'm' } };
+  assert.equal(context.approve, undefined);
+  const envs = params('approval-result');
+  assert.equal(expect(envs.AUTO, context), true);
+  assert.equal(expect(envs.CONTRACT, context), CONTRACT);
+  assert.deepEqual(expect(envs.JOINERS, context), joiners.list);
+  assert.equal(expect(envs.APPROVAL, context), null, '没有批准卡：空值，脚本在自动路径上不读它');
+  for (const only of ['[]', '["deploy"]']) for (const missing of ['', 'notes']) {
+    const ctx = { ...context, 'approval-result': { only, missing, asks: '「发布说明」：部署要' } };
+    assert.equal(route('merged-choice', ctx), only === '[]' ? 'done-none' : 'fill-choice');
+    assert.equal(route('fill-choice', ctx), missing ? 'fill' : 'merged-inputs');
+  }
+  for (const id of ['done', 'done-none']) for (const expression of [nodes[id].notify, values(nodes[id]).find(v => v.name === 'notify').value]) {
+    assert.equal(expect(expression, context), true, '自动路径视为勾上「全部完成后通知 Agent」');
+  }
+  assert.equal(expect(values(nodes.done).find(v => v.name === 'pr').value, context), PR);
+  assert.equal(expect(params('tell-device').text, context), '需求「输入框」：用户设备验收通过，接下来跑合并前检查与 GitHub 检查，通过后流程自动合并。');
+  // fill 的说明：按 overall.auto 分两种写法，自动路径读 approval-result 和 loopCounter 不出错。
+  const doc = nodes.fill.documentation[0].text;
+  const render = ctx => doc.replace(/{{([\s\S]*?)}}/g, (_, e) => { const r = evaluate(e, ctx); assert.deepEqual(r.problems ?? [], [], e); return r.value ?? ''; });
+  const filled = { ...context, 'approval-result': { asks: '「发布说明」：部署要' }, loopCounter: 1 };
+  const auto = render(filled), manual = render({ ...filled, overall: { auto: false } });
+  assert.ok(auto.startsWith('契约的 hooks 里列的流程要一段文字') && !auto.includes('用户批准合并时勾的') && auto.includes('「发布说明」：部署要'), auto);
+  assert.ok(manual.startsWith('用户批准合并时勾的流程要一段文字，批准卡上没有写：') && !manual.includes('契约的 hooks'), manual);
+  assert.equal(auto.split('\n').slice(1).join('\n'), manual.split('\n').slice(1).join('\n'), '除第一句外两种写法一样');
 });
 
 // 假宿主：照流程定义从开始走到结束。网关按 FEEL 分流（并行网关走检查那一支），脚本步骤真跑 develop.mjs（env 照 coda:env 求值、输出照引擎转布尔），
 // 人工任务按引擎展开文字后交给 answers 里的函数答，调用的流程和服务步骤也由 answers 给结果（没给的服务步骤当作成功、没有输出）。
 async function host(f, inputs, message, answers) {
   const { nodes, values, route, next } = await definition();
+  // 走到结束事件为止（不执行它），end 是结束事件的 ID。
   const context = { inputs, run: { id: 'run-1', message } }, visited = [], cards = [];
   const value = v => (v.startsWith('=') ? evaluateTyped(v.slice(1), context) : v);
   const render = text => text.replace(/{{([\s\S]*?)}}/g, (_, e) => { const v = evaluateTyped(e, context); return v === null || v === undefined ? '' : String(v); });
-  for (let step = 'start'; nodes[step].$type !== 'bpmn:EndEvent';) {
+  let step = 'start';
+  while (nodes[step].$type !== 'bpmn:EndEvent') {
     const node = nodes[step], type = node.$type;
     visited.push(step);
     if (type === 'bpmn:ScriptTask') {
@@ -1076,7 +1121,7 @@ async function host(f, inputs, message, answers) {
     } else if (type === 'bpmn:CallActivity' || type === 'bpmn:ServiceTask') context[step] = answers[step]?.() ?? {};
     step = step === 'pr-fork' ? 'reuse-checks' : type === 'bpmn:ExclusiveGateway' ? route(step, context) : next(step);
   }
-  return { visited, cards, context };
+  return { visited, cards, context, end: step };
 }
 
 test('假宿主走一遍：两块的需求提交验收，整体评审有必须修回到进行中，派块修好再提交验收不再评，合并前检查后出批准卡', async t => {
@@ -1278,12 +1323,21 @@ test('「交用户批准」：选项与说明只在契约模式出现', async ()
   assert.ok(escalate.detail.includes('范围门禁有违例也不打回') && escalate.detail.includes('项目检查不按契约校验') && escalate.detail.includes('不自动合并'));
   const shown = contract => evaluateTyped(escalate.shown.slice(1), { inputs: { contract } });
   assert.deepEqual([shown(''), shown(CONTRACT)], [false, true]);
-  const render = contract => nodes.progress.documentation[0].text.replace(/{{([\s\S]*?)}}/g, (_, e) => { const v = evaluateTyped(e, { inputs: { ...KICKOFF, contract, delivery: '', devices: false }, req: { base: 'main' }, resume: { reason: '' } }); return v ?? ''; });
-  const plain = render(''), contracted = render(CONTRACT);
+  const render = (contract, extra = {}) => nodes.progress.documentation[0].text.replace(/{{([\s\S]*?)}}/g, (_, e) => { const v = evaluateTyped(e, { inputs: { ...KICKOFF, ...extra, contract, delivery: '', devices: false }, req: { base: 'main' }, resume: { reason: '' } }); return v ?? ''; });
+  // 没填整体评审者、没开自动合并时，契约模式只多下面这一段；整体评审与自动合并的说明按模式分开写，下面单独断言。
+  const plain = render('', { overallReviewer: null }), contracted = render(CONTRACT, { overallReviewer: null });
   for (const word of ['契约模式', '范围门禁', '交用户批准']) assert.ok(!plain.includes(word), word);
   assert.equal(contracted.replace(/\n契约模式：.*(?=\n)/, ''), plain, '契约模式只多这一段');
   const added = /\n契约模式：(.*)(?=\n)/.exec(contracted)[1];
   for (const text of ['范围门禁', 'allowed', 'required', '交用户批准', '不打回', '项目检查不按契约校验', '不自动合并', '批准卡']) assert.ok(added.includes(text), text);
+  // 整体评审与自动合并的说明：非契约模式照旧，契约模式按 head 写。
+  const [p, c] = [render('', { autoMerge: true }), render(CONTRACT, { autoMerge: true })];
+  for (const text of ['这次运行还没整体评审过时由整体评审者评一次整条需求分支', '只合进了一块且它评成过时跳过', '这次运行一次都没评成过、或整体评审出过必须修时照常由用户批准']) assert.ok(p.includes(text) && !c.includes(text), text);
+  for (const text of ['head 与最近一次评完的整体评审的 head 不同时', 'head 没变不重评', '范围门禁在当前 head 上没有违例、整体评审评在当前 head 上且没有必须修', '合并后只跑契约 hooks 里列的流程']) assert.ok(c.includes(text) && !p.includes(text), text);
+  const review = nodes.review.documentation[0].text.replace(/{{([\s\S]*?)}}/g, (_, e) => evaluateTyped(e, { inputs: { contract: CONTRACT }, req: {}, pr: {}, overall: {} }) ?? '');
+  assert.ok(review.includes('再提交验收会在新 head 上重评') && !review.includes('不再评，要再评'), review);
+  const reviewPlain = nodes.review.documentation[0].text.replace(/{{([\s\S]*?)}}/g, (_, e) => evaluateTyped(e, { inputs: { contract: '' }, req: {}, pr: {}, overall: {} }) ?? '');
+  assert.ok(reviewPlain.includes('这次运行已经整体评审过，再提交验收不再评，要再评就勾「重新整体评审」。') && !reviewPlain.includes('新 head'), reviewPlain);
 });
 
 test('交用户批准的这次提交：整理整体评审的 auto 一律为 false，汇总最前面写明并列出范围门禁的违例，PR 描述不带它；没勾照旧', t => {
@@ -1363,10 +1417,214 @@ test('范围门禁：.gitmodules 里写了 ignore = all 的子模块，只更新
   put(f, '.gitmodules', '[submodule "vendor/lib"]\n\tpath = vendor/lib\n\turl = ../lib.git\n\tignore = all\n');
   f.git('add', '.gitmodules'); link('1'.repeat(40)); f.git('commit', '-qm', 'submodule'); f.git('push', '-q', 'origin', 'main');
   f.run('branch', { CONTRACT, REVIEWER: 'true' });
-  change(f, () => link('2'.repeat(40)));
+  // 只更新指针的提交：不经 git add -A（工作区没有检出子模块，add -A 会把它当作删除）。
+  f.git('fetch', '-q', 'origin', f.state().branch); f.git('switch', '-q', '--detach', 'FETCH_HEAD');
+  link('2'.repeat(40)); f.git('commit', '-qm', 'pointer'); f.git('push', '-q', 'origin', `HEAD:refs/heads/${f.state().branch}`);
   const pr = submitContract(f);
+  assert.equal(f.git('ls-tree', pr.head, 'vendor/lib'), `160000 commit ${'2'.repeat(40)}\tvendor/lib`, '提交后仍是子模块（160000），指向新的提交');
   assert.equal(f.git('diff', '--name-only', `${pr.base}...${pr.head}`), '', 'ignore = all 下普通 diff 看不到指针变化');
   assert.equal(gate(f, pr, JSON.stringify({ required: [], allowed: ['docs/'], hooks: [] })).route, 'progress');
   assert.deepEqual(f.state().gate, { head: pr.head, outside: ['vendor/lib'], missing: [] });
   assert.equal(gate(f, pr, JSON.stringify({ required: ['vendor/lib'], allowed: ['vendor/lib'], hooks: [] })).route, 'pass');
+});
+
+// 契约模式的整体评审按 head 走（README.md「整体评审」）：round 在需求分支上提一个改动（change 为 false 时 head 不变），提交验收、过门禁、定整体评审。
+const contracted = (t, hooks = []) => {
+  const contract = JSON.stringify({ required: ['docs/a.md'], allowed: ['docs/'], hooks });
+  const f = fixture(t); f.run('branch', { CONTRACT: contract, REVIEWER: 'true' });
+  let n = 0;
+  const round = (options = {}, change_ = true) => {
+    if (change_) change(f, () => put(f, 'docs/a.md', `v${n++}`));
+    const pr = submitContract(f, options, contract);
+    assert.equal(gate(f, pr, contract).route, 'pass');
+    return { pr, plan: (extra = {}) => f.run('overall-plan', { REVIEWER: 'true', CONTRACT: contract, ...extra }).outputs.review };
+  };
+  const overall = (pr, extra = {}) => f.run('overall', { SUMMARY: pr.summary, AUTO: 'true', CONTRACT: contract, ...extra }).outputs;
+  return { f: Object.assign(f, { contract }), contract, round, overall };
+};
+
+test('契约模式定整体评审按 head：head 变了就评，没变不评，勾「重新整体评审」一定评；没评成不算评过；只合进一块且它评成过也评', t => {
+  const { f, round } = contracted(t);
+  mkdirSync(join(f.work, 'docs'));
+  f.land('docs/b.md', 'x', '块一\n\nCoda-Piece: piece-1');
+  f.run('piece-landed', { TITLE: '块一', COMMIT: 'c'.repeat(40), PIECE_RUN: 'piece-1', REVIEWED: 'true' });
+  let { plan } = round();
+  assert.deepEqual(f.state().landed, ['piece-1']);
+  assert.equal(plan(), 'true', '只合进了一块且它评成过：契约模式照样评');
+  assert.equal(plan({ REVIEWER: 'false' }), 'false', '没填整体评审者不评');
+  // 没评成（调用没成、没评完）：最近一次评完的还没有，照样评；评完后同一 head 不评。
+  f.run('overall-lost');
+  ({ plan } = round({}, false));
+  assert.equal(plan(), 'true');
+  f.run('overall-reviewed', reviewed([], { DECISION: 'INCOMPLETE', LINE: '评审没有完成：没有合格的 review 代码块', FINDINGS: '[]', REPORT: '' }));
+  ({ plan } = round({}, false));
+  assert.equal(plan(), 'true');
+  f.run('overall-reviewed', reviewed([]));
+  ({ plan } = round({}, false));
+  assert.equal(plan(), 'false', '同一个 head 已评完：不重评');
+  ({ plan } = round({ again: true }, false));
+  assert.equal(plan(), 'true', '勾了「重新整体评审」：同一个 head 也评');
+  ({ plan } = round({}, false));
+  assert.equal(plan(), 'false', '勾选只管这一次提交');
+  // head 变了：评；评完了那一个 head 又不评。又一次没评成不动最近一次评完的 head，仍然评。
+  ({ plan } = round());
+  assert.equal(plan(), 'true', 'head 变了');
+  f.run('overall-lost');
+  ({ plan } = round({}, false));
+  assert.equal(plan(), 'true', '新 head 上没评成：最近一次评完的仍是旧 head');
+  f.run('overall-reviewed', reviewed([]));
+  ({ plan } = round({}, false));
+  assert.equal(plan(), 'false');
+  assert.equal(f.state().overall.head, f.state().head);
+});
+
+test('契约模式的 auto：开了 autoMerge、没勾「交用户批准」、门禁在当前 head 上无违例、最近一次评完的整体评审就是当前 head 且没有必须修；旧提交上出过的必须修不再粘住', t => {
+  const { f, round, overall } = contracted(t);
+  const must = [{ level: 'must', title: '登录后停在空白页', location: 'app.mjs:3' }];
+  const verdict = (pr, extra) => { const { route, auto } = overall(pr, extra); return [route, auto]; };
+  // 第一个 head：评出必须修，交主 Agent，不自动合并。
+  let { pr, plan } = round();
+  assert.equal(plan(), 'true');
+  f.run('overall-reviewed', reviewed(must));
+  assert.deepEqual(verdict(pr), ['review', 'false']);
+  assert.equal(f.state().overallMust, true);
+  // 修好后新 head 上重评、没有必须修：自动合并（不再粘住）。
+  ({ pr, plan } = round());
+  assert.equal(plan(), 'true');
+  f.run('overall-reviewed', reviewed([]));
+  assert.deepEqual(verdict(pr), ['accept', 'true']);
+  assert.equal(overall(pr, { AUTO: 'false' }).auto, 'false', '没开 autoMerge');
+  // 同一个 head 再提交验收（不重评）：评审与门禁都还是当前 head，照样自动合并。
+  ({ pr, plan } = round({}, false));
+  assert.equal(plan(), 'false');
+  assert.equal(overall(pr).auto, 'true');
+  // 勾了「交用户批准」：不自动合并。
+  ({ pr, plan } = round({ escalate: true }, false));
+  plan();
+  assert.equal(overall(pr).auto, 'false');
+  // 同一个 head 已有评完且没有必须修的整体评审：没发起重评，照旧复用，auto 为 true；勾「重新整体评审」再评但没评成（调用没成、没评完），auto 为 false，route 仍是 review。
+  ({ pr, plan } = round());
+  assert.equal(plan(), 'true');
+  f.run('overall-reviewed', reviewed([]));
+  ({ pr, plan } = round({}, false));
+  assert.equal(plan(), 'false');
+  assert.deepEqual(verdict(pr), ['accept', 'true'], '没发起重评：复用同一个 head 上评完的结果');
+  ({ pr, plan } = round({ again: true }, false));
+  assert.equal(plan(), 'true');
+  f.run('overall-lost');
+  assert.deepEqual(verdict(pr), ['review', 'false'], '重评的调用没成功');
+  ({ pr, plan } = round({ again: true }, false));
+  assert.equal(plan(), 'true');
+  f.run('overall-reviewed', reviewed([], { DECISION: 'INCOMPLETE', LINE: '评审没有完成', FINDINGS: '[]', REPORT: '' }));
+  assert.deepEqual(verdict(pr), ['review', 'false'], '重评没评完');
+  assert.equal(f.state().overall.head, f.state().head, '最近一次评完的还是同一个 head 上的那份');
+  // 下一次不重评的提交：outcome 清掉，又复用那份，auto 为 true。
+  ({ pr, plan } = round({}, false));
+  assert.equal(plan(), 'false');
+  assert.deepEqual(verdict(pr), ['accept', 'true']);
+  // 评审是旧 head 的：新 head 上没评成（调用没成、没评完）。
+  ({ pr, plan } = round());
+  assert.equal(plan(), 'true');
+  f.run('overall-lost');
+  assert.equal(overall(pr).auto, 'false', '新 head 上没评成：最近一次评完的是旧 head');
+  f.run('overall-reviewed', reviewed([], { DECISION: 'INCOMPLETE', LINE: '评审没有完成', FINDINGS: '[]', REPORT: '' }));
+  assert.deepEqual(verdict(pr), ['review', 'false'], '没评完不算评完');
+  // 当前 head 有必须修。
+  f.run('overall-reviewed', reviewed(must));
+  assert.deepEqual(verdict(pr), ['review', 'false']);
+  // 门禁是旧 head 算的：新 head 评好了，但没有对新 head 跑过门禁。
+  const oldGate = f.state().gate;
+  change(f, () => put(f, 'docs/a.md', 'newer'));
+  const next = submitContract(f, {}, f.contract);
+  assert.notEqual(next.head, oldGate.head);
+  f.run('overall-plan', { REVIEWER: 'true', CONTRACT });
+  f.run('overall-reviewed', reviewed([]));
+  assert.equal(overall(next).auto, 'false', '门禁记的是旧 head');
+  assert.deepEqual(f.state().gate, oldGate);
+  // 门禁在当前 head 上有违例：不自动合并（正常走到这里只有勾了交用户批准，这里直接改状态核对判定本身）。
+  assert.equal(gate(f, next, f.contract).route, 'pass');
+  assert.equal(overall(next).auto, 'true');
+  for (const violation of [{ outside: ['x'], missing: [] }, { outside: [], missing: ['docs/b.md'] }]) {
+    const state = f.state(); writeFileSync(join(f.env.CODA_ARTIFACTS, 'develop.json'), JSON.stringify({ ...state, gate: { ...state.gate, ...violation } }));
+    assert.equal(overall(next).auto, 'false', JSON.stringify(violation));
+  }
+});
+
+// hook-joiners 的列表：lint 声明了默认勾选，但不在任何白名单里。
+const LIST = JSON.stringify([
+  { id: 'deploy', name: '部署', default: false },
+  { id: 'lint', name: '代码检查', default: true },
+  { id: 'publish-preview', name: '发布预览版', default: false, inputs: [{ id: 'notes', label: '发布说明' }] },
+]);
+
+test('自动合并在「读取批准」里合成答复：只勾契约 hooks 白名单里的加入者，没写的不勾（含默认勾选的）；白名单为空 only 是 []；批准卡留着旧答复也不读', t => {
+  const f = fixture(t); f.run('branch');
+  const contract = hooks => JSON.stringify({ required: [], allowed: ['a'], hooks });
+  const auto = (hooks, extra = {}) => f.run('approval', { AUTO: 'true', CONTRACT: hooks ? contract(hooks) : '', JOINERS: LIST, ...extra }).outputs;
+  assert.deepEqual(auto(['deploy']), { route: 'merge', only: '["deploy"]', picked: '部署', inputs: '{}', missing: '', asks: '', needs: '{}' });
+  assert.equal(auto(['deploy', 'publish-preview']).only, '["deploy","publish-preview"]', '按列表的顺序');
+  assert.deepEqual([auto([]).route, auto([]).only], ['merge', '[]'], '白名单为空');
+  assert.deepEqual(auto(null), { route: 'merge', only: '[]', picked: '', inputs: '{}', missing: '', asks: '', needs: '{}' }, '非契约模式只开 autoMerge：白名单是空的，默认勾选的也不跑');
+  // 白名单里的加入者要文字：卡上没有写，交主 Agent 补填（missing、asks、needs 照旧）。
+  assert.deepEqual([auto(['publish-preview']).missing, auto(['publish-preview']).asks, auto(['publish-preview']).needs], ['notes', '「发布说明」：发布预览版要', '{"notes":["publish-preview"]}']);
+  // 早先出过批准卡、用户选过「暂不合并」：之后自动路径不读那份旧答复。
+  const stale = JSON.stringify({ choice: 'stop', note: '先别合', options: { lint: true } });
+  assert.deepEqual([auto(['deploy'], { APPROVAL: stale }).route, auto(['deploy'], { APPROVAL: stale }).only], ['merge', '["deploy"]']);
+  assert.equal(auto(null, { APPROVAL: stale }).route, 'merge');
+  assert.equal(auto(['deploy'], { APPROVAL: 'null' }).only, '["deploy"]', '这条路上没有批准卡');
+  assert.equal(f.reason(), '', '没有回到进行中');
+  // 人工路径（没有 AUTO）不受 hooks 约束，照旧按用户在卡上的勾选。
+  const manual = f.run('approval', { AUTO: 'false', CONTRACT: contract(['deploy']), JOINERS: LIST, APPROVAL: JSON.stringify({ choice: 'merge', options: { lint: true, 'publish-preview': true }, inputs: { notes: '说明' } }) }).outputs;
+  assert.deepEqual([manual.route, manual.only, manual.inputs], ['merge', '["lint","publish-preview"]', '{"notes":"说明"}']);
+  assert.match(f.run('approval', { AUTO: 'false', CONTRACT: contract(['deploy']), JOINERS: LIST, APPROVAL: JSON.stringify({ choice: 'stop', note: '再等等' }) }).outputs.route, /stop/);
+  assert.match(f.reason(), /用户选了暂不合并：\n再等等/);
+});
+
+test('自动合并时白名单里有不是当前 head 上挂点 merged 加入者的名字：不合并，带着原因回到进行中，原因写明名字和当前有哪些加入者', t => {
+  const f = fixture(t); f.run('branch');
+  const out = f.run('approval', { AUTO: 'true', CONTRACT: JSON.stringify({ required: [], allowed: ['a'], hooks: ['deploy', 'ghost', 'phantom'] }), JOINERS: LIST }).outputs;
+  assert.deepEqual([out.route, out.only, out.picked], ['stop', '[]', '']);
+  const reason = f.reason();
+  assert.match(reason, /自动合并没有合并/);
+  assert.ok(reason.includes('不是需求分支 head 上挂点 merged 的加入者：ghost、phantom。'), reason);
+  assert.ok(reason.includes('当前 head 上挂点 merged 的加入者：deploy、lint、publish-preview'), reason);
+  assert.match(reason, /交用户批准/);
+  // 没有任何加入者。
+  f.run('approval', { AUTO: 'true', CONTRACT: JSON.stringify({ required: [], allowed: ['a'], hooks: ['deploy'] }), JOINERS: '[]' });
+  assert.ok(f.reason().includes('当前 head 上挂点 merged 的加入者：没有'), f.reason());
+});
+
+test('假宿主走一遍契约模式加自动合并加非空白名单：门禁、带契约的项目检查、当前 head 的整体评审、列出加入者后不出批准卡，合并后只跑白名单里的，结束时 afterMerge 逐项列出、notify 为 true', async t => {
+  const f = fixture(t);
+  const contract = JSON.stringify({ required: ['one'], allowed: ['one'], approved: { skeleton: {} }, hooks: ['deploy'] });
+  const progress = [{ choice: 'piece', note: '块一\n做第一块' }, { choice: 'submit', note: '做了什么\n- 输入框能输入\n需要你知道：无', options: { again: false, escalate: false } }];
+  const reviews = [];
+  const joiners = [{ id: 'deploy', name: '部署', default: false }, { id: 'lint', name: '代码检查', default: true }];
+  const { nodes, values, params } = await definition();
+  const run = await host(f, { title: '输入框', devices: false, device: '', hold: '', delivery: '', executor: { agent: 'codex' }, executor2: null, reviewer: { agent: 'kimi' },
+    overallReviewer: { agent: 'grok' }, autoMerge: true, base: '', contract }, '输入框可以输入', {
+    progress: () => progress.shift(),
+    piece: () => ({ commit: f.land('one', 'first', '块一\n\nCoda-Piece: piece-1'), run: 'piece-1', reviewed: true }),
+    checks: () => ({ runs: [{ workflow: 'test', state: 'succeeded', runId: 'c1' }] }),
+    'overall-call': () => { reviews.push(f.state().head); return { decision: 'APPROVE', line: '评审通过', report: '评审原文', findings: '[]', head: f.state().head }; },
+    joiners: () => ({ list: joiners }),
+    'run-merged': () => ({ runs: [{ workflow: 'deploy', runId: 'r1', state: 'succeeded' }] }),
+  });
+  const { visited, cards, context } = run;
+  const at = id => visited.indexOf(id);
+  assert.deepEqual(visited.filter(id => ['pr', 'gate', 'checks', 'checks-passed', 'overall-plan', 'overall-call', 'overall-reviewed', 'overall', 'premerge', 'github-checks', 'joiners', 'auto-merge-choice', 'approval-result', 'merge', 'merged-inputs', 'run-merged', 'after-run'].includes(id)),
+    ['pr', 'gate', 'checks', 'checks-passed', 'overall-plan', 'overall-call', 'overall-reviewed', 'overall', 'premerge', 'github-checks', 'joiners', 'auto-merge-choice', 'approval-result', 'merge', 'merged-inputs', 'run-merged', 'after-run']);
+  assert.ok(at('gate') < at('checks') && at('github-checks') < at('joiners') && at('joiners') < at('auto-merge-choice'), '门禁在项目检查前，加入者在是否自动合并前');
+  assert.ok(!visited.includes('approve') && !cards.some(c => c.step === 'approve'), '不出批准卡');
+  assert.equal(run.end, 'done');
+  assert.deepEqual(evaluateTyped(params('checks').inputs.slice(1), context), { contract }, '项目检查带契约');
+  assert.deepEqual([reviews.length, reviews[0], f.state().overall.head], [1, f.state().head, f.state().head], '整体评审评在当前 head 上');
+  assert.deepEqual(f.state().gate, { head: f.state().head, outside: [], missing: [] });
+  assert.deepEqual([context.overall.auto, context['approval-result'].route, context['approval-result'].only], [true, 'merge', '["deploy"]'], '只勾白名单里的，默认勾选的 lint 不跑');
+  assert.equal(context['merged-inputs'].only, '["deploy"]');
+  assert.ok(f.calls().some(c => c.args[1] === 'merge' && c.args.includes('--match-head-commit') && c.args.includes(f.state().head)), '合并了需求分支 head');
+  const out = name => evaluateTyped(values(nodes.done).find(v => v.name === name).value.slice(1), context);
+  assert.equal(out('afterMerge'), '合并后的流程已全部结束，不用再等：部署：成功');
+  assert.equal(out('notify'), true);
+  assert.equal(evaluateTyped(nodes.done.notify.slice(1), context), true);
 });

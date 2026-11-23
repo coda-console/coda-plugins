@@ -168,6 +168,13 @@ export function outputPicked(answer, joiners) {
   output('needs', JSON.stringify(Object.fromEntries([...missing].map(([id, m]) => [id, m.for.map(joiner => joiner.id)]))));
 }
 
+// 自动合并不出批准卡，合成「合并」的答复（README「合并后的流程」）：只勾 hooks 白名单里的加入者，没写进白名单的一律不勾，即使它声明了默认勾选；
+// 没有要卡上文字的输入。unknown 是白名单里不是当前 head 上挂点 merged 加入者的名字（joiners 是 hook-joiners 的列表 JSON），known 是现有加入者的 ID。
+export function autoApproval(hooks, joiners) {
+  const known = (joiners ? JSON.parse(joiners) : []).map(joiner => joiner.id);
+  return { known, unknown: hooks.filter(id => !known.includes(id)), answer: { choice: 'merge', options: Object.fromEntries(hooks.map(id => [id, true])) } };
+}
+
 // 交给 run-workflows 的 inputs：卡上写了的，加主 Agent 在「填写合并后流程要的文字」里写的（FILLS，多实例按 MISSING 的顺序各一份）。
 // 任务要求必须附言，只附文件、没写字的这里失败并写明是哪一项。选了「这一项这次不跑」（skip）的输入不写，要它的加入者
 // 全部从 only 里去掉（ONLY、NEEDS）；输出的 only 是接着要运行的，空就是 `[]`，也作为返回值。
