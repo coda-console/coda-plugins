@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { activate, deactivate } from '../../../plugins/friends/main.mjs';
+import { pointProblem } from '@coda-console/protocol/validate';
 
 const manifest = JSON.parse(await readFile(new URL('../../../plugins/friends/package.json', import.meta.url), 'utf8'));
 const SOCIAL = 'friends/social@1';
@@ -104,7 +105,8 @@ test('friends merges the friend table with the paged profiles and the local note
   assert.deepEqual([result.selfAuthor, result.certState, result.truncated], [A, 'active', false]);
   assert.deepEqual(result.friends.map(row => [row.node, row.status, row.title, row.profileName, row.emoji, row.color, row.note]),
     [['n2', 'bound', '小二', '小二', '', 'gray', ''], ['n1', 'bound', '老王', '小一', '🐱', 'blue', '老王']]);
-  assert.deepEqual(g.accord.queries.map(q => [q.kind, q.limit, q.cursor]), [['profile', 200, undefined], ['profile', 200, '2']]);
+  assert.deepEqual(g.accord.queries.filter(q => q.kind === 'profile').map(q => [q.kind, q.limit, q.cursor]), [['profile', 200, undefined], ['profile', 200, '2']]);
+  assert.deepEqual(g.accord.queries.filter(q => q.kind === 'friends/card').map(q => [q.limit, q.cursor]), [[200, undefined]]);
   const all = await g.call('friends', { includePending: true });
   assert.deepEqual(all.friends.map(row => [row.node, row.status]), [['n3', 'pending'], ['n2', 'bound'], ['n1', 'bound']]);
 });
@@ -114,7 +116,7 @@ test('friends stops at a cursor it has seen and says it is truncated; with no id
   g.accord.loop = true;
   const result = await g.call('friends');
   assert.equal(result.truncated, true);
-  assert.equal(g.accord.queries.length, 2, 'the second page repeats the cursor, so there is no third');
+  assert.equal(g.accord.queries.length, 4, 'each kind\'s second page repeats the cursor, so there is no third');
   g.accord.queries.length = 0;
   await g.accord.change({ author: null, certificate: null, friends: [] });
   const none = await g.call('friends', { includePending: true });
@@ -680,4 +682,57 @@ test('a withdrawal that a later publish of the same author already replaced and 
   await g.accord.change({ certificate: ACTIVE });
   await until(async () => Object.keys(await g.outbox()).join() === 'p:x:same', '过期撤回被丢掉');
   assert.deepEqual(g.accord.calls, []);
+});
+
+const OWNER = '0123abcd-4567-89ef-0123-456789abcdef', HASH = 'ab'.repeat(32);
+const AVATAR = { owner: OWNER, path: `content/${HASH}`, sha256: HASH, mime: 'image/png', size: 1024 };
+
+test('setCard publishes the cleaned friends/card self record to the public, clears an avatar with null, and refuses a bad pointer', async t => {
+  const g = await gateway(t);
+  assert.deepEqual(await g.call('setCard', { name: ' 小明 ', emoji: '🙂', color: 'teal', avatar: AVATAR }), { state: 'synced', author: A, version: 1 });
+  assert.deepEqual(g.accord.calls, [{ kind: 'friends/card', id: 'self', body: { name: '小明', emoji: '🙂', color: 'teal', avatar: AVATAR }, audience: ['public'] }]);
+  assert.equal((await g.outbox())['p:friends/card:self'].state, 'synced');
+  assert.deepEqual(await g.call('setCard', { name: '小明', emoji: '🙂', color: 'teal', avatar: AVATAR }), { state: 'synced', skipped: true, author: A });
+  assert.deepEqual(await g.call('setCard', { name: '小明', avatar: null }), { state: 'synced', author: A, version: 2 });
+  assert.deepEqual(g.accord.calls.at(-1).body, { name: '小明', avatar: null });
+  for (const avatar of [{ ...AVATAR, path: `uploads/${OWNER}` }, { ...AVATAR, path: 'plugins/friends/services/x/a.png' }, { ...AVATAR, sha256: 'cd'.repeat(32) },
+    { ...AVATAR, size: 5 * 1024 * 1024 + 1 }, { ...AVATAR, extra: 1 }, { ...AVATAR, name: ' \u0007 ' }]) await rejects(g.call('setCard', { name: '小明', avatar }));
+  await rejects(g.call('setCard', { name: '' }));
+  await rejects(g.call('setCard', { name: '小明', color: 'red' }));
+  assert.equal(g.accord.calls.length, 2, 'a refused card never reaches Accord');
+});
+
+test('setCard waits in the outbox while the certificate is expired and goes out once it is active again', async t => {
+  const g = await gateway(t, { certificate: EXPIRED });
+  assert.deepEqual(await g.call('setCard', { name: '小明', avatar: AVATAR }), { state: 'needs_cert', author: A });
+  assert.deepEqual(g.accord.calls, []);
+  assert.deepEqual((await g.outbox())['p:friends/card:self'].body, { name: '小明', avatar: AVATAR });
+  await g.accord.change({ certificate: ACTIVE });
+  await until(async () => (await g.status()).pendingCount === 0, '证书恢复后补发名片');
+  assert.deepEqual(g.accord.calls, [{ kind: 'friends/card', id: 'self', body: { name: '小明', avatar: AVATAR }, audience: ['public'] }]);
+  assert.equal((await g.outbox())['p:friends/card:self'].state, 'synced');
+});
+
+test('friends reads profiles and friends/card records, falls back to the card field by field and gives each row its avatar', async t => {
+  const g = await gateway(t, { friends: [{ node: 'n1', author: F1, bound: true, updatedAt: 2 }, { node: 'n2', author: F2, bound: true, updatedAt: 1 }, { node: 'n3', author: F3, bound: true, updatedAt: 0 }] });
+  g.accord.records.push({ author: F1, kind: 'profile', id: 'self', version: 1, body: { name: '小一' } },
+    { author: F1, kind: 'friends/card', id: 'self', version: 3, body: { name: '卡一', emoji: '🐱', avatar: AVATAR } },
+    { author: F2, kind: 'friends/card', id: 'self', version: 1, body: { name: '卡二', color: 'green' } },
+    { author: F3, kind: 'friends/card', id: 'self', version: 1, body: { name: '卡三', avatar: { ...AVATAR, path: 'uploads/x' } } });
+  const result = await g.call('friends');
+  assert.equal(result.truncated, false);
+  assert.deepEqual(result.friends.map(row => [row.node, row.profileName, row.emoji, row.color, row.avatar]),
+    [['n1', '小一', '🐱', 'gray', AVATAR], ['n2', '卡二', '', 'green', null], ['n3', '卡三', '', 'gray', null]]);
+});
+
+test('setCard takes an emoji of up to 8 code points, as the card itself does, and refuses 9', async t => {
+  const g = await gateway(t);
+  assert.equal((await g.call('setCard', { name: '小明', emoji: '🙂'.repeat(8) })).state, 'synced');
+  assert.equal(g.accord.calls.at(-1).body.emoji, '🙂'.repeat(8));
+  await rejects(g.call('setCard', { name: '小明', emoji: '🙂'.repeat(9) }));
+  assert.equal(g.accord.calls.length, 1);
+  // 协议 schema 自己就判到 8：调用方照 schema 填的，处理函数不会再拒。
+  const input = manifest.contributes.protocols[0].operations.setCard.input;
+  assert.equal(pointProblem(input, { name: '小明', emoji: '🙂'.repeat(8) }, 'setCard'), null);
+  assert.notEqual(pointProblem(input, { name: '小明', emoji: '🙂'.repeat(9) }, 'setCard'), null);
 });

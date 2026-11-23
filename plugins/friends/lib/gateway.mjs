@@ -1,7 +1,7 @@
 // 抽象社交网关：实现 friends/social@1。业务无关——只认 kind、id、body；签名写入与记录查询全部透传 coda/accord@1，
 // 自己不建第二份目录库，只在 outbox.json 里留还没发出去的 body（同步成功即释放）。所有会写盘、会外发的动作排成一条队，
 // 发布、撤回、证书变化引起的冲洗互不交叉。
-import { PROFILE_KIND, mergeFriendRows, statusOf } from './friends.mjs';
+import { CARD_KIND, PROFILE_ID, PROFILE_KIND, mergeFriendRows, normalizeCardInput, statusOf } from './friends.mjs';
 import { readNotes } from './notes.mjs';
 import { canSkip, canonicalHash, certStateOf, checkId, checkKind, checkPublish, entryKey, holdState, keyOf, retractKey, invalid, isPending, markRejected, markSynced,
   nextSeq, queuePublish, queueRetract, readOutbox, withState, writeOutbox } from './outbox.mjs';
@@ -157,10 +157,11 @@ export function createGateway(coda, dir) {
   async function friends({ includePending = false } = {}) {
     const { accord, author, certState } = await accordState();
     const list = Array.isArray(accord?.status?.friends) ? accord.status.friends : [];
-    const { records, truncated } = list.length ? await pages({ kind: PROFILE_KIND }) : { records: [], truncated: false };
+    const none = { records: [], truncated: false };
+    const [profiles, cards] = list.length ? await Promise.all([pages({ kind: PROFILE_KIND }), pages({ kind: CARD_KIND })]) : [none, none];
     const notes = dir ? await readNotes(dir) : {};
-    const rows = mergeFriendRows({ friends: list, profiles: records, notes }).filter(row => includePending || row.status === 'bound');
-    return { selfAuthor: author, certState, friends: rows, truncated };
+    const rows = mergeFriendRows({ friends: list, profiles: profiles.records, cards: cards.records, notes }).filter(row => includePending || row.status === 'bound');
+    return { selfAuthor: author, certState, friends: rows, truncated: profiles.truncated || cards.truncated };
   }
 
   function records({ kind, author, id, limit, cursor, includeAudience }) {
@@ -209,6 +210,13 @@ export function createGateway(coda, dir) {
       if (done.state === 'synced') return { state: 'synced', author: done.entry.lastAuthor, ...(Number.isSafeInteger(done.result?.version) ? { version: done.result.version } : {}) };
       return { state: done.state, author, error: done.error };
     });
+  }
+
+  // 可代签的社交名片：清洗后走 publish 的同一条队，没有身份或证书过期一样排队、恢复后补发。
+  function setCard(input) {
+    let body;
+    try { body = normalizeCardInput(input); } catch (e) { throw invalid(message(e)); }
+    return publish({ kind: CARD_KIND, id: PROFILE_ID, body, audience: ['public'] });
   }
 
   function retract({ kind, id } = {}) {
@@ -302,7 +310,7 @@ export function createGateway(coda, dir) {
     return { author, certState, pausedKinds, pendingCount: Object.values(entries).filter(isPending).length, items };
   }
 
-  const protocolHandlers = { friends, records, publish, retract, outbox };
+  const protocolHandlers = { friends, records, publish, setCard, retract, outbox };
   for (const [name, fn] of Object.entries(protocolHandlers)) handles.push(coda.handle(SOCIAL, name, input => fn(input ?? {})));
 
   // 证书变成可用就冲洗待发队列；任何变化都刷新网关记录。

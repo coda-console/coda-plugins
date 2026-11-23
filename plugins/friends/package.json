@@ -40,7 +40,7 @@
       {
         "name": "friends/social@1",
         "title": "好友社交网关",
-        "description": "业务无关的好友网关：读好友与好友分享的记录，向好友发布、撤回记录；签名与记录全部透传 coda/accord@1，没有身份或证书过期时在本机排队，恢复后自动补发。",
+        "description": "业务无关的好友网关：读好友与好友分享的记录，向好友发布、撤回记录，设置可代签的社交名片 friends/card；签名与记录全部透传 coda/accord@1，没有身份或证书过期时在本机排队，恢复后自动补发。",
         "spec": {
           "type": "object",
           "properties": { "version": { "const": 1 } },
@@ -136,6 +136,50 @@
               "additionalProperties": false
             }
           },
+          "setCard": {
+            "idempotent": true,
+            "input": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "string", "minLength": 1, "maxLength": 40 },
+                "emoji": { "type": "string", "maxLength": 8 },
+                "color": { "enum": ["blue", "orange", "green", "purple", "pink", "teal", "gray"] },
+                "avatar": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "description": "内容寻址的图片指针（BlobPointer）：path 只收 content/<sha256>，sha256 须与 path 里的一致",
+                      "properties": {
+                        "owner": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+                        "path": { "type": "string", "pattern": "^content/[0-9a-f]{64}$" },
+                        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+                        "mime": { "type": "string", "minLength": 1, "maxLength": 128 },
+                        "size": { "type": "integer", "minimum": 0, "maximum": 5242880 },
+                        "name": { "type": "string", "minLength": 1, "maxLength": 200 }
+                      },
+                      "required": ["owner", "path", "sha256"],
+                      "additionalProperties": false
+                    },
+                    { "type": "null" }
+                  ]
+                }
+              },
+              "required": ["name"],
+              "additionalProperties": false
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "state": { "enum": ["synced", "queued", "paused", "no_identity", "needs_cert", "error"] },
+                "skipped": { "type": "boolean" },
+                "author": { "type": ["string", "null"] },
+                "version": { "type": "integer", "minimum": 0 },
+                "error": { "type": "string" }
+              },
+              "required": ["state"],
+              "additionalProperties": false
+            }
+          },
           "retract": {
             "idempotent": true,
             "input": {
@@ -198,7 +242,7 @@
         },
         "permissions": {
           "read": { "title": "查看好友列表与读取好友分享的记录", "read": true, "operations": ["friends", "records"] },
-          "publish": { "title": "通过好友网关发布、撤回记录与查看待发队列", "operations": ["publish", "retract", "outbox"] }
+          "publish": { "title": "通过好友网关发布、撤回记录、设置社交名片与查看待发队列", "operations": ["publish", "setCard", "retract", "outbox"] }
         }
       }
     ],

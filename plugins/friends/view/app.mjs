@@ -1,7 +1,8 @@
 // 好友页：本机 Accord 身份与名片、接受好友邀请、好友列表。Accord 的读写（coda/accord@1）都在这里按交互发起；
 // 备注只经模块存在本机。好友的昵称、备注、节点名等外来数据一律用 textContent / DOM API 渲染，不进 innerHTML。
 import { Bridge } from 'coda-view://lib/v1/bridge.js';
-import { COLORS, checked, mergeFriendRows, normalizeProfileInput, parseInvite, readProfileRecord, shortAuthor } from '../lib/friends.mjs';
+import { CARD_KIND, COLORS, cardFallbackNotice, checked, mergeFriendRows, mergeProfileAndCard, normalizeProfileInput, parseInvite, readCardRecord, readProfileRecord,
+  shortAuthor } from '../lib/friends.mjs';
 
 const ACCORD = 'coda/accord@1', LOCAL = { kind: ACCORD, id: 'local' };
 const coda = window.coda, bridge = new Bridge();
@@ -19,7 +20,7 @@ const h = (tag, attrs = {}, ...children) => {
   return node;
 };
 
-const state = { author: null, friends: [], profiles: [], notes: {}, loaded: false, problem: null, editing: null, removing: null, busy: new Set(), notice: new Map() };
+const state = { author: null, friends: [], profiles: [], cards: [], notes: {}, loaded: false, problem: null, editing: null, removing: null, busy: new Set(), notice: new Map() };
 
 // ---- 备注：经模块存在本机 ----
 const pendingReplies = new Map();
@@ -41,22 +42,25 @@ function ask(type, input = {}) {
 
 // ---- 读本机 Accord ----
 let reading = 0;
+// profile 与 friends/card 各读各的：一种读不到或没有记录，不挡另一种。
 async function readProfiles() {
   const mine = ++reading;
-  try {
-    const { records } = await coda.query(LOCAL, 'records', { kind: 'profile', limit: 200 });
-    if (mine !== reading) return;
-    state.profiles = records;
-    state.problem = null;
-    if (!own.touched) loadOwn();
-  } catch (e) { if (mine === reading) state.problem = `读不到好友名片：${e.message}`; }
+  const [profiles, cards] = await Promise.allSettled(['profile', CARD_KIND].map(kind => coda.query(LOCAL, 'records', { kind, limit: 200 })));
+  if (mine !== reading) return;
+  if (profiles.status === 'fulfilled') state.profiles = profiles.value?.records ?? [];
+  if (cards.status === 'fulfilled') state.cards = cards.value?.records ?? [];
+  const failed = [profiles, cards].find(read => read.status === 'rejected');
+  state.problem = failed ? `读不到好友名片：${failed.reason?.message ?? failed.reason}` : null;
+  if (!own.touched) loadOwn();
   draw();
 }
-const own = { touched: false, name: '', emoji: '', color: 'blue' };
+const own = { touched: false, name: '', emoji: '', color: 'blue', avatar: undefined };
+const latestOwn = (records, read) => records.map(read).filter(p => p && p.author === state.author).sort((a, b) => b.version - a.version)[0];
+// 本机名片：与好友列表同一条合并规则（profile 写了的优先，缺的由 friends/card 补）；头像随表单带着，重新发布不会把它丢掉或带回已清除的。
 function loadOwn() {
-  const mine = state.profiles.map(readProfileRecord).filter(p => p && p.author === state.author).sort((a, b) => b.version - a.version)[0];
+  const mine = mergeProfileAndCard(latestOwn(state.profiles, readProfileRecord), latestOwn(state.cards, readCardRecord));
   if (!mine) return;
-  Object.assign(own, { name: mine.name, emoji: mine.emoji ?? '', color: mine.color ?? 'blue' });
+  Object.assign(own, { name: mine.name, emoji: mine.emoji ?? '', color: mine.color ?? 'blue', avatar: mine.avatarPresent ? mine.avatar : undefined });
   syncOwnForm();
 }
 
@@ -99,8 +103,18 @@ async function publishProfile() {
   ownForm.button.disabled = true;
   say(ownForm.message, '正在发布…', 'progress');
   try {
-    await coda.call(LOCAL, 'publish', { kind: 'profile', id: 'self', body, audience: ['public'] });
-    say(ownForm.message, '名片已发布，好友会看到它', 'ok');
+    try {
+      await coda.call(LOCAL, 'publish', { kind: 'profile', id: 'self', body, audience: ['public'] });
+      say(ownForm.message, '名片已发布，好友会看到它', 'ok');
+    } catch (e) {
+      // 绑定了代签证书时 profile 须由客户端根签，这里发不了：改发可代签的社交名片 friends/card，好友一样看得到。
+      if (e?.code !== 'forbidden') throw e;
+      await coda.call(LOCAL, 'publish', { kind: CARD_KIND, id: 'self', body, audience: ['public'] });
+      // 缓存的 state.profiles 可能还没读完或读失败了：现查一次本机作者的根签 profile，查不出来就不承诺。
+      let rooted = null;
+      try { rooted = ((await coda.query(LOCAL, 'records', { kind: 'profile', author: state.author, limit: 1 }))?.records ?? []).some(record => readProfileRecord(record)); } catch { /* 按没读出来提示 */ }
+      say(ownForm.message, cardFallbackNotice(rooted), 'ok');
+    }
     readProfiles();
   } catch (e) { say(ownForm.message, `没有发布成功：${e.message}`, 'error'); }
   ownForm.button.disabled = false;
@@ -114,8 +128,8 @@ async function copyKey() {
 // ---- 添加好友 ----
 const invite = {
   paste: h('textarea', { placeholder: '粘贴邀请：JSON、coda-friend:// 链接，或多行 control=… / authKey=…', autocomplete: 'off', spellcheck: 'false', oninput: parsePaste }),
-  control: h('input', { type: 'text', autocomplete: 'off', spellcheck: 'false', placeholder: 'https://…' }),
-  authKey: h('input', { type: 'password', autocomplete: 'off', spellcheck: 'false', placeholder: '入网码，提交后立即清空' }),
+  control: h('input', { type: 'text', autocomplete: 'off', spellcheck: 'false', placeholder: 'https://…', oninput: dropHidden }),
+  authKey: h('input', { type: 'password', autocomplete: 'off', spellcheck: 'false', placeholder: '入网码，提交后立即清空', oninput: dropHidden }),
   linkId: h('input', { type: 'text', autocomplete: 'off', placeholder: '留空自动生成' }),
   scope: h('input', { type: 'text', autocomplete: 'off', placeholder: '留空用本机空间' }),
   peerNode: h('input', { type: 'text', autocomplete: 'off', placeholder: '可选' }),
@@ -123,14 +137,17 @@ const invite = {
   button: h('button', { class: 'btn', type: 'button', onclick: submitInvite }, '接受邀请'),
   hidden: {},
 };
+// hostname、peerPort 只随识别出的那份邀请：手改入网地址或入网码就是另一份邀请了，丢掉；改 linkId、scope、peerNode 不算。
+function dropHidden() { invite.hidden = {}; }
 function parsePaste() {
+  invite.hidden = {};
   const text = invite.paste.value;
   if (!text.trim()) return say(invite.message, '', 'hint');
   try {
     const found = parseInvite(text);
     for (const name of ['control', 'authKey', 'scope', 'peerNode']) if (found[name]) invite[name].value = found[name];
     if (found.linkId && !/^f-[0-9a-f]{8}$/.test(found.linkId)) invite.linkId.value = found.linkId;
-    invite.hidden.hostname = found.hostname ?? '';
+    invite.hidden = { hostname: found.hostname ?? '', peerPort: found.peerPort };
     say(invite.message, '已识别邀请，核对后点「接受邀请」', 'ok');
   } catch (e) { say(invite.message, e.message, 'error'); }
 }
@@ -142,7 +159,7 @@ async function submitInvite() {
   let input;
   try {
     input = checked({ control: invite.control.value, authKey: invite.authKey.value, linkId: invite.linkId.value, scope: invite.scope.value,
-      peerNode: invite.peerNode.value, hostname: invite.hidden.hostname });
+      peerNode: invite.peerNode.value, hostname: invite.hidden.hostname, peerPort: invite.hidden.peerPort });
   } catch (e) {
     // 只填了粘贴区、还没有识别出来：再试着从粘贴区解析一次。
     try { input = parseInvite(invite.paste.value); } catch { return say(invite.message, e.message, 'error'); }
@@ -168,7 +185,7 @@ async function submitInvite() {
 // ---- 好友列表 ----
 const list = h('div');
 const countBadge = h('span', { class: 'count' });
-function rows() { return mergeFriendRows({ friends: state.friends, profiles: state.profiles, notes: state.notes }); }
+function rows() { return mergeFriendRows({ friends: state.friends, profiles: state.profiles, cards: state.cards, notes: state.notes }); }
 
 async function handshake(row) {
   state.busy.add(row.node); state.notice.set(row.node, { kind: 'progress', text: '正在互认…' }); draw();

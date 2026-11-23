@@ -2,7 +2,7 @@
 
 管理本机的 Accord 身份、个人名片与熟人好友通道（`coda/accord@1`）。
 
-- **我的身份与名片**：显示本机公钥短码，可复制公钥；昵称、头像 Emoji、主题色以公开的 `profile` / `self` 记录发布。
+- **我的身份与名片**：显示本机公钥短码，可复制公钥；昵称、头像 Emoji、主题色以公开的 `profile` / `self` 记录发布；本机绑定了代签证书、`profile` 被拒（`forbidden`）时改发可代签的社交名片 `friends/card` / `self`。
 - **添加好友**：粘贴对方给的邀请（JSON、`coda-friend://` 链接或多行 `key=value`），接受后自动尝试互认。暂需由对方提供 friend 角色入网码。
 - **好友列表**：实时跟随好友表变化；可备注、重新互认、移除。
 - **社交网关 `friends/social@1`**：业务无关，别的插件（在 `optionalUses` 里声明）经它读好友与好友分享的记录、向好友发布与撤回记录，不必各自处理没有身份、证书过期和重试。
@@ -13,9 +13,10 @@
 
 | 操作 | 作用 |
 | --- | --- |
-| `friends`（读） | 互认的好友（`includePending` 带上待互认与冲突的），合并名片与本地备注 |
+| `friends`（读） | 互认的好友（`includePending` 带上待互认与冲突的），合并 `profile`、`friends/card`（逐字段 `profile` 优先）与本地备注；每行带 `avatar`（`content/<sha256>` 指针或 `null`） |
 | `records`（读） | 按 `kind`、`author`、`id`、`cursor` 读好友分享的记录，不读 `binding` |
 | `publish` | 发布 `{ kind, id, body, audience? }`；同作者同内容不重发，换作者重发 |
+| `setCard` | 发布本机社交名片 `friends/card` / `self`：`{ name, emoji?, color?, avatar? }`，`avatar` 只收 `content/<sha256>` 指针（至多 5 MiB），`null` 清除；与 `publish` 同一条队 |
 | `retract` | 撤回一条，或省略 `id` 撤回本机在这个 `kind` 下的全部（含队列里还没发出去的） |
 | `outbox`（读） | 待发与已同步条目的状态，从不给出 `body` |
 

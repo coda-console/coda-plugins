@@ -30,7 +30,7 @@ test('activate registers the notes and policy handlers, the gateway operations a
   t.after(deactivate);
   await activate(h.coda);
   assert.deepEqual([...h.self.keys()].sort(), ['notes.delete', 'notes.list', 'notes.set', 'policy.get', 'policy.setKind']);
-  assert.deepEqual(h.operations.sort(), ['friends', 'outbox', 'publish', 'records', 'retract'].map(name => `friends/social@1/${name}`));
+  assert.deepEqual(h.operations.sort(), ['friends', 'outbox', 'publish', 'records', 'retract', 'setCard'].map(name => `friends/social@1/${name}`));
   assert.deepEqual([...h.views.keys()], ['friends']);
 });
 
@@ -74,6 +74,6 @@ test('without a state directory notes fail plainly, and deactivate disposes what
   await assert.rejects(Promise.resolve().then(() => h.self.get('notes.list')({})), /状态目录/);
   deactivate();
   assert.deepEqual(h.disposed.sort(), ['friends/social@1/friends', 'friends/social@1/outbox', 'friends/social@1/publish', 'friends/social@1/records',
-    'friends/social@1/retract', 'notes.delete', 'notes.list', 'notes.set', 'policy.get', 'policy.setKind', 'watch']);
+    'friends/social@1/retract', 'friends/social@1/setCard', 'notes.delete', 'notes.list', 'notes.set', 'policy.get', 'policy.setKind', 'watch']);
   deactivate();
 });
