@@ -28,16 +28,5 @@ jobs:
         run: node scripts/install-plugins.mjs
       - name: 检查包与插件的测试
         run: npm test
-      - name: 插件契约与 Coda 同步的一致（check/coda/ 没被手改，依赖版本与 Coda 相同）
-        run: node scripts/check-contract.mjs
-      - name: 模板：清单 + 握手 + 一轮
-        run: |
-          for dir in templates/*/; do node bin/check.mjs "$dir" --live; done
-          node bin/check.mjs templates/agent --live --prompt "wait 演示自主轮次"
-      - name: 模板 module 的测试（模板依赖的检查包用这一份，不用 npm 上已发布的）
-        run: |
-          mkdir -p templates/module/node_modules/@coda-console
-          ln -s "$PWD" templates/module/node_modules/@coda-console/plugin-check
-          node --test templates/module/test/main.test.mjs
-      - name: 插件：只查清单（真握手与一轮要各家的 CLI 与登录，不在 CI 跑；入口用假的对端跑过的在 npm test 里）
-        run: for dir in plugins/*/; do node bin/check.mjs "$dir" --manifest; done
+      - name: 插件：静态校验清单与工作流（完整校验在 Coda 宿主用 coda plugin check；入口用假的对端跑过的在 npm test 里）
+        run: node scripts/check-plugins.mjs
