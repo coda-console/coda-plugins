@@ -1,4 +1,4 @@
-// 瞬时故障的原地重试（coda:retry）：只加在重跑安全的、做幂等网络操作的脚本步骤上。静态读三个流程的 BPMN。
+// 瞬时故障的原地重试（coda:retry）：只加在重跑安全的、做幂等网络操作的脚本步骤上。静态读四个流程的 BPMN。
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
@@ -6,8 +6,8 @@ import { readWorkflow } from '@coda-console/protocol/workflow';
 
 // 声明了 coda:retry 的脚本步骤，重跑都安全：
 // piece 的 gate 同一个提交强推同一个临时分支；land 先按本运行的 trailer 认出已合入的提交，abandon 临时分支已不在就跳过；develop 的 merge 先认 PR 终态，已合并直接交出原合并提交；
-// develop 的 req 远端已有同名需求分支就沿用、pr 已开着的 PR 只更新正文、github-checks 只读；deliver 的 confirm-result 只读 gh，全部成功后才记下成员。
-const RETRIED = { piece: ['gate', 'land', 'abandon'], develop: ['req', 'pr', 'github-checks', 'merge'], deliver: ['confirm-result'] };
+// develop 与 develop-contract 的 req 远端已有同名需求分支就沿用、pr 已开着的 PR 只更新正文、github-checks 只读，develop-contract 的 gate 只 fetch 固定的两个提交并重算判定；deliver 的 confirm-result 只读 gh，全部成功后才记下成员。
+const RETRIED = { piece: ['gate', 'land', 'abandon'], develop: ['req', 'pr', 'github-checks', 'merge'], 'develop-contract': ['req', 'pr', 'gate', 'github-checks', 'merge'], deliver: ['confirm-result'] };
 // 会开执行会话、或强推后重跑会撞租约（integrate 的 --force-with-lease 在推送成功但响应丢了时，重跑必然被拒）的步骤：不加。
 const NOT_RETRIED = { piece: ['execute', 'swap', 'revise'], deliver: ['integrate'] };
 

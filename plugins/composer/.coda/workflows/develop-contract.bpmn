@@ -1,0 +1,438 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 契约开发（README.md「契约开发」）：在开工前锁定的契约（JSON：required、allowed、approved、hooks）约束下推进并自动合并；监督开发（develop.bpmn）保持原样，两个流程共用 scripts/develop.mjs。
+     一个需求一次运行、一条需求分支 req/<运行 ID>，开工时就校验契约、必须填整体评审者。主 Agent 在「需求进行中」派块（callActivity 调 piece，一次一块）往需求分支里提改动，
+     不找用户；提交验收后需求分支先跟上目标分支，再开 PR 进目标分支，先过范围门禁（改动的文件都在契约的 allowed 内、required 的都改到了），再依次项目检查（带契约）、整体评审
+     （需求分支 head 与最近一次评完的整体评审的 head 不同才评）、合并前检查、GitHub 检查，之后列出合并后的流程。开了自动合并并满足条件（范围门禁与整体评审都在当前 head 上、没有违例也没有必须修、
+     没勾「交用户批准」）时不出批准卡，由流程按契约 hooks 白名单合成答复合并，合并后只跑白名单里的流程；否则由用户批准一次，用合并提交合并，再运行勾选的合并后流程（挂点 merged）。
+     结束时的输出 afterMerge 写明合并后流程的结果：都成功（逐项列出）或没有要跑的，发起会话据此知道合并后的流程已全部结束；有一项没成功时运行失败，错误里写明是哪一项。
+     收尾的任何失败和「暂不合并」都带着原因回到「需求进行中」。BPMN 2.0，由 Coda 执行（docs/workflows.md）。 -->
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="develop-contract-definitions" targetNamespace="https://coda.pub/plugins/composer">
+  <process id="develop-contract" name="契约开发" isExecutable="true" coda:title='{{if inputs.title = "" then "契约开发" else "需求：" + inputs.title}}'>
+    <extensionElements>
+      <coda:join hook="develop" />
+      <coda:input name="title" label="需求名" default="" description="也是需求分支进目标分支的 PR 标题；留空时由主 Agent 在第一张任务里写" />
+      <coda:input name="executor" label="执行者" type="agent" description="每一块的默认执行者，主 Agent 派块时可在备注里换；提交验收时跟上目标分支的解冲突也交它；不填则每块都要在备注里写" />
+      <coda:input name="executor2" label="备用执行者" type="agent" description="每一块审查卡上「换备用执行者重做」的默认接手人，主 Agent 派块时可在备注里换；不填则不能换人" />
+      <coda:input name="reviewer" label="评审者" type="agent" description="评每一块的交付，主 Agent 派块时可在备注里换；不填不评" />
+      <coda:input name="overallReviewer" label="整体评审者" type="agent" required="true" description="必填：提交验收、项目检查通过后评整条需求分支。需求分支 head 与最近一次评完的整体评审的 head 不同才评，相同不重评；提交验收时勾「重新整体评审」则一定评" />
+      <coda:input name="autoMerge" label="检查和评审通过后自动合并" type="boolean" default="true" description="合并前检查和 GitHub 检查通过且这次提交没勾「交用户批准」、范围门禁是在当前 head 上算的且没有违例、最近一次评完的整体评审就是当前 head 且没有必须修、这次提交没有发起了却没评成的评审，就直接合并，不出批准卡；合并后只跑契约 hooks 里列的流程（写了才跑，没写的即使默认勾选也不跑）。不满足时照常出批准卡；关掉则每次都出批准卡" />
+      <coda:input name="base" label="目标分支" default="" description="留空用仓库默认分支" />
+      <coda:input name="contract" label="契约" type="string" required="true" description="整份契约的 JSON，如 {&quot;required&quot;:[…],&quot;allowed&quot;:[…],&quot;approved&quot;:{…},&quot;hooks&quot;:[…]}：required 是必须改到的、allowed 是允许改的（区域名或路径，以 / 结尾的是目录前缀）、hooks 是自动合并后允许自动跑的挂点 merged 的流程名（白名单，写了才跑），approved 交给项目检查读。开工时校验，提交验收会过范围门禁" />
+    </extensionElements>
+    <startEvent id="start" />
+    <sequenceFlow id="start-brief" sourceRef="start" targetRef="brief-choice" />
+    <!-- 目标是发起时带的需求文字（run.message）。需求名和它都有时直接建需求分支；否则（如用户在会话里开启）第一张任务交给主 Agent，
+         不叫醒它，随会话的下一条输入告诉它，由它把聊定的需求写下来。 -->
+    <exclusiveGateway id="brief-choice" name="是否已有目标" default="brief-needed" />
+    <sequenceFlow id="brief-needed" sourceRef="brief-choice" targetRef="brief" />
+    <sequenceFlow id="brief-given" sourceRef="brief-choice" targetRef="req"><conditionExpression xsi:type="tFormalExpression">=inputs.title != "" and run.message != ""</conditionExpression></sequenceFlow>
+    <userTask id="brief" name="写需求" coda:wake="false" coda:noteLabel="第一行需求名，空一行后是目标与完成标准">
+      <documentation>用户在这个会话里开启了契约开发：一个需求一条需求分支，改动要在契约划定的范围内，你是主 Agent，用块把需求一块块交给执行者做、亲自审查后合进需求分支；需求做完提交验收，需求分支开 PR、跑检查，满足自动合并条件时直接合并，否则由用户批准合并。
+现在把和用户聊定的需求写下来：备注第一行是需求名（也是 PR 标题），空一行后是目标与完成标准。之后会给你一张「需求进行中」，写着怎么派块。
+{{if run.message = "" then "" else "发起时带的需求：\n" + run.message + "\n"}}
+{{if brief-result.feedback = null then "" else brief-result.feedback}}</documentation>
+      <extensionElements><coda:choice id="start" name="开始" primary="true" note="required" /></extensionElements>
+    </userTask>
+    <sequenceFlow id="brief-result-flow" sourceRef="brief" targetRef="brief-result" />
+    <scriptTask id="brief-result" name="读取需求" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements><coda:env name="BRIEF" value="=brief" /><coda:output name="route" /><coda:output name="feedback" /><coda:output name="title" /><coda:output name="goal" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" brief</script>
+    </scriptTask>
+    <sequenceFlow id="brief-route" sourceRef="brief-result" targetRef="after-brief" />
+    <exclusiveGateway id="after-brief" name="需求是否写全" default="brief-req" />
+    <sequenceFlow id="brief-again" sourceRef="after-brief" targetRef="brief"><conditionExpression xsi:type="tFormalExpression">=brief-result.route = "brief"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="brief-req" sourceRef="after-brief" targetRef="req" />
+    <scriptTask id="req" name="建需求分支" scriptFormat="bash" coda:timeout="5" coda:retry="3">
+      <extensionElements>
+        <coda:env name="TITLE" value='=if inputs.title != "" and run.message != "" then inputs.title else brief-result.title' />
+        <coda:env name="GOAL" value='=if inputs.title != "" and run.message != "" then run.message else brief-result.goal' />
+        <coda:env name="BASE" value="=inputs.base" /><coda:env name="CONTRACT" value="=inputs.contract" /><coda:env name="REVIEWER" value="=inputs.overallReviewer != null" />
+        <coda:output name="title" /><coda:output name="goal" /><coda:output name="base" /><coda:output name="branch" />
+      </extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" branch</script>
+    </scriptTask>
+    <sequenceFlow id="req-resume" sourceRef="req" targetRef="resume" />
+    <!-- 每次回到「需求进行中」都经过这里，带上回来的原因（第一次为空）。 -->
+    <scriptTask id="resume" name="整理回来的原因" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements><coda:output name="reason" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" resume</script>
+    </scriptTask>
+    <sequenceFlow id="resume-progress" sourceRef="resume" targetRef="progress" />
+    <userTask id="progress" name="需求进行中" coda:noteLabel="派一块的标题与任务书、给用户的改动汇报，或暂停的原因">
+      <documentation>需求：{{req.title}}
+目标与完成标准：
+{{req.goal}}
+需求分支：{{req.branch}}（从 {{req.base}} 建，最后开 PR 进 {{req.base}}）
+{{if resume.reason = "" then "" else "回到进行中的原因：\n" + resume.reason + "\n"}}{{if progress-result.feedback = null then "" else progress-result.feedback}}
+你是主 Agent，需求由你推进，这期间不找用户。把需求分成几块，用这张任务的答复一块块派给执行者：
+- 「派一块」：备注第一行是这一块的标题（也是它合进需求分支那个提交的标题），其后是自足的任务书（背景、范围、验收要求）。流程调用块（piece），执行者从需求分支 head 开工，项目检查、评审后交你审查（块里的任务交到这个会话），合进需求分支后回到这张任务，写着合入的提交和块的运行；块失败或你在块里选了放弃，也带着原因回到这里。
+- 「跟上目标分支」：派一块把 {{req.base}} 最新的提交合并进需求分支、解冲突、顺延撞号的迁移版本，以合并提交快进进需求分支，不 squash。备注可不写，写了附在固定任务后面。
+- 一次只派一块：派出后等它结束才回到这里，有依赖的按先后派。
+块的人选默认用开工时填的：
+- 执行者：{{if inputs.executor = null then "没填" else inputs.executor.agent + (if inputs.executor.model = null then "" else "，模型 " + inputs.executor.model) + (if inputs.executor.effort = null then "" else "，强度 " + inputs.executor.effort) + (if inputs.executor.mode = null then "" else "，模式 " + inputs.executor.mode)}}
+- 备用执行者：{{if inputs.executor2 = null then "没填" else inputs.executor2.agent + (if inputs.executor2.model = null then "" else "，模型 " + inputs.executor2.model) + (if inputs.executor2.effort = null then "" else "，强度 " + inputs.executor2.effort) + (if inputs.executor2.mode = null then "" else "，模式 " + inputs.executor2.mode)}}
+- 评审者：{{if inputs.reviewer = null then "没填" else inputs.reviewer.agent + (if inputs.reviewer.model = null then "" else "，模型 " + inputs.reviewer.model) + (if inputs.reviewer.effort = null then "" else "，强度 " + inputs.reviewer.effort) + (if inputs.reviewer.mode = null then "" else "，模式 " + inputs.reviewer.mode)}}
+难的或性质不同的块要换人，就在备注最前面照上面的写法写要换的那几行（有执行者名单就从名单选），没写的照旧：冒号后先写 Agent ID，再按需写「模型 …」「强度 …」「模式 …」，逗号隔开，没写的用 Agent 的默认值；备用执行者和评审者写「无」表示这一块不用。例如：
+- 执行者：&lt;Agent ID&gt;，模型 &lt;模型&gt;，强度 &lt;强度&gt;
+- 评审者：无
+写法看不懂、或开工没填执行者备注里也没写时，不派，带着原因回到这里。
+取舍标准：只有必须修才派块修；评审者说成立不等于现在要修。必须修是合并后用户会遇到错的结果、丢数据、安全问题，对外契约写错，测试是红的或会偶发失败，漏了任务书要求的事或做了任务书之外的事，以及会扩散、越晚越难改的结构问题（跨模块或会被照着写：绕过已有边界、依赖方向反过来、第二个事实来源或第二套做同一件事的机制、迁移只做一半）；其余是小问题。修复块只修那一条，不顺手带小问题，不加设计改动，不把以后的需求提前做进来。
+中途想先看效果：可以用需求分支的提交发起 mac-preview-install、ios-preview-install（传 commit），或对需求分支 head 跑一次合并前检查（加入挂点 premerge 的流程）。
+需求做完、要合的块都合进需求分支后选「提交验收」：流程先让需求分支跟上 {{req.base}}（能快进就快进，能干净合并就做合并提交，有冲突交开工执行者合并），再开或更新需求分支进 {{req.base}} 的 PR，先过范围门禁（改动的文件都在契约的 allowed 内、required 的都改到了），没过会带着清单回到这里，派块修好再提交验收；确实需要越界就勾「交用户批准」：这次范围门禁有违例也不打回，项目检查不按契约校验，也不自动合并，由用户在批准卡上决定，卡上写明违例。过了门禁跑项目检查（同一 head 复用，契约原文交给项目检查），需求分支 head 与最近一次评完的整体评审的 head 不同时由整体评审者评整条需求分支（head 没变不重评；勾「重新整体评审」一定评），有必须修或没评成时交你看结论，然后跑合并前检查与 GitHub 检查，{{if inputs.autoMerge = true then "通过后，范围门禁在当前 head 上没有违例、整体评审评在当前 head 上且没有必须修、这次没勾「交用户批准」时直接合并（合并提交，合并后只跑契约 hooks 里列的流程，没列的不跑），否则由用户批准合并（合并提交）。" else "通过后由用户批准合并（合并提交）。"}}任何失败和用户的「暂不合并」都带着原因回到这里。
+「提交验收」备注必填，写给用户的改动汇报，会原样放在批准卡和 PR 描述最上面。约 8 行以内，只写用户能感知的变化和动到的端，不放实现细节、测试数量、文件清单，不贴代码：
+做了什么
+- …（3～5 条）
+需要你知道：…（风险、没做的、顺带改的；没有写「无」）
+「暂停」备注必填，写为什么停、等什么；这张任务转成用户手上的「需求已暂停」，由用户选继续或放弃。
+「放弃」结束这次需求运行：会先运行项目加入「放弃后」挂点的收尾流程，收尾失败时这次需求运行会以失败结束；需求分支保留。</documentation>
+      <extensionElements>
+        <coda:choice id="submit" name="提交验收" primary="true" note="required">
+          <coda:option id="again" name="重新整体评审" detail="当前 head 已经整体评审过时，这次再评一次" shown="=inputs.overallReviewer != null" default="false" />
+          <coda:option id="escalate" name="交用户批准" detail="范围门禁有违例也不打回，项目检查不按契约校验，不自动合并，由用户在批准卡上决定" default="false" />
+        </coda:choice>
+        <coda:choice id="piece" name="派一块" note="required" />
+        <coda:choice id="sync" name="跟上目标分支" />
+        <coda:choice id="pause" name="暂停" note="required" />
+        <coda:choice id="abandon" name="放弃" />
+      </extensionElements>
+    </userTask>
+    <sequenceFlow id="progress-result-flow" sourceRef="progress" targetRef="progress-result" />
+    <scriptTask id="progress-result" name="读取进行中的答复" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements>
+        <coda:env name="PROGRESS" value="=progress" /><coda:env name="FIXER" value="=inputs.executor != null" /><coda:env name="CONTRACT" value="=inputs.contract" />
+        <coda:output name="route" /><coda:output name="feedback" /><coda:output name="title" /><coda:output name="task" /><coda:output name="sync" />
+        <coda:output name="executor" /><coda:output name="executorModel" /><coda:output name="executorEffort" /><coda:output name="executorMode" /><coda:output name="executor2" /><coda:output name="executor2Model" /><coda:output name="executor2Effort" /><coda:output name="executor2Mode" /><coda:output name="reviewer" /><coda:output name="reviewerModel" /><coda:output name="reviewerEffort" /><coda:output name="reviewerMode" />
+      </extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" progress</script>
+    </scriptTask>
+    <sequenceFlow id="progress-route" sourceRef="progress-result" targetRef="after-progress" />
+    <exclusiveGateway id="after-progress" name="派块、提交验收、暂停还是放弃" default="progress-submit" />
+    <sequenceFlow id="progress-note" sourceRef="after-progress" targetRef="progress"><conditionExpression xsi:type="tFormalExpression">=progress-result.route = "progress"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="progress-piece" sourceRef="after-progress" targetRef="piece"><conditionExpression xsi:type="tFormalExpression">=progress-result.route = "piece"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="progress-pause" sourceRef="after-progress" targetRef="paused"><conditionExpression xsi:type="tFormalExpression">=progress-result.route = "pause"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="progress-abandon" sourceRef="after-progress" targetRef="abandoned-flows"><conditionExpression xsi:type="tFormalExpression">=progress-result.route = "abandon"</conditionExpression></sequenceFlow>
+    <!-- 派块：调用块（piece），是本运行的子运行（取消需求运行时一起停，运行页「调用的流程」列出每一块），它的人工任务照旧交给发起需求运行的会话。
+         人选默认取开工值，备注里换了的由答复里的标量拼成 agent 对象（参数保留表达式的类型，对象原样传给 agent 参数）。
+         一次一块，结束后回到「需求进行中」：合进了带上提交和块的运行，没正常结束（失败、被取消、主 Agent 在块里放弃）带着原因，合入状态待主 Agent 核实。 -->
+    <callActivity id="piece" name="块" calledElement="piece">
+      <extensionElements>
+        <coda:param name="branch" value="=req.branch" />
+        <coda:param name="base" value="=req.base" />
+        <coda:param name="title" value="=progress-result.title" />
+        <coda:param name="task" value="=progress-result.task" />
+        <coda:param name="sync" value="=progress-result.sync" />
+          <coda:param name="executor" value='=if progress-result.executor = "" then inputs.executor else context merge([{agent: progress-result.executor}, if progress-result.executorModel = "" then {} else {model: progress-result.executorModel}, if progress-result.executorEffort = "" then {} else {effort: progress-result.executorEffort}, if progress-result.executorMode = "" then {} else {mode: progress-result.executorMode}])' />
+          <coda:param name="executor2" value='=if progress-result.executor2 = "" then inputs.executor2 else if progress-result.executor2 = "无" then null else context merge([{agent: progress-result.executor2}, if progress-result.executor2Model = "" then {} else {model: progress-result.executor2Model}, if progress-result.executor2Effort = "" then {} else {effort: progress-result.executor2Effort}, if progress-result.executor2Mode = "" then {} else {mode: progress-result.executor2Mode}])' />
+          <coda:param name="reviewer" value='=if progress-result.reviewer = "" then inputs.reviewer else if progress-result.reviewer = "无" then null else context merge([{agent: progress-result.reviewer}, if progress-result.reviewerModel = "" then {} else {model: progress-result.reviewerModel}, if progress-result.reviewerEffort = "" then {} else {effort: progress-result.reviewerEffort}, if progress-result.reviewerMode = "" then {} else {mode: progress-result.reviewerMode}])' />
+      </extensionElements>
+    </callActivity>
+    <boundaryEvent id="piece-failed" attachedToRef="piece"><errorEventDefinition /></boundaryEvent>
+    <sequenceFlow id="piece-failed-flow" sourceRef="piece-failed" targetRef="piece-lost" />
+    <scriptTask id="piece-lost" name="交回没正常结束的块" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements><coda:env name="TITLE" value="=progress-result.title" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" piece-failed</script>
+    </scriptTask>
+    <sequenceFlow id="piece-lost-resume" sourceRef="piece-lost" targetRef="resume" />
+    <sequenceFlow id="piece-done" sourceRef="piece" targetRef="piece-landed" />
+    <scriptTask id="piece-landed" name="记下合进的块" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements>
+        <coda:env name="TITLE" value="=progress-result.title" /><coda:env name="COMMIT" value="=piece.commit" /><coda:env name="PIECE_RUN" value="=piece.run" /><coda:env name="REVIEWED" value="=piece.reviewed" /><coda:env name="BY" value="=piece.by" />
+      </extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" piece-landed</script>
+    </scriptTask>
+    <sequenceFlow id="piece-landed-resume" sourceRef="piece-landed" targetRef="resume" />
+    <sequenceFlow id="progress-submit" sourceRef="after-progress" targetRef="sync" />
+    <userTask id="paused" name="需求已暂停" coda:assignee="user" coda:noteLabel="附言（可选）">
+      <documentation>需求：{{req.title}}
+需求分支：{{req.branch}}
+主 Agent 暂停了这个需求：
+{{progress.note}}
+选「继续」交回主 Agent 接着推进，附言随原因一起交给它；选「放弃」结束这次需求运行：会先运行项目加入「放弃后」挂点的收尾流程，收尾失败时这次需求运行会以失败结束；需求分支保留。</documentation>
+      <extensionElements>
+        <coda:choice id="continue" name="继续" primary="true" />
+        <coda:choice id="abandon" name="放弃" />
+      </extensionElements>
+    </userTask>
+    <sequenceFlow id="paused-result-flow" sourceRef="paused" targetRef="paused-result" />
+    <scriptTask id="paused-result" name="读取暂停的答复" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements><coda:env name="PAUSED" value="=paused" /><coda:output name="route" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" paused</script>
+    </scriptTask>
+    <sequenceFlow id="paused-route" sourceRef="paused-result" targetRef="after-paused" />
+    <exclusiveGateway id="after-paused" name="继续还是放弃" default="paused-continue" />
+    <sequenceFlow id="paused-abandon" sourceRef="after-paused" targetRef="abandoned-flows"><conditionExpression xsi:type="tFormalExpression">=paused-result.route = "abandon"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="paused-continue" sourceRef="after-paused" targetRef="resume" />
+    <!-- 放弃（需求进行中选「放弃」、暂停后选「放弃」）先运行加入挂点 abandoned 的流程，再结束：项目在这里收回这个需求占着的东西。
+         不写 only：加入者全跑，不出卡；不写 commit：放弃时没有合并提交，用本次运行的提交；不挂出错边界：失败就让运行失败，和 merged 一致。
+         只传 run 和 branch：composer 不认识项目的目录和流程名。 -->
+    <serviceTask id="abandoned-flows" name="放弃后的流程" coda:action="run-workflows">
+      <extensionElements>
+        <coda:param name="hook" value="abandoned" /><coda:param name="inputs" value="={run: run.id, branch: req.branch}" />
+      </extensionElements>
+    </serviceTask>
+    <sequenceFlow id="abandoned-flows-done" sourceRef="abandoned-flows" targetRef="abandoned" />
+    <endEvent id="abandoned" name="已放弃" coda:notify="true" />
+
+    <!-- 提交验收先跟上目标分支：需求分支已包含它不动，是它的祖先就快进，分叉能干净合并就做保留双亲的合并提交，都是普通推送（不 force）；
+         有冲突交开工执行者从需求分支 head 合并、解冲突（只合并不变基），没填执行者、推送被拒（需求分支被别人推进了）都带着原因回到进行中。
+         之后新 head 照常跑全部检查。 -->
+    <scriptTask id="sync" name="跟上目标分支" scriptFormat="bash" coda:timeout="5">
+      <extensionElements><coda:env name="FIXER" value="=inputs.executor != null" /><coda:output name="route" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" sync-base</script>
+    </scriptTask>
+    <sequenceFlow id="sync-route" sourceRef="sync" targetRef="after-sync" />
+    <exclusiveGateway id="after-sync" name="跟上目标分支之后" default="sync-pr" />
+    <sequenceFlow id="sync-conflict" sourceRef="after-sync" targetRef="sync-resolve"><conditionExpression xsi:type="tFormalExpression">=sync.route = "resolve"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="sync-progress" sourceRef="after-sync" targetRef="resume"><conditionExpression xsi:type="tFormalExpression">=sync.route = "progress"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="sync-pr" sourceRef="after-sync" targetRef="pr" />
+    <scriptTask id="sync-resolve" name="执行者合并目标分支" scriptFormat="bash">
+      <extensionElements><coda:env name="EXECUTOR" value="=inputs.executor" /><coda:output name="route" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" sync-resolve</script>
+    </scriptTask>
+    <sequenceFlow id="sync-resolve-route" sourceRef="sync-resolve" targetRef="after-sync-resolve" />
+    <exclusiveGateway id="after-sync-resolve" name="执行者合并之后" default="sync-resolve-pr" />
+    <sequenceFlow id="sync-resolve-progress" sourceRef="after-sync-resolve" targetRef="resume"><conditionExpression xsi:type="tFormalExpression">=sync-resolve.route = "progress"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="sync-resolve-pr" sourceRef="after-sync-resolve" targetRef="pr" />
+
+    <scriptTask id="pr" name="开 PR 或更新汇总" scriptFormat="bash" coda:timeout="5" coda:retry="3">
+      <extensionElements>
+        <coda:env name="CONTRACT" value="=inputs.contract" />
+        <coda:output name="checked" /><coda:output name="withContract" /><coda:output name="url" /><coda:output name="head" /><coda:output name="base" /><coda:output name="branch" /><coda:output name="summary" /><coda:output name="task" />
+      </extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" pr</script>
+    </scriptTask>
+    <!-- 范围门禁：改动文件对照契约的 allowed、required；没过且这次没勾「交用户批准」带着清单回到进行中，PR 不动，其余往下走。
+         区域定义读 pr 固定的目标分支提交，不读需求分支的。 -->
+    <sequenceFlow id="pr-gate-flow" sourceRef="pr" targetRef="gate" />
+    <scriptTask id="gate" name="范围门禁" scriptFormat="bash" coda:timeout="5" coda:retry="3">
+      <extensionElements>
+        <coda:env name="CONTRACT" value="=inputs.contract" /><coda:env name="BASE_COMMIT" value="=pr.base" /><coda:env name="HEAD_COMMIT" value="=pr.head" />
+        <coda:output name="route" />
+      </extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" gate</script>
+    </scriptTask>
+    <sequenceFlow id="gate-route" sourceRef="gate" targetRef="after-gate" />
+    <exclusiveGateway id="after-gate" name="范围门禁之后" default="gate-passed" />
+    <sequenceFlow id="gate-progress" sourceRef="after-gate" targetRef="resume"><conditionExpression xsi:type="tFormalExpression">=gate.route = "progress"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="gate-passed" sourceRef="after-gate" targetRef="reuse-checks" />
+    <!-- 项目检查已在各块上跑过；需求分支 head 是这次运行已通过检查的同一提交、且上次通过时带不带契约与这次一致时复用，否则在它上面跑一次。
+         这次没勾「交用户批准」时（由 pr 步骤判定，输出 withContract），把整份契约原文交给项目检查（inputs 里的 contract，引擎只交给声明了这个输入的加入者）；勾了不带。 -->
+    <exclusiveGateway id="reuse-checks" name="复用本次运行已通过的提交" default="reuse-missing" />
+    <sequenceFlow id="reuse-passed" sourceRef="reuse-checks" targetRef="overall-plan"><conditionExpression xsi:type="tFormalExpression">=pr.checked = true</conditionExpression></sequenceFlow>
+    <sequenceFlow id="reuse-missing" sourceRef="reuse-checks" targetRef="checks" />
+    <serviceTask id="checks" name="项目检查" coda:action="run-workflows">
+      <extensionElements><coda:param name="hook" value="check" /><coda:param name="commit" value="=pr.head" />
+        <coda:param name="inputs" value='=if pr.withContract then { contract: inputs.contract } else {}' />
+      </extensionElements>
+    </serviceTask>
+    <boundaryEvent id="checks-failed" attachedToRef="checks"><errorEventDefinition /></boundaryEvent>
+    <sequenceFlow id="checks-feedback-flow" sourceRef="checks-failed" targetRef="checks-feedback" />
+    <scriptTask id="checks-feedback" name="交回项目检查失败" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements><coda:env name="STEP" value="项目检查" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" check-failed</script>
+    </scriptTask>
+    <sequenceFlow id="checks-progress" sourceRef="checks-feedback" targetRef="resume" />
+    <sequenceFlow id="checks-done" sourceRef="checks" targetRef="checks-passed" />
+    <scriptTask id="checks-passed" name="记录通过的检查" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements><coda:env name="RUNS" value="=checks.runs" /><coda:env name="CONTRACT" value="=inputs.contract" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" checks-passed</script>
+    </scriptTask>
+    <sequenceFlow id="checks-overall" sourceRef="checks-passed" targetRef="overall-plan" />
+
+    <!-- 整体评审（README.md「整体评审」）：项目检查有了结论再定这次评不评：需求分支 head 与最近一次评完的整体评审的 head 不同，或这次勾了「重新整体评审」，才评，由整体评审者调一次 review-commit 评整条需求分支（目标分支最新提交…需求分支 head 的三点 diff）。
+         评审没完成时 review-commit 照常结束（INCOMPLETE），出错边界只接调用本身没成。评不评都经过「整理整体评审」：这次没评或没有必须修就往下走，
+         小问题、原有问题写进 PR 描述和汇总；有必须修或没评成交主 Agent「整体评审结论」。自动合并的判定 auto 也只在这里（按当前 head 判，不看这次运行出没出过必须修）。 -->
+    <scriptTask id="overall-plan" name="定整体评审" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements><coda:env name="REVIEWER" value="=inputs.overallReviewer != null" /><coda:env name="CONTRACT" value="=inputs.contract" /><coda:output name="review" /><coda:output name="evidence" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" overall-plan</script>
+    </scriptTask>
+    <sequenceFlow id="overall-plan-choice" sourceRef="overall-plan" targetRef="overall-choice" />
+    <exclusiveGateway id="overall-choice" name="这次整体评审吗" default="overall-skip" />
+    <sequenceFlow id="overall-needed" sourceRef="overall-choice" targetRef="overall-call"><conditionExpression xsi:type="tFormalExpression">=overall-plan.review = true</conditionExpression></sequenceFlow>
+    <sequenceFlow id="overall-skip" sourceRef="overall-choice" targetRef="overall" />
+    <callActivity id="overall-call" name="评审整条需求分支" calledElement="review-commit">
+      <extensionElements>
+        <coda:param name="base" value="=pr.base" />
+        <coda:param name="head" value="=pr.head" />
+        <coda:param name="task" value="=pr.task" />
+        <coda:param name="reviewer" value="=inputs.overallReviewer" />
+        <coda:param name="evidence" value="=overall-plan.evidence" />
+      </extensionElements>
+    </callActivity>
+    <boundaryEvent id="overall-failed" attachedToRef="overall-call"><errorEventDefinition /></boundaryEvent>
+    <sequenceFlow id="overall-failed-lost" sourceRef="overall-failed" targetRef="overall-lost" />
+    <scriptTask id="overall-lost" name="记下整体评审没评成" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" overall-lost</script>
+    </scriptTask>
+    <sequenceFlow id="overall-lost-done" sourceRef="overall-lost" targetRef="overall" />
+    <sequenceFlow id="overall-call-done" sourceRef="overall-call" targetRef="overall-reviewed" />
+    <scriptTask id="overall-reviewed" name="记下整体评审结果" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements>
+        <coda:env name="DECISION" value="=overall-call.decision" /><coda:env name="FINDINGS" value="=overall-call.findings" />
+        <coda:env name="LINE" value="=overall-call.line" /><coda:env name="REPORT" value="=overall-call.report" />
+      </extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" overall-reviewed</script>
+    </scriptTask>
+    <sequenceFlow id="overall-reviewed-done" sourceRef="overall-reviewed" targetRef="overall" />
+    <scriptTask id="overall" name="整理整体评审" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements>
+        <coda:env name="SUMMARY" value="=pr.summary" /><coda:env name="AUTO" value="=inputs.autoMerge" /><coda:env name="CONTRACT" value="=inputs.contract" />
+        <coda:output name="route" /><coda:output name="summary" /><coda:output name="auto" /><coda:output name="review" /><coda:output name="note" />
+      </extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" overall</script>
+    </scriptTask>
+    <sequenceFlow id="overall-how" sourceRef="overall" targetRef="overall-route" />
+    <exclusiveGateway id="overall-route" name="往下走还是交主 Agent" default="overall-accept" />
+    <sequenceFlow id="overall-escalate" sourceRef="overall-route" targetRef="review"><conditionExpression xsi:type="tFormalExpression">=overall.route = "review"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="overall-accept" sourceRef="overall-route" targetRef="premerge" />
+    <userTask id="review" name="整体评审结论" coda:noteLabel="回到进行中的说明（可选）">
+      <documentation>需求：{{req.title}}
+PR：{{pr.url}}
+需求分支 head：{{pr.head}}
+整体评审者对整条需求分支（{{req.base}}…需求分支 head）的结论：
+{{overall.review}}
+
+取舍标准：只有必须修才回到进行中派块修；评审者说成立不等于现在要修。必须修是合并后用户会遇到错的结果、丢数据、安全问题，对外契约写错，测试是红的或会偶发失败，漏了任务书要求的事或做了任务书之外的事，以及会扩散、越晚越难改的结构问题（跨模块或会被照着写：绕过已有边界、依赖方向反过来、第二个事实来源或第二套做同一件事的机制、迁移只做一半）；其余是小问题。修复块只修那一条，不顺手带小问题，不加设计改动，不把以后的需求提前做进来。
+要先修的选「回到进行中」，备注写要修哪几条，派块修好后再提交验收；需求分支 head 变了，再提交验收会在新 head 上重评；要在 head 没变时再评就勾「重新整体评审」。不必修的、或没评成也决定往下走的，选「继续验收」。</documentation>
+      <extensionElements>
+        <coda:choice id="continue" name="继续验收" primary="true" />
+        <coda:choice id="progress" name="回到进行中" />
+      </extensionElements>
+    </userTask>
+    <sequenceFlow id="review-result-flow" sourceRef="review" targetRef="review-result" />
+    <scriptTask id="review-result" name="读取整体评审结论" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements><coda:env name="REVIEW" value="=review" /><coda:output name="route" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" review</script>
+    </scriptTask>
+    <sequenceFlow id="review-route" sourceRef="review-result" targetRef="after-review" />
+    <exclusiveGateway id="after-review" name="整体评审之后" default="review-continue" />
+    <sequenceFlow id="review-progress" sourceRef="after-review" targetRef="resume"><conditionExpression xsi:type="tFormalExpression">=review-result.route = "progress"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="review-continue" sourceRef="after-review" targetRef="premerge" />
+
+    <!-- 合并前检查与 GitHub 检查放在整体评审之后：之后需求分支 head 不再变，只对最终要合并的提交跑；批准卡和自动合并之前都已通过。 -->
+    <serviceTask id="premerge" name="合并前检查" coda:action="run-workflows">
+      <extensionElements><coda:param name="hook" value="premerge" /><coda:param name="commit" value="=pr.head" /></extensionElements>
+    </serviceTask>
+    <boundaryEvent id="premerge-failed" attachedToRef="premerge"><errorEventDefinition /></boundaryEvent>
+    <sequenceFlow id="premerge-feedback-flow" sourceRef="premerge-failed" targetRef="premerge-feedback" />
+    <scriptTask id="premerge-feedback" name="交回合并前检查失败" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements><coda:env name="STEP" value="合并前检查" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" check-failed</script>
+    </scriptTask>
+    <sequenceFlow id="premerge-progress" sourceRef="premerge-feedback" targetRef="resume" />
+    <sequenceFlow id="premerge-github" sourceRef="premerge" targetRef="github-checks" />
+    <scriptTask id="github-checks" name="GitHub 检查" scriptFormat="bash" coda:timeout="60" coda:retry="3">
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" github-checks</script>
+    </scriptTask>
+    <boundaryEvent id="github-checks-failed" attachedToRef="github-checks"><errorEventDefinition /></boundaryEvent>
+    <sequenceFlow id="github-checks-feedback" sourceRef="github-checks-failed" targetRef="github-feedback" />
+    <scriptTask id="github-feedback" name="交回 GitHub 检查失败" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements><coda:env name="STEP" value="GitHub 检查" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" check-failed</script>
+    </scriptTask>
+    <sequenceFlow id="github-progress" sourceRef="github-feedback" targetRef="resume" />
+    <sequenceFlow id="github-joiners" sourceRef="github-checks" targetRef="joiners" />
+    <!-- 合并前检查和 GitHub 检查通过后，先在需求分支 head 上列出挂点 merged 的加入者（hook-joiners），再分流：批准卡的勾选项与自动合并的白名单核对都用这份列表。
+         自动合并：满足 overall.auto = true（只在「整理整体评审」判定，各处只引用它；条件见 README.md「契约开发」）时不出批准卡，直接到「读取批准」，
+         由脚本按 overall.auto 合成「合并」的答复：只勾契约 hooks 白名单里的加入者。 -->
+    <exclusiveGateway id="auto-merge-choice" name="是否自动合并" default="auto-merge-skip" />
+    <sequenceFlow id="auto-merge-needed" sourceRef="auto-merge-choice" targetRef="approval-result"><conditionExpression xsi:type="tFormalExpression">=overall.auto = true</conditionExpression></sequenceFlow>
+    <sequenceFlow id="auto-merge-skip" sourceRef="auto-merge-choice" targetRef="approve" />
+    <!-- 合并卡只放做决定用得到的数据和控件：汇总、已通过的检查、PR；勾选项是项目在需求分支 head 上加入挂点 merged 的流程（hook-joiners，在上面「是否自动合并」之前列出），默认勾不勾由它们自己声明。 -->
+    <serviceTask id="joiners" name="合并后的流程" coda:action="hook-joiners">
+      <extensionElements><coda:param name="hook" value="merged" /><coda:param name="commit" value="=pr.head" /></extensionElements>
+    </serviceTask>
+    <sequenceFlow id="joiners-auto-choice" sourceRef="joiners" targetRef="auto-merge-choice" />
+    <userTask id="approve" name="批准合并" coda:noteLabel="备注（可选）" coda:assignee="user">
+      <documentation>{{overall.summary}}
+
+项目检查、合并前检查、GitHub 检查已通过{{overall.note}}。
+PR：{{pr.url}}</documentation>
+      <extensionElements>
+        <coda:choice id="merge" name="合并" primary="true">
+          <coda:optionList value="=joiners.list" />
+          <coda:option id="notify" name="全部完成后通知 Agent" default="true" />
+        </coda:choice>
+        <coda:choice id="stop" name="暂不合并" note="required" />
+      </extensionElements>
+    </userTask>
+    <sequenceFlow id="approve-route" sourceRef="approve" targetRef="approval-result" />
+    <!-- 人工路径读批准卡的答复；自动合并（overall.auto = true）不读它（这条路上批准卡没有执行过，读到空值；这次运行早先出过卡时留着的是旧答复），
+         合成答复的白名单是契约的 hooks，白名单里有不是当前 head 上挂点 merged 加入者的名字就不合并，带着原因回到进行中。 -->
+    <scriptTask id="approval-result" name="读取批准" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements>
+        <coda:env name="APPROVAL" value="=approve" /><coda:env name="JOINERS" value="=joiners.list" /><coda:env name="AUTO" value="=overall.auto" /><coda:env name="CONTRACT" value="=inputs.contract" />
+        <coda:output name="route" /><coda:output name="only" /><coda:output name="picked" /><coda:output name="inputs" /><coda:output name="missing" /><coda:output name="asks" /><coda:output name="needs" />
+      </extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" approval</script>
+    </scriptTask>
+    <sequenceFlow id="approval-validated" sourceRef="approval-result" targetRef="after-approval" />
+    <exclusiveGateway id="after-approval" name="是否合并" default="approval-merge" />
+    <sequenceFlow id="approval-stop" sourceRef="after-approval" targetRef="resume"><conditionExpression xsi:type="tFormalExpression">=approval-result.route = "stop"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="approval-merge" sourceRef="after-approval" targetRef="merge" />
+    <scriptTask id="merge" name="合并" scriptFormat="bash" coda:checkout="false" coda:timeout="10" coda:retry="3">
+      <extensionElements><coda:output name="commit" /><coda:output name="route" /></extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" merge</script>
+    </scriptTask>
+    <sequenceFlow id="merge-route" sourceRef="merge" targetRef="after-merge" />
+    <exclusiveGateway id="after-merge" name="是否合并冲突" default="merge-merged-choice" />
+    <sequenceFlow id="merge-conflict" sourceRef="after-merge" targetRef="resume"><conditionExpression xsi:type="tFormalExpression">=merge.route = "conflict"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="merge-merged-choice" sourceRef="after-merge" targetRef="merged-choice" />
+    <!-- 合并后运行 only：批准卡上勾的，或自动合并时契约 hooks 白名单里的，它们要的文字没写的先交主 Agent 逐项写。 -->
+    <exclusiveGateway id="merged-choice" name="是否运行合并后的流程" default="merged-fill-choice" />
+    <sequenceFlow id="merged-only" sourceRef="merged-choice" targetRef="done-none"><conditionExpression xsi:type="tFormalExpression">=approval-result.only = "[]"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="merged-fill-choice" sourceRef="merged-choice" targetRef="fill-choice" />
+    <exclusiveGateway id="fill-choice" name="是否有没写的文字" default="fill-skip" />
+    <sequenceFlow id="fill-needed" sourceRef="fill-choice" targetRef="fill"><conditionExpression xsi:type="tFormalExpression">=approval-result.missing != ""</conditionExpression></sequenceFlow>
+    <sequenceFlow id="fill-skip" sourceRef="fill-choice" targetRef="merged-inputs" />
+    <userTask id="fill" name="填写合并后流程要的文字" coda:noteLabel="要填的文字">
+      <documentation>{{if overall.auto = true then "契约的 hooks 里列的流程要一段文字，自动合并时没有地方写：" else "用户批准合并时勾的流程要一段文字，批准卡上没有写："}}
+{{split(approval-result.asks, "\n")[loopCounter]}}
+PR：{{pr.url}}
+合并提交：{{merge.commit}}
+主 Agent：按这次合并进来的改动写这段面向用户的文字，不用审查意见；备注只放文字本身。
+选「这一项这次不跑」（备注可不写）：这段文字不写，要它的流程这次都不跑，其余要跑的照常运行；都不跑了就直接结束。不想发出这段文字、写不出时选它，不要答复 rejected。</documentation>
+      <extensionElements><coda:choice id="done" name="已写好" primary="true" note="required" /><coda:choice id="skip" name="这一项这次不跑" /></extensionElements>
+      <multiInstanceLoopCharacteristics isSequential="true" coda:inputCollection='=split(approval-result.missing, ",")' coda:inputElement="input" />
+    </userTask>
+    <sequenceFlow id="fill-inputs" sourceRef="fill" targetRef="merged-inputs" />
+    <scriptTask id="merged-inputs" name="整理合并后流程的参数" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements>
+        <coda:env name="INPUTS" value="=approval-result.inputs" /><coda:env name="MISSING" value="=approval-result.missing" />
+        <coda:env name="ASKS" value="=approval-result.asks" /><coda:env name="FILLS" value="=fill" /><coda:env name="NEEDS" value="=approval-result.needs" /><coda:env name="ONLY" value="=approval-result.only" />
+        <coda:output name="inputs" /><coda:output name="only" />
+      </extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" inputs</script>
+    </scriptTask>
+    <sequenceFlow id="merged-inputs-run" sourceRef="merged-inputs" targetRef="left" />
+    <exclusiveGateway id="left" name="还有要跑的合并后流程吗" default="left-run" />
+    <sequenceFlow id="left-none" sourceRef="left" targetRef="done-none"><conditionExpression xsi:type="tFormalExpression">=merged-inputs.only = "[]"</conditionExpression></sequenceFlow>
+    <sequenceFlow id="left-run" sourceRef="left" targetRef="run-merged" />
+    <serviceTask id="run-merged" name="合并后的流程" coda:action="run-workflows">
+      <extensionElements>
+        <coda:param name="hook" value="merged" /><coda:param name="only" value="=merged-inputs.only" />
+        <coda:param name="commit" value="=merge.commit" /><coda:param name="inputs" value="=merged-inputs.inputs" />
+      </extensionElements>
+    </serviceTask>
+    <sequenceFlow id="run-merged-done" sourceRef="run-merged" targetRef="after-run" />
+    <!-- 结束时交给发起会话的消息里有输出 afterMerge，写明合并后的流程已全部结束：跑了的（run-workflows 有一项没成功就让运行失败，错误里写明是哪一项，所以走到这里都成功）逐项列出，
+         没跑任何合并后的流程的几条路（没勾、白名单为空、补填时都选了不跑）都到 done-none，写没有运行。 -->
+    <scriptTask id="after-run" name="记下合并后流程的结果" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
+      <extensionElements>
+        <coda:env name="RUNS" value="=run-merged.runs" /><coda:env name="JOINERS" value="=joiners.list" />
+        <coda:output name="line" />
+      </extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" ran</script>
+    </scriptTask>
+    <sequenceFlow id="after-run-done" sourceRef="after-run" targetRef="done" />
+    <endEvent id="done-none" name="已完成" coda:status="已完成，没有要跑的合并后流程" coda:notify='=if overall.auto = true then true else approve.options.notify'>
+      <extensionElements><coda:output name="pr" value="=pr.url" /><coda:output name="commit" value="=merge.commit" /><coda:output name="notify" value='=if overall.auto = true then true else approve.options.notify' />
+        <coda:output name="afterMerge" value="没有运行合并后的流程，没有什么要再等的" /></extensionElements>
+    </endEvent>
+    <endEvent id="done" name="已完成" coda:notify='=if overall.auto = true then true else approve.options.notify'>
+      <extensionElements><coda:output name="pr" value="=pr.url" /><coda:output name="commit" value="=merge.commit" /><coda:output name="notify" value='=if overall.auto = true then true else approve.options.notify' />
+        <coda:output name="afterMerge" value="=after-run.line" /></extensionElements>
+    </endEvent>
+  </process>
+</definitions>
