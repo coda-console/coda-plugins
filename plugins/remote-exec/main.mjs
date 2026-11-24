@@ -9,17 +9,41 @@ import { hostSpec } from './lib/host.mjs';
 
 const report = what => error => console.error(`远程执行：${what}：${error?.message ?? error}`);
 let disposables = [];
+const RETRY_FIRST = 5_000, RETRY_MAX = 300_000;
 
-export async function activate(coda) {
-  let enabled = false, name = null, ready = false, notified = false, queue = Promise.resolve();
-  // 登记（或撤掉）这条记录；一次接一次做，旧的读数不会盖过新的。
-  const publish = () => coda.replace(MACHINE, enabled ? [{ key: KEY, spec: hostSpec(name), status: { available: true } }] : []);
-  const refresh = () => { const run = queue.then(publish); queue = run.catch(() => {}); return run; };
+// `schedule`、`cancel` 只为测试里不真等：重试的计时器可以换掉。
+export async function activate(coda, { schedule = setTimeout, cancel = clearTimeout } = {}) {
+  let enabled = false, name = null, ready = false, notified = false, stopped = false, pending = false, inFlight = false, timer = null, delay = RETRY_FIRST;
+  disposables.push({ dispose() { stopped = true; cancel(timer); timer = null; } });
+  // 只有一个待发布状态：变化只标记「有待发布」，发布时读的是当时最新的开关与机器名。
+  // 没有进行中的发布、也不在等重试时才发；失败了按退避等计时器，期间的变化并进这个状态，不另起发布。
+  const flush = async () => {
+    if (inFlight) return;   // 进行中的发布结束后会再看一次是否还有待发布
+    inFlight = true;
+    try {
+      while (pending && !stopped) {
+        pending = false;
+        try {
+          await coda.replace(MACHINE, enabled ? [{ key: KEY, spec: hostSpec(name), status: { available: true } }] : []);
+          delay = RETRY_FIRST;
+        } catch (error) {
+          pending = true;
+          report('登记记录失败')(error);
+          if (!stopped && !timer) {
+            timer = schedule(() => { timer = null; flush(); }, delay);
+            delay = Math.min(delay * 2, RETRY_MAX);
+          }
+          return;
+        }
+      }
+    } finally { inFlight = false; }
+  };
+  const publishLater = () => { pending = true; if (ready && !timer) flush(); };
   const apply = settings => {
     const next = settings?.[SETTING] === true;
     if (next === enabled) return;
     enabled = next;
-    if (ready) refresh().catch(report('登记记录失败'));
+    publishLater();
   };
 
   const env = { coda, enabled: () => enabled, audit: createAuditLog(coda.plugin.state) };
@@ -37,11 +61,12 @@ export async function activate(coda) {
       const next = type === 'DELETED' ? null : entry?.spec?.name ?? null;
       if (next === name) return;
       name = next;
-      if (ready && enabled) refresh().catch(report('更新机器名失败'));
+      if (enabled) publishLater();
     }, { scope: 'local' }));
   } catch (error) { report('读不到本机的机器名，用主机名')(error); }
   ready = true;
-  await refresh();
+  pending = true;
+  await flush();
 }
 
 export function deactivate() {

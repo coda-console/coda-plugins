@@ -123,6 +123,84 @@ test('with the switch on at startup the record is there, and it is the machine r
   assert.equal(after[0].spec.name, 'renamed');
 });
 
+// 重试的计时器换成测试里手动触发的；replace 的头 `failures` 次失败。
+async function startRetrying(t, { failures = 1, initial = 0, settings = { [SETTING]: true } } = {}) {
+  const host = createMockCoda({ plugin: { id: 'remote-exec', protocols: manifest.contributes.protocols }, settings });
+  await host.coda.put({ kind: LOCAL_MACHINE, key: 'machine' }, { spec: { name: 'xiaomi' } });
+  const replace = host.coda.replace, timers = [], published = [];
+  let left = initial, block = null;
+  host.coda.replace = async (kind, items) => {
+    published.push(items.length);
+    if (block) await block;
+    if (left > 0) { left--; throw new Error('目录库写不进'); }
+    return replace(kind, items);
+  };
+  const errors = [];
+  t.mock.method(console, 'error', message => errors.push(message));
+  await activate(host.coda, { schedule: (fn, ms) => { const timer = { fn, ms, cleared: false }; timers.push(timer); return timer; }, cancel: timer => { if (timer) timer.cleared = true; } });
+  t.after(() => { deactivate(); host.close(); });
+  await settle();
+  left = failures;
+  // 之后的 replace 停住，直到 release()：造「发布进行中」。
+  const hold = () => { let release; block = new Promise(resolve => { release = () => { block = null; resolve(); }; }); return release; };
+  const fire = async () => { const live = timers.filter(timer => !timer.cleared && !timer.fired); live.at(-1).fired = true; live.at(-1).fn(); await settle(); };
+  return { host, timers, published, errors, fire, hold };
+}
+
+test('a record that failed to publish is retried until it works: the switch turned off takes effect at once and the retry removes the record', async t => {
+  const { host, timers, published, errors, fire } = await startRetrying(t);
+  await host.setSettings({ [SETTING]: false });
+  await settle();
+  assert.equal((await records(host)).length, 1);   // 撤不掉：目录库里的记录还在
+  assert.deepEqual(timers.map(timer => timer.ms), [5000]);
+  assert.equal(errors.length, 1);
+  await fire();
+  assert.deepEqual(await records(host), []);
+  assert.deepEqual(published, [1, 0, 0]);
+  assert.equal(timers.length, 1);   // 成功了就不再排计时器
+});
+
+test('a record that failed to publish is retried until it works: the switch turned on is published by the retry', async t => {
+  const { host, timers, published, fire } = await startRetrying(t, { settings: {} });
+  await host.setSettings({ [SETTING]: true });
+  await settle();
+  assert.deepEqual(await records(host), []);
+  assert.equal(timers.length, 1);
+  await fire();
+  assert.equal((await records(host)).length, 1);
+  assert.deepEqual(published, [0, 1, 1]);
+  assert.equal(timers.length, 1);
+});
+
+test('changes during the failure are merged into the one pending state: the retry publishes what is true when it runs, and no second timer is made', async t => {
+  const { host, timers, published, fire } = await startRetrying(t, { failures: 1 });
+  await host.setSettings({ [SETTING]: false });
+  await host.setSettings({ [SETTING]: true });
+  await host.coda.put({ kind: LOCAL_MACHINE, key: 'machine' }, { spec: { name: 'renamed' } });
+  await settle();
+  assert.equal(timers.length, 1);
+  assert.equal((await records(host))[0].spec.name, 'xiaomi');
+  await fire();
+  assert.equal((await records(host))[0].spec.name, 'renamed');
+  const calls = published.length;
+  await settle();
+  assert.equal(published.length, calls);
+  assert.equal(timers.length, 1);
+});
+
+test('failed retries back off by doubling up to five minutes; deactivate stops the retrying', async t => {
+  const { host, timers, published, fire } = await startRetrying(t, { failures: 100 });
+  await host.setSettings({ [SETTING]: false });
+  await settle();
+  for (let i = 0; i < 9; i++) await fire();
+  assert.deepEqual(timers.map(timer => timer.ms), [5000, 10000, 20000, 40000, 80000, 160000, 300000, 300000, 300000, 300000]);
+  const calls = published.length;
+  deactivate();
+  assert.equal(timers.at(-1).cleared, true);
+  await settle();
+  assert.equal(published.length, calls);
+});
+
 test('a notification that arrives while the settings are being read wins over the older snapshot', async t => {
   const host = createMockCoda({ plugin: { id: 'remote-exec', protocols: manifest.contributes.protocols }, settings: {} });
   t.after(() => { deactivate(); host.close(); });
@@ -140,11 +218,68 @@ test('a notification that arrives while the settings are being read wins over th
 test('without a machine record the host name is used; a record that cannot be written is reported, not swallowed', async t => {
   const host = await start(t, { settings: { [SETTING]: true }, name: null });
   assert.equal((await records(host))[0].spec.name, hostSpec(null).name);
-  const failing = createMockCoda({ plugin: { id: 'remote-exec', protocols: manifest.contributes.protocols }, settings: { [SETTING]: true } });
-  failing.coda.replace = async () => { throw new Error('目录库写不进'); };
-  await assert.rejects(activate(failing.coda), /目录库写不进/);
+});
+
+test('a first publish that fails does not fail the activation: it is reported, and the retry converges on the latest state without activating again', async t => {
+  const { host, timers, published, errors, fire } = await startRetrying(t, { initial: 1, failures: 0 });
+  assert.deepEqual(await records(host), []);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /目录库写不进/);
+  assert.deepEqual(timers.map(timer => timer.ms), [5000]);
+  await host.setSettings({ [SETTING]: false });
+  await fire();
+  assert.deepEqual(await records(host), []);
+  await host.setSettings({ [SETTING]: true });
+  await settle();
+  assert.equal((await records(host)).length, 1);
+  assert.deepEqual(published, [1, 0, 1]);
+});
+
+test('a timer that expires while another publish is in flight does not publish again once that one worked', async t => {
+  const { host, timers, published, fire, hold } = await startRetrying(t);
+  await host.setSettings({ [SETTING]: false });
+  await settle();
+  const release = hold();
+  await fire();   // 重试的发布进行中（停在 replace 里）
+  assert.deepEqual(published, [1, 0, 0]);
+  timers[0].fn();   // 计时器又到期一次
+  await settle();
+  assert.deepEqual(published, [1, 0, 0]);
+  release();
+  await settle();
+  assert.deepEqual(published, [1, 0, 0]);
+  assert.deepEqual(await records(host), []);
+  // 进行中又有变化：不同时发第二个，等这个结束后按最新状态再发一次。
+  const again = hold();
+  await host.setSettings({ [SETTING]: true });
+  await settle();
+  await host.setSettings({ [SETTING]: false });
+  await settle();
+  assert.deepEqual(published, [1, 0, 0, 1]);
+  again();
+  await settle();
+  assert.deepEqual(published, [1, 0, 0, 1, 0]);
+  assert.deepEqual(await records(host), []);
+});
+
+test('after deactivate a queued retry and a change made during an in-flight publish write nothing more', async t => {
+  const { host, timers, published, fire, hold } = await startRetrying(t, { failures: 1 });
+  await host.setSettings({ [SETTING]: false });
+  await settle();
   deactivate();
-  failing.close();
+  timers[0].fn();   // 已经排下的重试
+  await settle();
+  assert.deepEqual(published, [1, 0]);
+  const other = await startRetrying(t);
+  await other.host.setSettings({ [SETTING]: false });
+  await settle();
+  const release = other.hold();
+  await other.fire();
+  await other.host.setSettings({ [SETTING]: true });   // 发布进行中又变了
+  deactivate();
+  release();
+  await settle();
+  assert.deepEqual(other.published, [1, 0, 0]);
 });
 
 test('the spec is the environment of the process on this machine: user, home directory and the distribution name', () => {

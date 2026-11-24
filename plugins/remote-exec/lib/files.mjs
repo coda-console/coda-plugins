@@ -133,6 +133,7 @@ export async function push(env, request, ctx) {
   const op = begin(env, 'push', ctx, { path });
   const size = await op.guard({ path }, async () => {
     absolute(coda, path);
+    if (path.endsWith('/')) throw coda.error('is_a_directory', `${path}：以 / 结尾是目录，不能当文件写`, { effects: 'none' });
     let temp = null, handle = null, reader, written = 0;
     const made = [];
     // 等请求体的时候也要响应取消：一个监听去取消 reader，等着的那次读随即结束，之后照常走收尾。
@@ -145,10 +146,12 @@ export async function push(env, request, ctx) {
       if (existing?.isDirectory()) throw coda.error('is_a_directory', `${path}：是目录，不能当文件写`, { effects: 'none' });
       if (existing && !existing.isFile()) throw coda.error('not_a_regular_file', `${path}：已有的不是普通文件（FIFO、设备或套接字），不替换`, { effects: 'none' });
       await makeDirectories(dirname(target), made);
-      const candidate = join(dirname(target), `.coda-push-${randomBytes(8).toString('hex')}`);
-      handle = await open(candidate, 'wx', 0o666);
+      // 临时文件与目标在内核解析出的同一个父目录里；原始路径里的 `..` 与符号链接不做词法拼接。
+      const parent = await realpath(dirname(target)), destination = join(parent, basename(target));
+      const candidate = join(parent, `.coda-push-${randomBytes(8).toString('hex')}`);
+      // 写的过程中只有自己能读写，最终权限在写满之后、改名之前才给。
+      handle = await open(candidate, 'wx', 0o600);
       temp = candidate;
-      if (existing) await handle.chmod(existing.mode & 0o7777);
       reader = request.body?.getReader();
       ctx.signal.throwIfAborted();   // 取消若在拿到 reader 之前到，监听没有东西可取消
       while (reader) {
@@ -159,10 +162,11 @@ export async function push(env, request, ctx) {
       }
       ctx.signal.throwIfAborted();
       await handle.sync();
+      await handle.chmod(existing ? existing.mode & 0o7777 : 0o666 & ~process.umask());
       await handle.close();
       handle = null;
       ctx.signal.throwIfAborted();
-      await rename(temp, target);
+      await rename(temp, destination);
       return written;
     } catch (error) {
       reader?.cancel().catch(() => {});

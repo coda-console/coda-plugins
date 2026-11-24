@@ -207,6 +207,36 @@ test('push: it replaces a whole file and keeps its permission bits; pushing agai
   assert.deepEqual(names(dir), ['run.sh']);
 });
 
+test('push: while the body is still being written the temporary file is never wider than 0600; the final permission is the old file\'s, or 0666 minus the umask for a new one', async t => {
+  const dir = scratch(t), path = join(dir, 'secret.txt'), fresh = join(dir, 'fresh.txt'), before = process.umask(0o027);
+  try {
+    writeFileSync(path, 'old');
+    chmodSync(path, 0o600);
+    for (const [file, mode] of [[path, 0o600], [fresh, 0o640]]) {
+      const { body, controller } = slowBody(Buffer.from('half'));
+      const one = writing(t, { path: file }, body);
+      const temp = await waitFor(() => readdirSync(dir).find(name => name.startsWith('.coda-push-')), '临时文件');
+      assert.equal(statSync(join(dir, temp)).mode & 0o177, 0, '写的过程中临时文件不能宽于 0600');
+      controller.close();
+      await one.done;
+      assert.equal(statSync(file).mode & 0o7777, mode);
+      assert.deepEqual(names(dir).filter(name => name.startsWith('.coda-push-')), []);
+    }
+  } finally { process.umask(before); }
+});
+
+test('push: the temporary file and the target are in the directory the kernel resolves, also for a path with a symbolic link and ".." before the new file', async t => {
+  const dir = scratch(t), here = join(dir, 'here'), output = join(dir, 'there', 'output');
+  mkdirSync(output, { recursive: true });
+  mkdirSync(join(dir, 'there', 'sub'));
+  mkdirSync(here);
+  symlinkSync(join(dir, 'there', 'sub'), join(here, 'link'));
+  await pushed(t, `${here}/link/../output/new`, 'x');   // 不用 join：它会在词法上折叠 `..`
+  assert.equal(readFileSync(join(output, 'new'), 'utf8'), 'x');
+  assert.deepEqual(names(output), ['new']);
+  assert.deepEqual(names(here), ['link']);
+});
+
 test('push: a path that is a symbolic link writes the file it points to and keeps the link', async t => {
   const dir = scratch(t), real = join(dir, 'real', 'target.txt'), link = join(dir, 'link.txt');
   mkdirSync(join(dir, 'real'));
@@ -256,6 +286,16 @@ test('push: a dangling link whose target directory does not exist (even before a
   }
   assert.deepEqual(names(dir), ['a', 'alias', 'b', 'other']);
   assert.deepEqual(names(other), []);
+});
+
+test('push: a path ending with "/" is a directory path: refused with is_a_directory, nothing is made or written', async t => {
+  const dir = scratch(t);
+  mkdirSync(join(dir, 'there'));
+  for (const path of [`${dir}/new/`, `${dir}/there/new/`, `${dir}/a/b/`]) {
+    await assert.rejects(pushed(t, path, 'x'), { code: 'is_a_directory', effects: 'none' });
+  }
+  assert.deepEqual(names(dir), ['there']);
+  assert.deepEqual(names(join(dir, 'there')), []);
 });
 
 test('push: a symbolic link loop fails with symlink_loop and leaves both links alone', async t => {
