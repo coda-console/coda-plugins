@@ -62,8 +62,7 @@ export const canonicalHash = value => createHash('sha256').update(JSON.stringify
 // 不同作者对同一个 (kind, id) 排下的待撤互不相干，也不挡着对方撤自己的记录。
 // 每次写入发布或撤回的意图都领一个递增的整数 `seq`（落在条目里，不看系统时钟）：冲洗按它的先后执行，并据它判断旧撤回是否已被更晚的发布取代。
 //   待发  { seq, kind, id, desired: 'publish', state: queued|paused|no_identity|needs_cert, body, audience, hash, lastError?, + 上次同步的元数据 }
-//   已同步 { seq, kind, id, desired: 'publish', state: 'synced', hash, audience, lastAuthor, lastSyncedHash, lastSyncedAt, lastCreatedAt? }（没有 body；
-//         lastCreatedAt 是 body.createdAt，同一 id 重试时沿用它，不必再查 Accord）
+//   已同步 { seq, kind, id, desired: 'publish', state: 'synced', hash, audience, lastAuthor, lastSyncedHash, lastSyncedAt }（没有 body）
 //   待撤  { seq, kind, id, desired: 'retract', state: queued|no_identity|needs_cert, targetAuthor, lastError?, + 上次同步的元数据 }
 //         targetAuthor 是排队时的作者：换了作者就不再替新作者撤，等原作者回来
 //   被拒  { …, state: 'error', lastError }：Accord 明确拒绝，不再自动重试；下一次发布或撤回同一条会替换它
@@ -97,12 +96,10 @@ export function withState(entry, state, error) {
   return { ...rest, state, ...(error ? { lastError: error } : {}) };
 }
 
-/** 发布成功：释放 body，只留 `{ seq, kind, id, desired, state: 'synced', hash, audience, lastAuthor, lastSyncedHash, lastSyncedAt }`，body 有合法的 createdAt 再留 `lastCreatedAt`。 */
-export const markSynced = (entry, author, now) => {
-  const createdAt = entry.body?.createdAt;
-  return { seq: entry.seq, kind: entry.kind, id: entry.id, desired: 'publish', state: 'synced', hash: entry.hash, audience: entry.audience, lastAuthor: author, lastSyncedHash: entry.hash,
-    lastSyncedAt: now, ...(Number.isSafeInteger(createdAt) && createdAt >= 0 ? { lastCreatedAt: createdAt } : {}) };
-};
+/** 发布成功：释放 body，只留 `{ seq, kind, id, desired, state: 'synced', hash, audience, lastAuthor, lastSyncedHash, lastSyncedAt }`。 */
+export const markSynced = (entry, author, now) =>
+  ({ seq: entry.seq, kind: entry.kind, id: entry.id, desired: 'publish', state: 'synced', hash: entry.hash, audience: entry.audience, lastAuthor: author, lastSyncedHash: entry.hash,
+    lastSyncedAt: now });
 
 /** Accord 明确拒绝：不再留 body 和 audience，只留元数据与原因。 */
 export const markRejected = (entry, message) =>

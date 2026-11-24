@@ -160,6 +160,15 @@ test('reading the outbox drops entries of a reserved kind such as a stale friend
   assert.deepEqual(JSON.parse(await readFile(join(dir, 'outbox.json'), 'utf8')).entries, { 'p:x:i': keep });
 });
 
+test('markSynced no longer keeps body.createdAt, and an old synced entry with a stale lastCreatedAt still reads', async t => {
+  const dir = await directory(t);
+  const done = markSynced(queuePublish(undefined, { kind: 'x', id: 'i', body: { createdAt: 5 }, audience: ['public'] }, 1), A, 9);
+  assert.equal('lastCreatedAt' in done, false);
+  const old = { ...done, lastCreatedAt: 5 };
+  await writeFile(join(dir, 'outbox.json'), JSON.stringify({ seq: 1, entries: { [entryKey('x', 'i')]: old } }));
+  assert.deepEqual(await readOutbox(dir), { 'p:x:i': old });
+});
+
 test('the policy file keeps the paused kinds sorted and unique, refuses reserved and malformed kinds, and falls back to none when missing or broken', async t => {
   const dir = await directory(t);
   assert.deepEqual(await readPolicy(dir), { pausedKinds: [] });

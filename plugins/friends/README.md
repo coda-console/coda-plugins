@@ -37,7 +37,7 @@
 
 ## 已下线的功能
 
-名片编辑（昵称、照片、Emoji、字标、主题色、裁剪上传）、本机备注（`notes.json`、`coda self notes.*`）、`set-card`、私信 `send-dm`、动态 `post-feed` 与 `dm`、`feed` 两条帧流都已移除。`outbox.json` 之外插件不再写任何本地文件；旧版留下的 `notes.json` 不再被读取。
+名片编辑（昵称、照片、Emoji、字标、主题色、裁剪上传）、本机备注（`notes.json`、`coda self notes.*`）、`set-card`、私信 `send-dm`、动态 `post-feed` 与 `dm`、`feed` 两条帧流都已移除。插件本地只写 `outbox.json` 与 `policy.json`；旧版留下的 `notes.json` 不再被读取。
 
 ## 权限与数据边界
 
