@@ -1,0 +1,152 @@
+{
+  "name": "@coda-console/remote-exec",
+  "id": "remote-exec",
+  "displayName": "远程执行",
+  "description": "让空间里别的机器上的 Agent 在这台机器上执行命令、拉取和推送文件",
+  "icon": { "symbol": "terminal", "color": "blue" },
+  "version": "0.1.0",
+  "coda": { "channels": ["preview"] },
+  "categories": ["机器与资源"],
+  "type": "module",
+  "main": "main.mjs",
+  "activationEvents": ["onStartupFinished"],
+  "uses": {
+    "coda/machine@1": ["read"]
+  },
+  "contributes": {
+    "configuration": {
+      "title": "远程执行",
+      "properties": {
+        "remote-exec.enabled": {
+          "title": "允许本空间的机器在这台上执行",
+          "type": "boolean",
+          "order": 0,
+          "default": false,
+          "description": "打开后，空间里的机器能以这台后端所在系统用户的权限在这台上执行任意命令、读写文件，相当于 SSH 登录这个账号。每次操作都会记在本插件的状态目录里。默认关闭；关闭后这台不再出现在可用机器里，对它的操作会被明确拒绝。"
+        }
+      }
+    },
+    "protocols": [
+      {
+        "name": "remote-exec/machine@1",
+        "title": "可远程执行的机器",
+        "description": "一台打开了远程执行的机器：空间里别的机器上的 Agent 能在它上面跑命令、拉取和推送文件。",
+        "spec": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "title": "机器",
+              "description": "机器名，工具的 target 写它。"
+            },
+            "os": {
+              "type": "string",
+              "title": "系统",
+              "description": "目标机上执行进程看到的系统（安卓机上是 chroot 里的发行版，不是安卓本体）。"
+            },
+            "user": {
+              "type": "string",
+              "title": "用户",
+              "description": "执行用的系统用户：目标机上执行进程看到的当前用户，命令以它的权限运行。"
+            },
+            "cwd": {
+              "type": "string",
+              "title": "默认目录",
+              "description": "目标机上执行进程的默认目录：执行不给 cwd 时命令在这里运行。"
+            }
+          },
+          "required": ["name", "os", "user", "cwd"],
+          "additionalProperties": false
+        },
+        "status": {
+          "type": "object",
+          "properties": {
+            "available": { "type": "boolean" }
+          },
+          "required": [],
+          "additionalProperties": false
+        },
+        "resource": { "columns": ["name", "os", "user", "cwd"], "symbol": "terminal" },
+        "operations": {
+          "exec": {
+            "description": "在目标机上用 /bin/sh -c 执行一条命令，以目标机后端所在的系统用户运行，等它结束后返回退出码、stdout 和 stderr。cwd 不给时在这台机器的默认目录运行；stdin 给了就一次写入后关闭，不给就是空输入。时限 timeout 以秒计，默认 120，最长 600；超时会结束整个进程组并返回 timedOut: true。stdout 与 stderr 各最多保留约 24 KiB（开头和结尾各一半，中间注明省略了多少字节），超出时 truncated 为 true，完整输出留在目标机上，outputDir 是它的目录，里面有 stdout、stderr 两个文件，用 pull 取回。命令被信号结束时 exitCode 为 null，signal 是信号名。请求和回答各自编码后都不能超过 1 MiB，大的内容用 pull、push 传。需要长时间运行的任务，放到后台再回来查。",
+            "input": {
+              "type": "object",
+              "properties": {
+                "command": { "type": "string", "minLength": 1, "description": "要执行的 shell 命令，交给 /bin/sh -c。" },
+                "cwd": { "type": "string", "description": "命令的工作目录（目标机上的绝对路径）；不给就用机器的默认目录。" },
+                "timeout": { "type": "integer", "minimum": 1, "maximum": 600, "description": "时限，秒；默认 120。" },
+                "stdin": { "type": "string", "description": "写给命令标准输入的文本，一次写完后关闭。" }
+              },
+              "required": ["command"],
+              "additionalProperties": false
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "exitCode": { "type": ["integer", "null"], "description": "退出码；被信号结束时为 null。" },
+                "signal": { "type": ["string", "null"], "description": "结束命令的信号名，正常退出为 null。" },
+                "stdout": { "type": "string", "description": "标准输出；截短时是开头和结尾，中间有一行说明。" },
+                "stderr": { "type": "string", "description": "标准错误；截短规则同 stdout。" },
+                "timedOut": { "type": "boolean", "description": "是否因超过时限被结束。" },
+                "truncated": { "type": "boolean", "description": "stdout 或 stderr 是否被截短。" },
+                "outputDir": { "type": ["string", "null"], "description": "截短时，完整输出在目标机上的目录（里面是 stdout、stderr 两个文件）；没截短为 null。" },
+                "ms": { "type": "integer", "minimum": 0, "description": "命令运行的毫秒数。" }
+              },
+              "required": ["exitCode", "signal", "stdout", "stderr", "timedOut", "truncated", "outputDir", "ms"],
+              "additionalProperties": false
+            },
+            "timeout": 630000
+          }
+        },
+        "streams": {
+          "pull": {
+            "description": "读目标机上的一个文件，返回它的字节，不改动目标机上的任何东西。path 是目标机上的绝对路径；offset、length 按字节范围读，不给就读全部。文件会落到本会话的临时目录，工具返回本地路径，改完用 push 推回去。",
+            "shape": "read",
+            "input": {
+              "type": "object",
+              "properties": {
+                "path": { "type": "string", "minLength": 1, "description": "目标机上的文件路径。" },
+                "offset": { "type": "string", "pattern": "^[0-9]+$", "description": "从第几个字节读起，默认 0。" },
+                "length": { "type": "string", "pattern": "^[0-9]+$", "description": "最多读多少字节，默认读到文件末尾。" }
+              },
+              "required": ["path"],
+              "additionalProperties": false
+            }
+          },
+          "push": {
+            "description": "把本地的一个文件整份写到目标机的 path，已有的同名文件被替换，目录不存在时先建。请求体就是文件的全部字节；回答是 JSON，写入的路径 path 与字节数 size。重复推送结果相同。",
+            "shape": "write",
+            "input": {
+              "type": "object",
+              "properties": {
+                "path": { "type": "string", "minLength": 1, "description": "目标机上要写的文件路径。" }
+              },
+              "required": ["path"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "permissions": {
+          "use": {
+            "title": "让会话在这台机器上以后端所在用户的身份执行命令、读写文件",
+            "sessions": true,
+            "operations": ["exec"],
+            "streams": ["pull", "push"]
+          }
+        }
+      }
+    ],
+    "protocolImplementations": ["remote-exec/machine@1"]
+  },
+  "engines": { "node": ">=24", "coda": 15 },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coda-console/coda-plugins.git",
+    "directory": "plugins/remote-exec"
+  },
+  "publishConfig": { "access": "public" },
+  "files": ["main.mjs", "lib"]
+}
