@@ -253,6 +253,14 @@ test('granting checks the target, the friend and the machine key, pins the targe
   await refused({ friend: F3, target: { kind: MACHINE, id: 'rx-1' } }, 'invalid_input');
   await refused({ friend: STRANGER, target: { kind: MACHINE, id: 'rx-1' } });
   await refused({ friend: 'someone', target: { kind: MACHINE, id: 'rx-1' } });
+  // 机器名含控制字符、换行、双向控制符或首尾有空白：当场失败，什么也不留。
+  for (const name of ['a\nb', 'a\u0007b', 'a\u0085b', 'a\u202eb', ' box', 'box ']) {
+    h.targets.set('rx-1', { spec: { ...SPEC, name } });
+    await refused({ friend: F1, target: { kind: MACHINE, id: 'rx-1' } });
+  }
+  assert.deepEqual(await h.store.listGrants(), []);
+  assert.deepEqual(h.published('friends/rpc-grant'), []);
+  h.targets.set('rx-1', { spec: { ...SPEC } });
   // 读不出本机的机器钥匙：不能授权。
   await h.accord.change({ machine: null });
   await refused({ friend: F1, target: { kind: MACHINE, id: 'rx-1' } }, 'invalid_state');

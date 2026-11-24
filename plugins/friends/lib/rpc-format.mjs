@@ -120,7 +120,10 @@ export function rebuildExecInput(input) {
 
 // ---- 正文的形状 ----
 
-const specOk = spec => isPlain(spec) && Object.keys(spec).length === 4 && ['name', 'os', 'user', 'cwd'].every(key => isText(spec[key])) && spec.name !== '';
+// 机器名会拼进代理记录的标题：含 C0、DEL、C1 控制字符、换行（含 U+2028/2029）、双向控制符，或首尾有空白的不收，也不替换、不裁剪。
+const NAME_REJECTED = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u;
+export const machineNameOk = name => isText(name) && name !== '' && name === name.trim() && !NAME_REJECTED.test(name);
+const specOk = spec => isPlain(spec) && Object.keys(spec).length === 4 && ['name', 'os', 'user', 'cwd'].every(key => isText(spec[key])) && machineNameOk(spec.name);
 const errorOk = error => isPlain(error) && Object.keys(error).length === 3 && isText(error.code) && isText(error.message) && isText(error.effects);
 
 // 每种正文：必有的字段与可有的字段，各配一个类型检查；多出来的字段、缺的必有字段、类型不对都拒。

@@ -375,18 +375,19 @@ test('naming: a key without a nickname uses its first 8 hex digits; a friend who
   assert.deepEqual(c.mine().map(one => [one.id, one.spec.name, one.labels.tail]), [[row.id, 'box@hh#1277', fullTail(HR)]]);
 });
 
-test('naming: legacy proxies without a tail do not stop the sync: one whose grant is still there is rebuilt under the same record ID, ones that cannot be are deleted, new grants register', async t => {
-  const world = worldFake(), h = await holderOf(t, world), h2 = await holderOf(t, world, { author: HM2, machine: HM2 }), grant = await h.grant(ROOT);
-  // 通道还在、授权记录也还在，但授给的是别人（核对不过，也不算撤回）：重建不了。
-  const elsewhere = await h2.grant(FB);
-  const legacy = (holder, grantId) => ({ owner: 'm-1', id: `m-1/${proxyKey(holder, grantId)}`, key: proxyKey(holder, grantId), plugin: 'friends',
-    spec: { ...SPEC, name: 'box@好友 旧称呼' }, status: { available: true }, labels: { 'friends-holder': holder, 'friends-grant': grantId } });
-  const proxies = proxiesFake();
-  proxies.rows.push(legacy(HM, grant), legacy(HM2, elsewhere), legacy(STRANGER, randomUUID()));
-  const c = await callerOf(t, world, { proxies, friends: [channel(), { node: 'n-h2', author: ZYV, bound: true, machine: HM2, certified: true }] });
-  assert.deepEqual(c.mine().map(row => [row.id, row.spec.name, row.labels.tail]), [[`m-1/${proxyKey(HM, grant)}`, 'box@zzy#1948', fullTail(HM)]]);
-  const grant2 = await h2.grant(ROOT);
-  await until(() => c.mine().some(row => row.key === proxyKey(HM2, grant2) && row.spec.name === 'box@zyv#4103'), '新授权照常登记');
+test('naming: a machine name with control characters, line breaks, bidi controls or edge whitespace registers no proxy; @, #, CJK and inner spaces do', async t => {
+  const world = worldFake(), c = await callerOf(t, world);
+  const inject = name => {
+    const one = grantRecord({ holder: HM, grantee: ROOT, grant: randomUUID(), spec: SPEC, available: true, grantedAt: START });
+    world.inject({ author: HM, kind: GRANT, id: one.id, body: { ...one.body, spec: { ...SPEC, name } }, audience: one.audience });
+    return one.body.grant;
+  };
+  for (const name of ['a\nb', 'a\r\nb', 'a\u0007b', 'a\u007fb', 'a\u0085b', 'a b', 'a‮b', 'a‏b', 'a⁧b', ' box', 'box ', '\tbox', 'box\n']) inject(name);
+  await c.caller.tick();
+  assert.deepEqual(c.mine(), []);
+  const fine = ['a@b', 'a#b', '机器 一号', 'my box', 'Ünï'].map(name => [inject(name), name]);
+  await until(() => c.mine().length === fine.length, '合格的名字登记');
+  for (const [grant, name] of fine) assert.ok(c.mine().some(row => row.key === proxyKey(HM, grant) && row.spec.name === `${name}@zzy#1948`), name);
 });
 
 test('naming: the tail length counts only the records this machine keeps after dedup, and list shows the title of the record that is registered', async t => {

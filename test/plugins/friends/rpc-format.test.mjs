@@ -163,6 +163,11 @@ test('a body with the wrong version, an unknown field, a missing field or a wron
   assert.equal(grantCheck({ ...granted.body, protocol: 'other/x@1' }), 'bad_body');
   assert.equal(grantCheck({ ...granted.body, spec: { ...SPEC, extra: 1 } }), 'bad_body');
   assert.equal(grantCheck({ ...granted.body, available: 'yes' }), 'bad_body');
+  for (const name of ['a\nb', 'a\u0000b', 'a\u007fb', 'a\u009fb', 'a\u2029b', 'a\u202eb', 'a\u2066b', ' box', 'box ', '\u3000box', '']) {
+    assert.equal(grantCheck({ ...granted.body, spec: { ...SPEC, name } }), 'bad_body', JSON.stringify(name));
+    assert.throws(() => grantRecord({ holder: HOLDER, grantee: CALLER, grant: GRANT, spec: { ...SPEC, name }, available: true, grantedAt: 7 }), { code: 'invalid_input' });
+  }
+  for (const name of ['a@b', 'a#b', '机器 一号', 'my box']) assert.equal(grantCheck({ ...granted.body, spec: { ...SPEC, name } }), undefined, name);
 });
 
 test('the derived ids and the idempotency key', () => {

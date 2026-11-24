@@ -18,7 +18,7 @@ import { performance } from 'node:perf_hooks';
 import { isDeepStrictEqual } from 'node:util';
 import { certStateOf, statusOf } from './friends.mjs';
 import { KIND_ANSWER, KIND_CALL, KIND_GRANT, PROTOCOL, answerId, answerRecord, clockWentBack, grantRecord, idempotencyKey, isAuthor, rebuildExecInput,
-  machineOf, replayWindow, requestDigest, verifyCall } from './rpc-format.mjs';
+  machineNameOk, machineOf, replayWindow, requestDigest, verifyCall } from './rpc-format.mjs';
 import { answerDueAt, commandInfo, inflightKey, isCorrupt } from './rpc-store.mjs';
 export { ANSWER_KEEP_MS } from './rpc-store.mjs';
 
@@ -611,6 +611,7 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
     if (!entry) throw fail('not_found', `本机没有记录 ${target.kind}/${target.id}`);
     if (entry.local !== true) throw invalid('只能授出本机的记录');
     if (entry.plugin !== PROVIDER) throw invalid(`只能授出 ${PROVIDER} 提供的记录，这条是 ${entry.plugin ?? '未知插件'} 的`);
+    if (!machineNameOk(entry.spec?.name)) throw invalid('本机这台机器的名字含控制字符、换行、双向控制符，或首尾有空白，对方不会登记它：请先改名');
     const me = await identity();
     if (!me.bound.has(friend)) throw invalid('这位不是已绑定好友通道的好友');
     if (!isAuthor(me.machine)) throw fail('invalid_state', '读不出本机的机器钥匙，不能授权');
