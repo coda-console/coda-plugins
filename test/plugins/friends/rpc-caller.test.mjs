@@ -16,6 +16,7 @@ import { ACK_MS, LOST, RESUME_MS, UNSUPPORTED, createCaller, proxyKey } from '..
 import { createHolder } from '../../../plugins/friends/lib/rpc-holder.mjs';
 import { answerId, answerRecord, grantRecord, requestDigest, requestId } from '../../../plugins/friends/lib/rpc-format.mjs';
 import { createRpcStore } from '../../../plugins/friends/lib/rpc-store.mjs';
+import { tailOf } from '../../../plugins/friends/lib/nickname.mjs';
 
 const friendsManifest = JSON.parse(await readFile(new URL('../../../plugins/friends/package.json', import.meta.url), 'utf8'));
 const remoteExec = JSON.parse(await readFile(new URL('../../../plugins/remote-exec/package.json', import.meta.url), 'utf8'))
@@ -25,6 +26,11 @@ const key = c => `ed25519:${c.repeat(64)}`;
 // 持有方：HM 是它的机器钥匙（持有方始终以它出现），HR 是它绑了个人身份时的根。
 // 调用方：ROOT 是个人作者的根，MC、MC2 是我两台机器的机器钥匙，NEW_ROOT 是换过的根；FB 是另一位好友（机器作者）。
 const HM = key('c'), HR = key('d'), ROOT = key('a'), MC = key('b'), MC2 = key('e'), NEW_ROOT = key('f'), FB = key('1'), STRANGER = key('9');
+// 公钥昵称与尾号（coda#3040）：HM 的昵称是 zzy、尾号末 4 位 1948，HR 是 hh、1277。XS 是测试向量里昵称为 xs 的公钥（末 6 位 604084），
+// XS_NEXT 比它大 1（604085），XS_FAR 大 10000（614084，末 4 位相同）；ZYV 的昵称是 zyv（末 4 位 4103）；NONAME 解不出昵称（末 4 位 5311）。
+const XS = 'ed25519:2e4b9cc2428beb7bff6a56c14d7304e472a23e890e91ef0a6b0b0380e89f9734', XS_NEXT = `${XS.slice(0, -1)}5`, XS_FAR = `${XS.slice(0, -4)}be44`;
+const ZYV = 'ed25519:66c8aec217cac5fa9829e4e314c2dfe6f3b3710cbf2c4b4df462c333565b4e27', NONAME = `ed25519:01${'f'.repeat(62)}`, HM2 = key('3');
+const fullTail = author => tailOf(Buffer.from(author.slice('ed25519:'.length), 'hex'));
 const ACTIVE = { active: true, until: 1_900_000_000 }, EXPIRED = { active: false };
 const START = Date.UTC(2026, 10, 24, 12, 0, 0), MINUTE = 60_000;
 const SPEC = { name: 'box', os: 'linux', user: 'u', cwd: '/home/u' };
@@ -250,7 +256,7 @@ async function callerOf(t, world, { author = ROOT, certificate = ACTIVE, machine
     list: (kind, filter) => kind === MACHINE ? records.list(kind, filter) : coda.list(kind, filter),
   }) });
   const { coda, gateway, store } = base;
-  const caller = createCaller(coda, { store: wrapStore(store), signRpc: gateway.signRpc, retractRpc: gateway.retractRpc, onAccord: gateway.onAccord, pages: gateway.pages, dir: base.dir,
+  const caller = createCaller(coda, { store: wrapStore(store), signRpc: gateway.signRpc, retractRpc: gateway.retractRpc, onAccord: gateway.onAccord, pages: gateway.pages,
     now: () => world.clock.now, timers: world.timers });
   const c = { ...base, node, proxies, owner, caller, handlers, streams, stopped: false };
   c.stop = () => { if (c.stopped) return; c.stopped = true; caller.stop(); gateway.stop(); base.host.close(); };
@@ -290,20 +296,22 @@ const rejectsWith = (promise, code, effects, text) => assert.rejects(promise, er
 
 // ---- 授予与发现 ----
 
-test('a grant becomes a proxy record named machine@friend with the holder machine key and grant labels, the name following the note, card and short key; revoking deletes it', async t => {
+test('a grant becomes a proxy record named machine@nickname#tail with the holder machine key, grant and full tail labels; the note and card name do not touch it; revoking deletes it', async t => {
   const world = worldFake(), h = await holderOf(t, world), c = await callerOf(t, world);
   const grant = await granted(h, c);
   const [row] = c.mine();
   assert.equal(row.key, `friend:${'c'.repeat(16)}:${grant}`);
-  assert.deepEqual(row.spec, { ...SPEC, name: `box@好友 ${'c'.repeat(8)}` });
+  assert.deepEqual(row.spec, { ...SPEC, name: 'box@zzy#1948' });
   assert.deepEqual(row.status, { available: true });
-  assert.deepEqual(row.labels, { 'friends-holder': HM, 'friends-grant': grant });
-  // 好友名片名优先于短公钥，本机备注又优先于名片名。
+  assert.deepEqual(row.labels, { 'friends-holder': HM, 'friends-grant': grant, tail: fullTail(HM) });
+  assert.match(row.labels.tail, /^\d{78}$/);
+  assert.ok(row.labels.tail.endsWith('1948'));
+  // 对方改名片名、本机改备注：标题与记录 ID 都不变。
   world.inject({ author: HM, kind: 'friends/card', id: 'self', body: { name: '老王' }, audience: ['public'] });
-  await until(() => c.mine()[0].spec.name === 'box@老王', '名片名');
+  await c.caller.tick();
   await writeFile(join(c.dir, 'notes.json'), JSON.stringify({ 'n-h': '王哥' }));
   await c.caller.tick();
-  assert.equal(c.mine()[0].spec.name, 'box@王哥');
+  assert.deepEqual(c.mine().map(one => [one.id, one.spec.name]), [[row.id, 'box@zzy#1948']]);
 
   await h.holder.self['grants.revoke']({ grant });
   await until(() => c.mine().length === 0, '撤回后删掉代理记录');
@@ -312,9 +320,9 @@ test('a grant becomes a proxy record named machine@friend with the holder machin
 test('a holder machine renamed after the grant: the grant record is published again under the same id and the caller\'s proxy name follows', async t => {
   const world = worldFake(), h = await holderOf(t, world), c = await callerOf(t, world);
   const grant = await granted(h, c);
-  assert.equal(c.mine()[0].spec.name, `box@好友 ${'c'.repeat(8)}`);
+  assert.equal(c.mine()[0].spec.name, 'box@zzy#1948');
   h.targets.rename('renamed');
-  await until(() => c.mine()[0].spec.name === `renamed@好友 ${'c'.repeat(8)}`, '代理名跟着改名');
+  await until(() => c.mine()[0].spec.name === 'renamed@zzy#1948', '代理名跟着改名');
   assert.deepEqual(c.mine().map(row => row.key), [proxyKey(HM, grant)], 'same grant, same proxy');
 });
 
@@ -326,14 +334,84 @@ test('a second rename while the first rename\'s grant record is still being publ
   await until(() => h.node.held(), '第一次改名的发布还在路上');
   h.targets.rename('second');
   release();
-  await until(() => c.mine()[0].spec.name === `second@好友 ${'c'.repeat(8)}`, '代理名是第二个名字');
+  await until(() => c.mine()[0].spec.name === 'second@zzy#1948', '代理名是第二个名字');
+});
+
+// 两位好友各授出一台叫 box 的机器：通道背后的作者是 first、second，持有方机器钥匙是 HM、HM2；两位的名片名都是「老王」。
+for (const [what, first, second, names] of [
+  ['another friend with the same card name gets a record named after its own key', XS, ZYV, ['box@xs#4084', 'box@zyv#4103']],
+  ['two keys with the same nickname keep their own last 4 digits', XS, XS_NEXT, ['box@xs#4084', 'box@xs#4085']],
+  ['two keys with the same nickname and the same last 4 digits are both written to the shortest distinguishing length', XS, XS_FAR, ['box@xs#04084', 'box@xs#14084']],
+]) {
+  test(`naming: ${what}`, async t => {
+    const world = worldFake(), h = await holderOf(t, world), h2 = await holderOf(t, world, { author: HM2, machine: HM2 });
+    const c = await callerOf(t, world, { friends: [channel({ author: first }), { node: 'n-h2', author: second, bound: true, machine: HM2, certified: true }] });
+    for (const author of [first, second]) world.inject({ author, kind: 'friends/card', id: 'self', body: { name: '老王' }, audience: ['public'] });
+    const grant = await granted(h, c), grant2 = await h2.grant(ROOT);
+    await until(() => c.mine().length === 2, '第二条代理记录登记');
+    await c.caller.tick();
+    const rows = [proxyKey(HM, grant), proxyKey(HM2, grant2)].map(recordKey => c.mine().find(row => row.key === recordKey));
+    assert.deepEqual(rows.map(row => row.spec.name), names);
+    assert.deepEqual(rows.map(row => row.labels.tail), [fullTail(first), fullTail(second)]);
+    for (const row of rows) assert.ok(row.labels.tail.endsWith(row.spec.name.split('#')[1]));
+    // 另一条撤回了，留下的这条回到 4 位。
+    await h2.holder.self['grants.revoke']({ grant: grant2 });
+    await until(() => c.mine().length === 1, '撤回后删掉');
+    await c.caller.tick();
+    assert.equal(c.mine()[0].spec.name, `${names[0].split('#')[0]}#${fullTail(first).slice(-4)}`);
+  });
+}
+
+test('naming: a key without a nickname uses its first 8 hex digits; a friend whose certificate expired (unbound, the stored author kept) keeps the title', async t => {
+  const world = worldFake(), h = await holderOf(t, world), c = await callerOf(t, world, { friends: [channel({ author: NONAME })] });
+  await granted(h, c);
+  assert.equal(c.mine()[0].spec.name, 'box@01ffffff#5311');
+  await c.node.change({ friends: [channel({ author: HR })] });
+  await c.caller.tick();
+  const [row] = c.mine();
+  assert.equal(row.spec.name, 'box@hh#1277');
+  await c.node.change({ friends: [channel({ author: HR, bound: false })] });
+  await c.caller.tick();
+  assert.deepEqual(c.mine().map(one => [one.id, one.spec.name, one.labels.tail]), [[row.id, 'box@hh#1277', fullTail(HR)]]);
+});
+
+test('naming: legacy proxies without a tail do not stop the sync: one whose grant is still there is rebuilt under the same record ID, ones that cannot be are deleted, new grants register', async t => {
+  const world = worldFake(), h = await holderOf(t, world), h2 = await holderOf(t, world, { author: HM2, machine: HM2 }), grant = await h.grant(ROOT);
+  // 通道还在、授权记录也还在，但授给的是别人（核对不过，也不算撤回）：重建不了。
+  const elsewhere = await h2.grant(FB);
+  const legacy = (holder, grantId) => ({ owner: 'm-1', id: `m-1/${proxyKey(holder, grantId)}`, key: proxyKey(holder, grantId), plugin: 'friends',
+    spec: { ...SPEC, name: 'box@好友 旧称呼' }, status: { available: true }, labels: { 'friends-holder': holder, 'friends-grant': grantId } });
+  const proxies = proxiesFake();
+  proxies.rows.push(legacy(HM, grant), legacy(HM2, elsewhere), legacy(STRANGER, randomUUID()));
+  const c = await callerOf(t, world, { proxies, friends: [channel(), { node: 'n-h2', author: ZYV, bound: true, machine: HM2, certified: true }] });
+  assert.deepEqual(c.mine().map(row => [row.id, row.spec.name, row.labels.tail]), [[`m-1/${proxyKey(HM, grant)}`, 'box@zzy#1948', fullTail(HM)]]);
+  const grant2 = await h2.grant(ROOT);
+  await until(() => c.mine().some(row => row.key === proxyKey(HM2, grant2) && row.spec.name === 'box@zyv#4103'), '新授权照常登记');
+});
+
+test('naming: the tail length counts only the records this machine keeps after dedup, and list shows the title of the record that is registered', async t => {
+  const world = worldFake(), h = await holderOf(t, world), h2 = await holderOf(t, world, { author: HM2, machine: HM2 });
+  const second = { node: 'n-h2', author: XS_FAR, bound: true, machine: HM2, certified: true };
+  const c = await callerOf(t, world, { friends: [channel({ author: XS }), second] });
+  const grant = await granted(h, c), grant2 = await h2.grant(ROOT);
+  await until(() => c.mine().length === 2, '第二条代理记录登记');
+  await c.caller.tick();
+  assert.deepEqual(c.mine().map(row => row.spec.name).sort(), ['box@xs#04084', 'box@xs#14084']);
+  // 我的另一台机器（ID 更小）也有与第二位好友的通道：这一授权归它登记，本机留下的那条回到 4 位。
+  const other = await callerOf(t, world, { owner: 'm-0', machine: MC2, friends: [second], proxies: c.proxies });
+  await until(() => other.mine().length === 1, '另一台登记');
+  await c.caller.tick();
+  assert.deepEqual(c.mine().map(row => [row.key, row.spec.name]), [[proxyKey(HM, grant), 'box@xs#4084']]);
+  assert.deepEqual(other.mine().map(row => [row.key, row.spec.name]), [[proxyKey(HM2, grant2), 'box@xs#4084']]);
+  assert.deepEqual((await c.caller.list({ friend: XS })).map(proxy => proxy.name), ['box@xs#4084']);
+  assert.deepEqual((await c.caller.list({ friend: XS_FAR })).map(proxy => proxy.name), ['box@xs#4084'], '取另一台登记的那条的名字');
 });
 
 test('list gives the proxies a friend granted to me, read only: filtered by the friend\'s bound channel, with the status I would meet now', async t => {
   const world = worldFake(), h = await holderOf(t, world), c = await callerOf(t, world, { friends: [channel(), { node: 'n-b', author: FB, bound: true, machine: FB, certified: false }] });
   assert.deepEqual(await c.caller.list(), []);
   const grant = await granted(h, c);
-  const proxy = { key: proxyKey(HM, grant), grant, holder: HM, name: `box@好友 ${'c'.repeat(8)}`, os: 'linux', user: 'u', status: 'available' };
+  const proxy = { key: proxyKey(HM, grant), grant, holder: HM, name: 'box@zzy#1948', os: 'linux', user: 'u', status: 'available' };
   assert.deepEqual(await c.caller.list(), [proxy]);
   assert.deepEqual(await c.caller.list({ friend: HM }), [proxy]);
   assert.deepEqual(await c.caller.list({ friend: FB }), [], 'another friend\'s channel has a different machine key');

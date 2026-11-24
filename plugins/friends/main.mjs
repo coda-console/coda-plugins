@@ -67,7 +67,7 @@ export async function activate(coda) {
       holder.start().catch(() => {});
     } catch { holder = null; }
     try {
-      caller = createCaller(coda, { ...rpc, dir });
+      caller = createCaller(coda, rpc);
       callerStart = caller.start().catch(async e => {
         // 只有协议确实不在（读它的记录报 not_found）才说没装；别的启动失败按实际原因报。
         const absent = await coda.list(TARGET_KIND, { scope: 'local' }).then(() => false, error => error?.code === 'not_found');

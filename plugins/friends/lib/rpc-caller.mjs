@@ -4,7 +4,10 @@
 //
 // - 发现：网关已有的 Accord 变化通知与每 15 秒的兜底，翻页读全 friends/rpc-grant。合格的授权：作者是好友表里某条无冲突通道背后的机器钥匙
 //   （`machine`；不看是否已绑定：持有方个人证书过期时这一行是未绑定、机器钥匙仍在，授出的照常可用），受众与正文的 grantee 恰好是本机此刻的作者，正文的 holder 就是作者（verifyGrant）。
-// - 代理记录：`friend:<持有方机器钥匙前 16 位>:<授权号>`，spec 取授权记录的、名字改成 `<机器名>@<好友称呼>`，labels 记持有方机器钥匙与授权号。
+// - 代理记录：`friend:<持有方机器钥匙前 16 位>:<授权号>`，spec 取授权记录的、名字改成 `<机器名>@<公钥昵称>#<尾号>`（coda#3040），
+//   labels 记持有方机器钥匙、授权号与完整尾号（`tail`）。公钥是好友表这一行存下的作者（证书过期时仍是这把），没有时用机器钥匙；
+//   解不出昵称的用公钥前 8 位十六进制。尾号默认最后 4 位，本机去重后留下的同一主干的代理记录最后几位相同时写到能区分的最短位数。
+//   备注与名片名不参与。旧版登记、没有 `tail` 的：这一遍发现了授权就按它重建（记录 ID 不变），没发现的删掉。
 //   同一授权在空间里只留一条：候选是与持有方有这样一条通道的机器，机器 ID 最小的那台留下，其余删掉自己这条（没有通道的不留）；
 //   可用性在留下的那台上单独算，不参与选主。授权撤回（目录里这一号已不在，或只剩撤回后的空正文）就删掉；
 //   对端换了机器钥匙、本机作者变了、签不了、授权记录说不可用，只标为不可用。
@@ -19,8 +22,7 @@
 // - 本机作者变了：旧作者下的代理记录停用，正在等的请求不再处理，要等重新授予。
 // - 签名只经网关的内部入口（signRpc、retractRpc）。
 import { isDeepStrictEqual } from 'node:util';
-import { CARD_KIND, PROFILE_KIND, mergeFriendRows } from './friends.mjs';
-import { readNotes } from './notes.mjs';
+import { nicknameOf, tailOf } from './nickname.mjs';
 import { KIND_ANSWER, KIND_CALL, KIND_GRANT, MAX_WINDOW_MS, PROTOCOL, answerId, callRecord, cancelRecord, isAuthor, rebuildExecInput, requestId,
   signerOf, verifyAnswer, verifyGrant } from './rpc-format.mjs';
 import { KEEP_AFTER_EXPIRY_MS } from './rpc-store.mjs';
@@ -28,7 +30,7 @@ import { KEEP_AFTER_EXPIRY_MS } from './rpc-store.mjs';
 const ACCORD = { kind: 'coda/accord@1', id: 'local' };
 export const POLL_MS = 15_000, ACK_MS = 75_000, RESUME_MS = 30_000;
 const TERMINAL = ['completed', 'failed', 'canceled'];
-const LABEL_HOLDER = 'friends-holder', LABEL_GRANT = 'friends-grant';
+const LABEL_HOLDER = 'friends-holder', LABEL_GRANT = 'friends-grant', LABEL_TAIL = 'tail';
 export const LOST = '命令可能仍在好友的机器上执行，结果不会再送达；重跑之前先检查';
 export const UNSUPPORTED = '经好友的机器暂不支持拉取与推送；用 exec 分段读写（如 `sed -n`、`base64`），截短时完整输出在 outputDir 里';
 
@@ -45,13 +47,14 @@ const PROBLEMS = {
 };
 
 /**
- * `store`：rpc-store（用其中的发出表）；`signRpc`、`retractRpc`、`onAccord`、`pages`：网关的内部签名、撤回入口、Accord 变化通知、翻页读取；
- * `dir`：插件状态目录（读本机备注，给代理记录起名）。`now`、`timers` 可换（测试用）。
+ * `store`：rpc-store（用其中的发出表）；`signRpc`、`retractRpc`、`onAccord`、`pages`：网关的内部签名、撤回入口、Accord 变化通知、翻页读取。
+ * `now`、`timers` 可换（测试用）。
  */
-export function createCaller(coda, { store, signRpc, retractRpc, onAccord, pages, dir, now = Date.now, timers = globalThis, pollMs = POLL_MS, ackMs = ACK_MS } = {}) {
+export function createCaller(coda, { store, signRpc, retractRpc, onAccord, pages, now = Date.now, timers = globalThis, pollMs = POLL_MS, ackMs = ACK_MS } = {}) {
   let stopped = false, timer = null, ticking = Promise.resolve(), queued = null, self = null, markReady;
   const ready = new Promise(resolve => { markReady = resolve; });
-  // 代理记录 key → { holder, grant, grantee, spec, offered（授权记录说可用）, present（上一遍按此刻的作者与通道核对合格）}。
+  // 代理记录 key → { holder, grant, grantee, spec, stem（`<机器名>@<昵称>`）, tail（完整尾号）, title（空间里登记着这一授权的那条代理记录的名字，没有是 null）,
+  //   offered（授权记录说可用）, present（上一遍按此刻的作者与通道核对合格）}。
   const known = new Map();
   const waiters = new Set(); // 正在等回答的调用
   // 本机作者的代次：Accord 变化通知里的作者与上一次看到的不同就加一（第一次看到不算），换走再换回也算两次。
@@ -101,14 +104,19 @@ export function createCaller(coda, { store, signRpc, retractRpc, onAccord, pages
     const mine = new Map((await coda.list(PROTOCOL, { scope: 'local' })).filter(entry => entry.plugin === coda.plugin.id && entry.key).map(entry => [entry.key, entry]));
     for (const [key, entry] of mine) {
       self ??= entry.owner;
-      const holder = entry.labels?.[LABEL_HOLDER], grant = entry.labels?.[LABEL_GRANT];
-      if (!known.has(key) && isAuthor(holder) && grant) known.set(key, { holder, grant, grantee: null, spec: entry.spec, offered: false, present: false });
+      const holder = entry.labels?.[LABEL_HOLDER], grant = entry.labels?.[LABEL_GRANT], tail = entry.labels?.[LABEL_TAIL];
+      if (known.has(key) || !isAuthor(holder) || !grant) continue;
+      // 旧版登记、没有尾号的：这一遍发现了，下面按授权记录重建；没发现的重建不了，删掉。
+      if (!tail) {
+        if (!found.has(key)) await coda.delete({ kind: PROTOCOL, key });
+        continue;
+      }
+      known.set(key, { holder, grant, grantee: null, spec: entry.spec, stem: entry.spec.name.slice(0, entry.spec.name.lastIndexOf('#')), tail, offered: false, present: false });
     }
-    const names = found.size ? await namesOf([...found.values()].map(one => one.friend)) : new Map();
     for (const [key, { friend, body }] of found) {
-      known.set(key, { holder: body.holder, grant: body.grant, grantee: body.grantee, spec: { ...body.spec, name: `${body.spec.name}@${names.get(friend.node)}` },
-        offered: body.available, present: true });
+      known.set(key, { holder: body.holder, grant: body.grant, grantee: body.grantee, spec: body.spec, ...stemOf(body.spec.name, friend), offered: body.available, present: true });
     }
+    const contests = new Map();
     for (const [key, grant] of known) {
       if (stopped) return;
       if (!found.has(key) && !read.truncated) {
@@ -120,15 +128,30 @@ export function createCaller(coda, { store, signRpc, retractRpc, onAccord, pages
           continue;
         }
       }
-      await register(key, grant, me, mine.get(key));
+      contests.set(key, await contest(grant, me));
+    }
+    // 尾号默认写最后 4 位；本机去重后留下的同一主干、尾号不同的代理记录最后几位也相同时，写到能区分的最短位数。
+    const kept = [...known].filter(([key]) => contests.get(key).keep).map(([, grant]) => grant);
+    for (const grant of kept) {
+      let digits = 4;
+      for (const other of kept) {
+        if (other.stem !== grant.stem || other.tail === grant.tail) continue;
+        let same = 0;
+        while (other.tail[77 - same] === grant.tail[77 - same]) same++;
+        digits = Math.max(digits, same + 1);
+      }
+      grant.spec = { ...grant.spec, name: `${grant.stem}#${grant.tail.slice(-digits)}` };
+    }
+    for (const [key, grant] of known) {
+      if (stopped) return;
+      await register(key, grant, me, mine.get(key), contests.get(key));
     }
   }
 
-  // 好友称呼：与好友页同一个函数（本机备注、好友名片名、短公钥依次取）。
-  async function namesOf(friends) {
-    const [profiles, cards] = await Promise.all([pages({ kind: PROFILE_KIND }), pages({ kind: CARD_KIND })]);
-    const notes = dir ? await readNotes(dir) : {};
-    return new Map(mergeFriendRows({ friends, profiles: profiles.records, cards: cards.records, notes }).map(row => [row.node, row.title]));
+  // 代理记录名的主干 `<机器名>@<公钥昵称>` 与完整尾号：公钥是好友表这一行存下的作者，没有时用机器钥匙。
+  function stemOf(machineName, friend) {
+    const hex = (isAuthor(friend.author) ? friend.author : friend.machine).slice('ed25519:'.length), key = Buffer.from(hex, 'hex');
+    return { stem: `${machineName}@${nicknameOf(key) || hex.slice(0, 8)}`, tail: tailOf(key) };
   }
 
   async function retracted({ holder, grant }) {
@@ -136,24 +159,30 @@ export function createCaller(coda, { store, signRpc, retractRpc, onAccord, pages
     return !(read?.records ?? []).some(record => record.author === holder && record.id === grant && Object.keys(record.body ?? {}).length > 0);
   }
 
-  // 写本机这条代理记录，再去重：候选是与持有方有通道的机器（它们才登记代理记录），机器 ID 最小的留下；本机不是候选、
-  // 或空间里有 ID 更小的同一授权的代理记录，就删掉自己这条。可用性只写在留下的那条上，不参与比较。
-  // 本机的机器 ID 取自本机写过的代理记录（还没有时先写一次）。
-  async function register(key, grant, me, existing) {
-    const labels = { [LABEL_HOLDER]: grant.holder, [LABEL_GRANT]: grant.grant };
-    const value = { spec: grant.spec, status: { available: problemOf(grant, me) === null }, labels };
+  // 去重：候选是与持有方有通道的机器（它们才登记代理记录），机器 ID 最小的留下。给回空间里别的机器登记的同一授权的代理记录，
+  // 与本机是否留下（本机不是候选、或别的机器 ID 更小的就不留）。可用性只写在留下的那条上，不参与比较。
+  async function contest(grant, me) {
     const candidate = Boolean(channelOf(me, grant.holder));
-    const others = candidate ? (await coda.list(PROTOCOL, { labels })).filter(entry => !entry.local) : [];
-    const beaten = owner => others.some(entry => entry.owner < owner);
-    if (!candidate || (self && beaten(self))) {
-      if (existing) await coda.delete({ kind: PROTOCOL, key });
-      return;
+    const others = candidate ? (await coda.list(PROTOCOL, { labels: { [LABEL_HOLDER]: grant.holder, [LABEL_GRANT]: grant.grant } })).filter(entry => !entry.local) : [];
+    return { others, keep: candidate && !(self && others.some(entry => entry.owner < self)) };
+  }
+
+  // 按去重的结果写或删本机这条代理记录，记下空间里登记着这一授权的那条的名字（本机的，或机器 ID 最小的别家的）。
+  // 本机的机器 ID 取自本机写过的代理记录（还没有时先写一次，写完再比一次）。
+  async function register(key, grant, me, existing, { others, keep }) {
+    const winner = () => others.reduce((best, entry) => (entry.owner < best.owner ? entry : best));
+    if (keep) {
+      const value = { spec: grant.spec, status: { available: problemOf(grant, me) === null },
+        labels: { [LABEL_HOLDER]: grant.holder, [LABEL_GRANT]: grant.grant, [LABEL_TAIL]: grant.tail } };
+      if (!(existing && ['spec', 'status', 'labels'].every(field => isDeepStrictEqual(existing[field], value[field])))) {
+        const written = await coda.put({ kind: PROTOCOL, key }, value);
+        self ??= written?.owner ?? null;
+      }
+      grant.title = grant.spec.name;
+      if (!(self && others.some(entry => entry.owner < self))) return;
     }
-    if (!(existing && ['spec', 'status', 'labels'].every(field => isDeepStrictEqual(existing[field], value[field])))) {
-      const written = await coda.put({ kind: PROTOCOL, key }, value);
-      self ??= written?.owner ?? null;
-    }
-    if (self && beaten(self)) await coda.delete({ kind: PROTOCOL, key });
+    if (existing || keep) await coda.delete({ kind: PROTOCOL, key });
+    grant.title = others.length ? winner().spec.name : null;
   }
 
   // ---- exec ----
@@ -338,13 +367,14 @@ export function createCaller(coda, { store, signRpc, retractRpc, onAccord, pages
   }
 
   // 好友授给本机的代理记录（给好友页读，只读）：给了 `friend`（好友的公钥）就只列这位好友的，按他通道背后的机器钥匙筛。
+  // 名字取空间里登记着这一授权的那条代理记录的（去重让给别的机器的，取那台的；哪儿都没登记是 null）。
   // 状态：available 可用，或 PROBLEMS 里的原因（off、channel、author、sign）。
   async function list({ friend } = {}) {
     if (friend !== undefined && !isAuthor(friend)) throw fail('invalid_input', 'friend 须是好友的公钥（ed25519:…）');
     await ready;
     const me = await identity(), holders = new Set(me.friends.filter(one => friend === undefined || one.author === friend).map(one => one.machine));
     return [...known].filter(([, grant]) => friend === undefined || holders.has(grant.holder))
-      .map(([key, grant]) => ({ key, grant: grant.grant, holder: grant.holder, name: grant.spec.name, os: grant.spec.os, user: grant.spec.user, status: problemOf(grant, me) ?? 'available' }));
+      .map(([key, grant]) => ({ key, grant: grant.grant, holder: grant.holder, name: grant.title, os: grant.spec.os, user: grant.spec.user, status: problemOf(grant, me) ?? 'available' }));
   }
 
   // ---- 请求的撤回 ----
