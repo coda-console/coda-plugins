@@ -2,7 +2,7 @@
 
 // 判定点：所有操作（exec、pull、push）执行前都经它。第一版恒放行；以后收紧只改这一处。
 //   operation：'exec' | 'pull' | 'push'
-//   content：操作内容，exec 是 { command, cwd, timeout }，pull 是 { path, offset, length }，push 是 { path }
+//   content：操作内容，exec 是 { command, cwd（实际生效的）, timeout, stdin }（完整的执行输入；操作记录只记命令与目录），pull 是 { path, offset, length }，push 是 { path }
 //   caller：`ctx.caller` 原样；record：`ctx.record`
 // 放行回 { allow: true }，拒绝回 { allow: false, code, reason }。
 export function decide({ operation, content, caller, record }) {

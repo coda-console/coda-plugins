@@ -6,7 +6,9 @@ import { syncBuiltinESMExports } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pointProblem } from '@coda-console/protocol/validate';
-import { exec } from '../../../plugins/remote-exec/lib/exec.mjs';
+import { AUDIT_FILE, createAuditLog } from '../../../plugins/remote-exec/lib/audit.mjs';
+import { defaultCwd } from '../../../plugins/remote-exec/lib/host.mjs';
+import { exec, DRAIN } from '../../../plugins/remote-exec/lib/exec.mjs';
 import { HEAD, TAIL, openOutputs } from '../../../plugins/remote-exec/lib/output.mjs';
 import { allGone, caller, coda, fakeSpawn, scratch, setup, waitFor } from './support.mjs';
 
@@ -216,4 +218,106 @@ test('a cancel that arrives while the output is being wrapped up is not a succes
   await assert.rejects(done, error => error === reason);
   assert.deepEqual(leftovers(id), []);
   assert.deepEqual(host.lines().map(line => [line.operation, line.error]), [['exec', 'cancelled']]);
+});
+
+// ——— 操作记录不可用：开始之前拒绝 ———
+
+test('an operation whose log cannot be written is refused with audit_unavailable before anything runs: no state directory, a state directory that cannot be made, a log file that cannot be opened', async t => {
+  const dir = scratch(t), marker = join(dir, 'ran');
+  const blocked = join(dir, 'blocked'), isDirectory = join(dir, 'dir-state');
+  writeFileSync(blocked, '');
+  mkdirSync(join(isDirectory, AUDIT_FILE), { recursive: true });
+  for (const state of [null, join(blocked, 'state'), isDirectory]) {
+    const host = setup(t), warned = [];
+    host.env.audit = createAuditLog(state, { warn: message => warned.push(message) });
+    const { ctx, id } = context(t);
+    await assert.rejects(exec(host.env, { command: `touch ${marker}` }, ctx), { code: 'audit_unavailable', effects: 'none' });
+    assert.equal(existsSync(marker), false, `没有状态时命令不该执行：${state}`);
+    assert.deepEqual(leftovers(id), []);
+  }
+});
+
+test('the switch is checked first: a switch that is off is `disabled` even when the log is unavailable', async t => {
+  const host = setup(t, { enabled: false }), { ctx } = context(t);
+  host.env.audit = createAuditLog(null, { warn() {} });
+  await assert.rejects(exec(host.env, { command: 'true' }, ctx), { code: 'disabled', effects: 'none' });
+});
+
+test('a log line that cannot be appended after the operation is done does not change its outcome; standard error names the call', async t => {
+  const dir = scratch(t), host = setup(t), warned = [], { ctx, id } = context(t);
+  host.env.audit = createAuditLog(host.state, { warn: message => warned.push(message) });
+  // 命令自己把记录文件换成目录：开始时记录可写，做完之后追加才失败。
+  const file = join(host.state, AUDIT_FILE);
+  const result = await exec(host.env, { command: `rm -f '${file}' && mkdir '${file}'; echo done`, cwd: dir }, ctx);
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.stdout, 'done\n');
+  assert.equal(warned.length, 1);
+  assert.ok(warned[0].includes(id) && warned[0].includes('exec') && warned[0].includes(dir), warned[0]);
+});
+
+// ——— 判定点拿到完整的执行输入 ———
+
+test('the decision point gets the whole execution input (stdin and the cwd in effect); the log keeps the command, the directory and the limit (when given), never the stdin', async t => {
+  const asked = [], host = setup(t), { ctx } = context(t);
+  host.env.judge = request => { asked.push(request); return { allow: true }; };
+  await exec(host.env, { command: 'cat', stdin: 'top-secret-input', timeout: 7 }, ctx);
+  assert.deepEqual(asked.map(request => request.content), [{ command: 'cat', cwd: defaultCwd(), timeout: 7, stdin: 'top-secret-input' }]);
+  const [line] = host.lines();
+  assert.deepEqual(line.params, { command: 'cat', cwd: defaultCwd(), timeout: 7 });
+  assert.ok(!readFileSync(join(host.state, AUDIT_FILE), 'utf8').includes('top-secret-input'));
+  // 判定点拒绝，命令不执行。
+  host.env.judge = () => ({ allow: false, code: 'not_allowed', reason: '不许' });
+  const marker = join(scratch(t), 'ran');
+  await assert.rejects(exec(host.env, { command: `touch ${marker}`, stdin: 'x' }, context(t).ctx), { code: 'not_allowed', effects: 'none' });
+  assert.equal(existsSync(marker), false);
+});
+
+// ——— 脱离进程组的后代拿着输出管道 ———
+
+// 起一个脱离进程组（新会话）、继承输出管道的 sleep 30：根与整个进程组结束后管道仍不关。macOS 没有 setsid 命令，用 perl 的 POSIX::setsid。
+// perl 在 setsid 成功之后才把自己的 PID 写进文件（exec 不改 PID），外层 sh 等到文件有内容才输出 started：看到 started 就是已经脱组、PID 已知。
+const quote = path => `'${path.replaceAll("'", "'\\''")}'`;
+const detached = pidFile => `perl -MPOSIX -e 'POSIX::setsid() or die; open(F, ">", shift) or die; print F "$$\n"; close F; exec @ARGV' ${quote(pidFile)} sleep 30 & `
+  + `while [ ! -s ${quote(pidFile)} ]; do kill -0 $! 2>/dev/null || { echo 'perl 在写 PID 之前就退出了' >&2; exit 1; }; sleep 0.05; done; echo started; wait`;
+// 等 perl 报告 PID；这条命令在此之前就结束了（成功或失败）就立刻失败并带上它的结果，不等到外层超时。
+async function waitedPid(pidFile, done) {
+  let ended = null;
+  done.then(result => { ended = { result }; }, error => { ended = { error }; });
+  return waitFor(() => {
+    if (existsSync(pidFile) && readFileSync(pidFile, 'utf8').endsWith('\n')) return Number(readFileSync(pidFile, 'utf8'));
+    if (ended) throw new Error(`命令在 PID 就绪之前就结束了：${ended.error?.message ?? JSON.stringify(ended.result)}`);
+    return false;
+  }, 'perl 报告的 PID');
+}
+// 路径带空格也不能拆开。
+const spaced = t => { const dir = join(scratch(t), 'with space'); mkdirSync(dir); return join(dir, 'pid file'); };
+const reap = pid => { try { process.kill(pid, 'SIGKILL'); } catch {} };
+
+test('a time limit with a detached descendant holding the output pipes still returns timedOut within a bounded wait, with the output so far', { timeout: 30_000 }, async t => {
+  // 杀进程的钩子先于删临时目录的钩子登记（钩子按登记顺序跑）；PID 读到后存在内存里。
+  let pid;
+  t.after(() => reap(pid));
+  const pidFile = spaced(t);
+  const { host, id, done } = await running(t, { command: detached(pidFile), timeout: 1 }, { reap: false, ready: true });
+  pid = await waitedPid(pidFile, done);
+  const result = await done;
+  assert.equal(result.timedOut, true);
+  assert.equal(result.stdout, 'started\n');
+  assert.ok(result.ms < 1000 + DRAIN + 5000, `ms ${result.ms}`);
+  assert.deepEqual(leftovers(id), []);
+  assert.deepEqual(host.lines().map(line => line.result.timedOut), [true]);
+});
+
+test('an abort with a detached descendant holding the output pipes still throws the signal reason within a bounded wait, and the line is logged', { timeout: 30_000 }, async t => {
+  let pid;
+  t.after(() => reap(pid));
+  const pidFile = spaced(t);
+  const { host, id, controller, done } = await running(t, { command: detached(pidFile) }, { reap: false, ready: true });
+  pid = await waitedPid(pidFile, done);
+  const reason = new DOMException('cancelled by caller', 'AbortError'), started = Date.now();
+  controller.abort(reason);
+  await assert.rejects(done, error => error === reason);
+  assert.ok(Date.now() - started < DRAIN + 5000);
+  assert.deepEqual(leftovers(id), []);
+  assert.deepEqual(host.lines().map(line => line.error), ['cancelled']);
 });

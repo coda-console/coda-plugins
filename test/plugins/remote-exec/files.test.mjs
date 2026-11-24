@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { execFileSync } from 'node:child_process';
 import { truncateSync } from 'node:fs';
+import { createAuditLog } from '../../../plugins/remote-exec/lib/audit.mjs';
 import { pull, push } from '../../../plugins/remote-exec/lib/files.mjs';
 import { caller, scratch, setup, waitFor } from './support.mjs';
 
@@ -480,4 +481,14 @@ test('push: one abort listener for the whole upload, not a callback per chunk', 
   assert.equal((await response.json()).size, chunks);
   assert.equal(race.mock.callCount(), 0);
   assert.deepEqual([added, removed], [1, 1]);
+});
+
+test('pull and push are refused with audit_unavailable, effects none, when the log cannot be written; nothing is read or written', async t => {
+  const dir = scratch(t), source = join(dir, 'a'), target = join(dir, 'new', 'b');
+  writeFileSync(source, 'x');
+  const host = setup(t);
+  host.env.audit = createAuditLog(null, { warn() {} });
+  await assert.rejects(reading(t, { path: source }, { host }).response, { code: 'audit_unavailable', effects: 'none' });
+  await assert.rejects(writing(t, { path: target }, 'x', { host }).done, { code: 'audit_unavailable', effects: 'none' });
+  assert.equal(existsSync(join(dir, 'new')), false);
 });

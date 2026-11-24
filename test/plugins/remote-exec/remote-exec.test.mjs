@@ -174,7 +174,7 @@ test('when the switch is off every operation is refused with `disabled` and noth
 });
 
 test('the decision point lets everything through and gets the operation, its content, the caller as given and the record', () => {
-  const request = { operation: 'exec', content: { command: 'rm -rf x', cwd: '/tmp', timeout: 5 }, caller, record: { kind: MACHINE, id: 'r-1', key: KEY } };
+  const request = { operation: 'exec', content: { command: 'rm -rf x', cwd: '/tmp', timeout: 5, stdin: 'y' }, caller, record: { kind: MACHINE, id: 'r-1', key: KEY } };
   assert.deepEqual(decide(request), { allow: true });
   assert.doesNotThrow(() => admit(coda, { enabled: true, ...request }));
 });
@@ -243,6 +243,19 @@ test('without a state directory nothing is logged and standard error says so onc
   await createAuditLog(join(blocked, 'state'), { warn: message => warned.push(message) }).write('z');
   assert.equal(warned.length, 1);
   assert.match(warned[0], /写不进/);
+  // 操作之后写不进去，标准错误里说明是哪次调用。
+  const labelled = [];
+  await createAuditLog(join(blocked, 'state'), { warn: message => labelled.push(message) }).write('z', 'exec call-9 /srv');
+  assert.match(labelled[0], /exec call-9 \/srv/);
+});
+
+test('ready() says whether the log can be written before anything is done: no state directory, a state directory that cannot be made, a log file that cannot be opened; and it writes no line', async t => {
+  const root = scratch(t), blocked = join(root, 'file'), asDirectory = join(root, 'dir'), good = join(root, 'good', 'state');
+  writeFileSync(blocked, '');
+  mkdirSync(join(asDirectory, AUDIT_FILE), { recursive: true });
+  for (const state of [null, join(blocked, 'state'), asDirectory]) await assert.rejects(createAuditLog(state).ready(), /./);
+  await createAuditLog(good).ready();
+  assert.equal(readFileSync(join(good, AUDIT_FILE), 'utf8'), '');
 });
 
 // ——— 输出截短 ———

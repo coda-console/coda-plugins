@@ -29,13 +29,22 @@ export function auditLine({ time = new Date(), id, caller, operation, params, re
   });
 }
 
-// 追加到 `state`（插件状态目录）里的记录文件。没有状态目录时如实不记，在标准错误说一次；写不进去写标准错误，不抛。
+// 追加到 `state`（插件状态目录）里的记录文件。
+//   `ready()`：操作开始之前问一次记录能不能写（建状态目录、以追加方式打开记录文件、不写内容）；不能就抛，调用方据此拒绝这次操作。
+//   `write(line, what)`：操作之后追加一行。写不进去不抛（操作已经做完，结局不能变），在标准错误写明哪次调用（`what`）的记录丢了。
 export function createAuditLog(state, { warn = console.error } = {}) {
   let said = false;
   return {
-    async write(line) {
+    async ready() {
+      if (!state) throw new Error('没有插件状态目录，操作记录无处可写');
+      try {
+        await mkdir(state, { recursive: true });
+        await appendFile(join(state, AUDIT_FILE), '');
+      } catch (error) { throw new Error(`操作记录写不进 ${join(state, AUDIT_FILE)}：${error.message}`); }
+    },
+    async write(line, what = '一次调用') {
       if (!state) {
-        if (!said) { said = true; warn('远程执行：没有插件状态目录，操作记录不会保存'); }
+        if (!said) { said = true; warn(`远程执行：没有插件状态目录，操作记录不会保存（${what}的记录丢了）`); }
         return;
       }
       const file = join(state, AUDIT_FILE);
@@ -43,7 +52,7 @@ export function createAuditLog(state, { warn = console.error } = {}) {
         try {
           await mkdir(state, { recursive: true });
           await appendFile(file, `${line}\n`);
-        } catch (error) { warn(`远程执行：操作记录写不进 ${file}：${error.message}`); }
+        } catch (error) { warn(`远程执行：操作记录写不进 ${file}：${error.message}（${what}的记录丢了）`); }
       });
     },
   };
