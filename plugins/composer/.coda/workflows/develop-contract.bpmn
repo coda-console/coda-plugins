@@ -271,6 +271,7 @@
       <extensionElements>
         <coda:env name="DECISION" value="=overall-call.decision" /><coda:env name="FINDINGS" value="=overall-call.findings" />
         <coda:env name="LINE" value="=overall-call.line" /><coda:env name="REPORT" value="=overall-call.report" />
+        <coda:env name="CONTRACT" value="=inputs.contract" />
       </extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" overall-reviewed</script>
     </scriptTask>
@@ -294,7 +295,9 @@ PR：{{pr.url}}
 {{overall.review}}
 
 取舍标准：只有必须修才回到进行中派块修；评审者说成立不等于现在要修。必须修是合并后用户会遇到错的结果、丢数据、安全问题，对外契约写错，测试是红的或会偶发失败，漏了任务书要求的事或做了任务书之外的事，以及会扩散、越晚越难改的结构问题（跨模块或会被照着写：绕过已有边界、依赖方向反过来、第二个事实来源或第二套做同一件事的机制、迁移只做一半）；其余是小问题。修复块只修那一条，不顺手带小问题，不加设计改动，不把以后的需求提前做进来。
-要先修的选「回到进行中」，备注写要修哪几条，派块修好后再提交验收；需求分支 head 变了，再提交验收会在新 head 上重评；要在 head 没变时再评就勾「重新整体评审」。不必修的、或没评成也决定往下走的，选「继续验收」。</documentation>
+要先修的选「回到进行中」，备注写要修哪几条，派块修好后再提交验收；需求分支 head 变了，再提交验收会在新 head 上重评；要在 head 没变时再评就勾「重新整体评审」。不必修的、或没评成也决定往下走的，选「继续验收」。
+上面每条必须修前有编号（#1、#2……）。你判定某条不必修，就在备注里单独一行写 `#编号 不改`，后面可以接理由（如 `- #2 不改：只影响少见路径`；行首只允许空白或列表符号 -、*，「不改」后面是行尾，或「：」「:」「，」「,」接理由；句子中间提到的不算）：流程就此关掉这条，它不再算当前 head 上的必须修，并连同理由写进 PR 汇总的「需要你知道」，最后给用户看。写了不存在的编号不生效。
+拿不准的取舍由你自己定，记下来，最后汇报，不为这类取舍去找用户。选「继续验收」时，如果还有没关掉的必须修，就不会自动合并，检查通过后会出用户的批准卡；必须修都关掉了，满足其余条件就自动合并。</documentation>
       <extensionElements>
         <coda:choice id="continue" name="继续验收" primary="true" />
         <coda:choice id="progress" name="回到进行中" />
@@ -302,13 +305,14 @@ PR：{{pr.url}}
     </userTask>
     <sequenceFlow id="review-result-flow" sourceRef="review" targetRef="review-result" />
     <scriptTask id="review-result" name="读取整体评审结论" scriptFormat="bash" coda:checkout="false" coda:timeout="5">
-      <extensionElements><coda:env name="REVIEW" value="=review" /><coda:output name="route" /></extensionElements>
+      <extensionElements><coda:env name="REVIEW" value="=review" /><coda:env name="CONTRACT" value="=inputs.contract" /><coda:output name="route" /></extensionElements>
       <script>node "${CODA_PLUGIN_PATH}/scripts/develop.mjs" review</script>
     </scriptTask>
     <sequenceFlow id="review-route" sourceRef="review-result" targetRef="after-review" />
     <exclusiveGateway id="after-review" name="整体评审之后" default="review-continue" />
     <sequenceFlow id="review-progress" sourceRef="after-review" targetRef="resume"><conditionExpression xsi:type="tFormalExpression">=review-result.route = "progress"</conditionExpression></sequenceFlow>
-    <sequenceFlow id="review-continue" sourceRef="after-review" targetRef="premerge" />
+    <!-- 选「继续验收」回到「整理整体评审」：按备注里关掉的必须修重算汇总和 auto（那时 route 为 accept，不再出本卡）。 -->
+    <sequenceFlow id="review-continue" sourceRef="after-review" targetRef="overall" />
 
     <!-- 合并前检查与 GitHub 检查放在整体评审之后：之后需求分支 head 不再变，只对最终要合并的提交跑；批准卡和自动合并之前都已通过。 -->
     <serviceTask id="premerge" name="合并前检查" coda:action="run-workflows">

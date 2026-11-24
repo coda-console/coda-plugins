@@ -166,11 +166,11 @@ test('契约开发的定义：流程 ID 与名字、挂点 develop（没有 orde
   }
   assert.deepEqual(elements.filter(e => e.$type === 'bpmn:CallActivity').map(e => e.calledElement).sort(), ['piece', 'review-commit']);
   assert.deepEqual(elements.filter(e => e.$type === 'bpmn:SubProcess'), [], '没有设备验收的子流程');
-  // 自动合并之前列出合并后的流程；整体评审往下走直接到合并前检查。
-  assert.deepEqual(['overall-accept', 'review-continue'].map(id => nodes[id].targetRef.id), ['premerge', 'premerge']);
+  // 自动合并之前列出合并后的流程；整体评审往下走直接到合并前检查，主 Agent 选继续验收先回到整理整体评审（按关掉的必须修重算汇总和 auto）。
+  assert.deepEqual(['overall-accept', 'review-continue'].map(id => nodes[id].targetRef.id), ['premerge', 'overall']);
   assert.equal(nodes['github-joiners'].targetRef.id, 'joiners');
   // 判断是不是契约模式的脚本步骤都要传 CONTRACT。
-  const aware = ['branch', 'progress', 'pr', 'gate', 'checks-passed', 'overall-plan', 'overall', 'approval'];
+  const aware = ['branch', 'progress', 'pr', 'gate', 'checks-passed', 'overall-plan', 'overall-reviewed', 'overall', 'review', 'approval'];
   const scripts = elements.filter(e => e.$type === 'bpmn:ScriptTask').map(e => [e.id, /develop\.mjs" (\S+)/.exec(e.script)?.[1]]);
   for (const [id, action] of scripts) assert.equal(values(nodes[id]).some(v => v.name === 'CONTRACT' && v.value === '=inputs.contract'), aware.includes(action), `${id}（${action}）`);
   for (const action of aware) assert.ok(scripts.some(([, a]) => a === action), action);
@@ -192,10 +192,12 @@ const DIFFERENT = {
   checks: '项目检查按 pr.withContract 把契约交给它',
   'checks-passed': '多传 CONTRACT：记下这次通过的检查带没带契约',
   'overall-plan': '多传 CONTRACT：整体评审按 head 定评不评',
+  'overall-reviewed': '多传 CONTRACT：契约模式的必须修带编号',
   overall: '多传 CONTRACT：自动合并按契约模式判定',
+  'review-result': '多传 CONTRACT：契约模式才按备注关掉必须修',
   'overall-accept': '整体评审往下走直接到合并前检查，没有设备验收',
-  review: '说明里的「再提交验收」按 head 重评',
-  'review-continue': '继续验收直接到合并前检查，没有设备验收',
+  review: '说明里的「再提交验收」按 head 重评，写明「#编号 不改」关掉必须修、取舍自己定',
+  'review-continue': '继续验收回到整理整体评审，按关掉的必须修重算汇总和 auto',
   'auto-merge-needed': '自动合并走到读取批准，由脚本合成答复，不直接合并',
   'auto-merge-skip': '不自动合并走批准卡（加入者已在前面列出）',
   approve: '说明里没有设备验收',
@@ -582,6 +584,136 @@ test('契约模式的 auto：开了 autoMerge、没勾「交用户批准」、�
 });
 
 
+const MUSTS = [{ level: 'must', title: '登录后停在空白页', location: 'app.mjs:3' }, { level: 'must', title: '退出不清缓存' }, { level: 'must', title: '重试没有上限', location: 'net.mjs:9' }];
+const card = (f, note, choice = 'continue') => f.run('review', { REVIEW: JSON.stringify({ choice, note }), CONTRACT: f.contract }).outputs;
+const declinedOf = f => Object.fromEntries(f.state().overall.must.map(m => [m.id, m.status ?? 'open']));
+
+test('契约模式整体评审结论卡：必须修带编号，备注里单独一行写「#编号 不改」关掉；全关掉 auto 为真，只关一部分为假，关掉的条目与理由写进汇总和 PR 描述', t => {
+  const { f, round, overall } = contracted(t);
+  let { pr, plan } = round();
+  assert.equal(plan(), 'true');
+  f.run('overall-reviewed', reviewed(MUSTS, { CONTRACT: f.contract }));
+  assert.deepEqual(f.state().overall.must.map(m => m.id), ['#1', '#2', '#3'], '评完时按顺序编号');
+  let out = overall(pr);
+  assert.deepEqual([out.route, out.auto], ['review', 'false']);
+  assert.match(out.review, /- #1 登录后停在空白页（app\.mjs:3）/);
+  assert.match(out.review, /必须修 3 条/);
+  // 只关掉一部分（含理由、列表符号）；句中提到的不算，不存在的编号不报错也不生效。
+  assert.equal(card(f, '- #1 不改：边角，只影响少见路径\n修 #3，#3 不改的话会失败\n还有 #2 不改\n#9 不改').route, 'continue');
+  assert.deepEqual(declinedOf(f), { '#1': 'declined', '#2': 'open', '#3': 'open' });
+  assert.equal(f.state().overall.must[0].reason, '边角，只影响少见路径');
+  assert.equal(f.state().settled, true);
+  out = overall(pr);
+  assert.deepEqual([out.route, out.auto], ['accept', 'false'], '还有没关掉的必须修：不自动合并，继续往下走，检查通过后出批准卡');
+  assert.match(out.summary, /需要你知道：整体评审的必须修，主 Agent 定了不改：\n- #1 登录后停在空白页（app\.mjs:3）：边角，只影响少见路径（在 head [0-9a-f]{12} 上关掉）/);
+  assert.doesNotMatch(out.summary, /- #2 |- #3 /);
+  assert.match(f.calls().findLast(c => c.args[1] === 'edit').body, /定了不改/, 'PR 描述也带上');
+  assert.doesNotMatch(out.review, /#1 登录后/, '关掉的不再列为必须修');
+  assert.match(out.review, /必须修 2 条/);
+  // 其余也关掉：auto 照常为真；已关掉的不重复，理由可以没有。
+  card(f, '#1 不改\n  - #2 不改\n- #3 不改，先这样：重试由上层兜底');
+  assert.deepEqual(declinedOf(f), { '#1': 'declined', '#2': 'declined', '#3': 'declined' });
+  assert.equal(f.state().overall.must[0].reason, '边角，只影响少见路径', '已关掉的理由不被覆盖');
+  out = overall(pr);
+  assert.deepEqual([out.route, out.auto], ['accept', 'true']);
+  assert.match(out.summary, /- #2 退出不清缓存（在 head [0-9a-f]{12} 上关掉）\n- #3 重试没有上限（net\.mjs:9）：先这样：重试由上层兜底（在 head [0-9a-f]{12} 上关掉）/);
+  // 每次提交验收清掉 settled：新 head 上重评，按新的评审结果重新编号、重新算，关掉的不带过来。
+  ({ pr, plan } = round());
+  assert.equal(plan(), 'true');
+  assert.equal(f.state().settled, undefined);
+  f.run('overall-reviewed', reviewed(MUSTS.slice(0, 2), { CONTRACT: f.contract }));
+  out = overall(pr);
+  assert.deepEqual([out.route, out.auto], ['review', 'false']);
+  assert.deepEqual(declinedOf(f), { '#1': 'open', '#2': 'open' });
+  assert.match(out.summary, /- #1 登录后停在空白页（app\.mjs:3）：边角，只影响少见路径（在 head [0-9a-f]{12} 上关掉）/, '关掉的取舍换 head 重评后仍在汇总里');
+});
+
+test('契约模式整体评审结论卡：选「回到进行中」写的「不改」也记在当前 head 的评审上，head 没变再提交验收仍然有效；旧 head 的评审、没评成的不受影响', t => {
+  const { f, round, overall } = contracted(t);
+  let { pr, plan } = round();
+  plan();
+  f.run('overall-reviewed', reviewed(MUSTS.slice(0, 2), { CONTRACT: f.contract }));
+  assert.equal(overall(pr).route, 'review');
+  assert.equal(card(f, '修 #1\n- #2 不改：不影响用户', 'progress').route, 'progress');
+  assert.deepEqual(declinedOf(f), { '#1': 'open', '#2': 'declined' });
+  assert.equal(f.state().settled, undefined, '回到进行中不算继续验收');
+  // head 没变再提交验收：不重评，只剩 #1 没关，auto 为假。
+  ({ pr, plan } = round({}, false));
+  assert.equal(plan(), 'false');
+  let out = overall(pr);
+  assert.deepEqual([out.route, out.auto], ['accept', 'false']);
+  assert.match(out.summary, /定了不改：\n- #2 退出不清缓存：不影响用户（在 head [0-9a-f]{12} 上关掉）/);
+  // 评审是旧 head 的、这次没评成：备注里的「不改」不动旧 head 的评审。
+  ({ pr, plan } = round());
+  assert.equal(plan(), 'true');
+  f.run('overall-lost');
+  assert.equal(overall(pr).route, 'review');
+  card(f, '#1 不改');
+  assert.deepEqual(declinedOf(f), { '#1': 'open', '#2': 'declined' });
+  out = overall(pr);
+  assert.deepEqual([out.route, out.auto], ['accept', 'false'], '没评成：继续验收照旧往下走，不自动合并');
+  assert.match(out.summary, /- #2 退出不清缓存：不影响用户（在 head [0-9a-f]{12} 上关掉）/, '以前关掉的仍在汇总里');
+});
+
+test('契约模式整体评审结论卡：「不改」只能关掉卡上列出的条目，同一 head 重评没评成、卡上没有上一轮的条目时写了编号也不生效', t => {
+  const { f, round, overall } = contracted(t);
+  let { pr, plan } = round();
+  plan();
+  f.run('overall-reviewed', reviewed(MUSTS.slice(0, 2), { CONTRACT: f.contract }));
+  card(f, '修 #1', 'progress');
+  ({ pr, plan } = round({ again: true }, false));
+  assert.equal(plan(), 'true');
+  f.run('overall-lost');
+  assert.equal(overall(pr).route, 'review');
+  assert.match(overall(pr).review, /^没评成/);
+  card(f, '- #1 不改：边角\n#2 不改');
+  assert.deepEqual(declinedOf(f), { '#1': 'open', '#2': 'open' });
+  assert.equal(f.state().declined, undefined);
+  const out = overall(pr);
+  assert.deepEqual([out.route, out.auto], ['accept', 'false'], '上一轮的必须修没有关掉，不自动合并');
+  assert.doesNotMatch(out.summary, /定了不改/);
+});
+
+test('契约模式：关掉的必须修一直留到最后的汇总，先关一条、修另一条、换 head 重评通过，汇总里仍有那条取舍并标明在哪个 head 上关的', t => {
+  const { f, round, overall } = contracted(t);
+  let { pr, plan } = round();
+  plan();
+  f.run('overall-reviewed', reviewed(MUSTS.slice(0, 2), { CONTRACT: f.contract }));
+  const first = f.state().head;
+  assert.equal(overall(pr).route, 'review');
+  card(f, '- #1 不改：边角\n修 #2', 'progress');
+  ({ pr, plan } = round());
+  assert.notEqual(f.state().head, first);
+  assert.equal(plan(), 'true');
+  f.run('overall-reviewed', reviewed([], { CONTRACT: f.contract }));
+  const out = overall(pr);
+  assert.deepEqual([out.route, out.auto], ['accept', 'true']);
+  assert.match(out.summary, new RegExp(`定了不改：\\n- #1 登录后停在空白页（app\\.mjs:3）：边角（在 head ${first.slice(0, 12)} 上关掉）`));
+  assert.doesNotMatch(out.summary, /#2 退出不清缓存/);
+  assert.match(f.calls().findLast(c => c.args[1] === 'edit').body, /定了不改/, 'PR 描述里也有');
+});
+
+test('没有 CONTRACT 时整体评审结论卡与以前一样：必须修不带编号，备注里写「#编号 不改」不关掉任何东西，继续验收不回到整理整体评审', t => {
+  const f = fixture(t); f.run('branch');
+  f.land('one', 'first');
+  f.run('progress', { PROGRESS: JSON.stringify({ choice: 'submit', note: '汇报', options: {} }) });
+  f.run('sync-base', { FIXER: 'true' });
+  const pr = f.run('pr').outputs;
+  f.run('checks-passed', { RUNS });
+  f.run('overall-plan', { REVIEWER: 'true' });
+  f.run('overall-reviewed', reviewed(MUSTS.slice(0, 2)));
+  assert.deepEqual(f.state().overall.must.map(m => [m.id, m.status]), [[undefined, undefined], [undefined, undefined]]);
+  const before = f.state();
+  let out = f.run('overall', { AUTO: 'true', SUMMARY: pr.summary }).outputs;
+  assert.deepEqual([out.route, out.auto], ['review', 'false']);
+  assert.match(out.review, /^- 登录后停在空白页（app\.mjs:3）$/m);
+  assert.equal(f.run('review', { REVIEW: JSON.stringify({ choice: 'continue', note: '- #1 不改：边角' }) }).outputs.route, 'continue');
+  assert.deepEqual(f.state(), before, '状态一字不变');
+  out = f.run('overall', { AUTO: 'true', SUMMARY: pr.summary }).outputs;
+  assert.deepEqual([out.route, out.auto], ['review', 'false']);
+  assert.doesNotMatch(out.summary, /定了不改/);
+});
+
 test('提交验收的顺序：跟上目标分支、开 PR、范围门禁、项目检查、整体评审、合并前检查、GitHub 检查，之后列出合并后的流程，最后批准', async () => {
   const flow = await definition();
   const order = ['sync', 'pr', 'gate', 'checks', 'overall-plan', 'overall-call', 'overall', 'premerge', 'github-checks', 'joiners'];
@@ -594,8 +726,9 @@ test('提交验收的顺序：跟上目标分支、开 PR、范围门禁、项�
   assert.deepEqual(reused.filter(id => order.includes(id)), ['pr', 'gate', 'overall-plan', 'overall', 'premerge', 'github-checks', 'joiners']);
   // 有必须修：先交主 Agent，继续验收才接着走合并前检查；回到进行中就不跑。
   const escalated = { ...context, overall: { route: 'review', auto: false } };
-  assert.deepEqual(walk(flow, 'overall', { ...escalated, 'review-result': { route: 'continue' } }, ['approve']).filter(id => [...order, 'review'].includes(id)),
-    ['overall', 'review', 'premerge', 'github-checks', 'joiners']);
+  const carded = walk(flow, 'overall-route', { ...escalated, 'review-result': { route: 'continue' } }, ['overall']);
+  assert.deepEqual(carded.filter(id => ['review', 'overall'].includes(id)), ['review', 'overall']);
+  assert.deepEqual(walk(flow, 'overall', context, ['approve']).filter(id => order.includes(id)), ['overall', 'premerge', 'github-checks', 'joiners'], '回到整理整体评审后 route 为 accept，往下走');
   assert.deepEqual(walk(flow, 'overall', { ...escalated, 'review-result': { route: 'progress' } }, ['resume', 'premerge']).at(-1), 'resume');
 });
 

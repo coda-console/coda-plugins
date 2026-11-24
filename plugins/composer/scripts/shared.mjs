@@ -16,6 +16,10 @@ export const command = (bin, args, env = process.env) => {
 export const git = (...args) => command('git', args);
 export const gh = (...args) => command('gh', args);
 
+// 退回意见、整体评审结论的备注里单独一行写的「#编号 不改」，后面可以接理由：返回 [{ id, reason }]。
+// 行首只允许空白或列表符号 -、*，「不改」后面是行尾，或「：」「:」「，」「,」接理由；句子中间提到的不算。
+export const declinedIn = note => [...note.matchAll(/^[^\S\n]*(?:[-*][^\S\n]*)?(#\d+)[^\S\n]*不改[^\S\n]*(?:$|[：:，,][^\S\n]*(.*))/gm)].map(([, id, reason = '']) => ({ id, reason: reason.trim() }));
+
 // 执行者的固定说明，放在每个交给执行者的任务前面：块的执行与修改、监督开发提交验收时的解冲突都用它。
 export const instructions = `你是这次开发流程的执行者，自己完成这一项任务，不继承主 Agent 的协调职责，不再委派。
 只做这一项，在当前分支提交，不推送、不开 PR、不合并、不部署。
