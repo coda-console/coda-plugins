@@ -100,10 +100,10 @@ function accordFake({ author = ME, certificate = ACTIVE, machine = MK, friends =
 // 给结果对象就完成，给 Error 就失败，给 'hang' 就挂着等 release；中止（signal）时以 interrupted、unknown 失败。
 function execFake() {
   const ok = command => ({ exitCode: 0, signal: null, stdout: `ran ${command}`, stderr: '', timedOut: false, truncated: false, outputDir: null, ms: 7 });
-  const fake = { calls: [], jobs: new Map(), runs: 0, plan: input => ok(input.command) };
+  const fake = { calls: [], jobs: new Map(), runs: 0, stubborn: false, abortCode: 'interrupted', plan: input => ok(input.command) };
   fake.call = async (ref, operation, input, options = {}) => {
     assert.equal(operation, 'exec');
-    fake.calls.push({ ref: structuredClone(ref), input: structuredClone(input), id: options.id, timeout: options.timeout });
+    fake.calls.push({ ref: structuredClone(ref), input: structuredClone(input), id: options.id, timeout: options.timeout, signaled: options.signal !== undefined });
     let job = fake.jobs.get(options.id);
     if (!job) {
       fake.runs++;
@@ -116,9 +116,17 @@ function execFake() {
       const planned = fake.plan(input);
       if (planned instanceof Error) job.reject(planned); else if (planned !== 'hang') job.resolve(planned);
     }
-    const abort = () => job.reject(fail('interrupted', '命令被中止', 'unknown'));
-    if (options.signal?.aborted) abort(); else options.signal?.addEventListener('abort', abort, { once: true });
-    return job.done;
+    if (!options.signal) return job.done;
+    // 与真实的 coda.call 一样：signal 一中止，这次 call 立刻以 AbortError 失败，并把取消交给内核；内核那边的调用之后怎么结束，只有再用同一个键调一次才知道。
+    // stubborn：内核收到取消也不停，直到放行。abortCode：内核确认取消时给的错误码，默认执行端以 interrupted 失败。
+    const local = new Promise((resolve, reject) => {
+      const abort = () => {
+        reject(Object.assign(new Error('已中止'), { name: 'AbortError' }));
+        if (!fake.stubborn) job.reject(fail(fake.abortCode, '命令被中止', 'unknown'));
+      };
+      if (options.signal.aborted) abort(); else options.signal.addEventListener('abort', abort, { once: true });
+    });
+    return Promise.race([job.done, local]);
   };
   fake.release = (id, result = ok(fake.jobs.get(id).input.command)) => fake.jobs.get(id).resolve(result);
   fake.pending = () => [...fake.jobs.values()].filter(job => !job.settled).length;
@@ -170,7 +178,9 @@ function routed(host, { accord, exec, targets }) {
   return { ...host.coda,
     get: ref => ref.kind === ACCORD ? accord.get() : ref.kind === MACHINE ? targets.get(ref.id) : host.coda.get(ref),
     query: accord.query,
-    call: (ref, operation, input, options) => ref.kind === ACCORD ? accord.call(ref, operation, input) : exec.call(ref, operation, input, options),
+    // 调用内核按目标记录路由：目标不在了，调用（包括同一个幂等键的重调）到不了执行端，以 not_found、none 失败。
+    call: (ref, operation, input, options) => ref.kind === ACCORD ? accord.call(ref, operation, input)
+      : targets.rows.has(ref.id) ? exec.call(ref, operation, input, options) : Promise.reject(fail('not_found', `没有记录 ${ref.id}`)),
     watch: (kind, listener, selector) => kind === ACCORD ? accord.watch(kind, listener, selector) : kind === MACHINE ? targets.watch(listener) : host.coda.watch(kind, listener, selector) };
 }
 
@@ -293,11 +303,17 @@ test('revoking is written to disk first and takes effect even when the retractio
 test('a grant whose target is gone ends for good: it is no longer admitted, its record is withdrawn and it stays ended when the target returns', async t => {
   const h = await holderOf(t);
   const { grant } = await h.grant();
+  const gate = h.accord.hold(() => true);
   h.targets.remove('rx-1');
-  await h.settle();
+  await until(() => h.accord.held(), '撤回卡在目录查询');
+  assert.equal((await h.store.getGrant(grant)).retractedAt, undefined, 'not retracted yet');
+  gate();
+  await until(async () => (await h.store.getGrant(grant)).retractedAt !== undefined, '撤回签出');
   assert.deepEqual(h.accord.calls.at(-1), { kind: 'friends/rpc-grant', id: grant, body: {}, audience: [], signer: 'machine', expectAuthor: MK });
+  const calls = h.accord.calls.length;
   h.targets.set('rx-1');
   await h.settle();
+  assert.equal(h.accord.calls.length, calls, 'the target coming back publishes nothing');
   const { grants } = await h.holder.self['grants.list']();
   assert.deepEqual(grants.map(row => [row.grant, row.status]), [[grant, 'target_missing']]);
   const body = send(h, { grant });
@@ -366,10 +382,11 @@ test('a large output is cut to fit the answer, cut is set on the answer, and the
 
 // ---- 撤销的分界 ----
 
-test('revoking: what was submitted runs to its end; what was admitted but not yet submitted never starts', async t => {
+test('revoking: what was submitted is canceled and its outcome is recorded as it was; what was admitted but not yet submitted never starts', async t => {
   const h = await holderOf(t);
   const { grant } = await h.grant();
   h.exec.plan = () => 'hang';
+  h.exec.abortCode = 'canceled';
   // 同时执行每人 4 个：前 4 个提交，第 5 个准入了在等名额。
   const bodies = Array.from({ length: LIMITS.executing.author }, () => send(h, { grant }));
   await h.settle();
@@ -380,13 +397,286 @@ test('revoking: what was submitted runs to its end; what was admitted but not ye
   assert.deepEqual(h.answers(F1, waiting.request), ['running']);
   assert.equal((await h.store.get(F1, waiting.request)).state, 'admitted');
   await h.holder.self['grants.revoke']({ grant });
-  for (const one of bodies.slice(0, 4)) h.exec.release(idempotencyKey(F1, one.request));
   await h.settle();
-  for (const one of bodies.slice(0, 4)) assert.deepEqual(h.answers(F1, one.request), ['running', 'completed']);
+  for (const one of bodies.slice(0, 4)) {
+    assert.deepEqual(h.answers(F1, one.request), ['running', 'canceled']);
+    assert.deepEqual(h.lastAnswer(F1, one.request).body.error, { code: 'canceled', message: '对方撤销了授权，调用已取消', effects: 'unknown' });
+    assert.equal((await h.store.get(F1, one.request)).state, 'canceled');
+  }
+  assert.equal(h.exec.pending(), 0);
   assert.equal(h.exec.runs, 4, 'the waiting one was never started');
   assert.deepEqual(h.answers(F1, waiting.request), ['running', 'failed']);
   assert.deepEqual(h.lastAnswer(F1, waiting.request).body.error.code, 'revoked');
   assert.equal(h.lastAnswer(F1, waiting.request).body.error.effects, 'none');
+  assert.deepEqual((await h.ledger({ outcome: 'canceled' })).map(row => row.code), ['canceled', 'canceled', 'canceled', 'canceled']);
+});
+
+test('revoking after the command has finished leaves its outcome as it was', async t => {
+  const h = await holderOf(t);
+  const { grant } = await h.grant();
+  const body = send(h, { grant });
+  await h.settle();
+  assert.deepEqual(h.answers(F1, body.request), ['running', 'completed']);
+  const answered = h.lastAnswer(F1, body.request);
+  await h.holder.self['grants.revoke']({ grant });
+  await h.settle();
+  assert.deepEqual(h.answers(F1, body.request), ['running', 'completed']);
+  assert.deepEqual(h.lastAnswer(F1, body.request), answered);
+});
+
+test('revoking returns at once; the cancel follows, and a command that ends in its own way is recorded as it ended', async t => {
+  const h = await holderOf(t);
+  const { grant } = await h.grant();
+  h.exec.plan = () => 'hang';
+  h.exec.stubborn = true;
+  const stubborn = send(h, { grant });
+  await h.settle();
+  assert.equal(h.exec.pending(), 1);
+  const revoked = await h.holder.self['grants.revoke']({ grant });
+  // 已撤、还有已提交的调用没落到终态：撤销中。
+  assert.equal(revoked.status, 'revoking');
+  await h.settle();
+  assert.equal((await h.holder.self['grants.list']()).grants[0].status, 'revoking');
+  // 取消发出了（已落盘标记），命令还没停：没有终态，回答里只有 running。
+  assert.equal((await h.store.get(F1, stubborn.request)).canceled, true);
+  assert.deepEqual(h.answers(F1, stubborn.request), ['running']);
+  // 取消发出后，用同一个幂等键不带 signal 再调一次，接上原来那次调用。
+  assert.deepEqual(h.exec.calls.map(call => [call.id, call.signaled]), [[idempotencyKey(F1, stubborn.request), true], [idempotencyKey(F1, stubborn.request), false]]);
+  // 取消没赶上：命令其实自己跑完了，照实记。
+  h.exec.release(idempotencyKey(F1, stubborn.request));
+  await h.settle();
+  assert.deepEqual(h.answers(F1, stubborn.request), ['running', 'completed']);
+  assert.equal(h.lastAnswer(F1, stubborn.request).body.result.stdout, `ran ${stubborn.input.command}`);
+  // 调用都落到终态了：已撤销。
+  assert.equal((await h.holder.self['grants.list']()).grants[0].status, 'revoked');
+});
+
+test('revoking: the cancel is not queued behind the grant record sync: with the Accord query hung, revoke still returns and the submitted call is canceled', async t => {
+  const h = await holderOf(t);
+  const { grant } = await h.grant();
+  h.exec.plan = () => 'hang';
+  h.exec.abortCode = 'canceled';
+  const body = send(h, { grant });
+  await h.settle();
+  assert.equal(h.exec.pending(), 1);
+  // 之后的 Accord 查询（撤回记录的同步、扫请求）都挂住。
+  const release = h.accord.hold(() => true);
+  let done = false;
+  h.holder.self['grants.revoke']({ grant }).then(() => { done = true; });
+  await until(() => done, 'revoke 返回');
+  await until(() => h.answers(F1, body.request).join() === 'running,canceled', '已提交的调用收到取消');
+  assert.equal(h.accord.held(), true, 'the query is hung');
+  release();
+  await h.settle();
+});
+
+test('revoking: the executor failing with interrupted after the cancel is recorded as interrupted, not as canceled', async t => {
+  const h = await holderOf(t);
+  const { grant } = await h.grant();
+  h.exec.plan = () => 'hang';
+  const body = send(h, { grant });
+  await h.settle();
+  await h.holder.self['grants.revoke']({ grant });
+  await h.settle();
+  assert.deepEqual(h.answers(F1, body.request), ['running', 'failed']);
+  assert.deepEqual(h.lastAnswer(F1, body.request).body.error, { code: 'interrupted', message: '命令被中止', effects: 'unknown' });
+});
+
+test('revoking: when the outcome of the canceled call cannot be had, it is recorded as failed with unknown effects', async t => {
+  const h = await holderOf(t);
+  const { grant } = await h.grant();
+  h.exec.plan = () => 'hang';
+  h.exec.stubborn = true;
+  const body = send(h, { grant });
+  await h.settle();
+  await h.holder.self['grants.revoke']({ grant });
+  await h.settle();
+  h.exec.jobs.get(idempotencyKey(F1, body.request)).reject(new Error('内核不再认识这次调用'));
+  await h.settle();
+  assert.deepEqual(h.answers(F1, body.request), ['running', 'failed']);
+  assert.deepEqual(h.lastAnswer(F1, body.request).body.error, { code: 'internal', message: '内核不再认识这次调用', effects: 'unknown' });
+});
+
+test('an ending found by the re-check cancels the submitted call at once, with the Accord query hung', async t => {
+  const h = await holderOf(t);
+  const { grant } = await h.grant();
+  h.exec.plan = () => 'hang';
+  h.exec.abortCode = 'canceled';
+  const body = send(h, { grant });
+  await h.settle();
+  assert.equal(h.exec.pending(), 1);
+  // 目标悄悄没了（没有事件），好友表变一下让授权记录全部过一遍：补查发现失效、落盘，撤回卡在目录查询。
+  h.targets.remove('rx-1', { quiet: true });
+  const release = h.accord.hold(() => true);
+  await h.accord.change({ friends: [...FRIENDS, { node: 'n9', author: key('8'), bound: true, machine: key('8'), certified: false }] });
+  await until(async () => (await h.store.getGrant(grant)).endedBy === 'target_missing', '补查把失效落盘');
+  await until(() => h.accord.held(), '撤回卡在目录查询');
+  await until(() => h.exec.pending() === 0, '已提交的调用收到取消');
+  assert.equal((await h.store.get(F1, body.request)).canceledBy, 'target_missing');
+  release();
+  await h.settle();
+  // 目标已没了，取消后的重调到不了执行端：不是原调用的结局，记 interrupted、unknown。
+  assert.deepEqual(h.answers(F1, body.request), ['running', 'failed']);
+  assert.deepEqual([h.lastAnswer(F1, body.request).body.error.code, h.lastAnswer(F1, body.request).body.error.effects], ['interrupted', 'unknown']);
+});
+
+test('revoking returns from local state: with the identity read hung, revoke still returns and the submitted call is canceled', async t => {
+  const h = await holderOf(t);
+  const { grant } = await h.grant();
+  h.exec.plan = () => 'hang';
+  h.exec.abortCode = 'canceled';
+  h.exec.stubborn = true;
+  const body = send(h, { grant });
+  await h.settle();
+  let open;
+  const gate = new Promise(resolve => { open = resolve; }), get = h.accord.get;
+  h.accord.get = async () => { await gate; return get(); };
+  let returned = null;
+  h.holder.self['grants.revoke']({ grant }).then(row => { returned = row; });
+  await until(() => returned, 'revoke 返回');
+  assert.deepEqual([returned.grant, returned.friend, returned.status], [grant, F1, 'revoking']);
+  await until(async () => (await h.store.get(F1, body.request)).canceled === true, '已提交的调用收到取消');
+  assert.deepEqual(h.exec.calls.map(call => call.signaled), [true, false]);
+  open();
+  h.exec.release(idempotencyKey(F1, body.request));
+  await h.settle();
+});
+
+test('a cancel that cannot be written is recorded for that call only: the others are still canceled and the rest of the sweep carries on', async t => {
+  const disk = { failFor: null, wrapStore: store => ({ ...store, cancel: (caller, request, by) => request === disk.failFor ? Promise.reject(new Error('写不进去')) : store.cancel(caller, request, by) }) };
+  const h = await holderOf(t, disk);
+  const { grant } = await h.grant();
+  h.exec.plan = () => 'hang';
+  h.exec.abortCode = 'canceled';
+  const [first, second, third] = [send(h, { grant }), send(h, { grant }), send(h, { grant })];
+  await h.settle();
+  assert.equal(h.exec.pending(), 3);
+  disk.failFor = first.request;
+  // 机器钥匙读不出：第三条跑完后答不出去，留着等补签。
+  await h.accord.change({ machine: null });
+  h.exec.release(idempotencyKey(F1, third.request));
+  await h.settle();
+  assert.equal((await h.store.get(F1, third.request)).state, 'completed');
+  await h.holder.self['grants.revoke']({ grant });
+  await h.settle();
+  assert.equal((await h.store.get(F1, first.request)).canceled, undefined, 'the failing one is left for later');
+  assert.equal(h.exec.pending(), 1);
+  assert.equal((await h.store.get(F1, second.request)).state, 'canceled');
+  // 机器钥匙读得出了：这一轮 sweep 里第一条的取消照样写不进去，也不挡着第二、三条的补签。
+  await h.accord.change({ machine: MK });
+  await h.settle();
+  assert.deepEqual(h.answers(F1, third.request), ['running', 'completed']);
+  assert.deepEqual(h.answers(F1, second.request), ['running', 'canceled']);
+  assert.deepEqual(h.answers(F1, first.request), ['running']);
+  // 写得进去了：下一轮补上第一条的取消。
+  disk.failFor = null;
+  await h.settle();
+  assert.deepEqual(h.answers(F1, first.request), ['running', 'canceled']);
+});
+
+// markSubmitted 落盘之后、首次调用之前的空档：`gap.hook` 在那里跑一次。
+function submitGap() {
+  const gap = { hook: null, wrapStore: store => ({ ...store, markSubmitted: async (...args) => {
+    const marked = await store.markSubmitted(...args), hook = gap.hook;
+    gap.hook = null;
+    await hook?.();
+    return marked;
+  } }) };
+  return gap;
+}
+
+test('a cancel that lands after the submit is on disk and before the first call: the command never runs, whether the grant was revoked or the caller canceled', async t => {
+  for (const what of ['revoked', 'caller']) {
+    const gap = submitGap();
+    const h = await holderOf(t, gap);
+    const { grant } = await h.grant();
+    let body;
+    gap.hook = async () => {
+      if (what === 'revoked') await h.holder.self['grants.revoke']({ grant });
+      else { cancelOf(h, body); await h.holder.tick(); }
+      await until(async () => (await h.store.get(F1, body.request)).canceled === true, `${what}: 取消落盘`);
+    };
+    body = send(h, { grant });
+    await h.settle();
+    assert.equal(h.exec.calls.length, 0, `${what}: the kernel was never called`);
+    assert.equal(h.exec.runs, 0, what);
+    assert.deepEqual(h.answers(F1, body.request), ['running', 'canceled'], what);
+    assert.deepEqual(h.lastAnswer(F1, body.request).body.error, { code: 'canceled', effects: 'none',
+      message: what === 'revoked' ? '对方撤销了授权，命令没有启动' : '调用方取消了这次调用，命令没有启动' }, what);
+  }
+});
+
+test('after a restart a call that is canceled is not called again, since whether it went out before is unknown: it ends as interrupted with unknown effects', async t => {
+  const h = await holderOf(t);
+  const { grant } = await h.grant();
+  h.exec.plan = () => 'hang';
+  const body = send(h, { grant });
+  await h.settle();
+  assert.equal(h.exec.calls.length, 1);
+  h.stop();
+  await h.store.revokeGrant(grant);
+  await h.store.cancel(F1, body.request, 'revoked');
+  const again = await holderOf(t, h);
+  await again.settle();
+  assert.equal(h.exec.calls.length, 1, 'no second call');
+  assert.deepEqual(again.answers(F1, body.request), ['running', 'failed']);
+  assert.equal(again.lastAnswer(F1, body.request).body.error.code, 'interrupted');
+  assert.equal(again.lastAnswer(F1, body.request).body.error.effects, 'unknown');
+});
+
+test('revoking: when the re-call after the cancel cannot find the target, that is not the original call\'s outcome: interrupted with unknown effects, not none', async t => {
+  const h = await holderOf(t);
+  const { grant } = await h.grant();
+  h.exec.plan = () => 'hang';
+  const body = send(h, { grant });
+  await h.settle();
+  h.targets.remove('rx-1');
+  await h.settle();
+  assert.deepEqual(h.exec.calls.map(call => call.signaled), [true]);
+  assert.deepEqual(h.answers(F1, body.request), ['running', 'failed']);
+  const error = h.lastAnswer(F1, body.request).body.error;
+  assert.deepEqual([error.code, error.effects], ['interrupted', 'unknown']);
+  assert.match(error.message, /没有记录 rx-1/);
+});
+
+test('an ending that has not reached the disk only blocks new admissions and submissions; the submitted call is canceled once the ending is written', async t => {
+  const disk = failingDisk(() => ({}));
+  const h = await holderOf(t, disk);
+  const { grant } = await h.grant();
+  h.exec.plan = () => 'hang';
+  h.exec.abortCode = 'canceled';
+  const body = send(h, { grant });
+  await h.settle();
+  assert.equal(h.exec.pending(), 1);
+  h.targets.remove('rx-1');
+  await h.settle();
+  assert.equal(h.holder.pendingEnds(), 1);
+  assert.equal((await h.store.getGrant(grant)).revokedAt, undefined, 'not on disk yet');
+  assert.equal(h.exec.pending(), 1, 'still running');
+  assert.equal((await h.store.get(F1, body.request)).canceled, undefined);
+  assert.deepEqual(h.answers(F1, body.request), ['running']);
+  disk.failing = false;
+  for (const retry of disk.retries.splice(0)) retry();
+  await until(async () => (await h.store.getGrant(grant)).revokedAt !== undefined, '失效落盘');
+  await h.settle();
+  assert.equal((await h.store.get(F1, body.request)).canceledBy, 'target_missing');
+  assert.deepEqual(h.answers(F1, body.request), ['running', 'failed']);
+  assert.deepEqual([h.lastAnswer(F1, body.request).body.error.code, h.lastAnswer(F1, body.request).body.error.effects], ['interrupted', 'unknown']);
+});
+
+test('revoking: a command that fails in its own way after the cancel is recorded as failed, not as canceled', async t => {
+  const h = await holderOf(t);
+  const { grant } = await h.grant();
+  h.exec.plan = () => 'hang';
+  h.exec.stubborn = true;
+  const body = send(h, { grant });
+  await h.settle();
+  await h.holder.self['grants.revoke']({ grant });
+  await h.settle();
+  h.exec.jobs.get(idempotencyKey(F1, body.request)).reject(fail('too_many_running', '同时执行太多', 'none'));
+  await h.settle();
+  assert.deepEqual(h.answers(F1, body.request), ['running', 'failed']);
+  assert.deepEqual(h.lastAnswer(F1, body.request).body.error, { code: 'too_many_running', message: '同时执行太多', effects: 'none' });
 });
 
 // ---- 准入的各项拒绝 ----
@@ -828,8 +1118,15 @@ test('a grant record\'s publishes and retractions share one queue that reads the
 
   // 发出去以后撤了的：available 再变，也不会盖掉撤回。
   const { grant } = await h.grant();
+  // 撤回在后台同步：用查询闸门把顺序固定下来，撤回签出之后才断言它的内容。
+  const gate = h.accord.hold(() => true);
   await h.holder.self['grants.revoke']({ grant });
+  await until(() => h.accord.held(), '撤回卡在目录查询');
+  assert.equal((await h.store.getGrant(grant)).retractedAt, undefined, 'not retracted yet');
+  gate();
+  await until(async () => (await h.store.getGrant(grant)).retractedAt !== undefined, '撤回签出');
   assert.deepEqual(h.accord.calls.at(-1), { kind: 'friends/rpc-grant', id: grant, body: {}, audience: [], signer: 'machine', expectAuthor: MK });
+  // 可用性变化前先记下发布次数。
   const calls = h.accord.calls.length;
   h.targets.set('rx-1', { status: { available: false } });
   await h.settle();

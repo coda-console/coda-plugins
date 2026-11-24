@@ -55,12 +55,12 @@ const inflightOk = entry => {
   const callOk = call => isPlain(call) && isTarget(call.target) && inputOk(call.input);
   if (!(isPlain(entry) && isAuthor(entry.caller) && isText(entry.request) && isText(entry.grant) && isText(entry.digest) && isText(entry.key)
     && isTime(entry.notAfter) && isTime(entry.admittedAt) && STATES.includes(entry.state)
-    && optional(entry.call, callOk) && optional(entry.canceled, value => value === true) && optional(entry.canceledAt, isTime)
+    && optional(entry.call, callOk) && optional(entry.canceled, value => value === true) && optional(entry.canceledAt, isTime) && optional(entry.canceledBy, isText)
     && optional(entry.signed, value => value === true) && optional(entry.outcome, outcome => isPlain(outcome) && isTime(outcome.finishedAt))
     && optional(entry.finishedAt, isTime) && optional(entry.retracted, value => value === true) && optional(entry.version, Number.isSafeInteger)
     && optional(entry.ledger, row => row?.outcome !== 'rejected' && completedRowOk(row)))) return false;
   if (entry.ledger !== undefined && !TERMINAL.includes(entry.state)) return false;
-  if ((entry.canceled === undefined) !== (entry.canceledAt === undefined)) return false;
+  if ((entry.canceled === undefined) !== (entry.canceledAt === undefined) || (entry.canceledBy !== undefined && entry.canceled === undefined)) return false;
   if (!TERMINAL.includes(entry.state)) return callOk(entry.call) && entry.outcome === undefined && entry.signed === undefined;
   return entry.signed === true ? entry.outcome === undefined : entry.outcome !== undefined;
 };
@@ -274,9 +274,10 @@ export function createRpcStore(stateDir, { now = Date.now } = {}) {
   const get = (caller, request) => serial(async () => (await load('inflight'))[inflightKey(caller, request)] ?? null);
 
   // 标记已取消：已有终态的不改（`terminal`），已标记的不重复写。没有这一项给 `unknown`，调用方再用 `admit({ canceled: true })` 留标记。
-  const cancel = (caller, request) => update(caller, request, entry => {
+  // `by` 是授权撤销或失效的原因（对方发来的取消不给）：记下它，结局里写明。
+  const cancel = (caller, request, by) => update(caller, request, entry => {
     if (TERMINAL.includes(entry.state)) return { ok: false, code: 'terminal', entry };
-    return entry.canceled ? entry : { ...entry, canceled: true, canceledAt: now() };
+    return entry.canceled ? entry : { ...entry, canceled: true, canceledAt: now(), ...(by === undefined ? {} : { canceledBy: by }) };
   });
 
   /**
