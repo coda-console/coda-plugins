@@ -4,7 +4,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { agentArgs, changes, checksText, git, instructions, output, resumeText } from './shared.mjs';
+import { agentArgs, changes, checksText, declinedIn, git, instructions, output, resumeText } from './shared.mjs';
 
 const env = process.env, action = process.argv[2];
 const statePath = join(env.CODA_ARTIFACTS, 'piece.json');
@@ -69,14 +69,13 @@ ${state.notes.map((note, i) => `第 ${i + 1} 次：\n${note}`).join('\n\n')}${de
 主 Agent 定了不改、已经关闭的条目（编号对应上面意见里的编号）：
 ${declined.map(findingLine).join('\n')}` : ''}`;
 };
-// 主 Agent 的「退回修改」：同一执行会话按备注修，之后复评。备注里单独一行写的「#编号 不改」就此关掉那条：
-// 行首只允许空白或列表符号 -、*，「不改」后面是行尾，或「：」「:」「，」「,」接理由；句子中间提到的不算。
+// 主 Agent 的「退回修改」：同一执行会话按备注修，之后复评。备注里单独一行写的「#编号 不改」（写法见 shared.mjs 的 declinedIn）就此关掉那条。
 const sendBack = note => {
   state.feedback = note;
   state.returns++;
   (state.notes ??= []).push(note);
   state.rereview = true;
-  for (const [, id] of note.matchAll(/^[^\S\n]*(?:[-*][^\S\n]*)?(#\d+)[^\S\n]*不改[^\S\n]*(?:$|[：:，,])/gm)) {
+  for (const { id } of declinedIn(note)) {
     const f = state.findings?.find(f => f.id === id);
     if (f?.status === 'open') f.status = 'declined';
   }

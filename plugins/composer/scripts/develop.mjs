@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { waitForGitHubChecks } from './github-checks.mjs';
-import { agentArgs, areasAt, autoApproval, changes, checksText, fail, gh, git, mergedCommit, mergePr, openPr, output, outputFilled, outputPicked, readContract, resumeText, scopeViolations, talk } from './shared.mjs';
+import { agentArgs, areasAt, autoApproval, changes, checksText, declinedIn, fail, gh, git, mergedCommit, mergePr, openPr, output, outputFilled, outputPicked, readContract, resumeText, scopeViolations, talk } from './shared.mjs';
 
 const env = process.env, action = process.argv[2];
 const statePath = join(env.CODA_ARTIFACTS, 'develop.json');
@@ -101,11 +101,13 @@ ${files.map(file => `- ${file}`).join('\n')}
 // 合进需求分支的块（至少一块）最后一次交付都评成过。
 const piecesReviewed = () => state.landed.length > 0 && state.landed.every(run => state.reviewedPieces?.includes(run));
 const flat = text => String(text ?? '').replace(/\s*[\r\n]+\s*/g, ' ');
-const findingLine = f => `- ${flat(f.title)}${f.location ? `（${flat(f.location)}）` : ''}`;
+const findingLine = f => `- ${f.id ? `${f.id} ` : ''}${flat(f.title)}${f.location ? `（${flat(f.location)}）` : ''}`;
 // 「整体评审结论」卡上的一页结论：必须修每条一句加位置，小问题、原有问题只给条数，评审原文的路径；没评成的写原因。
+// 契约模式的必须修带编号（#1、#2……），主 Agent 在卡上写「#编号 不改」关掉的（declined）不再算数。
+const openMust = o => o.must.filter(f => f.status !== 'declined');
 const overallText = o => o.lost ? `没评成：调用 review-commit 没有成功，原因见本运行 coda://workflow-runs/${env.GITHUB_RUN_ID} 的「评审整条需求分支」（workflow_status）。`
   : !o.report ? `没评成：${o.line}`
-  : [o.line, `必须修 ${o.must.length} 条${o.must.length ? '：' : '。'}`, ...o.must.map(findingLine), `小问题 ${o.nit.length} 条，原有问题 ${o.existing.length} 条。`, `评审原文：${o.report}`].join('\n');
+  : [o.line, `必须修 ${openMust(o).length} 条${openMust(o).length ? '：' : '。'}`, ...openMust(o).map(findingLine), `小问题 ${o.nit.length} 条，原有问题 ${o.existing.length} 条。`, `评审原文：${o.report}`].join('\n');
 
 // 「需求进行中」派块时备注最前面换人的行（README.md「派块」）：一行一个角色，冒号后先写 Agent ID，再按需写「模型 …」「强度 …」「模式 …」，逗号隔开；
 // 可带 Markdown 列表的「- 」。备用执行者和评审者写「无」表示这一块不用。没写的角色用开工值（流程里用 FEEL 拼成 agent 对象）。
@@ -244,6 +246,7 @@ switch (action) {
   // ——非契约模式——既不是只合进了一块且它评成过、这次运行也还没评过。evidence 是交给评审者的已有验证。
   case 'overall-plan':
     delete state.outcome;
+    delete state.settled;
     save();
     output('review', String(env.REVIEWER === 'true' && (state.again || (contracted ? state.overall?.head !== state.head : !(state.landed.length === 1 && piecesReviewed()) && !state.overall))));
     output('evidence', `项目检查：\n${checksText(state.checks, state.head)}`);
@@ -261,7 +264,7 @@ switch (action) {
       state.reviews = (state.reviews ?? 0) + 1;
       const report = join(env.CODA_ARTIFACTS, `overall-review-${state.reviews}.md`);
       writeFileSync(report, env.REPORT);
-      state.overall = state.outcome = { head: state.head, line: env.LINE, report, must: of('must'), nit: of('nit'), existing: of('existing') };
+      state.overall = state.outcome = { head: state.head, line: env.LINE, report, must: of('must').map((f, i) => contracted ? { ...f, id: `#${i + 1}` } : f), nit: of('nit'), existing: of('existing') };
       if (state.overall.must.length) state.overallMust = true;
     }
     save();
@@ -275,6 +278,9 @@ switch (action) {
     const at = done && done.head !== state.head ? `，评审时需求分支 head ${done.head.slice(0, 12)}` : '';
     const minor = done ? [[done.nit, `整体评审的小问题（没有修${at}）：`], [done.existing, `整体评审提到的原有问题（不是这个需求引入的${at}）：`]]
       .filter(([list]) => list.length).map(([list, heading]) => [heading, ...list.map(f => `${findingLine(f)}${f.detail ? `\n  ${f.detail.replace(/\n/g, '\n  ')}` : ''}`)].join('\n')) : [];
+    // 契约模式主 Agent 在整体评审卡上关掉的必须修（state.declined，换 head 重评、修了别的条目也留着）：写进汇总让用户看到取舍，标明是在哪个 head 上关的。
+    const declined = state.declined ?? [];
+    if (declined.length) minor.unshift(['需要你知道：整体评审的必须修，主 Agent 定了不改：', ...declined.map(f => `${findingLine(f)}${f.reason ? `：${flat(f.reason)}` : ''}（在 head ${f.head.slice(0, 12)} 上关掉）`)].join('\n'));
     const body = [env.SUMMARY, ...minor].join('\n\n');
     if (minor.length) {
       const path = join(env.RUNNER_TEMP, 'pr.md');
@@ -284,16 +290,29 @@ switch (action) {
     // 交用户批准的这次提交：批准卡和待交付卡先显示的汇总最前面写明，不进 PR 描述。
     const escalated = contracted && state.escalate === true;
     const summary = escalated ? `【交用户批准】这次提交是主 Agent 交给用户批准的，项目检查没有按契约校验，不自动合并。\n范围门禁的违例：${state.gate.outside.length || state.gate.missing.length ? `\n${violationText(state.gate)}` : '没有。'}\n\n${body}` : body;
-    output('route', o && (o.lost || !o.report || o.must.length) ? 'review' : 'accept');
+    output('route', !state.settled && o && (o.lost || !o.report || openMust(o).length) ? 'review' : 'accept');
     output('summary', summary);
     const gate = state.gate, scoped = gate?.head === state.head && !gate.outside.length && !gate.missing.length;
-    output('auto', String(!escalated && env.AUTO === 'true' && (contracted ? scoped && done?.head === state.head && !done.must.length && !(o && (o.lost || !o.report)) : Boolean(done || piecesReviewed()) && !state.overallMust)));
+    output('auto', String(!escalated && env.AUTO === 'true' && (contracted ? scoped && done?.head === state.head && !openMust(done).length && !(o && (o.lost || !o.report)) : Boolean(done || piecesReviewed()) && !state.overallMust)));
     output('review', o ? overallText(o) : '');
     output('note', !done ? '' : done.head === state.head ? '，整条需求分支已整体评审' : `，整条需求分支在 ${done.head.slice(0, 12)} 时整体评审过`);
     break;
   }
   case 'review': {
     const { choice, note = '' } = JSON.parse(env.REVIEW);
+    // 契约模式：备注里单独一行写「#编号 不改」（shared.mjs declinedIn）只关掉这张卡上列出的必须修（这次提交评完的 outcome，没评成的卡上没有条目），不存在的编号不理；
+    // 关掉的记在 overall 的条目上，并记进 state.declined 留到最后的汇总。选「继续验收」回到「整理整体评审」按关掉后的结果重算汇总与自动合并，不再出这张卡（settled，下次提交验收清掉）。
+    if (contracted) {
+      for (const { id, reason } of state.outcome?.must ? declinedIn(note) : []) {
+        const f = state.outcome.must.find(f => f.id === id);
+        if (!f || f.status === 'declined') continue;
+        for (const record of [state.outcome, state.overall]) Object.assign(record.must.find(g => g.id === id), { status: 'declined', reason });
+        // 同一 head 重评后又把同一条关掉，不重复记。
+        if (!state.declined?.some(d => d.head === state.head && d.title === f.title && d.location === f.location)) (state.declined ??= []).push({ head: state.head, id, title: f.title, location: f.location, reason });
+      }
+      if (choice === 'continue') state.settled = true;
+      save();
+    }
     if (choice === 'progress') back(`整体评审后主 Agent 选了回到进行中。${note.trim() ? `\n${note}` : ''}\n整体评审的结论：\n${overallText(state.outcome)}`);
     output('route', choice);
     break;
