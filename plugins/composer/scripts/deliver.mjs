@@ -28,7 +28,46 @@ if (action === 'init') {
 const state = JSON.parse(readFileSync(statePath, 'utf8'));
 const save = () => writeFileSync(statePath, JSON.stringify(state));
 const links = () => state.members.map(member => member.url).join('\n');
-const localMembers = () => state.members.filter(member => new URL(member.url).pathname.split('/').slice(1, 3).join('/') === state.repository);
+// 仓库身份是小写的 host/owner/repo：不同主机上的同名 owner/repo 不是同一个仓库。地址对原始字符串严格匹配，结构不对就报错，不退回到不带主机的比较。
+const LABEL = '[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?', SEG = '[A-Za-z0-9_.-]+';
+const OWNER_REPO = new RegExp(`^(${SEG})/(${SEG})$`);
+const FQDN = new RegExp(`^(?:${LABEL}\\.)+${LABEL}$`);
+const REPO_URL = new RegExp(`^[hH][tT][tT][pP][sS]://((?:${LABEL}\\.)+${LABEL})/(${SEG})/(${SEG})$`);
+const PR_URL = new RegExp(`^[hH][tT][tT][pP][sS]://((?:${LABEL}\\.)+${LABEL})/(${SEG})/(${SEG})/pull/[1-9][0-9]*$`);
+const SSH_URL = /^ssh:\/\/(?:[A-Za-z0-9_.-]+@)?([A-Za-z0-9][A-Za-z0-9.-]*)(?::\d+)?\/(.*)$/;
+const SCP_URL = /^(?:[A-Za-z0-9_.-]+@)?([A-Za-z0-9][A-Za-z0-9.-]*):(?!\/)(.*)$/;
+const bad = url => { throw new Error(`无法从地址解析 host/owner/repo：${url}`); };
+const idOf = (host, owner, repo, url) => {
+  const name = repo.replace(/\.git$/i, '');
+  return [owner, name].some(part => !part || part === '.' || part === '..') ? bad(url) : `${host}/${owner}/${name}`.toLowerCase();
+};
+// 仓库地址：https://<host>/<owner>/<repo>(.git)。
+const repoIdOf = url => {
+  const [, host, owner, repo] = url.match(REPO_URL) ?? bad(url);
+  return idOf(host, owner, repo, url);
+};
+// PR 地址：https://<host>/<owner>/<repo>/pull/<编号>；PR 地址里的仓库名不带 .git。
+const prIdOf = url => {
+  const [, host, owner, repo] = url.match(PR_URL) ?? bad(url);
+  return /\.git$/i.test(repo) ? bad(url) : idOf(host, owner, repo, url);
+};
+// SSH 主机可能是 ~/.ssh/config 里的别名：取 ssh -G 解析出的 hostname。Host github.com → HostName ssh.github.com 这类走 SSH 专用入口的写法保留原主机；
+// 解析后仍不是完整域名（单段别名）就返回 null，交给 gh 自己处理。
+const sshHost = host => {
+  const resolved = /^hostname (\S+)$/mi.exec(spawnSync('ssh', ['-G', host], { encoding: 'utf8' }).stdout ?? '')?.[1] ?? host;
+  const name = FQDN.test(host) && resolved.toLowerCase() === `ssh.${host}`.toLowerCase() ? host : resolved;
+  return FQDN.test(name) ? name : null;
+};
+// origin 的仓库标识：https://、ssh://[user@]host[:port]/owner/repo(.git) 或 [user@]host:owner/repo(.git)；本地路径和解析不出域名的 SSH 别名返回 null。
+const originIdOf = url => {
+  if (/^https:\/\//i.test(url)) return repoIdOf(url);
+  const ssh = url.match(SSH_URL) ?? url.match(SCP_URL);
+  if (!ssh) return null;
+  const [, owner, repo] = ssh[2].match(OWNER_REPO) ?? bad(url);
+  const host = sshHost(ssh[1]);
+  return host && idOf(host, owner, repo, url);
+};
+const localMembers = () => state.members.filter(member => prIdOf(member.url) === state.repository);
 // 人工任务的必填备注由脚本检查，缺少时回到同一张卡。用户附上的文件也算附言，路径随反馈交回主 Agent。
 const answer = (route, required) => {
   const { note = '', attachments = [] } = JSON.parse(env.RESPONSE);
@@ -50,8 +89,11 @@ switch (action) {
     const { choice, note } = JSON.parse(env.RESPONSE);
     if (!answer(choice === 'stop' ? 'stop' : env.DEVICES === 'true' ? 'integrate' : 'report', choice === 'start') || choice === 'stop') break;
     state.members = note.trim().split(/\r?\n/).map(url => JSON.parse(gh('pr', 'view', url.trim(), '--json', 'url,headRefOid,headRefName,baseRefName')));
-    const repo = JSON.parse(gh('repo', 'view', '--json', 'nameWithOwner,defaultBranchRef'));
-    state.repository = repo.nameWithOwner;
+    // 集成向 origin 取提交，本仓库必须是 origin 指的那个；origin 是本地路径时用 gh 的默认仓库。
+    const origin = originIdOf(git('remote', 'get-url', 'origin'));
+    const repo = JSON.parse(gh('repo', 'view', ...origin ? [origin] : [], '--json', 'url,nameWithOwner,defaultBranchRef'));
+    state.repository = repoIdOf(repo.url);
+    if (origin && state.repository.split('/')[0] !== origin.split('/')[0]) throw new Error(`gh 的仓库 ${repo.url} 与 origin 不在同一主机：${origin}`);
     const local = localMembers();
     state.base = local[0]?.baseRefName ?? repo.defaultBranchRef.name;
     state.round += 1;

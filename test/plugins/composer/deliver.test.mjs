@@ -17,7 +17,7 @@ function fixture(t, devices = true) {
   const work = join(root, 'work'), origin = join(root, 'origin.git'), bin = join(root, 'bin'), artifacts = join(root, 'artifacts');
   for (const path of [work, bin, artifacts]) mkdirSync(path);
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, CODA_ARTIFACTS: artifacts, RUNNER_TEMP: root,
-    GITHUB_RUN_ID: 'run-1', GITHUB_OUTPUT: join(root, 'outputs'), TITLE: '交付 输入框', DEVICES: String(devices), FIXTURE: root,
+    GITHUB_RUN_ID: 'run-1', REPO_URL: 'https://github.com/example/coda', GITHUB_OUTPUT: join(root, 'outputs'), TITLE: '交付 输入框', DEVICES: String(devices), FIXTURE: root,
     GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid', GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.invalid',
     GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'commit.gpgsign', GIT_CONFIG_VALUE_0: 'false', GIT_CONFIG_KEY_1: 'core.hooksPath', GIT_CONFIG_VALUE_1: '/dev/null' };
   const git = (...args) => {
@@ -43,6 +43,12 @@ function fixture(t, devices = true) {
     members.push(pr);
     return pr;
   };
+  // 测试里 origin 是本地 bare 目录：设了 ORIGIN_URL 时只让 git remote get-url origin 返回它，其余照旧走真 git。
+  writeFileSync(join(bin, 'git'), `#!/bin/sh\nif [ -n "$ORIGIN_URL" ] && [ "$1 $2 $3" = "remote get-url origin" ]; then echo "$ORIGIN_URL"; exit 0; fi\nPATH=\${PATH#${bin}:}\nexec git "$@"\n`);
+  chmodSync(join(bin, 'git'), 0o755);
+  // ssh -G 的桩：把别名按 SSH_HOSTS（JSON）解析成 hostname，没写的原样返回。
+  writeFileSync(join(bin, 'ssh'), `#!${process.execPath}\nconst map = JSON.parse(process.env.SSH_HOSTS ?? '{}'), host = process.argv[3];\nconsole.log('hostname ' + (map[host] ?? host));\n`);
+  chmodSync(join(bin, 'ssh'), 0o755);
   const gh = join(bin, 'gh');
   writeFileSync(gh, `#!${process.execPath}\n` + String.raw`
 const { readFileSync, appendFileSync } = require('node:fs');
@@ -50,7 +56,7 @@ const { join } = require('node:path');
 const args = process.argv.slice(2), root = process.env.FIXTURE;
 appendFileSync(join(root, 'calls'), JSON.stringify(args) + '\n');
 if (process.env.GH_EXIT) { console.error('gh query failed'); process.exit(Number(process.env.GH_EXIT)); }
-if (args[0] === 'repo') console.log(JSON.stringify({ nameWithOwner: 'example/coda', defaultBranchRef: { name: 'main' } }));
+if (args[0] === 'repo') console.log(JSON.stringify({ url: process.env.REPO_URL, nameWithOwner: 'example/coda', defaultBranchRef: { name: 'main' } }));
 else console.log(JSON.stringify(JSON.parse(readFileSync(join(root, 'members'), 'utf8')).find(pr => pr.url === args[2])));
 `);
   chmodSync(gh, 0o755);
@@ -73,7 +79,7 @@ else console.log(JSON.stringify(JSON.parse(readFileSync(join(root, 'members'), '
   const state = () => JSON.parse(readFileSync(join(artifacts, 'deliver.json'), 'utf8'));
   const calls = () => readFileSync(join(root, 'calls'), 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
   run('init');
-  return { root, work, git, commit, base, members, member, run, answer, confirm, state, calls };
+  return { root, work, git, commit, base, env, members, member, run, answer, confirm, state, calls };
 }
 
 test('交付按成员顺序记录快照，仅集成本仓库 head，从最新 base 建预览分支并推送', t => {
@@ -87,7 +93,7 @@ test('交付按成员顺序记录快照，仅集成本仓库 head，从最新 ba
   assert.equal(confirmed.members, f.members.map(pr => pr.url).join('\n'));
   assert.deepEqual(f.calls(), [
     ...f.members.map(pr => ['pr', 'view', pr.url, '--json', 'url,headRefOid,headRefName,baseRefName']),
-    ['repo', 'view', '--json', 'nameWithOwner,defaultBranchRef'],
+    ['repo', 'view', '--json', 'url,nameWithOwner,defaultBranchRef'],
   ]);
   // 确认后成员分支又前进，集成仍使用已记录的 head。
   f.git('switch', two.headRefName); f.commit('unconfirmed', 'unconfirmed'); f.git('push', '-q', 'origin', two.headRefName);
@@ -101,6 +107,106 @@ test('交付按成员顺序记录快照，仅集成本仓库 head，从最新 ba
   assert.equal(f.git('rev-parse', `${parents[1]}^1`), latest);
   assert.equal(f.git('ls-tree', '--name-only', integrated.head), 'base\nlatest\none\ntwo');
   assert.equal(f.run('context').outputs.feedback, '');
+});
+
+test('本仓库按 host/owner/repo 识别：同名 owner/repo 在别的主机上的 PR 不是本仓库成员', t => {
+  const f = fixture(t);
+  f.env.REPO_URL = 'https://git.example.org/example/coda';
+  const outsider = f.member(2, 'public', 'public');
+  const local = f.member(3, 'local', 'local'), last = f.member(4, 'last', 'last');
+  outsider.url = 'https://github.com/example/coda/pull/1';
+  local.url = 'https://git.example.org/example/coda/pull/2'; last.url = 'https://git.example.org/example/coda/pull/3';
+  const confirmed = f.confirm();
+  assert.equal(confirmed.commit, last.headRefOid);
+  assert.equal(f.state().repository, 'git.example.org/example/coda');
+  const integrated = f.run('integrate').outputs;
+  f.git('fetch', 'origin', integrated.branch);
+  assert.equal(f.git('ls-tree', '--name-only', integrated.head), 'base\nlast\nlocal');
+});
+
+test('本仓库识别忽略主机与 owner/repo 的大小写', t => {
+  const f = fixture(t);
+  f.env.REPO_URL = 'https://Git.Example.Org/Example/Coda';
+  const one = f.member(2, 'one', 'one');
+  one.url = 'https://git.example.org/example/coda/pull/2';
+  assert.equal(f.confirm().commit, one.headRefOid);
+  assert.equal(f.state().repository, 'git.example.org/example/coda');
+  f.members.push({ ...f.members[0], url: 'https://GIT.example.org/EXAMPLE/CODA/pull/3', headRefOid: 'b'.repeat(40) });
+  assert.equal(f.confirm().commit, 'b'.repeat(40));
+});
+
+test('仓库地址带 .git 后缀时归一化后照常匹配', t => {
+  const f = fixture(t);
+  f.env.REPO_URL = 'https://git.example.org/Example/Coda.git';
+  const one = f.member(2, 'one', 'one');
+  one.url = 'https://git.example.org/example/coda/pull/2';
+  assert.equal(f.confirm().commit, one.headRefOid);
+  assert.equal(f.state().repository, 'git.example.org/example/coda');
+});
+
+test('origin 是标准远端地址时，用它的 host/owner/repo 查本仓库；与 gh 返回的主机不一致就失败', t => {
+  const f = fixture(t);
+  f.env.REPO_URL = 'https://git.example.org/example/coda';
+  const one = f.member(2, 'one', 'one');
+  one.url = 'https://git.example.org/example/coda/pull/2';
+  const origins = ['https://git.example.org/example/coda.git', 'git@git.example.org:example/coda.git',
+    'ssh://git@git.example.org/example/coda.git', 'ssh://git@git.example.org:2222/example/coda.git', 'Git.Example.Org:Example/Coda'];
+  for (const origin of origins) {
+    f.env.ORIGIN_URL = origin;
+    assert.equal(f.confirm().commit, one.headRefOid, origin);
+    assert.deepEqual(f.calls().at(-1), ['repo', 'view', 'git.example.org/example/coda', '--json', 'url,nameWithOwner,defaultBranchRef'], origin);
+  }
+  f.env.ORIGIN_URL = 'git@github.com:example/coda.git';
+  const failed = f.run('confirm', { RESPONSE: JSON.stringify({ choice: 'start', note: f.members.map(pr => pr.url).join('\n') }) }, 1);
+  assert.match(failed.stderr, /与 origin 不在同一主机/);
+});
+
+test('origin 的 SSH 主机是别名时按 ssh -G 解析：别名解析成域名就用它，SSH 专用入口保留原主机，解析不出域名就交给 gh', t => {
+  const f = fixture(t);
+  const one = f.member(2, 'one', 'one');
+  one.url = 'https://git.example.org/example/coda/pull/2';
+  f.env.REPO_URL = 'https://git.example.org/example/coda';
+  f.env.SSH_HOSTS = JSON.stringify({ 'work-github': 'git.example.org', 'github.com': 'ssh.github.com' });
+  f.env.ORIGIN_URL = 'git@work-github:example/coda.git';
+  assert.equal(f.confirm().commit, one.headRefOid);
+  assert.deepEqual(f.calls().at(-1), ['repo', 'view', 'git.example.org/example/coda', '--json', 'url,nameWithOwner,defaultBranchRef']);
+  f.env.ORIGIN_URL = 'ssh://git@work-github:2222/example/coda.git';
+  f.confirm();
+  assert.deepEqual(f.calls().at(-1), ['repo', 'view', 'git.example.org/example/coda', '--json', 'url,nameWithOwner,defaultBranchRef']);
+  f.env.ORIGIN_URL = 'git@github.com:Example/Coda.GIT';
+  f.env.REPO_URL = 'https://github.com/example/coda';
+  f.members[1].url = 'https://github.com/example/coda/pull/2';
+  assert.equal(f.confirm().commit, one.headRefOid);
+  assert.deepEqual(f.calls().at(-1), ['repo', 'view', 'github.com/example/coda', '--json', 'url,nameWithOwner,defaultBranchRef']);
+  f.env.ORIGIN_URL = 'git@unresolved:example/coda.git';
+  assert.equal(f.confirm().commit, one.headRefOid);
+  assert.deepEqual(f.calls().at(-1), ['repo', 'view', '--json', 'url,nameWithOwner,defaultBranchRef']);
+});
+
+test('origin、本仓库或成员的地址结构不对时明确失败，不退回到不带主机的匹配', t => {
+  const f = fixture(t);
+  f.member(2, 'one', 'one');
+  const confirm = () => f.run('confirm', { RESPONSE: JSON.stringify({ choice: 'start', note: f.members.map(pr => pr.url).join('\n') }) }, 1);
+  for (const url of ['not a url', 'https://github.com/example', 'https://github.com/example/coda/pull/2', 'https://github.com/example/..', 'https://github.com/example/.git', 'http://github.com/example/coda',
+    'https://git.example.org/example/coda/../coda', 'https:git.example.org/example/coda', 'https://git.example.org/example/coda?x=1', 'https://git.example.org/example/coda#top',
+    'https://user@git.example.org/example/coda', 'https://git.example.org//example/coda', 'https://git.example.org/example/coda/']) {
+    f.env.REPO_URL = url;
+    assert.match(confirm().stderr, /无法从地址解析 host\/owner\/repo/, url);
+  }
+  f.env.REPO_URL = 'https://github.com/example/coda';
+  for (const origin of ['https://github.com/example', 'https://github.com/example/coda?x=1', 'git@github.com:example/coda/extra.git', 'git@github.com:example/..', 'ssh://git@github.com/example', 'ssh://git@github.com/example/./coda']) {
+    f.env.ORIGIN_URL = origin;
+    assert.match(confirm().stderr, /无法从地址解析 host\/owner\/repo/, origin);
+  }
+  delete f.env.ORIGIN_URL;
+  for (const url of ['https://github.com/example', 'https://git.example.org/example/pull/2', 'https://github.com/example/coda/pull/x',
+    'https://github.com/example/coda/pull/0', 'https://github.com/example/coda/issues/2', 'https://github.com/example/coda/pull/2/files', 'https://github.com/./coda/pull/2',
+    'https://git.example.org/example/coda/pull/./2', 'https://git.example.org/example/coda/../coda/pull/2', 'https:git.example.org/example/coda/pull/2',
+    'https://git.example.org/example/coda.git/pull/2', 'https://git.example.org/example/coda.GIT/pull/2', 'https://git.example.org/example/coda/pull/2?x=1', 'https://git.example.org/example/coda/pull/2#top',
+    'https://user@git.example.org/example/coda/pull/2', 'https://git.example.org:8443/example/coda/pull/2', 'https://git.example.org//example/coda/pull/2', 'https://localhost/example/coda/pull/2']) {
+    f.members[1].url = url;
+    assert.match(confirm().stderr, /无法从地址解析 host\/owner\/repo/, url);
+  }
 });
 
 test('设备退回后刷新成员，从新工作区重建同一个交付分支，去掉被替换的 head', t => {

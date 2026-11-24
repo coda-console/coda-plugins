@@ -68,6 +68,8 @@
 
 12.5.0 契约开发声明 `coda:questionDenial`（需要宿主插件 API Level 16）：运行期间正在替这个流程干活的会话（含块的子运行）向用户提问，原生提问和 ask-user 都被当场拒绝，回给它的就是这段文字。监督开发不变。
 
+12.5.1 需求交付（`deliver`）识别「本仓库成员」时带上主机：本仓库身份记为小写 `host/owner/repo`：`origin` 是标准远端地址（HTTPS、`ssh://` 或 `git@host:owner/repo`）时，用它的标识去 `gh repo view`，并要求返回的主机与 `origin` 一致，保证集成去 `origin` 取得到成员提交；`origin` 是本地路径时用 `gh` 的默认仓库。成员 PR 地址按同样方式比较；仓库地址只接受 `<owner>/<repo>`（去掉 `.git`），PR 地址只接受 `<owner>/<repo>/pull/<编号>`，结构不对（含 `.`/`..` 段、query、fragment、userinfo、端口）直接报错；`origin` 的 SSH 主机是 `~/.ssh/config` 里的别名时按 `ssh -G` 解析，解析不出完整域名就交给 `gh` 自己处理。此前只比 `owner/repo`，企业 GitHub（如 `git.example.org`）与公网 `github.com` 上同名仓库的 PR 会被当成本仓库成员，导致 `commit` 错选或在集成时向错误的 `origin` 抓取失败。地址解析不出 `host/owner/repo` 时直接报错。
+
 插件只返回补充，不改正文、附件、引用或输入框的执行者。多个模式的补充由 Coda 合并，`tell` 是字符串数组，按列表追加后随这条发送到每个收到它的会话；只要有一项 `divert: true` 就不发给默认去向，各模式追加的去向仍分别执行。
 
 | 模式 | 发出的一条的补充 |
