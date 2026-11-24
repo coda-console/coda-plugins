@@ -1,4 +1,4 @@
-// 好友模块：备注的视图消息与 `coda self`、社交网关的登记；备注存在插件状态目录。activate 里 Accord 只读本机记录、监听变化，不查询、不发布。
+// 好友模块：策略的 `coda self` 处理函数与社交网关的登记。activate 里 Accord 只读本机记录、监听变化，不查询、不发布。
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -17,66 +17,37 @@ async function host(t, state) {
     stream: async (kind, name) => { streams.push(`${kind}/${name}`); return { dispose: () => disposed.push(`stream ${kind}/${name}`) }; },
     self: { handle: (name, fn) => { self.set(name, fn); return { dispose: () => disposed.push(name) }; } },
     views: { register: (id, provider) => { views.set(id, provider); return { dispose() {} }; } } };
-  const open = () => {
-    const page = { got: [], tell: null };
-    views.get('friends').open({ postMessage: m => { page.got.push(m); return true; }, onMessage: fn => { page.tell = fn; }, onClose() {} });
-    return page;
-  };
-  return { coda, dir, self, views, operations, streams, disposed, open };
+  return { coda, dir, self, views, operations, streams, disposed };
 }
-const settled = () => new Promise(resolve => setTimeout(resolve, 30));
 
-test('activate registers the notes and policy handlers, the gateway operations and streams and the view, without querying or publishing', async t => {
+test('activate registers the policy handlers and the gateway operations, with no notes, streams or view messages, and without querying or publishing', async t => {
   const h = await host(t);
   t.after(deactivate);
   await activate(h.coda);
-  assert.deepEqual([...h.self.keys()].sort(), ['notes.delete', 'notes.list', 'notes.set', 'policy.get', 'policy.setKind']);
-  assert.deepEqual(h.operations.sort(), ['friends', 'outbox', 'post-feed', 'publish', 'records', 'retract', 'send-dm', 'set-card'].map(name => `friends/social@1/${name}`));
-  assert.deepEqual(h.streams, ['friends/social@1/dm', 'friends/social@1/feed']);
-  assert.deepEqual([...h.views.keys()], ['friends']);
+  assert.deepEqual([...h.self.keys()].sort(), ['policy.get', 'policy.setKind']);
+  assert.deepEqual(h.operations.sort(), ['friends', 'outbox', 'publish', 'records', 'retract'].map(name => `friends/social@1/${name}`));
+  assert.deepEqual(h.streams, []);
+  assert.deepEqual([...h.views.keys()], []);
 });
 
-test('notes are read and written through `coda self` and kept in the state directory', async t => {
+test('policy is read and written through `coda self` and kept in the state directory', async t => {
   const h = await host(t);
   t.after(deactivate);
   await activate(h.coda);
-  assert.deepEqual(await h.self.get('notes.list')({}), {});
-  assert.deepEqual(await h.self.get('notes.set')({ node: 'n1', note: '老王' }), { n1: '老王' });
-  assert.deepEqual(JSON.parse(await readFile(join(h.dir, 'notes.json'), 'utf8')), { n1: '老王' });
-  assert.deepEqual(await h.self.get('notes.delete')({ node: 'n1' }), {});
-  await assert.rejects(h.self.get('notes.set')({ node: '', note: 'x' }), /不合法/);
+  assert.deepEqual(await h.self.get('policy.get')({}), { pausedKinds: [] });
+  assert.deepEqual(await h.self.get('policy.setKind')({ kind: 'x', paused: true }), { pausedKinds: ['x'] });
+  assert.deepEqual(await h.self.get('policy.get')({}), { pausedKinds: ['x'] });
+  await assert.rejects(Promise.resolve().then(() => h.self.get('policy.setKind')({ kind: 'x', paused: 'yes' })), /paused/);
+  await assert.rejects(Promise.resolve().then(() => h.self.get('policy.setKind')({ kind: 'friends/card', paused: true })), error => error.code === 'invalid_input');
+  assert.deepEqual(JSON.parse(await readFile(join(h.dir, 'policy.json'), 'utf8')).pausedKinds, ['x']);
 });
 
-test('a page reads and writes notes by messages, each answer carrying its request id', async t => {
-  const h = await host(t);
-  t.after(deactivate);
-  await activate(h.coda);
-  const page = h.open();
-  page.tell({ type: 'notes.set', rid: 'a', node: 'n1', note: '备注' });
-  await settled();
-  page.tell({ type: 'notes.list', rid: 'b' });
-  await settled();
-  page.tell({ type: 'notes.set', rid: 'c', node: '', note: 'x' });
-  await settled();
-  page.tell({ type: 'other', rid: 'd' });
-  page.tell({ type: 'notes.list' });
-  page.tell(null);
-  await settled();
-  assert.deepEqual(page.got[0], { type: 'reply', rid: 'a', ok: true, value: { n1: '备注' } });
-  assert.deepEqual(page.got[1], { type: 'reply', rid: 'b', ok: true, value: { n1: '备注' } });
-  assert.equal(page.got[2].ok, false);
-  assert.equal(page.got[2].rid, 'c');
-  assert.match(page.got[2].error, /不合法/);
-  assert.equal(page.got.length, 3, 'unknown or id-less messages are ignored');
-});
-
-test('without a state directory notes fail plainly, and deactivate disposes what activate registered', async t => {
+test('without a state directory policy fails plainly, and deactivate disposes what activate registered', async t => {
   const h = await host(t, null);
   await activate(h.coda);
-  await assert.rejects(Promise.resolve().then(() => h.self.get('notes.list')({})), /状态目录/);
+  await assert.rejects(Promise.resolve().then(() => h.self.get('policy.get')({})), /状态目录/);
   deactivate();
-  assert.deepEqual(h.disposed.sort(), ['friends/social@1/friends', 'friends/social@1/outbox', 'friends/social@1/post-feed', 'friends/social@1/publish', 'friends/social@1/records',
-    'friends/social@1/retract', 'friends/social@1/send-dm', 'friends/social@1/set-card', 'notes.delete', 'notes.list', 'notes.set', 'policy.get', 'policy.setKind',
-    'stream friends/social@1/dm', 'stream friends/social@1/feed', 'watch']);
+  assert.deepEqual(h.disposed.sort(), ['friends/social@1/friends', 'friends/social@1/outbox', 'friends/social@1/publish', 'friends/social@1/records', 'friends/social@1/retract',
+    'policy.get', 'policy.setKind', 'watch']);
   deactivate();
 });

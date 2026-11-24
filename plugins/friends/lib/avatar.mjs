@@ -1,26 +1,12 @@
-// 好友页头像与 Accord 状态的纯逻辑：头像地址、回退链、确定性几何纹、身份与好友统计。
+// 好友页头像与 Accord 状态的纯逻辑：确定性几何纹、无公钥时的首字兜底、身份与好友统计。
 // 页面（WKWebView）与 Node 单测都直接加载它，所以只用标准 JS 和 ./friends.mjs，不拼 HTML。
 
-import { certStateOf, readContentPointer, shortAuthor } from './friends.mjs';
-
-/** 头像图片的大小上限，与客户端和后端的 5 MiB 一致。 */
-export const BLOB_MAX_BYTES = 5 * 1024 * 1024;
+import { certStateOf, shortAuthor } from './friends.mjs';
 
 const CONTROL_CHARS = /[\p{Cc}\u2028\u2029]/gu;
 const AUTHOR = /^ed25519:([0-9a-f]{64})$/;
-const MAX_EMOJI = 8;
 
 const clean = text => typeof text === 'string' ? text.replace(CONTROL_CHARS, '').trim() : '';
-const machineQuery = machine => typeof machine === 'string' && machine.trim() ? `?coda-machine=${encodeURIComponent(machine.trim())}` : '';
-
-/** 头像指针的读取地址：指针不合法（或为空）给 null；多机空间里带上 machine。 */
-export function blobReadUrl(pointer, machine) {
-  const p = readContentPointer(pointer);
-  return p ? `coda-view://blob/${p.owner}/content/${p.sha256}${machineQuery(machine)}` : null;
-}
-
-/** 上传头像的地址；多机空间里带上 machine。 */
-export const blobUploadUrl = machine => `coda-view://blob/content${machineQuery(machine)}`;
 
 /** 一串字节的确定性混合（FNV-1a 作种，mulberry32 取数），给几何纹用。 */
 function* stream(bytes) {
@@ -59,17 +45,9 @@ export function initialChar(text, fallback = '友') {
   return first ? (/^[a-z]$/.test(first) ? first.toUpperCase() : first) : fallback;
 }
 
-/**
- * 决定头像怎么展示，只返回纯数据：
- * 有可读的图片指针且没失败 → photo；否则有 emoji（1–8 字）→ emoji；否则有合法 author（且 prefer 不是 monogram）→ identicon；否则 monogram。
- * photo 带 `fallback`：图片加载失败时直接换用的描述。
- */
-export function resolveAvatar({ avatar, emoji, author, name, fallback = '友', machine, photoFailed = false, prefer = 'auto' } = {}) {
-  const url = photoFailed ? null : blobReadUrl(avatar, machine);
-  if (url) return { kind: 'photo', url, fallback: resolveAvatar({ avatar, emoji, author, name, fallback, machine, photoFailed: true, prefer }) };
-  const mark = clean(emoji);
-  if (mark && [...mark].length <= MAX_EMOJI) return { kind: 'emoji', emoji: mark };
-  if (prefer !== 'monogram' && AUTHOR.test(author ?? '')) return { kind: 'identicon', grid: identiconPattern(author), author };
+/** 决定头像怎么展示，只返回纯数据：合法的 author 画它的几何纹（identicon），否则取 name 的首字（monogram）。 */
+export function resolveAvatar({ author, name, fallback = '友' } = {}) {
+  if (AUTHOR.test(author ?? '')) return { kind: 'identicon', grid: identiconPattern(author), author };
   return { kind: 'monogram', text: initialChar(name, fallback) };
 }
 

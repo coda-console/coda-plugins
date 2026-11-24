@@ -16,8 +16,8 @@ const directory = async t => {
 };
 const refuses = (fn, pattern = /./) => assert.throws(fn, error => error.code === 'invalid_input' && pattern.test(error.message));
 
-test('the five reserved kinds are refused, and a kind must have Accord\'s shape', () => {
-  assert.deepEqual([...RESERVED_KINDS].sort(), ['binding', 'coda/friends', 'coda/profile', 'friends', 'profile']);
+test('the six reserved kinds are refused, and a kind must have Accord\'s shape', () => {
+  assert.deepEqual([...RESERVED_KINDS].sort(), ['binding', 'coda/friends', 'coda/profile', 'friends', 'friends/card', 'profile']);
   for (const kind of RESERVED_KINDS) refuses(() => checkKind(kind), /保留类型/);
   for (const kind of ['Upper', '1abc', 'a/b/c', 'a/', '/b', '', 'a_b', `a${'b'.repeat(64)}`, undefined, 3]) refuses(() => checkKind(kind));
   for (const kind of ['x', 'ns/name', 'a-b/c-d', `a${'b'.repeat(63)}`, 'profiles', 'coda/profiles']) assert.equal(checkKind(kind), kind);
@@ -142,6 +142,22 @@ test('the outbox file is read back by key (renamed from the entry itself), and a
     await writeFile(join(dir, 'outbox.json'), text);
     assert.deepEqual(await readOutbox(dir), {});
   }
+});
+
+test('reading the outbox drops entries of a reserved kind such as a stale friends/card and counts them, keeping the other entries and the sequence', async t => {
+  const dir = await directory(t);
+  const card = { ...queuePublish(undefined, { kind: 'friends/card', id: 'self', body: { name: '旧' }, audience: ['public'] }, 7), state: 'needs_cert' };
+  const cardRetract = queueRetract(undefined, 'friends/card', 'self', A, 8);
+  const keep = queuePublish(undefined, { kind: 'x', id: 'i', body: { v: 1 }, audience: ['public'] }, 3);
+  await writeFile(join(dir, 'outbox.json'), JSON.stringify({ seq: 8, entries: { [entryKey('friends/card', 'self')]: card, [retractKey(A, 'friends/card', 'self')]: cardRetract, [entryKey('x', 'i')]: keep } }));
+  const read = await readOutbox(dir);
+  assert.deepEqual(read, { 'p:x:i': keep });
+  assert.equal(read.dropped, 2);
+  assert.equal(nextSeq(read), 9, 'the sequence never goes back');
+  await writeOutbox(dir, read);
+  const clean = await readOutbox(dir);
+  assert.equal(clean.dropped, 0);
+  assert.deepEqual(JSON.parse(await readFile(join(dir, 'outbox.json'), 'utf8')).entries, { 'p:x:i': keep });
 });
 
 test('the policy file keeps the paused kinds sorted and unique, refuses reserved and malformed kinds, and falls back to none when missing or broken', async t => {

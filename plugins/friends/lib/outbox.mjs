@@ -4,8 +4,8 @@
 import { createHash } from 'node:crypto';
 import { readJson, writeJson } from './json-file.mjs';
 
-/** 网关不替业务发布、撤回的类型：好友关系、名片等 Accord 自己的记录。 */
-export const RESERVED_KINDS = new Set(['binding', 'profile', 'friends', 'coda/profile', 'coda/friends']);
+/** 网关不替业务发布、撤回的类型：好友关系、名片等 Accord 自己的记录；friends/card 是已下线的旧名片，封住旧写路径。 */
+export const RESERVED_KINDS = new Set(['binding', 'profile', 'friends', 'coda/profile', 'coda/friends', 'friends/card']);
 export const MAX_ID_CHARS = 200, MAX_ID_BYTES = 256, MAX_BODY_BYTES = 65536, MAX_AUDIENCE = 500;
 const KIND = /^[a-z][a-z0-9-]{0,63}(?:\/[a-z][a-z0-9-]{0,63})?$/;
 const AUDIENCE = /^(?:public|ed25519:[0-9a-f]{64})$/;
@@ -118,16 +118,21 @@ export function holdState(entry, certState, pausedKinds) {
 
 /**
  * 读出整张表 `{ 键: 条目 }`（磁盘上是 `{ seq, entries }`，旧版是直接平铺的条目）；键按条目内容重新规范（兼容旧键名），
- * 缺失、损坏、条目不成样子的都丢掉。序号计数器取顶层 `seq` 与现存条目最大序号中较大的。
+ * 缺失、损坏、条目不成样子的都丢掉；保留类型（含旧版残留的 friends/card）的条目也丢掉，丢了的个数记在表上不可枚举的 `dropped`，
+ * 由冲洗落盘清理。序号计数器取顶层 `seq` 与现存条目最大序号中较大的。
  */
 export async function readOutbox(dir) {
   const parsed = await readJson(dir, 'outbox.json'), entries = withSeq({}, 0);
   if (!isPlain(parsed)) return entries;
+  let dropped = 0;
   const stored = isPlain(parsed.entries) ? parsed.entries : parsed;
   for (const entry of Object.values(stored)) {
     if (isPlain(entry) && typeof entry.kind === 'string' && typeof entry.id === 'string' && ['publish', 'retract'].includes(entry.desired) && typeof entry.state === 'string'
-      && (entry.desired === 'publish' || typeof entry.targetAuthor === 'string')) entries[keyOf(entry)] = entry;
+      && (entry.desired === 'publish' || typeof entry.targetAuthor === 'string')) {
+      if (RESERVED_KINDS.has(entry.kind)) dropped++; else entries[keyOf(entry)] = entry;
+    }
   }
+  Object.defineProperty(entries, 'dropped', { value: dropped });
   return withSeq(entries, Math.max(Number.isSafeInteger(parsed.seq) ? parsed.seq : 0, ...Object.values(entries).map(entry => entry.seq ?? 0)));
 }
 
