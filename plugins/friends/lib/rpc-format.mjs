@@ -142,6 +142,19 @@ const SHAPES = {
   },
 };
 
+// 回答按状态核对字段组合（只在收到时核对）：running 不带 result、error；completed 带合格的 exec 结果；failed 带 error，effects 取值合法；
+// canceled 照上面的形状。exec 结果的必需字段与类型照 remote-exec/machine@1 的协议定义（plugins/remote-exec/package.json）。
+const EFFECTS = ['none', 'some', 'unknown'];
+const EXEC_RESULT = { exitCode: v => v === null || Number.isInteger(v), signal: v => v === null || isText(v), stdout: isText, stderr: isText,
+  timedOut: v => typeof v === 'boolean', truncated: v => typeof v === 'boolean', outputDir: v => v === null || isText(v), ms: v => Number.isInteger(v) && v >= 0 };
+const execResultOk = result => isPlain(result) && Object.entries(EXEC_RESULT).every(([key, check]) => Object.hasOwn(result, key) && check(result[key]));
+const ANSWER_STATE_OK = {
+  running: body => !Object.hasOwn(body, 'result') && !Object.hasOwn(body, 'error'),
+  completed: body => execResultOk(body.result),
+  failed: body => EFFECTS.includes(body.error?.effects),
+  canceled: () => true,
+};
+
 function shapeProblem(kind, body) {
   if (!isPlain(body)) return 'bad_body';
   const { required, optional } = SHAPES[kind];
@@ -175,7 +188,7 @@ export const senderField = kind => VERIFY[kind]?.sender;
  * 校验 Accord `records` 的一项 `{ author, kind, id, version, body, audience }`（查询须带 `includeAudience: true`）。
  * `self` 是接收方（本机此刻的作者），`peer` 是期望的对方（发出方）。通过给 `{ ok: true, body }`，否则 `{ ok: false, code }`：
  * `bad_kind`、`bad_audience`（缺失、public、多人、方向不对）、`bad_author`（已验作者不是期望的对方，或不是正文写的发出方）、
- * `bad_body`（多出未知字段、缺字段、类型不对）、`bad_version`（v 不是 1）、`bad_recipient`（正文写的接收方不是本机）、
+ * `bad_body`（多出未知字段、缺字段、类型不对；回答的字段组合与状态不合）、`bad_version`（v 不是 1）、`bad_recipient`（正文写的接收方不是本机）、
  * `bad_id`（记录 id 与正文对不上）、`too_large`。
  */
 function verify(kind, record, { self, peer } = {}) {
@@ -185,6 +198,7 @@ function verify(kind, record, { self, peer } = {}) {
   const problem = shapeProblem(kind, record.body);
   if (problem) return bad(problem);
   const { body } = record, rule = VERIFY[kind];
+  if (kind === KIND_ANSWER && !ANSWER_STATE_OK[body.state](body)) return bad('bad_body');
   if (body[rule.sender] !== record.author) return bad('bad_author');
   if (body[rule.receiver] !== self) return bad('bad_recipient');
   if (record.id !== rule.id(body)) return bad('bad_id');

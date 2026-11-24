@@ -133,6 +133,25 @@ test('a body with the wrong version, an unknown field, a missing field or a wron
   assert.equal(check(bodyOf({ digest: 'abc' })), 'bad_body');
   assert.equal(check(bodyOf({ error: { code: 'x', message: 'y' } })), 'bad_body');
   assert.equal(check(bodyOf({ cut: false })), 'bad_body');
+  // 按状态核对字段组合：completed 要带合格的 exec 结果，failed 要带 effects 合法的 error，running 不带 result、error。
+  const { result, ...noResult } = answer().body, failedError = { code: 'x', message: 'y', effects: 'unknown' };
+  assert.equal(check(noResult), 'bad_body', 'completed without result');
+  assert.equal(check(bodyOf({ result: {} })), 'bad_body', 'completed with an empty result');
+  for (const field of execSchema.required) {
+    const { [field]: dropped, ...partial } = EXEC;
+    assert.equal(check(bodyOf({ result: partial })), 'bad_body', `completed without ${field}`);
+  }
+  assert.equal(check(bodyOf({ result: { ...EXEC, ms: -1 } })), 'bad_body');
+  assert.equal(check(bodyOf({ result: { ...EXEC, exitCode: '0' } })), 'bad_body');
+  assert.equal(check({ ...noResult, state: 'failed' }), 'bad_body', 'failed without error');
+  assert.equal(check({ ...noResult, state: 'failed', error: { code: 'x', message: 'y' } }), 'bad_body', 'failed without effects');
+  assert.equal(check({ ...noResult, state: 'failed', error: { ...failedError, effects: 'maybe' } }), 'bad_body', 'failed with unknown effects');
+  assert.equal(check({ ...noResult, state: 'failed', error: { ...failedError, code: 5 } }), 'bad_body');
+  assert.equal(check({ ...noResult, state: 'failed', error: failedError }), undefined);
+  assert.equal(check(bodyOf({ state: 'running' })), 'bad_body', 'running with result');
+  assert.equal(check({ ...noResult, state: 'running', error: failedError }), 'bad_body', 'running with error');
+  assert.equal(check({ ...noResult, state: 'running' }), undefined);
+  assert.equal(check({ ...noResult, state: 'canceled' }), undefined);
   const granted = grantRecord({ holder: HOLDER, grantee: CALLER, grant: GRANT, spec: SPEC, available: true, grantedAt: 1 }), grantCheck = body => verifyGrant(received({ ...granted, body }, HOLDER), { self: CALLER, peer: HOLDER }).code;
   assert.equal(grantCheck({ ...granted.body, ops: ['exec', 'pull'] }), 'bad_body');
   assert.equal(grantCheck({ ...granted.body, protocol: 'other/x@1' }), 'bad_body');

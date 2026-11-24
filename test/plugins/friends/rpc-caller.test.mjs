@@ -31,7 +31,7 @@ const SPEC = { name: 'box', os: 'linux', user: 'u', cwd: '/home/u' };
 // 持有方好友表：我（个人作者，通道背后是 MC）、FB（机器作者）。
 const HOLDER_FRIENDS = [{ node: 'n-a', author: ROOT, bound: true, machine: MC, certified: true }, { node: 'n-b', author: FB, bound: true, machine: FB, certified: false }];
 // 调用方好友表：持有方那条通道（机器作者，机器钥匙就是作者）。
-const channel = ({ author = HM, bound = true } = {}) => ({ node: 'n-h', author, bound, machine: HM, certified: author !== HM });
+const channel = ({ author = HM, bound = true, conflict = false } = {}) => ({ node: 'n-h', author, bound, machine: HM, certified: author !== HM, ...(conflict ? { conflict } : {}) });
 
 const pause = (ms = 15) => new Promise(resolve => setTimeout(resolve, ms));
 const until = async (check, what = '条件') => {
@@ -85,7 +85,7 @@ function worldFake() {
 }
 
 // 一台机器的 Accord：certificate 为 null 是没绑个人身份（作者就是机器钥匙），绑了时机器钥匙在 certificate.key。`deaf` 时听不到目录的变化。
-// `hold(match)`：下一次符合的查询挂住，直到放行；`failNext(match)`：下一次符合的查询失败；`holdGet()`：下一次读本机 Accord 记录挂住，直到放行。
+// `hold(match)`：下一次符合的查询挂住，直到放行；`failNext(match)`：下一次符合的查询失败（`always` 时此后每次都失败）；`holdGet()`：下一次读本机 Accord 记录挂住，直到放行。
 function nodeOf(world, { author, certificate = null, machine = author, friends = [] }) {
   const node = { author, certificate, machine, friends, listeners: new Set(), calls: [], queries: [], deaf: false };
   node.machineKey = () => node.certificate === null ? node.author : node.machine;
@@ -110,12 +110,12 @@ function nodeOf(world, { author, certificate = null, machine = author, friends =
       return () => { node.gate = null; release(); };
     },
     held: () => node.gate?.waiting === true,
-    failNext(match) { node.failing = match; },
+    failNext(match, { always = false } = {}) { node.failing = match; node.failingAlways = always; },
     async change(next) { Object.assign(node, next); node.tell(); await pause(30); },
     query: async (ref, operation, input) => {
       assert.deepEqual([ref.kind, operation], [ACCORD, 'records']);
       node.queries.push(structuredClone(input));
-      if (node.failing?.(input)) { node.failing = null; throw fail('internal', '目录读不出'); }
+      if (node.failing?.(input)) { if (!node.failingAlways) node.failing = null; throw fail('internal', '目录读不出'); }
       if (node.gate?.match(input) && !node.gate.waiting) { node.gate.waiting = true; await node.gate.promise; }
       const rows = world.records.filter(r => r.kind === input.kind && (input.author === undefined || r.author === input.author) && (input.id === undefined || r.id === input.id))
         .map(({ audience, ...rest }) => ({ ...rest, local: mine(rest), ...(input.includeAudience && audience !== undefined ? { audience } : {}) }));
@@ -331,8 +331,8 @@ test('the same grant seen by two of my bound machines keeps one proxy record on 
   await big.caller.tick();
   await small.caller.tick();
   assert.deepEqual(proxies.rows.map(row => [row.owner, row.status.available]), [['m-1', true]]);
-  // 小的那台与持有方的通道断了：它不再是候选，删掉自己这条，大的那台接过去。
-  await small.node.change({ friends: [channel({ bound: false })] });
+  // 小的那台与持有方的通道断了（冲突）：它不再是候选，删掉自己这条，大的那台接过去。
+  await small.node.change({ friends: [channel({ conflict: true })] });
   await small.caller.tick();
   await big.caller.tick();
   await small.caller.tick();
@@ -556,8 +556,12 @@ test('grant records with a public, shared, missing or reversed audience, an auth
 
 test('a holder that is a person with an expired certificate still grants and answers with its machine key; a caller whose certificate expired fails on the spot', async t => {
   const world = worldFake(), h = await holderOf(t, world, { author: HR, certificate: EXPIRED, machine: HM });
-  const c = await callerOf(t, world, { friends: [channel({ author: HR })] });
+  // 持有方个人证书过期时，我这边好友表里真实的样子：未绑定、机器钥匙仍在、没有冲突。
+  const c = await callerOf(t, world, { friends: [channel({ author: HR, bound: false })] });
   const grant = await granted(h, c);
+  assert.equal((await c.exec({ grant, input: { command: 'id' } }).promise).stdout, 'ran id');
+  await c.caller.tick();
+  assert.deepEqual(c.mine().map(row => [row.key, row.status.available]), [[proxyKey(HM, grant), true]], '下一轮代理记录还在、可用');
   assert.equal((await c.exec({ grant, input: { command: 'id' } }).promise).stdout, 'ran id');
   await c.node.change({ certificate: EXPIRED });
   const sent = c.requests().length;
@@ -818,6 +822,120 @@ test('#6 with two bound machines the proxy stays on the smaller id even when it 
   await big.caller.tick();
   await small.caller.tick();
   assert.deepEqual(proxies.rows.map(row => [row.owner, row.status.available]), [['m-1', false]]);
+});
+
+// ---- 核对与整体评审的修正 ----
+
+for (const [what, friends] of [['changes its machine key', [{ ...channel(), machine: STRANGER }]], ['is removed', []]]) {
+  test(`a friend who ${what} before the final answer arrives: the old machine's answer is not handed back`, async t => {
+    const world = worldFake(), h = await holderOf(t, world), c = await callerOf(t, world);
+    const grant = await granted(h, c);
+    h.exec.plan = () => 'hang';
+    const call = c.exec({ grant });
+    await until(() => h.answers(ROOT, call.request).includes('running') && h.exec.pending() === 1, '回执 running');
+    await c.node.change({ friends });
+    h.exec.releaseAll();
+    await until(() => h.lastAnswer(ROOT, call.request)?.state === 'completed', '旧机器签出终态');
+    await rejectsWith(call.promise, 'interrupted', 'unknown', [LOST, call.request]);
+  });
+}
+
+test('resume does not hand back the final answer of a friend removed meanwhile', async t => {
+  const world = worldFake(), h = await holderOf(t, world);
+  const { first, grant, call } = await sentThenStopped(t, world, h);
+  h.node.deaf = false;
+  await h.holder.tick();
+  await until(() => h.lastAnswer(ROOT, call.request)?.state === 'completed', '持有方答完');
+  first.node.friends = [];
+  const next = await restarted(t, world, first);
+  await rejectsWith(next.resume({ grant, id: call.id }), 'interrupted', 'unknown', [LOST, call.request]);
+});
+
+test('after the request is signed, reads of the answer that keep failing end as unknown with the request number, never as none', async t => {
+  const world = worldFake(), h = await holderOf(t, world), c = await callerOf(t, world);
+  const grant = await granted(h, c);
+  h.node.deaf = true;
+  await h.holder.tick();
+  const call = c.exec({ grant });
+  c.node.failNext(answerQuery(call.request), { always: true });
+  await until(() => c.requests().length === 1, '请求发出');
+  await until(() => c.answerReads() > 0, '读过回答');
+  assert.ok(await pending(call.promise), '读失败不当结局');
+  await world.timers.advance(ACK_MS);
+  await rejectsWith(call.promise, 'peer_offline', 'unknown', [LOST, call.request]);
+  assert.equal(c.cancels(call.request).length, 1);
+});
+
+test('the 75-second receipt deadline wins over a first answer query that never returns: a cancel is sent and the call fails peer_offline, unknown', async t => {
+  const world = worldFake(), h = await holderOf(t, world), c = await callerOf(t, world);
+  const grant = await granted(h, c);
+  h.node.deaf = true;
+  await h.holder.tick();
+  const call = c.exec({ id: 'call-hang', grant });
+  const release = c.node.hold(answerQuery(call.request));
+  await until(() => c.node.held(), '首次读回答挂住');
+  await world.timers.advance(ACK_MS);
+  await until(async () => !(await pending(call.promise)), '期限一到就结束');
+  await rejectsWith(call.promise, 'peer_offline', 'unknown', [LOST, call.request]);
+  assert.equal(c.node.held(), true, '查询还挂着，调用已经结束');
+  assert.equal(c.cancels(call.request).length, 1);
+  release();
+});
+
+test('when my author changes while resume is reading the answer, resume hands back no stdout and ends as interrupted, unknown', async t => {
+  const world = worldFake(), h = await holderOf(t, world);
+  const { first, grant, call } = await sentThenStopped(t, world, h);
+  h.node.deaf = false;
+  await h.holder.tick();
+  await until(() => h.lastAnswer(ROOT, call.request)?.state === 'completed', '持有方答完');
+  h.node.deaf = true;
+  await h.holder.tick();
+  const next = await restarted(t, world, first);
+  const release = next.node.hold(answerQuery(call.request));
+  const resumed = next.resume({ grant, id: call.id });
+  resumed.catch(() => {});
+  await until(() => next.node.held(), '读回答挂住');
+  await next.node.change({ author: NEW_ROOT });
+  release();
+  await rejectsWith(resumed, 'interrupted', 'unknown', [LOST, call.request]);
+});
+
+test('when my author changes A→B→A while resume is reading the answer, resume still hands back no stdout and ends as interrupted, unknown', async t => {
+  const world = worldFake(), h = await holderOf(t, world);
+  const { first, grant, call } = await sentThenStopped(t, world, h);
+  h.node.deaf = false;
+  await h.holder.tick();
+  await until(() => h.lastAnswer(ROOT, call.request)?.state === 'completed', '持有方答完');
+  h.node.deaf = true;
+  await h.holder.tick();
+  const next = await restarted(t, world, first);
+  const release = next.node.hold(answerQuery(call.request));
+  const resumed = next.resume({ grant, id: call.id });
+  resumed.catch(() => {});
+  await until(() => next.node.held(), '读回答挂住');
+  await next.node.change({ author: NEW_ROOT });
+  await next.node.change({ author: ROOT });
+  release();
+  await rejectsWith(resumed, 'interrupted', 'unknown', [LOST, call.request]);
+});
+
+test('when my author changes A→B→A while resume is reading the outgoing entry, resume hands back no stdout and ends as interrupted, unknown', async t => {
+  const world = worldFake(), h = await holderOf(t, world);
+  const { first, grant, call } = await sentThenStopped(t, world, h);
+  h.node.deaf = false;
+  await h.holder.tick();
+  await until(() => h.lastAnswer(ROOT, call.request)?.state === 'completed', '持有方答完');
+  h.node.deaf = true;
+  await h.holder.tick();
+  const reads = holdWrites('getOutgoing'), next = await restarted(t, world, first, { wrapStore: reads.wrap });
+  reads.arm();
+  const resumed = next.resume({ grant, id: call.id });
+  resumed.catch(() => {});
+  await until(() => reads.waiting(), '读发出项挂住');
+  await next.node.change({ author: NEW_ROOT });
+  await next.node.change({ author: ROOT });
+  reads.release();
+  await rejectsWith(resumed, 'interrupted', 'unknown', [LOST, call.request]);
 });
 
 // ---- 大小 ----
