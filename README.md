@@ -25,6 +25,7 @@ plugins/review/          PR 生命流程：会话开的 PR 先跑项目的检查
 plugins/desktop-pet/     桌面宠物：Coda 娘待在 Mac 桌面上，Agent 在跑时打字，有事等你时举卡片叫你（Coda 的浮窗）
 plugins/token-board/     Token 消耗榜：看本机的 Token 用量，可选向好友分享匿名月块日归档与 48 小时曲线并看熟人消耗榜、多台机器合并（coda/usage@1 与 coda/machine@1 只读，coda/accord@1 读与发布）
 plugins/testbed/         测试机：长插在 Mac 上的 iPhone、iPad 只经 use-testbed 使用，排到后装 App、交给会话操作、用完切黑屏；依赖宿主资源
+plugins/remote-exec/     远程执行：默认关闭，打开后空间里别的机器上的 Agent 能以这台后端所在用户的身份在这台上执行命令、拉取和推送文件，每次操作记在状态目录里；两侧都要装
 plugins/composer/        输入框模式与开发流程：监督开发（一个需求一条需求分支，主 Agent 把一块块改动合进需求分支，用户批准一次）与需求交付；Ultra 名单引用 composer.templates
 test/                    测试；test/plugins/ 是各插件的测试（插件目录里只放运行要用的文件）
 ```
