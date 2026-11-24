@@ -1227,7 +1227,8 @@ test('a flush drops queued friends/rpc- entries without signing them, including 
   await until(async () => (await g.status()).pendingCount === 0 && Object.keys(await g.outbox()).length === 1, '其余条目照常发完');
   assert.deepEqual(g.accord.calls.map(call => call.kind), ['x'], 'only the ordinary entry is signed');
   assert.deepEqual(Object.keys(await g.outbox()), ['p:x:ok']);
-  assert.equal(g.accord.queries.some(query => query.kind.startsWith('friends/rpc-')), false);
+  // 冲洗不按条目去查这类记录；持有方启动时按作者查一次本机的授权记录（不带 id），不算。
+  assert.equal(g.accord.queries.some(query => query.kind.startsWith('friends/rpc-') && query.id !== undefined), false);
 
   // 只有这类条目、没有别的待发时，下一次冲洗也清掉它们。
   const only = Object.fromEntries([put(queuePublish(undefined, item('friends/rpc-call', 'c2'), 6)), put(markSynced(queuePublish(undefined, item('friends/rpc-answer', 'a2'), 7), A, 5))]);

@@ -1874,6 +1874,78 @@ test('after the state directory is cleared (no grants, no handled table) the req
   assert.deepEqual(fresh.answers(F1, waiting.request), []);
 });
 
+// 目录里本机机器钥匙签给 `friend`、还没撤回的授权记录的授权号：调用方照这个登记代理。
+const liveGrantRecords = (h, friend = F1) => h.accord.records.filter(r => r.kind === 'friends/rpc-grant' && r.author === MK && r.local && r.audience?.includes(friend)).map(r => r.id);
+
+test('after the state directory is cleared the grant records left in the directory are withdrawn at start, so the caller drops its proxy; granting again leaves the caller one', async t => {
+  const h = await holderOf(t);
+  const { grant: old } = await h.grant();
+  const { grant: other } = await h.grant(F2);
+  assert.deepEqual(liveGrantRecords(h), [old]);
+  h.stop();
+  // 卸载并清数据，再装回：空的状态目录，同一个 Accord。
+  const fresh = await holderOf(t, { accord: h.accord, targets: h.targets, clock: h.clock });
+  // 孤儿清理在后台，不随节拍结束：等目录里这两条撤掉再看。
+  await until(() => !liveGrantRecords(fresh).length && !liveGrantRecords(fresh, F2).length, '旧授权记录撤回');
+  assert.deepEqual(fresh.published('friends/rpc-grant').filter(call => !call.audience.length).map(call => [call.id, call.expectAuthor, call.signer]).sort(),
+    [[old, MK, 'machine'], [other, MK, 'machine']].sort());
+  const { grant: renewed } = await fresh.grant();
+  await fresh.settle();
+  assert.deepEqual(liveGrantRecords(fresh), [renewed]);
+  assert.notEqual(renewed, old);
+});
+
+test('while an orphan grant record\'s retraction hangs, requests under a live grant are still scanned and run; the directory is read once and the retraction goes through when let go', async t => {
+  const h = await holderOf(t);
+  const { grant: old } = await h.grant();
+  h.stop();
+  // 撤回前按授权号查那一条的查询挂住。
+  const release = h.accord.hold(input => input.kind === 'friends/rpc-grant' && input.id === old);
+  const fresh = await holderOf(t, { accord: h.accord, targets: h.targets, clock: h.clock });
+  await until(() => h.accord.held(), '孤儿撤回挂住');
+  const { grant } = await fresh.grant();
+  const body = send(fresh, { grant });
+  await fresh.settle();
+  assert.deepEqual(fresh.answers(F1, body.request), ['running', 'completed']);
+  assert.equal(fresh.exec.runs, 1);
+  assert.deepEqual(liveGrantRecords(fresh).sort(), [old, grant].sort());
+  release();
+  await until(() => !liveGrantRecords(fresh).includes(old), '孤儿撤回');
+  await fresh.settle();
+  assert.deepEqual(liveGrantRecords(fresh), [grant]);
+  const listings = h.accord.queries.filter(input => input.kind === 'friends/rpc-grant' && input.id === undefined);
+  assert.equal(listings.length, 2, 'one directory read per start');
+});
+
+test('with a corrupt grants table at start no grant record is withdrawn', async t => {
+  const h = await holderOf(t);
+  const { grant } = await h.grant();
+  h.stop();
+  await writeFile(join(h.dir, 'rpc', 'grants.json'), '{ not json');
+  const calls = h.accord.calls.length;
+  const again = await holderOf(t, h);
+  await again.settle();
+  assert.deepEqual(liveGrantRecords(again), [grant]);
+  assert.equal(h.accord.calls.length, calls, 'nothing sent');
+  assert.equal((await again.holder.self['grants.list']()).corrupt, 'grants.json');
+});
+
+test('at start a grant record with a live grant in the table is left alone; one whose grant was revoked is withdrawn as usual', async t => {
+  const h = await holderOf(t);
+  const { grant: kept } = await h.grant();
+  const { grant: gone } = await h.grant(F2);
+  await h.accord.change({ machine: null });
+  await h.holder.self['grants.revoke']({ grant: gone });
+  await h.settle();
+  h.stop();
+  await h.accord.change({ machine: MK });
+  const calls = h.accord.calls.length;
+  const again = await holderOf(t, h);
+  await again.settle();
+  assert.deepEqual([liveGrantRecords(again), liveGrantRecords(again, F2)], [[kept], []]);
+  assert.deepEqual(h.accord.calls.slice(calls).map(call => [call.id, call.audience]), [[gone, []]]);
+});
+
 // ---- coda self ----
 
 test('coda self grants.list, grants.grant, grants.revoke and ledger.list go through the activated module', async t => {

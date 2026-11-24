@@ -2,7 +2,8 @@
 // 验过、核对本机授权后调本机那条记录的 exec，再签回答（friends/rpc-answer）发回去。格式、窗口、配额、恢复以 coda#3011 为准。
 //
 // - 授权表（rpc-store 的 grants.json）是权威：撤权与失效先落盘、不可逆，之后尚未提交的不再启动，已提交的走「对方发来取消」同一条路径取消；授权记录（friends/rpc-grant）的发与撤
-//   按授权号排成一条队，发不出去等能发了再补，撤回要等原来那把机器钥匙能签时补发。
+//   按授权号排成一条队，发不出去等能发了再补，撤回要等原来那把机器钥匙能签时补发。启动后查一次目录，本机机器钥匙签出、授权表里却没有对应有效授权的
+//   （清过状态目录后留下的）也排进这条队撤回；授权表损坏时不查。
 // - 持有方始终以机器出现：授权记录与回答用本机机器钥匙签（rpc-format 的 machineOf，网关带 `signer: "machine"`），与有没有绑个人身份、
 //   证书是否有效无关；证书过期照常准入、执行、签回答、撤回答。授权记下授予时的机器钥匙，机器钥匙变了授权就此失效；
 //   本机绑定、解绑个人身份或换根都不影响它授出的授权。
@@ -59,6 +60,10 @@ const EFFECTS = ['none', 'some', 'unknown'];
 export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages, now = Date.now, monotonic = () => performance.now(), timers = globalThis, pollMs = POLL_MS } = {}) {
   let stopped = false, corrupt = null, maxSeen = null, persistedClock = 0, timer = null, lastIdentity = null, lastMachine = null, lastFriends = null;
   let ticking = Promise.resolve(), queued = null, wantGrants = false;
+  // 孤儿授权记录（见 readOrphans）：目录读全了没有、正在读的那一次。
+  let orphansRead = false, orphanRead = null;
+  const orphans = new Map(); // 授权号 → 签出它的机器钥匙：查到了、还没撤成的孤儿授权记录
+  const orphanBusy = new Set(); // 授权号：撤回正排在它的队里
   // 扫请求：一轮读不完时下一轮从 `scanCursor` 续；`passPresent` 是这一遍（可能跨几轮）见到的记录，整遍读完才拿它清 `seen`。
   let scanCursor = null, passPresent = new Set();
   const subscriptions = [];
@@ -171,8 +176,8 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
   // ---- 授权记录 ----
 
   // 同一授权号的发与撤排成一条队，队里读最新的授权行再决定发还是撤。
-  function syncGrant(id) {
-    const run = (grantQueues.get(id) ?? Promise.resolve()).then(() => syncGrantNow(id));
+  function syncGrant(id, work = () => syncGrantNow(id)) {
+    const run = (grantQueues.get(id) ?? Promise.resolve()).then(work);
     const tail = run.then(() => {}, () => {});
     grantQueues.set(id, tail);
     tail.then(() => { if (grantQueues.get(id) === tail) grantQueues.delete(id); });
@@ -228,6 +233,43 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
       if (stopped) return;
       await settle(grant.id);
     }
+  }
+
+  // 孤儿授权记录的清理，节拍只触发、不等它：启动后目录还没读全就再读一次（同时只读一次），读全了就只让没撤成的各自重试。
+  function orphanWork() {
+    if (stopped) return;
+    if (orphansRead) retryOrphans();
+    else orphanRead ??= readOrphans().catch(note).finally(() => { orphanRead = null; });
+  }
+  // 启动后读一遍目录：本机机器钥匙签出、还没撤回、授权表里却没有对应有效授权的授权记录（清过状态目录后留下的），记下来交给 retryOrphans。
+  // 授权表读不出（损坏）就不做，不拿空表当依据；表不存在算空表。读不到机器钥匙、读目录失败或没读全，下一拍再读；读全了就不再读。
+  async function readOrphans() {
+    const me = await identity();
+    if (!isAuthor(me.machine)) return;
+    const live = new Set((await store.listGrants()).filter(grant => grant.revokedAt === undefined).map(grant => grant.id));
+    const { records, truncated } = await pages({ kind: KIND_GRANT, author: me.machine }, Infinity);
+    if (truncated) return;
+    for (const record of records) {
+      if (record?.local === true && record.author === me.machine && !live.has(record.id) && Object.keys(record.body ?? {}).length) orphans.set(record.id, me.machine);
+    }
+    orphansRead = true;
+    retryOrphans();
+  }
+  // 没撤成的孤儿各自排进自己授权号的队，同一号同时只排一次；撤成了（或表里这一号有效）就不再管，没成的下一拍再排。
+  function retryOrphans() {
+    for (const [id, machine] of orphans) {
+      if (stopped || orphanBusy.has(id)) continue;
+      orphanBusy.add(id);
+      syncGrant(id, () => retractOrphan(id, machine)).then(done => { if (done) orphans.delete(id); }, note).finally(() => orphanBusy.delete(id));
+    }
+  }
+  // 队里再按授权号对一次：表里这一号有效就不动；撤了的照常跟上；表里没有的，用签出它的那把机器钥匙撤回。
+  async function retractOrphan(id, machine) {
+    const row = await store.getGrant(id);
+    if (row) return row.revokedAt === undefined || syncGrantNow(id);
+    if (stopped) return false;
+    await retractRpc({ kind: KIND_GRANT, id, author: machine });
+    return true;
   }
 
   // ---- 请求 ----
@@ -501,7 +543,7 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
 
   // ---- 节拍 ----
 
-  // 一次节拍：授权记录跟上（`grants` 时全部，否则只补待补的）、找请求、扫在途表。排成一条队，排着的只留一次。
+  // 一次节拍：授权记录跟上（`grants` 时全部，否则只补待补的）、找请求、扫在途表；孤儿授权记录的清理只在这里触发、不等。排成一条队，排着的只留一次。
   function tick({ grants = false } = {}) {
     wantGrants ||= grants;
     if (queued) return queued;
@@ -510,6 +552,7 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
       if (stopped) return;
       const all = wantGrants;
       wantGrants = false;
+      orphanWork();
       for (const work of [() => syncGrants(all ? undefined : grant => dirtyGrants.has(grant.id)), scan, sweep]) {
         if (stopped) return;
         try { await work(); } catch (e) { note(e); }
