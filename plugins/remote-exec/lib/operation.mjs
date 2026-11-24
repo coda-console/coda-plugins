@@ -34,6 +34,7 @@ export function absolute(coda, path, what = 'path') {
 const CODES = {
   ENOENT: ['not_found', '不存在'], ENOTDIR: ['not_a_directory', '路径中有不是目录的部分'], EISDIR: ['is_a_directory', '是目录'],
   EACCES: ['permission_denied', '没有权限'], EPERM: ['permission_denied', '没有权限'], EROFS: ['permission_denied', '只读文件系统'],
+  ELOOP: ['symlink_loop', '符号链接绕成了圈，解析不出目标'],
 };
 export function fsError(coda, error, path) {
   if (typeof error?.code === 'string' && /^[a-z0-9_]+$/.test(error.code)) return error;   // 已经是带码的错误（coda.error）

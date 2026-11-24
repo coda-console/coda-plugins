@@ -1,19 +1,26 @@
 // 拉取（读的流）与推送（写的流）。错误都在第一个字节之前以带码的错误抛，读的 effects 一律 none。
 import { randomBytes } from 'node:crypto';
-import { mkdir, open, realpath, rename, rm, stat } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { mkdir, open, readlink, realpath, rename, rm, rmdir, stat } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 import { writeAll } from './output.mjs';
 import { absolute, begin, errorCode, fsError } from './operation.mjs';
 
-const octet = length => ({ status: 200, headers: { 'content-type': 'application/octet-stream', 'content-length': String(length) } });
+// `length` 不给就不声明长度。
+const octet = length => ({ status: 200, headers: { 'content-type': 'application/octet-stream', ...(length === undefined ? {} : { 'content-length': String(length) }) } });
 
-// 打开文件，目录不行；回 `{ handle, size }`。
+// 打开普通文件，目录与特殊节点（FIFO、设备、套接字）不行；回 `{ handle, size }`。
+// `open` 之前先 `stat`：打开没有写端的 FIFO 会一直挂住；`open` 之后再确认一次，防的是两步之间被换掉。
 async function openFile(coda, path) {
+  const check = info => {
+    if (info.isDirectory()) throw coda.error('is_a_directory', `${path}：是目录，不能当文件读`, { effects: 'none' });
+    if (!info.isFile()) throw coda.error('not_a_regular_file', `${path}：不是普通文件（FIFO、设备或套接字），不能读`, { effects: 'none' });
+  };
+  try { check(await stat(path)); } catch (error) { throw fsError(coda, error, path); }
   let handle;
   try { handle = await open(path, 'r'); } catch (error) { throw fsError(coda, error, path); }
   try {
     const info = await handle.stat();
-    if (info.isDirectory()) throw coda.error('is_a_directory', `${path}：是目录，不能当文件读`, { effects: 'none' });
+    check(info);
     return { handle, size: info.size };
   } catch (error) {
     await handle.close();
@@ -28,13 +35,16 @@ export async function pull(env, request, ctx) {
   return op.guard({ path, offset, length }, async () => {
     absolute(coda, path);
     const { handle, size } = await openFile(coda, path);
-    const start = Math.min(Number(offset ?? 0), size), end = length === undefined ? size : Math.min(size, start + Number(length));
+    // `stat` 的大小为 0 的普通文件不一定是空的（如 /proc/cpuinfo）：读到 EOF 为准，一律不声明长度。
+    // 超出安全整数的 offset、length 在建读流之前收口：offset 超过末尾就是空体，length 超大就是读到末尾。
+    const unsized = size === 0, limit = unsized ? Infinity : size, declared = length => unsized ? undefined : length;
+    const start = Math.min(Number(offset ?? 0), unsized ? Number.MAX_SAFE_INTEGER : size), end = length === undefined ? limit : Math.min(limit, start + Number(length));
     if (end <= start) {
       await handle.close();
       await op.record({ result: { bytes: 0 } });
-      return new Response(null, octet(0));
+      return new Response(null, octet(declared(0)));
     }
-    const expected = end - start, file = handle.createReadStream({ start, end: end - 1 }), chunks = file[Symbol.asyncIterator]();
+    const expected = unsized ? 0 : end - start, file = handle.createReadStream({ start, end: Number.isSafeInteger(end) ? end - 1 : Infinity }), chunks = file[Symbol.asyncIterator]();
     let sent = 0, recorded = false, controller;
     const record = fields => { if (!recorded) { recorded = true; return op.record(fields); } };
     // 调用被中止：文件关掉，响应体当场以取消的原因出错（预读的块随之丢掉），并记一行，不等调用方再读。
@@ -60,6 +70,11 @@ export async function pull(env, request, ctx) {
     };
     // 第一块在回答之前读出来：这之前的失败还能按错误码答复。
     let pending = await next();
+    if (unsized && pending === null) {   // 真的是空的
+      ctx.signal.removeEventListener('abort', onAbort);
+      await record({ result: { bytes: 0 } });
+      return new Response(null, octet());
+    }
     const body = new ReadableStream({
       start(c) { controller = c; },
       async pull(controller) {
@@ -79,16 +94,37 @@ export async function pull(env, request, ctx) {
       },
     }, { highWaterMark: 0 });
     if (ctx.signal.aborted) onAbort();
-    return new Response(body, octet(expected));
+    return new Response(body, octet(declared(expected)));
   });
 }
 
-// 推送里能解析出符号链接目标的写到目标；还不存在的路径就是它自己。
-async function resolveTarget(path) {
-  try { return await realpath(path); } catch (error) {
-    if (error.code === 'ENOENT') return path;
-    throw error;
+// 推送里能解析出符号链接目标的写到目标；悬空的符号链接按它指向的路径写，链接保留；路径本身不存在就是它自己。
+// 悬空链接目标的目录部分必须已经存在：「链接所在目录 + '/' + 目标的目录部分」原样交给 `realpath`（`..` 与符号链接由文件系统按序处理，
+// 不做词法折叠），再接上目标的文件名；解析不了就带码失败，不经符号链接新建目录。绕成圈的链接 `realpath` 报 ELOOP，照常带码失败。
+async function resolveTarget(coda, path) {
+  for (let current = path;;) {
+    try { return await realpath(current); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    let link;
+    try { link = await readlink(current); } catch (error) {
+      if (error.code === 'ENOENT') return current;
+      throw error;
+    }
+    try { current = join(await realpath(isAbsolute(link) ? dirname(link) : `${dirname(current)}/${dirname(link)}`), basename(link)); } catch (error) {
+      if (error.code === 'ENOENT') throw coda.error('not_found', `${path}：符号链接指向的目录不存在（${link}）`, { effects: 'none' });
+      throw error;
+    }
   }
+}
+
+// 从已存在的祖先起逐级建目录（非递归的 mkdir），每建成一个立即登记到 `made`（深的在前），失败时已建的也在里面。
+async function makeDirectories(dir, made) {
+  try { await mkdir(dir); } catch (error) {
+    if (error.code === 'EEXIST') return;
+    if (error.code !== 'ENOENT') throw error;
+    await makeDirectories(dirname(dir), made);
+    try { await mkdir(dir); } catch (again) { if (again.code === 'EEXIST') return; throw again; }
+  }
+  made.unshift(dir);
 }
 
 // `ctx.input`：{ path }；请求体是文件的全部字节。
@@ -98,15 +134,17 @@ export async function push(env, request, ctx) {
   const size = await op.guard({ path }, async () => {
     absolute(coda, path);
     let temp = null, handle = null, reader, written = 0;
+    const made = [];
     // 等请求体的时候也要响应取消：一个监听去取消 reader，等着的那次读随即结束，之后照常走收尾。
     const onAbort = () => reader?.cancel(ctx.signal.reason).catch(() => {});
     ctx.signal.addEventListener('abort', onAbort, { once: true });
     try {
       ctx.signal.throwIfAborted();
-      const target = await resolveTarget(path);
+      const target = await resolveTarget(coda, path);
       const existing = await stat(target).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
       if (existing?.isDirectory()) throw coda.error('is_a_directory', `${path}：是目录，不能当文件写`, { effects: 'none' });
-      await mkdir(dirname(target), { recursive: true });
+      if (existing && !existing.isFile()) throw coda.error('not_a_regular_file', `${path}：已有的不是普通文件（FIFO、设备或套接字），不替换`, { effects: 'none' });
+      await makeDirectories(dirname(target), made);
       const candidate = join(dirname(target), `.coda-push-${randomBytes(8).toString('hex')}`);
       handle = await open(candidate, 'wx', 0o666);
       temp = candidate;
@@ -129,9 +167,13 @@ export async function push(env, request, ctx) {
     } catch (error) {
       reader?.cancel().catch(() => {});
       await handle?.close().catch(() => {});
-      if (temp) await rm(temp, { force: true });
-      if (ctx.signal.aborted) throw ctx.signal.reason;
-      throw fsError(coda, error, path);
+      // 临时文件与本次新建的目录（深的在前）各自独立地收；有任何残留，`effects: 'none'` 就不成立，如实报 unknown。
+      let leftover = false;
+      if (temp) await rm(temp, { force: true }).catch(() => { leftover = true; });
+      for (const dir of made) await rmdir(dir).catch(() => { leftover = true; });
+      const failure = ctx.signal.aborted ? ctx.signal.reason : fsError(coda, error, path);
+      if (leftover) failure.effects = 'unknown';
+      throw failure;
     } finally {
       ctx.signal.removeEventListener('abort', onAbort);
     }

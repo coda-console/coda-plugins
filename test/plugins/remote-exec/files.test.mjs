@@ -1,10 +1,11 @@
 import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, statSync, readlinkSync, symlinkSync, writeFileSync } from 'node:fs';
 import fsp from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
+import { execFileSync } from 'node:child_process';
 import { truncateSync } from 'node:fs';
 import { pull, push } from '../../../plugins/remote-exec/lib/files.mjs';
 import { caller, scratch, setup, waitFor } from './support.mjs';
@@ -82,6 +83,71 @@ test('pull: a missing file, a directory, a relative path and a closed switch are
   assert.deepEqual(off.lines().map(line => line.error), ['disabled']);
 });
 
+test('pull: a FIFO is refused before it is opened, a node that is not a regular file when opened is refused too; both are not_a_regular_file with effects none', async t => {
+  const dir = scratch(t), fifo = join(dir, 'fifo'), file = join(dir, 'f');
+  execFileSync('mkfifo', [fifo]);
+  writeFileSync(file, 'abc');
+  // 测试自己占着 FIFO 的另一端，万一真的 open 了也不会挂住；要断言的是根本没去 open。
+  const hold = openSync(fifo, 'r+'), opened = [];
+  t.after(() => closeSync(hold));
+  const original = fsp.open;
+  fsp.open = async (...args) => { opened.push(args[0]); return original(...args); };
+  syncBuiltinESMExports();
+  try {
+    const one = reading(t, { path: fifo });
+    await assert.rejects(one.response, { code: 'not_a_regular_file', effects: 'none' });
+    assert.deepEqual(one.host.lines().map(line => line.error), ['not_a_regular_file']);
+  } finally { fsp.open = original; syncBuiltinESMExports(); }
+  assert.deepEqual(opened, []);
+  // stat 与 open 之间被换成了别的东西：open 之后的 fstat 要拦住。
+  await withFailingFile(real => ({ stat: async () => ({ isDirectory: () => false, isFile: () => false, size: 0 }), close: () => real.close() }), async () => {
+    await assert.rejects(reading(t, { path: file }).response, { code: 'not_a_regular_file', effects: 'none' });
+  });
+});
+
+test('pull: a file whose stat size is 0 but has content (like /proc/cpuinfo) is read to the end, without content-length, and the line has the bytes sent; a range works the same way', async t => {
+  const file = join(scratch(t), 'f');
+  writeFileSync(file, '0123456789');
+  const zero = real => ({ stat: async () => ({ isDirectory: () => false, isFile: () => true, size: 0 }), close: () => real.close(), createReadStream: o => real.createReadStream(o) });
+  await withFailingFile(zero, async () => {
+    for (const [input, expected] of [[{}, '0123456789'], [{ offset: '3', length: '4' }, '3456'], [{ offset: '8' }, '89'], [{ length: '3' }, '012']]) {
+      const { response, body, host } = await pulled(t, { path: file, ...input });
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get('content-length'), null);
+      assert.equal(body.toString(), expected);
+      const [line] = await waitFor(() => host.lines().length === 1 && host.lines(), '记录');
+      assert.deepEqual(line.result, { bytes: expected.length });
+    }
+  });
+});
+
+test('pull: an empty regular file is an empty body without content-length, and the line says 0 bytes', async t => {
+  const file = join(scratch(t), 'empty');
+  writeFileSync(file, '');
+  const { response, body, host } = await pulled(t, { path: file });
+  assert.equal(response.headers.get('content-length'), null);
+  assert.equal(body.length, 0);
+  assert.deepEqual(host.lines().map(line => line.result), [{ bytes: 0 }]);
+});
+
+test('pull: offsets and lengths beyond the safe integers are an empty body or read to the end, for an empty file, a regular file and a stat-0 file with content', async t => {
+  const dir = scratch(t), empty = join(dir, 'empty'), file = join(dir, 'f'), huge = '99999999999999999999';
+  writeFileSync(empty, '');
+  writeFileSync(file, '0123456789');
+  const cases = [[{ offset: huge }, ''], [{ length: huge }, null], [{ offset: huge, length: huge }, ''], [{ offset: '3', length: huge }, null]];
+  for (const [input, expected] of cases) {
+    const one = await pulled(t, { path: empty, ...input });
+    assert.equal(one.body.length, 0);
+    assert.equal(one.response.headers.get('content-length'), null);
+    const two = await pulled(t, { path: file, ...input });
+    assert.equal(two.body.toString(), expected ?? ('0123456789'.slice(Number(input.offset ?? 0))));
+  }
+  const zero = real => ({ stat: async () => ({ isDirectory: () => false, isFile: () => true, size: 0 }), close: () => real.close(), createReadStream: o => real.createReadStream(o) });
+  await withFailingFile(zero, async () => {
+    for (const [input, expected] of cases) assert.equal((await pulled(t, { path: file, ...input })).body.toString(), expected ?? '0123456789'.slice(Number(input.offset ?? 0)));
+  });
+});
+
 test('pull: an unreadable file is refused with permission_denied', { skip: process.getuid?.() === 0 }, async t => {
   const file = join(scratch(t), 'secret');
   writeFileSync(file, 'x');
@@ -153,6 +219,64 @@ test('push: a path that is a symbolic link writes the file it points to and keep
   assert.deepEqual(names(join(dir, 'real')), ['target.txt']);
 });
 
+test('push: a dangling symbolic link (absolute or relative, also through a chain) writes the path it points to and keeps the link', async t => {
+  const dir = scratch(t), real = join(dir, 'real');
+  mkdirSync(real);
+  symlinkSync(join(real, 'abs.txt'), join(dir, 'abs'));
+  symlinkSync('real/rel.txt', join(dir, 'rel'));
+  symlinkSync('rel', join(dir, 'chain'));
+  assert.deepEqual((await pushed(t, join(dir, 'abs'), 'A')).json, { path: join(dir, 'abs'), size: 1 });
+  assert.deepEqual((await pushed(t, join(dir, 'chain'), 'R')).json, { path: join(dir, 'chain'), size: 1 });
+  assert.equal(readFileSync(join(real, 'abs.txt'), 'utf8'), 'A');
+  assert.equal(readFileSync(join(real, 'rel.txt'), 'utf8'), 'R');
+  for (const link of ['abs', 'rel', 'chain']) assert.equal(lstatSync(join(dir, link)).isSymbolicLink(), true, link);
+  assert.deepEqual(names(real), ['abs.txt', 'rel.txt']);
+});
+
+test('push: a dangling link whose target goes through a symbolic link and ".." writes where the file system would, not where the path folds to', async t => {
+  const dir = scratch(t), other = join(dir, 'other');
+  mkdirSync(join(other, 'sub'), { recursive: true });
+  symlinkSync(join(other, 'sub'), join(dir, 'alias'));
+  symlinkSync('alias/../new.txt', join(dir, 'link'));
+  await pushed(t, join(dir, 'link'), 'x');
+  assert.equal(readFileSync(join(other, 'new.txt'), 'utf8'), 'x');
+  assert.equal(existsSync(join(dir, 'new.txt')), false);
+  assert.equal(readlinkSync(join(dir, 'link')), 'alias/../new.txt');
+});
+
+test('push: a dangling link whose target directory does not exist (even before a later ".." that would lead back) is refused with nothing made and the link left alone', async t => {
+  const dir = scratch(t), other = join(dir, 'other');
+  mkdirSync(other);
+  symlinkSync(other, join(dir, 'alias'));
+  for (const [name, target] of [['a', 'missing/../alias/../new.txt'], ['b', 'missing/sub/new.txt']]) {
+    symlinkSync(target, join(dir, name));
+    await assert.rejects(pushed(t, join(dir, name), 'x'), { code: 'not_found', effects: 'none' });
+    assert.equal(readlinkSync(join(dir, name)), target);
+  }
+  assert.deepEqual(names(dir), ['a', 'alias', 'b', 'other']);
+  assert.deepEqual(names(other), []);
+});
+
+test('push: a symbolic link loop fails with symlink_loop and leaves both links alone', async t => {
+  const dir = scratch(t);
+  symlinkSync('b', join(dir, 'a'));
+  symlinkSync('a', join(dir, 'b'));
+  await assert.rejects(pushed(t, join(dir, 'a'), 'x'), { code: 'symlink_loop', effects: 'none' });
+  assert.deepEqual([readlinkSync(join(dir, 'a')), readlinkSync(join(dir, 'b'))], ['b', 'a']);
+  assert.deepEqual(names(dir), ['a', 'b']);
+});
+
+test('push: an existing target that is not a regular file (a FIFO, also through a link) is refused with not_a_regular_file and left alone', async t => {
+  const dir = scratch(t), fifo = join(dir, 'fifo');
+  execFileSync('mkfifo', [fifo]);
+  symlinkSync(fifo, join(dir, 'link'));
+  for (const path of [fifo, join(dir, 'link')]) {
+    await assert.rejects(pushed(t, path, 'x'), { code: 'not_a_regular_file', effects: 'none' });
+  }
+  assert.equal(statSync(fifo).isFIFO(), true);
+  assert.deepEqual(names(dir), ['fifo', 'link']);
+});
+
 test('push: a directory, a relative path, a parent that is a file and a closed switch are refused, nothing is left behind, and each is logged with its code', async t => {
   const dir = scratch(t), file = join(dir, 'f'), sub = join(dir, 'sub');
   writeFileSync(file, 'keep');
@@ -198,8 +322,73 @@ test('push: a body that fails, with the caller still there, leaves the original 
   await waitFor(() => existsSync(join(dir, 'new')) && readdirSync(join(dir, 'new')).length === 1, '临时文件');
   controller.error(new Error('连接断了'));
   await assert.rejects(one.done, { code: 'io_error', effects: 'none' });
-  assert.deepEqual(names(join(dir, 'new')), []);
+  assert.equal(existsSync(join(dir, 'new')), false);
   assert.deepEqual(one.host.lines().map(line => line.error), ['io_error']);
+});
+
+test('push: a failure removes exactly the directories this push made, deepest first, and keeps the ones that were already there', async t => {
+  const dir = scratch(t), old = join(dir, 'old');
+  mkdirSync(old);
+  const path = join(old, 'n1', 'n2', 'x'), { body, controller } = slowBody(Buffer.from('some'));
+  const one = writing(t, { path }, body);
+  await waitFor(() => existsSync(join(old, 'n1', 'n2')) && readdirSync(join(old, 'n1', 'n2')).length === 1, '临时文件');
+  controller.error(new Error('连接断了'));
+  await assert.rejects(one.done, { code: 'io_error', effects: 'none' });
+  assert.deepEqual(names(dir), ['old']);
+  assert.deepEqual(names(old), []);
+});
+
+test('push: the rollback only removes directories that were really made, also when the path goes through ".." over a missing directory', async t => {
+  const dir = scratch(t), old = join(dir, 'old');
+  mkdirSync(old);
+  const path = `${dir}/new/../old/sub/file`;   // 不用 join：它会把 .. 折叠掉
+  const { body, controller } = slowBody(Buffer.from('some'));
+  const one = writing(t, { path }, body);
+  await waitFor(() => existsSync(join(old, 'sub')) && readdirSync(join(old, 'sub')).length === 1, '临时文件');
+  controller.error(new Error('连接断了'));
+  await assert.rejects(one.done, { code: 'io_error', effects: 'none' });
+  assert.deepEqual(names(dir), ['old']);
+  assert.deepEqual(names(old), []);
+});
+
+test('push: a directory made before a later one fails to be made is still taken back', async t => {
+  const dir = scratch(t), path = join(dir, 'made', 'x'.repeat(300), 'f');
+  await assert.rejects(pushed(t, path, 'x'), { code: 'io_error', effects: 'none' });
+  assert.deepEqual(names(dir), []);
+});
+
+test('push: a temporary file that cannot be removed does not stop the directories from being taken back, and the failure says effects unknown', async t => {
+  const dir = scratch(t), path = join(dir, 'n1', 'x'), { body, controller } = slowBody(Buffer.from('some'));
+  const original = fsp.rm;
+  fsp.rm = async (...args) => { await original(...args); throw new Error('rm failed'); };
+  syncBuiltinESMExports();
+  try {
+    const one = writing(t, { path }, body);
+    await waitFor(() => existsSync(join(dir, 'n1')) && readdirSync(join(dir, 'n1')).length === 1, '临时文件');
+    controller.error(new Error('连接断了'));
+    await assert.rejects(one.done, { code: 'io_error', effects: 'unknown' });
+  } finally { fsp.rm = original; syncBuiltinESMExports(); }
+  assert.deepEqual(names(dir), []);
+});
+
+test('push: aborted with a directory it made that cannot be taken back, the signal reason is thrown with effects unknown', async t => {
+  const dir = scratch(t), path = join(dir, 'n1', 'x'), { body } = slowBody(Buffer.from('some'));
+  const one = writing(t, { path }, body), reason = new DOMException('away', 'AbortError');
+  await waitFor(() => existsSync(join(dir, 'n1')) && readdirSync(join(dir, 'n1')).length === 1, '临时文件');
+  writeFileSync(join(dir, 'n1', 'other'), 'not ours');
+  one.controller.abort(reason);
+  await assert.rejects(one.done, error => error === reason && error.effects === 'unknown');
+  assert.deepEqual(names(join(dir, 'n1')), ['other']);
+});
+
+test('push: when a directory it made cannot be taken back (someone put a file in it), the failure says effects unknown', async t => {
+  const dir = scratch(t), path = join(dir, 'n1', 'n2', 'x'), { body, controller } = slowBody(Buffer.from('some'));
+  const one = writing(t, { path }, body);
+  await waitFor(() => existsSync(join(dir, 'n1', 'n2')) && readdirSync(join(dir, 'n1', 'n2')).length === 1, '临时文件');
+  writeFileSync(join(dir, 'n1', 'other'), 'not ours');
+  controller.error(new Error('连接断了'));
+  await assert.rejects(one.done, { code: 'io_error', effects: 'unknown' });
+  assert.deepEqual(names(join(dir, 'n1')), ['other']);
 });
 
 test('push: a replace that cannot be completed does not touch the old file (the directory cannot be written)', { skip: process.getuid?.() === 0 }, async t => {
