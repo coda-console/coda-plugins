@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import vm from 'node:vm';
-import { codaMcpPolicy, trustedCodaMcpRequests } from '../../../plugins/codex/agent/mcp-policy.mjs';
+import { CODA_TOOL_TIMEOUT_SEC, codaMcpPolicy, trustedCodaMcpRequests } from '../../../plugins/codex/agent/mcp-policy.mjs';
 import { pluginDir, resolveFrom } from '../plugin.mjs';
 
 const bundle = readFileSync(resolveFrom('codex', '@agentclientprotocol/codex-acp'), 'utf8');
@@ -32,7 +32,12 @@ test('Coda MCP tools reach Coda in auto-review mode without changing the session
   const original = plain(await owner(bundle).createSessionConfig('/tmp/project', [], peers));
   const actual = plain(await owner(patched).createSessionConfig('/tmp/project', [], peers));
   assert.equal(actual.mcp_servers.coda.default_tools_approval_mode, 'approve');
+  // Codex's own default is 300 s; remote execution runs up to 600 s, so Coda's server gets 15 minutes, the others keep theirs.
+  assert.equal(CODA_TOOL_TIMEOUT_SEC, 900);
+  assert.equal(actual.mcp_servers.coda.tool_timeout_sec, 900);
+  assert.equal('tool_timeout_sec' in actual.mcp_servers.docs, false);
   delete actual.mcp_servers.coda.default_tools_approval_mode;
+  delete actual.mcp_servers.coda.tool_timeout_sec;
   assert.deepEqual(actual, original);
 });
 
@@ -73,6 +78,20 @@ test('the pinned CLI parses the server approval mode and rejects an invalid valu
   assert.notEqual(invalid.status, 0);
   assert.match(invalid.stderr, /unknown variant `unknown-mode`/);
   assert.match(invalid.stderr, /default_tools_approval_mode/);
+});
+
+test('the pinned CLI reads tool_timeout_sec per server and rejects a value that is not a number', t => {
+  const root = mkdtempSync(join(tmpdir(), 'coda-codex-mcp-timeout-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const cli = join(pluginDir('codex'), 'node_modules/.bin/codex');
+  const inspect = value => spawnSync(cli, ['mcp', 'get', 'coda', '--json', '-c', 'mcp_servers.coda.command="node"',
+    '-c', `mcp_servers.coda.tool_timeout_sec=${value}`], { encoding: 'utf8', env: { ...process.env, CODEX_HOME: root }, timeout: 10000 });
+  const set = inspect(String(CODA_TOOL_TIMEOUT_SEC));
+  assert.equal(set.status, 0, set.stderr);
+  assert.equal(JSON.parse(set.stdout).tool_timeout_sec, CODA_TOOL_TIMEOUT_SEC);
+  const invalid = inspect('"fifteen minutes"');
+  assert.notEqual(invalid.status, 0);
+  assert.match(invalid.stderr, /tool_timeout_sec/);
 });
 
 test('the policy patch is valid ESM and rejects drift or double application', () => {

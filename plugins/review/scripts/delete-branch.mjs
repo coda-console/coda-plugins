@@ -5,17 +5,17 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { summary } from './step.mjs';
+import { parsePrUrl, summary } from './step.mjs';
 
 const say = text => { console.log(text); summary(text); };
 const reason = done => (done.stderr || done.stdout || done.error?.message || `退出码 ${done.status}`).trim();
 
 let dir;
 try {
-  const at = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)\/?$/.exec(process.env.URL ?? '');
+  const parsed = parsePrUrl(process.env.URL);
   const head = process.env.HEAD;
-  if (!at || !/^[0-9a-f]{40,64}$/.test(head ?? '')) throw new Error('不知道要删除哪个 PR 的哪个提交的远程分支');
-  const asked = spawnSync('gh', ['api', `repos/${at[1]}/pulls/${at[2]}`, '--jq',
+  if (!parsed || !/^[0-9a-f]{40,64}$/.test(head ?? '')) throw new Error('不知道要删除哪个 PR 的哪个提交的远程分支');
+  const asked = spawnSync('gh', ['api', '--hostname', parsed.host, `repos/${parsed.repo}/pulls/${parsed.number}`, '--jq',
     '{merged, head: {sha: .head.sha, ref: .head.ref, repo: .head.repo.full_name, main: .head.repo.default_branch}, base: {ref: .base.ref, repo: .base.repo.full_name}}'], { encoding: 'utf8' });
   if (asked.status !== 0) throw new Error(`读不到 PR：${reason(asked)}`);
   const pr = JSON.parse(asked.stdout);
@@ -28,8 +28,8 @@ try {
   } else if (pr.head.ref === pr.head.main || (pr.head.repo === pr.base?.repo && pr.head.ref === pr.base.ref)) {
     say(`保留远程分支 ${pr.head.repo}:${pr.head.ref}：它是默认分支或合并目标分支。`);
   } else {
-    if (!/^[\w.-]+\/[\w.-]+$/.test(pr.head.repo) || !pr.head.main) throw new Error('读不到源仓库或它的默认分支');
-    const ref = `refs/heads/${pr.head.ref}`, remote = `https://github.com/${pr.head.repo}.git`, branch = `${pr.head.repo}:${pr.head.ref}`;
+    if (!/^[\w.-]+\/[\w.-]+$/.test(pr.head.repo) || pr.head.repo.split('/').some(part => part === '.' || part === '..') || !pr.head.main) throw new Error('读不到源仓库或它的默认分支');
+    const ref = `refs/heads/${pr.head.ref}`, remote = `https://${parsed.host}/${pr.head.repo}.git`, branch = `${pr.head.repo}:${pr.head.ref}`;
     const git = (...args) => spawnSync('git', args, { cwd: dir, encoding: 'utf8' });
     if (git('check-ref-format', ref).status !== 0) throw new Error('源分支名无效');
     dir = mkdtempSync(join(process.env.RUNNER_TEMP || tmpdir(), 'review-delete-branch-'));

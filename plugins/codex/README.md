@@ -4,6 +4,10 @@ Codex Agent：Codex 插件提供的入口运行 codex-acp，报告子 Agent、�
 
 实时的上下文压缩（自动或手动）作为 Coda 的「整理上下文」记录显示：开始报 `compaction_update` in_progress、完成报 completed，Coda 据此知道会话压缩过；回合失败或中断、压缩未完成时补报 failed，不再出「Compact conversation」工具卡。恢复会话时，历史里的压缩仍显示为「Compact conversation」工具卡，不上报，免得 Coda 把它当成新的压缩。
 
+**Coda 自己的 MCP 服务器**（名为 `coda`、经后端的 mcp-shim 接入的那一个）在交给 Codex 时多带两项按服务器的设置：`default_tools_approval_mode = "approve"`（工具请求都交到 Coda 自己的权限边界）与 `tool_timeout_sec = 900`。Codex 对单次 MCP 工具调用默认只等 300 秒，到点就报 `timed out awaiting tools/call` 并取消；Coda 的工具里有远程执行，命令最长跑 10 分钟，所以给 Coda 的服务器 15 分钟。用户自己配的其他 MCP 服务器、以及 Codex 配置里本来就有的同名 `coda` 服务器不受影响，沿用它们自己的设置（没设就是 Codex 的 300 秒）。
+
+**会话临时目录可写**：Coda 给会话一个临时目录时（环境变量 `CODA_SESSION_TMP`，绝对路径，`<状态根>/session-tmp/<会话ID>`），它加进 Codex workspace-write 沙箱的可写根，和 Coda 经 ACP 交来的附加目录同样处理（每一轮的沙箱策略与会话配置的 `sandbox_workspace_write.writable_roots`），从别的机器拉下来的文件可以原地改再推回去。只加这个会话自己的目录，不加 `session-tmp/`（别的会话的目录在它下面）；完全放开模式本来就能写，只读的沙箱策略不加；没有这个变量（旧的后端）或不是绝对路径时和以前一样。Codex 的 `TMPDIR` 不改。
+
 ## 资源页：Codex 的登录与额度
 
 资源页上的资源类型「Codex」：这台机器上 Codex 自己的登录（本机登录）和它的额度。打开「多账号」时它输出为空，「Codex」里是多账号管理的账号（类型 `accounts`，见下）。

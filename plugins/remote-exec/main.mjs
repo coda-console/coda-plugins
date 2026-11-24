@@ -2,17 +2,20 @@
 // 记录的内容（系统、用户、目录）是这台上执行进程看到的环境，由本模块自己算；机器名取 Coda 的本机机器记录，变了跟着改。
 // 一个操作（exec）两条流（pull、push）的处理函数在这里登记，每次操作都先看当前的开关（见 lib/operation.mjs 的顺序）。
 import { createAuditLog } from './lib/audit.mjs';
+import { activeOutputs, exec } from './lib/exec.mjs';
+import { outputRoot, sweepOutputs } from './lib/output.mjs';
 import { KEY, LOCAL_MACHINE, MACHINE, SETTING } from './lib/definitions.mjs';
-import { exec } from './lib/exec.mjs';
 import { pull, push } from './lib/files.mjs';
 import { hostSpec } from './lib/host.mjs';
 
 const report = what => error => console.error(`远程执行：${what}：${error?.message ?? error}`);
 let disposables = [];
 const RETRY_FIRST = 5_000, RETRY_MAX = 300_000;
+// 留下的执行输出：插件激活时回收一次，之后每小时一次（留下新输出时另会当场回收），没人再执行时过期的也删得掉。
+export const SWEEP_EVERY = 60 * 60 * 1000;
 
 // `schedule`、`cancel` 只为测试里不真等：重试的计时器可以换掉。
-export async function activate(coda, { schedule = setTimeout, cancel = clearTimeout } = {}) {
+export async function activate(coda, { schedule = setTimeout, cancel = clearTimeout, every = setInterval, stopEvery = clearInterval } = {}) {
   let enabled = false, name = null, ready = false, notified = false, stopped = false, pending = false, inFlight = false, timer = null, delay = RETRY_FIRST;
   disposables.push({ dispose() { stopped = true; cancel(timer); timer = null; } });
   // 只有一个待发布状态：变化只标记「有待发布」，发布时读的是当时最新的开关与机器名。
@@ -46,7 +49,10 @@ export async function activate(coda, { schedule = setTimeout, cancel = clearTime
     publishLater();
   };
 
-  const env = { coda, enabled: () => enabled, audit: createAuditLog(coda.plugin.state) };
+  // 输出的根在插件状态目录里：每次要用时现查（不在就建），被人删了下次照样建得回来。
+  const rootOf = () => outputRoot(coda.plugin.state);
+  const sweep = () => rootOf().then(dir => sweepOutputs(dir, { active: activeOutputs }), report('回收留下的执行输出失败'));
+  const env = { coda, enabled: () => enabled, audit: createAuditLog(coda.plugin.state), outputRoot: rootOf };
   disposables.push(
     coda.handle(MACHINE, 'exec', (input, ctx) => exec(env, input, ctx)),
     await coda.stream(MACHINE, 'pull', (request, ctx) => pull(env, request, ctx)),
@@ -67,6 +73,12 @@ export async function activate(coda, { schedule = setTimeout, cancel = clearTime
   ready = true;
   pending = true;
   await flush();
+  if (coda.plugin.state) {
+    await sweep();
+    const sweeper = every(sweep, SWEEP_EVERY);
+    sweeper?.unref?.();
+    disposables.push({ dispose() { stopEvery(sweeper); } });
+  }
 }
 
 export function deactivate() {

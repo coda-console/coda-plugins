@@ -81,7 +81,7 @@ class Board {
     this.timers = new Set();
     this.queue = Promise.resolve();
     this.stopped = false;
-    this.settings = { share: false, range: '7d' };
+    this.settings = { share: null, range: '7d' };
     this.prefs = this.dir ? readJson(join(this.dir, 'prefs.json'), {}) : {};
     this.published = new Map(Object.entries(this.dir ? readJson(join(this.dir, 'published.json'), {}) : {}).filter(([key]) => key.includes(`:${DAY_ARCHIVE_KIND}:`) || key.includes(`:${TODAY_CURVE_KIND}:`) || oldKey(key)));
     this.source = this.loadSource();
@@ -162,12 +162,12 @@ class Board {
   }
   applySettings(settings) {
     const value = key => settings?.[`token-board.${key}`] ?? settings?.[key];
-    const share = value('share') === true, range = RANGES.includes(value('range')) ? value('range') : '7d';
-    // 设置里的开关一改，页面上临时切的就作废，以设置为准。
-    if (share !== this.settings.share && this.prefs.share !== undefined) { delete this.prefs.share; this.save('prefs.json', this.prefs); }
+    const share = (value('share') ?? true) === true, range = RANGES.includes(value('range')) ? value('range') : '7d';
+    // 首次读取保留页面存下的选择。之后设置里的开关变化才覆盖页面选择。
+    if (this.settings.share !== null && share !== this.settings.share && this.prefs.share !== undefined) { delete this.prefs.share; this.save('prefs.json', this.prefs); }
     this.settings = { share, range };
   }
-  get share() { return typeof this.prefs.share === 'boolean' ? this.prefs.share : this.settings.share; }
+  get share() { return typeof this.prefs.share === 'boolean' ? this.prefs.share : this.settings.share === true; }
   // board() 和 status() 共用的同步状态：没开分享 disabled；没有好友网关 no_gateway；没有身份 no_identity；上次同步的是当前作者才沿用它的结果，否则 pending
   // （还没发布过、刚切了作者、刚从没身份恢复、关了再开后还没发布完）。
   syncStateFor(author) {
@@ -285,8 +285,8 @@ class Board {
     }
     const shared = { selfAuthor, selfSourceId: this.sourceId, excludedSourceIds: this.source.legacy, localBuckets, friends };
     const board = aggregateLeaderboard({ ...shared, legacyUsageRecords: records[USAGE_RECORD_KIND], dayRecords: records[DAY_ARCHIVE_KIND], todayRecords: records[TODAY_CURVE_KIND], profileRecords: profiles, from, to });
-    // 页面只用每来源的明细（sources）算合计；这里只给每个人的名片字段，不重复发一份按作者聚合的统计。
-    result.people = board.entries.map(({ author, shortId, self, shared, name, emoji, color }) => ({ author, shortId, self, shared, name, emoji, color }));
+    // 页面用 sources 算合计，用 people 的作者地址映射显示 ID，并读取分享状态与头像样式。
+    result.people = board.entries.map(({ author, self, shared, emoji, color }) => ({ author, self, shared, emoji, color }));
     result.sources = board.sources;
     result.retired = this.source.legacy;   // 这台已弃用的旧来源 ID：别的机器读到它们的旧副本时统一不算
     result.curve = aggregateTodayCurve({ ...shared, localBuckets: localBuckets ?? [], todayRecords: records[TODAY_CURVE_KIND], range: rangeWindow('today', now), slotMs: SLOT_MS }).curve;

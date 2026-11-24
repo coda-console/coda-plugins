@@ -1,7 +1,7 @@
 // Token 消耗榜页面：用量概览，和好友的消耗榜。数据都由模块（main.mjs）读好、算好，经页面消息送来；页面不直接读记录。
 // 视图里有几台机器就都读，按人合并（lib/merge.mjs）：时间范围由页首选，机器范围由 App 的全局视图定，页面不自己选机器。
 // 每一轮读取由页面按这台设备的当地时间定一组 from、to 发给每台：各台时区不同时，窗口也是同一段时间。
-// 好友的昵称、模型名等外来文字只经 textContent / 文本节点渲染，从不拼进 innerHTML。
+// 名片头像、模型名等外来文字只经 textContent / 文本节点渲染，从不拼进 innerHTML。
 import { mergeBoards } from '../lib/merge.mjs';
 import { rangeWindow } from '../lib/usage.mjs';
 
@@ -217,7 +217,7 @@ function local() {
 // 一块用量的标题：同一身份的几台相加就写明合了哪几台；视图里有几个身份时再写是谁的。
 function caption(group) {
   const entry = merged.locals.length > 1 ? merged.entries.find(e => e.author === group.author) : null;
-  const who = entry ? `${entry.name ?? `${entry.shortId}…`} · ` : '';
+  const who = entry ? `${entry.displayId} · ` : '';
   return h('p', { class: 'hint' }, `${who}${group.machines.length > 1 ? '合计 · ' : ''}${names(group.machines)}`);
 }
 function usageBody(mine) {
@@ -251,18 +251,17 @@ function leaderboard() {
   else {
     const others = merged.entries.filter(e => !e.self);
     content = [
-      !merged.friends ? h('p', { class: 'empty' }, '还没有好友。添加好友并让他们开启分享后，这里会出现你们的消耗榜。') : null,
+      !merged.friends ? h('p', { class: 'empty' }, '还没有好友。添加好友后，这里会显示你们分享的用量。') : null,
       h('ul', { class: 'list' }, merged.entries.map(entry)),
       others.length && !others.some(e => e.shared) ? h('p', { class: 'hint' }, '好友们还没有分享用量。') : null,
       merged.truncated.friends ? h('p', { class: 'note' }, '好友的记录太多，只取到了其中一部分，榜单可能不全。') : null,
-      merged.truncated.profiles ? h('p', { class: 'note' }, '好友名片太多，只取到了其中一部分，有些人可能显示成密钥短码。') : null];
+      merged.truncated.profiles ? h('p', { class: 'note' }, '好友名片太多，只取到了其中一部分，有些人可能显示默认头像。') : null];
   }
   return h('section', {}, h('h2', {}, '熟人榜', h('span', { class: 'secondary' }, rangeLabel()), partial()), content);
 }
 
 function entry(e) {
   const open = expanded.has(e.author);
-  const name = e.name ?? `${e.shortId}…`;
   const avatar = h('span', { class: 'avatar' }, e.emoji ?? '👤');
   const color = colorOf(e.color);
   if (color) avatar.style.background = `color-mix(in srgb, ${color} 28%, transparent)`;
@@ -270,10 +269,10 @@ function entry(e) {
   return h('li', { class: 'row' },
     h('button', { class: 'head', 'aria-expanded': open ? 'true' : 'false', onclick: () => { if (open) expanded.delete(e.author); else expanded.add(e.author); render(); } },
       h('span', { class: 'rank num' }, String(e.rank)), avatar,
-      h('span', { class: 'who' }, h('span', { class: 'line' }, h('span', { class: 'strong truncate' }, name), e.self ? h('span', { class: 'me' }, '我') : null), h('span', { class: 'secondary truncate' }, sub)),
+      h('span', { class: 'who' }, h('span', { class: 'line' }, h('span', { class: 'strong truncate' }, e.displayId), e.self ? h('span', { class: 'me' }, '我') : null), h('span', { class: 'secondary truncate' }, sub)),
       h('span', { class: 'amount' }, h('span', { class: 'strong num' }, tokens(e.totalTokens)))),
     open ? h('div', { class: 'detail' }, e.models.length
-      ? [h('div', { class: 'secondary' }, `${e.name ? `${e.shortId}… · ` : ''}共 ${count(e.totalTokens)} Token`), modelBars(e.models, e.totalTokens)]
+      ? [h('div', { class: 'secondary' }, `共 ${count(e.totalTokens)} Token`), modelBars(e.models, e.totalTokens)]
       : h('p', { class: 'empty' }, '没有模型明细')) : null);
 }
 
