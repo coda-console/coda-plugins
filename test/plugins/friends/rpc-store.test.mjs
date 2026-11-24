@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mock, test } from 'node:test';
 import { requestDigest } from '../../../plugins/friends/lib/rpc-format.mjs';
-import { BUSY_RETRY_MS, KEEP_AFTER_EXPIRY_MS, LEDGER_KEEP_MS, LIMITS, commandInfo, createRpcStore, inflightKey, isCorrupt } from '../../../plugins/friends/lib/rpc-store.mjs';
+import { ANSWER_KEEP_MS, BUSY_RETRY_MS, KEEP_AFTER_EXPIRY_MS, LEDGER_KEEP_MS, LIMITS, commandInfo, createRpcStore, inflightKey, isCorrupt } from '../../../plugins/friends/lib/rpc-store.mjs';
 
 const author = n => `ed25519:${String(n).repeat(64).slice(0, 64)}`;
 const A = author(1), B = author(2), C = author(3), D = author(4), E = author(5);
@@ -240,7 +240,7 @@ const seed = async (dir, entries) => {
 const settled = (n, notAfter, more = {}) => ({ caller: B, request: `c${hex(n)}`, grant: GRANT, digest: `d${hex(n)}`.padEnd(64, '0'), key: `friend:${hex(n)}`, notAfter, admittedAt: START - DAY,
   state: 'completed', signed: true, retracted: true, ...more });
 
-test('a full table refuses new requests and evicts nothing unexpired; expired entries do not count and go 24 hours after expiry', async t => {
+test('a full table refuses new requests and evicts nothing unexpired; expired entries stay 24 hours after expiry while the table has room', async t => {
   const { dir, store, clock } = await setup(t);
   const future = Array.from({ length: LIMITS.table }, (_, i) => settled(i, START + 5 * MINUTE + i));
   await seed(dir, future);
@@ -251,20 +251,54 @@ test('a full table refuses new requests and evicts nothing unexpired; expired en
   // 同号重发在表满时仍认得出是同号，不是「表满」。
   assert.equal((await store.admit({ caller: B, request: future[0].request, grant: GRANT, digest: future[0].digest, key: 'k', notAfter: future[0].notAfter, call: { target: TARGET, input: { command: 'x' } } })).code, 'duplicate');
 
-  // 少一项没过期的：收下；刚过期的（24 小时内）留着、也不占名额；过期超过 24 小时的这次清掉。
+  // 表里还有空位：刚过期的（24 小时内）留着；过期超过 24 小时的这次清掉。
   const expired = (n, ago) => settled(n, START - ago);
-  await seed(dir, [...future.slice(1), expired(5000, 1), expired(5001, KEEP_AFTER_EXPIRY_MS - 1), expired(5002, KEEP_AFTER_EXPIRY_MS), expired(5003, KEEP_AFTER_EXPIRY_MS + DAY)]);
+  await seed(dir, [...future.slice(10), expired(5000, 1), expired(5001, KEEP_AFTER_EXPIRY_MS - 1), expired(5002, KEEP_AFTER_EXPIRY_MS), expired(5003, KEEP_AFTER_EXPIRY_MS + DAY)]);
   const admitted = await store.admit(candidate(clock));
   assert.equal(admitted.ok, true);
   const kept = (await store.listInflight()).map(entry => entry.request);
   assert.ok(kept.includes(`c${hex(5000)}`) && kept.includes(`c${hex(5001)}`), 'expired within 24 hours stays');
   assert.ok(!kept.includes(`c${hex(5002)}`) && !kept.includes(`c${hex(5003)}`), 'expired for 24 hours is cleared');
-  assert.equal(kept.length, LIMITS.table - 1 + 2 + 1, '4095 unexpired + 2 recently expired + the new one');
-  assert.equal((await store.admit(candidate(clock))).code, 'table_full');
+  assert.equal(kept.length, LIMITS.table - 10 + 2 + 1, '4086 unexpired + 2 recently expired + the new one');
   // 单独清：时间过去后做完了的一次清完；刚准入、还没做完的那一项留着等恢复。
   clock.now += 2 * DAY;
-  assert.equal(await store.purge(), LIMITS.table - 1 + 2);
+  assert.equal(await store.purge(), LIMITS.table - 10 + 2);
   assert.deepEqual((await store.listInflight()).map(entry => entry.state), ['admitted']);
+});
+
+// 过期了、不再承担去重，但还要交付的项：没签出结局、记账没写完、回答还在撤回期内、没做完。
+const LEDGER_ROW = { v: 1, at: START - DAY, request: 'r', friend: B, grant: GRANT, target: { kind: TARGET.kind, id: TARGET.id, name: 'box' }, op: 'exec',
+  command: { summary: 'ls', sha256: 'a'.repeat(64) }, outcome: 'completed', ms: 1 };
+const duties = from => [
+  settled(from, START - 1, { signed: undefined, retracted: undefined, outcome: { finishedAt: START - 1 } }),
+  settled(from + 1, START - 1, { retracted: undefined, ledger: LEDGER_ROW }),
+  settled(from + 2, START - 1, { retracted: undefined, finishedAt: START - 1 }),
+  settled(from + 4, START - 1, { retracted: undefined, finishedAt: START + 1 - ANSWER_KEEP_MS }),
+  settled(from + 3, START - 1, { state: 'admitted', signed: undefined, retracted: undefined, call: { target: TARGET, input: { command: 'x' } } }),
+];
+
+test('a table full of rows that are safe to clear admits a new request, and only the clearable rows go', async t => {
+  const { dir, store, clock } = await setup(t);
+  const duty = duties(9000), count = LIMITS.table - duty.length;
+  // 过期不到 24 小时的已撤回项，和已过撤回期但没撤成的项，都可清；加上那几项还承担交付的。
+  const clearable = Array.from({ length: count }, (_, i) => i % 2
+    ? settled(i, START - 1, { finishedAt: START - 2 * ANSWER_KEEP_MS })
+    : settled(i, START - 1, { retracted: undefined, finishedAt: START - ANSWER_KEEP_MS }));
+  await seed(dir, [...clearable, ...duty]);
+  const admitted = await store.admit(candidate(clock));
+  assert.equal(admitted.ok, true);
+  assert.deepEqual((await store.listInflight()).map(entry => entry.request).sort(), [...duty.map(entry => entry.request), admitted.entry.request].sort());
+});
+
+test('a table full of rows that still carry dedup or delivery refuses the new request and loses no row', async t => {
+  const { dir, store, clock } = await setup(t);
+  // 全是过期的、但都还承担交付：按实际行数算，表是满的。
+  const rows = Array.from({ length: Math.ceil(LIMITS.table / 5) }, (_, i) => duties(i * 5)).flat().slice(0, LIMITS.table);
+  assert.equal(rows.length, LIMITS.table);
+  await seed(dir, rows);
+  const before = await readRaw(dir, 'inflight.json');
+  assert.deepEqual([(await store.admit(candidate(clock))).ok, (await store.admit(candidate(clock))).code], [false, 'table_full']);
+  assert.equal(await readRaw(dir, 'inflight.json'), before, 'not one row was dropped or rewritten');
 });
 
 test('the in-flight quota: 8 per author and 32 in all; a finished request frees its slot', async t => {
@@ -413,6 +447,7 @@ test('rejections merge by author, reason and minute into one counted line instea
 
 test('the ledger splits by month, reads the latest rows first with filters, and drops months older than 90 days', async t => {
   const { rpc, store, clock } = await setup(t);
+  clock.now = Date.UTC(2026, 7, 20);
   const at = (month, day) => Date.UTC(2026, month - 1, day, 12);
   await store.appendLedger(row({ at: at(7, 1), request: 'jul' }));
   await store.appendLedger(row({ at: at(8, 15), request: 'aug' }));
@@ -635,6 +670,103 @@ test('a rejection is merged into its line wherever it sits in the month file, ho
   await store.recordRejection({ friend: B, code: 'bad_audience' });
   const last = JSON.parse((await readFile(file, 'utf8')).trim().split('\n').at(-1));
   assert.deepEqual([last.count, last.at], [1, START + MINUTE]);
+});
+
+test('rows older than 90 days are not listed even before any sweep, and a day with no new operation still sweeps them out', async t => {
+  const { store } = await setup(t);
+  // 同一天里先清扫过，之后写进来的旧行（补写）只靠读出时的过滤挡住。
+  await store.appendLedger(row({ at: START - 91 * DAY, request: 'old' }));
+  await store.appendLedger(row({ at: START - 89 * DAY, request: 'edge' }));
+  await store.appendLedger(row({ at: START - 1, request: 'fresh' }));
+  assert.deepEqual((await store.readLedger()).map(one => one.request), ['fresh', 'edge']);
+  // 只写了一次账，之后没有任何新操作：走过 91 天，列出来是空的，旧行也从文件里清掉。
+  const lone = await setup(t);
+  await lone.store.appendLedger(row({ request: 'only' }));
+  lone.clock.now += 91 * DAY;
+  assert.deepEqual(await lone.store.readLedger(), []);
+  assert.equal(await readFile(join(lone.rpc, 'ledger-2026-11.jsonl'), 'utf8'), '', 'the expired row is gone from the file, not only hidden');
+});
+
+test('a write with an explicit time past 90 days is not stored but counts as handled', async t => {
+  const { rpc, store } = await setup(t);
+  const old = START - 91 * DAY, ledgerFiles = async () => (await readdir(rpc).catch(() => [])).filter(name => name.startsWith('ledger'));
+  const done = { v: 1, at: old, request: 'late', friend: B, grant: GRANT, target: { kind: TARGET.kind, id: TARGET.id, name: 'box' }, op: 'exec',
+    command: { summary: 'ls', sha256: 'a'.repeat(64) }, outcome: 'completed', ms: 1 };
+  assert.deepEqual(await store.appendLedgerRow(done), { written: false });
+  await store.appendLedger(row({ at: old, request: 'late-2' }));
+  await store.recordRejection({ friend: B, code: 'bad_audience', at: old });
+  assert.deepEqual(await ledgerFiles(), [], 'nothing reached the disk');
+  // 90 天以内的照常写。
+  assert.deepEqual(await store.appendLedgerRow({ ...done, at: START - 89 * DAY }), { written: true });
+  assert.equal((await ledgerFiles()).length, 1);
+});
+
+test('a write whose time passes the 90-day line while it is reading the month is not stored', async t => {
+  const old = START - 90 * DAY + 1000;   // 开头查时还在 90 天以内
+  const done = { v: 1, at: old, request: 'late', friend: B, grant: GRANT, target: { kind: TARGET.kind, id: TARGET.id, name: 'box' }, op: 'exec',
+    command: { summary: 'ls', sha256: 'a'.repeat(64) }, outcome: 'completed', ms: 1 };
+  const writes = {
+    appendLedgerRow: store => store.appendLedgerRow(done),
+    appendLedger: store => store.appendLedger(row({ at: old })),
+    recordRejection: store => store.recordRejection({ friend: B, code: 'bad_audience', at: old }),
+  };
+  for (const [name, write] of Object.entries(writes)) {
+    const { rpc, store, clock } = await setup(t);
+    // 读目标月份的那一刻，时钟走过截止线。
+    const real = fsp.readFile, patch = mock.method(fsp, 'readFile', async (path, ...rest) => {
+      try { return await real(path, ...rest); } finally { if (String(path).includes('ledger-')) clock.now += 2000; }
+    });
+    syncBuiltinESMExports();
+    try { await write(store); } finally { patch.mock.restore(); syncBuiltinESMExports(); }
+    assert.ok(clock.now > START, `${name}: the clock moved while reading`);
+    assert.deepEqual((await readdir(rpc)).filter(file => file.startsWith('ledger')), [], `${name}: the old row was not written`);
+  }
+});
+
+test('a damaged month on the cutoff does not stop writes to other months; the sweep is reported and retried, and reading that month is still corrupt', async t => {
+  const reported = [];
+  const dir = await mkdtemp(join(tmpdir(), 'friends-rpc-store-')), clock = { now: START };
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const store = createRpcStore(dir, { now: () => clock.now, onMaintenanceError: e => reported.push(e) }), rpc = join(dir, 'rpc');
+  await mkdir(rpc, { recursive: true });
+  // 截止日是 8 月 26 日，8 月文件就是边界月。
+  const boundary = join(rpc, 'ledger-2026-08.jsonl');
+  await writeFile(boundary, 'garbage\n');
+  await store.appendLedger(row({ request: 'first' }));
+  assert.deepEqual((await readdir(rpc)).sort(), ['ledger-2026-08.jsonl', 'ledger-2026-11.jsonl'], 'this month was written');
+  assert.deepEqual(reported.map(e => [e.code, isCorrupt(e.cause)]), [['ledger_maintenance', true]]);
+  // 失败不算清过：下一笔写入再试；读到那个月，照旧报损坏。
+  await store.appendLedger(row({ request: 'second' }));
+  assert.equal(reported.length, 2, 'retried');
+  await assert.rejects(store.readLedger(), isCorrupt);
+  assert.equal(reported.length, 3, 'reading also retries the sweep');
+  // 文件修好以后，下一次清扫成功，过期的行去掉；之后同一天不再清。
+  const augRow = (request, at) => JSON.stringify({ ...row({ request }), v: 1, at, op: 'exec', command: commandInfo('ls') });
+  await writeFile(boundary, `${augRow('aug-old', Date.UTC(2026, 7, 10))}\n${augRow('aug-new', Date.UTC(2026, 7, 30))}\n`);
+  await store.appendLedger(row({ request: 'third' }));
+  assert.equal(reported.length, 3);
+  assert.deepEqual((await readFile(boundary, 'utf8')).trim().split('\n').map(line => JSON.parse(line).request), ['aug-new']);
+  await writeFile(boundary, 'garbage\n');
+  await store.appendLedger(row({ request: 'fourth' }));
+  assert.equal(reported.length, 3, 'the sweep succeeded today, so it is not run again');
+});
+
+test('the month holding the cutoff keeps only unexpired rows, and a month wholly past it is deleted', async t => {
+  const { rpc, store, clock } = await setup(t);
+  clock.now = Date.UTC(2026, 7, 22, 12);   // 先在 8 月 22 日把各行写进去
+  const at = (month, day, hour = 12) => Date.UTC(2026, month - 1, day, hour);
+  await store.appendLedger(row({ at: at(7, 30), request: 'jul' }));
+  await store.appendLedger(row({ at: at(8, 10), request: 'aug-old' }));
+  await store.appendLedger(row({ at: at(8, 22, 11), request: 'aug-just-old' }));
+  await store.appendLedger(row({ at: at(8, 22, 12), request: 'aug-edge' }));
+  await store.appendLedger(row({ at: at(8, 25), request: 'aug-new' }));
+  await store.appendLedger(row({ at: at(9, 5), request: 'sep' }));
+  clock.now = Date.UTC(2026, 10, 20, 12);   // 截止日是 8 月 22 日 12 点
+  assert.deepEqual(await store.pruneLedger(), ['ledger-2026-07.jsonl']);
+  const requests = name => readFile(join(rpc, name), 'utf8').then(text => text.trim().split('\n').map(line => JSON.parse(line).request));
+  assert.deepEqual(await requests('ledger-2026-08.jsonl'), ['aug-edge', 'aug-new']);
+  assert.deepEqual(await requests('ledger-2026-09.jsonl'), ['sep']);
+  assert.deepEqual((await store.readLedger()).map(one => one.request), ['sep', 'aug-new', 'aug-edge']);
 });
 
 test('the latest rows are chosen by their time before the limit is applied, even when a month was written out of order', async t => {

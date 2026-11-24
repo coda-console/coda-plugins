@@ -19,12 +19,12 @@ import { isDeepStrictEqual } from 'node:util';
 import { certStateOf, statusOf } from './friends.mjs';
 import { KIND_ANSWER, KIND_CALL, KIND_GRANT, PROTOCOL, answerId, answerRecord, clockWentBack, grantRecord, idempotencyKey, isAuthor, rebuildExecInput,
   machineOf, replayWindow, requestDigest, verifyCall } from './rpc-format.mjs';
-import { commandInfo, inflightKey, isCorrupt } from './rpc-store.mjs';
+import { answerDueAt, commandInfo, inflightKey, isCorrupt } from './rpc-store.mjs';
+export { ANSWER_KEEP_MS } from './rpc-store.mjs';
 
 const ACCORD = { kind: 'coda/accord@1', id: 'local' };
 const PROVIDER = 'remote-exec';
-const HOUR = 3_600_000;
-export const POLL_MS = 15_000, ANSWER_KEEP_MS = 24 * HOUR;
+export const POLL_MS = 15_000;
 // exec 不给 timeout 时 remote-exec 的默认时限（秒）；remote-exec 的操作时限比命令时限多 30 秒（630 对 600），收尾用。
 const DEFAULT_TIMEOUT_S = 120, EXEC_GRACE_MS = 30_000;
 // 见过的最大时刻至多每分钟落一次盘。
@@ -484,7 +484,7 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
       if (!entry.signed) { drive(entry.caller, entry.request); continue; }
       // 操作记录还没写成的另外接着补写，不挡着到期撤回答。
       if (entry.ledger) drive(entry.caller, entry.request);
-      if (entry.retracted || now() < entry.finishedAt + ANSWER_KEEP_MS) continue;
+      if (entry.retracted || now() < answerDueAt(entry.finishedAt)) continue;
       me ??= await identity();
       try { await retractAnswer(entry, me); } catch (e) { note(e); }
     }

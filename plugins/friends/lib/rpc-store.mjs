@@ -21,7 +21,10 @@ export const LIMITS = Object.freeze({
 });
 // 在途与同时执行超限时给调用方的重试提示（每分钟新请求超限的，按最早一条滑出窗口的时刻算）。
 export const BUSY_RETRY_MS = 5_000;
-export const KEEP_AFTER_EXPIRY_MS = DAY, LEDGER_KEEP_MS = 90 * DAY;
+// 去重行过期后留多久，与回答签出后留多久（到期由持有方撤回）各算各的。
+export const KEEP_AFTER_EXPIRY_MS = DAY, ANSWER_KEEP_MS = DAY, LEDGER_KEEP_MS = 90 * DAY;
+/** 回答到期的时刻：签出（终态）时刻之后 24 小时；持有方到时撤回，表满时也只清到了这一刻的。 */
+export const answerDueAt = finishedAt => finishedAt + ANSWER_KEEP_MS;
 export const SUMMARY_CHARS = 80;
 const TERMINAL = ['completed', 'failed', 'canceled'], STATES = ['admitted', 'submitted', ...TERMINAL];
 // cancel_pending：取消没发出去，待发；canceled：取消已发出。
@@ -148,9 +151,10 @@ const ledgerRowOk = row => isPlain(row) && (row.outcome === 'rejected' ? rejecti
 
 /**
  * `stateDir` 是插件状态目录，表与记录在它下面的 `rpc/`。`now` 可换（测试用）。
+ * 操作记录的顺手清扫失败（如跨截止日的月份文件损坏）不影响读写，用 `ledger_maintenance` 错误交给 `onMaintenanceError`（默认写到 stderr），下次再试。
  * 所有方法都是异步的、排成一条队；读到损坏的表就抛 `corrupt`（见 `isCorrupt`）。
  */
-export function createRpcStore(stateDir, { now = Date.now } = {}) {
+export function createRpcStore(stateDir, { now = Date.now, onMaintenanceError = e => console.error(e.message) } = {}) {
   const dir = join(stateDir, 'rpc');
   let chain = Promise.resolve(), prunedDay = null;
   const serial = work => {
@@ -208,10 +212,13 @@ export function createRpcStore(stateDir, { now = Date.now } = {}) {
 
   // ---- 在途与去重 ----
 
-  const live = entries => Object.values(entries).filter(entry => now() < entry.notAfter);
   // 只清做完了的：结局签出、回答撤回、操作记录写进去了，且过期满 24 小时。没恢复的、没签出的、没撤回答的、没记账的一律留着。
   const purged = entries => Object.fromEntries(Object.entries(entries).filter(([, entry]) =>
     !(entry.retracted === true && entry.ledger === undefined && now() >= entry.notAfter + KEEP_AFTER_EXPIRY_MS)));
+
+  // 表满时还能清的：结局已签出、操作记录已写进去、已过期（不再承担去重），且回答已撤回或已过撤回期。没签出的、没记账的、没过期的一律不动。
+  const reclaimable = entry => entry.signed === true && entry.ledger === undefined && now() >= entry.notAfter
+    && (entry.retracted === true || now() >= answerDueAt(entry.finishedAt));
 
   const counts = (entries, caller) => {
     const tally = state => {
@@ -239,8 +246,8 @@ export function createRpcStore(stateDir, { now = Date.now } = {}) {
   /**
    * 准入一个请求：同号去重、表容量、在途与每分钟配额都过了，才写入一项 `admitted`。给
    * `{ ok: true, entry }`，或 `{ ok: false, code }`：`duplicate`（同号同摘要，带原来那一项）、`digest_conflict`（同号不同摘要，原项不动）、
-   * `table_full`（没过期的项已达 4096，不挤掉任何一项）、`busy`（带 `limit`、`scope`、`retryAfterMs`）。
-   * `canceled: true` 是取消先于请求到达：先留下标记，之后不会再启动。过期 24 小时的旧项顺手清掉。
+   * `table_full`（实际保存的项已达 4096，清掉可清的之后仍满；不挤掉承担去重或交付的项）、`busy`（带 `limit`、`scope`、`retryAfterMs`）。
+   * `canceled: true` 是取消先于请求到达：先留下标记，之后不会再启动。过期 24 小时的旧项顺手清掉；表按行数满了，再清已过期的可清项。
    */
   const admit = ({ caller, request, grant, digest, key, notAfter, call, canceled, version }) => serial(async () => {
     const at = now(), entry = { caller, request, grant, digest, key, notAfter, admittedAt: at, state: 'admitted', call, ...(canceled ? { canceled: true, canceledAt: at } : {}),
@@ -248,7 +255,10 @@ export function createRpcStore(stateDir, { now = Date.now } = {}) {
     if (!inflightOk(entry) || !call) throw invalid('在途项的各项不合格');
     const entries = purged(await load('inflight')), slot = inflightKey(caller, request), old = entries[slot];
     if (old) return old.digest === digest ? { ok: false, code: 'duplicate', entry: old } : { ok: false, code: 'digest_conflict', entry: old };
-    if (live(entries).length >= LIMITS.table) return { ok: false, code: 'table_full' };
+    if (Object.keys(entries).length >= LIMITS.table) {
+      for (const [key, one] of Object.entries(entries)) if (reclaimable(one)) delete entries[key];
+      if (Object.keys(entries).length >= LIMITS.table) return { ok: false, code: 'table_full' };
+    }
     const verdict = tallyVerdict('inflight', counts(entries, caller).inflight) ?? rateVerdict(entries, caller);
     if (verdict) return verdict;
     entries[slot] = entry;
@@ -401,11 +411,21 @@ export function createRpcStore(stateDir, { now = Date.now } = {}) {
   // ---- 操作记录 ----
 
   const ledgerName = at => `ledger-${monthOf(at)}.jsonl`;
+  // 带显式 `at` 的写入共用的截止规则：已经超过 90 天的不落盘（落了也会马上被清掉），当作已处理。
+  // 开头查一次，免得为旧行去清扫、读文件；清扫和读月份文件期间时钟可能走过截止线，写盘前再查一次。
+  const pastKeep = at => at < now() - LEDGER_KEEP_MS;
+  // 每天最多清一次：写账时清，没有新操作时靠 ledger.list 读出时顺手清。
+  const sweepLedger = async () => {
+    const day = Math.floor(now() / DAY);
+    if (prunedDay === day) return;
+    try { await pruneNow(); prunedDay = day; } catch (cause) {
+      onMaintenanceError(Object.assign(new Error(`好友调用的操作记录清扫失败（${cause?.message ?? cause}），之后再试`), { code: 'ledger_maintenance', cause }));
+    }
+  };
   const ledgerPrepare = async () => {
     await mkdir(dir, { recursive: true, mode: 0o700 });
     await chmod(dir, 0o700);
-    const day = Math.floor(now() / DAY);
-    if (prunedDay !== day) { prunedDay = day; await pruneNow(); }
+    await sweepLedger();
   };
 
   // 一个月份文件的全部行：解析错误或形状不对就是损坏，不跳过、不当空。
@@ -427,29 +447,40 @@ export function createRpcStore(stateDir, { now = Date.now } = {}) {
   // 追加与合并都是读出整个月份文件、改完整份再原子换上：写到一半失败，更新前那份仍然完整可读。
   const writeMonth = (name, rows) => writeAtomic(dir, name, rows.length ? `${rows.map(row => JSON.stringify(row)).join('\n')}\n` : '');
 
-  // 保留 90 天：一个月的文件，整月都早于 90 天前才删（按 UTC 月）。
+  // 保留 90 天：一个月的文件，整月都早于 90 天前才删（按 UTC 月）；跨截止日的那个月，重写时丢掉过期的行。
   async function pruneNow() {
     const cutoff = now() - LEDGER_KEEP_MS, removed = [];
     let names;
     try { names = await readdir(dir); } catch (e) { if (e?.code === 'ENOENT') return removed; throw e; }
+    let failure;
     for (const name of names) {
       const match = LEDGER.exec(name);
-      if (match && Date.UTC(Number(match[1]), Number(match[2]), 1) <= cutoff) { await unlink(join(dir, name)); removed.push(name); }
+      if (!match) continue;
+      if (Date.UTC(Number(match[1]), Number(match[2]), 1) <= cutoff) { await unlink(join(dir, name)); removed.push(name); continue; }
+      if (Date.UTC(Number(match[1]), Number(match[2]) - 1, 1) >= cutoff) continue;
+      // 这个月清不了（文件损坏、写不进去）不拦着别的月份照常清；清完再抛。
+      try {
+        const rows = await readMonth(name), kept = rows.filter(row => row.at >= cutoff);
+        if (kept.length < rows.length) await writeMonth(name, kept);
+      } catch (e) { failure ??= e; }
     }
+    if (failure) throw failure;
     return removed;
   }
 
   /**
    * 记一个请求的结局。`command` 是命令全文，只存前 80 字与 sha256；`cwd`、`stdin` 不收。
-   * 行：`{ v:1, at, request, friend, grant, target:{kind,id,name}, op, command:{summary,sha256}, outcome, code?, exitCode?, ms }`。
+   * 行：`{ v:1, at, request, friend, grant, target:{kind,id,name}, op, command:{summary,sha256}, outcome, code?, exitCode?, ms }`。`at` 已超过 90 天的不落盘。
    */
   const appendLedger = ({ at = now(), request, friend, grant, target, op = 'exec', command, outcome, code, exitCode, ms }) => serial(async () => {
     if (typeof command !== 'string') throw invalid('command 须是命令全文，记录里只存摘要');
     const row = { v: 1, at, request, friend, grant, target: { kind: target?.kind, id: target?.id, name: target?.name }, op, command: commandInfo(command), outcome,
       ...(code === undefined ? {} : { code }), ...(exitCode === undefined ? {} : { exitCode }), ms };
     if (!ledgerRowOk(row) || outcome === 'rejected') throw invalid('操作记录的各项不合格');
+    if (pastKeep(at)) return row;
     await ledgerPrepare();
     const name = ledgerName(at), rows = await readMonth(name);
+    if (pastKeep(at)) return row;
     rows.push(row);
     await writeMonth(name, rows);
     return row;
@@ -457,13 +488,14 @@ export function createRpcStore(stateDir, { now = Date.now } = {}) {
 
   /**
    * 补写一个请求的那一行（`row` 是 appendLedger 那样的整行，命令已是摘要）：按「调用方 + 请求号」幂等，当月已有这一行就不再写。
-   * 给 `{ written }`。
+   * 给 `{ written }`；`at` 已超过 90 天的不落盘，也给 `{ written: false }`（已处理，调用方可以去掉待补写的标记）。
    */
   const appendLedgerRow = row => serial(async () => {
     if (!completedRowOk(row)) throw invalid('操作记录的各项不合格');
+    if (pastKeep(row.at)) return { written: false };
     await ledgerPrepare();
     const name = ledgerName(row.at), rows = await readMonth(name);
-    if (rows.some(old => old.outcome !== 'rejected' && old.friend === row.friend && old.request === row.request)) return { written: false };
+    if (rows.some(old => old.outcome !== 'rejected' && old.friend === row.friend && old.request === row.request) || pastKeep(row.at)) return { written: false };
     rows.push(row);
     await writeMonth(name, rows);
     return { written: true };
@@ -473,8 +505,10 @@ export function createRpcStore(stateDir, { now = Date.now } = {}) {
   const recordRejection = ({ friend, code, at = now() }) => serial(async () => {
     const row = { v: 1, at: Math.floor(at / MINUTE) * MINUTE, friend, outcome: 'rejected', code, count: 1 };
     if (!ledgerRowOk(row)) throw invalid('拒绝记录的各项不合格');
+    if (pastKeep(row.at)) return row;
     await ledgerPrepare();
     const name = ledgerName(at), rows = await readMonth(name);
+    if (pastKeep(row.at)) return row;
     const found = rows.findIndex(old => old.outcome === 'rejected' && old.friend === friend && old.code === code && old.at === row.at);
     if (found < 0) rows.push(row); else rows[found] = { ...rows[found], count: rows[found].count + 1 };
     await writeMonth(name, rows);
@@ -484,13 +518,16 @@ export function createRpcStore(stateDir, { now = Date.now } = {}) {
   /**
    * 最近的 `limit` 行（按 `at` 新的在前，同 `at` 的后写的在前），可按 `friend`、`outcome`、`request`、`grant` 筛。
    * 月份文件按月新的先读；一个月内的行不一定按 `at` 排，所以整月筛完、排好，才截到条数。月份文件损坏就抛 `corrupt`。
+   * 超过 90 天的行不返回；读出时顺手清扫。
    */
   const readLedger = ({ limit = 100, friend, outcome, request, grant } = {}) => serial(async () => {
+    await sweepLedger();
+    const cutoff = now() - LEDGER_KEEP_MS;
     let names;
     try { names = (await readdir(dir)).filter(name => LEDGER.test(name)).sort().reverse(); } catch (e) { if (e?.code === 'ENOENT') return []; throw e; }
     const found = [];
     for (const name of names) {
-      const rows = (await readMonth(name)).reverse().filter(row => (friend === undefined || row.friend === friend) && (outcome === undefined || row.outcome === outcome)
+      const rows = (await readMonth(name)).reverse().filter(row => row.at >= cutoff && (friend === undefined || row.friend === friend) && (outcome === undefined || row.outcome === outcome)
         && (request === undefined || row.request === request) && (grant === undefined || row.grant === grant));
       for (const one of rows.sort((a, b) => b.at - a.at)) found.push(one);
       if (found.length >= limit) break;
