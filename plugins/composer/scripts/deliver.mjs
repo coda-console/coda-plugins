@@ -34,8 +34,8 @@ const OWNER_REPO = new RegExp(`^(${SEG})/(${SEG})$`);
 const FQDN = new RegExp(`^(?:${LABEL}\\.)+${LABEL}$`);
 const REPO_URL = new RegExp(`^[hH][tT][tT][pP][sS]://((?:${LABEL}\\.)+${LABEL})/(${SEG})/(${SEG})$`);
 const PR_URL = new RegExp(`^[hH][tT][tT][pP][sS]://((?:${LABEL}\\.)+${LABEL})/(${SEG})/(${SEG})/pull/[1-9][0-9]*$`);
-// origin 的 HTTPS 远端可以带 userinfo（https://git@host/...、https://token@host/...）：只取 host/owner/repo，userinfo 不进参数也不进报错。
-const ORIGIN_HTTPS = new RegExp(`^[hH][tT][tT][pP][sS]://(?:[^\\s@/?#\\x00-\\x1f\\x7f]*@)?((?:${LABEL}\\.)+${LABEL})/(${SEG})/(${SEG})$`);
+// origin 的 HTTPS 远端可以带 userinfo（https://git@host/...、https://token@host/...）：只取 host/owner/repo，userinfo 不进参数也不进报错；Git 远端末尾可以带一个斜线。
+const ORIGIN_HTTPS = new RegExp(`^[hH][tT][tT][pP][sS]://(?:[^\\s@/?#\\x00-\\x1f\\x7f]*@)?((?:${LABEL}\\.)+${LABEL})/(${SEG})/(${SEG})\\/?$`);
 const SSH_URL = /^ssh:\/\/(?:(?<user>[A-Za-z0-9_.-]+)@)?(?<host>[A-Za-z0-9][A-Za-z0-9.-]*)(?::(?<port>\d+))?\/(?<path>.*)$/;
 const SCP_URL = /^(?:(?<user>[A-Za-z0-9_.-]+)@)?(?<host>[A-Za-z0-9][A-Za-z0-9.-]*):(?!\/)(?<path>.*)$/;
 // 完整域名：总长不超过 253，末段标签不全是数字（排除 IPv4 字面量）。
@@ -73,13 +73,23 @@ const words = command => {
   if (word !== null) out.push(word);
   return out;
 };
-// Git 用的 SSH 配置文件：GIT_SSH_COMMAND（没设时 core.sshCommand）拆词后的 -F <文件> 或 -F<文件>；有多个时和 OpenSSH 一样取最后一个。
+// OpenSSH 客户端带值的单字符选项。
+const SSH_VALUED = 'bcDEeFIiJLlmOopQRSWw';
+// Git 用的 SSH 参数：GIT_SSH_COMMAND（没设时 core.sshCommand）拆词后按 getopt 扫描选项（到 -- 或第一个非选项参数为止），
+// 带值选项照常吃掉它的值；其中的 -F <文件> 和 -o <选项>（含连写形式）按出现顺序保留，交给 ssh -G 自己取舍（-F 有多个时取最后一个）。
 const sshConfig = () => {
   const command = env.GIT_SSH_COMMAND || spawnSync('git', ['config', '--get', 'core.sshCommand'], { encoding: 'utf8' }).stdout || '';
-  const parts = words(command);
-  let file = null;
-  for (let i = 1; i < parts.length; i++) if (parts[i].startsWith('-F')) file = parts[i] === '-F' ? parts[++i] : parts[i].slice(2);
-  return file ? ['-F', file] : [];
+  const parts = words(command), kept = [];
+  for (let i = 1; i < parts.length && parts[i] !== '--' && /^-./.test(parts[i]); i++) {
+    for (let j = 1; j < parts[i].length; j++) {
+      const flag = parts[i][j];
+      if (!SSH_VALUED.includes(flag)) continue;
+      const value = parts[i].slice(j + 1) || parts[++i];
+      if (flag === 'F' || flag === 'o') kept.push(`-${flag}`, value);
+      break;
+    }
+  }
+  return kept;
 };
 // SSH 主机可能是 SSH 配置里的别名：按 Git 实际的 SSH 配置和地址里的用户、端口取 ssh -G 解析出的 hostname。Host <域名> → HostName ssh.<域名> 这类走 SSH 专用入口的写法保留原主机；
 // GitHub 公网的 SSH 443 入口 ssh.github.com 就是 github.com。解析后仍不是合法域名（单段别名、IP、超长、非法标签）就报错，不交给 gh 的默认仓库。
@@ -93,9 +103,10 @@ const sshHost = (host, user, port) => {
   return isFqdn(name) ? name : bad('origin');
 };
 // origin 的仓库标识：https://[userinfo@]host/owner/repo(.git)、ssh://[user@]host[:port]/owner/repo(.git) 或 [user@]host:owner/repo(.git)。
-// 带协议头的和 SCP 写法（冒号前没有斜线；只有 Windows 上 X: 开头是盘符）都是网络远端，不合上面的格式就报错；只有本地路径返回 null。
+// 带协议头的和 SCP 写法（冒号前没有斜线；只有 Windows 上 X: 开头是盘符）都是网络远端，不合上面的格式就报错；只有本地路径和本机 file:// 地址返回 null。
 const originIdOf = url => {
   const https = url.match(ORIGIN_HTTPS);
+  if (/^file:\/\/(?:localhost)?\//i.test(url)) return null;
   if (https) return idOf(https[1], https[2], https[3], 'origin');
   const scp = /^[^/]*:/.test(url) && !(process.platform === 'win32' && /^[A-Za-z]:/.test(url));
   if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url) && !scp) return null;
