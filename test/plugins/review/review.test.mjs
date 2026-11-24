@@ -23,7 +23,7 @@ test('GitHub-returned PR URLs share the event key without deriving repository id
   assert.notEqual(key('https://github.com/owner/repo/pull/403'), expected);
   assert.notEqual(key('https://github.com/other/repo/pull/402'), expected);
   for (const pr of ['', '402', '00402', 'main', `${expected}/`, `${expected}?tab=checks#comment`,
-    'https://other.example/owner/repo/pull/402', 'https://github.com/owner/repo/issues/402'])
+    'https://github.com/owner/repo/issues/402'])
     assert.equal(key(pr), null, pr);
 });
 

@@ -154,3 +154,47 @@ test('the approval keeps the selected cleanup for the workflow, and merging dele
   assert.ok(calls.filter(args => args[1] === 'merge').every(args => !args.includes('--delete-branch')));
   assert.equal(existsSync(join(c.local, 'unfinished.txt')), true);
 });
+
+test('the branch is removed from the PR\'s own host: the same owner/repo on another host is another repository', t => {
+  const c = setup(t), config = join(c.root, 'gitconfig'), enterprise = join(c.root, 'enterprise.git'), third = join(c.root, 'third.git');
+  c.git('init', '--bare', '--quiet', enterprise); c.git('init', '--bare', '--quiet', third);
+  writeFileSync(config, `${readFileSync(config, 'utf8')}[url "${enterprise}"]\n\tinsteadOf = https://ghe.corp.internal/owner/repo.git\n[url "${third}"]\n\tinsteadOf = https://git.example.org/author/fork.git\n`);
+  c.git('push', '--quiet', enterprise, 'feature');
+  c.git('push', '--quiet', third, 'feature');
+  const asked = () => readFileSync(c.calls, 'utf8').trim().split('\n').map(JSON.parse).at(-1);
+  const done = c.run('delete-branch', { URL: 'https://ghe.corp.internal/owner/repo/pull/5' });
+  assert.equal(done.status, 0, done.stderr);
+  assert.deepEqual(asked().slice(0, 4), ['api', '--hostname', 'ghe.corp.internal', 'repos/owner/repo/pulls/5']);
+  assert.equal(c.ref('feature', enterprise), '');
+  assert.equal(c.ref(), c.head, 'github.com\'s owner/repo is untouched');
+  // A fork on an Enterprise host: the host of the PR, not github.com's author/fork.
+  c.pr.head.repo = 'author/fork';
+  const fork = c.run('delete-branch', { URL: 'https://git.example.org/owner/repo/pull/5' });
+  assert.equal(fork.status, 0, fork.stderr);
+  assert.deepEqual(asked().slice(0, 3), ['api', '--hostname', 'git.example.org']);
+  assert.equal(c.ref('feature', third), '');
+  assert.equal(c.ref('feature', c.fork), c.head, 'github.com\'s author/fork is untouched');
+  const github = c.run();
+  assert.equal(github.status, 0, github.stderr);
+  assert.deepEqual(asked().slice(0, 3), ['api', '--hostname', 'github.com']);
+  assert.equal(c.ref('feature', c.fork), '');
+});
+
+test('nothing is asked or deleted for an address that is not a pull request, or a source repository that is a path', t => {
+  const c = setup(t);
+  for (const url of ['https://github.com/owner/repo/pull/5/', 'http://github.com/owner/repo/pull/5', 'https://github/owner/repo/pull/5',
+    'https://github.com/owner/repo/pull/5?x=1', 'https://github.com/owner/repo/pull/0', 'https://github.com/../repo/pull/5']) {
+    const done = c.run('delete-branch', { URL: url });
+    assert.equal(done.status, 1, url);
+    assert.match(done.summary, /不知道要删除哪个 PR/, url);
+    assert.equal(existsSync(c.calls), false, url);
+    assert.equal(c.ref(), c.head);
+  }
+  for (const repo of ['../repo', 'owner/..', './repo']) {
+    c.pr.head.repo = repo;
+    const done = c.run();
+    assert.equal(done.status, 1, repo);
+    assert.match(done.summary, /读不到源仓库或它的默认分支/, repo);
+    assert.equal(c.ref(), c.head);
+  }
+});

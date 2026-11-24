@@ -25,7 +25,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { json, output, summary } from './step.mjs';
+import { json, output, parsePrUrl, summary } from './step.mjs';
 
 const fail = message => { console.error(message); summary(`交叉评审没有进行：${message}`); process.exit(1); };
 const hex = value => /^[0-9a-f]{40,64}$/.test(value ?? '') ? value : null;
@@ -67,8 +67,10 @@ const named = pr ? `PR #${Number(pr.number)}` : `提交 ${head.slice(0, 12)}`;
 
 // Somebody else's pull request is read from GitHub, bound to the two commits of this review: what the author pushes after the
 // event is not in it. Its commits are not fetched, and the step has no repository to ask.
-const repo = foreign ? /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\//.exec(pr.html_url)[1] : null;
-const api = (path, accept) => spawnSync('gh', ['api', '-H', `Accept: ${accept}`, path], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 120_000 });
+const parsed = foreign ? parsePrUrl(pr.html_url) : null;
+if (foreign && !parsed) fail(`不是 GitHub 上的 PR：${pr.html_url}`);
+const repo = parsed?.repo;
+const api = (path, accept) => spawnSync('gh', ['api', '--hostname', parsed.host, '-H', `Accept: ${accept}`, path], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 120_000 });
 const reason = done => (done.stderr || done.error?.message || '').trim().split('\n').at(-1);
 
 // A pull request's later review: the `must`s this run left open (`LAST`'s `open`) are judged again, one by one, whatever

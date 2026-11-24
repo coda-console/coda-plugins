@@ -80,8 +80,8 @@ for (const [verdict, decision] of [['approve', 'APPROVE'], ['changes', 'REQUEST_
     assert.equal(done.out.decision, decision);
     // Every command run, git none among them: the change as text, the guidelines, the reviewer, one comment. No project check,
     // no merge, no task for a session.
-    assert.deepEqual(done.calls.map(c => [c.name, ...c.args.slice(0, 4)].map(a => a.replace(/\?ref=.*/, ''))),
-      [['gh', 'api', '-H', 'Accept: application/vnd.github.diff', f.compare], ['gh', 'api', '-H', 'Accept: application/vnd.github.raw+json', 'repos/acme/app/contents/.coda/review.md'],
+    assert.deepEqual(done.calls.map(c => [c.name, ...c.args.slice(0, c.args[0] === 'api' ? 6 : 4)].map(a => a.replace(/\?ref=.*/, ''))),
+      [['gh', 'api', '--hostname', 'github.com', '-H', 'Accept: application/vnd.github.diff', f.compare], ['gh', 'api', '--hostname', 'github.com', '-H', 'Accept: application/vnd.github.raw+json', 'repos/acme/app/contents/.coda/review.md'],
         ['coda-agent', '--agent', 'codex', '--model', 'm1'], ['gh', 'pr', 'comment', URL_7, '--body']]);
     const agent = done.calls[2].args;
     assert.deepEqual(agent, ['--agent', 'codex', '--model', 'm1', '--effort', 'high', '--commit', f.base, '--title', '交叉评审 PR #7', '--prompt-file', agent.at(-1)]);
@@ -94,6 +94,21 @@ for (const [verdict, decision] of [['approve', 'APPROVE'], ['changes', 'REQUEST_
     assert.equal(done.out.passed, String(decision === 'APPROVE'));
   });
 }
+
+test('someone else\'s pull request on another host is read from that host, and an address that is no pull request is not reviewed', t => {
+  const f = fixture(t);
+  for (const host of ['git.example.org', 'ghe.corp.internal']) {
+    const done = f.review({ PULL_REQUEST: JSON.stringify({ ...f.event, html_url: `https://${host}/acme/app/pull/7` }), DIFF: 'd' });
+    assert.equal(done.code, 0, done.said);
+    const reads = done.calls.filter(c => c.args[0] === 'api');
+    assert.equal(reads.length, 2, host);
+    assert.ok(reads.every(c => c.args[1] === '--hostname' && c.args[2] === host), host);
+  }
+  for (const html_url of ['https://github.com/acme/app/pull/7/files', 'https://github/acme/app/pull/7', 'http://github.com/acme/app/pull/7']) {
+    const done = f.review({ PULL_REQUEST: JSON.stringify({ ...f.event, html_url }), DIFF: 'd' });
+    assert.deepEqual([done.code, done.said, done.calls.length], [1, `不是 GitHub 上的 PR：${html_url}`, 0], html_url);
+  }
+});
 
 test('the change reviewed is the one of the event\'s two commits, whatever the author pushed since', t => {
   const f = fixture(t);
@@ -183,7 +198,7 @@ test('a manual review reads the pull request from GitHub and goes the same way; 
   const view = { number: 7, url: URL_7, title: 'T', body: 'B', headRefOid: f.head, headRefName: 'f', baseRefOid: f.base, baseRefName: 'main' };
   const done = f.review({ PR: URL_7, VIEW: JSON.stringify(view), DIFF });
   assert.equal(done.code, 0, done.said);
-  assert.deepEqual(done.calls.map(c => [c.name, c.args[0], c.args[1]]), [['gh', 'pr', 'view'], ['gh', 'api', '-H'], ['gh', 'api', '-H'], ['coda-agent', '--agent', 'codex'], ['gh', 'pr', 'comment']]);
+  assert.deepEqual(done.calls.map(c => [c.name, c.args[0], c.args[1]]), [['gh', 'pr', 'view'], ['gh', 'api', '--hostname'], ['gh', 'api', '--hostname'], ['coda-agent', '--agent', 'codex'], ['gh', 'pr', 'comment']]);
   assert.equal(done.calls[3].args[done.calls[3].args.indexOf('--commit') + 1], f.base);
   assert.equal(done.calls[4].args[2], URL_7);
   assert.equal(done.out.count, '0', 'a manual review is not counted');
