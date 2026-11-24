@@ -8,7 +8,7 @@
      收尾的任何失败和「暂不合并」都带着原因回到「需求进行中」。BPMN 2.0，由 Coda 执行（docs/workflows.md）。 -->
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="develop-contract-definitions" targetNamespace="https://coda.pub/plugins/composer">
-  <process id="develop-contract" name="契约开发" isExecutable="true" coda:title='{{if inputs.title = "" then "契约开发" else "需求：" + inputs.title}}' coda:questionDenial="契约开发运行期间不找用户。拿不准的取舍（修不修、评审到第几轮、偏离原计划、改判）按任务里的取舍标准自己定，记进提交验收时的改动汇报，最后一并汇报。只有真正紧急、必须用户本人处理的事（会造成不可挽回的后果，或要用户本人操作、提供凭据）才交出去：在「需求进行中」选「暂停」并写明原因；手上是「整体评审结论」时，先选「回到进行中」再暂停。">
+  <process id="develop-contract" name="契约开发" isExecutable="true" coda:title='{{if inputs.title = "" then "契约开发" else "需求：" + inputs.title}}' coda:questionDenial="契约开发运行期间不找用户。拿不准的取舍（修不修、评审到第几轮、偏离原计划、改判）按任务里的取舍标准自己定，记进提交验收时的改动汇报，最后一并汇报。只有真正紧急、必须用户本人处理的事（会造成不可挽回的后果，或要用户本人操作、提供凭据）才交出去：手上是「需求进行中」就选「暂停」并写明原因；手上是「整体评审结论」就先选「回到进行中」再暂停；手上是别的卡，就用 workflow_task 的 handUp 把这张卡连同原因交给上一层。">
     <extensionElements>
       <coda:join hook="develop" />
       <coda:input name="title" label="需求名" default="" description="也是需求分支进目标分支的 PR 标题；留空时由主 Agent 在第一张任务里写" />
