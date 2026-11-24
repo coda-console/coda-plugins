@@ -270,9 +270,35 @@ test('granting checks the target, the friend and the machine key, pins the targe
   assert.deepEqual([row.grantee, row.holder, row.target, row.createdAt], [F1, { machine: MK }, { owner: TEST_OWNER, provider: 'remote-exec', kind: MACHINE, id: 'rx-1' }, START]);
   assert.deepEqual(h.published('friends/rpc-grant'), [{ kind: 'friends/rpc-grant', id: row.id, audience: [F1], signer: 'machine', expectAuthor: MK,
     body: { v: 1, holder: MK, grantee: F1, grant: row.id, protocol: MACHINE, ops: ['exec'], spec: SPEC, available: true, grantedAt: START } }]);
-  // 再授一次是新的授权号。
+});
+
+test('granting the same friend the same target twice gives back the one live grant; once revoked it is refused, and granting again is a new grant; another friend or another target is its own grant', async t => {
+  const h = await holderOf(t);
+  h.targets.set('rx-2');
+  const live = async () => (await h.store.listGrants()).filter(row => row.revokedAt === undefined);
+  const first = await h.grant();
+  // 命中已有授权：不另生成授权号、不写盘，也不再查目录、不再签发。
+  const file = join(h.dir, 'rpc', 'grants.json'), written = await readFile(file, 'utf8'), calls = h.accord.calls.length, queries = h.accord.queries.length;
   const again = await h.grant();
-  assert.notEqual(again.grant, row.id);
+  assert.equal(again.grant, first.grant);
+  assert.deepEqual([await readFile(file, 'utf8'), h.accord.calls.length, h.accord.queries.length], [written, calls, queries]);
+  assert.deepEqual((await live()).map(row => row.id), [first.grant]);
+  assert.deepEqual(h.published('friends/rpc-grant').map(call => call.id), [first.grant], 'one grant record sent');
+
+  await h.holder.self['grants.revoke']({ grant: first.grant });
+  await h.settle();
+  assert.deepEqual(await live(), []);
+  const body = send(h, { grant: first.grant });
+  await h.settle();
+  assert.deepEqual(h.answers(F1, body.request), []);
+  assert.equal(h.exec.runs, 0);
+  assert.equal((await rejections(h, 'revoked'))[0].count, 1);
+
+  const renewed = await h.grant();
+  assert.notEqual(renewed.grant, first.grant);
+  const other = await h.grant(F2), elsewhere = await h.grant(F1, { kind: MACHINE, id: 'rx-2' });
+  assert.equal(new Set([renewed.grant, other.grant, elsewhere.grant]).size, 3);
+  assert.deepEqual((await live()).map(row => row.id).sort(), [renewed.grant, other.grant, elsewhere.grant].sort());
 });
 
 test('when the target\'s availability changes the grant record is published again under the same id; nothing changes, nothing is sent', async t => {
@@ -1010,6 +1036,35 @@ test('an outcome answer is withdrawn 24 hours after the terminal state, not befo
   h.clock.now += ANSWER_KEEP_MS;
   await h.settle();
   assert.equal(await h.store.get(F1, body.request), null);
+});
+
+test('a full table whose only clearable row is an answer still to withdraw refuses the new request without running it; after the sweep withdraws that answer the next request runs', async t => {
+  const h = await holderOf(t);
+  const { grant } = await h.grant();
+  const body = send(h, { grant });
+  await h.settle();
+  // 其余的行都还没过期（仍承担去重），只有这条到了撤回时刻、还没撤的能腾出位置。
+  const file = join(h.dir, 'rpc', 'inflight.json'), table = JSON.parse(await readFile(file, 'utf8')), [real] = Object.values(table.entries);
+  for (let i = 0; i < LIMITS.table - 1; i++) {
+    const request = `filler-${i}`;
+    table.entries[`${F2}/${request}`] = { ...real, caller: F2, request, key: `friend:${request}`, notAfter: START + 2 * ANSWER_KEEP_MS, retracted: true };
+  }
+  await writeFile(file, JSON.stringify(table));
+  assert.equal(Object.keys(JSON.parse(await readFile(file, 'utf8')).entries).length, LIMITS.table);
+  h.clock.now = START + ANSWER_KEEP_MS;
+  // 同一拍里先扫新请求、再扫待撤的回答：新请求被拒，命令不执行，那条回答随后撤回。
+  const refused = send(h, { grant });
+  await h.settle();
+  assert.deepEqual(h.answers(F1, refused.request), []);
+  assert.equal(h.exec.runs, 1);
+  assert.equal((await rejections(h, 'table_full'))[0].count, 1);
+  assert.deepEqual(h.answers(F1, body.request), ['running', 'completed', 'retracted']);
+  assert.equal((await h.store.get(F1, body.request)).retracted, true, 'the row stayed until the answer was withdrawn');
+  const next = send(h, { grant });
+  await h.settle();
+  assert.deepEqual(h.answers(F1, next.request), ['running', 'completed']);
+  assert.equal(h.exec.runs, 2);
+  assert.equal(await h.store.get(F1, body.request), null, 'the withdrawn row made room');
 });
 
 test('an answer due for withdrawal while the machine key cannot be read stays pending, and is withdrawn exactly once when the key is back', async t => {

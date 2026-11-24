@@ -18,10 +18,11 @@ const GRANTED = { id: GRANT, holder: { machine: A }, grantee: B, granteePerson: 
 const MINUTE = 60_000, DAY = 86_400_000;
 
 async function setup(t) {
-  const dir = await mkdtemp(join(tmpdir(), 'friends-rpc-store-')), clock = { now: START };
+  const dir = await mkdtemp(join(tmpdir(), 'friends-rpc-store-')), clock = { now: START }, ids = [];
   t.after(() => rm(dir, { recursive: true, force: true }));
-  const store = createRpcStore(dir, { now: () => clock.now });
-  return { dir, rpc: join(dir, 'rpc'), clock, store };
+  // 授权号固定是 GRANT；`ids` 记下生成过几次。
+  const store = createRpcStore(dir, { now: () => clock.now, newId: () => { ids.push(GRANT); return GRANT; } });
+  return { dir, rpc: join(dir, 'rpc'), clock, store, ids };
 }
 const hex = n => n.toString(16).padStart(32, '0');
 let sequence = 0;
@@ -115,11 +116,16 @@ test('an inflight entry that reads back with a wrong shape is corruption too', a
 });
 
 test('grants: added once, revoked to disk first, and a revoked grant stays in the table with the first revocation time', async t => {
-  const { dir, store } = await setup(t);
-  const grant = { id: GRANT, holder: { machine: A }, grantee: B, granteePerson: null, target: TARGET, createdAt: START };
-  assert.equal((await store.addGrant(grant)).ops[0], 'exec');
-  await assert.rejects(store.addGrant(grant), { code: 'invalid_input' });
-  await assert.rejects(store.addGrant({ ...grant, id: 'x', target: { owner: 'a' } }), { code: 'invalid_input' });
+  const { dir, store, ids } = await setup(t);
+  const grant = { holder: { machine: A }, grantee: B, granteePerson: null, target: TARGET, createdAt: START + 1 };
+  const added = await store.addGrant(grant);
+  assert.deepEqual([added.created, added.entry.id, added.entry.ops[0], ids.length], [true, GRANT, 'exec', 1]);
+  // 同一机器钥匙、同一好友、同一目标再授一次：原样给回已有的那一条，不生成授权号、不写盘。
+  const written = await readRaw(dir, 'grants.json');
+  assert.deepEqual(await store.addGrant({ ...grant, createdAt: START + 2 }), { created: false, entry: added.entry });
+  assert.equal(ids.length, 1, 'no new grant id');
+  assert.equal(await readRaw(dir, 'grants.json'), written, 'nothing written');
+  await assert.rejects(store.addGrant({ ...grant, target: { owner: 'a' } }), { code: 'invalid_input' });
   assert.equal((await store.getGrant(GRANT)).revokedAt, undefined);
   assert.equal(await store.revokeGrant('nope', START), null);
   const revoked = await store.revokeGrant(GRANT, START + 5);
@@ -132,6 +138,19 @@ test('grants: added once, revoked to disk first, and a revoked grant stays in th
   assert.equal((await createRpcStore(dir).getGrant(GRANT)).revokedAt, START + 5);
 });
 
+test('a new grant id that already exists is refused before writing: grant, revoke, grant again with a fixed id leaves the revoked row as it was', async t => {
+  const { dir, store, ids } = await setup(t);
+  const grant = { holder: { machine: A }, grantee: B, granteePerson: null, target: TARGET, createdAt: START };
+  assert.equal((await store.addGrant(grant)).entry.id, GRANT);
+  await store.revokeGrant(GRANT, START + 1);
+  const before = await readRaw(dir, 'grants.json');
+  // 撤了的不算匹配的有效授权，于是再生成一次授权号；生成器给的还是 GRANT。
+  await assert.rejects(store.addGrant({ ...grant, createdAt: START + 2 }), { code: 'invalid_input' });
+  assert.equal(ids.length, 2);
+  assert.equal(await readRaw(dir, 'grants.json'), before, 'the revoked row is not overwritten');
+  assert.equal((await store.getGrant(GRANT)).revokedAt, START + 1, 'the revoked grant does not come back');
+});
+
 test('a grant row records the holder\'s machine key, and whether the grantee was a person (null while the host does not say)', async t => {
   const { store } = await setup(t);
   const grant = { ...GRANTED, holder: { machine: A }, granteePerson: true };
@@ -139,7 +158,7 @@ test('a grant row records the holder\'s machine key, and whether the grantee was
     ['缺 granteePerson', { granteePerson: undefined }], ['granteePerson 不是布尔', { granteePerson: 1 }]])
     await assert.rejects(store.addGrant({ ...grant, ...bad }), { code: 'invalid_input' }, what);
   assert.deepEqual(await store.listGrants(), []);
-  const added = await store.addGrant(grant);
+  const { entry: added } = await store.addGrant(grant);
   assert.deepEqual([added.holder, added.granteePerson], [{ machine: A }, true]);
 });
 
@@ -266,7 +285,7 @@ test('a full table refuses new requests and evicts nothing unexpired; expired en
   assert.deepEqual((await store.listInflight()).map(entry => entry.state), ['admitted']);
 });
 
-// 过期了、不再承担去重，但还要交付的项：没签出结局、记账没写完、回答还在撤回期内、没做完。
+// 过期了、不再承担去重，但还要交付的项：没签出结局、记账没写完、回答还在撤回期内、回答到了撤回时刻还没撤成、没做完。
 const LEDGER_ROW = { v: 1, at: START - DAY, request: 'r', friend: B, grant: GRANT, target: { kind: TARGET.kind, id: TARGET.id, name: 'box' }, op: 'exec',
   command: { summary: 'ls', sha256: 'a'.repeat(64) }, outcome: 'completed', ms: 1 };
 const duties = from => [
@@ -274,16 +293,15 @@ const duties = from => [
   settled(from + 1, START - 1, { retracted: undefined, ledger: LEDGER_ROW }),
   settled(from + 2, START - 1, { retracted: undefined, finishedAt: START - 1 }),
   settled(from + 4, START - 1, { retracted: undefined, finishedAt: START + 1 - ANSWER_KEEP_MS }),
+  settled(from + 5, START - 1, { retracted: undefined, finishedAt: START - 2 * ANSWER_KEEP_MS }),
   settled(from + 3, START - 1, { state: 'admitted', signed: undefined, retracted: undefined, call: { target: TARGET, input: { command: 'x' } } }),
 ];
 
 test('a table full of rows that are safe to clear admits a new request, and only the clearable rows go', async t => {
   const { dir, store, clock } = await setup(t);
   const duty = duties(9000), count = LIMITS.table - duty.length;
-  // 过期不到 24 小时的已撤回项，和已过撤回期但没撤成的项，都可清；加上那几项还承担交付的。
-  const clearable = Array.from({ length: count }, (_, i) => i % 2
-    ? settled(i, START - 1, { finishedAt: START - 2 * ANSWER_KEEP_MS })
-    : settled(i, START - 1, { retracted: undefined, finishedAt: START - ANSWER_KEEP_MS }));
+  // 过期不到 24 小时、回答已撤回的项可清；加上那几项还承担交付的（含回答已过撤回时刻、还没撤成的）。
+  const clearable = Array.from({ length: count }, (_, i) => settled(i, START - 1, { finishedAt: START - 2 * ANSWER_KEEP_MS }));
   await seed(dir, [...clearable, ...duty]);
   const admitted = await store.admit(candidate(clock));
   assert.equal(admitted.ok, true);
@@ -293,12 +311,25 @@ test('a table full of rows that are safe to clear admits a new request, and only
 test('a table full of rows that still carry dedup or delivery refuses the new request and loses no row', async t => {
   const { dir, store, clock } = await setup(t);
   // 全是过期的、但都还承担交付：按实际行数算，表是满的。
-  const rows = Array.from({ length: Math.ceil(LIMITS.table / 5) }, (_, i) => duties(i * 5)).flat().slice(0, LIMITS.table);
+  const rows = Array.from({ length: Math.ceil(LIMITS.table / 6) }, (_, i) => duties(i * 6)).flat().slice(0, LIMITS.table);
   assert.equal(rows.length, LIMITS.table);
   await seed(dir, rows);
   const before = await readRaw(dir, 'inflight.json');
   assert.deepEqual([(await store.admit(candidate(clock))).ok, (await store.admit(candidate(clock))).code], [false, 'table_full']);
   assert.equal(await readRaw(dir, 'inflight.json'), before, 'not one row was dropped or rewritten');
+});
+
+test('a full table whose only clearable row is an answer due but not yet withdrawn refuses the new request and keeps that row; once it is withdrawn the next request gets in', async t => {
+  const { dir, store, clock } = await setup(t);
+  const due = settled(9000, START - 1, { retracted: undefined, finishedAt: START - ANSWER_KEEP_MS });
+  await seed(dir, [...Array.from({ length: LIMITS.table - 1 }, (_, i) => settled(i, START + 5 * MINUTE)), due]);
+  const before = await readRaw(dir, 'inflight.json');
+  assert.deepEqual([(await store.admit(candidate(clock))).ok, (await store.admit(candidate(clock))).code], [false, 'table_full']);
+  assert.equal(await readRaw(dir, 'inflight.json'), before, 'the row still to withdraw stays');
+  await store.markRetracted(B, due.request);
+  const admitted = await store.admit(candidate(clock));
+  assert.equal(admitted.ok, true);
+  assert.equal(await store.get(B, due.request), null, 'the withdrawn row made room');
 });
 
 test('the in-flight quota: 8 per author and 32 in all; a finished request frees its slot', async t => {

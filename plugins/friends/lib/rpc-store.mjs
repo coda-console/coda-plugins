@@ -6,7 +6,7 @@
 //   clock.json     持有方见过的最大时刻：本机时钟大幅回拨时据此暂停准入。
 // 表文件与操作记录的月份文件都原子写入（临时文件 + rename，文件 0600、目录 0700）。读出来不是合法 JSON、或形状不对，就抛 `corrupt`，调用方据此停止准入，
 // 绝不当成空表继续；文件不存在才是空表。同一个 store 里所有读改写排成一条队。
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { chmod, mkdir, open, readFile, readdir, rename, rm, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -23,7 +23,7 @@ export const LIMITS = Object.freeze({
 export const BUSY_RETRY_MS = 5_000;
 // 去重行过期后留多久，与回答签出后留多久（到期由持有方撤回）各算各的。
 export const KEEP_AFTER_EXPIRY_MS = DAY, ANSWER_KEEP_MS = DAY, LEDGER_KEEP_MS = 90 * DAY;
-/** 回答到期的时刻：签出（终态）时刻之后 24 小时；持有方到时撤回，表满时也只清到了这一刻的。 */
+/** 回答到期的时刻：签出（终态）时刻之后 24 小时；持有方到时撤回。 */
 export const answerDueAt = finishedAt => finishedAt + ANSWER_KEEP_MS;
 export const SUMMARY_CHARS = 80;
 const TERMINAL = ['completed', 'failed', 'canceled'], STATES = ['admitted', 'submitted', ...TERMINAL];
@@ -45,9 +45,11 @@ export const isCorrupt = error => error?.code === 'corrupt';
 // 授权行：`holder.machine` 是授予时本机的机器钥匙（持有方始终以机器出现，机器是 `target.owner`）；`granteePerson` 是被授权的好友当时是不是个人作者
 // （好友表的 `certified`，宿主还不写时是 null）。
 const isFlag = value => typeof value === 'boolean';
-const grantOk = entry => isPlain(entry) && isText(entry.id) && isPlain(entry.holder) && isAuthor(entry.holder.machine)
+// 授权号以外的各项：新授权在 store 里查重没命中才生成授权号，先按这些校验。
+const grantFieldsOk = entry => isPlain(entry) && isPlain(entry.holder) && isAuthor(entry.holder.machine)
   && isAuthor(entry.grantee) && (entry.granteePerson === null || isFlag(entry.granteePerson)) && isTarget(entry.target) && Array.isArray(entry.ops) && entry.ops.length === 1 && entry.ops[0] === 'exec'
   && isTime(entry.createdAt) && optional(entry.revokedAt, isTime) && optional(entry.endedBy, isText) && optional(entry.retractedAt, isTime);
+const grantOk = entry => grantFieldsOk(entry) && isText(entry.id);
 
 // 在途项按状态校验：非终态要有完整的子调用参数（固定目标、重建后的输入；幂等键与最晚启动时刻每项都有），且不带结局与「已签出」；
 // 终态带结局或「已签出」之一（签出后结局释放，留下终态时刻；回答撤回后另记一笔）；取消标记与取消时刻成对出现。
@@ -150,11 +152,11 @@ const ledgerRowOk = row => isPlain(row) && (row.outcome === 'rejected' ? rejecti
 // ---- store ----
 
 /**
- * `stateDir` 是插件状态目录，表与记录在它下面的 `rpc/`。`now` 可换（测试用）。
+ * `stateDir` 是插件状态目录，表与记录在它下面的 `rpc/`。`now` 与生成授权号的 `newId` 可换（测试用）。
  * 操作记录的顺手清扫失败（如跨截止日的月份文件损坏）不影响读写，用 `ledger_maintenance` 错误交给 `onMaintenanceError`（默认写到 stderr），下次再试。
  * 所有方法都是异步的、排成一条队；读到损坏的表就抛 `corrupt`（见 `isCorrupt`）。
  */
-export function createRpcStore(stateDir, { now = Date.now, onMaintenanceError = e => console.error(e.message) } = {}) {
+export function createRpcStore(stateDir, { now = Date.now, newId = randomUUID, onMaintenanceError = e => console.error(e.message) } = {}) {
   const dir = join(stateDir, 'rpc');
   let chain = Promise.resolve(), prunedDay = null;
   const serial = work => {
@@ -167,15 +169,21 @@ export function createRpcStore(stateDir, { now = Date.now, onMaintenanceError = 
 
   // ---- 授权 ----
 
-  // 授权号冲突、形状不对都是调用方的错；`target` 是固定的 { owner, provider, kind, id }。
-  const addGrant = ({ id, holder, grantee, granteePerson, target, createdAt }) => serial(async () => {
-    const entry = { id, holder, grantee, granteePerson, target, ops: ['exec'], createdAt };
-    if (!grantOk(entry)) throw invalid('授权的各项不合格');
+  // 形状不对是调用方的错；`target` 是固定的 { owner, provider, kind, id }。给 `{ created, entry }`。
+  // 同一把机器钥匙、同一位好友、同一个目标已有没撤的授权：原样给回那一条（`created: false`），不生成授权号、不写盘（重试授予不会多出一条撤不干净的）。
+  // 撤了的不算；`ended(grant)` 给原因的（调用方还没落盘的失效，同 markSubmitted）也不算。没命中才生成授权号、落盘（`created: true`）；生成的授权号已存在就拒绝，旧行不动。
+  const addGrant = ({ holder, grantee, granteePerson, target, createdAt }, ended = () => null) => serial(async () => {
+    const fields = { holder, grantee, granteePerson, target, ops: ['exec'], createdAt };
+    if (!grantFieldsOk(fields)) throw invalid('授权的各项不合格');
     const grants = await load('grants');
-    if (grants[id]) throw invalid(`授权号 ${id} 已存在`);
-    grants[id] = entry;
+    const live = Object.values(grants).find(one => one.revokedAt === undefined && one.holder.machine === holder.machine && one.grantee === grantee
+      && ['owner', 'provider', 'kind', 'id'].every(key => one.target[key] === target[key]) && !ended(one));
+    if (live) return { created: false, entry: live };
+    const entry = { id: newId(), ...fields };
+    if (grants[entry.id]) throw invalid(`授权号 ${entry.id} 已存在`);
+    grants[entry.id] = entry;
     await save('grants', grants);
-    return entry;
+    return { created: true, entry };
   });
 
   // 撤权：先落盘再返回；已撤的不改撤回时刻。没有这条授权给 null。`endedBy` 写明不是本人撤的（目标不在了、本机的机器钥匙变了、被授权的好友换了作者而失效）。
@@ -216,9 +224,8 @@ export function createRpcStore(stateDir, { now = Date.now, onMaintenanceError = 
   const purged = entries => Object.fromEntries(Object.entries(entries).filter(([, entry]) =>
     !(entry.retracted === true && entry.ledger === undefined && now() >= entry.notAfter + KEEP_AFTER_EXPIRY_MS)));
 
-  // 表满时还能清的：结局已签出、操作记录已写进去、已过期（不再承担去重），且回答已撤回或已过撤回期。没签出的、没记账的、没过期的一律不动。
-  const reclaimable = entry => entry.signed === true && entry.ledger === undefined && now() >= entry.notAfter
-    && (entry.retracted === true || now() >= answerDueAt(entry.finishedAt));
+  // 表满时还能清的：结局已签出、回答已撤回、操作记录已写进去、已过期（不再承担去重）。回答到了撤回时刻还没撤成的也留着，等 sweep 撤完再腾位置。
+  const reclaimable = entry => entry.signed === true && entry.retracted === true && entry.ledger === undefined && now() >= entry.notAfter;
 
   const counts = (entries, caller) => {
     const tally = state => {

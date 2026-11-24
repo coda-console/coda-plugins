@@ -13,7 +13,6 @@
 // - 在途表是唯一的工作队列：准入、提交、终态（连同要记的那一行操作记录）、记账、签出、撤回答都落在它上面，重启与证书恢复后照它接着做；
 //   这几步都做完的才会被清掉。
 // - 签名只经网关的内部入口（signRpc、retractRpc），签不了时什么也不发。
-import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { isDeepStrictEqual } from 'node:util';
 import { certStateOf, statusOf } from './friends.mjs';
@@ -571,10 +570,14 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
     const me = await identity();
     if (!me.bound.has(friend)) throw invalid('这位不是已绑定好友通道的好友');
     if (!isAuthor(me.machine)) throw fail('invalid_state', '读不出本机的机器钥匙，不能授权');
-    const row = await store.addGrant({ id: randomUUID(), holder: { machine: me.machine }, grantee: friend, granteePerson: me.bound.get(friend),
-      target: { owner: entry.owner, provider: entry.plugin, kind: target.kind, id: target.id }, createdAt: now() });
-    for (const one of pendingEnds.values()) one.after.add(row.id);
-    await settle(row.id);
+    // 同一好友、同一目标已有没撤、也不在待落盘失效里的授权时，store 原样给回那一条（页面重试授予拿到的还是它），这里什么也不另做。
+    const added = await store.addGrant({ holder: { machine: me.machine }, grantee: friend, granteePerson: me.bound.get(friend),
+      target: { owner: entry.owner, provider: entry.plugin, kind: target.kind, id: target.id }, createdAt: now() }, pendingEnd), row = added.entry;
+    // 新授出的：不归此前的失效管，并发出授权记录。
+    if (added.created) {
+      for (const one of pendingEnds.values()) one.after.add(row.id);
+      await settle(row.id);
+    }
     return describe(row, me, entry);
   }
 
