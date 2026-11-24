@@ -38,9 +38,11 @@ export async function pull(env, request, ctx) {
     let sent = 0, recorded = false, controller;
     const record = fields => { if (!recorded) { recorded = true; return op.record(fields); } };
     // 调用被中止：文件关掉，响应体当场以取消的原因出错（预读的块随之丢掉），并记一行，不等调用方再读。
+    // 响应体建立之前（还在读第一块）只关文件：随后 next 抛出取消的原因，由 guard 记那一行。
     const onAbort = () => {
       file.destroy();
-      controller?.error(ctx.signal.reason);
+      if (!controller) return;
+      controller.error(ctx.signal.reason);
       record({ error: errorCode(ctx.signal.reason) });
     };
     ctx.signal.addEventListener('abort', onAbort, { once: true });

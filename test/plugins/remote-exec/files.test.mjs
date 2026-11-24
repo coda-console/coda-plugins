@@ -264,6 +264,19 @@ test('pull: when the call is aborted the body ends at once with the reason, the 
   await assert.rejects(response.body.getReader().read(), error => error === away);
 });
 
+test('pull: aborted while the first chunk is still being read, the signal reason is thrown and exactly one cancelled line is written', async t => {
+  const file = join(scratch(t), 'f'), away = new DOMException('away', 'AbortError');
+  writeFileSync(file, 'abc');
+  let reading_ = null;
+  await withFailingFile(real => ({ stat: () => real.stat(), close: () => real.close(), createReadStream: () => { real.close(); reading_ = true; return new Readable({ read() {} }); } }), async () => {
+    const one = reading(t, { path: file }), failed = assert.rejects(one.response, error => error === away);
+    await waitFor(() => reading_, '开始读第一块');
+    one.controller.abort(away);
+    await failed;
+    assert.deepEqual(one.host.lines().map(line => line.error), ['cancelled']);
+  });
+});
+
 test('push: one abort listener for the whole upload, not a callback per chunk', async t => {
   const dir = scratch(t), path = join(dir, 'many'), chunks = 3000, controller = new AbortController(), real = controller.signal;
   let added = 0, removed = 0;
