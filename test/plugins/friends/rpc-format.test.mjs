@@ -143,7 +143,12 @@ test('a body with the wrong version, an unknown field, a missing field or a wron
   }
   assert.equal(check(bodyOf({ result: { ...EXEC, ms: -1 } })), 'bad_body');
   assert.equal(check(bodyOf({ result: { ...EXEC, exitCode: '0' } })), 'bad_body');
-  assert.equal(check(bodyOf({ result: { ...EXEC, extra: 1 } })), 'bad_body', 'completed with a field the protocol does not have');
+  // 结果多出的字段（持有方的远程执行插件以后加的）不拒收，交出的结果里丢掉；已知字段照旧核对。
+  const extra = verifyAnswer(received({ ...answer(), body: bodyOf({ result: { ...EXEC, extra: 1 } }) }, HOLDER), { self: CALLER, peer: HOLDER });
+  assert.deepEqual([extra.ok, extra.body.result], [true, EXEC], 'completed with a field the protocol does not have: accepted, the field dropped');
+  assert.equal(check(bodyOf({ result: { ...EXEC, extra: 1, exitCode: '0' } })), 'bad_body', 'an extra field does not excuse a known one of the wrong type');
+  const { ms, ...noMs } = EXEC;
+  assert.equal(check(bodyOf({ result: { ...noMs, extra: 1 } })), 'bad_body', 'an extra field does not stand in for a missing one');
   assert.equal(check({ ...noResult, state: 'failed' }), 'bad_body', 'failed without error');
   assert.equal(check({ ...noResult, state: 'failed', error: { code: 'x', message: 'y' } }), 'bad_body', 'failed without effects');
   assert.equal(check({ ...noResult, state: 'failed', error: { ...failedError, effects: 'maybe' } }), 'bad_body', 'failed with unknown effects');
@@ -315,6 +320,8 @@ test('an answer within 60 KiB is kept as it is; one over it is cut to fit with t
   check(shortenedOf(cut.body));
   assert.match(shortenedOf(cut.body).stdout, /^o+\n\[… 省略了 \d+ 字节[^\n]*…\]\no+$/);
   assert.equal(verifyAnswer(received(cut, HOLDER), { self: CALLER, peer: HOLDER }).ok, true);
+  const cutExtra = verifyAnswer(received(answer({ result: { ...big, extra: 1 } }), HOLDER), { self: CALLER, peer: HOLDER });
+  assert.deepEqual([cutExtra.ok, cutExtra.body.cut, 'extra' in cutExtra.body.result, cutExtra.body.result.truncated], [true, true, false, true], 'a cut answer with an extra field passes, the field dropped');
   // 省略的字节数是对的：留下的加省略的等于原来的。
   const kept = shortenedOf(cut.body).stdout.split('\n'), omitted = Number(/省略了 (\d+) 字节/.exec(kept[1])[1]);
   assert.equal(kept[0].length + kept[2].length + omitted, 100_000);

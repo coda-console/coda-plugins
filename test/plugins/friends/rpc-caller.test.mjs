@@ -985,7 +985,7 @@ test('a final answer read but not yet handed back when I restart: the request is
   release();
 });
 
-test('a request expired 24 hours and more when I restart keeps its outgoing entry through the resume window, and resume hands back the holder\'s signed final answer', async t => {
+for (const canceled of [false, true]) test(`a request expired 24 hours and more when I restart keeps its outgoing entry through the resume window, and resume${canceled ? ' (canceled)' : ''} hands back the holder's signed final answer${canceled ? ' without signing a cancel' : ''}`, async t => {
   const world = worldFake(), h = await holderOf(t, world);
   const { first, grant, call } = await sentThenStopped(t, world, h);
   h.node.deaf = false;
@@ -998,7 +998,24 @@ test('a request expired 24 hours and more when I restart keeps its outgoing entr
   await next.caller.tick();
   assert.ok(next.retracted(call.request), '撤回请求照旧');
   assert.ok(await next.store.getOutgoing(call.request), '过期满 24 小时的发出项在恢复期内也不删');
-  assert.equal((await next.resume({ grant, id: call.id })).stdout, 'ran echo late');
+  assert.equal((await next.resume({ grant, id: call.id, canceled })).stdout, 'ran echo late');
+  await next.caller.tick();
+  // 已撤回的请求不补签取消：目录里仍没有这条请求，撤回之后没有再签过它，发出项已删。
+  const signed = next.node.calls.filter(one => one.kind === CALL && one.id === call.request);
+  assert.deepEqual([world.records.some(record => record.kind === CALL && record.id === call.request), Object.keys(signed.at(-1).body).length, next.cancels(call.request),
+    await next.store.getOutgoing(call.request)], [false, 0, [], null]);
+});
+
+test('a request I already withdrew is not canceled by resume even when the clock goes back before expiresAt: no cancel is signed and the command does not come back to the directory', async t => {
+  const world = worldFake(), h = await holderOf(t, world);
+  const { first, grant, call } = await sentThenStopped(t, world, h);
+  world.clock.now = START + 5 * MINUTE + 24 * 60 * MINUTE + MINUTE;
+  const next = await restarted(t, world, first);
+  await next.caller.tick();
+  assert.ok(next.retracted(call.request), '启动清扫撤回请求');
+  world.clock.now = START + MINUTE;
+  await rejectsWith(next.resume({ grant, id: call.id, canceled: true }), 'interrupted', 'unknown', call.request);
+  assert.deepEqual([next.cancels(call.request), world.records.some(record => record.kind === CALL && record.id === call.request)], [[], false]);
 });
 
 for (const [why, code, act] of [
@@ -1041,6 +1058,16 @@ test('a call canceled while the gateway reads my signing identity ends as cancel
 });
 
 // ---- 大小 ----
+
+test('a completed answer whose result has a field this version does not know is handed back without that field', async t => {
+  const world = worldFake(), h = await holderOf(t, world), c = await callerOf(t, world);
+  const grant = await granted(h, c);
+  h.exec.plan = () => ({ exitCode: 0, signal: null, stdout: 'new\n', stderr: '', timedOut: false, truncated: false, outputDir: null, ms: 3, cpuMs: 2 });
+  const call = c.exec({ grant });
+  await until(async () => !(await pending(call.promise)), '交出结局');
+  assert.deepEqual(await call.promise, { exitCode: 0, signal: null, stdout: 'new\n', stderr: '', timedOut: false, truncated: false, outputDir: null, ms: 3 });
+  assert.equal(h.lastAnswer(ROOT, call.request).result.cpuMs, 2, 'the holder did sign the extra field');
+});
 
 test('a request over 56 KiB is refused on the spot; a truncated answer is handed back with truncated set', async t => {
   const world = worldFake(), h = await holderOf(t, world), c = await callerOf(t, world);

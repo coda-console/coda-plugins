@@ -280,9 +280,10 @@ export function createCaller(coda, { store, signRpc, retractRpc, onAccord, pages
 
   // 取消：同一请求号的更高版本，带 cancel: true。发出去记 canceled；发不出去（离线、证书不可用）记 cancel_pending，清扫时在有效期内补发。
   // 给回是否发出去了。
-  async function sendCancel(entry) {
+  // `beforePublish`（可省）照网关的同名钩子：读完签名身份、发布之前调一次，抛错就不发。
+  async function sendCancel(entry, beforePublish) {
     let sent = true;
-    try { await signRpc(cancelRecord(entry.body, now())); } catch { sent = false; }
+    try { await signRpc(cancelRecord(entry.body, now()), { beforePublish }); } catch { sent = false; }
     await store.setOutgoingState(entry.request, sent ? 'canceled' : 'cancel_pending').catch(() => {});
     return sent;
   }
@@ -303,7 +304,11 @@ export function createCaller(coda, { store, signRpc, retractRpc, onAccord, pages
       if (!entry || halted) return null;
       const mine = (await identity()).author === entry.author;
       if (halted) return null;
-      if (mine && call.canceled && ['sent', 'cancel_pending'].includes(entry.state)) await sendCancel(entry);
+      // 已撤回或过了 expiresAt 的不补签取消（补签会把命令正文重新留在目录里），只读回答；网关读完签名身份、发布之前再看一次。
+      const open = () => !withdrawn.has(request) && now() < entry.expiresAt;
+      if (mine && call.canceled && ['sent', 'cancel_pending'].includes(entry.state) && open()) {
+        await sendCancel(entry, () => { if (!open()) throw fail('invalid_state', `请求已撤回或已过期，不再补签取消（请求号 ${request}）`, 'none'); });
+      }
       const answer = mine && !halted ? await readAnswer(entry) : null;
       if (halted) return null;
       const terminal = answer && TERMINAL.includes(answer.state) ? answer : null;
