@@ -68,7 +68,8 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
   const seen = new Map(); // `${作者}/${请求号}` → 已经处理过的版本
   const drives = new Map(); // 在途键 → { again }：同一项同时只有一个在做
   const running = new Map(); // 在途键 → 已提交那次调用的 AbortController
-  const unissued = new Set(); // 在途键：本进程刚提交、还没向内核发过调用的（重启后接手的不在里面，之前发没发过无从知道）
+  const unissued = new Set(); // 在途键：本进程提交了、还没向内核发过调用的，留到首次调用发出或终态落盘成功（重启后接手的不在里面，之前发没发过无从知道）
+  const outcomes = new Map(); // 在途键 → 已得出、还没落盘成功的结局：终态写盘失败重来时照它补写，不再调内核
   const since = new Map(); // 在途键 → 本进程开始经手它的单调时刻
   const availability = new Map(); // 目标记录 id → 上次看到的 available
   const dirtyGrants = new Set(); // 授权记录还没跟上（发或撤还没成）的授权号
@@ -303,7 +304,7 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
   const answerBody = (entry, grant, { state, finishedAt, result, error }) =>
     ({ holder: grant.holder.machine, caller: entry.caller, grant: entry.grant, request: entry.request, digest: entry.digest, state, acceptedAt: entry.admittedAt, finishedAt, result, error });
 
-  // 取消：没提交的标记后答 canceled；已提交的中止那次调用，结局照它实际的结束方式给。`by` 是授权失效的原因：撤销与失效取消已提交的调用时给，
+  // 取消：没提交的标记后答 canceled；已提交的中止那次调用，结局见 execute。`by` 是授权失效的原因：撤销与失效取消已提交的调用时给，
   // 记在在途项上，结局与回答里写明。
   async function cancel(entry, by) {
     if (!TERMINAL.includes(entry.state)) {
@@ -374,45 +375,51 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
   const refused = problem => ({ state: 'failed', error: { code: problem, message: `${REASONS[problem]}，命令没有启动`, effects: 'none' } });
   const endedReason = by => by === 'revoked' ? '对方撤销了授权' : REASONS[by];
   const canceledOutcome = by => ({ state: 'canceled', error: { code: 'canceled', message: by ? `${endedReason(by)}，命令没有启动` : '调用方取消了这次调用，命令没有启动', effects: 'none' } });
+  const interrupted = why => ({ state: 'failed', error: { code: 'interrupted', message: `${why}；命令可能已在本机执行，结果不明`, effects: 'unknown' } });
 
   // 调本机那条记录的 exec，带内核幂等键：重启后再调接上原来的调用、拿到它的结局，不会再执行一遍。
-  // 授权失效取消的调用：调用内核确认取消了的记 canceled，回答里写明失效原因；跑完了的、以别的原因失败的，照实。
+  // 取消之后绝不再用这个幂等键调内核（SDK 没有只查不建的调用，路由期间取消的那次还没登记，再调就会新建、把命令跑起来），结局只按本进程确认得了的写：
+  // - 首次调用发出之前就取消了：canceled、效果 none，命令一次也没跑；
+  // - 那次调用在中止生效之前自己结束了：照它的结局；
+  // - 其余（已发出，或重启后接手、发没发过不知道）：interrupted、效果 unknown。
+  // SDK 的 coda.call 中止后立即以 signal 的中止原因失败，之后内核怎么结束不再交回，所以中止之后拿不到原调用的结局。
   async function execute(entry) {
-    const key = inflightKey(entry.caller, entry.request), controller = new AbortController(), fresh = unissued.delete(key);
+    const key = inflightKey(entry.caller, entry.request), controller = new AbortController();
     running.set(key, controller);
     try {
       // 先登记中止的手柄、再读一次：取消落在这之前的，这里看得到；落在之后的，会经手柄中止。
       if ((await store.get(entry.caller, entry.request))?.canceled) controller.abort();
       const { target, input } = entry.call;
       const deadline = entry.notAfter + (input.timeout ?? DEFAULT_TIMEOUT_S) * 1000 + EXEC_GRACE_MS;
-      const exec = signal => coda.call({ kind: target.kind, id: target.id }, 'exec', input, { id: entry.key, timeout: Math.max(deadline - now(), RESUME_MS), ...(signal ? { signal } : {}) });
-      let outcome;
-      if (controller.signal.aborted) {
-        // 首次调用发出之前就取消了：不调内核，免得用这个幂等键新建一次调用、把命令跑起来。本进程刚提交的，命令一次也没跑；
-        // 重启后接手的，之前发没发过无从知道，不重调，命令可能已经执行。
+      let outcome = outcomes.get(key);
+      if (outcome === undefined && controller.signal.aborted) {
+        // 「没发出」的标记留到终态落盘成功：落盘失败重来时仍签 canceled。重启后接手的不在 `unissued` 里。
         const by = (await store.get(entry.caller, entry.request))?.canceledBy;
-        outcome = fresh ? canceledOutcome(by) : { state: 'failed', error: { code: 'interrupted', message: '重启前这次调用是否已发出无法确认，已取消、不再重调，命令可能已经执行', effects: 'unknown' } };
-      } else try {
-        let result;
-        // 本机中止一发出，这次 call 就以中止原因失败，对方之后怎么结束不再告诉它：用同一个幂等键不带 signal 再调一次，接上已发出的那次，拿它真实的结局。
-        try { result = await exec(controller.signal); } catch (e) {
-          if (!controller.signal.aborted) throw e;
-          try { result = await exec(); } catch (second) {
-            // 重调在路由、找目标这一层就失败（目标已没了）：说的是第二次没发出去，不是原调用的结局；原调用的下落不明。
-            if (second?.code === 'not_found' && targetProblem({ target }, await targetOf(target))) throw Object.assign(new Error(`取消后没能接回原调用的结局：${message(second)}`), { code: 'interrupted', effects: 'unknown' });
-            throw second;
-          }
-        }
-        outcome = { state: 'completed', result };
+        outcome = unissued.has(key) ? canceledOutcome(by) : interrupted('重启前这次调用是否已发出无法确认，已取消、不再重调');
+      } else if (outcome === undefined) try {
+        unissued.delete(key);
+        outcome = { state: 'completed', result: await coda.call({ kind: target.kind, id: target.id }, 'exec', input,
+          { id: entry.key, timeout: Math.max(deadline - now(), RESUME_MS), signal: controller.signal }) };
       } catch (e) {
-        const effects = EFFECTS.includes(e?.effects) ? e.effects : 'unknown', by = (await store.get(entry.caller, entry.request))?.canceledBy;
-        // 调用内核确认是取消的才记 canceled；跑完的照实完成，执行端以别的原因失败的（interrupted 等）照实记它自己的错误，拿不到结局的效果记 unknown。
-        if (by && ['canceled', 'cancelled'].includes(e?.code)) {
-          outcome = { state: 'canceled', error: { code: 'canceled', message: `${endedReason(by)}，调用已取消`, effects } };
-        } else outcome = { state: 'failed', error: { code: String(e?.code ?? 'internal'), message: message(e), effects } };
+        const by = (await store.get(entry.caller, entry.request))?.canceledBy;
+        // 中止后交回的是中止原因（AbortError），不是原调用的结局；中止前已自己结束的，照它的结局分类。
+        if (controller.signal.aborted && (e === controller.signal.reason || e?.name === 'AbortError')) {
+          outcome = interrupted(by ? `${endedReason(by)}，已中止这次调用` : '调用方取消了这次调用，已中止');
+        } else {
+          const effects = EFFECTS.includes(e?.effects) ? e.effects : 'unknown';
+          // 调用内核确认是取消的才记 canceled；跑完的照实完成，执行端以别的原因失败的（interrupted 等）照实记它自己的错误，拿不到结局的效果记 unknown。
+          if (by && ['canceled', 'cancelled'].includes(e?.code)) {
+            outcome = { state: 'canceled', error: { code: 'canceled', message: `${endedReason(by)}，调用已取消`, effects } };
+          } else outcome = { state: 'failed', error: { code: String(e?.code ?? 'internal'), message: message(e), effects } };
+        }
       }
+      outcomes.set(key, outcome);
       // 停了就不再落盘、不签：下次启动用同一个幂等键取回结局。
-      return stopped ? null : await end(entry, outcome);
+      if (stopped) return null;
+      const done = await end(entry, outcome);
+      outcomes.delete(key);
+      unissued.delete(key);
+      return done;
     } finally {
       running.delete(key);
       kick();
