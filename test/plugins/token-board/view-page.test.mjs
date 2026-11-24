@@ -1,17 +1,19 @@
 // 页面：视图里有几台就读几台、按人合并；页面不自己选机器，消息都带 machine 发给每台。
 import assert from 'node:assert/strict';
 import { mock, test } from 'node:test';
-import { flush, openPage } from '../view-dom.mjs';
+import { deferred, flush, openPage } from '../view-dom.mjs';
 import { A, B, C, DAY, X, Y, bucket, dayRec, reply } from './boards.mjs';
 
 // 严格多机的 window.coda：不指明 machine 的 postMessage 直接拒绝；rejects 里的机器发送一律失败。
-function strictCoda(machines, { rejects = [], state = {} } = {}) {
-  const log = { sent: [], watches: [], saved: [] };
+// hold(msg, machine) 可以返回一个 promise 把这条发送挂住，之后再让它成功或失败。
+function strictCoda(machines, { rejects = [], state = {}, hold } = {}) {
+  const log = { sent: [], watches: [], saved: [], toolbars: [] };
   const coda = {
-    machine: machines[0], machines, getState: () => state, setState: value => log.saved.push(value), on() {}, toolbar: async () => {}, header: async () => {},
+    machine: machines[0], machines, getState: () => state, setState: value => log.saved.push(value), on() {}, toolbar: async items => { log.toolbars.push(items); }, header: async () => {},
     async postMessage(msg, options) {
       if (!options?.machine) throw new Error('这一页有几台机器，postMessage 须指明 machine');
       if (rejects.includes(options.machine)) throw new Error(`no route to ${options.machine}`);
+      await hold?.(msg, options.machine);
       log.sent.push([msg.type, options.machine, msg]);
     },
     watch(kind, cb, selector, options) { log.watches.push({ kind, cb, machine: options?.machine }); return Promise.resolve({ dispose() {} }); },
@@ -229,4 +231,133 @@ test('开关和撤回：没连上的成员写明没有执行；同步仍只发�
   await flush();
   assert.deepEqual(sentTo(log, 'sync'), ['x']);
   assert.ok(!page.text().includes('没连上，没有撤回'), '同步不带这条');
+});
+
+test('每一轮读取给每台发同一组 from、to；切换范围、刷新各自一轮，每轮各台仍收到同一组', async t => {
+  // 固定在当地 23:59:59.999：to 是排他上界（now + 1），已经跨到次日，期望值要从这一刻独立算。
+  const at = new Date(2026, 10, 20, 23, 59, 59, 999).getTime();
+  mock.timers.enable({ apis: ['Date', 'setTimeout'], now: at });
+  t.after(() => mock.timers.reset());
+  const headers = [];
+  const { coda, log } = strictCoda([X, Y]);
+  coda.on = (name, fn) => { headers.push([name, fn]); };
+  const page = await openPage(t, 'plugins/token-board/view/app.mjs', coda);
+  await flush();
+  const dayStart = back => new Date(2026, 10, 20 - back).getTime();
+  const rounds = want => {
+    const boards = log.sent.filter(([type]) => type === 'board');
+    log.sent.length = 0;
+    assert.deepEqual(boards.map(([, machine]) => machine), ['x', 'y']);
+    for (const [, , msg] of boards) assert.deepEqual([msg.range, msg.from, msg.to], [want.range, want.from, want.to]);
+  };
+  page.reply(status(false), { id: 'x' });
+  await flush();
+  rounds({ range: '7d', from: dayStart(6), to: at + 1 });
+  headers.find(([name]) => name === 'header')[1]({ id: 'today' });
+  await flush();
+  rounds({ range: 'today', from: dayStart(0), to: at + 1 });
+  mock.timers.tick(1);   // 刷新那一刻已是次日：窗口随之整体换成新的一组，两台仍一致
+  page.button('刷新中…').fire('click');
+  await flush();
+  rounds({ range: 'today', from: dayStart(-1), to: at + 2 });
+});
+
+// 分享状态：没回报、读不到的电脑不能被当成「没有分享」。
+const shareToggle = log => log.toolbars.at(-1).find(item => item.id === 'share');
+const WRONG = ['没有向好友分享', '正在向好友分享每日汇总'];
+
+test('分享状态：A 已回报关闭、B 还没回报：按台列出，不说整个视图没有分享，工具栏不给开关', async t => {
+  const { page, log } = await open(t, [X, Y]);
+  page.reply(status(false), { id: 'x' });
+  await flush();
+  const text = page.text();
+  assert.ok(text.includes('Mac：没有分享') && text.includes('rig：还没取到分享状态'));
+  for (const wrong of WRONG) assert.ok(!text.includes(wrong));
+  assert.equal(shareToggle(log), undefined);
+  page.reply(status(false), { id: 'y' });
+  assert.ok(page.text().includes('没有向好友分享'), '都回报了才合成一份');
+  assert.equal(shareToggle(log).on, false);
+});
+
+test('分享状态：A 已回报关闭、B 读不到：写明 B 读不到，不说整个视图没有分享', async t => {
+  const { page, log } = await open(t, [X, { id: 'z', name: 'nas', unreachable: '断开' }]);
+  page.reply(status(false), { id: 'x' });
+  await flush();
+  const text = page.text();
+  assert.ok(text.includes('nas：读不到分享状态：断开') && text.includes('Mac：没有分享'));
+  for (const wrong of WRONG) assert.ok(!text.includes(wrong));
+  assert.equal(shareToggle(log), undefined);
+});
+
+test('分享状态：全都没回报：不显示成关闭，工具栏不给开关', async t => {
+  const { page, log } = await open(t, [X, Y]);
+  const text = page.text();
+  assert.ok(text.includes('Mac：还没取到分享状态') && text.includes('rig：还没取到分享状态'));
+  for (const wrong of WRONG) assert.ok(!text.includes(wrong));
+  assert.equal(shareToggle(log), undefined);
+});
+
+test('失败按请求认：新榜单成功后，旧榜单请求的发送才被拒，新数据还在', async t => {
+  const old = deferred();
+  let held = false;
+  const { page, log } = await open(t, [X, Y], { hold: (msg, machine) => { if (msg.type === 'board' && machine === 'x' && !held) { held = true; return old.promise; } } });
+  page.reply(status(false), { id: 'x' });
+  await flush();
+  page.button('刷新中…').fire('click');
+  await flush();
+  answer(page, log, 'x', reply({ selfAuthor: A, sourceId: 'x', local: mac }));
+  answer(page, log, 'y', reply({ selfAuthor: A, sourceId: 'y', local: rig }));
+  assert.ok(page.text().includes('1.30K'));
+  old.reject(new Error('迟到的发送失败'));
+  await flush();
+  assert.ok(page.text().includes('1.30K'), '新数据没被清掉');
+  assert.ok(!page.text().includes('读不到') && !page.text().includes('不完整'));
+});
+
+test('失败按请求认：hello 发送失败不清掉已成功的榜单，也不解除写操作的忙碌状态', async t => {
+  let failHello = false;
+  const { page, log } = await open(t, [X, Y], { hold: msg => { if (failHello && msg.type === 'hello') throw new Error('hello 发不出去'); } });
+  page.reply(status(false), { id: 'x' });
+  page.reply(status(false), { id: 'y' });
+  await flush();
+  answer(page, log, 'x', reply({ selfAuthor: A, sourceId: 'x', local: mac }));
+  answer(page, log, 'y', reply({ selfAuthor: A, sourceId: 'y', local: rig }));
+  page.button('开启分享').fire('click');
+  assert.ok(page.button('开启分享').attrs.disabled !== undefined, '写操作进行中');
+  failHello = true;
+  page.button('刷新').fire('click');
+  await flush();
+  assert.ok(page.text().includes('1.30K'), '榜单还在');
+  assert.ok(!page.text().includes('读不到'));
+  assert.ok(page.text().includes('Mac：发送失败：hello 发不出去'));
+  assert.ok(page.button('开启分享').attrs.disabled !== undefined, '忙碌状态还在');
+});
+
+test('两台身份不同、互为好友：两个人都标「我」，也不写「还没有好友」；真的没有好友才写', async t => {
+  const { page, log } = await open(t, [X, Y]);
+  page.reply(status(false), { id: 'x' });
+  await flush();
+  answer(page, log, 'x', reply({ selfAuthor: A, sourceId: 'x', local: mac, friends: [{ author: C }] }));
+  answer(page, log, 'y', reply({ selfAuthor: C, sourceId: 'y', local: rig, friends: [{ author: A }] }));
+  assert.equal(page.all(n => n.attrs?.class === 'row').length, 2);
+  assert.equal(page.all(n => n.attrs?.class === 'me').length, 2);
+  assert.ok(!page.text().includes('还没有好友'));
+  answer(page, log, 'x', reply({ selfAuthor: A, sourceId: 'x', local: mac }));
+  answer(page, log, 'y', reply({ selfAuthor: C, sourceId: 'y', local: rig }));
+  assert.ok(page.text().includes('还没有好友'));
+});
+
+test('分享状态：A 回报关闭、B 的 hello 被拒：B 那一行写读取失败和原因，不是「还没取到」；后端回错误也一样', async t => {
+  const { page, log } = await open(t, [X, Y], { hold: (msg, machine) => { if (msg.type === 'hello' && machine === 'y') throw new Error('hello 被拒'); } });
+  page.reply(status(false), { id: 'x' });
+  await flush();
+  const text = page.text();
+  assert.ok(text.includes('rig：读取分享状态失败：hello 被拒') && text.includes('Mac：没有分享'));
+  assert.ok(!text.includes('还没取到分享状态'));
+  for (const wrong of WRONG) assert.ok(!text.includes(wrong));
+  assert.equal(shareToggle(log), undefined, '全局开关仍隐藏');
+  page.reply({ type: 'error', request: 'hello', message: '读设置失败' }, { id: 'x' });
+  assert.ok(page.text().includes('Mac：没有分享'), '已回报过的状态不被一次失败盖掉');
+  page.reply(status(false), { id: 'y' });
+  assert.ok(!page.text().includes('读取分享状态失败') && page.text().includes('没有向好友分享'), '之后回报了就恢复');
 });

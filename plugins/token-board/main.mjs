@@ -207,7 +207,7 @@ class Board {
         return;
       case 'board': {
         const range = RANGES.includes(request.range) ? request.range : this.settings.range;
-        const result = await this.board(range, request.id);
+        const result = await this.board(range, request.id, request);
         // 宿主丢弃超过上限的消息，页面既收不到回包也收不到错误：量过，放不下就回一个送得到的失败。
         if (JSON.stringify({ message: result }).length > MESSAGE_LIMIT) throw new Error(`榜单明细超过宿主 ${MESSAGE_LIMIT / 1024} KiB 的消息上限，没能送达`);
         view.postMessage(result);
@@ -235,9 +235,10 @@ class Board {
   // ——— 榜单 ———
 
   // 统计只靠本机用量和已读到的记录：好友网关、好友、各种记录读不到都只记一条提示，本机统计与曲线照常返回。
-  async board(range, id) {
+  // 窗口优先用页面发来的 from、to（几台电脑共用同一段时间）；没带或不成窗口才按本机的当地时间由 range 算。
+  async board(range, id, asked) {
     const now = Date.now();
-    const { from, to } = rangeWindow(range, now);
+    const { from, to } = Number.isFinite(asked?.from) && Number.isFinite(asked?.to) && asked.from < asked.to ? asked : rangeWindow(range, now);
     await this.refreshSource();
     const result = { type: 'board', id, range, from, to, share: this.share, accord: false, selfAuthor: null, errors: [], truncated: { usage: false, friends: false, profiles: false },
       friendCount: 0, local: null, people: [], sources: [], retired: [], curve: [], syncState: this.share ? 'no_gateway' : 'disabled' };

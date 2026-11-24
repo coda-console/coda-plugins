@@ -216,7 +216,7 @@ editor.dialog.body.append(h('div', { class: 'ed-cols' },
     h('div', { class: 'field' }, h('span', { class: 'lbl' }, '主题色'), editor.swatches))));
 
 const modeOf = card => (card.avatar ? 'photo' : !card.emoji ? 'identicon' : card.emoji === initialChar(card.name, '') ? 'monogram' : 'emoji');
-// 改名片只发给这个身份的一台（id.signer），靠目录库同步到同一身份的其他台；头像也上传到这一台。
+// 改名片只发给这个身份的一台（id.signer），页面只确认这一台写入成功；同一身份的其他台要等 Coda 基座同步后才显示新名片（本插件不保证、不检查）；头像也上传到这一台。
 function openEditor(id) {
   if (!id.signer) return;
   editorGen++;

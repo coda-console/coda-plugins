@@ -329,6 +329,23 @@ for (const [name, setup] of [
   });
 }
 
+test('榜单按页面发来的 from、to 查本机用量：落在窗口内、但在这台当地午夜之前的用量也算', async t => {
+  freeze(t);
+  const midnight = startOfBucket(new Date(new Date(now).getFullYear(), new Date(now).getMonth(), new Date(now).getDate()).getTime());
+  const early = bucket(midnight - 3_600_000), asked = { from: midnight - 7_200_000, to: now + 1 };
+  const state = mkdir(t), host = fake({ state, usage: [early] });
+  activate(host.coda);
+  const page = host.open();
+  page.tell({ type: 'board', range: 'today', ...asked, id: 1 });
+  const board = await page.waitFor('board');
+  assert.deepEqual([board.from, board.to], [asked.from, asked.to]);
+  assert.equal(board.local.totalTokens, 116, '自己的「今天」从当地午夜起算，会漏掉这条');
+  const seen = page.got.length;
+  page.tell({ type: 'board', range: 'today', id: 2 });
+  const own = await page.waitFor('board', seen);
+  assert.equal(own.local.totalTokens, 0, '没带窗口时仍按自己的当地时间算今天');
+});
+
 test('没有好友插件：手动撤回不假装成功，保留本机已知发布 ID 索引，提示清晰；装回来之后能撤', async t => {
   freeze(t);
   const state = mkdir(t), host = fake({ state, settings: { 'token-board.share': true }, usage: [bucket(startOfBucket(now))] });

@@ -28,7 +28,7 @@ const better = (source, held) => {
  * - `entries`：榜单，每个作者一行，格式同单台的 entries；
  * - `locals`：本机用量，每个身份一块 `{ author, machines, ...合计与分模型, truncated }`；同一身份（selfAuthor）的几台相加，没有身份的每台各算一块；
  * - `problems`：`[{ machine, reason, partial? }]`，`pending`：还在等回包的机器；`incomplete` 为真表示合计还不全；
- * - `readable`：有没有读到回包的机器；`accord`、`noAccord`（读到了但没有 Accord 身份的机器）、`errors`（各台回包里的提示 `{ machine, text }`）、`truncated`。
+ * - `readable`：有没有读到回包的机器；`friends`：读到回包的机器里有没有哪台有好友（回包的 `friendCount`，与榜上谁是「我」无关）；`accord`、`noAccord`（读到了但没有 Accord 身份的机器）、`errors`（各台回包里的提示 `{ machine, text }`）、`truncated`。
  */
 export function mergeBoards(members) {
   const problems = [], pending = [], boards = [];
@@ -84,6 +84,7 @@ export function mergeBoards(members) {
 
   return {
     entries, locals, problems, pending, readable: boards.length > 0, incomplete: problems.length > 0 || pending.length > 0,
+    friends: boards.some(({ board }) => board.friendCount > 0),
     accord: boards.some(({ board }) => board.accord),
     noAccord: boards.filter(({ board }) => !board.accord).map(({ machine }) => machine),
     errors: boards.flatMap(({ machine, board }) => (board.errors ?? []).map(text => ({ machine, text }))),

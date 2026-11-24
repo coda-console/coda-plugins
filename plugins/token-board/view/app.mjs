@@ -1,7 +1,9 @@
 // Token 消耗榜页面：用量概览，和好友的消耗榜。数据都由模块（main.mjs）读好、算好，经页面消息送来；页面不直接读记录。
 // 视图里有几台机器就都读，按人合并（lib/merge.mjs）：时间范围由页首选，机器范围由 App 的全局视图定，页面不自己选机器。
+// 每一轮读取由页面按这台设备的当地时间定一组 from、to 发给每台：各台时区不同时，窗口也是同一段时间。
 // 好友的昵称、模型名等外来文字只经 textContent / 文本节点渲染，从不拼进 innerHTML。
 import { mergeBoards } from '../lib/merge.mjs';
+import { rangeWindow } from '../lib/usage.mjs';
 
 const coda = window.coda;
 const root = document.getElementById('root');
@@ -17,7 +19,7 @@ let range = RANGES.find(r => r.id === saved?.range)?.id ?? null;
 // 视图里的每台机器（成员在页面生命周期内不变）各存一份状态、数据和错误；读不到的（unreachable）也在，只是不发消息。
 const members = (Array.isArray(coda.machines) ? coda.machines : [coda.machine]).filter(m => typeof m?.id === 'string' && m.id).map(m => ({
   id: m.id, name: m.name || m.id, unreachable: m.unreachable ? (m.unreachable === true ? '暂时连不上' : String(m.unreachable)) : null,
-  status: null, board: null, failure: null, loading: false, acting: false, seq: 0,
+  status: null, statusFailure: null, board: null, failure: null, loading: false, acting: false, seq: 0,
 }));
 const live = members.filter(m => !m.unreachable);
 const multi = members.length > 1;
@@ -48,21 +50,28 @@ const clock = at => { const d = new Date(at); return `${pad(d.getMonth() + 1)}-$
 
 // ——— 与模块通信 ———
 const send = (m, msg) => { Promise.resolve().then(() => coda.postMessage(msg, { machine: m.id })).catch(error => failed(m, msg, error)); };
+// 发送失败按请求认：榜单只认当前那一次（旧的晚到不动新数据），状态读取和写操作的失败只落在各自的提示里，互不影响。
 function failed(m, msg, error) {
   const text = error?.message ?? String(error);
-  m.loading = false; m.acting = false;
-  if (msg.type === 'hello' || msg.type === 'board') { m.failure = text; m.board = null; } else m.status = { ...(m.status ?? {}), notice: `发送失败：${text}` };
+  if (msg.type === 'board') {
+    if (msg.id !== m.seq) return;
+    m.loading = false; m.failure = text; m.board = null;
+  } else {
+    if (msg.type === 'hello') m.statusFailure = text; else m.acting = false;
+    m.status = { ...(m.status ?? {}), notice: `发送失败：${text}` };
+  }
   render();
 }
 function requestBoards() {
   if (!range) return;
-  for (const m of live) { m.loading = true; m.seq = ++seq; send(m, { type: 'board', range, id: m.seq }); }
+  const { from, to } = rangeWindow(range, Date.now());
+  for (const m of live) { m.loading = true; m.seq = ++seq; send(m, { type: 'board', range, from, to, id: m.seq }); }
   render();
 }
 function refresh() { for (const m of live) send(m, { type: 'hello' }); requestBoards(); }
 const handlers = {
   status(m, d) {
-    m.status = d; m.acting = false;
+    m.status = d; m.statusFailure = null; m.acting = false;
     if (!range) { range = RANGES.find(r => r.id === d.range)?.id ?? '7d'; declareHeader(); requestBoards(); }
     render();
   },
@@ -75,6 +84,7 @@ const handlers = {
       if (d.id === m.seq) { m.loading = false; m.failure = d.message; m.board = null; render(); }
       return;
     }
+    if (d.request === 'hello') m.statusFailure = d.message;
     m.acting = false;
     m.status = { ...(m.status ?? {}), notice: d.message };
     render();
@@ -95,10 +105,12 @@ function act(message, targets, skipped = null) {
   render();
 }
 const setShare = on => act({ type: 'set-share', on }, live, `没连上，没有${on ? '开启' : '关闭'}分享`);
+// 分享状态只有视图里每一台都已回报、且一样才合成一份（single）；有没回报或读不到的，不替它做主，按台列出。
 const shareOf = () => {
   const known = live.filter(m => typeof m.status?.share === 'boolean');
   const on = known.filter(m => m.status.share === true);
-  return { known, on: known.length > 0 && on.length === known.length, any: on.length > 0, mixed: on.length > 0 && on.length < known.length };
+  const single = known.length === members.length && (on.length === 0 || on.length === known.length);
+  return { known, single, on: single && on.length > 0, any: on.length > 0 };
 };
 
 // ——— 顶栏 ———
@@ -116,17 +128,18 @@ coda.on?.('header', ({ id }) => {
 });
 let toolbarKey = '';
 function declareToolbar() {
-  const on = shareOf().on, key = String(on);
+  const { single, on } = shareOf(), key = single ? String(on) : 'unsettled';
   if (toolbarKey === key) return;
   toolbarKey = key;
+  // 状态没定（有的没回报、读不到或各台不一样）时不给分享开关：开关只有开、关两种样子，哪种都是替没回报的电脑做主。
   try {
     coda.toolbar?.([{ id: 'refresh', kind: 'button', label: '刷新', icon: 'arrow.clockwise' },
-      { id: 'share', kind: 'toggle', label: '分享', icon: 'person.2.fill', on }])?.catch?.(() => {});
+      ...(single ? [{ id: 'share', kind: 'toggle', label: '分享', icon: 'person.2.fill', on }] : [])])?.catch?.(() => {});
   } catch {}
 }
 coda.on?.('toolbar', ({ id, on } = {}) => {
   if (id === 'refresh') refresh();
-  else if (id === 'share') setShare(typeof on === 'boolean' ? on : !shareOf().on);
+  else if (id === 'share' && shareOf().single) setShare(typeof on === 'boolean' ? on : !shareOf().on);
 });
 
 // 好友表变动或收到好友的新记录，Coda 通知一次，榜单跟着刷新；用量本身不会推送，另有定时刷新。
@@ -169,23 +182,28 @@ function notes() {
 }
 
 function controls() {
-  const { known, on, any, mixed } = shareOf(), acting = live.some(m => m.acting);
+  const { known, single, on, any } = shareOf(), acting = live.some(m => m.acting);
   const syncedAt = Math.max(0, ...known.map(m => m.status.lastSyncAt ?? 0));
   const notices = members.filter(m => m.status?.notice || m.skipped).map(m => h('p', { class: 'hint' }, `${multi ? `${m.name}：` : ''}${m.skipped ?? m.status.notice}`));
-  const pill = mixed
-    ? h('div', { class: 'shares' }, known.map(m => h('div', { class: 'pill' }, h('span', { class: m.status.share === true ? 'dot on' : 'dot' }),
-      h('span', { class: 'strong' }, `${m.name}：${m.status.share === true ? `正在分享${m.status.lastSyncAt ? `，上次同步 ${clock(m.status.lastSyncAt)}` : ''}` : '没有分享'}`))))
-    : h('div', { class: 'pill' }, h('span', { class: on ? 'dot on' : 'dot' }), h('span', { class: 'strong' }, on ? '正在向好友分享每日汇总' : '没有向好友分享'));
+  const shareText = m => (m.unreachable ? `读不到分享状态：${m.unreachable}` : typeof m.status?.share !== 'boolean' ? (m.statusFailure ? `读取分享状态失败：${m.statusFailure}` : '还没取到分享状态')
+    : m.status.share === true ? `正在分享${m.status.lastSyncAt ? `，上次同步 ${clock(m.status.lastSyncAt)}` : ''}` : '没有分享');
+  const pill = single
+    ? h('div', { class: 'pill' }, h('span', { class: on ? 'dot on' : 'dot' }), h('span', { class: 'strong' }, on ? '正在向好友分享每日汇总' : '没有向好友分享'))
+    : h('div', { class: 'shares' }, members.map(m => h('div', { class: 'pill' }, h('span', { class: m.status?.share === true ? 'dot on' : 'dot' }),
+      h('span', { class: 'strong' }, `${multi ? `${m.name}：` : ''}${shareText(m)}`))));
   return h('section', {},
     h('h2', {}, '分享'),
     h('div', { class: 'card' },
       pill,
-      h('p', { class: 'hint' }, mixed ? '各台的分享状态不一样；开启、关闭和撤回会对每台生效。'
+      h('p', { class: 'hint' }, !single ? '各台的分享状态不一样，或有的还没取到；开启、关闭和撤回会对每台生效。'
         : on ? `每 10 分钟发布按日归档和最近 48 小时曲线，只含按 Agent 和模型的 Token 数与回合数。${syncedAt ? `上次同步 ${clock(syncedAt)}。` : ''}`
           : '开启后好友才看得到你的用量，你也才能和他们排名；关闭会撤回已发布的记录。'),
       notices,
       h('div', { class: 'controls' },
-        h('button', { class: on ? 'btn' : 'btn primary', disabled: acting || !known.length, onclick: () => setShare(!on) }, on ? '关闭分享' : '开启分享'),
+        ...(single
+          ? [h('button', { class: on ? 'btn' : 'btn primary', disabled: acting || !known.length, onclick: () => setShare(!on) }, on ? '关闭分享' : '开启分享')]
+          : [h('button', { class: 'btn primary', disabled: acting || !known.length, onclick: () => setShare(true) }, '开启分享'),
+            h('button', { class: 'btn', disabled: acting || !known.length, onclick: () => setShare(false) }, '关闭分享')]),
         any ? h('button', { class: 'btn', disabled: acting, onclick: () => act({ type: 'sync' }, known.filter(m => m.status.share === true)) }, '立即同步') : null,
         h('button', { class: 'btn', disabled: acting, onclick: () => act({ type: 'withdraw' }, live, '没连上，没有撤回，它已发布的记录还在') }, '撤回已发布的记录'),
         h('button', { class: 'btn', disabled: live.some(m => m.loading), onclick: refresh }, live.some(m => m.loading) ? '刷新中…' : '刷新'))));
@@ -233,7 +251,7 @@ function leaderboard() {
   else {
     const others = merged.entries.filter(e => !e.self);
     content = [
-      others.length === 0 ? h('p', { class: 'empty' }, '还没有好友。添加好友并让他们开启分享后，这里会出现你们的消耗榜。') : null,
+      !merged.friends ? h('p', { class: 'empty' }, '还没有好友。添加好友并让他们开启分享后，这里会出现你们的消耗榜。') : null,
       h('ul', { class: 'list' }, merged.entries.map(entry)),
       others.length && !others.some(e => e.shared) ? h('p', { class: 'hint' }, '好友们还没有分享用量。') : null,
       merged.truncated.friends ? h('p', { class: 'note' }, '好友的记录太多，只取到了其中一部分，榜单可能不全。') : null,
