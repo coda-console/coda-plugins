@@ -51,8 +51,11 @@ export function questionForm(sessionId, questions) {
   return { sessionId, mode: 'form', message: 'Codex 需要你的回答', requestedSchema: { type: 'object', properties, required: questions.map((_, i) => `q${i}`) } };
 }
 
-// What the user said to a card, as the message Codex is told, a line a question.
+// What the user said to a card, as the message Codex is told, a line a question. A decline with the host's reason
+// (coda-protocol「宿主当场拒绝表单」) is told as that text, once, as it is.
 export function answerText(questions, response) {
+  const reason = response?.action === 'decline' ? response._meta?.coda?.reason : null;
+  if (typeof reason === 'string' && reason.trim()) return reason;
   const content = response?.action === 'accept' && record(response.content) ? response.content : null;
   return questions.map((q, i) => {
     if (!content) return `用户没有回答「${q.title}」`;

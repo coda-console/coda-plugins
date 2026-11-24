@@ -30,6 +30,11 @@ SDK 的查询自己结束（Claude 进程被杀、崩溃、正常退出）时，
 会话已结束后再来的 `session/prompt` 当场拒绝，错误文字是 `Claude 会话未在运行：<原因>`，标 `session_ended`、`input: "not_accepted"`（输入没有进原生会话，Coda 整条重发）。
 换模型服务时重启查询失败、输入还没交给新查询的，同样是 `session_ended` + `not_accepted`；失败本身已带别的类别（如额度、服务）的保留原类别，类别允许 `input` 时补上 `not_accepted`（`auth_required` 不带 `input`，原样保留）。设置项请求（`session/set_config_option`）只带原因，不带标记。
 
+## 提问被拒绝
+
+Claude 的提问（AskUserQuestion）是一张表单，回包不是 `accept` 就回给 Claude `deny`。宿主当场拒绝表单（回 `decline`，`_meta.coda.reason` 是非空文字，协议「宿主当场拒绝表单」）时，`deny.message` 就是这段文字原文；
+不带 reason 的 `decline` 与 `cancel` 仍是「用户取消了问答」。
+
 ## 失败怎样分类
 
 一轮失败时，入口（`agent/errors.mjs` 的 `claudeFailure`，纯函数）只按最终错误标失败类别（协议 `failure.json`），重试策略归 Coda，插件里没有重试或等待。

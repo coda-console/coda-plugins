@@ -19,7 +19,11 @@ export function questionForm({ sessionId, toolCallId, input }) {
   const params = { sessionId, ...(toolCallId ? { toolCallId } : {}), mode: 'form', message: 'Claude 需要你的回答',
     requestedSchema: { type: 'object', properties, required: questions.map((_, i) => `q${i}`) } };
   const answer = response => {
-    if (response?.action !== 'accept') return { behavior: 'deny', message: '用户取消了问答' };
+    if (response?.action !== 'accept') {
+      // The host's own refusal of the form (coda-protocol「宿主当场拒绝表单」) carries its text; the model gets it as it is.
+      const reason = response?.action === 'decline' ? response._meta?.coda?.reason : null;
+      return { behavior: 'deny', message: typeof reason === 'string' && reason.trim() ? reason : '用户取消了问答' };
+    }
     const content = response.content ?? {};
     return { behavior: 'allow', updatedInput: { ...input, answers: Object.fromEntries(questions.map((q, i) => {
       const other = String(content[`q${i}_other`] ?? '').trim() || '其他', pick = value => value === OTHER ? other : value;

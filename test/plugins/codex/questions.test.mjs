@@ -1,3 +1,16 @@
+test('a card the host refused with a reason tells Codex that text as it is, once; a decline without one still says the user did not answer', () => {
+  for (const [result, text] of [
+    [{ action: 'decline', _meta: { coda: { reason: '契约开发运行期间不找用户。\n自己定。' } } }, '契约开发运行期间不找用户。\n自己定。'],
+    [{ action: 'decline', _meta: { coda: { reason: '' } } }, '用户没有回答「打开链接登录 npm」\n用户没有回答「还要发哪个包？」'],
+    [{ action: 'cancel', _meta: { coda: { reason: '不该用' } } }, '用户没有回答「打开链接登录 npm」\n用户没有回答「还要发哪个包？」'],
+  ]) {
+    const { questions, card } = asked();
+    questions.fromAgent(ended(1));
+    const [next] = questions.fromCoda({ jsonrpc: '2.0', id: card, result }).agent;
+    assert.equal(next.params.prompt[0].text, text);
+  }
+});
+
 // Codex's async messages and questions through the Codex entry (plugins/codex/agent/questions.mjs): the message is shown,
 // the questions of a call are one form card in Coda's turn, and the turn goes on until each card is answered and Codex told.
 import { test } from 'node:test';

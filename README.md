@@ -261,6 +261,8 @@ Codex 把每次调用报成一条 `delivery: "async"` 的完整 Agent 消息、�
   字段同 Claude 的提问：第 i 题是必填字段 `q{i}`，标题是问题；有选项时单选，末尾多一项「其他（写在下面）」配可选字段 `q{i}_other`；没有选项时填文字。
 - **这一轮**：卡片都有结果之前，Coda 的这一轮一直在进行，codex-acp 那次 `session/prompt` 的答复先不转给 Coda。
   回答作为用户消息交给 Codex，每题一行：「回答你的提问「<问题>」：<答案>」；用户取消或卡片被撤回，就说「用户没有回答「<问题>」」。
+  宿主当场拒绝这张表单（回 `decline`，`_meta.coda.reason` 是非空文字，协议「宿主当场拒绝表单」）时，交给 Codex 的就是这段文字原文，只一条，不再逐题写；不带 reason 的 `decline` 照旧。
+  `item/tool/requestUserInput`（同步提问）由 codex-acp 处理，拒绝时它只回 `{ answers: {} }`，插件够不到这段文字，所以同步提问的拒绝还是没有 reason。
   codex-acp 那次 prompt 还在跑时经插话（`idleBehavior: "promptRequired"`）加进去；回 `promptRequired` 或已经跑完，入口自己向 codex-acp 发 `session/prompt`，
   它的输出照常算在 Coda 的这一轮里，最后一次答复才结束这一轮。
 - **等卡片时**：停止会话撤回没答的卡片（`$/cancel_request`），把取消转给 codex-acp，这一轮按取消结束；

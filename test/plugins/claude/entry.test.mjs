@@ -842,7 +842,21 @@ test('Claude\'s questions are a plain form: a choice per question, one of them t
   assert.deepEqual((await asking).updatedInput.answers, { 选一个: 'C', 选多个: 'X, Z' });
   const declined = c.query.options.canUseTool('AskUserQuestion', input, { signal: new AbortController().signal, toolUseID: 'ask-2' });
   c.answer((await c.asked('elicitation/create')).id, { action: 'decline' });
-  assert.equal((await declined).behavior, 'deny');
+  assert.deepEqual(await declined, { behavior: 'deny', message: '用户取消了问答' });
+});
+
+test('a declined question tells Claude the host\'s reason as it is; a decline without one and a cancel stay the user\'s cancel', async t => {
+  const c = await setup(t); await c.open();
+  const input = { questions: [{ question: '选一个', options: [{ label: 'A' }], multiSelect: false }] };
+  const ask = async (response, id) => {
+    const asking = c.query.options.canUseTool('AskUserQuestion', input, { signal: new AbortController().signal, toolUseID: id });
+    c.answer((await c.asked('elicitation/create')).id, response);
+    return asking;
+  };
+  assert.deepEqual(await ask({ action: 'decline', _meta: { coda: { reason: '  契约开发运行期间不找用户。\n自己定。' } } }, 'r-1'),
+    { behavior: 'deny', message: '  契约开发运行期间不找用户。\n自己定。' });
+  assert.deepEqual(await ask({ action: 'decline', _meta: { coda: { reason: '' } } }, 'r-2'), { behavior: 'deny', message: '用户取消了问答' });
+  assert.deepEqual(await ask({ action: 'cancel', _meta: { coda: { reason: '不该用' } } }, 'r-3'), { behavior: 'deny', message: '用户取消了问答' });
 });
 
 test('an MCP server\'s form passes as it is, and its link is a link', async t => {

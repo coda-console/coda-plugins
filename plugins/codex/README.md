@@ -44,3 +44,4 @@ Codex Agent：Codex 插件提供的入口运行 codex-acp，报告子 Agent、�
   交令牌（`chatgptAuthTokens`）是 app-server 的实验接口：升级 codex-acp 或 Codex 时复核登录、`account/read` 的身份核对、续期请求与轮次边界。
 
 「模型服务」设置、异步消息与提问见仓库根 README 的「模型服务」「Codex 异步消息与提问」。
+异步提问被宿主当场拒绝（`decline` 带非空 `_meta.coda.reason`）时，交给 Codex 的是这段文字原文；不带 reason 的 `decline` 与 `cancel` 仍是「用户没有回答「<问题>」」。同步提问（`item/tool/requestUserInput`）由 codex-acp 回 `{ answers: {} }`，拿不到 reason。

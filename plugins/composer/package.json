@@ -4,7 +4,7 @@
   "displayName": "输入框模式",
   "description": "交接、子会话、! 命令、Ultra 与循环",
   "icon": { "symbol": "character.cursor.ibeam", "color": "blue" },
-  "version": "12.4.0",
+  "version": "12.5.0",
   "categories": [
     "工作流程"
   ],
@@ -31,6 +31,9 @@
     "scripts",
     "THIRD_PARTY_NOTICES.md"
   ],
+  "engines": {
+    "coda": 16
+  },
   "main": "main.mjs",
   "activationEvents": [
     "onStartupFinished"
