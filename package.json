@@ -17,7 +17,7 @@
   },
   "devDependencies": {
     "@agentclientprotocol/sdk": "2.6.0",
-    "@coda-console/protocol": "6.26.0",
+    "@coda-console/protocol": "6.27.0",
     "feelin": "8.2.0",
     "typescript": "6.0.3"
   }
