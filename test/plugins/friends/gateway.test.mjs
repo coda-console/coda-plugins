@@ -16,7 +16,7 @@ import { pointProblem } from '@coda-console/protocol/validate';
 
 const manifest = JSON.parse(await readFile(new URL('../../../plugins/friends/package.json', import.meta.url), 'utf8'));
 const SOCIAL = 'friends/social@1';
-const A = `ed25519:${'a'.repeat(64)}`, B = `ed25519:${'b'.repeat(64)}`, F1 = `ed25519:${'1'.repeat(64)}`, F2 = `ed25519:${'2'.repeat(64)}`, F3 = `ed25519:${'3'.repeat(64)}`;
+const A = `ed25519:${'a'.repeat(64)}`, B = `ed25519:${'b'.repeat(64)}`, MK = `ed25519:${'c'.repeat(64)}`, F1 = `ed25519:${'1'.repeat(64)}`, F2 = `ed25519:${'2'.repeat(64)}`, F3 = `ed25519:${'3'.repeat(64)}`;
 const RESERVED = ['binding', 'profile', 'friends', 'coda/profile', 'coda/friends'];
 const ACTIVE = { active: true, until: 1_900_000_000 }, EXPIRED = { active: false };
 
@@ -26,10 +26,12 @@ const until = async (check, what = '条件') => {
 };
 
 // 本机的 Accord：身份与证书可换，记录按页吐（cursor 是下标），发布记下来；过期的证书发布会失败（invalid_state）。
-function accordFake({ author = A, certificate = ACTIVE, friends = [], pageSize = 2 } = {}) {
-  const fake = { author, certificate, friends, pageSize, records: [], queries: [], calls: [], listeners: new Set(), failure: null, loop: false, withCertificateKey: true, gets: 0, getGate: null, callGate: null, onCall: null, queryGate: null, queryFailure: null };
+// `machine` 是本机的机器钥匙：绑了个人身份时在 `status.certificate.key`，没绑（certificate 为 null）时就是作者；`signer: "machine"` 用它签，不看证书。
+function accordFake({ author = A, certificate = ACTIVE, machine = MK, friends = [], pageSize = 2 } = {}) {
+  const fake = { author, certificate, machine, friends, pageSize, records: [], queries: [], calls: [], listeners: new Set(), failure: null, loop: false, withCertificateKey: true, gets: 0, getGate: null, callGate: null, onCall: null, queryGate: null, queryFailure: null };
+  const certificateOf = () => fake.certificate === null ? null : { ...fake.certificate, key: fake.machine };
   const entry = () => ({ kind: 'coda/accord@1', id: 'local', local: true, spec: { author: fake.author },
-    status: { friends: structuredClone(fake.friends), ...(fake.withCertificateKey ? { certificate: fake.certificate } : {}) } });
+    status: { friends: structuredClone(fake.friends), ...(fake.withCertificateKey ? { certificate: certificateOf() } : {}) } });
   Object.assign(fake, {
     entry,
     get: async () => { fake.gets++; await fake.getGate; return structuredClone(entry()); },
@@ -53,16 +55,19 @@ function accordFake({ author = A, certificate = ACTIVE, friends = [], pageSize =
       fake.calls.push(structuredClone(input));
       await fake.onCall?.();
       await fake.callGate;
-      // 基座将来的「预期作者」（coda#3012）：给了就必须与此刻真正署名的作者相同，否则拒签。
-      if (input.expectAuthor !== undefined && input.expectAuthor !== fake.author) throw Object.assign(new Error('预期作者与此刻署名的作者不符'), { code: 'forbidden' });
+      // 基座的 `signer: "machine"`（coda#3018）：用机器钥匙签、不看证书，只许签调用插件自己命名空间的种类。
+      const byMachine = input.signer === 'machine', signer = byMachine ? (fake.certificate === null ? fake.author : fake.machine) : fake.author;
+      if (byMachine && !input.kind.startsWith('friends/')) throw Object.assign(new Error('只能签自己命名空间的种类'), { code: 'forbidden' });
+      // 「预期作者」：给了就必须与此刻真正署名的作者相同，否则拒签。
+      if (input.expectAuthor !== undefined && input.expectAuthor !== signer) throw Object.assign(new Error('预期作者与此刻署名的作者不符'), { code: 'forbidden' });
       if (fake.failure) throw fake.failure;
       // 没绑个人身份（certificate 为 null）用机器钥匙签，没有有效期；绑了的要证书有效。
-      if (fake.certificate !== null && fake.certificate?.active !== true) throw Object.assign(new Error('代签证书已过期'), { code: 'invalid_state' });
-      const at = fake.records.findIndex(r => r.kind === input.kind && r.id === input.id && r.author === fake.author);
+      if (!byMachine && fake.certificate !== null && fake.certificate?.active !== true) throw Object.assign(new Error('代签证书已过期'), { code: 'invalid_state' });
+      const at = fake.records.findIndex(r => r.kind === input.kind && r.id === input.id && r.author === signer);
       const version = (at < 0 ? 0 : fake.records[at].version) + 1;
       if (at >= 0) fake.records.splice(at, 1);
-      if (input.audience.length) fake.records.push({ author: fake.author, kind: input.kind, id: input.id, version, body: input.body, local: true });
-      return { author: fake.author, kind: input.kind, id: input.id, version, audience: input.audience };
+      if (input.audience.length) fake.records.push({ author: signer, kind: input.kind, id: input.id, version, body: input.body, local: true });
+      return { author: signer, kind: input.kind, id: input.id, version, audience: input.audience };
     },
     watch: async (name, listener, selector) => {
       assert.deepEqual([name, selector], ['coda/accord@1', { id: 'local' }]);
@@ -1266,23 +1271,29 @@ test('the dm and feed streams only ever read their own kinds, so no friends/rpc-
   assert.equal(JSON.stringify([dmSnapshot, feedSnapshot, frame]).includes('rpc'), false);
 });
 
-// 一条要签的记录：正文里的发送方按种类取（grant、answer 是 holder，call 是 caller），默认是 A。
+// 一条要签的记录：正文里的发送方按种类取（grant、answer 是 holder，call 是 caller）；默认请求署本机作者 A，授权记录与回答署本机机器钥匙 MK。
 const SENDER = { 'friends/rpc-call': 'caller', 'friends/rpc-grant': 'holder', 'friends/rpc-answer': 'holder' };
-const sign = ({ from = A, ...more } = {}) => ({ kind: 'friends/rpc-call', id: 'c1', body: { v: 1, n: 1, [SENDER[more.kind ?? 'friends/rpc-call']]: from }, audience: [F1], ...more });
+const HOLDER_KINDS = ['friends/rpc-grant', 'friends/rpc-answer'];
+const sign = ({ from, ...more } = {}) => {
+  const holder = HOLDER_KINDS.includes(more.kind);
+  return { kind: 'friends/rpc-call', id: 'c1', body: { v: 1, n: 1, [holder ? 'holder' : 'caller']: from ?? (holder ? MK : A) }, audience: [F1], ...more };
+};
 
-test('the internal signer publishes the three rpc kinds to one recipient with expectAuthor, and is not an operation of the gateway or of coda self', async t => {
+test('the internal signer publishes the three rpc kinds to one recipient with expectAuthor, grants and answers with the machine key, and is not an operation of the gateway or of coda self', async t => {
   const d = await direct(t);
   const done = await d.gw.signRpc(sign());
   assert.deepEqual(d.accord.calls, [{ kind: 'friends/rpc-call', id: 'c1', body: { v: 1, n: 1, caller: A }, audience: [F1], expectAuthor: A }]);
   assert.deepEqual([done.author, done.version], [A, 1]);
-  for (const kind of ['friends/rpc-grant', 'friends/rpc-answer']) await d.gw.signRpc(sign({ kind, id: `${kind}-1` }));
-  assert.deepEqual(d.accord.calls.map(call => call.kind), ['friends/rpc-call', 'friends/rpc-grant', 'friends/rpc-answer']);
+  for (const kind of HOLDER_KINDS) assert.equal((await d.gw.signRpc(sign({ kind, id: `${kind}-1` }))).author, MK);
+  assert.deepEqual(d.accord.calls.slice(1), HOLDER_KINDS.map(kind => ({ kind, id: `${kind}-1`, body: { v: 1, n: 1, holder: MK }, audience: [F1], signer: 'machine', expectAuthor: MK })));
   // 同一个 id 再签是更高的版本（取消用它）。
   assert.equal((await d.gw.signRpc(sign({ body: { v: 1, n: 1, caller: A, cancel: true } }))).version, 2);
-  // 本机此刻应署的作者跟着身份变。
+  // 请求该署的作者跟着身份变；授权记录与回答仍是机器钥匙。
   await d.accord.change({ author: B });
   await d.gw.signRpc(sign({ id: 'c2', audience: [F2], from: B }));
   assert.equal(d.accord.calls.at(-1).expectAuthor, B);
+  await d.gw.signRpc(sign({ kind: 'friends/rpc-answer', id: 'a2' }));
+  assert.deepEqual([d.accord.calls.at(-1).signer, d.accord.calls.at(-1).expectAuthor], ['machine', MK]);
   // 不进待发队列、不写 outbox。
   await assert.rejects(readFile(join(await stateOf(d), 'outbox.json')), { code: 'ENOENT' });
   // 不是 friends/social@1 的操作，也不经 coda self。
@@ -1315,7 +1326,7 @@ test('the internal signer refuses anything but the three kinds and a recipient l
   assert.deepEqual(d.accord.queries, []);
 });
 
-test('the internal signer fails on the spot when a personal author\'s certificate is not active: invalid_state, nothing sent, nothing queued', async t => {
+test('a request fails on the spot when a personal author\'s certificate is not active: invalid_state, nothing sent, nothing queued; grants and answers still go out with the machine key', async t => {
   const d = await direct(t, { certificate: EXPIRED });
   const failed = (more, call = () => d.gw.signRpc(sign(more))) => assert.rejects(call(), error => error.code === 'invalid_state' && error.effects === 'none');
   await failed();
@@ -1335,6 +1346,17 @@ test('the internal signer fails on the spot when a personal author\'s certificat
   await d.accord.change({ certificate: EXPIRED });
   await failed({}, () => d.gw.retractRpc({ kind: 'friends/rpc-call', id: 'c1', author: A }));
   assert.equal(d.accord.calls.length, 1);
+  // 授权记录与回答用机器钥匙签：证书过期照签、照撤，署名是机器钥匙。
+  for (const kind of HOLDER_KINDS) assert.equal((await d.gw.signRpc(sign({ kind, id: `${kind}-1` }))).author, MK);
+  assert.equal((await d.gw.retractRpc({ kind: 'friends/rpc-answer', id: 'friends/rpc-answer-1', author: MK })).state, 'retracted');
+  assert.deepEqual(d.accord.calls.at(-1), { kind: 'friends/rpc-answer', id: 'friends/rpc-answer-1', body: {}, audience: [], signer: 'machine', expectAuthor: MK });
+  // 写成本机此刻的作者（根）不行：授权记录与回答只署机器钥匙。
+  await failed({ kind: 'friends/rpc-answer', id: 'a2', from: A });
+  await failed({}, () => d.gw.retractRpc({ kind: 'friends/rpc-grant', id: 'friends/rpc-grant-1', author: A }));
+  // 读不出机器钥匙（旧宿主没写证书这个键）：授权记录与回答也不签。
+  await d.accord.change({ withCertificateKey: false });
+  await failed({ kind: 'friends/rpc-grant', id: 'g2' });
+  assert.equal(d.accord.calls.length, 4);
 });
 
 test('a machine author (no personal identity bound) signs and retracts with its machine key whatever the certificate, with expectAuthor set to it', async t => {
@@ -1343,9 +1365,11 @@ test('a machine author (no personal identity bound) signs and retracts with its 
   const done = await d.gw.signRpc(sign({ from: M }));
   assert.deepEqual([done.author, done.version], [M, 1]);
   assert.deepEqual(d.accord.calls, [{ kind: 'friends/rpc-call', id: 'c1', body: { v: 1, n: 1, caller: M }, audience: [F1], expectAuthor: M }]);
-  for (const kind of ['friends/rpc-grant', 'friends/rpc-answer']) await d.gw.signRpc(sign({ kind, id: `${kind}-1`, from: M }));
+  // 没绑个人身份时机器钥匙就是作者：授权记录与回答同样署它，带 signer: "machine"。
+  for (const kind of HOLDER_KINDS) await d.gw.signRpc(sign({ kind, id: `${kind}-1`, from: M }));
+  assert.deepEqual(d.accord.calls.slice(1).map(call => [call.signer, call.expectAuthor]), [['machine', M], ['machine', M]]);
   assert.equal((await d.gw.retractRpc({ kind: 'friends/rpc-grant', id: 'friends/rpc-grant-1', author: M })).state, 'retracted');
-  assert.deepEqual(d.accord.calls.at(-1), { kind: 'friends/rpc-grant', id: 'friends/rpc-grant-1', body: {}, audience: [], expectAuthor: M });
+  assert.deepEqual(d.accord.calls.at(-1), { kind: 'friends/rpc-grant', id: 'friends/rpc-grant-1', body: {}, audience: [], signer: 'machine', expectAuthor: M });
   // 发送方不是此刻的机器作者，照旧当场失败。
   await assert.rejects(d.gw.signRpc(sign({ id: 'c2', from: A })), error => error.code === 'invalid_state' && error.effects === 'none');
   assert.equal(d.accord.calls.length, 4);
@@ -1375,13 +1399,14 @@ test('the internal signer takes the sender from the body by kind and refuses on 
   const d = await direct(t);
   const kinds = Object.keys(SENDER);
   const notYou = more => assert.rejects(d.gw.signRpc(sign(more)), error => error.code === 'invalid_state' && error.effects === 'none');
-  // 签名入口读身份之前，作者就换成了 B：为 A 写的记录，三种都当场失败，什么也没发。
-  await d.accord.change({ author: B });
-  for (const kind of kinds) await notYou({ kind, id: `${kind}-1`, from: A });
+  // 签名入口读身份之前，作者换成了 B、机器钥匙换成了 F3：为 A、MK 写的记录，三种都当场失败，什么也没发。
+  await d.accord.change({ author: B, machine: F3 });
+  for (const kind of kinds) await notYou({ kind, id: `${kind}-1` });
   assert.deepEqual(d.accord.calls, []);
-  // 为 B 写的就能签，expectAuthor 是正文里的发送方。
-  for (const kind of kinds) await d.gw.signRpc(sign({ kind, id: `${kind}-1`, from: B }));
-  assert.deepEqual(d.accord.calls.map(call => [call.kind, call.expectAuthor, call.body[SENDER[call.kind]]]), kinds.map(kind => [kind, B, B]));
+  // 为此刻该署的写就能签（请求是 B，授权记录与回答是 F3），expectAuthor 是正文里的发送方。
+  const now = kind => kind === 'friends/rpc-call' ? B : F3;
+  for (const kind of kinds) await d.gw.signRpc(sign({ kind, id: `${kind}-1`, from: now(kind) }));
+  assert.deepEqual(d.accord.calls.map(call => [call.kind, call.expectAuthor, call.body[SENDER[call.kind]]]), kinds.map(kind => [kind, now(kind), now(kind)]));
   // 读身份的当口换的：读到的是换了以后的，不符就拒。
   d.accord.calls.length = 0;
   let release;

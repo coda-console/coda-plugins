@@ -7,7 +7,7 @@ import { pointProblem } from '@coda-console/protocol/validate';
 import {
   CLOCK_BACK_MS, FUTURE_SKEW_MS, KIND_ANSWER, KIND_CALL, KIND_GRANT, MAX_ANSWER_BYTES, MAX_CALL_BYTES, MAX_WINDOW_MS, RPC_KINDS, RPC_PREFIX,
   answerId, answerRecord, callRecord, cancelRecord, canonicalJson, clockWentBack, fitAnswer, grantRecord, idempotencyKey, isRpcKind, rebuildExecInput,
-  replayWindow, requestDigest, requestId, signerOf, verifyAnswer, verifyCall, verifyGrant,
+  machineOf, replayWindow, requestDigest, requestId, signerOf, verifyAnswer, verifyCall, verifyGrant,
 } from '../../../plugins/friends/lib/rpc-format.mjs';
 
 const HOLDER = `ed25519:${'a'.repeat(64)}`, CALLER = `ed25519:${'b'.repeat(64)}`, OTHER = `ed25519:${'c'.repeat(64)}`;
@@ -341,4 +341,14 @@ test('the signer: with no personal identity the machine key signs with no expiry
     local(HOLDER, { certificate: 'x' }), local(HOLDER, { certificate: [] }), null, undefined])
     assert.equal(signerOf(accord).canSign, false, JSON.stringify(accord));
   assert.equal(signerOf(local('someone', { certificate: null })).author, null);
+});
+
+test('the machine key: the certificate\'s key when a personal identity is bound, whether or not the certificate is active; the author when none is bound; null otherwise', () => {
+  const local = (author, status) => ({ kind: 'coda/accord@1', id: 'local', spec: { author }, ...(status === undefined ? {} : { status }) });
+  assert.equal(machineOf(local(HOLDER, { certificate: null })), HOLDER);
+  for (const certificate of [{ active: true, until: 1_900_000_000, key: OTHER }, { active: false, key: OTHER }])
+    assert.equal(machineOf(local(HOLDER, { certificate })), OTHER, JSON.stringify(certificate));
+  for (const accord of [local(HOLDER, { certificate: { active: true } }), local(HOLDER, { certificate: { active: true, key: 'x' } }), local('someone', { certificate: null }),
+    local(HOLDER, {}), local(HOLDER), null, undefined])
+    assert.equal(machineOf(accord), null, JSON.stringify(accord));
 });

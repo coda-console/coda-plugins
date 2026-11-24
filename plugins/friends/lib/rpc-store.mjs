@@ -38,10 +38,10 @@ export const isCorrupt = error => error?.code === 'corrupt';
 
 // ---- 条目的形状 ----
 
-// 授权行：`holder` 是授予时本机的作者（机器钥匙或根）、是不是个人作者、机器；`granteePerson` 是被授权的好友当时是不是个人作者
+// 授权行：`holder.machine` 是授予时本机的机器钥匙（持有方始终以机器出现，机器是 `target.owner`）；`granteePerson` 是被授权的好友当时是不是个人作者
 // （好友表的 `certified`，宿主还不写时是 null）。
 const isFlag = value => typeof value === 'boolean';
-const grantOk = entry => isPlain(entry) && isText(entry.id) && isPlain(entry.holder) && isAuthor(entry.holder.author) && isFlag(entry.holder.person) && isText(entry.holder.machine)
+const grantOk = entry => isPlain(entry) && isText(entry.id) && isPlain(entry.holder) && isAuthor(entry.holder.machine)
   && isAuthor(entry.grantee) && (entry.granteePerson === null || isFlag(entry.granteePerson)) && isTarget(entry.target) && Array.isArray(entry.ops) && entry.ops.length === 1 && entry.ops[0] === 'exec'
   && isTime(entry.createdAt) && optional(entry.revokedAt, isTime) && optional(entry.endedBy, isText) && optional(entry.retractedAt, isTime);
 
@@ -170,8 +170,8 @@ export function createRpcStore(stateDir, { now = Date.now } = {}) {
     return entry;
   });
 
-  // 撤权：先落盘再返回；已撤的不改撤回时刻。没有这条授权给 null。`endedBy` 写明不是本人撤的（目标不在了、本机的签名作者变了而失效）。
-  // 撤权与失效不可逆；授权记录的撤回另记（markGrantRetracted），要等原作者能签时才补发。
+  // 撤权：先落盘再返回；已撤的不改撤回时刻。没有这条授权给 null。`endedBy` 写明不是本人撤的（目标不在了、本机的机器钥匙变了、被授权的好友换了作者而失效）。
+  // 撤权与失效不可逆；授权记录的撤回另记（markGrantRetracted），要等原来那把机器钥匙能签时才补发。
   const revokeGrant = (id, at = now(), endedBy) => serial(async () => {
     const grants = await load('grants'), entry = grants[id];
     if (!entry) return null;

@@ -32,7 +32,7 @@ const isText = value => typeof value === 'string';
 export const isAuthor = value => isText(value) && AUTHOR.test(value);
 
 /**
- * 本机此刻替三种记录署名的作者（`coda/accord@1` 的 local 记录）：`{ author, person, canSign }`。
+ * 本机此刻替调用请求（friends/rpc-call）署名的作者（`coda/accord@1` 的 local 记录）：`{ author, person, canSign }`。
  * `status.certificate` 为 null 是没绑个人身份的后端，作者是机器钥匙，没有有效期，能签；是对象是个人作者（根），证书 `active` 才能签；
  * 其余（作者不是合法公钥、没写证书这个键）不能签。社交功能照旧看 friends.mjs 的 certStateOf。
  */
@@ -42,6 +42,17 @@ export function signerOf(accord) {
   if (author && certificate === null) return { author, person: false, canSign: true };
   if (author && isPlain(certificate)) return { author, person: true, canSign: certificate.active === true };
   return { author, person: false, canSign: false };
+}
+
+/**
+ * 本机自己的机器钥匙（授权记录与回答用它签，`coda/accord@1.publish` 的 `signer: "machine"`）：绑了个人身份是 `status.certificate.key`，
+ * 没绑（`status.certificate` 为 null）就是 `spec.author`。与证书是否有效无关；读不出给 null。
+ */
+export function machineOf(accord) {
+  const status = accord?.status;
+  const certificate = isPlain(status) && Object.hasOwn(status, 'certificate') ? status.certificate : undefined;
+  const machine = certificate === null ? accord?.spec?.author : certificate?.key;
+  return isAuthor(machine) ? machine : null;
 }
 
 // ---- 派生 ----
