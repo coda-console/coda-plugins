@@ -300,6 +300,16 @@ export function createCaller(coda, { store, signRpc, retractRpc, onAccord, pages
     return outcomeOf(answer);
   }
 
+  // 好友授给本机的代理记录（给好友页读，只读）：给了 `friend`（好友的公钥）就只列这位好友的，按他已绑定通道背后的机器钥匙筛。
+  // 状态：available 可用，或 PROBLEMS 里的原因（off、channel、author、sign）。
+  async function list({ friend } = {}) {
+    if (friend !== undefined && !isAuthor(friend)) throw fail('invalid_input', 'friend 须是好友的公钥（ed25519:…）');
+    await ready;
+    const me = await identity(), holders = new Set(me.friends.filter(one => friend === undefined || one.author === friend).map(one => one.machine));
+    return [...known].filter(([, grant]) => friend === undefined || holders.has(grant.holder))
+      .map(([key, grant]) => ({ key, grant: grant.grant, holder: grant.holder, name: grant.spec.name, os: grant.spec.os, user: grant.spec.user, status: problemOf(grant, me) ?? 'available' }));
+  }
+
   // ---- 请求的撤回 ----
 
   // 清扫发出表，都按发出时的作者（`entry.author`）签：
@@ -359,6 +369,7 @@ export function createCaller(coda, { store, signRpc, retractRpc, onAccord, pages
   return {
     // 测试与诊断用：推一拍（发现、去重、撤回）。
     tick: () => tick(),
+    list,
     async start() {
       // 处理函数先同步登记，宿主在 activate 之后交来的调用不会落空；它们等第一遍发现做完再看。
       handles.push(coda.handle(PROTOCOL, 'exec', { run, resume }));

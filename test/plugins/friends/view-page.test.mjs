@@ -8,15 +8,25 @@ const AUTHOR = `ed25519:${'ab'.repeat(32)}`, CARD = 'friends/card';
 const entry = { type: 'MODIFIED', entry: { spec: { author: AUTHOR }, status: { friends: [] } } };
 
 // 严格多机的 window.coda：不指明 machine 的 postMessage 直接拒绝；记下每次发往哪台。
-function strictCoda(page, { notes = { ok: true, value: {} }, silent, watch, call, records, machines = [A] } = {}) {
-  const log = { sent: [], calls: [], queries: [], watches: [], on: {}, copied: [] };
+// 「共享」一节读写持有方的消息默认都答空；`share` 按消息类型换成自己的答复（返回值就是 value，抛错是明确的拒绝，永不返回是没有回应）。
+const SHARE = { 'grants.list': () => ({ grants: [] }), 'proxies.list': () => [], 'ledger.list': () => [], 'grants.targets': () => [] };
+function strictCoda(page, { notes = { ok: true, value: {} }, silent, watch, call, records, machines = [A], share = {}, inviteFriend, copy } = {}) {
+  const log = { sent: [], calls: [], queries: [], watches: [], on: {}, copied: [], states: [], invites: [] };
   const coda = {
-    machine: A, machines, getState: () => ({}), setState() {}, on(type, fn) { log.on[type] = fn; }, copy: async text => { log.copied.push(text); },
+    machine: A, machines, getState: () => ({}), setState(state) { log.states.push(state); }, on(type, fn) { log.on[type] = fn; },
+    copy: async text => { if (copy) await copy(text); log.copied.push(text); },
+    ...(inviteFriend ? { inviteFriend: async options => { log.invites.push(options); return inviteFriend(options); } } : {}),
     toolbar: async () => {}, header: async () => {},
     async postMessage(msg, options) {
       if (!options?.machine) throw new Error('这一页有几台机器，postMessage 须指明 machine');
       log.sent.push({ msg, machine: options.machine });
       if (msg.type === 'notes.list' && options.machine !== silent) setImmediate(() => page.reply({ type: 'reply', rid: msg.rid, ...notes }, { id: options.machine }));
+      const answer = { ...SHARE, ...share }[msg.type];
+      if (answer && options.machine !== silent) setImmediate(async () => {
+        let reply;
+        try { reply = { ok: true, value: await answer(msg, options.machine) }; } catch (e) { reply = { ok: false, error: e.message, effects: e.effects }; }
+        page.reply({ type: 'reply', rid: msg.rid, ...reply }, { id: options.machine });
+      });
     },
     watch(kind, cb, selector, options) { log.watches.push({ cb, machine: options?.machine }); return watch ? watch(options?.machine) : Promise.resolve({ dispose() {} }); },
     async query(target, op, params, options) { log.queries.push({ params, machine: options?.machine }); return { records: records ? records(params, options?.machine) : [] }; },
@@ -552,4 +562,567 @@ test('each machine\'s refresh re-reads its own cards', async t => {
   log.on.toolbar({ id: 'refresh' });
   await flush();
   assert.deepEqual(log.queries.map(q => q.machine).sort(), ['a', 'a', 'b', 'b']);
+});
+
+// ---- 添加好友：邀请对方与接受对方的邀请 ----
+
+const INVITE = '{"control":"https://control.example","authKey":"hskey-auth-secret","scope":"coda-tailnet/https://control.example","peerNode":"node-5d2a8f"}';
+const isVisible = scrim => scrim.hidden === false;
+// 持有方明确拒绝（什么也没写），与「不确定写没写」的错误不同。
+const refusal = message => Object.assign(new Error(message), { effects: 'none' });
+const bridgeError = (code, message) => Object.assign(new Error(message), { code });
+const blocksOf = (page, scrim) => page.all(n => n.tag === 'section' && cls(n) === 'blk', scrim);
+
+test('the add-friend dialog has the two blocks in fixed places: whatever the generate state, the invite block keeps its slots and the accept form is not touched', async t => {
+  let outcome = () => new Promise(() => {});
+  const { page, log } = await open(t, { inviteFriend: () => outcome() });
+  page.button('添加好友').fire('click');
+  const invite = scrims(page)[2];
+  const [top, bottom] = blocksOf(page, invite);
+  assert.deepEqual(top.children.map(n => n.textContent.slice(0, 8)).slice(0, 2), ['邀请对方', '生成一段邀请发给']);
+  assert.equal(bottom.children[0].textContent, '接受对方的邀请');
+  assert.ok(!invite.textContent.includes('后续将支持客户端一键生成邀请'), 'the old sentence is gone');
+  const slots = () => top.children.map(n => `${n.tag}.${cls(n)}`), acceptSnapshot = [...bottom.children], generate = page.button('生成邀请'), result = top.children[3];
+  const idleSlots = slots();
+  const stable = () => {
+    assert.deepEqual(slots(), idleSlots, 'the invite block keeps its slots');
+    assert.deepEqual(blocksOf(page, invite), [top, bottom], 'the two blocks are the same two nodes');
+    assert.ok(bottom.children.length === acceptSnapshot.length && bottom.children.every((n, i) => n === acceptSnapshot[i]), 'the accept form is untouched');
+    assert.equal(top.children[3], result, 'the result area is one node whose content changes');
+    assert.ok(page.all(n => n === generate, top).length === 1, 'and so is the one button');
+  };
+  stable();
+  assert.equal(generate.disabled, false);
+  assert.equal(result.textContent, '');
+
+  // 生成中：按钮禁用，结果区写「正在生成…」（确认框由客户端弹）。
+  const first = deferred();
+  outcome = () => first.promise;
+  generate.fire('click');
+  stable();
+  assert.deepEqual([generate.disabled, generate.textContent, result.textContent], [true, '生成邀请', '正在生成…']);
+  generate.fire('click');
+  assert.equal(log.invites.length, 1, 'a second click while generating does nothing');
+  // 已生成：整段邀请，一行「复制」和有效期；按钮变「再生成一个」。
+  first.resolve({ text: INVITE, expires: 1795600000000, machine: 'a', space: 's' });
+  await flush();
+  stable();
+  assert.deepEqual([generate.disabled, generate.textContent], [false, '再生成一个']);
+  assert.ok(result.textContent.includes(INVITE) && result.textContent.includes('24 小时内有效，只能用一次'));
+  assert.ok(buttonIn(page, result, '复制'));
+  // 失败：结果区写错误消息，按钮「重试」。
+  outcome = () => Promise.reject(bridgeError('service_unavailable', '控制服务器没有应答'));
+  generate.fire('click');
+  await flush();
+  stable();
+  assert.deepEqual([generate.disabled, generate.textContent, result.textContent], [false, '重试', '控制服务器没有应答']);
+  assert.ok(!page.text().includes('hskey-auth-secret'), 'a new try drops the old invite');
+  // 在确认框里取消：回到空闲，不显示错误。
+  outcome = () => Promise.reject(bridgeError('canceled', '已取消'));
+  generate.fire('click');
+  await flush();
+  stable();
+  assert.deepEqual([generate.disabled, generate.textContent, result.textContent], [false, '生成邀请', '']);
+  assert.deepEqual(log.invites, [{ machine: 'a' }, { machine: 'a' }, { machine: 'a' }], 'asks for the machine of the section it was opened from');
+});
+
+test('without window.coda.inviteFriend the generate button is disabled and says to open the page in the Coda client', async t => {
+  const { page, log } = await open(t);
+  page.button('添加好友').fire('click');
+  const invite = scrims(page)[2], [top] = blocksOf(page, invite);
+  const generate = page.button('生成邀请');
+  assert.equal(generate.disabled, true);
+  assert.equal(top.children[3].textContent, '请在 Coda 客户端里打开好友页来生成邀请');
+  generate.fire('click');
+  await flush();
+  assert.deepEqual(log.invites, []);
+  assert.equal(generate.disabled, true);
+});
+
+test('the generated invite is shown once: copied through coda.copy, kept in no page state, and gone when the dialog closes, even for a result that arrives after', async t => {
+  let outcome = () => Promise.resolve({ text: INVITE });
+  const { page, log } = await open(t, { inviteFriend: () => outcome() });
+  page.button('添加好友').fire('click');
+  const invite = scrims(page)[2], [top] = blocksOf(page, invite);
+  page.button('生成邀请').fire('click');
+  await flush();
+  assert.ok(top.textContent.includes(INVITE));
+  buttonIn(page, top, '复制').fire('click');
+  await flush();
+  assert.deepEqual(log.copied, [INVITE]);
+  assert.ok(buttonIn(page, top, '已复制'));
+  assert.deepEqual(log.states, [], 'setState is never called');
+  page.dispatch('keydown', { key: 'Escape' });
+  assert.equal(invite.hidden, true);
+  assert.ok(!page.text().includes('hskey-auth-secret'), 'closed: the invite is gone from the page');
+  page.button('添加好友').fire('click');
+  assert.equal(top.children[3].textContent, '');
+  assert.equal(page.button('生成邀请').textContent, '生成邀请');
+
+  // 生成还没回来就关掉弹层：迟到的结果不再显示。
+  const late = deferred();
+  outcome = () => late.promise;
+  page.button('生成邀请').fire('click');
+  page.dispatch('keydown', { key: 'Escape' });
+  late.resolve({ text: INVITE });
+  await flush();
+  page.button('添加好友').fire('click');
+  assert.ok(!page.text().includes('hskey-auth-secret'));
+  assert.equal(top.children[3].textContent, '');
+  assert.deepEqual(log.states, []);
+});
+
+// ---- 好友详情里的「共享」 ----
+
+const GRANT_KIND = 'remote-exec/machine@1';
+const grantRow = (grant, over = {}) => ({ grant, friend: FRIEND, target: { kind: GRANT_KIND, id: `rx-${grant}`, name: `机器 ${grant}` }, createdAt: 1, status: 'available', ...over });
+const TARGETS = [{ id: 'rx-1', name: '书房的 Mac mini', os: 'macOS 15.2', user: 'leavan', available: true }, { id: 'rx-2', name: '阳台的树莓派', os: 'Debian 12', user: 'pi', available: false },
+  { id: 'rx-3', name: '车库的 Linux', os: 'Ubuntu 24.04', user: 'coda', available: true }];
+// 打开好友详情（好友在第一台上、已绑定），返回详情与授予选择框。
+async function openShare(t, { certified = true, ...options } = {}) {
+  const { page, log } = await open(t, options);
+  log.watches[0].cb(accord({ friends: [{ node: 'n1', author: FRIEND, bound: true, ...(certified === 'absent' ? {} : { certified }) }] }));
+  await flush();
+  tiles(page)[0].fire('click');
+  await flush();
+  return { page, log, detail: scrims(page)[1], picker: scrims(page)[3] };
+}
+const listRows = (page, node) => page.all(n => n.tag === 'li' && cls(n) === 'g-row', node);
+const badgeOf = (page, row) => page.all(n => cls(n).startsWith('badge'), row)[0].textContent;
+const kebabOf = (page, row) => page.all(n => n.tag === 'button' && cls(n) === 'kebab', row)[0];
+const slotsOfRow = row => row.children.map(n => `${n.tag}.${cls(n).split(' ')[0]}`);
+const sentOf = (log, type) => log.sent.filter(s => s.msg.type === type);
+const chooseTarget = (page, picker, name) => page.all(n => n.tag === 'button' && cls(n) === 'pick' && n.textContent.startsWith(name), picker)[0];
+// 超过 1 秒的定时器（模块回应的 10 秒期限、后台恢复的间隔）交给测试手动拨。
+function stubTimers(t) {
+  const real = globalThis.setTimeout, timers = [];
+  globalThis.setTimeout = (fn, ms, ...args) => (ms >= 1000 ? (timers.push({ fn, ms }), { unref() {} }) : real(fn, ms, ...args));
+  t.after(() => { globalThis.setTimeout = real; });
+  return { has: ms => timers.some(one => one.ms === ms), fire: ms => { const [one] = timers.splice(timers.findLastIndex(x => x.ms === ms), 1); one.fn(); } };
+}
+
+test('the sharing section sits above the re-handshake / remove row and is titled with the machine; both lists and the operations have their own empty text', async t => {
+  const { page, detail } = await openShare(t);
+  const stack = page.all(n => cls(n) === 'stack', detail)[0], order = stack.children.map(cls);
+  assert.ok(order.includes('share') && order.includes('actions split'));
+  assert.equal(order.indexOf('share') + 1, order.indexOf('actions split'), 'right above the action row');
+  const share = stack.children[order.indexOf('share')], actions = stack.children[order.indexOf('actions split')];
+  assert.deepEqual(page.all(n => n.tag === 'button', actions).map(n => n.textContent), ['重新互认', '移除好友…']);
+  assert.deepEqual(page.all(n => n.tag === 'button' && ['重新互认', '移除好友…'].includes(n.textContent), share), []);
+  assert.equal(share.children[0].textContent, '共享 · A', 'the machine is named, also when there is only one');
+  for (const part of ['我授给 TA', 'TA 授给我', '还没有授给 TA 的东西', 'TA 还没有授给你东西', '最近的操作']) assert.ok(share.textContent.includes(part), part);
+});
+
+test('the granting dialog only picks records: no scope choice, the line under each row follows the friend\'s identity (person, machine, or unknown: none)', async t => {
+  for (const [certified, line] of [[true, '授给这个人名下的机器'], [false, '只授给对方那一台机器'], [null, null], ['absent', null]]) {
+    const { page, picker } = await openShare(t, { certified, share: { 'grants.targets': () => TARGETS } });
+    assert.equal(isVisible(picker), false);
+    page.button('授予…').fire('click');
+    await flush();
+    assert.equal(isVisible(picker), true);
+    assert.deepEqual(page.all(n => ['select', 'input', 'option', 'textarea'].includes(n.tag) || n.attrs['aria-pressed'] !== undefined || n.attrs.type === 'radio', picker), [], 'nothing to choose but the record');
+    const rows = page.all(n => n.tag === 'button' && cls(n) === 'pick', picker);
+    assert.equal(rows.length, 3);
+    for (const row of rows) assert.equal(row.textContent.includes('授给这个人名下的机器') || row.textContent.includes('只授给对方那一台机器'), line !== null, `${certified}: ${row.textContent}`);
+    if (line) assert.ok(rows.every(row => row.textContent.includes(line)));
+    assert.ok(rows[0].textContent.includes('书房的 Mac mini') && rows[0].textContent.includes('macOS 15.2 · leavan'));
+    assert.ok('disabled' in rows[1].attrs && rows[1].textContent.includes('远程执行没打开'));
+    assert.ok(!('disabled' in rows[0].attrs));
+    page.dispatch('keydown', { key: 'Escape' });
+    assert.equal(isVisible(picker), false, 'Escape closes only the picker');
+    assert.equal(isVisible(scrims(page)[1]), true, 'the friend detail stays');
+  }
+});
+
+test('granting shows the row granting at once; the answer settles it, a refusal rolls it back with the reason on that row', async t => {
+  const gate = deferred();
+  let grant = () => gate.promise;
+  const { page, log, detail, picker } = await openShare(t, { share: { 'grants.targets': () => TARGETS, 'grants.grant': () => grant() } });
+  page.button('授予…').fire('click');
+  await flush();
+  chooseTarget(page, picker, '书房的 Mac mini').fire('click');
+  assert.equal(isVisible(picker), false, 'the picker closes with the click');
+  let [row] = listRows(page, detail);
+  assert.equal(listRows(page, detail).length, 1);
+  assert.ok(row.textContent.includes('书房的 Mac mini') && row.textContent.includes('授给这个人名下的机器'));
+  assert.equal(badgeOf(page, row), '授予中');
+  assert.ok('disabled' in kebabOf(page, row).attrs, 'busy: nothing to press, and it says so on the row');
+  await flush();
+  assert.deepEqual(sentOf(log, 'grants.grant').map(s => [s.msg.friend, s.msg.target, s.machine]), [[FRIEND, { kind: GRANT_KIND, id: 'rx-1' }, 'a']]);
+  gate.resolve(grantRow('g1', { target: { kind: GRANT_KIND, id: 'rx-1', name: '书房的 Mac mini' } }));
+  await flush();
+  [row] = listRows(page, detail);
+  assert.equal(badgeOf(page, row), '可用');
+  assert.ok(!('disabled' in kebabOf(page, row).attrs));
+  // 已授出的，选择框里不能再选。
+  page.button('授予…').fire('click');
+  await flush();
+  assert.ok(chooseTarget(page, picker, '书房的 Mac mini').textContent.includes('已授给 TA') && 'disabled' in chooseTarget(page, picker, '书房的 Mac mini').attrs);
+  const refuse = deferred();
+  grant = () => refuse.promise;
+  page.dispatch('keydown', { key: 'Escape' });
+  page.button('授予…').fire('click');
+  await flush();
+  chooseTarget(page, picker, '车库的 Linux').fire('click');
+  await flush();
+  refuse.reject(refusal('这位不是已绑定好友通道的好友'));
+  await flush();
+  assert.deepEqual(listRows(page, detail).map(row => badgeOf(page, row)), ['可用', '未授予']);
+  const denied = () => listRows(page, detail)[1];
+  assert.ok(denied().textContent.includes('这位不是已绑定好友通道的好友'), 'the reason is on that row');
+  assert.ok(!listRows(page, detail)[0].textContent.includes('这位不是'), 'the other row is left alone');
+  assert.ok(!('disabled' in kebabOf(page, denied()).attrs));
+  kebabOf(page, denied()).fire('click');
+  page.all(n => n.tag === 'button' && n.attrs.role === 'menuitem' && n.textContent === '移除', detail)[0].fire('click');
+  assert.deepEqual(listRows(page, detail).map(row => badgeOf(page, row)), ['可用']);
+});
+
+test('revoking changes the row to revoking at once with no confirmation; a refusal puts it back with the reason; the grant goes once the holder says it is revoked', async t => {
+  const timers = stubTimers(t);
+  let revoke = () => Promise.reject(refusal('没有授权 g1')), listed = [grantRow('g1'), grantRow('g2', { status: 'target_off' })];
+  const { page, log, detail } = await openShare(t, { share: { 'grants.list': () => ({ grants: listed }), 'grants.revoke': () => revoke() } });
+  const rows = () => listRows(page, detail);
+  assert.deepEqual(rows().map(row => badgeOf(page, row)), ['可用', '目标已关闭']);
+  const kebab = kebabOf(page, rows()[0]);
+  assert.equal(kebab.attrs['aria-label'], '更多操作：机器 g1');
+  kebab.fire('click');
+  const item = () => page.all(n => n.tag === 'button' && n.attrs.role === 'menuitem', rows()[0])[0];
+  assert.ok(item().textContent.includes('撤销') && item().textContent.includes('同时取消对方正在跑的调用'), 'the menu item explains it');
+  item().fire('click');
+  // 这一刻（还没有任何回应）就是撤销中；没有确认框。
+  assert.equal(badgeOf(page, rows()[0]), '撤销中');
+  assert.ok('disabled' in kebabOf(page, rows()[0]).attrs);
+  assert.deepEqual(scrims(page).filter(isVisible), [detail], 'no confirmation dialog');
+  assert.ok(!page.text().includes('确认撤销'));
+  await flush();
+  assert.deepEqual(sentOf(log, 'grants.revoke').map(s => [s.msg.grant, s.machine]), [['g1', 'a']]);
+  // 被明确拒绝：回到原来的状态，原因写在这一行，别的行不动。
+  assert.equal(badgeOf(page, rows()[0]), '可用');
+  assert.ok(rows()[0].textContent.includes('没有授权 g1') && !rows()[1].textContent.includes('没有授权'));
+  // 再撤一次，这回成功：持有方说撤销中（名下的调用还在取消），行保持撤销中，直到读到已撤。
+  revoke = () => ({ ...grantRow('g1'), status: 'revoking', revokedAt: 5 });
+  kebabOf(page, rows()[0]).fire('click');
+  item().fire('click');
+  await flush();
+  assert.equal(badgeOf(page, rows()[0]), '撤销中');
+  assert.ok(!rows()[0].textContent.includes('没有授权 g1'), 'the old reason is gone');
+  listed = [{ ...grantRow('g1'), status: 'revoked', revokedAt: 5 }, grantRow('g2', { status: 'target_off' })];
+  assert.ok(timers.has(3000), 'it keeps reading in the background while something is revoking');
+  timers.fire(3000);
+  await flush();
+  assert.deepEqual(rows().map(row => row.textContent.includes('机器 g2')), [true]);
+});
+
+test('a grant with no answer stays granting and keeps its target taken: a list that does not show it yet is not a refusal, no second grant goes out, and a late answer or the list settles it', async t => {
+  const timers = stubTimers(t);
+  let listed = [], late = deferred();
+  const { page, log, detail, picker } = await openShare(t, { share: { 'grants.targets': () => TARGETS, 'grants.list': () => ({ grants: listed }), 'grants.grant': () => late.promise } });
+  const grant = async name => {
+    page.button('授予…').fire('click');
+    await flush();
+    chooseTarget(page, picker, name).fire('click');
+    await flush();
+    timers.fire(10_000);
+    await flush();
+  };
+  await grant('车库的 Linux');
+  const badges = () => listRows(page, detail).map(row => badgeOf(page, row));
+  assert.deepEqual(badges(), ['授予中'], 'the local choice stays');
+  // 读不到它：不算被拒，仍是授予中，目标仍占着，也发不出第二笔。
+  timers.fire(3000);
+  await flush();
+  assert.deepEqual(badges(), ['授予中']);
+  assert.ok(timers.has(3000), 'it keeps looking');
+  page.button('授予…').fire('click');
+  await flush();
+  const taken = chooseTarget(page, picker, '车库的 Linux');
+  assert.ok('disabled' in taken.attrs && taken.textContent.includes('已授给 TA'));
+  taken.fire('click');
+  await flush();
+  assert.equal(sentOf(log, 'grants.grant').length, 1, 'no second grant while the first has no outcome');
+  // 回应晚到了：就是它的结果。
+  late.resolve(grantRow('g9', { target: { kind: GRANT_KIND, id: 'rx-3', name: '车库的 Linux' } }));
+  await flush();
+  assert.deepEqual(badges(), ['可用']);
+  page.dispatch('keydown', { key: 'Escape' });
+  // 回应迟迟不来、但持有方那边已经有了：读到就是授出了。
+  late = deferred();
+  await grant('书房的 Mac mini');
+  assert.deepEqual(badges(), ['可用', '授予中']);
+  listed = [grantRow('g9', { target: { kind: GRANT_KIND, id: 'rx-3', name: '车库的 Linux' } }), grantRow('g8', { target: { kind: GRANT_KIND, id: 'rx-1', name: '书房的 Mac mini' } })];
+  timers.fire(3000);
+  await flush();
+  assert.deepEqual(badges(), ['可用', '可用']);
+  assert.ok(!timers.has(3000), 'nothing left to recover');
+});
+
+test('a late refusal ends a granting that had no answer, with the reason on its row; a retry replaces the failure with one row and clears it once confirmed', async t => {
+  const timers = stubTimers(t);
+  let grant = () => late.promise, late = deferred();
+  const { page, detail, picker } = await openShare(t, { share: { 'grants.targets': () => TARGETS, 'grants.grant': () => grant() } });
+  const choose = async () => {
+    page.button('授予…').fire('click');
+    await flush();
+    chooseTarget(page, picker, '车库的 Linux').fire('click');
+    await flush();
+  };
+  await choose();
+  timers.fire(10_000);
+  await flush();
+  late.reject(refusal('这位不是已绑定好友通道的好友'));
+  await flush();
+  const rows = () => listRows(page, detail);
+  assert.deepEqual(rows().map(row => badgeOf(page, row)), ['未授予']);
+  assert.ok(rows()[0].textContent.includes('这位不是已绑定好友通道的好友'));
+  // 重试：还是只有一行；确认成功后旧的失败也不在了。
+  const retry = deferred();
+  grant = () => retry.promise;
+  await choose();
+  assert.deepEqual(rows().map(row => [badgeOf(page, row), row.textContent.includes('这位不是')]), [['授予中', false]], 'one row, the old failure replaced');
+  retry.resolve(grantRow('g7', { target: { kind: GRANT_KIND, id: 'rx-3', name: '车库的 Linux' } }));
+  await flush();
+  assert.deepEqual(rows().map(row => [badgeOf(page, row), row.textContent.includes('这位不是')]), [['可用', false]]);
+  assert.ok(!detail.textContent.includes('未授予'));
+});
+
+test('a revoke whose error does not say nothing was written stays revoking and is checked against the holder, never rolled back to usable', async t => {
+  const timers = stubTimers(t);
+  let listed = [grantRow('g1')], revoked = 0;
+  const { page, log, detail } = await openShare(t, { share: { 'grants.list': () => ({ grants: listed }), 'grants.revoke': () => { revoked++; throw new Error('写盘时出错'); } } });
+  const badges = () => listRows(page, detail).map(row => badgeOf(page, row));
+  kebabOf(page, listRows(page, detail)[0]).fire('click');
+  page.all(n => n.tag === 'button' && n.attrs.role === 'menuitem', detail)[0].fire('click');
+  await flush();
+  assert.deepEqual(badges(), ['撤销中']);
+  assert.ok(!detail.textContent.includes('写盘时出错'), 'not shown as a refusal');
+  // 核对：持有方那边还可用，就再发一次；已经在撤销中，就不用再发。
+  timers.fire(3000);
+  await flush();
+  assert.equal(revoked, 2, 'still usable at the holder: sent again');
+  assert.deepEqual(badges(), ['撤销中']);
+  listed = [{ ...grantRow('g1'), status: 'revoking', revokedAt: 5 }];
+  timers.fire(3000);
+  await flush();
+  assert.equal(revoked, 2, 'already revoking at the holder: not sent again');
+  assert.deepEqual(badges(), ['撤销中']);
+  listed = [{ ...grantRow('g1'), status: 'revoked', revokedAt: 5 }];
+  timers.fire(3000);
+  await flush();
+  assert.deepEqual(badges(), []);
+  assert.equal(sentOf(log, 'grants.revoke').length, 2);
+});
+
+test('a list that was asked before a write and arrives after it does not overwrite the confirmed grant or revoke; it is read again', async t => {
+  let hold = null, reads = 0, listed = [grantRow('g1')];
+  const { page, detail, picker } = await openShare(t, { share: { 'grants.targets': () => TARGETS,
+    'grants.list': () => { reads++; return hold ? hold.promise : { grants: listed }; },
+    'grants.grant': () => { listed = [...listed, grantRow('g2', { target: { kind: GRANT_KIND, id: 'rx-3', name: '车库的 Linux' } })]; return listed[1]; },
+    'grants.revoke': () => { listed = listed.map(g => (g.grant === 'g1' ? { ...g, status: 'revoked', revokedAt: 5 } : g)); return listed[0]; } } });
+  const badges = () => listRows(page, detail).map(row => badgeOf(page, row));
+  const reopen = async () => { page.button('完成').fire('click'); tiles(page)[0].fire('click'); await flush(); };
+  assert.deepEqual(badges(), ['可用']);
+  // 授予：列表在授予之前发出，授予确认了它才回来，回来的是旧的。
+  hold = deferred();
+  await reopen();
+  page.button('授予…').fire('click');
+  await flush();
+  chooseTarget(page, picker, '车库的 Linux').fire('click');
+  await flush();
+  assert.deepEqual(badges(), ['可用', '可用']);
+  const before = reads;
+  hold.resolve({ grants: [grantRow('g1')] });
+  hold = null;
+  await flush();
+  assert.deepEqual(badges(), ['可用', '可用'], 'the old list did not wipe the confirmed grant');
+  assert.equal(reads, before + 1, 'and it was read again');
+  // 撤销：同样，撤掉的不会被旧列表读回来。
+  hold = deferred();
+  await reopen();
+  kebabOf(page, listRows(page, detail)[0]).fire('click');
+  page.all(n => n.tag === 'button' && n.attrs.role === 'menuitem', detail)[0].fire('click');
+  await flush();
+  assert.deepEqual(badges(), ['可用'], 'g1 is gone, g2 stays');
+  const latest = reads;
+  hold.resolve({ grants: [grantRow('g1'), grantRow('g2', { target: { kind: GRANT_KIND, id: 'rx-3', name: '车库的 Linux' } })] });
+  hold = null;
+  await flush();
+  assert.deepEqual(badges(), ['可用'], 'the revoked one stays gone');
+  assert.equal(reads, latest + 1);
+});
+
+test('a holder fault is shown as a fault: no empty text, no granting, and the list is not used to settle a pending grant', async t => {
+  const timers = stubTimers(t);
+  let list = () => ({ grants: [] });
+  const { page, detail, picker } = await openShare(t, { share: { 'grants.targets': () => TARGETS, 'grants.list': () => list(), 'grants.grant': () => new Promise(() => {}) } });
+  page.button('授予…').fire('click');
+  await flush();
+  chooseTarget(page, picker, '车库的 Linux').fire('click');
+  await flush();
+  timers.fire(10_000);
+  await flush();
+  list = () => ({ corrupt: true, grants: [] });
+  timers.fire(3000);
+  await flush();
+  assert.ok(detail.textContent.includes('持有方出了故障'));
+  assert.ok(!detail.textContent.includes('还没有授给 TA 的东西'));
+  assert.ok('disabled' in page.button('授予…').attrs, 'no granting');
+  assert.ok(timers.has(3000), 'the pending grant is still being looked after');
+  list = () => ({ grants: [grantRow('g9', { target: { kind: GRANT_KIND, id: 'rx-3', name: '车库的 Linux' } })] });
+  timers.fire(3000);
+  await flush();
+  assert.ok(!detail.textContent.includes('持有方出了故障'));
+  assert.deepEqual(listRows(page, detail).map(row => badgeOf(page, row)), ['可用']);
+  assert.ok(!('disabled' in page.button('授予…').attrs));
+});
+
+test('a grant read as revoking when the detail opens is followed until its state changes', async t => {
+  const timers = stubTimers(t);
+  let listed = [{ ...grantRow('g1'), status: 'revoking', revokedAt: 5 }];
+  const { page, detail } = await openShare(t, { share: { 'grants.list': () => ({ grants: listed }) } });
+  assert.deepEqual(listRows(page, detail).map(row => badgeOf(page, row)), ['撤销中']);
+  assert.ok(timers.has(3000), 'the recovery timer is on from the read itself');
+  timers.fire(3000);
+  await flush();
+  assert.ok(timers.has(3000), 'still revoking: it keeps going');
+  listed = [{ ...grantRow('g1'), status: 'revoked', revokedAt: 5 }];
+  timers.fire(3000);
+  await flush();
+  assert.deepEqual(listRows(page, detail), []);
+  assert.ok(!timers.has(3000), 'and stops');
+});
+
+test('rows keep one shape in every state: the info, one badge, and one slot at the end that is the menu button for what can be revoked', async t => {
+  const gate = deferred();
+  const { page, detail, picker } = await openShare(t, { share: { 'grants.targets': () => TARGETS, 'grants.grant': () => gate.promise, 'grants.list': () => ({ grants: [grantRow('g1'), grantRow('g2', { status: 'target_off' }), grantRow('g3', { status: 'revoking', revokedAt: 1 })] }),
+    'proxies.list': () => [{ key: 'k1', grant: 'p1', holder: FRIEND, name: '客厅的 Linux@小周', os: 'linux', user: 'u', status: 'available' }, { key: 'k2', grant: 'p2', holder: FRIEND, name: '工作室的 Mac@小周', os: 'm', user: 'u', status: 'off' }] } });
+  page.button('授予…').fire('click');
+  await flush();
+  chooseTarget(page, picker, '车库的 Linux').fire('click');
+  const mine = listRows(page, detail).slice(0, 4);
+  assert.deepEqual(mine.map(row => badgeOf(page, row)), ['可用', '目标已关闭', '撤销中', '授予中']);
+  const shapes = mine.map(row => slotsOfRow(row).join(' '));
+  assert.ok(shapes.every(shape => shape === 'div.g-info span.badge button.kebab'), shapes.join(' | '));
+  assert.ok(mine.every(row => page.all(n => n.tag === 'button', row).length === 1), 'only one button at the end of a row');
+  await flush();
+  gate.reject(new Error('不行'));
+  await flush();
+  assert.equal(slotsOfRow(listRows(page, detail)[3]).join(' '), 'div.g-info span.badge button.kebab', 'a refused one too');
+  const theirs = listRows(page, detail).slice(4);
+  assert.deepEqual(theirs.map(row => [row.children[0].textContent, badgeOf(page, row)]), [['客厅的 Linux@小周', '可用'], ['工作室的 Mac@小周', 'TA 那边没开远程执行']]);
+  assert.ok(theirs.every(row => slotsOfRow(row).join(' ') === 'div.g-info span.badge span.kebab-slot'), 'what I cannot act on keeps the slot, with no button');
+});
+
+test('the recent operations are folded by default and read only when opened, as a summary: time, kind, command, outcome and duration', async t => {
+  const ROWS = [
+    { v: 1, at: Date.UTC(2026, 10, 24, 6, 32), request: 'r1', friend: FRIEND, grant: 'g1', target: { kind: GRANT_KIND, id: 'rx-1', name: 'box' }, op: 'exec', command: { summary: 'ls -la ~/projects', sha256: 'a'.repeat(64) }, outcome: 'completed', exitCode: 0, ms: 400 },
+    { v: 1, at: Date.UTC(2026, 10, 24, 3, 8), request: 'r2', friend: FRIEND, grant: 'g1', target: { kind: GRANT_KIND, id: 'rx-1', name: 'box' }, op: 'exec', command: { summary: 'brew upgrade', sha256: 'b'.repeat(64) }, outcome: 'completed', exitCode: 1, ms: 38_000 },
+    { v: 1, at: Date.UTC(2026, 10, 23, 13, 45), friend: FRIEND, outcome: 'rejected', code: 'no_grant', count: 3 }];
+  const { page, log, detail } = await openShare(t, { share: { 'ledger.list': () => ROWS } });
+  const folded = () => page.all(n => n.tag === 'details' && cls(n) === 'ops', detail)[0];
+  assert.equal(folded().attrs.open, undefined, 'folded');
+  assert.deepEqual(sentOf(log, 'ledger.list'), [], 'nothing read yet');
+  assert.ok(!detail.textContent.includes('ls -la'));
+  folded().open = true;
+  folded().fire('toggle');
+  await flush();
+  assert.deepEqual(sentOf(log, 'ledger.list').map(s => [s.msg.friend, s.msg.limit, s.machine]), [[FRIEND, 20, 'a']]);
+  assert.notEqual(folded().attrs.open, undefined, 'a redraw keeps it open');
+  const text = folded().textContent;
+  for (const part of ['ls -la ~/projects', '成功', '0.4 秒', 'brew upgrade', '失败（退出码 1）', '38 秒', 'no_grant × 3', '被拒绝', '完整记录：coda self ledger.list']) assert.ok(text.includes(part), part);
+  assert.equal(page.all(n => cls(n) === 'op', folded()).length, 3);
+});
+
+test('the sharing section follows the machine of the friend row: titled with it, read from it and written to it, with each machine\'s own grants', async t => {
+  const { page, log } = await open(t, { machines: [A, B], share: { 'grants.list': (msg, machine) => ({ grants: machine === 'a' ? [grantRow('ga')] : [grantRow('gb')] }), 'grants.revoke': () => grantRow('gb', { status: 'revoking', revokedAt: 1 }) } });
+  const friend = { node: 'n1', author: FRIEND, bound: true, certified: true };
+  feed(log, 'a', { friends: [friend] });
+  feed(log, 'b', { friends: [friend] });
+  await flush();
+  tiles(page)[1].fire('click');
+  await flush();
+  const detail = scrims(page)[1];
+  assert.equal(page.all(n => n.tag === 'h4' && n.textContent.startsWith('共享'), detail)[0].textContent, '共享 · B');
+  assert.deepEqual(listRows(page, detail).map(row => row.textContent.includes('机器 gb')), [true]);
+  assert.ok(!detail.textContent.includes('机器 ga'));
+  assert.deepEqual(sentOf(log, 'grants.list').map(s => s.machine), ['b']);
+  kebabOf(page, listRows(page, detail)[0]).fire('click');
+  page.all(n => n.tag === 'button' && n.attrs.role === 'menuitem', detail)[0].fire('click');
+  await flush();
+  assert.deepEqual(sentOf(log, 'grants.revoke').map(s => [s.msg.grant, s.machine]), [['gb', 'b']]);
+  page.button('完成').fire('click');
+  tiles(page)[0].fire('click');
+  await flush();
+  assert.equal(page.all(n => n.tag === 'h4' && n.textContent.startsWith('共享'), detail)[0].textContent, '共享 · A');
+  assert.deepEqual(listRows(page, detail).map(row => row.textContent.includes('机器 ga')), [true]);
+  assert.ok(!detail.textContent.includes('机器 gb'));
+});
+
+test('a list error that arrives after a write is dropped like a stale list: it does not hide the confirmed grant, and the list is read again', async t => {
+  let hold = null, reads = 0, listed = [grantRow('g1')];
+  const { page, detail, picker } = await openShare(t, { share: { 'grants.targets': () => TARGETS,
+    'grants.list': () => { reads++; return hold ? hold.promise : { grants: listed }; },
+    'grants.grant': () => { listed = [...listed, grantRow('g2', { target: { kind: GRANT_KIND, id: 'rx-3', name: '车库的 Linux' } })]; return listed[1]; } } });
+  hold = deferred();
+  page.button('完成').fire('click');
+  tiles(page)[0].fire('click');
+  await flush();
+  page.button('授予…').fire('click');
+  await flush();
+  chooseTarget(page, picker, '车库的 Linux').fire('click');
+  await flush();
+  const before = reads;
+  hold.reject(new Error('读超时'));
+  hold = null;
+  await flush();
+  assert.deepEqual(listRows(page, detail).map(row => badgeOf(page, row)), ['可用', '可用'], 'the confirmed grant is still shown');
+  assert.ok(!detail.textContent.includes('读不到授权'));
+  assert.equal(reads, before + 1, 'read again');
+});
+
+test('when a holder fault is found the open granting dialog closes, and a grant submitted from it afterwards is not sent', async t => {
+  const timers = stubTimers(t);
+  let list = () => ({ grants: [{ ...grantRow('g1'), status: 'revoking', revokedAt: 5 }] });
+  const { page, log, picker } = await openShare(t, { share: { 'grants.targets': () => TARGETS, 'grants.list': () => list() } });
+  page.button('授予…').fire('click');
+  await flush();
+  const row = chooseTarget(page, picker, '车库的 Linux');
+  assert.equal(isVisible(picker), true);
+  list = () => ({ corrupt: 'grants.json', grants: [] });
+  timers.fire(3000);
+  await flush();
+  assert.equal(isVisible(picker), false, 'closed by the fault');
+  row.fire('click');
+  await flush();
+  assert.deepEqual(sentOf(log, 'grants.grant'), [], 'a stale click sends nothing');
+  page.button('授予…').fire('click');
+  await flush();
+  assert.ok(chooseTarget(page, picker, '车库的 Linux').textContent.includes('持有方出了故障'), 'and if it is opened anyway every row is disabled');
+  assert.ok('disabled' in chooseTarget(page, picker, '车库的 Linux').attrs);
+});
+
+test('the recovery loop starts the next round only when this one has read and retried: a slow retry is the only one in flight, never a third revoke', async t => {
+  const timers = stubTimers(t);
+  let broken = false;
+  const { page, log, detail } = await openShare(t, { share: { 'grants.list': () => { if (broken) throw new Error('读不到'); return { grants: [grantRow('g1')] }; }, 'grants.revoke': () => new Promise(() => {}) } });
+  kebabOf(page, listRows(page, detail)[0]).fire('click');
+  page.all(n => n.tag === 'button' && n.attrs.role === 'menuitem', detail)[0].fire('click');
+  await flush();
+  timers.fire(10_000);
+  await flush();
+  assert.equal(sentOf(log, 'grants.revoke').length, 1);
+  timers.fire(3000);
+  await flush();
+  assert.equal(sentOf(log, 'grants.revoke').length, 2, 'one retry, still usable at the holder');
+  assert.ok(!timers.has(3000), 'no next round while the retry is in flight');
+  assert.equal(sentOf(log, 'grants.revoke').length, 2);
+  timers.fire(10_000);
+  await flush();
+  assert.ok(timers.has(3000), 'the retry ended: now the next round is scheduled');
+  // 这一轮没读到有效列表就不重发。
+  broken = true;
+  const reads = sentOf(log, 'grants.list').length;
+  timers.fire(3000);
+  await flush();
+  assert.equal(sentOf(log, 'grants.list').length, reads + 1);
+  assert.equal(sentOf(log, 'grants.revoke').length, 2, 'no valid list, no retry');
 });

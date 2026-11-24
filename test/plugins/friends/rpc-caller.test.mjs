@@ -306,6 +306,21 @@ test('a grant becomes a proxy record named machine@friend with the holder machin
   await until(() => c.mine().length === 0, '撤回后删掉代理记录');
 });
 
+test('list gives the proxies a friend granted to me, read only: filtered by the friend\'s bound channel, with the status I would meet now', async t => {
+  const world = worldFake(), h = await holderOf(t, world), c = await callerOf(t, world, { friends: [channel(), { node: 'n-b', author: FB, bound: true, machine: FB, certified: false }] });
+  assert.deepEqual(await c.caller.list(), []);
+  const grant = await granted(h, c);
+  const proxy = { key: proxyKey(HM, grant), grant, holder: HM, name: `box@好友 ${'c'.repeat(8)}`, os: 'linux', user: 'u', status: 'available' };
+  assert.deepEqual(await c.caller.list(), [proxy]);
+  assert.deepEqual(await c.caller.list({ friend: HM }), [proxy]);
+  assert.deepEqual(await c.caller.list({ friend: FB }), [], 'another friend\'s channel has a different machine key');
+  await assert.rejects(c.caller.list({ friend: 'someone' }), error => error.code === 'invalid_input');
+  // 本机没有可用的签名证书时，好友授的东西这一刻用不了。
+  await c.node.change({ certificate: EXPIRED });
+  assert.equal((await c.caller.list({ friend: HM }))[0].status, 'sign');
+  assert.equal(c.mine().length, 1, 'listing writes nothing');
+});
+
 test('the same grant seen by two of my bound machines keeps one proxy record on the smaller machine id; a machine whose channel breaks drops out', async t => {
   const world = worldFake(), proxies = proxiesFake(), h = await holderOf(t, world);
   const big = await callerOf(t, world, { owner: 'm-2', proxies });

@@ -7,6 +7,8 @@
 // - 签名网关的持有方（lib/rpc-holder.mjs）：把本机 remote-exec 记录的 exec 授给好友、转发好友签名的调用，
 //   授权与操作记录用 `coda self grants.list|grants.grant|grants.revoke|ledger.list` 读写。持有方出错不影响社交网关。
 // - 签名网关的调用方（lib/rpc-caller.mjs）：把好友授给本机的记录登记成代理记录，接住对它的 exec 转给好友签名执行。调用方出错不影响社交网关与持有方。
+//   好友授给本机的代理记录用 `coda self proxies.list` 读；授予时可选的本机 remote-exec 记录用 `coda self grants.targets` 读。
+// 这几样（SHARED）好友页也经视图消息调用，与 `notes.*` 同一个写法。
 import { createGateway } from './lib/gateway.mjs';
 import { deleteNote, readNotes, setNote } from './lib/notes.mjs';
 import { createCaller } from './lib/rpc-caller.mjs';
@@ -14,6 +16,7 @@ import { createHolder } from './lib/rpc-holder.mjs';
 import { createRpcStore } from './lib/rpc-store.mjs';
 
 const HOLDER_ACTIONS = ['grants.list', 'grants.grant', 'grants.revoke', 'ledger.list'];
+const TARGET_KIND = 'remote-exec/machine@1';
 let dir = null, gateway = null, holder = null, caller = null;
 const handles = [];
 
@@ -28,14 +31,27 @@ export async function activate(coda) {
     if (!dir) throw new Error('这台机器没有插件状态目录，备注存不下');
     return actions[name](input);
   };
+  // 好友页的「共享」一节用的：持有方的四个操作、调用方的代理记录、本机可授出的 remote-exec 记录。
+  const shared = {
+    ...Object.fromEntries(HOLDER_ACTIONS.map(name => [name, input => {
+      if (!holder) throw new Error('这台机器没有插件状态目录，好友授权存不下');
+      return holder.self[name](input);
+    }])),
+    'proxies.list': input => {
+      if (!caller) throw new Error('这台机器没有插件状态目录，好友授给本机的授权读不出来');
+      return caller.list(input);
+    },
+    'grants.targets': async () => (await coda.list(TARGET_KIND, { scope: 'local' })).filter(entry => entry.local === true && entry.plugin === 'remote-exec')
+      .map(entry => ({ id: entry.id, name: entry.spec?.name ?? entry.id, os: entry.spec?.os ?? '', user: entry.spec?.user ?? '', available: entry.status?.available === true })),
+  };
   for (const name of Object.keys(actions)) handles.push(coda.self.handle(name, input => run(name, input ?? {})));
   coda.views.register('friends', {
     open(view) {
       view.onMessage(async message => {
-        const name = message?.type;
-        if (!Object.hasOwn(actions, name) || typeof message.rid !== 'string') return;
-        try { view.postMessage({ type: 'reply', rid: message.rid, ok: true, value: await run(name, message) }); }
-        catch (e) { view.postMessage({ type: 'reply', rid: message.rid, ok: false, error: String(e?.message ?? e) }); }
+        const name = message?.type, notes = Object.hasOwn(actions, name);
+        if (!(notes || Object.hasOwn(shared, name)) || typeof message.rid !== 'string') return;
+        try { view.postMessage({ type: 'reply', rid: message.rid, ok: true, value: await (notes ? run(name, message) : shared[name](message)) }); }
+        catch (e) { view.postMessage({ type: 'reply', rid: message.rid, ok: false, error: String(e?.message ?? e), effects: e?.effects }); }
       });
     },
   });
@@ -53,10 +69,7 @@ export async function activate(coda) {
       caller.start().catch(() => {});
     } catch { caller = null; }
   }
-  for (const name of HOLDER_ACTIONS) handles.push(coda.self.handle(name, input => {
-    if (!holder) throw new Error('这台机器没有插件状态目录，好友授权存不下');
-    return holder.self[name](input ?? {});
-  }));
+  for (const [name, fn] of Object.entries(shared)) handles.push(coda.self.handle(name, input => fn(input ?? {})));
 }
 
 export function deactivate() {

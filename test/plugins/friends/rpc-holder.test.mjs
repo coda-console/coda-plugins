@@ -1598,6 +1598,52 @@ test('binding a personal identity (machine key to root) and unbinding it again l
   assert.deepEqual(await rejections(h), []);
 });
 
+// ---- 目录里留下的旧请求（基座的目录同步不看插件状态，停用、卸载期间它们还在） ----
+
+test('after a stop and start on the same data directory the first read of the directory does not run a request past its replay window nor answer it running, and does not run a handled one again', async t => {
+  const h = await holderOf(t);
+  const { grant } = await h.grant();
+  const handled = send(h, { grant, expiresAt: START + 10 * MINUTE });
+  await h.settle();
+  assert.deepEqual(h.answers(F1, handled.request), ['running', 'completed']);
+  assert.equal(h.exec.runs, 1);
+  // 停用期间目录里又来了一条，没人处理；再启用时它已过了重放窗口，处理过的那条还在窗口里（去重表在盘上）。
+  h.stop();
+  const stale = send(h, { grant, createdAt: START, expiresAt: START + 5 * MINUTE });
+  h.clock.now = START + 7 * MINUTE;
+  const again = await holderOf(t, h);
+  await again.settle();
+  assert.equal(h.exec.runs, 1, 'the command ran once, in all');
+  assert.deepEqual(again.answers(F1, stale.request), [], 'not even running');
+  assert.deepEqual(again.answers(F1, handled.request), ['running', 'completed']);
+  assert.deepEqual((await rejections(again, 'window_expired')).map(row => row.friend), [F1]);
+});
+
+test('after an uninstall and reinstall (the data directory empty: no grants, no handled table) the requests left in the directory are refused for want of a grant and no command runs', async t => {
+  const h = await holderOf(t);
+  const { grant } = await h.grant();
+  const handled = send(h, { grant, expiresAt: START + 10 * MINUTE });
+  await h.settle();
+  assert.equal(h.exec.runs, 1);
+  h.stop();
+  // 卸载期间又来了一条，还在窗口里；装回来的是空的数据目录和一个新的执行端替身。
+  const waiting = send(h, { grant, expiresAt: START + 10 * MINUTE });
+  const fresh = await holderOf(t, { accord: h.accord, targets: h.targets, clock: h.clock });
+  await fresh.settle();
+  assert.deepEqual((await fresh.holder.self['grants.list']()).grants, []);
+  assert.equal(fresh.exec.runs, 0);
+  assert.deepEqual(fresh.exec.calls, []);
+  for (const request of [handled.request, waiting.request]) assert.deepEqual(fresh.answers(F1, request), h.answers(F1, request), 'no new answer');
+  assert.deepEqual(fresh.answers(F1, waiting.request), []);
+  // 没有任何授权时目录根本不读；授了别人之后读到的旧请求，作者不是任何被授权者，一概拒绝。
+  assert.deepEqual(await rejections(fresh), []);
+  await fresh.grant(F2);
+  await fresh.settle();
+  assert.equal(fresh.exec.runs, 0);
+  assert.deepEqual((await rejections(fresh, 'bad_author')).map(row => [row.friend, row.count]), [[F1, 2]]);
+  assert.deepEqual(fresh.answers(F1, waiting.request), []);
+});
+
 // ---- coda self ----
 
 test('coda self grants.list, grants.grant, grants.revoke and ledger.list go through the activated module', async t => {
