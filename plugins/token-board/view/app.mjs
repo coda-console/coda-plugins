@@ -1,6 +1,7 @@
-// Token 消耗榜页面：本机的用量概览，和好友的消耗榜。数据都由模块（main.mjs）读好、算好，经页面消息送来；页面不直接读记录。
+// Token 消耗榜页面：用量概览，和好友的消耗榜。数据都由模块（main.mjs）读好、算好，经页面消息送来；页面不直接读记录。
+// 视图里有几台机器就都读，按人合并（lib/merge.mjs）：时间范围由页首选，机器范围由 App 的全局视图定，页面不自己选机器。
 // 好友的昵称、模型名等外来文字只经 textContent / 文本节点渲染，从不拼进 innerHTML。
-import { createMachineBridge, pickMachine, reachableMachines } from '../lib/view-machine.mjs';
+import { mergeBoards } from '../lib/merge.mjs';
 
 const coda = window.coda;
 const root = document.getElementById('root');
@@ -13,10 +14,14 @@ const colorOf = value => (Object.hasOwn(NAMED_COLORS, value) ? NAMED_COLORS[valu
 
 const saved = coda.getState?.() ?? {};
 let range = RANGES.find(r => r.id === saved?.range)?.id ?? null;
-let currentMachine = pickMachine(coda, saved?.machine);
-// 每次选机自增（A → B → A 也不同）：旧机器的订阅回调、在途的发送失败，凭它丢弃。
-let selectionGen = 0;
-let status = null, board = null, loading = false, seq = 0, acting = false;
+// 视图里的每台机器（成员在页面生命周期内不变）各存一份状态、数据和错误；读不到的（unreachable）也在，只是不发消息。
+const members = (Array.isArray(coda.machines) ? coda.machines : [coda.machine]).filter(m => typeof m?.id === 'string' && m.id).map(m => ({
+  id: m.id, name: m.name || m.id, unreachable: m.unreachable ? (m.unreachable === true ? '暂时连不上' : String(m.unreachable)) : null,
+  status: null, board: null, failure: null, loading: false, acting: false, seq: 0,
+}));
+const live = members.filter(m => !m.unreachable);
+const multi = members.length > 1;
+let seq = 0, merged = null;
 const expanded = new Set();
 
 const h = (tag, attrs = {}, ...children) => {
@@ -42,40 +47,59 @@ const pad = n => String(n).padStart(2, '0');
 const clock = at => { const d = new Date(at); return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
 
 // ——— 与模块通信 ———
-function requestBoard() {
-  if (!range) return;
-  loading = true;
-  bridge.send({ type: 'board', range, id: ++seq });
+const send = (m, msg) => { Promise.resolve().then(() => coda.postMessage(msg, { machine: m.id })).catch(error => failed(m, msg, error)); };
+function failed(m, msg, error) {
+  const text = error?.message ?? String(error);
+  m.loading = false; m.acting = false;
+  if (msg.type === 'hello' || msg.type === 'board') { m.failure = text; m.board = null; } else m.status = { ...(m.status ?? {}), notice: `发送失败：${text}` };
   render();
 }
+function requestBoards() {
+  if (!range) return;
+  for (const m of live) { m.loading = true; m.seq = ++seq; send(m, { type: 'board', range, id: m.seq }); }
+  render();
+}
+function refresh() { for (const m of live) send(m, { type: 'hello' }); requestBoards(); }
 const handlers = {
-  status(d) {
-    status = d;
-    if (!range) { range = RANGES.find(r => r.id === d.range)?.id ?? '7d'; declareHeader(); requestBoard(); }
-    acting = false;
+  status(m, d) {
+    m.status = d; m.acting = false;
+    if (!range) { range = RANGES.find(r => r.id === d.range)?.id ?? '7d'; declareHeader(); requestBoards(); }
     render();
   },
-  board(d) {
-    if (d.id !== seq) return;
-    board = d; loading = false; render();
+  board(m, d) {
+    if (d.id !== m.seq) return;
+    m.board = d; m.failure = null; m.loading = false; render();
   },
-  error(d) { loading = false; acting = false; status = { ...(status ?? {}), notice: d.message }; render(); },
+  error(m, d) {
+    if (d.request === 'board') {   // 读榜单失败：这台算读不到，不留旧数据冒充完整的结果
+      if (d.id === m.seq) { m.loading = false; m.failure = d.message; m.board = null; render(); }
+      return;
+    }
+    m.acting = false;
+    m.status = { ...(m.status ?? {}), notice: d.message };
+    render();
+  },
 };
-const bridge = createMachineBridge({
-  coda,
-  getMachine: () => currentMachine,
-  getEpoch: () => selectionGen,
-  onMessage: d => handlers[d.type]?.(d),
-  onError(error, msg, machine, gen) {
-    if (gen !== selectionGen) return;
-    loading = false; acting = false;
-    status = { ...(status ?? {}), notice: `发送失败：${error?.message ?? error}` };
-    render();
-  },
+addEventListener('message', event => {
+  const d = event.data;
+  if (!(d && typeof d === 'object' && typeof d.type === 'string')) return;
+  const m = event.machine?.id ? members.find(one => one.id === event.machine.id) : members.length === 1 ? members[0] : null;
+  if (m) handlers[d.type]?.(m, d);
 });
 
-function act(message) { acting = true; render(); bridge.send(message); }
-const setShare = on => act({ type: 'set-share', on });
+// 开关、同步、撤回都发给每台（同步只发给开着分享的），各台各自回结果。
+// 没连上的成员收不到：开关和撤回要写明它没有执行，撤回尤其要让人知道它已发布的记录没撤掉。
+function act(message, targets, skipped = null) {
+  for (const m of members) m.skipped = m.unreachable ? skipped : null;
+  for (const m of targets) { m.acting = true; send(m, message); }
+  render();
+}
+const setShare = on => act({ type: 'set-share', on }, live, `没连上，没有${on ? '开启' : '关闭'}分享`);
+const shareOf = () => {
+  const known = live.filter(m => typeof m.status?.share === 'boolean');
+  const on = known.filter(m => m.status.share === true);
+  return { known, on: known.length > 0 && on.length === known.length, any: on.length > 0, mixed: on.length > 0 && on.length < known.length };
+};
 
 // ——— 顶栏 ———
 let headerKey = '';
@@ -86,104 +110,106 @@ function declareHeader() {
 }
 coda.on?.('header', ({ id }) => {
   if (!RANGES.some(r => r.id === id)) return;
-  range = id; saveState(); board = null; requestBoard();
+  range = id; saveState();
+  for (const m of members) m.board = null;
+  requestBoards();
 });
 let toolbarKey = '';
 function declareToolbar() {
-  const key = String(status?.share);
+  const on = shareOf().on, key = String(on);
   if (toolbarKey === key) return;
   toolbarKey = key;
   try {
     coda.toolbar?.([{ id: 'refresh', kind: 'button', label: '刷新', icon: 'arrow.clockwise' },
-      { id: 'share', kind: 'toggle', label: '分享', icon: 'person.2.fill', on: status?.share === true }])?.catch?.(() => {});
+      { id: 'share', kind: 'toggle', label: '分享', icon: 'person.2.fill', on }])?.catch?.(() => {});
   } catch {}
 }
 coda.on?.('toolbar', ({ id, on } = {}) => {
-  if (id === 'refresh') { bridge.send({ type: 'hello' }); requestBoard(); }
-  else if (id === 'share') setShare(typeof on === 'boolean' ? on : !status?.share);
+  if (id === 'refresh') refresh();
+  else if (id === 'share') setShare(typeof on === 'boolean' ? on : !shareOf().on);
 });
 
 // 好友表变动或收到好友的新记录，Coda 通知一次，榜单跟着刷新；用量本身不会推送，另有定时刷新。
-let again = null, watching = null;
-function later() { clearTimeout(again); again = setTimeout(() => { bridge.send({ type: 'hello' }); requestBoard(); }, 800); }
-function watchFriends() {
-  watching?.then(w => w?.dispose?.(), () => {});
-  const mine = currentMachine, gen = selectionGen;
-  watching = Promise.resolve(coda.watch('friends/social@1', ({ type }) => { if (type === 'MODIFIED' && gen === selectionGen) later(); }, { id: 'local' }, mine ? { machine: mine } : undefined));
-  watching.catch(() => {});
+let again = null;
+function later() { clearTimeout(again); again = setTimeout(refresh, 800); }
+for (const m of live) {
+  try { Promise.resolve(coda.watch('friends/social@1', ({ type }) => { if (type === 'MODIFIED') later(); }, { id: 'local' }, { machine: m.id })).catch(() => {}); } catch {}
 }
-try { watchFriends(); } catch {}
-const saveState = () => coda.setState?.({ range, machine: currentMachine });
-
-function switchMachine(id) {
-  if (id === currentMachine) return;
-  currentMachine = id;
-  selectionGen++;
-  saveState();
-  seq++; status = null; board = null; loading = false; acting = false;
-  clearTimeout(again);
-  try { watchFriends(); } catch {}
-  bridge.send({ type: 'hello' });
-  requestBoard();
-}
-setInterval(() => { if (document.visibilityState !== 'hidden') requestBoard(); }, 60_000);
+const saveState = () => coda.setState?.({ range });
+setInterval(() => { if (document.visibilityState !== 'hidden') requestBoards(); }, 60_000);
 
 // ——— 画面 ———
+const names = list => list.map(m => m.name).join('、');
+const partial = () => (merged.incomplete ? h('span', { class: 'note' }, merged.problems.length ? '不完整' : '读取中…') : null);
+
 function render() {
   declareToolbar();
-  const children = [machineBar(), notes(), controls(), local(), leaderboard()];
-  root.replaceChildren(h('div', { class: 'page' }, children));
-}
-
-function machineBar() {
-  const machines = reachableMachines(coda);
-  if (machines.length < 2) return null;
-  return h('div', { class: 'machines' }, machines.map(m => {
-    const button = h('button', { class: 'btn', 'aria-pressed': String(m.id === currentMachine), onclick: () => switchMachine(m.id) });
-    button.textContent = m.name || m.id;
-    return button;
-  }));
+  const parts = members.flatMap(m => {
+    const problem = m.unreachable ?? m.failure;
+    return problem ? [{ machine: m, problem }] : m.board ? [{ machine: m, board: m.board }] : [{ machine: m, pending: true }];
+  });
+  merged = mergeBoards(parts);
+  root.replaceChildren(h('div', { class: 'page' }, [notes(), controls(), local(), leaderboard()]));
 }
 
 function notes() {
-  const lines = [];
-  if (board?.errors?.length) lines.push(...board.errors);
-  if (board?.truncated?.usage) lines.push('本机用量太零碎，部分时段没能取全，合计可能偏少');
-  if (status?.lastError) lines.push(`同步失败：${status.lastError}`);
-  if ((status?.syncState ?? board?.syncState) === 'needs_cert') lines.push('代签证书已过期，打开客户端续签后将自动补发统计');
-  if ((status?.syncState ?? board?.syncState) === 'paused') lines.push('好友插件已暂停此类数据的对外发布');
-  if ((status?.syncState ?? board?.syncState) === 'no_gateway') lines.push('未安装或未启用好友插件，暂只展示本机统计');
+  const lines = [], who = machine => (multi ? `${machine.name}：` : '');
+  for (const { machine, reason, partial } of merged.problems) lines.push(partial ? `${machine.name}：${reason}，合计缺它的本机用量` : `${machine.name} 读不到：${reason}，合计不含这台`);
+  for (const { machine, text } of merged.errors) lines.push(`${who(machine)}${text}`);
+  for (const group of merged.locals) if (group.truncated) lines.push(`${multi ? `${names(group.machines)}：` : ''}本机用量太零碎，部分时段没能取全，合计可能偏少`);
+  if (multi && merged.accord && merged.noAccord.length) lines.push(`${names(merged.noAccord)} 还没有 Accord 身份，它的用量不在榜里`);
+  for (const m of live) {
+    const state = m.status?.syncState ?? m.board?.syncState;
+    if (m.status?.lastError) lines.push(`${who(m)}同步失败：${m.status.lastError}`);
+    if (state === 'needs_cert') lines.push(`${who(m)}代签证书已过期，打开客户端续签后将自动补发统计`);
+    if (state === 'paused') lines.push(`${who(m)}好友插件已暂停此类数据的对外发布`);
+    if (state === 'no_gateway') lines.push(`${who(m)}未安装或未启用好友插件，暂只展示本机统计`);
+  }
   return lines.length ? h('div', { class: 'notes' }, lines.map(line => h('p', { class: 'note' }, line))) : null;
 }
 
 function controls() {
-  const on = status?.share === true;
+  const { known, on, any, mixed } = shareOf(), acting = live.some(m => m.acting);
+  const syncedAt = Math.max(0, ...known.map(m => m.status.lastSyncAt ?? 0));
+  const notices = members.filter(m => m.status?.notice || m.skipped).map(m => h('p', { class: 'hint' }, `${multi ? `${m.name}：` : ''}${m.skipped ?? m.status.notice}`));
+  const pill = mixed
+    ? h('div', { class: 'shares' }, known.map(m => h('div', { class: 'pill' }, h('span', { class: m.status.share === true ? 'dot on' : 'dot' }),
+      h('span', { class: 'strong' }, `${m.name}：${m.status.share === true ? `正在分享${m.status.lastSyncAt ? `，上次同步 ${clock(m.status.lastSyncAt)}` : ''}` : '没有分享'}`))))
+    : h('div', { class: 'pill' }, h('span', { class: on ? 'dot on' : 'dot' }), h('span', { class: 'strong' }, on ? '正在向好友分享每日汇总' : '没有向好友分享'));
   return h('section', {},
     h('h2', {}, '分享'),
     h('div', { class: 'card' },
-      h('div', { class: 'pill' }, h('span', { class: on ? 'dot on' : 'dot' }), h('span', { class: 'strong' }, on ? '正在向好友分享每日汇总' : '没有向好友分享')),
-      h('p', { class: 'hint' }, on
-        ? `每 10 分钟发布按日归档和最近 48 小时曲线，只含按 Agent 和模型的 Token 数与回合数。${status?.lastSyncAt ? `上次同步 ${clock(status.lastSyncAt)}。` : ''}`
-        : '开启后好友才看得到你的用量，你也才能和他们排名；关闭会撤回已发布的记录。'),
-      status?.notice ? h('p', { class: 'hint' }, status.notice) : null,
+      pill,
+      h('p', { class: 'hint' }, mixed ? '各台的分享状态不一样；开启、关闭和撤回会对每台生效。'
+        : on ? `每 10 分钟发布按日归档和最近 48 小时曲线，只含按 Agent 和模型的 Token 数与回合数。${syncedAt ? `上次同步 ${clock(syncedAt)}。` : ''}`
+          : '开启后好友才看得到你的用量，你也才能和他们排名；关闭会撤回已发布的记录。'),
+      notices,
       h('div', { class: 'controls' },
-        h('button', { class: on ? 'btn' : 'btn primary', disabled: acting || !status, onclick: () => setShare(!on) }, on ? '关闭分享' : '开启分享'),
-        on ? h('button', { class: 'btn', disabled: acting, onclick: () => act({ type: 'sync' }) }, '立即同步') : null,
-        h('button', { class: 'btn', disabled: acting, onclick: () => act({ type: 'withdraw' }) }, '撤回已发布的记录'),
-        h('button', { class: 'btn', disabled: loading, onclick: () => { bridge.send({ type: 'hello' }); requestBoard(); } }, loading ? '刷新中…' : '刷新'))));
+        h('button', { class: on ? 'btn' : 'btn primary', disabled: acting || !known.length, onclick: () => setShare(!on) }, on ? '关闭分享' : '开启分享'),
+        any ? h('button', { class: 'btn', disabled: acting, onclick: () => act({ type: 'sync' }, known.filter(m => m.status.share === true)) }, '立即同步') : null,
+        h('button', { class: 'btn', disabled: acting, onclick: () => act({ type: 'withdraw' }, live, '没连上，没有撤回，它已发布的记录还在') }, '撤回已发布的记录'),
+        h('button', { class: 'btn', disabled: live.some(m => m.loading), onclick: refresh }, live.some(m => m.loading) ? '刷新中…' : '刷新'))));
 }
 
 function local() {
-  const mine = board?.local;
-  const body = !mine ? h('p', { class: 'empty' }, loading ? '读取中…' : '还没有数据')
-    : !mine.totalTokens && !mine.turns ? h('p', { class: 'empty' }, `${rangeLabel()}没有用量`)
-      : h('div', { class: 'card' },
-        h('div', { class: 'big num' }, tokens(mine.totalTokens)),
-        h('div', { class: 'secondary' }, `Token · ${count(mine.turns)} 个回合${mine.reportedTurns < mine.turns ? `，其中 ${count(mine.turns - mine.reportedTurns)} 个没有上报用量` : ''}`),
-        stack(mine),
-        h('div', { class: 'parts' }, PARTS.map(([key, label]) => h('div', { class: 'part' }, h('span', { class: 'secondary' }, label), h('span', { class: 'num strong' }, tokens(mine[key]))))),
-        modelBars(mine.models, mine.totalTokens));
-  return h('section', {}, h('h2', {}, '本机', h('span', { class: 'secondary' }, rangeLabel())), body);
+  const loading = live.some(m => m.loading), blocks = merged.locals.map(group => h('div', { class: 'group' }, multi ? caption(group) : null, usageBody(group)));
+  const body = blocks.length ? blocks : h('p', { class: 'empty' }, loading ? '读取中…' : '还没有数据');
+  return h('section', {}, h('h2', {}, multi ? '用量' : '本机', h('span', { class: 'secondary' }, rangeLabel()), partial()), body);
+}
+// 一块用量的标题：同一身份的几台相加就写明合了哪几台；视图里有几个身份时再写是谁的。
+function caption(group) {
+  const entry = merged.locals.length > 1 ? merged.entries.find(e => e.author === group.author) : null;
+  const who = entry ? `${entry.name ?? `${entry.shortId}…`} · ` : '';
+  return h('p', { class: 'hint' }, `${who}${group.machines.length > 1 ? '合计 · ' : ''}${names(group.machines)}`);
+}
+function usageBody(mine) {
+  return !mine.totalTokens && !mine.turns ? h('p', { class: 'empty' }, `${rangeLabel()}没有用量`)
+    : h('div', { class: 'card' },
+      h('div', { class: 'big num' }, tokens(mine.totalTokens)),
+      h('div', { class: 'secondary' }, `Token · ${count(mine.turns)} 个回合${mine.reportedTurns < mine.turns ? `，其中 ${count(mine.turns - mine.reportedTurns)} 个没有上报用量` : ''}`),
+      stack(mine),
+      h('div', { class: 'parts' }, PARTS.map(([key, label]) => h('div', { class: 'part' }, h('span', { class: 'secondary' }, label), h('span', { class: 'num strong' }, tokens(mine[key]))))),
+      modelBars(mine.models, mine.totalTokens));
 }
 
 function stack(c) {
@@ -202,18 +228,18 @@ function modelBars(models, total) {
 
 function leaderboard() {
   let content;
-  if (!board) content = h('p', { class: 'empty' }, loading ? '读取中…' : '');
-  else if (!board.accord) content = h('p', { class: 'empty' }, '这台机器还没有 Accord 身份，暂时没有好友榜。');
+  if (!merged.readable) content = h('p', { class: 'empty' }, live.some(m => m.loading) ? '读取中…' : '');
+  else if (!merged.accord) content = h('p', { class: 'empty' }, multi ? '这些机器都还没有 Accord 身份，暂时没有好友榜。' : '这台机器还没有 Accord 身份，暂时没有好友榜。');
   else {
-    const others = board.entries.filter(e => !e.self);
+    const others = merged.entries.filter(e => !e.self);
     content = [
-      board.friendCount === 0 ? h('p', { class: 'empty' }, '还没有好友。添加好友并让他们开启分享后，这里会出现你们的消耗榜。') : null,
-      h('ul', { class: 'list' }, board.entries.map(entry)),
+      others.length === 0 ? h('p', { class: 'empty' }, '还没有好友。添加好友并让他们开启分享后，这里会出现你们的消耗榜。') : null,
+      h('ul', { class: 'list' }, merged.entries.map(entry)),
       others.length && !others.some(e => e.shared) ? h('p', { class: 'hint' }, '好友们还没有分享用量。') : null,
-      board.truncated?.friends ? h('p', { class: 'note' }, '好友的记录太多，只取到了其中一部分，榜单可能不全。') : null,
-      board.truncated?.profiles ? h('p', { class: 'note' }, '好友名片太多，只取到了其中一部分，有些人可能显示成密钥短码。') : null];
+      merged.truncated.friends ? h('p', { class: 'note' }, '好友的记录太多，只取到了其中一部分，榜单可能不全。') : null,
+      merged.truncated.profiles ? h('p', { class: 'note' }, '好友名片太多，只取到了其中一部分，有些人可能显示成密钥短码。') : null];
   }
-  return h('section', {}, h('h2', {}, '熟人榜', h('span', { class: 'secondary' }, rangeLabel())), content);
+  return h('section', {}, h('h2', {}, '熟人榜', h('span', { class: 'secondary' }, rangeLabel()), partial()), content);
 }
 
 function entry(e) {
@@ -233,6 +259,6 @@ function entry(e) {
       : h('p', { class: 'empty' }, '没有模型明细')) : null);
 }
 
-bridge.send({ type: 'hello' });
-if (range) { declareHeader(); requestBoard(); }
+for (const m of live) send(m, { type: 'hello' });
+if (range) { declareHeader(); requestBoards(); }
 render();
