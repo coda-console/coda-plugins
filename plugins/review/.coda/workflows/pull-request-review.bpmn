@@ -4,7 +4,7 @@
      这条流程里没有项目检查、合并前检查、修复任务、批准卡、合并、删分支、部署、发布，也不调用任何别的流程，评审结论不交给任何会话、不起任何任务。
      不检出任何提交，手动发起也一样：评审步骤 coda:checkout="false"（事件会把运行的提交改成别人的 PR 头，手动发起也可以显式传 commit，
      默认检出会把别人的提交检出到步骤工作区），脚本不跑 git；
-     评审方的工作树是 base 提交（我们自己的代码，由 coda-agent --commit 建）；改动取 GitHub 对事件里 base...head 两个提交的 diff 当数据；评审方至多自动档（scripts/review.mjs foreign）。
+     评审方的工作树是 base 提交（我们自己的代码，由 coda-agent 按 base 提交建）；改动取 GitHub 对事件里 base...head 两个提交的 diff 当数据；评审方至多自动档（scripts/review.mjs foreign）。
      评审次数受设置 review.maxReviews 约束，按整个 PR 数：到了上限，之后的新版本都不评，一直等到 PR 关闭才结束；手动发起的不数。
      自动评审受设置 review.autoRun 约束，和 PR 生命流程一样；也可以手动发起（传 GitHub 返回的 PR 地址），只评审一次。
      BPMN 2.0，由 Coda 执行（docs/workflows.md）。 -->
@@ -16,7 +16,7 @@
   <message id="closed" name="foreign_pull_request.closed" />
   <process id="pull-request-review" name="PR 只评审" isExecutable="true" coda:autoRun="=vars.review.autoRun"
     coda:key='=lower case(if github.event.pull_request.html_url != null then github.event.pull_request.html_url
-      else if matches(inputs.pr, "^https://github[.]com/[a-z0-9_.-]+/[a-z0-9_.-]+/pull/[1-9][0-9]*$", "i") then inputs.pr else null)'
+      else if matches(inputs.pr, "^[hH][tT][tT][pP][sS]://([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?[.])+[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?/([A-Za-z0-9_.-]{3,}|[A-Za-z0-9_-][A-Za-z0-9_.-]?|[.][A-Za-z0-9_-])/([A-Za-z0-9_.-]{3,}|[A-Za-z0-9_-][A-Za-z0-9_.-]?|[.][A-Za-z0-9_-])/pull/[1-9][0-9]*$") and not(matches(inputs.pr, "^[hH][tT][tT][pP][sS]://[^/]*[.][0-9]+/")) and 253 >= string length(substring before(substring after(inputs.pr, "://"), "/")) then inputs.pr else null)'
     coda:title='PR {{if github.event.coda.heard = null then (if review.pr = null then inputs.pr else review.pr) else "#" + string(github.event.number) + " " + github.event.pull_request.title}}'>
     <extensionElements>
       <coda:input name="pr" label="PR 地址" required="true" description="GitHub 返回的完整 PR 地址，不带末尾斜线、查询参数或片段；编号先用 gh pr view 解析。已有未结束运行时复用它" />

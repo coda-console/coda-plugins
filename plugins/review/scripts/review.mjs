@@ -25,7 +25,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { json, output, summary } from './step.mjs';
+import { json, output, parsePrUrl, summary } from './step.mjs';
 
 const fail = message => { console.error(message); summary(`交叉评审没有进行：${message}`); process.exit(1); };
 const hex = value => /^[0-9a-f]{40,64}$/.test(value ?? '') ? value : null;
@@ -50,11 +50,13 @@ const commit = process.argv[2] === 'commit', foreign = process.argv[2] === 'fore
 const event = json('PULL_REQUEST', null), automatic = !!event?.head?.sha;
 let pr = commit ? null : event;
 if (!commit && !automatic) {
-  const asked = (process.env.PR ?? '').trim();
+  const asked = process.env.PR ?? '';
   if (!asked) fail('请填写 GitHub 返回的完整 PR 地址');
+  const at = parsePrUrl(asked);
+  if (!at) fail('不是 GitHub 上的 PR，需要标准 HTTPS PR 地址');
   let view;
-  try { view = JSON.parse(execFileSync('gh', ['pr', 'view', asked, '--json', 'number,url,title,body,headRefOid,headRefName,baseRefOid,baseRefName'], { encoding: 'utf8' })); }
-  catch (e) { fail(`读不到 PR ${asked}：${e.stderr?.toString().trim() || e.message}`); }
+  try { view = JSON.parse(execFileSync('gh', ['pr', 'view', at.url, '--json', 'number,url,title,body,headRefOid,headRefName,baseRefOid,baseRefName'], { encoding: 'utf8' })); }
+  catch (e) { fail(`读不到 PR ${at.url}：${e.stderr?.toString().trim() || e.message}`); }
   pr = { number: view.number, html_url: view.url, title: view.title, body: view.body, head: { sha: view.headRefOid, ref: view.headRefName }, base: { sha: view.baseRefOid, ref: view.baseRefName } };
 }
 const head = hex(pr ? pr.head?.sha : process.env.HEAD), base = hex(pr ? pr.base?.sha : process.env.BASE);
@@ -67,8 +69,10 @@ const named = pr ? `PR #${Number(pr.number)}` : `提交 ${head.slice(0, 12)}`;
 
 // Somebody else's pull request is read from GitHub, bound to the two commits of this review: what the author pushes after the
 // event is not in it. Its commits are not fetched, and the step has no repository to ask.
-const repo = foreign ? /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\//.exec(pr.html_url)[1] : null;
-const api = (path, accept) => spawnSync('gh', ['api', '-H', `Accept: ${accept}`, path], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 120_000 });
+const parsed = foreign ? parsePrUrl(pr.html_url) : null;
+if (foreign && !parsed) fail('不是 GitHub 上的 PR，需要标准 HTTPS PR 地址');
+const repo = parsed?.repo;
+const api = (path, accept) => spawnSync('gh', ['api', '--hostname', parsed.host, '-H', `Accept: ${accept}`, path], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 120_000 });
 const reason = done => (done.stderr || done.error?.message || '').trim().split('\n').at(-1);
 
 // A pull request's later review: the `must`s this run left open (`LAST`'s `open`) are judged again, one by one, whatever
