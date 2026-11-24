@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { identiconPattern } from '../../../plugins/friends/lib/avatar.mjs';
-import { createMachineBridge } from '../../../plugins/friends/lib/view-machine.mjs';
 import { FakeNode, deferred, flush, openPage } from '../view-dom.mjs';
 
 const A = { id: 'a', name: 'A' }, B = { id: 'b', name: 'B' };
@@ -9,7 +8,7 @@ const AUTHOR = `ed25519:${'ab'.repeat(32)}`, CARD = 'friends/card';
 const entry = { type: 'MODIFIED', entry: { spec: { author: AUTHOR }, status: { friends: [] } } };
 
 // 严格多机的 window.coda：不指明 machine 的 postMessage 直接拒绝；记下每次发往哪台。
-function strictCoda(page, { notes = { ok: true, value: {} }, silent, watch, call, records, machines = [A, B] } = {}) {
+function strictCoda(page, { notes = { ok: true, value: {} }, silent, watch, call, records, machines = [A] } = {}) {
   const log = { sent: [], calls: [], queries: [], watches: [], on: {}, copied: [] };
   const coda = {
     machine: A, machines, getState: () => ({}), setState() {}, on(type, fn) { log.on[type] = fn; }, copy: async text => { log.copied.push(text); },
@@ -19,7 +18,7 @@ function strictCoda(page, { notes = { ok: true, value: {} }, silent, watch, call
       log.sent.push({ msg, machine: options.machine });
       if (msg.type === 'notes.list' && options.machine !== silent) setImmediate(() => page.reply({ type: 'reply', rid: msg.rid, ...notes }, { id: options.machine }));
     },
-    watch(kind, cb, selector, options) { log.watches.push({ cb, machine: options?.machine }); return watch ? watch() : Promise.resolve({ dispose() {} }); },
+    watch(kind, cb, selector, options) { log.watches.push({ cb, machine: options?.machine }); return watch ? watch(options?.machine) : Promise.resolve({ dispose() {} }); },
     async query(target, op, params, options) { log.queries.push({ params, machine: options?.machine }); return { records: records ? records(params, options?.machine) : [] }; },
     async call(target, op, input, options) { log.calls.push({ op, input, machine: options?.machine }); return call ? call(input, options) : {}; },
   };
@@ -34,57 +33,6 @@ async function open(t, options) {
   return { page: holder.page, log };
 }
 
-test('a publish that began on A keeps going to A after the page switched to B, and writes nothing into B\'s page', async t => {
-  const gate = deferred();
-  const { page, log } = await open(t, { call: input => (input.kind === 'profile' ? gate.promise : {}) });
-  page.all(n => n.tag === 'input' && n.attrs.placeholder?.startsWith('昵称'))[0].fire('input', { target: { value: '小明' } });
-  page.button('发布名片').fire('click');
-  await flush();
-  page.button('B').fire('click');
-  await flush();
-  gate.reject(Object.assign(new Error('forbidden'), { code: 'forbidden' }));
-  await flush();
-  assert.deepEqual(log.calls.map(c => [c.input.kind, c.machine]), [['profile', 'a'], ['friends/card', 'a']], 'the fallback still goes to A');
-  assert.deepEqual(log.calls.filter(c => c.machine === 'b'), [], 'nothing was published on B');
-  assert.deepEqual(log.queries.filter(q => q.params.kind === 'profile' && q.params.author !== undefined), [], 'no follow-up lookup after the switch');
-  assert.deepEqual(log.queries.filter(q => q.machine === 'a'), [], 'no refresh for the old machine either');
-  assert.deepEqual(page.all(n => ['progress', 'ok', 'error'].includes(n.className)), [], 'no progress or result message is left on B\'s page');
-  assert.equal(page.all(n => n.tag === 'button' && n.textContent === '发布名片')[0].disabled, false);
-});
-
-test('an invite accepted on A finishes its handshake on A, whatever page is showing', async t => {
-  const gate = deferred();
-  const { page, log } = await open(t, { call: input => (input.control ? gate.promise : {}) });
-  page.all(n => n.tag === 'input' && n.attrs.placeholder === 'https://…')[0].value = 'https://control.example';
-  page.all(n => n.tag === 'input' && n.attrs.type === 'password')[0].value = 'key';
-  page.button('接受邀请').fire('click');
-  await flush();
-  page.button('B').fire('click');
-  await flush();
-  gate.resolve({ node: 'n1' });
-  await flush();
-  assert.deepEqual(log.calls.map(c => c.machine), ['a', 'a']);
-  assert.deepEqual(page.all(n => ['progress', 'ok', 'error'].includes(n.className)), []);
-});
-
-test('switching A → B → A drops the first A\'s watch callback by generation', async t => {
-  const { page, log } = await open(t);
-  page.button('B').fire('click');
-  await flush();
-  page.button('A').fire('click');
-  await flush();
-  assert.deepEqual(log.watches.map(w => w.machine), ['a', 'b', 'a']);
-  const before = log.queries.length;
-  log.watches[0].cb(entry);
-  await flush();
-  assert.equal(log.queries.length, before, 'the stale callback reads nothing');
-  assert.ok(!page.text().includes('ed25519:'), 'and shows nothing');
-  log.watches[2].cb(entry);
-  await flush();
-  assert.ok(page.text().includes('ed25519:abababab'));
-  assert.equal(log.queries.length, before + 2);
-});
-
 test('a notes.list that fails is shown at once, and a later successful profile read does not clear it', async t => {
   const gate = deferred();
   const { page, log } = await open(t, { notes: { ok: false, error: 'boom' }, watch: () => gate.promise });
@@ -95,33 +43,6 @@ test('a notes.list that fails is shown at once, and a later successful profile r
   await flush();
   assert.ok(page.text().includes('ed25519:abababab'), 'the profile read went through');
   assert.ok(page.text().includes('读不到本地备注：boom'));
-});
-
-test('a notes.list still waiting when the page switches does not turn into an error on the new machine', async t => {
-  const { page, log } = await open(t, { silent: 'a' });
-  page.button('B').fire('click');
-  await flush();
-  assert.deepEqual(log.sent.map(s => [s.msg.type, s.machine]), [['notes.list', 'a'], ['notes.list', 'b']]);
-  assert.ok(!page.text().includes('读不到本地备注'), 'the old request was cancelled quietly');
-  assert.equal(log.watches.length, 1, 'only the new machine is watched');
-  assert.equal(log.watches[0].machine, 'b');
-});
-
-test('the bridge drops a queued write once the page has moved to another machine, even back to the same one', async () => {
-  const gate = deferred(), sent = [];
-  let machine = 'a', epoch = 0;
-  const coda = { async postMessage(msg, options) { sent.push([msg.type, options?.machine]); await gate.promise; } };
-  const bridge = createMachineBridge({ coda, getMachine: () => machine, getEpoch: () => epoch, onMessage() {}, onError: e => { throw e; }, targetWindow: new EventTarget() });
-  const first = bridge.send({ type: 'notes.list' });
-  await flush();
-  const queued = bridge.send({ type: 'notes.set' });
-  machine = 'b'; epoch++;
-  const forB = bridge.send({ type: 'notes.list' });
-  machine = 'a'; epoch++;
-  const again = bridge.send({ type: 'notes.delete' });
-  gate.resolve();
-  assert.deepEqual(await Promise.all([first, queued, forB, again]), [true, false, false, true]);
-  assert.deepEqual(sent, [['notes.list', 'a'], ['notes.delete', 'a']]);
 });
 
 // ---- Hero、头像、编辑名片、详情与添加好友 ----
@@ -169,34 +90,34 @@ async function editWithNewPhoto(page, name = '小明') {
 
 test('the hero and the status strip show the real card, friend counts and certificate state', async t => {
   const { page, log } = await open(t, { records: params => (params.kind === 'profile' ? [card(AUTHOR, { name: '小明', color: 'green', emoji: '🐱' })] : []) });
-  const hero = page.all(n => n.tag === 'section' && n.className.startsWith('hero'))[0];
-  assert.ok(hero.textContent.includes('读取中…'));
+  const heroOf = () => page.all(n => n.tag === 'section' && cls(n).startsWith('hero'))[0];
+  assert.ok(heroOf().textContent.includes('读取中…'));
   const friends = [{ node: 'n1', author: FRIEND, bound: true }, { node: 'n2', author: OTHER }, { node: 'n3', author: THIRD, conflict: true }];
   log.watches[0].cb(accord({ certificate: { active: true, until: Date.UTC(2030, 0, 2, 3, 4) }, friends }));
   await flush();
-  assert.equal(hero.className, 'hero c-green');
-  for (const part of ['小明', '我的名片', 'ed25519:abababab', '1 位已互认', '1 冲突', '1 待互认', '可发布', '证书有效至']) assert.ok(hero.textContent.includes(part), part);
-  assert.equal(page.all(n => n.className === 'av lg k-emoji', hero)[0].textContent, '🐱');
-  buttonIn(page, hero, 'ed25519:abababab… · 复制').fire('click');
+  assert.equal(cls(heroOf()), 'hero c-green');
+  for (const part of ['小明', '我的名片', 'ed25519:abababab', '1 位已互认', '1 冲突', '1 待互认', '可发布', '证书有效至']) assert.ok(heroOf().textContent.includes(part), part);
+  assert.equal(page.all(n => n.className === 'av lg k-emoji', heroOf())[0].textContent, '🐱');
+  buttonIn(page, heroOf(), 'ed25519:abababab… · 复制').fire('click');
   await flush();
   assert.deepEqual(log.copied, [AUTHOR]);
-  assert.ok(hero.textContent.includes('公钥已复制'));
+  assert.ok(heroOf().textContent.includes('公钥已复制'));
 
   log.watches[0].cb(accord({ certificate: { active: false } }));
   await flush();
-  for (const part of ['需要证书', '代签证书', '0 位已互认', '还没有好友']) assert.ok(hero.textContent.includes(part), part);
+  for (const part of ['需要证书', '代签证书', '0 位已互认', '还没有好友']) assert.ok(heroOf().textContent.includes(part), part);
   log.watches[0].cb({ type: 'MODIFIED', entry: { spec: {}, status: { certificate: null, friends: [] } } });
   await flush();
-  assert.ok(hero.textContent.includes('未建身份') && hero.textContent.includes('设置 › 身份'));
-  assert.ok(!hero.textContent.includes('ed25519:'));
+  assert.ok(heroOf().textContent.includes('未建身份') && heroOf().textContent.includes('设置 › 身份'));
+  assert.ok(!heroOf().textContent.includes('ed25519:'));
 });
 
-test('a friend photo loads from coda-view://blob for this machine, falls back once it fails, and retries on refresh', async t => {
+test('a friend photo loads from coda-view://blob, falls back once it fails, and retries on refresh', async t => {
   const { page, log } = await open(t, { records: params => (params.kind === CARD ? [card(FRIEND, { name: '阿青', emoji: '🌿', avatar: POINTER }, CARD)] : []) });
   const status = accord({ friends: [{ node: 'n1', author: FRIEND, bound: true, peerNode: 'qing-mac' }] });
   log.watches[0].cb(status);
   await flush();
-  const url = `coda-view://blob/${OWNER}/content/${SHA}?coda-machine=a`;
+  const url = `coda-view://blob/${OWNER}/content/${SHA}`;
   const images = () => page.all(n => n.tag === 'img').map(n => n.attrs.src);
   assert.deepEqual(images(), [url]);
   page.all(n => n.tag === 'img')[0].fire('error');
@@ -236,7 +157,7 @@ test('editing the card uploads the 512×512 crop and publishes the pointer it go
   await flush();
   assert.equal(browserLog.fetches.length, 1);
   const [upload] = browserLog.fetches;
-  assert.deepEqual([upload.url, upload.method, upload.headers['Content-Type'], upload.body.type], ['coda-view://blob/content?coda-machine=a', 'POST', 'image/webp', 'image/webp']);
+  assert.deepEqual([upload.url, upload.method, upload.headers['Content-Type'], upload.body.type], ['coda-view://blob/content', 'POST', 'image/webp', 'image/webp']);
   assert.deepEqual(log.calls.map(c => [c.input.kind, c.machine]), [['profile', 'a']]);
   assert.deepEqual(log.calls[0].input.body, { name: '小明', color: 'blue', avatar: POINTER });
   assert.equal(editor.hidden, true, 'the editor closes once published');
@@ -269,7 +190,7 @@ test('renaming keeps the published photo without uploading again; clearing the p
   log.watches[0].cb(entry);
   await flush();
   const hero = page.all(n => n.tag === 'section' && n.className.startsWith('hero'))[0];
-  assert.equal(page.all(n => n.tag === 'img', hero)[0].attrs.src, `coda-view://blob/${OWNER}/content/${SHA}?coda-machine=a`);
+  assert.equal(page.all(n => n.tag === 'img', hero)[0].attrs.src, `coda-view://blob/${OWNER}/content/${SHA}`);
   page.button('编辑名片').fire('click');
   nameInput(page).fire('input', { target: { value: '小明同学' } });
   page.button('发布名片').fire('click');
@@ -332,26 +253,6 @@ test('a failed upload says why and keeps the editor, the crop and the name as th
   respond = () => ({ ok: true, status: 200, json: async () => POINTER });
   await flush();
   assert.deepEqual(log.calls[0].input.body, { name: '小明', color: 'blue', avatar: POINTER }, 'the kept edit still publishes');
-});
-
-test('an upload that began on A publishes on A only, and writes nothing into B\'s page', async t => {
-  const gate = deferred();
-  const browserLog = browser(t, { upload: () => gate.promise });
-  const { page, log } = await open(t);
-  log.watches[0].cb(entry);
-  await flush();
-  buttonIn(page, await editWithNewPhoto(page), '发布名片').fire('click');
-  await flush();
-  assert.equal(browserLog.fetches[0].url, 'coda-view://blob/content?coda-machine=a');
-  page.button('B').fire('click');
-  await flush();
-  assert.equal(scrims(page)[0].hidden, true, 'the editor closed with the switch');
-  assert.deepEqual(browserLog.revoked, browserLog.created);
-  gate.resolve({ ok: true, status: 200, json: async () => POINTER });
-  await flush();
-  assert.deepEqual(log.calls.map(c => [c.input.kind, c.machine]), [['profile', 'a']]);
-  assert.deepEqual(page.all(n => ['progress', 'ok', 'error'].includes(n.className)), []);
-  assert.equal(page.button('发布名片').disabled, false);
 });
 
 test('a publish still running when the editor is cancelled and reopened leaves the new draft alone', async t => {
@@ -448,14 +349,207 @@ test('the add-friend dialog clears the auth key the moment it is submitted, then
   assert.equal(invite.hidden, true, 'a click on the backdrop closes it');
 });
 
-test('the machine bar shows an unreachable machine disabled with its reason, and hides with a single machine', async t => {
-  const { page } = await open(t, { machines: [A, B, { id: 'c', name: 'C', unreachable: '离线 3 小时' }] });
-  const bar = page.all(n => n.tag === 'nav')[0];
-  assert.equal(bar.hidden, false);
-  const buttons = page.all(n => n.tag === 'button', bar);
-  assert.deepEqual(buttons.map(b => b.attrs['aria-pressed']), ['true', 'false', undefined]);
-  assert.equal(buttons[2].attrs.disabled, '');
-  assert.ok(buttons[2].attrs.title.includes('离线 3 小时') && buttons[2].textContent.includes('不可达'));
-  const single = await open(t, { machines: [A] });
-  assert.equal(single.page.all(n => n.tag === 'nav')[0].hidden, true);
+// ---- 视图里有几台：页面都读，名片按身份合并，好友按电脑分节 ----
+
+const C = { id: 'c', name: 'C' };
+const ME2 = `ed25519:${'ef'.repeat(32)}`;
+const feed = (log, machine, status, author = AUTHOR) => log.watches.find(w => w.machine === machine).cb({ type: 'MODIFIED', entry: { spec: { author }, status: { friends: [], ...status } } });
+const versioned = (author, body, version, kind = 'profile') => ({ kind, id: 'self', author, version, body });
+const heroes = page => page.all(n => n.tag === 'section' && cls(n).startsWith('hero'));
+const sectionTitles = page => page.all(n => n.tag === 'h2' && cls(n) === 'sec').map(n => n.children[0]);
+const addButtons = page => page.all(n => n.tag === 'button' && n.textContent === '添加好友');
+const callsOf = (log, op) => log.calls.filter(c => c.op === op).map(c => [c.input, c.machine]);
+
+test('every reachable machine is read, with its machine named; the page keeps no machine choice and shows no machine bar', async t => {
+  const saved = [];
+  const { page, log } = await open(t, { machines: [A, B, { id: 'c', name: 'C', unreachable: '离线 3 小时' }] });
+  assert.deepEqual(log.sent.map(s => [s.msg.type, s.machine]), [['notes.list', 'a'], ['notes.list', 'b']]);
+  assert.deepEqual(log.watches.map(w => w.machine), ['a', 'b']);
+  assert.deepEqual(page.all(n => n.tag === 'nav'), []);
+  assert.deepEqual(page.all(n => n.tag === 'button' && n.attrs['aria-pressed'] !== undefined && ['A', 'B', 'C'].includes(n.textContent)), []);
+  assert.deepEqual(saved, []);
+});
+
+test('two machines of one identity show one card: the one with the higher record version', async t => {
+  const { page, log } = await open(t, { machines: [A, B], records: (params, machine) => (params.kind === 'profile'
+    ? [versioned(AUTHOR, { name: machine === 'a' ? '旧名' : '新名' }, machine === 'a' ? 3 : 5)] : []) });
+  feed(log, 'a', {});
+  feed(log, 'b', {});
+  await flush();
+  assert.equal(heroes(page).length, 1);
+  assert.ok(heroes(page)[0].textContent.includes('新名') && !page.text().includes('旧名'));
+  assert.equal(page.all(n => n.tag === 'button' && n.textContent === '编辑名片').length, 1);
+});
+
+test('machines of two identities show one card each', async t => {
+  const { page, log } = await open(t, { machines: [A, B], records: (params, machine) => (params.kind === 'profile'
+    ? [versioned(machine === 'a' ? AUTHOR : ME2, { name: machine === 'a' ? '甲' : '乙' }, 1)] : []) });
+  feed(log, 'a', {});
+  feed(log, 'b', {}, ME2);
+  await flush();
+  assert.deepEqual(heroes(page).map(hero => ['甲', '乙'].find(name => hero.textContent.includes(name))), ['甲', '乙']);
+});
+
+test('the friends are split by machine, titled with the machine name; the same friend on two machines shows once per section', async t => {
+  const { page, log } = await open(t, { machines: [A, B, C] });
+  const friend = { node: 'n1', author: FRIEND, bound: true };
+  feed(log, 'a', { friends: [friend] });
+  feed(log, 'b', { friends: [friend, { node: 'n2', author: OTHER }] });
+  feed(log, 'c', {});
+  await flush();
+  assert.deepEqual(sectionTitles(page), ['A', 'B', 'C']);
+  const [a, b, c] = page.all(n => n.tag === 'section' && !cls(n).startsWith('hero'));
+  assert.deepEqual([a, b, c].map(section => page.all(n => n.tag === 'button' && cls(n).startsWith('f-tile'), section).length), [1, 2, 0]);
+  assert.equal(addButtons(page).length, 3, 'every machine, even one without friends, has its own add-friend');
+  assert.ok(!c.textContent.includes('还没有好友') && !c.textContent.includes('位已互认'), 'a machine with no friends has only its add-friend');
+  assert.deepEqual(page.all(n => n.tag === 'button', c).map(n => n.textContent), ['添加好友']);
+  assert.ok(!a.textContent.includes('位已互认'), 'and nothing needs attention on A, so no status strip');
+  assert.ok(b.textContent.includes('1 位已互认') && b.textContent.includes('1 待互认'), 'B has a pending friend, so its own strip shows');
+});
+
+test('a machine that cannot be read says why in its own section, with no add-friend, and the others carry on', async t => {
+  const { page, log } = await open(t, { machines: [A, B, { id: 'c', name: 'C', unreachable: '离线 3 小时' }] });
+  feed(log, 'a', { friends: [{ node: 'n1', author: FRIEND, bound: true }] });
+  feed(log, 'b', {});
+  await flush();
+  assert.deepEqual(sectionTitles(page), ['A', 'B', 'C']);
+  assert.ok(page.text().includes('C 读不到：离线 3 小时'));
+  assert.equal(addButtons(page).length, 2);
+  assert.equal(tiles(page).length, 1);
+});
+
+test('a machine whose Accord cannot be read says only why in its section, and the other shows normally', async t => {
+  const { page, log } = await open(t, { machines: [A, B], watch: machine => (machine === 'a' ? Promise.reject(new Error('boom')) : Promise.resolve({ dispose() {} })),
+    records: (params, machine) => (params.kind === 'profile' ? [card(AUTHOR, { name: machine === 'a' ? '甲' : '乙' })] : []) });
+  feed(log, 'b', { friends: [{ node: 'n1', author: FRIEND, bound: true }] });
+  await flush();
+  const [a, b] = page.all(n => n.tag === 'section' && !cls(n).startsWith('hero'));
+  assert.ok(a.textContent.includes('A：读不到本机的好友信息：boom'));
+  assert.deepEqual(page.all(n => n.tag === 'button', a), [], 'no add-friend, no status strip, no friends on the failed machine');
+  assert.ok(!a.textContent.includes('还没有好友') && !a.textContent.includes('位已互认'));
+  assert.equal(page.all(n => n.tag === 'button' && n.textContent === '添加好友', b).length, 1);
+  assert.equal(tiles(page).length, 1);
+  assert.equal(heroes(page).length, 1, 'the failed machine takes no part in the card grouping');
+  assert.ok(heroes(page)[0].textContent.includes('乙') && !page.text().includes('甲'));
+  log.on.toolbar({ id: 'refresh' });
+  await flush();
+  const [freshA] = page.all(n => n.tag === 'section' && !cls(n).startsWith('hero'));
+  assert.notEqual(freshA, a, 'the refresh redrew the sections');
+  assert.ok(freshA.textContent.includes('读不到本机的好友信息：boom'), 'a successful card read does not clear the subscription error');
+});
+
+test('when every machine\'s Accord cannot be read, the card and its key line both say so instead of staying on loading', async t => {
+  const { page } = await open(t, { machines: [A, B], watch: () => Promise.reject(new Error('boom')) });
+  await flush();
+  const [hero] = heroes(page);
+  assert.equal(heroes(page).length, 1);
+  assert.ok(hero.textContent.includes('读不到名片') && hero.textContent.includes('读不到公钥'));
+  assert.ok(!hero.textContent.includes('读取中…'));
+});
+
+test('with one machine there is no machine title and the add-friend and status stay on the card', async t => {
+  const { page, log } = await open(t, { machines: [A] });
+  feed(log, 'a', {});
+  await flush();
+  assert.deepEqual(sectionTitles(page), ['好友']);
+  assert.ok(!page.text().includes('A'.repeat(1) + '：') && !page.text().includes('读不到：'));
+  assert.equal(addButtons(page).length, 1);
+  assert.equal(page.all(n => n.tag === 'button' && n.textContent === '添加好友')[0].attrs.class, 'pill strong');
+  assert.ok(heroes(page)[0].textContent.includes('添加好友') && heroes(page)[0].textContent.includes('0 位已互认'));
+});
+
+test('editing the card publishes to one machine only: the first of the identity that can sign; the photo goes up to it too', async t => {
+  const browserLog = browser(t);
+  const { page, log } = await open(t, { machines: [A, B] });
+  feed(log, 'a', { certificate: { active: false } });
+  feed(log, 'b', { certificate: { active: true } });
+  await flush();
+  const editor = await editWithNewPhoto(page);
+  buttonIn(page, editor, '发布名片').fire('click');
+  await flush();
+  assert.deepEqual(log.calls.map(c => [c.input.kind, c.machine]), [['profile', 'b']]);
+  assert.equal(browserLog.fetches.length, 1);
+  assert.equal(browserLog.fetches[0].url, 'coda-view://blob/content?coda-machine=b');
+});
+
+test('editing the card with every machine able to sign goes to the first in the view, and only to it', async t => {
+  browser(t);
+  const { page, log } = await open(t, { machines: [A, B] });
+  feed(log, 'a', { certificate: { active: true } });
+  feed(log, 'b', { certificate: { active: true } });
+  await flush();
+  page.button('编辑名片').fire('click');
+  nameInput(page).fire('input', { target: { value: '小明' } });
+  page.button('发布名片').fire('click');
+  await flush();
+  assert.deepEqual(log.calls.map(c => c.machine), ['a']);
+});
+
+test('an invite accepted in a section, and the handshake after it, go to that section\'s machine only', async t => {
+  const { page, log } = await open(t, { machines: [A, B], call: input => (input.control ? { node: 'n9' } : {}) });
+  feed(log, 'a', {});
+  feed(log, 'b', {});
+  await flush();
+  addButtons(page)[1].fire('click');
+  const invite = scrims(page)[2];
+  assert.ok(invite.textContent.includes('添加好友 · B'));
+  page.all(n => n.attrs.placeholder === 'https://…', invite)[0].value = 'https://control.example';
+  page.all(n => n.tag === 'input' && n.attrs.type === 'password', invite)[0].value = 'key';
+  buttonIn(page, invite, '接受邀请').fire('click');
+  await flush();
+  assert.deepEqual(log.calls.map(c => [c.op, c.machine]), [['accept', 'b'], ['handshake', 'b']]);
+  assert.ok(invite.textContent.includes('好友已添加并完成互认'));
+});
+
+test('a friend\'s note, re-handshake and removal go to the machine of the row, even when the other machine has the same node', async t => {
+  const { page, log } = await open(t, { machines: [A, B] });
+  const friend = { node: 'n1', author: FRIEND, bound: true, peerNode: 'qing-mac' };
+  feed(log, 'a', { friends: [friend] });
+  feed(log, 'b', { friends: [friend] });
+  await flush();
+  assert.equal(tiles(page).length, 2);
+  tiles(page)[1].fire('click');
+  const detail = scrims(page)[1];
+  assert.ok(detail.textContent.includes('B'));
+  const note = page.all(n => n.tag === 'input' && n.attrs.placeholder?.startsWith('备注名'), detail)[0];
+  note.value = '老青';
+  buttonIn(page, detail, '保存').fire('click');
+  await flush();
+  const set = log.sent.find(s => s.msg.type === 'notes.set');
+  assert.deepEqual([set.machine, set.msg.node, set.msg.note], ['b', 'n1', '老青']);
+  page.reply({ type: 'reply', rid: set.msg.rid, ok: true, value: { n1: '老青' } }, { id: 'b' });
+  await flush();
+  assert.ok(tiles(page)[1].textContent.includes('老青'));
+  assert.ok(!tiles(page)[0].textContent.includes('老青'), 'A has its own notes');
+  buttonIn(page, detail, '重新互认').fire('click');
+  await flush();
+  assert.deepEqual(callsOf(log, 'handshake'), [[{ node: 'n1', peerNode: 'qing-mac' }, 'b']]);
+  buttonIn(page, detail, '移除好友…').fire('click');
+  buttonIn(page, detail, '确认移除').fire('click');
+  await flush();
+  assert.deepEqual(callsOf(log, 'remove'), [[{ node: 'n1' }, 'b']]);
+});
+
+test('a notes reply from the wrong machine does not settle another machine\'s request', async t => {
+  const { page, log } = await open(t, { machines: [A, B], silent: 'a' });
+  const asked = log.sent.find(s => s.machine === 'a').msg;
+  page.reply({ type: 'reply', rid: asked.rid, ok: true, value: { n1: '串线' } }, { id: 'b' });
+  await flush();
+  assert.equal(log.watches.filter(w => w.machine === 'a').length, 0, 'A is still waiting for its own reply');
+  page.reply({ type: 'reply', rid: asked.rid, ok: true, value: { n1: 'A 的备注' } }, { id: 'a' });
+  await flush();
+  feed(log, 'a', { friends: [{ node: 'n1', author: FRIEND, bound: true }] });
+  await flush();
+  assert.ok(tiles(page)[0].textContent.includes('A 的备注') && !page.text().includes('串线'));
+});
+
+test('each machine\'s refresh re-reads its own cards', async t => {
+  const { log } = await open(t, { machines: [A, B] });
+  feed(log, 'a', {});
+  feed(log, 'b', {});
+  await flush();
+  log.queries.length = 0;
+  log.on.toolbar({ id: 'refresh' });
+  await flush();
+  assert.deepEqual(log.queries.map(q => q.machine).sort(), ['a', 'a', 'b', 'b']);
 });

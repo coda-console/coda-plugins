@@ -1,10 +1,10 @@
-// 好友页：本机 Accord 身份与名片（Hero + 状态条）、编辑名片（含本地选图裁剪上传）、好友列表与详情、添加好友。
-// Accord 的读写（coda/accord@1）都在这里按交互发起；备注只经模块存在本机。好友的昵称、备注、节点名等外来数据一律用
+// 好友页：各台电脑的 Accord 身份与名片（Hero）、编辑名片（含本地选图裁剪上传）、按电脑分节的好友列表与详情、添加好友。
+// 页面不自己选机器：视图里有几台就都读，名片按身份合并、好友按电脑分节（lib/view-members.mjs）；写操作发往它所在的那一台。
+// Accord 的读写（coda/accord@1）都在这里按交互发起；备注只经模块存在各台本机。好友的昵称、备注、节点名等外来数据一律用
 // textContent / DOM API 渲染，从不拼 HTML 字符串；头像图片地址只来自 resolveAvatar（经 readContentPointer 白名单校验）。
 import { accordStatusSummary, blobUploadUrl, initialChar, resolveAvatar } from '../lib/avatar.mjs';
-import { CARD_KIND, COLORS, cardFallbackNotice, checked, mergeFriendRows, mergeProfileAndCard, normalizeCardInput, normalizeContentPointer, parseInvite,
-  readCardRecord, readProfileRecord, shortAuthor } from '../lib/friends.mjs';
-import { createMachineBridge, pickMachine } from '../lib/view-machine.mjs';
+import { CARD_KIND, COLORS, cardFallbackNotice, checked, normalizeCardInput, normalizeContentPointer, parseInvite, readProfileRecord, shortAuthor } from '../lib/friends.mjs';
+import { friendSections, identities, listMembers } from '../lib/view-members.mjs';
 import { createCropper } from './cropper.mjs';
 import { fill, h, identiconSvg, svg } from './dom.mjs';
 
@@ -17,98 +17,66 @@ const MODES = [['photo', '照片'], ['identicon', '几何纹'], ['emoji', 'Emoji
 const EMOJIS = ['😀', '😎', '🦊', '🐱', '🐼', '🌿', '☕', '🎧', '🚀', '⚡', '🌙', '✨'];
 const UPLOAD_ERRORS = { 404: '当前客户端还不支持上传头像，请升级 Coda 后再试', 413: '图片太大（超过 5 MiB），请换一张' };
 
-const newState = () => ({ entry: null, author: null, friends: [], profiles: [], cards: [], notes: {}, loaded: false, problem: null, notesProblem: null,
-  busy: new Set(), notice: new Map(), detail: null, removing: null, failedPhotos: new Set() });
-const state = newState();
-let currentMachine = pickMachine(coda, coda.getState?.()?.machine);
-// 读写都发往当前选中的机器；单机时不指明。多步操作在入口取一次，之后不再读 currentMachine。
-const via = () => (currentMachine ? { machine: currentMachine } : undefined);
-// 头像图片的读写地址只在多机空间里带 machine。
-const multiMachine = () => Array.isArray(coda.machines) && coda.machines.length > 1;
-const blobMachine = () => (multiMachine() ? currentMachine : null);
-// 每次选机自增（A → B → A 也不同）：旧机器的订阅回调、异步回写，凭它丢弃。
-let selectionGen = 0;
-// 编辑名片的会话代际：每次打开、关闭编辑弹层或切机自增；旧会话的发布做完后不碰新会话的弹层、按钮、提示和裁剪。
+// 视图里的每台电脑（成员在页面生命周期内不变）各存一份数据；读不到的（unreachable）也在，只是不发请求。
+const members = listMembers(coda).map(m => ({ ...m, entry: null, author: null, friends: [], profiles: [], cards: [], notes: {}, loaded: false,
+  problem: null, notesProblem: null, accordProblem: null, reading: 0 }));
+const live = members.filter(m => !m.unreachable);
+const multi = members.length > 1;
+const state = { busy: new Set(), notice: new Map(), heroNotice: new Map(), detail: null, removing: null, failedPhotos: new Set() };
+const via = m => ({ machine: m.id });
+// 头像图片的读取地址只在多机空间里带 machine。
+const blobMachine = id => (multi ? id : null);
+const rowKey = (m, node) => `${m.id}\u0000${node}`;
+// 编辑名片的会话代际：每次打开、关闭编辑弹层自增；旧会话的发布做完后不碰新会话的弹层、按钮、提示和裁剪。
 let editorGen = 0;
 function say(target, text, kind = 'hint') { target.className = kind; target.textContent = text; }
 
-// ---- 备注：经模块存在本机 ----
+// ---- 备注：经各台的模块存在那台本机 ----
 const pendingReplies = new Map();
 let counter = 0;
-const bridge = createMachineBridge({
-  coda,
-  getMachine: () => currentMachine,
-  getEpoch: () => selectionGen,
-  onMessage({ type, rid, ok, value, error }) {
-    if (type !== 'reply') return;
-    const wait = pendingReplies.get(rid);
-    if (!wait) return;
-    pendingReplies.delete(rid);
-    if (ok) wait.resolve(value); else wait.reject(new Error(error));
-  },
-  onError(error, msg) {
-    const wait = pendingReplies.get(msg.rid);
-    if (!wait) return;
-    pendingReplies.delete(msg.rid);
-    wait.reject(new Error(`发送失败：${error?.message ?? error}`));
-  },
-});
-function ask(type, input = {}) {
-  const rid = `n${++counter}`, machine = currentMachine;
+function ask(m, type, input = {}) {
+  const rid = `n${++counter}`;
   return new Promise((resolve, reject) => {
+    const settle = fn => v => { clearTimeout(timer); pendingReplies.delete(rid); fn(v); };
     const timer = setTimeout(() => { pendingReplies.delete(rid); reject(new Error('模块没有回应')); }, 10_000);
-    pendingReplies.set(rid, { machine, resolve: v => { clearTimeout(timer); resolve(v); }, reject: e => { clearTimeout(timer); reject(e); } });
-    bridge.send({ type, rid, ...input });
+    pendingReplies.set(rid, { machine: m.id, resolve: settle(resolve), reject: settle(reject) });
+    Promise.resolve().then(() => coda.postMessage({ type, rid, ...input }, via(m))).catch(error => pendingReplies.get(rid)?.reject(new Error(`发送失败：${error?.message ?? error}`)));
   });
 }
+addEventListener('message', event => {
+  const { type, rid, ok, value, error } = event.data ?? {};
+  const wait = type === 'reply' ? pendingReplies.get(rid) : null;
+  if (!wait || (event.machine?.id && event.machine.id !== wait.machine)) return;
+  if (ok) wait.resolve(value); else wait.reject(new Error(error));
+});
 
-// ---- 读本机 Accord ----
-let reading = 0;
+// ---- 读各台的 Accord ----
 // profile 与 friends/card 各读各的：一种读不到或没有记录，不挡另一种。
-async function readProfiles() {
-  const mine = ++reading;
-  const [profiles, cards] = await Promise.allSettled(['profile', CARD_KIND].map(kind => coda.query(LOCAL, 'records', { kind, limit: 200 }, via())));
-  if (mine !== reading) return;
-  if (profiles.status === 'fulfilled') state.profiles = profiles.value?.records ?? [];
-  if (cards.status === 'fulfilled') state.cards = cards.value?.records ?? [];
+async function readProfiles(m) {
+  const mine = ++m.reading;
+  const [profiles, cards] = await Promise.allSettled(['profile', CARD_KIND].map(kind => coda.query(LOCAL, 'records', { kind, limit: 200 }, via(m))));
+  if (mine !== m.reading) return;
+  if (profiles.status === 'fulfilled') m.profiles = profiles.value?.records ?? [];
+  if (cards.status === 'fulfilled') m.cards = cards.value?.records ?? [];
   const failed = [profiles, cards].find(read => read.status === 'rejected');
-  state.problem = failed ? `读不到好友名片：${failed.reason?.message ?? failed.reason}` : null;
-  loadOwn();
+  m.problem = failed ? `读不到好友名片：${failed.reason?.message ?? failed.reason}` : null;
   draw();
 }
-// 本机已发布的名片（Hero 展示它）；编辑弹层另有一份草稿，打开时从它拷贝。
-const blankOwn = () => ({ name: '', emoji: '', color: 'blue', avatar: undefined });
-const own = blankOwn();
-const latestOwn = (records, read) => records.map(read).filter(p => p && p.author === state.author).sort((a, b) => b.version - a.version)[0];
-// 与好友列表同一条合并规则（profile 写了的优先，缺的由 friends/card 补）；头像随名片带着，重新发布不会把它丢掉或带回已清除的。
-function loadOwn() {
-  const mine = mergeProfileAndCard(latestOwn(state.profiles, readProfileRecord), latestOwn(state.cards, readCardRecord));
-  if (mine) Object.assign(own, { name: mine.name, emoji: mine.emoji ?? '', color: mine.color ?? 'blue', avatar: mine.avatarPresent ? mine.avatar : undefined });
-}
-
-let watching = null;
-function onChange({ type, entry }) {
+function onChange(m, { type, entry }) {
   if (type === 'DELETED' || !entry) return;
-  state.entry = entry;
-  state.author = entry.spec?.author ?? null;
-  state.friends = entry.status?.friends ?? [];
-  state.loaded = true;
+  m.entry = entry;
+  m.author = entry.spec?.author ?? null;
+  m.friends = entry.status?.friends ?? [];
+  m.loaded = true;
   draw();
-  readProfiles();
+  readProfiles(m);
 }
-async function start() {
-  const gen = selectionGen, opts = via();
-  try { state.notes = await ask('notes.list'); state.notesProblem = null; }
-  catch (e) { if (gen === selectionGen) { state.notesProblem = `读不到本地备注：${e.message}`; draw(); } }
-  if (gen !== selectionGen) return;
-  if (!watching) {
-    let mine;
-    try {
-      mine = watching = Promise.resolve(coda.watch(ACCORD, entry => { if (gen === selectionGen) onChange(entry); }, { id: 'local' }, opts));
-      await mine;
-    } catch (e) { if (watching === mine) watching = null; if (gen === selectionGen) { state.problem = `读不到本机的好友信息：${e.message}`; state.loaded = true; } }
-  }
-  if (gen === selectionGen) draw();
+async function start(m) {
+  try { m.notes = await ask(m, 'notes.list'); m.notesProblem = null; }
+  catch (e) { m.notesProblem = `读不到本地备注：${e.message}`; draw(); }
+  try { await coda.watch(ACCORD, event => onChange(m, event), { id: 'local' }, via(m)); }
+  catch (e) { m.accordProblem = `读不到本机的好友信息：${e.message}`; }
+  draw();
 }
 
 // ---- 头像 ----
@@ -125,8 +93,7 @@ function avatar(desc, size) {
   show(desc);
   return node;
 }
-const ownAvatar = () => resolveAvatar({ avatar: own.avatar, emoji: own.emoji, author: state.author, name: own.name, machine: blobMachine() });
-const rowAvatar = row => resolveAvatar({ avatar: row.avatar, emoji: row.emoji, author: row.author, name: row.title, machine: blobMachine() });
+const rowAvatar = (m, row) => resolveAvatar({ avatar: row.avatar, emoji: row.emoji, author: row.author, name: row.title, machine: blobMachine(m.id) });
 const cameraIcon = () => svg('svg', { viewBox: '0 0 24 24', width: 11, height: 11, fill: 'none', stroke: 'currentColor', 'stroke-width': 2.4, 'aria-hidden': 'true' },
   svg('path', { d: 'M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z' }), svg('circle', { cx: 12, cy: 13, r: 4 }));
 
@@ -157,99 +124,63 @@ function closeDialog() {
 }
 addEventListener('keydown', e => { if (e.key === 'Escape' && openDialog) closeDialog(); });
 
-// ---- 多台机器提供这页时，选看哪台 ----
-const machineBar = h('nav', { class: 'machines', 'aria-label': '选择机器' });
-function drawMachines() {
-  const machines = Array.isArray(coda.machines) ? coda.machines : [];
-  machineBar.hidden = machines.length < 2;
-  fill(machineBar, ...(machines.length < 2 ? [] : machines.map(m => {
-    if (m.unreachable) {
-      const why = m.unreachable === true ? '暂时连不上' : String(m.unreachable);
-      return h('button', { class: 'm-pill', type: 'button', disabled: true, title: `不可达：${why}`, 'aria-label': `${m.name || m.id}（不可达：${why}）` },
-        h('span', { class: 'm-dot off' }), m.name || m.id, h('small', { class: 'm-why' }, '不可达'));
-    }
-    return h('button', { class: 'm-pill', type: 'button', 'aria-pressed': String(m.id === currentMachine), onclick: () => switchMachine(m.id) }, h('span', { class: 'm-dot' }), m.name || m.id);
-  })));
-}
-function switchMachine(id) {
-  if (id === currentMachine) return;
-  currentMachine = id;
-  selectionGen++;
-  editorGen++;
-  coda.setState?.({ machine: currentMachine });
-  reading++;
-  watching?.then(w => w?.dispose?.(), () => {});
-  watching = null;
-  for (const [rid, wait] of [...pendingReplies]) { pendingReplies.delete(rid); wait.reject(new Error('已切换机器')); }
-  closeDialog();
-  Object.assign(state, newState());
-  Object.assign(own, blankOwn());
-  editor.publish.disabled = false; invite.button.disabled = false;
-  for (const target of [hero.message, editor.message, invite.message]) say(target, '');
-  drawMachines();
-  draw();
-  start();
-}
-
-// ---- 我的名片：Hero 与状态条 ----
-const hero = {
-  card: h('section', { class: 'hero' }),
-  avatar: h('button', { class: 'av-ring', type: 'button', 'aria-label': '更换头像', title: '更换头像', onclick: () => openEditor() }),
-  name: h('h2', { class: 'hero-name selectable' }),
-  key: h('button', { class: 'fp mono', type: 'button', onclick: copyKey }),
-  lead: h('p', { class: 'hint' }),
-  message: h('p', { class: 'hint' }),
-  friends: h('div', { class: 'tile' }),
-  cert: h('div', { class: 'tile' }),
-};
-hero.card.append(
-  h('div', { class: 'banner' }, h('div', { class: 'banner-acts' },
-    h('button', { class: 'pill', type: 'button', onclick: () => openEditor() }, '编辑名片'),
-    h('button', { class: 'pill strong', type: 'button', onclick: () => showDialog(invite.dialog) }, '添加好友'))),
-  h('div', { class: 'hero-body' },
-    h('div', { class: 'hero-id' }, hero.avatar, h('div', { class: 'hero-names' }, h('div', { class: 'name-line' }, hero.name, h('span', { class: 'tag' }, '我的名片')), hero.key)),
-    hero.lead, hero.message,
-    h('div', { class: 'bento' }, hero.friends, hero.cert)));
+// ---- 我的名片：每个身份一张 Hero ----
+// 只有一台电脑时，名片上带这台的状态条和「添加好友」；几台时这两样都在各自的节里。
 const CERT = {
   active: { dot: 'ok-dot', text: '可发布' },
   needs_cert: { dot: 'warn-dot', text: '需要证书', sub: '需绑定或续期代签证书：前往客户端「设置 › 身份」处理后再发布名片' },
   no_identity: { dot: 'off-dot', text: '未建身份', sub: '前往客户端「设置 › 身份」创建' },
 };
 const formatTime = ms => new Date(ms).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-function tile(node, label, value, sub, dot) {
-  fill(node, h('span', { class: 'tile-k' }, label), h('span', { class: 'tile-v' }, dot ? h('span', { class: `dot ${dot}` }) : null, value), sub);
+function tile(label, value, sub, dot) {
+  return h('div', { class: 'tile' }, h('span', { class: 'tile-k' }, label), h('span', { class: 'tile-v' }, dot ? h('span', { class: `dot ${dot}` }) : null, value), sub);
 }
-function drawHero(shown) {
-  hero.card.className = `hero c-${own.color}`;
-  hero.avatar.replaceChildren(avatar(ownAvatar(), 'lg'), h('span', { class: 'cam' }, cameraIcon()));
-  hero.name.textContent = own.name || (state.loaded ? '还没有名片' : '读取中…');
-  hero.lead.textContent = own.name || !state.loaded ? '' : '点「编辑名片」设置昵称、头像和主题色，好友就能认出你。名片对所有人公开。';
-  hero.lead.hidden = !hero.lead.textContent;
-  const summary = accordStatusSummary(state.entry, shown);
-  hero.key.disabled = !state.author;
-  hero.key.textContent = state.author ? `ed25519:${summary.short}… · 复制` : !state.loaded ? '读取中…' : summary.cert === 'no_identity' ? '未建身份' : '未取得公钥';
-  hero.key.title = state.author ? '复制完整公钥' : '';
-  if (!state.loaded) {
-    tile(hero.friends, '好友', '读取中…');
-    tile(hero.cert, '身份', '读取中…');
-    return;
-  }
-  const { bound, pending, conflict, total } = summary.friends;
-  tile(hero.friends, '好友', `${bound} 位已互认`, h('span', { class: 'tile-s' },
-    conflict ? h('span', { class: 'badge conflict' }, `${conflict} 冲突`) : null,
-    pending ? h('span', { class: 'badge pending' }, `${pending} 待互认`) : null,
-    conflict || pending ? null : total ? '全部已互认' : '还没有好友'));
-  const cert = CERT[summary.cert];
+// 一台电脑的好友数与证书状态。
+function statusTiles(m, rows) {
+  if (!m.loaded) return h('div', { class: 'bento' }, tile('好友', '读取中…'), tile('身份', '读取中…'));
+  const summary = accordStatusSummary(m.entry, rows), { bound, pending, conflict, total } = summary.friends, cert = CERT[summary.cert];
   const sub = summary.cert === 'active' ? (summary.certUntil ? `证书有效至 ${formatTime(summary.certUntil)}` : '名片可正常发布') : cert.sub;
-  tile(hero.cert, '身份', cert.text, h('span', { class: 'tile-s' }, sub), cert.dot);
+  return h('div', { class: 'bento' },
+    tile('好友', `${bound} 位已互认`, h('span', { class: 'tile-s' },
+      conflict ? h('span', { class: 'badge conflict' }, `${conflict} 冲突`) : null,
+      pending ? h('span', { class: 'badge pending' }, `${pending} 待互认`) : null,
+      conflict || pending ? null : total ? '全部已互认' : '还没有好友')),
+    tile('身份', cert.text, h('span', { class: 'tile-s' }, sub), cert.dot));
 }
-async function copyKey() {
-  if (!state.author) return;
-  const gen = selectionGen;
-  try { await coda.copy(state.author); if (gen === selectionGen) say(hero.message, '公钥已复制', 'ok'); } catch (e) { if (gen === selectionGen) say(hero.message, `复制失败：${e.message}`, 'error'); }
+function drawHero(id, sections) {
+  const { author, card, signer } = id, ready = Boolean(signer);
+  const own = card ?? blankOwn(), noticeKey = author ?? '';
+  const summary = accordStatusSummary(signer?.entry, []);
+  const avatarDesc = resolveAvatar({ avatar: card?.avatarPresent ? card.avatar : undefined, emoji: own.emoji, author, name: own.name, machine: blobMachine(card?.from) });
+  const notice = state.heroNotice.get(noticeKey);
+  const settled = members.every(m => m.loaded || m.unreachable || m.accordProblem);
+  const name = own.name || (!settled ? '读取中…' : ready ? '还没有名片' : '读不到名片');
+  const single = !multi && sections[0];
+  return h('section', { class: `hero c-${own.color ?? 'blue'}` },
+    h('div', { class: 'banner' }, h('div', { class: 'banner-acts' },
+      h('button', { class: 'pill', type: 'button', disabled: !ready, onclick: () => openEditor(id) }, '编辑名片'),
+      single && !single.unreachable ? h('button', { class: 'pill strong', type: 'button', onclick: () => openInvite(single.member) }, '添加好友') : null)),
+    h('div', { class: 'hero-body' },
+      h('div', { class: 'hero-id' },
+        h('button', { class: 'av-ring', type: 'button', 'aria-label': '更换头像', title: '更换头像', disabled: !ready, onclick: () => openEditor(id) },
+          avatar(avatarDesc, 'lg'), h('span', { class: 'cam' }, cameraIcon())),
+        h('div', { class: 'hero-names' }, h('div', { class: 'name-line' }, h('h2', { class: 'hero-name selectable' }, name), h('span', { class: 'tag' }, '我的名片')),
+          h('button', { class: 'fp mono', type: 'button', disabled: !author, title: author ? '复制完整公钥' : '', onclick: () => copyKey(author),
+          }, author ? `ed25519:${summary.short}… · 复制` : !ready ? (settled ? '读不到公钥' : '读取中…') : summary.cert === 'no_identity' ? '未建身份' : '未取得公钥'))),
+      !own.name && ready && settled ? h('p', { class: 'hint' }, '点「编辑名片」设置昵称、头像和主题色，好友就能认出你。名片对所有人公开。') : null,
+      notice ? h('p', { class: notice.kind }, notice.text) : null,
+      single && !single.unreachable ? statusTiles(single.member, single.rows) : null));
+}
+async function copyKey(author) {
+  try { await coda.copy(author); state.heroNotice.set(author, { kind: 'ok', text: '公钥已复制' }); } catch (e) { state.heroNotice.set(author, { kind: 'error', text: `复制失败：${e.message}` }); }
+  draw();
 }
 
 // ---- 编辑名片 ----
+// 正在编辑的名片所属的身份、发往的那一台，和这张名片当前已发布的内容（编辑弹层另有一份草稿，打开时从它拷贝）。
+const blankOwn = () => ({ name: '', emoji: '', color: 'blue', avatar: undefined });
+const own = blankOwn();
+const editing = { author: null, member: null, avatarMachine: null };
 // 草稿：mode 决定头像怎么发；avatar 是沿用的已有图片指针（清除照片后为 null），新选的图在 cropper 里。
 const draft = { name: '', color: 'blue', mode: 'identicon', emoji: '', avatar: null };
 const preview = { canvas: h('canvas', { class: 'preview-canvas', width: 144, height: 144 }) };
@@ -285,8 +216,12 @@ editor.dialog.body.append(h('div', { class: 'ed-cols' },
     h('div', { class: 'field' }, h('span', { class: 'lbl' }, '主题色'), editor.swatches))));
 
 const modeOf = card => (card.avatar ? 'photo' : !card.emoji ? 'identicon' : card.emoji === initialChar(card.name, '') ? 'monogram' : 'emoji');
-function openEditor() {
+// 改名片只发给这个身份的一台（id.signer），靠目录库同步到同一身份的其他台；头像也上传到这一台。
+function openEditor(id) {
+  if (!id.signer) return;
   editorGen++;
+  Object.assign(own, blankOwn(), id.card && { name: id.card.name, emoji: id.card.emoji ?? '', color: id.card.color ?? 'blue', avatar: id.card.avatarPresent ? id.card.avatar : undefined });
+  Object.assign(editing, { author: id.author, member: id.signer, avatarMachine: blobMachine(id.card?.from) });
   cropper.clear();
   editor.publish.disabled = false;
   Object.assign(draft, { name: own.name, color: own.color, mode: modeOf(own), emoji: own.emoji, avatar: own.avatar ?? null });
@@ -298,8 +233,8 @@ function openEditor() {
   showDialog(editor.dialog);
 }
 function draftAvatar() {
-  const author = state.author, name = draft.name;
-  if (draft.mode === 'photo') return resolveAvatar({ avatar: draft.avatar, emoji: own.emoji, author, name, machine: blobMachine() });
+  const author = editing.author, name = draft.name;
+  if (draft.mode === 'photo') return resolveAvatar({ avatar: draft.avatar, emoji: own.emoji, author, name, machine: editing.avatarMachine });
   if (draft.mode === 'emoji') return resolveAvatar({ emoji: draft.emoji, author, name });
   if (draft.mode === 'monogram') return { kind: 'monogram', text: initialChar(name) };
   return resolveAvatar({ author, name });
@@ -311,7 +246,7 @@ function syncPreview() {
     h('div', { class: 'mini-body' },
       h('span', { class: 'av-ring md' }, fresh ? h('span', { class: 'av md k-photo' }, preview.canvas) : avatar(draftAvatar(), 'md')),
       h('div', { class: 'mini-name truncate' }, draft.name.trim() || '未命名'),
-      state.author ? h('div', { class: 'mono secondary' }, `@${shortAuthor(state.author)}`) : null));
+      editing.author ? h('div', { class: 'mono secondary' }, `@${shortAuthor(editing.author)}`) : null));
   if (fresh) mirrorCrop();
   if (draft.mode === 'monogram') editor.other.textContent = `以昵称首字「${initialChar(draft.name)}」作头像，昵称改了它跟着变。`;
 }
@@ -320,7 +255,7 @@ function syncEditor() {
   editor.photo.hidden = draft.mode !== 'photo';
   editor.emojiPane.hidden = draft.mode !== 'emoji';
   editor.other.hidden = draft.mode !== 'identicon' && draft.mode !== 'monogram';
-  editor.other.textContent = draft.mode === 'identicon' ? (state.author ? '由你的公钥确定性生成的 5×5 几何纹，换设备也一样。' : '取得身份后按公钥生成几何纹；现在先以昵称首字代替。') : '';
+  editor.other.textContent = draft.mode === 'identicon' ? (editing.author ? '由你的公钥确定性生成的 5×5 几何纹，换设备也一样。' : '取得身份后按公钥生成几何纹；现在先以昵称首字代替。') : '';
   const choose = h('button', { class: 'btn quiet small', type: 'button', onclick: () => editor.file.click() }, cropper.ready || draft.avatar ? '换一张' : '选择图片');
   const clear = cropper.ready || draft.avatar ? h('button', { class: 'btn danger small', type: 'button', onclick: clearPhoto }, '清除照片') : null;
   fill(editor.photo, ...(cropper.ready
@@ -370,27 +305,26 @@ async function uploadAvatar(blob, machine) {
   return normalizeContentPointer({ owner, path, sha256, mime, size, name });
 }
 // 发 profile；绑定了代签证书时 profile 须由客户端根签，这里发不了：改发可代签的社交名片 friends/card，好友一样看得到。
-async function publishBody(body, opts, author, live) {
+async function publishBody(body, opts, author) {
   try {
     await coda.call(LOCAL, 'publish', { kind: 'profile', id: 'self', body, audience: ['public'] }, opts);
     return '名片已发布，好友会看到它';
   } catch (e) {
     if (e?.code !== 'forbidden') throw e;
     await coda.call(LOCAL, 'publish', { kind: CARD_KIND, id: 'self', body, audience: ['public'] }, opts);
-    // 缓存的 state.profiles 可能还没读完或读失败了：现查一次本机作者的根签 profile，查不出来就不承诺。已切机就不必查了。
-    if (!live()) return null;
+    // 缓存的 profiles 可能还没读完或读失败了：现查一次本机作者的根签 profile，查不出来就不承诺。
     let rooted = null;
     try { rooted = ((await coda.query(LOCAL, 'records', { kind: 'profile', author, limit: 1 }, opts))?.records ?? []).some(record => readProfileRecord(record)); } catch { /* 按没读出来提示 */ }
     return cardFallbackNotice(rooted);
   }
 }
-// 上传与发布都绑定入口时的机器与代际：途中切了机，仍在原机器做完，但不往新机器的页面写任何状态。
+// 上传与发布都发往入口时定下的那一台；弹层被关掉、重开后，旧会话做完也不往新会话的弹层写任何状态。
 async function publishCard() {
   const upload = draft.mode === 'photo' && cropper.ready;
   let body;
   try { body = normalizeCardInput(draftFields()); } catch (e) { return say(editor.message, e.message, 'error'); }
-  const gen = selectionGen, session = editorGen, opts = via(), machine = blobMachine(), author = state.author, live = () => gen === selectionGen;
-  const current = () => live() && session === editorGen;
+  const session = editorGen, { member, author } = editing, opts = via(member), machine = blobMachine(member.id);
+  const current = () => session === editorGen;
   editor.publish.disabled = true;
   try {
     if (upload) {
@@ -400,13 +334,14 @@ async function publishCard() {
       body = { ...body, avatar: await uploadAvatar(blob, machine) };
     }
     if (current()) say(editor.message, '正在发布…', 'progress');
-    const notice = await publishBody(body, opts, author, live);
-    if (live()) readProfiles();
+    const notice = await publishBody(body, opts, author);
+    readProfiles(member);
     if (current()) {
       // 关弹层会让会话代际自增，所以先恢复按钮。
       editor.publish.disabled = false;
       closeDialog();
-      say(hero.message, notice, 'ok');
+      state.heroNotice.set(author ?? '', { kind: 'ok', text: notice });
+      draw();
     }
   } catch (e) { if (current()) say(editor.message, `没有发布成功：${e.message}`, 'error'); }
   if (current()) editor.publish.disabled = false;
@@ -425,6 +360,13 @@ const invite = {
   hidden: {},
 };
 invite.dialog = makeDialog({ title: '添加好友', close: '关闭' });
+// 接受邀请和随后的互认都发给打开它的那一节的电脑。
+function openInvite(m) {
+  if (invite.target !== m) say(invite.message, '');
+  invite.target = m;
+  invite.dialog.heading.textContent = multi ? `添加好友 · ${m.name}` : '添加好友';
+  showDialog(invite.dialog);
+}
 invite.dialog.body.append(h('div', { class: 'stack' },
   h('p', { class: 'hint' }, '暂需由对方提供 friend 角色入网码，后续将支持客户端一键生成邀请。'),
   invite.paste,
@@ -464,70 +406,65 @@ async function submitInvite() {
   }
   // 入网码是凭据：取出后立刻清空所有输入框，不写进任何存储或日志。
   clearInvite();
-  const gen = selectionGen, opts = via(), live = () => gen === selectionGen;
+  const target = invite.target, opts = via(target), show = (text, kind) => { if (invite.target === target) say(invite.message, text, kind); };
   invite.button.disabled = true;
-  say(invite.message, '正在接受邀请，加入对方的通道…', 'progress');
+  show('正在接受邀请，加入对方的通道…', 'progress');
   const peerNode = input.peerNode;
   let node;
   try {
     ({ node } = await coda.call(LOCAL, 'accept', input, opts));
   } catch (e) {
     input = null;
-    if (!live()) return;
     invite.button.disabled = false;
-    return say(invite.message, `接受邀请失败：${e.message}。入网码已清空，请重新粘贴邀请再试`, 'error');
+    return show(`接受邀请失败：${e.message}。入网码已清空，请重新粘贴邀请再试`, 'error');
   }
   input = null;
-  if (live()) say(invite.message, '已加入通道，正在与对方互认…', 'progress');
+  show('已加入通道，正在与对方互认…', 'progress');
   try {
     await coda.call(LOCAL, 'handshake', { node, ...(peerNode ? { peerNode } : {}) }, opts);
-    if (live()) say(invite.message, '好友已添加并完成互认', 'ok');
-  } catch (e) { if (live()) say(invite.message, `已加入通道，但互认暂未完成（${e.message}）。可稍后在好友详情里点「重新互认」重试`, 'error'); }
-  if (live()) invite.button.disabled = false;
+    show('好友已添加并完成互认', 'ok');
+  } catch (e) { show(`已加入通道，但互认暂未完成（${e.message}）。可稍后在好友详情里点「重新互认」重试`, 'error'); }
+  invite.button.disabled = false;
 }
 
-// ---- 好友列表与详情 ----
-const list = h('div');
-const countBadge = h('span', { class: 'count' });
-function rows() { return mergeFriendRows({ friends: state.friends, profiles: state.profiles, cards: state.cards, notes: state.notes }); }
+// ---- 好友详情：备注、重新互认、移除都发给这一行所在的电脑 ----
+// 不同电脑上的 node 可能相同，忙碌与提示按（电脑, node）记。
+const sectionRows = m => friendSections([m])[0].rows;
 
-async function handshake(row) {
-  const gen = selectionGen, opts = via();
-  state.busy.add(row.node); state.notice.set(row.node, { kind: 'progress', text: '正在互认…' }); draw();
+async function handshake(m, row) {
+  const key = rowKey(m, row.node);
+  state.busy.add(key); state.notice.set(key, { kind: 'progress', text: '正在互认…' }); draw();
   let notice;
-  try { await coda.call(LOCAL, 'handshake', { node: row.node, ...(row.peerNode ? { peerNode: row.peerNode } : {}) }, opts); notice = { kind: 'ok', text: '互认完成' }; }
+  try { await coda.call(LOCAL, 'handshake', { node: row.node, ...(row.peerNode ? { peerNode: row.peerNode } : {}) }, via(m)); notice = { kind: 'ok', text: '互认完成' }; }
   catch (e) { notice = { kind: 'error', text: `互认失败：${e.message}` }; }
-  if (gen !== selectionGen) return;
-  state.notice.set(row.node, notice); state.busy.delete(row.node); draw();
+  state.notice.set(key, notice); state.busy.delete(key); draw();
 }
-async function remove(row) {
-  const gen = selectionGen, opts = via();
-  state.busy.add(row.node); state.notice.set(row.node, { kind: 'progress', text: '正在移除…' }); draw();
+async function remove(m, row) {
+  const key = rowKey(m, row.node);
+  state.busy.add(key); state.notice.set(key, { kind: 'progress', text: '正在移除…' }); draw();
   let failure = null;
-  try { await coda.call(LOCAL, 'remove', { node: row.node }, opts); }
+  try { await coda.call(LOCAL, 'remove', { node: row.node }, via(m)); }
   catch (e) { failure = { kind: 'error', text: `移除失败：${e.message}` }; }
-  if (gen !== selectionGen) return;
-  state.busy.delete(row.node);
-  if (failure) state.notice.set(row.node, failure);
+  state.busy.delete(key);
+  if (failure) state.notice.set(key, failure);
   else {
-    state.notice.delete(row.node); state.removing = null;
-    if (state.detail === row.node) closeDialog();
+    state.notice.delete(key); state.removing = null;
+    if (state.detail?.key === key) closeDialog();
   }
   draw();
 }
-async function saveNote(row, text) {
-  const gen = selectionGen;
-  state.busy.add(row.node); state.notice.set(row.node, { kind: 'progress', text: '正在保存备注…' }); draw();
+async function saveNote(m, row, text) {
+  const key = rowKey(m, row.node);
+  state.busy.add(key); state.notice.set(key, { kind: 'progress', text: '正在保存备注…' }); draw();
   let saved, failure;
-  try { saved = await ask(text.trim() ? 'notes.set' : 'notes.delete', { node: row.node, note: text }); }
+  try { saved = await ask(m, text.trim() ? 'notes.set' : 'notes.delete', { node: row.node, note: text }); }
   catch (e) { failure = { kind: 'error', text: `备注没存下：${e.message}` }; }
-  if (gen !== selectionGen) return;
-  state.busy.delete(row.node);
-  if (failure) state.notice.set(row.node, failure);
+  state.busy.delete(key);
+  if (failure) state.notice.set(key, failure);
   else {
-    state.notes = saved;
-    state.notice.set(row.node, { kind: 'ok', text: text.trim() ? '备注已保存' : '备注已清空' });
-    if (state.detail === row.node) detail.note.value = rows().find(r => r.node === row.node)?.note ?? '';
+    m.notes = saved;
+    state.notice.set(key, { kind: 'ok', text: text.trim() ? '备注已保存' : '备注已清空' });
+    if (state.detail?.key === key) detail.note.value = detailRow()?.note ?? '';
   }
   draw();
 }
@@ -537,7 +474,7 @@ const detail = {
   card: h('div'),
   info: h('dl', { class: 'facts' }),
   note: h('input', { type: 'text', maxlength: '40', placeholder: '备注名（只存在本机，不会发给好友）', autocomplete: 'off',
-    onkeydown: e => { if (e.key === 'Enter') noteAction(row => saveNote(row, detail.note.value)); } }),
+    onkeydown: e => { if (e.key === 'Enter') noteAction(row => saveNote(state.detail.member, row, detail.note.value)); } }),
   noteButtons: h('div', { class: 'line' }),
   actions: h('div', { class: 'actions split' }),
   notice: h('div'),
@@ -545,79 +482,92 @@ const detail = {
 detail.dialog.body.append(h('div', { class: 'stack' }, detail.card, detail.info,
   h('div', { class: 'field' }, h('span', { class: 'lbl' }, '本机备注'), h('div', { class: 'line nowrap' }, detail.note, detail.noteButtons)),
   detail.actions, detail.notice));
-const detailRow = () => rows().find(row => row.node === state.detail);
-function noteAction(run) { const row = detailRow(); if (row && !state.busy.has(row.node)) run(row); }
-function openDetail(row) {
-  state.detail = row.node; state.removing = null;
+const detailRow = () => state.detail && sectionRows(state.detail.member).find(row => row.node === state.detail.node);
+function noteAction(run) { const row = detailRow(); if (row && !state.busy.has(state.detail.key)) run(row); }
+function openDetail(m, row) {
+  state.detail = { member: m, node: row.node, key: rowKey(m, row.node) }; state.removing = null;
   detail.note.value = row.note;
   drawDetail();
   showDialog(detail.dialog);
 }
 function fact(label, ...value) { return [h('dt', {}, label), h('dd', { class: 'selectable' }, ...value)]; }
-async function copyFriendKey(row) {
-  const gen = selectionGen;
-  try { await coda.copy(row.author); if (gen === selectionGen) { state.notice.set(row.node, { kind: 'ok', text: '公钥已复制' }); draw(); } }
-  catch (e) { if (gen === selectionGen) { state.notice.set(row.node, { kind: 'error', text: `复制失败：${e.message}` }); draw(); } }
+async function copyFriendKey(m, row) {
+  const key = rowKey(m, row.node);
+  try { await coda.copy(row.author); state.notice.set(key, { kind: 'ok', text: '公钥已复制' }); }
+  catch (e) { state.notice.set(key, { kind: 'error', text: `复制失败：${e.message}` }); }
+  draw();
 }
 function drawDetail() {
-  const row = detailRow();
+  const row = detailRow(), { member: m, key } = state.detail;
   if (!row) return;
-  const busy = state.busy.has(row.node), notice = state.notice.get(row.node);
-  detail.dialog.heading.textContent = row.title;
+  const busy = state.busy.has(key), notice = state.notice.get(key);
+  detail.dialog.heading.textContent = multi ? `${row.title} · ${m.name}` : row.title;
   detail.card.replaceChildren(h('div', { class: `mini-card c-${row.color}` }, h('div', { class: 'banner small' }),
-    h('div', { class: 'mini-body row' }, h('span', { class: 'av-ring lg' }, avatar(rowAvatar(row), 'lg')),
+    h('div', { class: 'mini-body row' }, h('span', { class: 'av-ring lg' }, avatar(rowAvatar(m, row), 'lg')),
       h('div', { class: 'mini-names' }, h('div', { class: 'mini-name truncate selectable' }, row.title),
         row.note && row.profileName ? h('div', { class: 'secondary truncate selectable' }, `原名 ${row.profileName}`) : null),
       h('span', { class: `badge ${row.status}` }, STATUS_TEXT[row.status]))));
   detail.info.replaceChildren(
     ...fact('公钥', row.author ? h('span', { class: 'mono key-full' }, row.author) : h('span', { class: 'secondary' }, '密钥未互认'),
-      row.author ? h('button', { class: 'btn quiet small', type: 'button', onclick: () => copyFriendKey(row) }, '复制公钥') : null),
+      row.author ? h('button', { class: 'btn quiet small', type: 'button', onclick: () => copyFriendKey(m, row) }, '复制公钥') : null),
     ...fact('节点', h('span', { class: 'mono' }, row.peerNode ?? row.node)),
     ...fact('连接', STATUS_TEXT[row.status]));
   fill(detail.noteButtons,
-    h('button', { class: 'btn small', type: 'button', disabled: busy, onclick: () => noteAction(r => saveNote(r, detail.note.value)) }, '保存'),
-    row.note ? h('button', { class: 'btn quiet small', type: 'button', disabled: busy, onclick: () => noteAction(r => saveNote(r, '')) }, '清空') : null);
-  detail.actions.replaceChildren(...(state.removing === row.node
+    h('button', { class: 'btn small', type: 'button', disabled: busy, onclick: () => noteAction(r => saveNote(m, r, detail.note.value)) }, '保存'),
+    row.note ? h('button', { class: 'btn quiet small', type: 'button', disabled: busy, onclick: () => noteAction(r => saveNote(m, r, '')) }, '清空') : null);
+  detail.actions.replaceChildren(...(state.removing === key
     ? [h('span', { class: 'secondary' }, '移除后不再同步这位好友，确定吗？'), h('span', { class: 'spacer' }),
-      h('button', { class: 'btn danger small', type: 'button', disabled: busy, onclick: () => remove(row) }, '确认移除'),
+      h('button', { class: 'btn danger small', type: 'button', disabled: busy, onclick: () => remove(m, row) }, '确认移除'),
       h('button', { class: 'btn quiet small', type: 'button', onclick: () => { state.removing = null; draw(); } }, '再想想')]
-    : [h('button', { class: 'btn quiet small', type: 'button', disabled: busy, onclick: () => handshake(row) }, '重新互认'), h('span', { class: 'spacer' }),
-      h('button', { class: 'btn danger small', type: 'button', disabled: busy, onclick: () => { state.removing = row.node; draw(); } }, '移除好友…')]));
+    : [h('button', { class: 'btn quiet small', type: 'button', disabled: busy, onclick: () => handshake(m, row) }, '重新互认'), h('span', { class: 'spacer' }),
+      h('button', { class: 'btn danger small', type: 'button', disabled: busy, onclick: () => { state.removing = key; draw(); } }, '移除好友…')]));
   fill(detail.notice,
     row.status === 'conflict' ? h('p', { class: 'warn-box' }, '对方的密钥与之前互认的不一致，可能换了设备或身份。确认是本人后可「重新互认」，否则建议移除。') : null,
     notice ? h('p', { class: notice.kind }, notice.text) : null);
 }
 
-function friendTile(row) {
+function friendTile(m, row) {
   const secondary = [row.note && row.profileName ? row.profileName : null, row.short ? `@${row.short}` : '密钥未互认'].filter(Boolean).join(' · ');
-  return h('li', {}, h('button', { class: `f-tile c-${row.color}`, type: 'button', 'aria-label': `${row.title}，${STATUS_TEXT[row.status]}`, onclick: () => openDetail(row) },
-    avatar(rowAvatar(row), 'sm'),
+  return h('li', {}, h('button', { class: `f-tile c-${row.color}`, type: 'button', 'aria-label': `${row.title}，${STATUS_TEXT[row.status]}`, onclick: () => openDetail(m, row) },
+    avatar(rowAvatar(m, row), 'sm'),
     h('span', { class: 'f-info' }, h('span', { class: 'f-name truncate' }, row.title), h('span', { class: 'f-meta truncate' }, secondary)),
     h('span', { class: `badge ${row.status}` }, STATUS_TEXT[row.status])));
 }
 
-const problem = h('p', { class: 'error selectable' });
-function draw() {
-  const problems = [state.notesProblem, state.problem].filter(Boolean).join('；');
-  problem.textContent = problems;
-  problem.hidden = !problems;
-  const shown = rows();
-  drawHero(shown);
-  countBadge.textContent = String(shown.length);
-  countBadge.hidden = !shown.length;
-  list.replaceChildren(shown.length ? h('ul', { class: 'friends' }, shown.map(friendTile))
-    : h('p', { class: 'empty' }, state.loaded ? '还没有好友。点上方「添加好友」，粘贴对方发来的邀请即可。' : '正在读取…'));
-  if (state.detail !== null) { if (detailRow()) drawDetail(); else closeDialog(); }
+// 每台电脑一节；只有一台时没有节标题，也不重复画名片上已有的状态条和「添加好友」。
+const memberProblems = m => [m.notesProblem, m.problem].filter(Boolean).join('；');
+function drawSection({ member: m, title, unreachable, rows }) {
+  const problems = memberProblems(m);
+  const down = !unreachable ? null : m.unreachable ? `${m.name} 读不到：${unreachable}` : `${multi ? `${m.name}：` : ''}${unreachable}`;
+  const summary = !unreachable && m.loaded ? accordStatusSummary(m.entry, rows) : null;
+  // 几台时状态条只在有需要提示的状态（证书有问题、待互认、冲突）时出；只有一台时状态条在名片上。
+  const attention = summary && (summary.cert !== 'active' || summary.friends.pending || summary.friends.conflict);
+  const empty = !m.loaded ? '正在读取…' : '还没有好友。点上方「添加好友」，粘贴对方发来的邀请即可。';
+  return h('section', {},
+    h('h2', { class: 'sec' }, title ?? '好友', unreachable ? null : h('span', { class: 'count', hidden: !rows.length }, String(rows.length))),
+    down ? h('p', { class: 'error selectable' }, down) : [
+      multi && problems ? h('p', { class: 'error selectable' }, problems) : null,
+      multi && attention ? statusTiles(m, rows) : null,
+      multi ? h('div', { class: 'line' }, h('button', { class: 'pill strong', type: 'button', onclick: () => openInvite(m) }, '添加好友')) : null,
+      rows.length ? h('ul', { class: 'friends' }, rows.map(row => friendTile(m, row))) : multi && m.loaded ? null : h('p', { class: 'empty' }, empty)]);
 }
 
-root.replaceChildren(h('div', { class: 'page' }, machineBar, problem, hero.card,
-  h('section', {}, h('h2', { class: 'sec' }, '好友', countBadge), list)),
-  editor.dialog.scrim, detail.dialog.scrim, invite.dialog.scrim);
-drawMachines();
+const page = h('div', { class: 'page' });
+function draw() {
+  const sections = friendSections(members);
+  const ids = identities(live);
+  if (!ids.length) ids.push({ author: null, card: null, signer: null, members: [] });
+  // 单台时的问题放在页首，和以前一致；几台时各在各的节里。
+  const head = multi ? null : memberProblems(members[0] ?? {}) && h('p', { class: 'error selectable' }, memberProblems(members[0]));
+  fill(page, head, ids.map(id => drawHero(id, sections)), sections.map(drawSection));
+  if (state.detail) { if (detailRow()) drawDetail(); else closeDialog(); }
+}
+
+root.replaceChildren(page, editor.dialog.scrim, detail.dialog.scrim, invite.dialog.scrim);
 syncEditor();
 draw();
 
-coda.on('toolbar', ({ id } = {}) => { if (id === 'refresh') { state.failedPhotos.clear(); draw(); readProfiles(); } });
+coda.on('toolbar', ({ id } = {}) => { if (id === 'refresh') { state.failedPhotos.clear(); for (const m of live) readProfiles(m); draw(); } });
 coda.toolbar([{ id: 'refresh', label: '刷新', icon: 'arrow.clockwise', kind: 'button' }]).catch(() => {});
 coda.header({ text: '好友' }).catch(() => {});
-start();
+for (const m of live) start(m);

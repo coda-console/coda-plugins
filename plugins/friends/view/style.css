@@ -64,13 +64,8 @@ details[open] > summary { margin-bottom: 10px; }
   --c-ink: color-mix(in srgb, var(--c) 78%, var(--fg));
 }
 
-/* 多机切换条 */
-.machines { display: flex; gap: 6px; flex-wrap: wrap; }
-.m-pill { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 11px; border: 0; border-radius: 8px; background: var(--fill); color: var(--fg2); font-size: .92em; font-weight: 550; }
-.m-pill[aria-pressed="true"] { background: var(--fg); color: var(--bg); }
-.m-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
-.m-dot.off { background: var(--fg3); }
-.m-why { font-size: .85em; color: var(--fg3); }
+/* 好友按电脑分节 */
+.page > section:not(.hero) > * + * { margin-top: 10px; }
 
 /* 点阵柔光渐变 Banner */
 .banner { position: relative; height: 84px;

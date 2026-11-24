@@ -748,7 +748,7 @@ test('set-card takes an emoji of up to 8 code points, as the card itself does, a
 test('the protocol definition is valid, and its new operations and streams belong to the read and publish groups', () => {
   const [definition] = manifest.contributes.protocols;
   assert.equal(definitionProblem(definition, { namespace: 'friends', where: definition.name }), null);
-  assert.equal(manifest.version, '0.4.0');
+  assert.equal(manifest.version, '0.5.0');
   assert.deepEqual(definition.permissions.read.streams, ['dm', 'feed']);
   assert.deepEqual(definition.permissions.publish.operations, ['publish', 'set-card', 'send-dm', 'post-feed', 'retract', 'outbox']);
   for (const name of ['send-dm', 'post-feed']) assert.equal(definition.operations[name].idempotent, true);
