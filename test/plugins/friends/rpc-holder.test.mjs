@@ -903,6 +903,76 @@ test('admission pauses while the clock has gone back by five minutes or more, an
   assert.equal(h.exec.runs, 1);
 });
 
+test('an I/O error reading clock.json is not taken as no baseline: no new request is admitted until the old baseline is read', async t => {
+  const h = await holderOf(t);
+  const { grant } = await h.grant();
+  await h.settle();
+  h.stop();
+  // 时钟在停机期间回拨了，重启时读 clock.json 又出 I/O 错误。
+  h.clock.now = START - 5 * MINUTE;
+  const disk = { failing: true };
+  const again = await holderOf(t, { ...h, wrapStore: store => ({ ...store,
+    readClock: () => disk.failing ? Promise.reject(Object.assign(new Error('读不出'), { code: 'EIO' })) : store.readClock() }) });
+  const body = send(again, { grant, createdAt: again.clock.now, expiresAt: START + MINUTE });
+  await again.settle();
+  assert.deepEqual(again.answers(F1, body.request), []);
+  assert.equal((await again.holder.self['grants.list']()).admitting, false);
+  assert.equal(JSON.parse(await readFile(join(h.dir, 'rpc', 'clock.json'), 'utf8')).maxSeen, START);
+  // 读得出了：读到旧基准，回拨照样暂停；时钟赶上后准入。
+  disk.failing = false;
+  await again.settle();
+  assert.deepEqual(again.answers(F1, body.request), []);
+  again.clock.now = START + 1;
+  await again.settle();
+  assert.deepEqual(again.answers(F1, body.request), ['running', 'completed']);
+});
+
+test('a failed write of the clock high-water mark is written again on the next round', async t => {
+  const disk = { failures: 1, writes: 0 };
+  const h = await holderOf(t, { wrapStore: store => ({ ...store,
+    writeClock: at => { disk.writes++; return disk.failures-- > 0 ? Promise.reject(new Error('写不进去')) : store.writeClock(at); } }) });
+  await h.grant();
+  await h.holder.tick();
+  assert.equal(disk.writes, 1);
+  await h.holder.tick();
+  assert.equal(disk.writes, 2);
+  assert.equal(JSON.parse(await readFile(join(h.dir, 'rpc', 'clock.json'), 'utf8')).maxSeen, START);
+});
+
+test('an invalid clock.json only pauses admission and is read again every round: once it is fixed, the next round answers a valid request', async t => {
+  const h = await holderOf(t);
+  const { grant } = await h.grant();
+  await h.settle();
+  h.stop();
+  const file = join(h.dir, 'rpc', 'clock.json');
+  await writeFile(file, '{ broken');
+  const again = await holderOf(t, h);
+  const body = send(again, { grant });
+  await again.settle();
+  assert.deepEqual(again.answers(F1, body.request), []);
+  assert.deepEqual([(await again.holder.self['grants.list']()).admitting, (await again.holder.self['grants.list']()).corrupt], [false, null]);
+  await writeFile(file, `${JSON.stringify({ v: 1, maxSeen: START })}\n`);
+  await again.settle();
+  assert.deepEqual(again.answers(F1, body.request), ['running', 'completed']);
+});
+
+test('after a failed write of the clock high-water mark, the next round writes it again even when the wall clock stepped back a little', async t => {
+  const disk = { failing: false };
+  const h = await holderOf(t, { wrapStore: store => ({ ...store,
+    writeClock: at => disk.failing ? Promise.reject(new Error('写不进去')) : store.writeClock(at) }) });
+  await h.grant();
+  await h.settle();
+  const stored = async () => JSON.parse(await readFile(join(h.dir, 'rpc', 'clock.json'), 'utf8')).maxSeen;
+  assert.equal(await stored(), START);
+  h.clock.now = START + MINUTE;
+  disk.failing = true;
+  await h.holder.tick();
+  disk.failing = false;
+  h.clock.now = START + MINUTE - 1_000;
+  await h.holder.tick();
+  assert.equal(await stored(), START + MINUTE);
+});
+
 test('over the in-flight quota a request is refused as busy and the refusals are counted', async t => {
   const h = await holderOf(t);
   const { grant } = await h.grant();

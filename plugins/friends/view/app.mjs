@@ -378,6 +378,15 @@ const invite = {
   button: h('button', { class: 'btn', type: 'button', onclick: submitInvite }, '接受邀请'),
   hidden: {},
 };
+// 各字段只在识别出一份邀请之后展开给用户核对：口令只随粘贴的邀请来，空表单手填交不出去。
+const ASK_PASTE = '请粘贴对方给你的完整邀请';
+invite.fields = h('div', { class: 'fields' },
+  h('label', { class: 'field' }, h('span', { class: 'lbl' }, 'control（入网地址）'), invite.control),
+  h('label', { class: 'field' }, h('span', { class: 'lbl' }, 'authKey（入网码）'), invite.authKey),
+  h('label', { class: 'field' }, h('span', { class: 'lbl' }, 'linkId'), invite.linkId),
+  h('label', { class: 'field' }, h('span', { class: 'lbl' }, 'scope'), invite.scope),
+  h('label', { class: 'field' }, h('span', { class: 'lbl' }, 'peerNode'), invite.peerNode));
+invite.fields.hidden = true;
 invite.dialog = makeDialog({ title: '添加好友', close: '关闭', onClose: resetGenerated });
 // 接受邀请和随后的互认都发给打开它的那一节的电脑。
 function openInvite(m) {
@@ -437,35 +446,36 @@ invite.dialog.body.append(
     h('p', { class: 'hint' }, '生成一段邀请发给对方，对方在他的好友页粘贴'),
     h('div', { class: 'line' }, generate.button), generate.result),
   h('section', { class: 'blk' }, h('h4', { class: 'sec' }, '接受对方的邀请'), h('div', { class: 'stack' },
-    invite.paste,
-    h('details', {}, h('summary', {}, '分字段填写'), h('div', { class: 'fields' },
-      h('label', { class: 'field' }, h('span', { class: 'lbl' }, 'control（入网地址）'), invite.control),
-      h('label', { class: 'field' }, h('span', { class: 'lbl' }, 'authKey（入网码）'), invite.authKey),
-      h('label', { class: 'field' }, h('span', { class: 'lbl' }, 'linkId'), invite.linkId),
-      h('label', { class: 'field' }, h('span', { class: 'lbl' }, 'scope'), invite.scope),
-      h('label', { class: 'field' }, h('span', { class: 'lbl' }, 'peerNode'), invite.peerNode))),
+    h('p', { class: 'hint' }, ASK_PASTE), invite.paste, invite.fields,
     h('div', { class: 'line' }, invite.button), invite.message)));
 // hostname、peerPort、bindingToken（一次性口令）只随识别出的那份邀请，不进输入框：手改入网地址或入网码就是另一份邀请了，
 // 连粘贴区的原文一起丢掉，免得再从原文里解析出旧邀请；口令只交给邀请指定的那台，改 peerNode 同理；改 linkId、scope 不算。
 function dropHidden() { invite.hidden = {}; invite.paste.value = ''; }
+// 粘贴区没有识别出邀请（清空了或识别不了）：上次识别出的字段不再属于它，清掉并收起。
+function closeFields() {
+  for (const name of ['control', 'authKey', 'linkId', 'scope', 'peerNode']) invite[name].value = '';
+  invite.fields.hidden = true;
+}
 function parsePaste() {
   invite.hidden = {};
   const text = invite.paste.value;
-  if (!text.trim()) return say(invite.message, '', 'hint');
+  if (!text.trim()) { closeFields(); return say(invite.message, '', 'hint'); }
   try {
     const found = parseInvite(text);
     for (const name of ['control', 'authKey', 'scope', 'peerNode']) if (found[name]) invite[name].value = found[name];
     if (found.linkId && !/^f-[0-9a-f]{8}$/.test(found.linkId)) invite.linkId.value = found.linkId;
     invite.hidden = { hostname: found.hostname ?? '', peerPort: found.peerPort, bindingToken: found.bindingToken };
+    invite.fields.hidden = false;
     say(invite.message, '已识别邀请，核对后点「接受邀请」', 'ok');
   } catch (e) {
-    // 这份粘贴没识别成功：上次识别出的字段不再属于它，一起清掉，提交时报的是这份的解析错误。
-    for (const name of ['control', 'authKey', 'linkId', 'scope', 'peerNode']) invite[name].value = '';
+    // 提交时报的是这份的解析错误。
+    closeFields();
     say(invite.message, e.message, 'error');
   }
 }
 function clearInvite() {
-  for (const name of ['paste', 'control', 'authKey', 'linkId', 'scope', 'peerNode']) invite[name].value = '';
+  invite.paste.value = '';
+  closeFields();
   invite.hidden = {};
 }
 async function submitInvite() {
@@ -474,8 +484,9 @@ async function submitInvite() {
     input = checked({ control: invite.control.value, authKey: invite.authKey.value, linkId: invite.linkId.value, scope: invite.scope.value,
       peerNode: invite.peerNode.value, hostname: invite.hidden.hostname, peerPort: invite.hidden.peerPort, bindingToken: invite.hidden.bindingToken });
   } catch (e) {
-    // 当前粘贴识别成功了（口令只在这时记着）、或没有粘贴，就以字段为准，校验不过只报错；
+    // 什么也没粘贴、字段也没展开：请对方的完整邀请。当前粘贴识别成功了（口令只在这时记着）、或没有粘贴，就以字段为准，校验不过只报错；
     // 粘贴了却还没识别成功，才按粘贴原文再解析一次，成不了就报它的错。
+    if (invite.fields.hidden && !invite.paste.value.trim()) return say(invite.message, ASK_PASTE, 'error');
     if (invite.hidden.bindingToken || !invite.paste.value.trim()) return say(invite.message, e.message, 'error');
     try { input = parseInvite(invite.paste.value); } catch (pasted) { return say(invite.message, pasted.message, 'error'); }
   }

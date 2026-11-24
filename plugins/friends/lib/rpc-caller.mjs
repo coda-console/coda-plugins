@@ -12,7 +12,8 @@
 //   可用性在留下的那台上单独算，不参与选主。授权撤回（目录里这一号已不在，或只剩撤回后的空正文）就删掉；
 //   对端换了机器钥匙、本机作者变了、签不了、授权记录说不可用，只标为不可用。
 // - exec：请求按序列化字节量，先写发出表（连同请求正文与核对回答要的各项）再签；回答按「持有方机器钥匙、种类、派生的回答 id」精确读，
-//   逐项核对授权号、请求号、摘要。等待与查询都挂在调用的 signal 上；交出终态之前再看一次是否已取消、已到期、本机作者变了、
+//   逐项核对授权号、请求号、摘要。发布之前失败、或发布层明确回 effects: none 的，以没发出收尾；发布层别的异常是结果不明，照发出了等回答。
+//   等待与查询都挂在调用的 signal 上；交出终态之前再看一次是否已取消、已到期、本机作者变了、
 //   好友表里是否仍有这把持有方机器钥匙（好友被移除或换了钥匙，旧机器的回答不交）。请求签出之后读回答失败只当这一回没读到，接着等；
 //   拿不到受信终态的都是效果未知。75 秒没有回执（在途查询挂着也算）、调用被取消、调用到期，都先发取消（同号更高版本），
 //   发不出去的记为待发，有效期内补发。
@@ -200,13 +201,18 @@ export function createCaller(coda, { store, signRpc, retractRpc, onAccord, pages
     try {
       let answer;
       try {
+        let publishing = false;
         try {
           // 真正发布之前（等就绪、读身份、写发出表、网关读签名身份的过程中）已取消或已到期的：普通请求不发，以没发出收尾。
-          await signRpc(record, { beforePublish: () => { if (ctx.signal.aborted || now() >= record.body.expiresAt) throw unsent(ctx.signal); } });
+          await signRpc(record, { beforePublish: () => { if (ctx.signal.aborted || now() >= record.body.expiresAt) throw unsent(ctx.signal); publishing = true; } });
         } catch (e) {
-          // 没发出去：发出表里这一项按已了结处理，清扫时撤回（多半什么也不用撤）并清掉。
-          await store.setOutgoingState(request, 'finished').catch(() => {});
-          throw e;
+          // 发布之前就失败、或发布层明确说什么也没发出（effects: none）：没发出去，发出表里这一项按已了结处理，清扫时撤回（多半什么也不用撤）并清掉。
+          // 发布层的其他异常（回执丢了、超时……）可能已经发出去、持有方已经收到：结果不明，请求号与发出项都留着，照发出了等回答，
+          // 发布的错误不当结局交出。
+          if (!publishing || e?.effects === 'none') {
+            await store.setOutgoingState(request, 'finished').catch(() => {});
+            throw e;
+          }
         }
         answer = await wait(entry, ctx.signal, watch);
         await store.setOutgoingState(request, 'finished').catch(() => {});

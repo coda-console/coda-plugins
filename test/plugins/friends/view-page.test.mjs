@@ -405,7 +405,7 @@ test('accept carries the invite\'s bindingToken to the local backend, and afterw
   form.submit.fire('click');
   await flush();
   assert.equal(log.calls.filter(c => c.op === 'accept').length, 1);
-  assert.ok(invite.textContent.includes('缺少'));
+  assert.ok(invite.textContent.includes('请粘贴对方给你的完整邀请'));
 });
 
 test('when accept fails the token is cleared and not shown in the error either, and it is not handed out a second time', async t => {
@@ -424,7 +424,7 @@ test('when accept fails the token is cleared and not shown in the error either, 
   form.submit.fire('click');
   await flush();
   assert.equal(log.calls.filter(c => c.op === 'accept').length, 1, 'a second click has no token to hand out');
-  assert.ok(invite.textContent.includes('邀请缺少'));
+  assert.ok(invite.textContent.includes('请粘贴对方给你的完整邀请'));
   pasteInvite(form, inviteJson({ bindingToken: 'bt-second' }));
   form.submit.fire('click');
   await flush();
@@ -449,24 +449,30 @@ test('a paste without a bindingToken, or with one but no peerNode, is refused wi
   assert.deepEqual(log.calls, []);
 });
 
-test('filling the fields by hand has no token to give: it is refused, but a paste that was not recognized yet is still read on submit', async t => {
+test('an empty form offers no field-by-field entry and asks for the whole invite; a recognized paste opens the fields and is accepted', async t => {
   const { page, log } = await open(t, { call: backend() });
   page.button('添加好友').fire('click');
-  const invite = scrims(page)[2], form = acceptForm(page, invite);
-  form.control.value = 'https://control.example';
-  form.authKey.value = 'tskey-secret';
-  form.peerNode.value = 'node-5d2a8f';
+  const invite = scrims(page)[2], form = acceptForm(page, invite), fields = page.all(n => cls(n) === 'fields', invite)[0];
+  assert.ok(!invite.textContent.includes('分字段填写') && !page.all(n => n.tag === 'details' || n.tag === 'summary', invite).length, 'no entry for filling the fields by hand');
+  assert.equal(fields.hidden, true);
+  assert.ok(invite.textContent.includes('请粘贴对方给你的完整邀请'));
+  assert.ok(!page.all(n => n.tag === 'input' && /口令|token/i.test(n.attrs.placeholder ?? ''), invite).length, 'there is no box for the token');
   form.submit.fire('click');
   await flush();
   assert.deepEqual(log.calls, []);
-  assert.ok(invite.textContent.includes('邀请缺少 bindingToken（一次性口令），请让对方重新生成邀请'));
-  assert.ok(!page.all(n => n.tag === 'input' && /口令|token/i.test(n.attrs.placeholder ?? ''), invite).length, 'there is no box for the token');
-  // 粘贴区有内容、输入框里没有手填：提交时再解析一次，口令随这份邀请。
-  form.control.value = ''; form.authKey.value = ''; form.peerNode.value = '';
-  form.paste.value = inviteJson();
+  assert.equal(invite.textContent.match(/请粘贴对方给你的完整邀请/g).length, 2, 'submitting the empty form asks for the invite');
+  pasteInvite(form, inviteJson());
+  assert.equal(fields.hidden, false, 'the recognized invite opens the fields to check');
+  assert.equal(form.control.value, 'https://control.example');
   form.submit.fire('click');
   await flush();
   assert.equal(log.calls.find(c => c.op === 'accept').input.bindingToken, TOKEN_TEXT);
+  assert.equal(fields.hidden, true, 'closed again once handed out');
+  // 粘贴区有内容、还没识别：提交时再解析一次，口令随这份邀请。
+  form.paste.value = inviteJson({ bindingToken: 'bt-unparsed' });
+  form.submit.fire('click');
+  await flush();
+  assert.deepEqual(log.calls.filter(c => c.op === 'accept').map(c => c.input.bindingToken), [TOKEN_TEXT, 'bt-unparsed']);
 });
 
 test('a new paste replaces the old token, and editing the control address or the auth key drops it', async t => {

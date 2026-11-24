@@ -968,6 +968,50 @@ test('after the request is signed, reads of the answer that keep failing end as 
   assert.equal(c.cancels(call.request).length, 1);
 });
 
+// 让调用方下一次发布请求（不含取消）出错：`published` 为真时先真的发出去，再报错（回执丢了）。
+function failPublish(c, error, { published }) {
+  const call = c.node.call;
+  c.node.call = async (ref, operation, input) => {
+    if (input.kind !== CALL || input.body.cancel === true || !Object.keys(input.body).length) return call(ref, operation, input);
+    c.node.call = call;
+    if (published) await call(ref, operation, input);
+    throw error;
+  };
+}
+
+test('a publish whose receipt times out after the holder already got the request: the call still hands back the holder\'s final answer', async t => {
+  const world = worldFake(), h = await holderOf(t, world), c = await callerOf(t, world);
+  const grant = await granted(h, c);
+  failPublish(c, fail('timeout', '发布回执超时', 'unknown'), { published: true });
+  const call = c.exec({ grant, input: { command: 'echo lost-receipt' } });
+  assert.equal((await call.promise).stdout, 'ran echo lost-receipt');
+  assert.deepEqual(h.answers(ROOT, call.request), ['running', 'completed']);
+  await until(async () => c.retracted(call.request) && !(await c.store.getOutgoing(call.request)), '拿到结局后撤回请求');
+});
+
+test('a publish that fails with unknown effects and never reaches the holder keeps the request: after 75 seconds it ends as peer_offline, unknown, with the request number', async t => {
+  const world = worldFake(), h = await holderOf(t, world), c = await callerOf(t, world);
+  const grant = await granted(h, c);
+  failPublish(c, fail('internal', '发布层出错', 'unknown'), { published: false });
+  const call = c.exec({ grant });
+  await until(() => c.answerReads() > 0, '照发出了读回答');
+  assert.ok(await pending(call.promise), '发布的错误不当结局');
+  assert.equal((await c.store.getOutgoing(call.request)).state, 'sent');
+  await world.timers.advance(ACK_MS);
+  await rejectsWith(call.promise, 'peer_offline', 'unknown', [LOST, call.request]);
+});
+
+test('a publish that says effects: none ends the call as not sent: nothing is waited for and the outgoing entry is finished', async t => {
+  const world = worldFake(), h = await holderOf(t, world), c = await callerOf(t, world);
+  const grant = await granted(h, c);
+  failPublish(c, fail('unavailable', '签名目录不可用', 'none'), { published: false });
+  const call = c.exec({ grant });
+  await rejectsWith(call.promise, 'unavailable', 'none', '签名目录不可用');
+  assert.equal(c.answerReads(), 0);
+  await until(async () => !(await c.store.getOutgoing(call.request)), '发出项了结后清掉');
+  assert.deepEqual([c.requests(), h.exec.runs], [[], 0]);
+});
+
 test('the 75-second receipt deadline wins over a first answer query that never returns: a cancel is sent and the call fails peer_offline, unknown', async t => {
   const world = worldFake(), h = await holderOf(t, world), c = await callerOf(t, world);
   const grant = await granted(h, c);

@@ -33,7 +33,7 @@ const CLOCK_STEP_MS = 60_000;
 const END_RETRY_MS = 1_000, END_RETRY_MAX_MS = 60_000;
 const TERMINAL = ['completed', 'failed', 'canceled'];
 // 状态文件里这几个坏了就停止准入；操作记录坏了只是记不下。
-const ADMISSION_FILES = ['grants.json', 'inflight.json', 'clock.json'];
+const ADMISSION_FILES = ['grants.json', 'inflight.json'];
 // 一观察到就让授权失效（写进授权表、不可逆）的原因，及记在授权行上的失效原因。
 const ENDING = { machine_changed: 'machine_changed', grantee_changed: 'grantee_changed', target_missing: 'target_missing', target_changed: 'target_missing' };
 
@@ -58,7 +58,8 @@ const EFFECTS = ['none', 'some', 'unknown'];
  * `now` 是墙钟（窗口、时刻），`monotonic` 是单调时钟（只用来算操作记录里的耗时）。
  */
 export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages, now = Date.now, monotonic = () => performance.now(), timers = globalThis, pollMs = POLL_MS } = {}) {
-  let stopped = false, corrupt = null, maxSeen = null, persistedClock = 0, timer = null, lastIdentity = null, lastMachine = null, lastFriends = null;
+  // clockLoaded：时钟基准已读到（或确认 clock.json 不存在）；读不出来之前不放新准入，每一轮再读。
+  let stopped = false, corrupt = null, maxSeen = null, persistedClock = 0, clockLoaded = false, timer = null, lastIdentity = null, lastMachine = null, lastFriends = null;
   let ticking = Promise.resolve(), queued = null, wantGrants = false;
   // 孤儿授权记录（见 readOrphans）：目录读全了没有、正在读的那一次。
   let orphansRead = false, orphanRead = null;
@@ -162,12 +163,20 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
     return row;
   }
 
-  // 本机时钟：比见过的最大时刻早 5 分钟以上就暂停准入；否则记下（至多每分钟落一次盘）。
+  // 读时钟基准：文件不存在是没有基准；别的读取错误（I/O 错误、内容不合法）只让准入暂停，留着没读到，每一轮再读。
+  async function loadClock() {
+    try { maxSeen = await store.readClock(); persistedClock = maxSeen ?? 0; clockLoaded = true; } catch { /* 下一轮再读 */ }
+  }
+
+  // 本机时钟：基准还没读到、或比见过的最大时刻早 5 分钟以上就暂停准入；否则记下。见过的最大时刻比已落盘的大出一分钟就落盘，
+  // 写成了才算落过。
   async function clockOk() {
+    if (!clockLoaded) await loadClock();
+    if (!clockLoaded) return false;
     const at = now();
     if (clockWentBack(at, maxSeen)) return false;
     if (maxSeen === null || at > maxSeen) maxSeen = at;
-    if (at - persistedClock >= CLOCK_STEP_MS) { persistedClock = at; await store.writeClock(at); }
+    if (maxSeen - persistedClock >= CLOCK_STEP_MS) { const high = maxSeen; await store.writeClock(high); persistedClock = high; }
     return true;
   }
 
@@ -660,7 +669,7 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
     try { grants = await store.listGrants(); revoking = await submittedGrants(); } catch (e) { note(e); if (!isCorrupt(e)) throw e; }
     const rows = [];
     for (const row of grants) rows.push(describe(row, me, await targetOf(row.target).catch(() => null), revoking));
-    return { certState: me.certState, admitting: !corrupt && !clockWentBack(now(), maxSeen), corrupt, grants: rows };
+    return { certState: me.certState, admitting: !corrupt && clockLoaded && !clockWentBack(now(), maxSeen), corrupt, grants: rows };
   }
 
   function ledger({ limit = 50, friend } = {}) {
@@ -678,7 +687,7 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
     // 测试与诊断用：此刻待落盘的失效有几笔。
     pendingEnds: () => pendingEnds.size,
     async start() {
-      try { maxSeen = await store.readClock(); persistedClock = maxSeen ?? 0; } catch (e) { note(e); }
+      await loadClock();
       if (stopped) return;
       ({ machine: lastMachine, listed: lastFriends } = await identity());
       if (onAccord) subscriptions.push(onAccord(onAccordChange));
