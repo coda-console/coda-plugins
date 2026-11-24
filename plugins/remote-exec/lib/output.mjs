@@ -66,7 +66,7 @@ async function collector(file) {
 // 一次执行的两路输出，临时文件（stdout、stderr）在 `root`（默认系统临时目录）下这次新建的私有目录里：
 // 目录名带调用编号再加随机串，原子创建、权限 0700，所以不会碰到别人预先放好的路径；清理只删这个目录。
 // `finish()` 回 { stdout, stderr, truncated, outputDir }：两路都没截短时整个目录删掉，`outputDir` 是 null；
-// 有一路截短，目录与里面两个文件都留着。
+// 有一路截短，目录与里面两个文件都留着。`discard()` 不要这份输出了，整个目录删掉。
 export async function openOutputs(id, root = tmpdir()) {
   const dir = await mkdtemp(join(root, `coda-remote-exec-${String(id).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 40)}-`));
   let stdout, stderr;
@@ -84,6 +84,11 @@ export async function openOutputs(id, root = tmpdir()) {
       const truncated = out.truncated || err.truncated;
       if (!truncated) await rm(dir, { recursive: true, force: true });
       return { stdout: out.text, stderr: err.text, truncated, outputDir: truncated ? dir : null };
+    },
+    // 输出没人要了（执行失败或被取消）：关掉文件，整个目录删掉，不论有没有截短。
+    async discard() {
+      await Promise.allSettled([stdout.finish(), stderr.finish()]);
+      await rm(dir, { recursive: true, force: true });
     },
   };
 }

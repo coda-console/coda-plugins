@@ -9,6 +9,7 @@ import { definitionProblem, ownedProtocolsProblem } from '@coda-console/protocol
 import { manifestProblem } from '@coda-console/protocol/validate';
 import { createMockCoda, TEST_OWNER } from '../../helpers/mock-coda.mjs';
 import { pluginDir } from '../plugin.mjs';
+import { waitFor } from './support.mjs';
 import { activate, deactivate } from '../../../plugins/remote-exec/main.mjs';
 import { KEY, LOCAL_MACHINE, MACHINE, SETTING } from '../../../plugins/remote-exec/lib/definitions.mjs';
 import { admit, decide } from '../../../plugins/remote-exec/lib/gate.mjs';
@@ -418,7 +419,7 @@ async function leader(script) {
 }
 
 test('a real process group goes with its leader: TERM reaches the background children too', async () => {
-  const { child, exited, pids } = await leader('sleep 30 & echo $!; sleep 30');
+  const { child, exited, pids } = await leader('sleep 30 & echo $!; wait');
   assert.ok(pids.every(pid => !gone(pid)));
   assert.equal(await terminate(child.pid, exited), false);
   assert.ok(await allGone(pids));
@@ -436,4 +437,29 @@ test('a real group that ignores TERM is killed after the grace period', async ()
   const { child, exited, pids } = await leader("trap '' TERM; sleep 30 & echo $!; while :; do sleep 1; done");
   assert.equal(await terminate(child.pid, exited, { grace: 300 }), true);
   assert.ok(await allGone(pids));
+});
+
+// ——— 登记的处理函数 ———
+
+test('the operation and both streams are registered, read the switch as it is now, and are taken away with the plugin', async t => {
+  const state = scratch(t), file = join(state, 'hello.txt'), record = { kind: MACHINE, id: 'r-1' };
+  writeFileSync(file, 'hello');
+  const host = createMockCoda({ plugin: { id: 'remote-exec', protocols: manifest.contributes.protocols, state }, settings: {} });
+  await activate(host.coda);
+  t.after(() => { deactivate(); host.close(); });
+  const get = () => host.stream(record, 'pull', new Request(`http://stream/?path=${encodeURIComponent(file)}`));
+  await assert.rejects(host.call(record, 'exec', { command: 'echo' }), { code: 'disabled', effects: 'none' });
+  await assert.rejects(get(), { code: 'disabled', effects: 'none' });
+  // 测试宿主只从查询串取参数，写的流收不到 path：它先于处理函数拒绝，能证明的只是 push 已登记（没登记是 not_found）。
+  await assert.rejects(host.stream(record, 'push', new Request('http://stream/', { method: 'POST', body: 'x' })), { code: 'invalid_input' });
+  await host.setSettings({ [SETTING]: true });
+  assert.equal(await (await get()).text(), 'hello');
+  await host.setSettings({ [SETTING]: false });
+  await assert.rejects(get(), { code: 'disabled' });
+  const read = () => { try { return readFileSync(join(state, AUDIT_FILE), 'utf8').trim().split('\n').map(line => JSON.parse(line)); } catch { return []; } };
+  const lines = await waitFor(() => read().length === 4 && read(), '四行操作记录');
+  assert.deepEqual(lines.map(line => [line.operation, line.error ?? 'ok']), [['exec', 'disabled'], ['pull', 'disabled'], ['pull', 'ok'], ['pull', 'disabled']]);
+  deactivate();
+  await assert.rejects(host.call(record, 'exec', { command: 'echo' }), { code: 'not_found' });
+  await assert.rejects(get(), { code: 'not_found' });
 });

@@ -1,0 +1,139 @@
+// 拉取（读的流）与推送（写的流）。错误都在第一个字节之前以带码的错误抛，读的 effects 一律 none。
+import { randomBytes } from 'node:crypto';
+import { mkdir, open, realpath, rename, rm, stat } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { writeAll } from './output.mjs';
+import { absolute, begin, errorCode, fsError } from './operation.mjs';
+
+const octet = length => ({ status: 200, headers: { 'content-type': 'application/octet-stream', 'content-length': String(length) } });
+
+// 打开文件，目录不行；回 `{ handle, size }`。
+async function openFile(coda, path) {
+  let handle;
+  try { handle = await open(path, 'r'); } catch (error) { throw fsError(coda, error, path); }
+  try {
+    const info = await handle.stat();
+    if (info.isDirectory()) throw coda.error('is_a_directory', `${path}：是目录，不能当文件读`, { effects: 'none' });
+    return { handle, size: info.size };
+  } catch (error) {
+    await handle.close();
+    throw fsError(coda, error, path);
+  }
+}
+
+// `ctx.input`：{ path, offset?, length? }（字符串）。
+export async function pull(env, request, ctx) {
+  const { coda } = env, { path, offset, length } = ctx.input;
+  const op = begin(env, 'pull', ctx, { path, offset, length });
+  return op.guard({ path, offset, length }, async () => {
+    absolute(coda, path);
+    const { handle, size } = await openFile(coda, path);
+    const start = Math.min(Number(offset ?? 0), size), end = length === undefined ? size : Math.min(size, start + Number(length));
+    if (end <= start) {
+      await handle.close();
+      await op.record({ result: { bytes: 0 } });
+      return new Response(null, octet(0));
+    }
+    const expected = end - start, file = handle.createReadStream({ start, end: end - 1 }), chunks = file[Symbol.asyncIterator]();
+    let sent = 0, recorded = false, controller;
+    const record = fields => { if (!recorded) { recorded = true; return op.record(fields); } };
+    // 调用被中止：文件关掉，响应体当场以取消的原因出错（预读的块随之丢掉），并记一行，不等调用方再读。
+    const onAbort = () => {
+      file.destroy();
+      controller?.error(ctx.signal.reason);
+      record({ error: errorCode(ctx.signal.reason) });
+    };
+    ctx.signal.addEventListener('abort', onAbort, { once: true });
+    // 下一块；读完回 null。读失败、读到的比声明的短（文件在读的过程中被截短）都是错误，不当成功。
+    const next = async () => {
+      try {
+        const { value, done } = await chunks.next();
+        if (!done) { sent += value.length; return value; }
+      } catch (error) {
+        throw ctx.signal.aborted ? ctx.signal.reason : fsError(coda, error, path);
+      }
+      if (ctx.signal.aborted) throw ctx.signal.reason;
+      if (sent < expected) throw coda.error('short_read', `${path}：读到 ${sent} 字节就结束了，应有 ${expected}（文件被截短？）`, { effects: 'none' });
+      return null;
+    };
+    // 第一块在回答之前读出来：这之前的失败还能按错误码答复。
+    let pending = await next();
+    const body = new ReadableStream({
+      start(c) { controller = c; },
+      async pull(controller) {
+        try {
+          const chunk = pending ?? await next();
+          pending = null;
+          if (chunk === null) { controller.close(); await record({ result: { bytes: sent } }); } else controller.enqueue(chunk);
+        } catch (error) {
+          controller.error(error);
+          await record({ error: errorCode(error) });
+        }
+      },
+      // 读的人走了：关掉文件。
+      async cancel() {
+        file.destroy();
+        await record({ error: errorCode(ctx.signal.aborted ? ctx.signal.reason : { code: 'interrupted' }) });
+      },
+    }, { highWaterMark: 0 });
+    if (ctx.signal.aborted) onAbort();
+    return new Response(body, octet(expected));
+  });
+}
+
+// 推送里能解析出符号链接目标的写到目标；还不存在的路径就是它自己。
+async function resolveTarget(path) {
+  try { return await realpath(path); } catch (error) {
+    if (error.code === 'ENOENT') return path;
+    throw error;
+  }
+}
+
+// `ctx.input`：{ path }；请求体是文件的全部字节。
+export async function push(env, request, ctx) {
+  const { coda } = env, { path } = ctx.input;
+  const op = begin(env, 'push', ctx, { path });
+  const size = await op.guard({ path }, async () => {
+    absolute(coda, path);
+    let temp = null, handle = null, reader, written = 0;
+    // 等请求体的时候也要响应取消：一个监听去取消 reader，等着的那次读随即结束，之后照常走收尾。
+    const onAbort = () => reader?.cancel(ctx.signal.reason).catch(() => {});
+    ctx.signal.addEventListener('abort', onAbort, { once: true });
+    try {
+      ctx.signal.throwIfAborted();
+      const target = await resolveTarget(path);
+      const existing = await stat(target).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+      if (existing?.isDirectory()) throw coda.error('is_a_directory', `${path}：是目录，不能当文件写`, { effects: 'none' });
+      await mkdir(dirname(target), { recursive: true });
+      const candidate = join(dirname(target), `.coda-push-${randomBytes(8).toString('hex')}`);
+      handle = await open(candidate, 'wx', 0o666);
+      temp = candidate;
+      if (existing) await handle.chmod(existing.mode & 0o7777);
+      reader = request.body?.getReader();
+      ctx.signal.throwIfAborted();   // 取消若在拿到 reader 之前到，监听没有东西可取消
+      while (reader) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        await writeAll(handle, value);
+        written += value.length;
+      }
+      ctx.signal.throwIfAborted();
+      await handle.sync();
+      await handle.close();
+      handle = null;
+      ctx.signal.throwIfAborted();
+      await rename(temp, target);
+      return written;
+    } catch (error) {
+      reader?.cancel().catch(() => {});
+      await handle?.close().catch(() => {});
+      if (temp) await rm(temp, { force: true });
+      if (ctx.signal.aborted) throw ctx.signal.reason;
+      throw fsError(coda, error, path);
+    } finally {
+      ctx.signal.removeEventListener('abort', onAbort);
+    }
+  });
+  await op.record({ result: { bytes: size } });
+  return Response.json({ path, size });
+}

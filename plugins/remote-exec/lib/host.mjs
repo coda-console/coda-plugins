@@ -18,5 +18,8 @@ export function osName({ platform = process.platform, read = file => readFileSyn
   return `${type()} ${release()}`;
 }
 
+// 执行不给 cwd 时的目录，也是记录里的默认目录。
+export const defaultCwd = () => homedir();
+
 // `name`：本机 Coda 机器记录里的名字，没有就用主机名。
-export const hostSpec = name => ({ name: name || hostname(), os: osName(), user: userInfo().username, cwd: homedir() });
+export const hostSpec = name => ({ name: name || hostname(), os: osName(), user: userInfo().username, cwd: defaultCwd() });
