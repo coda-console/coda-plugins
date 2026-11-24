@@ -393,9 +393,10 @@ export function createCaller(coda, { store, signRpc, retractRpc, onAccord, pages
     list,
     async start() {
       // 处理函数先同步登记，宿主在 activate 之后交来的调用不会落空；它们等第一遍发现做完再看。
-      handles.push(coda.handle(PROTOCOL, 'exec', { run, resume }));
-      const streams = Promise.all(['pull', 'push'].map(name => coda.stream(PROTOCOL, name, () => { throw fail('unsupported', UNSUPPORTED); })));
+      // 协议不在（没装远程执行插件）时登记会失败：也要结束就绪等待，别让读代理记录的一直等。
       try {
+        handles.push(coda.handle(PROTOCOL, 'exec', { run, resume }));
+        const streams = Promise.all(['pull', 'push'].map(name => coda.stream(PROTOCOL, name, () => { throw fail('unsupported', UNSUPPORTED); })));
         for (const handle of await streams) { if (stopped) handle?.dispose?.(); else handles.push(handle); }
         if (onAccord) subscriptions.push(onAccord(onAccordChange));
         if (stopped) return;

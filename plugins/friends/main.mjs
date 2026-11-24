@@ -17,7 +17,7 @@ import { createRpcStore } from './lib/rpc-store.mjs';
 
 const HOLDER_ACTIONS = ['grants.list', 'grants.grant', 'grants.revoke', 'ledger.list'];
 const TARGET_KIND = 'remote-exec/machine@1';
-let dir = null, gateway = null, holder = null, caller = null;
+let dir = null, gateway = null, holder = null, caller = null, callerStart = null, callerDown = null;
 const handles = [];
 
 export async function activate(coda) {
@@ -37,8 +37,10 @@ export async function activate(coda) {
       if (!holder) throw new Error('这台机器没有插件状态目录，好友授权存不下');
       return holder.self[name](input);
     }])),
-    'proxies.list': input => {
+    'proxies.list': async input => {
       if (!caller) throw new Error('这台机器没有插件状态目录，好友授给本机的授权读不出来');
+      await callerStart;
+      if (callerDown) throw new Error(callerDown);
       return caller.list(input);
     },
     'grants.targets': async () => (await coda.list(TARGET_KIND, { scope: 'local' })).filter(entry => entry.local === true && entry.plugin === 'remote-exec')
@@ -66,7 +68,11 @@ export async function activate(coda) {
     } catch { holder = null; }
     try {
       caller = createCaller(coda, { ...rpc, dir });
-      caller.start().catch(() => {});
+      callerStart = caller.start().catch(async e => {
+        // 只有协议确实不在（读它的记录报 not_found）才说没装；别的启动失败按实际原因报。
+        const absent = await coda.list(TARGET_KIND, { scope: 'local' }).then(() => false, error => error?.code === 'not_found');
+        callerDown = absent ? '不可用：这台没装远程执行插件，好友授给本机的远程执行用不了' : `好友授给本机的远程执行没能启动：${e?.message ?? e}`;
+      });
     } catch { caller = null; }
   }
   for (const [name, fn] of Object.entries(shared)) handles.push(coda.self.handle(name, input => fn(input ?? {})));
@@ -75,6 +81,7 @@ export async function activate(coda) {
 export function deactivate() {
   caller?.stop();
   caller = null;
+  callerStart = callerDown = null;
   holder?.stop();
   holder = null;
   gateway?.stop();

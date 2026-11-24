@@ -10,7 +10,7 @@ const entry = { type: 'MODIFIED', entry: { spec: { author: AUTHOR }, status: { f
 // 严格多机的 window.coda：不指明 machine 的 postMessage 直接拒绝；记下每次发往哪台。
 // 「共享」一节读写持有方的消息默认都答空；`share` 按消息类型换成自己的答复（返回值就是 value，抛错是明确的拒绝，永不返回是没有回应）。
 const SHARE = { 'grants.list': () => ({ grants: [] }), 'proxies.list': () => [], 'ledger.list': () => [], 'grants.targets': () => [] };
-function strictCoda(page, { notes = { ok: true, value: {} }, silent, watch, call, records, machines = [A], share = {}, inviteFriend, copy } = {}) {
+function strictCoda(page, { notes = { ok: true, value: {} }, silent, sendFail, watch, call, records, machines = [A], share = {}, inviteFriend, copy } = {}) {
   const log = { sent: [], calls: [], queries: [], watches: [], on: {}, copied: [], states: [], invites: [] };
   const coda = {
     machine: A, machines, getState: () => ({}), setState(state) { log.states.push(state); }, on(type, fn) { log.on[type] = fn; },
@@ -19,6 +19,7 @@ function strictCoda(page, { notes = { ok: true, value: {} }, silent, watch, call
     toolbar: async () => {}, header: async () => {},
     async postMessage(msg, options) {
       if (!options?.machine) throw new Error('这一页有几台机器，postMessage 须指明 machine');
+      if (sendFail?.(msg)) throw new Error('桥不可用');
       log.sent.push({ msg, machine: options.machine });
       if (msg.type === 'notes.list' && options.machine !== silent) setImmediate(() => page.reply({ type: 'reply', rid: msg.rid, ...notes }, { id: options.machine }));
       const answer = { ...SHARE, ...share }[msg.type];
@@ -494,14 +495,16 @@ test('a new paste replaces the old token, and editing the control address or the
   await flush();
   assert.deepEqual(accepted(), ['bt-new']);
   assert.ok(!everywhere(page, log, form).includes('bt-edit-control') && !everywhere(page, log, form).includes('bt-edit-key'));
-  // 改 peerNode、scope 不算换了邀请，口令照旧。
+  // 改 peerNode：口令只该交给邀请指定的那一台，口令与粘贴原文一起丢掉，新节点拿不到旧口令。
   pasteInvite(form, inviteJson({ bindingToken: 'bt-same' }));
   form.peerNode.value = 'node-other';
   form.peerNode.fire('input');
+  assert.equal(form.paste.value, '');
   form.submit.fire('click');
   await flush();
-  assert.deepEqual(accepted(), ['bt-new', 'bt-same']);
-  assert.equal(log.calls.filter(c => c.op === 'accept')[1].input.peerNode, 'node-other');
+  assert.deepEqual(accepted(), ['bt-new'], 'nothing was handed out');
+  assert.ok(invite.textContent.includes('邀请缺少 bindingToken（一次性口令），请让对方重新生成邀请'));
+  assert.ok(!everywhere(page, log, form).includes('bt-same'));
 });
 
 test('editing the control address or the auth key drops the pasted text and the token with it: clearing both fields cannot bring the old invite back', async t => {
@@ -1123,6 +1126,111 @@ test('a late refusal ends a granting that had no answer, with the reason on its 
   await flush();
   assert.deepEqual(rows().map(row => [badgeOf(page, row), row.textContent.includes('这位不是')]), [['可用', false]]);
   assert.ok(!detail.textContent.includes('未授予'));
+});
+
+test('a grant whose message could not be sent is a plain failure: the row rolls back with the reason, the target is selectable again, and the retry goes out', async t => {
+  const timers = stubTimers(t);
+  let broken = true;
+  const { page, log, detail, picker } = await openShare(t, { sendFail: msg => broken && msg.type === 'grants.grant', share: { 'grants.targets': () => TARGETS, 'grants.grant': () => grantRow('g5', { target: { kind: GRANT_KIND, id: 'rx-3', name: '车库的 Linux' } }) } });
+  const choose = async () => {
+    page.button('授予…').fire('click');
+    await flush();
+    chooseTarget(page, picker, '车库的 Linux').fire('click');
+    await flush();
+  };
+  await choose();
+  const rows = () => listRows(page, detail);
+  assert.deepEqual(rows().map(row => badgeOf(page, row)), ['未授予']);
+  assert.ok(rows()[0].textContent.includes('发送失败：桥不可用'));
+  assert.ok(!timers.has(3000), 'nothing to recover: it did not reach the holder');
+  page.button('授予…').fire('click');
+  await flush();
+  assert.ok(!('disabled' in chooseTarget(page, picker, '车库的 Linux').attrs), 'the target can be chosen again');
+  page.dispatch('keydown', { key: 'Escape' });
+  broken = false;
+  await choose();
+  assert.equal(sentOf(log, 'grants.grant').length, 1, 'only the retry reached the holder');
+  assert.deepEqual(rows().map(row => badgeOf(page, row)), ['可用']);
+});
+
+test('a grant with no answer is never rolled back by lists that do not show it: it stays granting, its target stays taken, and no second grant is sent until the list shows it', async t => {
+  const timers = stubTimers(t);
+  let listed = [];
+  const { page, log, detail, picker } = await openShare(t, { share: { 'grants.targets': () => TARGETS, 'grants.list': () => ({ grants: listed }), 'grants.grant': () => deferred().promise } });
+  page.button('授予…').fire('click');
+  await flush();
+  chooseTarget(page, picker, '车库的 Linux').fire('click');
+  await flush();
+  timers.fire(10_000);
+  await flush();
+  const rows = () => listRows(page, detail);
+  for (let round = 0; round < 6; round++) {
+    timers.fire(3000);
+    await flush();
+  }
+  assert.deepEqual(rows().map(row => badgeOf(page, row)), ['授予中']);
+  assert.ok(timers.has(3000), 'it keeps looking');
+  page.button('授予…').fire('click');
+  await flush();
+  const taken = chooseTarget(page, picker, '车库的 Linux');
+  assert.ok('disabled' in taken.attrs && taken.textContent.includes('已授给 TA'));
+  taken.fire('click');
+  await flush();
+  assert.equal(sentOf(log, 'grants.grant').length, 1, 'no second grant while the first has no outcome');
+  // 列表里出现它，才算授出。
+  listed = [grantRow('g8', { target: { kind: GRANT_KIND, id: 'rx-3', name: '车库的 Linux' } })];
+  timers.fire(3000);
+  await flush();
+  assert.deepEqual(rows().map(row => badgeOf(page, row)), ['可用']);
+});
+
+test('a revoke whose message could not be sent is a plain failure: the row is usable again with the reason, and is not retried in the background', async t => {
+  const timers = stubTimers(t);
+  let broken = true;
+  const { page, log, detail } = await openShare(t, { sendFail: msg => broken && msg.type === 'grants.revoke', share: { 'grants.list': () => ({ grants: [grantRow('g1')] }), 'grants.revoke': () => ({ ...grantRow('g1'), status: 'revoking', revokedAt: 5 }) } });
+  const rows = () => listRows(page, detail);
+  kebabOf(page, rows()[0]).fire('click');
+  const item = () => page.all(n => n.tag === 'button' && n.attrs.role === 'menuitem', rows()[0])[0];
+  item().fire('click');
+  await flush();
+  assert.equal(badgeOf(page, rows()[0]), '可用');
+  assert.ok(rows()[0].textContent.includes('发送失败：桥不可用'));
+  assert.ok(!('disabled' in kebabOf(page, rows()[0]).attrs));
+  assert.ok(!timers.has(3000));
+  broken = false;
+  kebabOf(page, rows()[0]).fire('click');
+  item().fire('click');
+  await flush();
+  assert.equal(sentOf(log, 'grants.revoke').length, 1);
+  assert.equal(badgeOf(page, rows()[0]), '撤销中');
+});
+
+test('a revoke with no outcome is resent only a few times while the list keeps showing the grant usable; then it stops, says it is unconfirmed, and can be revoked again by hand', async t => {
+  const timers = stubTimers(t);
+  let revoked = 0;
+  const { page, detail } = await openShare(t, { share: { 'grants.list': () => ({ grants: [grantRow('g1')] }), 'grants.revoke': () => { revoked++; throw new Error('写盘时出错'); } } });
+  const rows = () => listRows(page, detail);
+  const revoke = async () => {
+    kebabOf(page, rows()[0]).fire('click');
+    page.all(n => n.tag === 'button' && n.attrs.role === 'menuitem', rows()[0])[0].fire('click');
+    await flush();
+  };
+  await revoke();
+  assert.equal(badgeOf(page, rows()[0]), '撤销中');
+  for (let round = 0; round < 3; round++) {
+    timers.fire(3000);
+    await flush();
+  }
+  assert.equal(revoked, 3, 'the cap stops the automatic resending');
+  assert.equal(badgeOf(page, rows()[0]), '可用');
+  assert.ok(rows()[0].textContent.includes('撤销没有确认'));
+  assert.ok(!('disabled' in kebabOf(page, rows()[0]).attrs), 'it can be revoked by hand');
+  assert.ok(!timers.has(3000), 'nothing left to recover');
+  // 手动再撤：重新开始计数。
+  await revoke();
+  assert.equal(revoked, 4);
+  assert.equal(badgeOf(page, rows()[0]), '撤销中');
+  assert.ok(timers.has(3000), 'the retry is followed again');
 });
 
 test('a revoke whose error does not say nothing was written stays revoking and is checked against the holder, never rolled back to usable', async t => {

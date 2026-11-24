@@ -17,6 +17,8 @@ const MODES = [['photo', '照片'], ['identicon', '几何纹'], ['emoji', 'Emoji
 const EMOJIS = ['😀', '😎', '🦊', '🐱', '🐼', '🌿', '☕', '🎧', '🚀', '⚡', '🌙', '✨'];
 const MACHINE_KIND = 'remote-exec/machine@1';
 const RECOVER_MS = 3000;
+// 结果不明的撤销：连续读到这么多遍有效列表、授权仍可用，就不再自动重发。
+const REVOKE_RETRIES = 3;
 const UPLOAD_ERRORS = { 404: '当前客户端还不支持上传头像，请升级 Coda 后再试', 413: '图片太大（超过 5 MiB），请换一张' };
 
 // 视图里的每台电脑（成员在页面生命周期内不变）各存一份数据；读不到的（unreachable）也在，只是不发请求。
@@ -46,14 +48,14 @@ function ask(m, type, input = {}, late) {
       reject(new Error('模块没有回应'));
     }, 10_000);
     pendingReplies.set(rid, { machine: m.id, resolve: settle(resolve), reject: settle(reject) });
-    Promise.resolve().then(() => coda.postMessage({ type, rid, ...input }, via(m))).catch(error => pendingReplies.get(rid)?.reject(new Error(`发送失败：${error?.message ?? error}`)));
+    Promise.resolve().then(() => coda.postMessage({ type, rid, ...input }, via(m))).catch(error => pendingReplies.get(rid)?.reject(Object.assign(new Error(`发送失败：${error?.message ?? error}`), { refused: true })));
   });
 }
 addEventListener('message', event => {
   const { type, rid, ok, value, error, effects } = event.data ?? {};
   const wait = type === 'reply' ? pendingReplies.get(rid) : null;
   if (!wait || (event.machine?.id && event.machine.id !== wait.machine)) return;
-  // refused：模块明确回了错误、且说明什么也没写（effects 为 none）；别的错误、超时、发不出去都是结果不明。
+  // refused：确认什么也没写——模块明确回了错误且 effects 为 none，或消息根本没发出去（postMessage 抛错）；别的错误、超时都是结果不明。
   const failure = Object.assign(new Error(error), { refused: effects === 'none' });
   if (wait.late) { pendingReplies.delete(rid); wait.late(ok ? { value } : { failure }); } else if (ok) wait.resolve(value); else wait.reject(failure);
 });
@@ -369,7 +371,7 @@ const invite = {
   authKey: h('input', { type: 'password', autocomplete: 'off', spellcheck: 'false', placeholder: '入网码，提交后立即清空', oninput: dropHidden }),
   linkId: h('input', { type: 'text', autocomplete: 'off', placeholder: '留空自动生成' }),
   scope: h('input', { type: 'text', autocomplete: 'off', placeholder: '留空用本机空间' }),
-  peerNode: h('input', { type: 'text', autocomplete: 'off', placeholder: '可选' }),
+  peerNode: h('input', { type: 'text', autocomplete: 'off', placeholder: '可选', oninput: dropHidden }),
   message: h('p', { class: 'hint' }),
   button: h('button', { class: 'btn', type: 'button', onclick: submitInvite }, '接受邀请'),
   hidden: {},
@@ -442,7 +444,7 @@ invite.dialog.body.append(
       h('label', { class: 'field' }, h('span', { class: 'lbl' }, 'peerNode'), invite.peerNode))),
     h('div', { class: 'line' }, invite.button), invite.message)));
 // hostname、peerPort、bindingToken（一次性口令）只随识别出的那份邀请，不进输入框：手改入网地址或入网码就是另一份邀请了，
-// 连粘贴区的原文一起丢掉，免得再从原文里解析出旧邀请；改 linkId、scope、peerNode 不算。
+// 连粘贴区的原文一起丢掉，免得再从原文里解析出旧邀请；口令只交给邀请指定的那台，改 peerNode 同理；改 linkId、scope 不算。
 function dropHidden() { invite.hidden = {}; invite.paste.value = ''; }
 function parsePaste() {
   invite.hidden = {};
@@ -680,7 +682,14 @@ function recover(m) {
   const need = sh.pending.some(p => p.unknown) || [...sh.revoking.values()].some(r => r.unknown) || (sh.grants ?? []).some(g => g.status === 'revoking');
   if (!need || sh.timer) return;
   sh.timer = setTimeout(async () => {
-    if (await readGrants(m, true)) for (const [grant, one] of sh.revoking) if (one.unknown) await sendRevoke(m, grant);
+    if (await readGrants(m, true)) {
+      for (const [grant, one] of sh.revoking) {
+        if (!one.unknown) continue;
+        // 授权仍可用的有效列表已连续读到上限遍：不再自动重发，写明没确认，这一行回到可手动再撤。
+        if ((one.reads = (one.reads ?? 0) + 1) >= REVOKE_RETRIES) sh.revoking.set(grant, { error: '撤销没有确认，可再撤一次' });
+        else await sendRevoke(m, grant);
+      }
+    }
     sh.timer = null;
     draw();
     recover(m);
@@ -688,10 +697,10 @@ function recover(m) {
   sh.timer?.unref?.();
 }
 async function sendRevoke(m, grant) {
-  const sh = shareOf(m);
+  const sh = shareOf(m), reads = sh.revoking.get(grant)?.reads;
   beginWrite(sh);
   try { mergeGrant(sh, await ask(m, 'grants.revoke', { grant })); sh.revoking.delete(grant); }
-  catch (e) { sh.revoking.set(grant, e.refused ? { error: e.message } : { unknown: true }); }
+  catch (e) { sh.revoking.set(grant, e.refused ? { error: e.message } : { unknown: true, reads }); }
   endWrite(m);
 }
 async function revokeGrant(m, g) {

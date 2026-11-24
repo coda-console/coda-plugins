@@ -107,3 +107,41 @@ test('without a state directory notes fail plainly, and deactivate disposes what
     'proxies.list', 'stream friends/social@1/dm', 'stream friends/social@1/feed', 'watch']);
   deactivate();
 });
+
+test('without the remote-exec protocol the caller still finishes starting: proxies.list answers at once, saying remote execution is unavailable, and the rest keeps working', async t => {
+  const h = await host(t);
+  t.after(deactivate);
+  const handle = h.coda.handle;
+  h.coda.handle = (kind, operation, ...rest) => {
+    if (kind === 'remote-exec/machine@1') throw new Error('没有这个协议');
+    return handle(kind, operation, ...rest);
+  };
+  h.coda.list = async kind => { throw Object.assign(new Error(`没有协议：${kind}`), { code: 'not_found' }); };
+  await activate(h.coda);
+  const page = h.open();
+  page.tell({ type: 'proxies.list', rid: 'p', friend: `ed25519:${'1'.repeat(64)}` });
+  page.tell({ type: 'notes.list', rid: 'n' });
+  await settled();
+  const reply = rid => page.got.find(m => m.rid === rid);
+  assert.equal(reply('p')?.ok, false);
+  assert.match(reply('p').error, /这台没装远程执行插件/);
+  assert.equal(reply('n')?.ok, true);
+  assert.equal((await h.self.get('grants.list')({})).corrupt, null, 'the holder is not affected');
+});
+
+test('a caller that fails to start with the protocol present is reported by its own reason, never as the plugin not being installed', async t => {
+  const h = await host(t);
+  t.after(deactivate);
+  const handle = h.coda.handle;
+  h.coda.handle = (kind, operation, ...rest) => {
+    if (kind === 'remote-exec/machine@1') throw new Error('磁盘满了');
+    return handle(kind, operation, ...rest);
+  };
+  await activate(h.coda);
+  const page = h.open();
+  page.tell({ type: 'proxies.list', rid: 'p', friend: `ed25519:${'1'.repeat(64)}` });
+  await settled();
+  assert.equal(page.got[0].ok, false);
+  assert.match(page.got[0].error, /磁盘满了/);
+  assert.doesNotMatch(page.got[0].error, /没装/);
+});
