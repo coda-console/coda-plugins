@@ -31,6 +31,19 @@ const isText = value => typeof value === 'string';
 
 export const isAuthor = value => isText(value) && AUTHOR.test(value);
 
+/**
+ * 本机此刻替三种记录署名的作者（`coda/accord@1` 的 local 记录）：`{ author, person, canSign }`。
+ * `status.certificate` 为 null 是没绑个人身份的后端，作者是机器钥匙，没有有效期，能签；是对象是个人作者（根），证书 `active` 才能签；
+ * 其余（作者不是合法公钥、没写证书这个键）不能签。社交功能照旧看 friends.mjs 的 certStateOf。
+ */
+export function signerOf(accord) {
+  const author = isAuthor(accord?.spec?.author) ? accord.spec.author : null, status = accord?.status;
+  const certificate = isPlain(status) && Object.hasOwn(status, 'certificate') ? status.certificate : undefined;
+  if (author && certificate === null) return { author, person: false, canSign: true };
+  if (author && isPlain(certificate)) return { author, person: true, canSign: certificate.active === true };
+  return { author, person: false, canSign: false };
+}
+
 // ---- 派生 ----
 
 /** 请求号：`c` + sha256("friends/rpc-call\0" + 调用内核的调用号) 的前 32 位十六进制。 */
@@ -149,7 +162,7 @@ export const senderField = kind => VERIFY[kind]?.sender;
 
 /**
  * 校验 Accord `records` 的一项 `{ author, kind, id, version, body, audience }`（查询须带 `includeAudience: true`）。
- * `self` 是接收方（本机此刻的根），`peer` 是期望的对方（发出方）。通过给 `{ ok: true, body }`，否则 `{ ok: false, code }`：
+ * `self` 是接收方（本机此刻的作者），`peer` 是期望的对方（发出方）。通过给 `{ ok: true, body }`，否则 `{ ok: false, code }`：
  * `bad_kind`、`bad_audience`（缺失、public、多人、方向不对）、`bad_author`（已验作者不是期望的对方，或不是正文写的发出方）、
  * `bad_body`（多出未知字段、缺字段、类型不对）、`bad_version`（v 不是 1）、`bad_recipient`（正文写的接收方不是本机）、
  * `bad_id`（记录 id 与正文对不上）、`too_large`。

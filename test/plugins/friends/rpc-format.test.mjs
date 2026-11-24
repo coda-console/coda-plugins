@@ -7,7 +7,7 @@ import { pointProblem } from '@coda-console/protocol/validate';
 import {
   CLOCK_BACK_MS, FUTURE_SKEW_MS, KIND_ANSWER, KIND_CALL, KIND_GRANT, MAX_ANSWER_BYTES, MAX_CALL_BYTES, MAX_WINDOW_MS, RPC_KINDS, RPC_PREFIX,
   answerId, answerRecord, callRecord, cancelRecord, canonicalJson, clockWentBack, fitAnswer, grantRecord, idempotencyKey, isRpcKind, rebuildExecInput,
-  replayWindow, requestDigest, requestId, verifyAnswer, verifyCall, verifyGrant,
+  replayWindow, requestDigest, requestId, signerOf, verifyAnswer, verifyCall, verifyGrant,
 } from '../../../plugins/friends/lib/rpc-format.mjs';
 
 const HOLDER = `ed25519:${'a'.repeat(64)}`, CALLER = `ed25519:${'b'.repeat(64)}`, OTHER = `ed25519:${'c'.repeat(64)}`;
@@ -328,4 +328,17 @@ test('an answer that cannot be cut to fit is refused', () => {
   // 收到的整条超过 60 KiB 也拒。
   const built = answer(), body = { ...built.body, error: { code: 'x', message: 'm'.repeat(70_000), effects: 'none' } };
   assert.equal(verifyAnswer(received({ ...built, body }, HOLDER), { self: CALLER, peer: HOLDER }).code, 'too_large');
+});
+
+test('the signer: with no personal identity the machine key signs with no expiry; a personal author signs only with an active certificate; anything else cannot sign', () => {
+  const local = (author, status) => ({ kind: 'coda/accord@1', id: 'local', spec: { author }, ...(status === undefined ? {} : { status }) });
+  assert.deepEqual(signerOf(local(HOLDER, { certificate: null })), { author: HOLDER, person: false, canSign: true });
+  assert.deepEqual(signerOf(local(HOLDER, { certificate: { active: true, until: 1_900_000_000 } })), { author: HOLDER, person: true, canSign: true });
+  for (const certificate of [{ active: false }, { active: false, until: 1_000 }, {}, { active: 'yes' }])
+    assert.deepEqual(signerOf(local(HOLDER, { certificate })), { author: HOLDER, person: true, canSign: false }, JSON.stringify(certificate));
+  // 作者不是合法公钥、没写证书这个键（旧宿主）、证书不是对象：都不能签。
+  for (const accord of [local(null, { certificate: null }), local('someone', { certificate: null }), local(HOLDER, {}), local(HOLDER),
+    local(HOLDER, { certificate: 'x' }), local(HOLDER, { certificate: [] }), null, undefined])
+    assert.equal(signerOf(accord).canSign, false, JSON.stringify(accord));
+  assert.equal(signerOf(local('someone', { certificate: null })).author, null);
 });

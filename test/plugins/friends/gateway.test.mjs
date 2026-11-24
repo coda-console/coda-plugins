@@ -56,7 +56,8 @@ function accordFake({ author = A, certificate = ACTIVE, friends = [], pageSize =
       // 基座将来的「预期作者」（coda#3012）：给了就必须与此刻真正署名的作者相同，否则拒签。
       if (input.expectAuthor !== undefined && input.expectAuthor !== fake.author) throw Object.assign(new Error('预期作者与此刻署名的作者不符'), { code: 'forbidden' });
       if (fake.failure) throw fake.failure;
-      if (fake.certificate?.active !== true) throw Object.assign(new Error('代签证书已过期'), { code: 'invalid_state' });
+      // 没绑个人身份（certificate 为 null）用机器钥匙签，没有有效期；绑了的要证书有效。
+      if (fake.certificate !== null && fake.certificate?.active !== true) throw Object.assign(new Error('代签证书已过期'), { code: 'invalid_state' });
       const at = fake.records.findIndex(r => r.kind === input.kind && r.id === input.id && r.author === fake.author);
       const version = (at < 0 ? 0 : fake.records[at].version) + 1;
       if (at >= 0) fake.records.splice(at, 1);
@@ -1278,7 +1279,7 @@ test('the internal signer publishes the three rpc kinds to one recipient with ex
   assert.deepEqual(d.accord.calls.map(call => call.kind), ['friends/rpc-call', 'friends/rpc-grant', 'friends/rpc-answer']);
   // 同一个 id 再签是更高的版本（取消用它）。
   assert.equal((await d.gw.signRpc(sign({ body: { v: 1, n: 1, caller: A, cancel: true } }))).version, 2);
-  // 本机此刻应署的根跟着身份变。
+  // 本机此刻应署的作者跟着身份变。
   await d.accord.change({ author: B });
   await d.gw.signRpc(sign({ id: 'c2', audience: [F2], from: B }));
   assert.equal(d.accord.calls.at(-1).expectAuthor, B);
@@ -1314,19 +1315,40 @@ test('the internal signer refuses anything but the three kinds and a recipient l
   assert.deepEqual(d.accord.queries, []);
 });
 
-test('the internal signer fails on the spot when the certificate is not active: invalid_state, nothing sent, nothing queued', async t => {
+test('the internal signer fails on the spot when a personal author\'s certificate is not active: invalid_state, nothing sent, nothing queued', async t => {
   const d = await direct(t, { certificate: EXPIRED });
-  const failed = () => assert.rejects(d.gw.signRpc(sign()), error => error.code === 'invalid_state' && error.effects === 'none');
+  const failed = (more, call = () => d.gw.signRpc(sign(more))) => assert.rejects(call(), error => error.code === 'invalid_state' && error.effects === 'none');
   await failed();
+  // 证书项里写着未生效（active 不是 true）也一样。
+  await d.accord.change({ certificate: { active: false, until: 1_000 } });
+  await failed();
+  // 读不出作者、旧宿主没写证书这个键：也不签。
   await d.accord.change({ author: null, certificate: null, friends: [] });
   await failed();
-  // 证书项里写着未生效（active 不是 true）也一样；旧宿主没有证书这个键、有作者就当可用，签的时候由 Accord 说了算。
-  await d.accord.change({ author: A, certificate: { active: false, until: 1_000 } });
+  await d.accord.change({ author: A, certificate: ACTIVE, withCertificateKey: false });
   await failed();
   assert.deepEqual(d.accord.calls, []);
   await assert.rejects(readFile(join(d.host.coda.plugin.state, 'outbox.json')), { code: 'ENOENT' });
-  await d.accord.change({ certificate: ACTIVE });
+  await d.accord.change({ withCertificateKey: true });
   assert.equal((await d.gw.signRpc(sign())).version, 1);
+  // 证书过期了，撤回也当场失败。
+  await d.accord.change({ certificate: EXPIRED });
+  await failed({}, () => d.gw.retractRpc({ kind: 'friends/rpc-call', id: 'c1', author: A }));
+  assert.equal(d.accord.calls.length, 1);
+});
+
+test('a machine author (no personal identity bound) signs and retracts with its machine key whatever the certificate, with expectAuthor set to it', async t => {
+  const M = `ed25519:${'e'.repeat(64)}`;
+  const d = await direct(t, { author: M, certificate: null });
+  const done = await d.gw.signRpc(sign({ from: M }));
+  assert.deepEqual([done.author, done.version], [M, 1]);
+  assert.deepEqual(d.accord.calls, [{ kind: 'friends/rpc-call', id: 'c1', body: { v: 1, n: 1, caller: M }, audience: [F1], expectAuthor: M }]);
+  for (const kind of ['friends/rpc-grant', 'friends/rpc-answer']) await d.gw.signRpc(sign({ kind, id: `${kind}-1`, from: M }));
+  assert.equal((await d.gw.retractRpc({ kind: 'friends/rpc-grant', id: 'friends/rpc-grant-1', author: M })).state, 'retracted');
+  assert.deepEqual(d.accord.calls.at(-1), { kind: 'friends/rpc-grant', id: 'friends/rpc-grant-1', body: {}, audience: [], expectAuthor: M });
+  // 发送方不是此刻的机器作者，照旧当场失败。
+  await assert.rejects(d.gw.signRpc(sign({ id: 'c2', from: A })), error => error.code === 'invalid_state' && error.effects === 'none');
+  assert.equal(d.accord.calls.length, 4);
 });
 
 test('the internal signer lets Accord refuse a signature when the author changed under it, and reports an Accord failure without queueing it', async t => {

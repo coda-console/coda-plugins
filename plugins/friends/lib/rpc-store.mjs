@@ -38,8 +38,11 @@ export const isCorrupt = error => error?.code === 'corrupt';
 
 // ---- 条目的形状 ----
 
-const grantOk = entry => isPlain(entry) && isText(entry.id) && isPlain(entry.holder) && isAuthor(entry.holder.root) && isText(entry.holder.machine)
-  && isAuthor(entry.grantee) && isTarget(entry.target) && Array.isArray(entry.ops) && entry.ops.length === 1 && entry.ops[0] === 'exec'
+// 授权行：`holder` 是授予时本机的作者（机器钥匙或根）、是不是个人作者、机器；`granteePerson` 是被授权的好友当时是不是个人作者
+// （好友表的 `certified`，宿主还不写时是 null）。
+const isFlag = value => typeof value === 'boolean';
+const grantOk = entry => isPlain(entry) && isText(entry.id) && isPlain(entry.holder) && isAuthor(entry.holder.author) && isFlag(entry.holder.person) && isText(entry.holder.machine)
+  && isAuthor(entry.grantee) && (entry.granteePerson === null || isFlag(entry.granteePerson)) && isTarget(entry.target) && Array.isArray(entry.ops) && entry.ops.length === 1 && entry.ops[0] === 'exec'
   && isTime(entry.createdAt) && optional(entry.revokedAt, isTime) && optional(entry.endedBy, isText) && optional(entry.retractedAt, isTime);
 
 // 在途项按状态校验：非终态要有完整的子调用参数（固定目标、重建后的输入；幂等键与最晚启动时刻每项都有），且不带结局与「已签出」；
@@ -157,8 +160,8 @@ export function createRpcStore(stateDir, { now = Date.now } = {}) {
   // ---- 授权 ----
 
   // 授权号冲突、形状不对都是调用方的错；`target` 是固定的 { owner, provider, kind, id }。
-  const addGrant = ({ id, holder, grantee, target, createdAt }) => serial(async () => {
-    const entry = { id, holder, grantee, target, ops: ['exec'], createdAt };
+  const addGrant = ({ id, holder, grantee, granteePerson, target, createdAt }) => serial(async () => {
+    const entry = { id, holder, grantee, granteePerson, target, ops: ['exec'], createdAt };
     if (!grantOk(entry)) throw invalid('授权的各项不合格');
     const grants = await load('grants');
     if (grants[id]) throw invalid(`授权号 ${id} 已存在`);
@@ -167,7 +170,7 @@ export function createRpcStore(stateDir, { now = Date.now } = {}) {
     return entry;
   });
 
-  // 撤权：先落盘再返回；已撤的不改撤回时刻。没有这条授权给 null。`endedBy` 写明不是本人撤的（目标不在了、本机的根换了而失效）。
+  // 撤权：先落盘再返回；已撤的不改撤回时刻。没有这条授权给 null。`endedBy` 写明不是本人撤的（目标不在了、本机的签名作者变了而失效）。
   // 撤权与失效不可逆；授权记录的撤回另记（markGrantRetracted），要等原作者能签时才补发。
   const revokeGrant = (id, at = now(), endedBy) => serial(async () => {
     const grants = await load('grants'), entry = grants[id];

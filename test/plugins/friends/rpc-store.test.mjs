@@ -13,7 +13,7 @@ const GRANT = '3f2b8c1e-4d5a-4e6f-8a7b-9c0d1e2f3a4b';
 const TARGET = { owner: 'machine-1', provider: 'remote-exec', kind: 'remote-exec/machine@1', id: 'rec-1' };
 const START = Date.UTC(2026, 10, 24, 12, 0, 0);
 // 提交前要读到这条授权：用到 markSubmitted 的用例先把它写进授权表。
-const GRANTED = { id: GRANT, holder: { root: A, machine: 'm1' }, grantee: B, target: TARGET, createdAt: START };
+const GRANTED = { id: GRANT, holder: { author: A, person: true, machine: 'm1' }, grantee: B, granteePerson: null, target: TARGET, createdAt: START };
 const MINUTE = 60_000, DAY = 86_400_000;
 
 async function setup(t) {
@@ -36,14 +36,14 @@ const finished = (more = {}) => ({ state: 'completed', finishedAt: START + 1, re
 
 test('state files are written atomically with private permissions, and no temporary file is left', async t => {
   const { dir, rpc, store, clock } = await setup(t);
-  await store.addGrant({ id: GRANT, holder: { root: A, machine: 'm1' }, grantee: B, target: TARGET, createdAt: START });
+  await store.addGrant({ id: GRANT, holder: { author: A, person: true, machine: 'm1' }, grantee: B, granteePerson: null, target: TARGET, createdAt: START });
   await store.admit(candidate(clock));
   await store.addOutgoing({ request: `c${hex(1)}`, call: 'call-1', key: 'friend:x', machine: 'm2', parent: null, expiresAt: START + MINUTE });
   await store.appendLedger({ request: 'c1', friend: B, grant: GRANT, target: { kind: TARGET.kind, id: TARGET.id, name: 'box' }, command: 'ls', outcome: 'completed', ms: 3 });
   assert.equal(await mode(rpc), 0o700);
   assert.deepEqual((await readdir(rpc)).sort(), ['grants.json', 'inflight.json', 'ledger-2026-11.jsonl', 'outgoing.json']);
   for (const name of await readdir(rpc)) assert.equal(await mode(join(rpc, name)), 0o600, name);
-  assert.deepEqual(JSON.parse(await readRaw(dir, 'grants.json')), { v: 1, grants: { [GRANT]: { id: GRANT, holder: { root: A, machine: 'm1' }, grantee: B, target: TARGET, ops: ['exec'], createdAt: START } } });
+  assert.deepEqual(JSON.parse(await readRaw(dir, 'grants.json')), { v: 1, grants: { [GRANT]: { id: GRANT, holder: { author: A, person: true, machine: 'm1' }, grantee: B, granteePerson: null, target: TARGET, ops: ['exec'], createdAt: START } } });
   // 同时发起很多写：排成一条队，没有丢更新，文件始终是完整的 JSON。
   await Promise.all(Array.from({ length: 20 }, (_, i) => store.addOutgoing({ request: `c${hex(100 + i)}`, call: `call-${i}`, key: 'friend:x', machine: 'm2', expiresAt: START + MINUTE })));
   assert.equal((await store.listOutgoing()).length, 21);
@@ -62,7 +62,7 @@ test('a missing file is an empty table; a file that is not JSON or not the right
   assert.deepEqual(await store.listOutgoing(), []);
   assert.deepEqual(await store.readLedger(), []);
   await mkdir(rpc, { recursive: true });
-  const goodGrant = { id: GRANT, holder: { root: A, machine: 'm1' }, grantee: B, target: TARGET, ops: ['exec'], createdAt: START };
+  const goodGrant = { id: GRANT, holder: { author: A, person: true, machine: 'm1' }, grantee: B, granteePerson: null, target: TARGET, ops: ['exec'], createdAt: START };
   const names = ['grants.json', 'inflight.json', 'outgoing.json'];
   const reads = { 'grants.json': () => store.listGrants(), 'inflight.json': () => store.listInflight(), 'outgoing.json': () => store.listOutgoing() };
   const everything = () => [() => store.getGrant(GRANT), () => store.addGrant({ ...goodGrant, id: '11111111-1111-4111-8111-111111111111' }), () => store.revokeGrant(GRANT),
@@ -112,7 +112,7 @@ test('an inflight entry that reads back with a wrong shape is corruption too', a
 
 test('grants: added once, revoked to disk first, and a revoked grant stays in the table with the first revocation time', async t => {
   const { dir, store } = await setup(t);
-  const grant = { id: GRANT, holder: { root: A, machine: 'm1' }, grantee: B, target: TARGET, createdAt: START };
+  const grant = { id: GRANT, holder: { author: A, person: true, machine: 'm1' }, grantee: B, granteePerson: null, target: TARGET, createdAt: START };
   assert.equal((await store.addGrant(grant)).ops[0], 'exec');
   await assert.rejects(store.addGrant(grant), { code: 'invalid_input' });
   await assert.rejects(store.addGrant({ ...grant, id: 'x', target: { owner: 'a' } }), { code: 'invalid_input' });
@@ -126,6 +126,17 @@ test('grants: added once, revoked to disk first, and a revoked grant stays in th
   assert.deepEqual((await store.listGrants()).map(one => one.id), [GRANT]);
   // 重新打开 store（重启）也读得到。
   assert.equal((await createRpcStore(dir).getGrant(GRANT)).revokedAt, START + 5);
+});
+
+test('a grant row records the author (machine key or root) and whether it is a person, and whether the grantee was one (null while the host does not say)', async t => {
+  const { store } = await setup(t);
+  const grant = { ...GRANTED, holder: { author: A, person: false, machine: 'm1' }, granteePerson: true };
+  for (const [what, bad] of [['旧的 root', { holder: { root: A, machine: 'm1' } }], ['缺 person', { holder: { author: A, machine: 'm1' } }],
+    ['person 不是布尔', { holder: { author: A, person: 'yes', machine: 'm1' } }], ['缺 granteePerson', { granteePerson: undefined }], ['granteePerson 不是布尔', { granteePerson: 1 }]])
+    await assert.rejects(store.addGrant({ ...grant, ...bad }), { code: 'invalid_input' }, what);
+  assert.deepEqual(await store.listGrants(), []);
+  const added = await store.addGrant(grant);
+  assert.deepEqual([added.holder, added.granteePerson], [{ author: A, person: false, machine: 'm1' }, true]);
 });
 
 test('an inflight entry only moves forward: admitted, submitted, then a terminal state that is written once and never undone', async t => {
@@ -525,7 +536,7 @@ test('a state table that fails to write leaves the file as it was and no tempora
   const before = await readRaw(dir, 'inflight.json');
   failRename(t, to => to.endsWith('.json'));
   await assert.rejects(store.admit(candidate(clock)), { code: 'ENOSPC' });
-  await assert.rejects(store.addGrant({ id: GRANT, holder: { root: A, machine: 'm1' }, grantee: B, target: TARGET, createdAt: START }), { code: 'ENOSPC' });
+  await assert.rejects(store.addGrant({ id: GRANT, holder: { author: A, person: true, machine: 'm1' }, grantee: B, granteePerson: null, target: TARGET, createdAt: START }), { code: 'ENOSPC' });
   assert.equal(await readRaw(dir, 'inflight.json'), before);
   await noTemporary(rpc);
   assert.equal((await store.listInflight()).length, 1);

@@ -1,5 +1,5 @@
 // 好友签名网关的持有方（lib/rpc-holder.mjs），在测试宿主里整段跑：签名与撤回经真实的网关内部入口；本机 Accord（coda/accord@1）是替身，
-// 能换作者与证书、注入别人的签名记录、记下本机的发布与撤回、认 expectAuthor；本机 remote-exec 的 exec 也是替身，能控制完成、失败、
+// 能换作者与证书（certificate 为 null 是没绑个人身份、作者是机器钥匙）、注入别人的签名记录、记下本机的发布与撤回、认 expectAuthor；本机 remote-exec 的 exec 也是替身，能控制完成、失败、
 // 挂起、被中止，并按内核幂等键接上同一个调用、记下收到的键；目标记录（remote-exec/machine@1）由测试直接摆放。
 import { TEST_OWNER, createMockCoda } from '../../helpers/mock-coda.mjs';
 import assert from 'node:assert/strict';
@@ -18,7 +18,7 @@ const remoteExec = JSON.parse(await readFile(new URL('../../../plugins/remote-ex
   .contributes.protocols.find(protocol => protocol.name === 'remote-exec/machine@1');
 const ACCORD = 'coda/accord@1', MACHINE = 'remote-exec/machine@1';
 const key = c => `ed25519:${c.repeat(64)}`;
-const ME = key('a'), NEW_ROOT = key('b'), F1 = key('1'), F2 = key('2'), F3 = key('3'), STRANGER = key('9');
+const ME = key('a'), NEW_ROOT = key('b'), MACHINE_KEY = key('c'), F1 = key('1'), F2 = key('2'), F3 = key('3'), STRANGER = key('9');
 const ACTIVE = { active: true, until: 1_900_000_000 }, EXPIRED = { active: false };
 const START = Date.UTC(2026, 10, 24, 12, 0, 0), MINUTE = 60_000;
 const SPEC = { name: 'box', os: 'linux', user: 'u', cwd: '/home/u' };
@@ -68,7 +68,8 @@ function accordFake({ author = ME, certificate = ACTIVE, friends = [{ node: 'n1'
     call: async (ref, operation, input) => {
       assert.deepEqual([ref.kind, ref.id, operation], [ACCORD, 'local', 'publish']);
       if (input.expectAuthor !== fake.author) throw fail('forbidden', '预期作者与此刻署名的作者不符');
-      if (fake.certificate?.active !== true) throw fail('invalid_state', '代签证书已过期');
+      // 没绑个人身份（certificate 为 null）用机器钥匙签，没有有效期；绑了的要证书有效。
+      if (fake.certificate !== null && fake.certificate?.active !== true) throw fail('invalid_state', '代签证书已过期');
       fake.calls.push(structuredClone(input));
       const version = upsert(fake.author, input.kind, input.id, input.body, input.audience, true);
       return { author: fake.author, kind: input.kind, id: input.id, version, audience: input.audience };
@@ -206,7 +207,7 @@ const rejections = async (h, code) => (await h.ledger({ outcome: 'rejected' })).
 
 // ---- 授予与撤销 ----
 
-test('granting checks the target, the friend and the certificate, pins the target and the root, and publishes the grant to that friend alone', async t => {
+test('granting checks the target, the friend and the certificate, pins the target and the author, and publishes the grant to that friend alone', async t => {
   const h = await holderOf(t);
   h.targets.set('other-machine', { owner: 'someone-else', location: 'x', local: false });
   h.targets.set('own-proxy', { plugin: 'friends' });
@@ -228,7 +229,9 @@ test('granting checks the target, the friend and the certificate, pins the targe
   assert.equal(granted.status, 'available');
   const [row] = await h.store.listGrants();
   assert.match(row.id, /^[0-9a-f-]{36}$/);
-  assert.deepEqual([row.grantee, row.holder, row.target, row.createdAt], [F1, { root: ME, machine: TEST_OWNER }, { owner: TEST_OWNER, provider: 'remote-exec', kind: MACHINE, id: 'rx-1' }, START]);
+  // 宿主还不写好友表的 certified：被授权者是不是个人作者记 null。
+  assert.equal(row.granteePerson, null);
+  assert.deepEqual([row.grantee, row.holder, row.target, row.createdAt], [F1, { author: ME, person: true, machine: TEST_OWNER }, { owner: TEST_OWNER, provider: 'remote-exec', kind: MACHINE, id: 'rx-1' }, START]);
   assert.deepEqual(h.published('friends/rpc-grant'), [{ kind: 'friends/rpc-grant', id: row.id, audience: [F1], expectAuthor: ME,
     body: { v: 1, holder: ME, grantee: F1, grant: row.id, protocol: MACHINE, ops: ['exec'], spec: SPEC, available: true, grantedAt: START } }]);
   // 再授一次是新的授权号。
@@ -399,18 +402,18 @@ test('requests are refused when the author is not the grantee, or the audience i
   assert.deepEqual(merged.map(row => row.count), [5]);
 });
 
-test('requests are refused after the root changed, when the friend is unbound, and when the target is no longer remote-exec\'s or no longer there', async t => {
+test('requests are refused after the author changed, when the friend is unbound, and when the target is no longer remote-exec\'s or no longer there', async t => {
   const h = await holderOf(t);
   const old = (await h.grant(F1)).grant;
-  // 换根：旧根下的授权停用；新根下给 F1 一条授权，F1 拿旧授权号来请求被拒。
+  // 换根：旧作者下的授权停用；新根下给 F1 一条授权，F1 拿旧授权号来请求被拒。
   await h.accord.change({ author: NEW_ROOT });
   await h.settle();
   const fresh = (await h.grant(F1)).grant;
   const stale = send(h, { grant: old });
   await h.settle();
   assert.deepEqual(h.answers(F1, stale.request), []);
-  assert.equal((await rejections(h, 'root_changed')).length, 1);
-  assert.deepEqual((await h.holder.self['grants.list']()).grants.find(row => row.grant === old).status, 'root_changed');
+  assert.equal((await rejections(h, 'author_changed')).length, 1);
+  assert.deepEqual((await h.holder.self['grants.list']()).grants.find(row => row.grant === old).status, 'author_changed');
 
   // 好友绑定没了。
   await h.accord.change({ friends: [{ node: 'n1', author: F1, bound: false }] });
@@ -699,7 +702,7 @@ test('the ledger has one row per outcome with a summary and a hash of the comman
 
 // ---- 撤回入口 ----
 
-test('the internal retraction only withdraws this root\'s own record of the three kinds, with expectAuthor, and fails plainly without a certificate', async t => {
+test('the internal retraction only withdraws this author\'s own record of the three kinds, with expectAuthor, and fails plainly without a certificate', async t => {
   const h = await holderOf(t);
   const { grant } = await h.grant();
   const refused = (input, code) => assert.rejects(h.gateway.retractRpc(input), error => error.code === code && error.effects === 'none');
@@ -774,24 +777,24 @@ test('a grant record\'s publishes and retractions share one queue that reads the
   assert.equal(h.accord.calls.length, calls);
 });
 
-test('a root change ends a grant for good, written at once; the retraction waits for the original root: A to B and back to A, the grant stays ended', async t => {
+test('an author change ends a grant for good, written at once; the retraction waits for the original author: A to B and back to A, the grant stays ended', async t => {
   const h = await holderOf(t);
   const { grant } = await h.grant();
   await h.accord.change({ author: NEW_ROOT });
   await h.settle();
   const ended = await h.store.getGrant(grant);
-  assert.deepEqual([ended.endedBy, ended.retractedAt], ['root_changed', undefined]);
+  assert.deepEqual([ended.endedBy, ended.retractedAt], ['author_changed', undefined]);
   assert.equal(h.accord.calls.filter(call => call.id === grant).length, 1, 'the new root does not sign for the old one');
   await h.accord.change({ author: ME });
   await h.settle();
   assert.deepEqual(h.accord.calls.at(-1), { kind: 'friends/rpc-grant', id: grant, body: {}, audience: [], expectAuthor: ME });
   assert.notEqual((await h.store.getGrant(grant)).retractedAt, undefined);
-  assert.equal((await h.holder.self['grants.list']()).grants[0].status, 'root_changed');
+  assert.equal((await h.holder.self['grants.list']()).grants[0].status, 'author_changed');
   const body = send(h, { grant });
   await h.settle();
   assert.deepEqual(h.answers(F1, body.request), []);
   assert.equal(h.exec.runs, 0);
-  assert.equal((await rejections(h, 'root_changed')).length, 1);
+  assert.equal((await rejections(h, 'author_changed')).length, 1);
 });
 
 test('a target deleted while the certificate is out ends the grant at once; rebuilt under the same id it does not revive it', async t => {
@@ -930,7 +933,7 @@ test('the events themselves end the grants: A to B and back to A, or a delete fo
   await h.settle();
   assert.equal(h.exec.runs, 0);
   assert.deepEqual(h.answers(F1, body.request), []);
-  assert.equal((await h.store.getGrant(grant)).endedBy, 'root_changed');
+  assert.equal((await h.store.getGrant(grant)).endedBy, 'author_changed');
   // 之后的补查只补撤回：A 能签，撤回发了。
   assert.deepEqual(h.accord.calls.at(-1), { kind: 'friends/rpc-grant', id: grant, body: {}, audience: [], expectAuthor: ME });
 
@@ -970,7 +973,7 @@ test('an answer is withdrawn 24 hours after its terminal state even while its le
   }
 });
 
-test('an ending that fails to reach the disk is kept in memory: back on the old root its grant is refused, and once the disk recovers the ending is written and dropped from memory', async t => {
+test('an ending that fails to reach the disk is kept in memory: back on the old author its grant is refused, and once the disk recovers the ending is written and dropped from memory', async t => {
   // 定时器替身：兜底查询（15 秒）不走，别的（失效落盘的重试）由测试放行。
   const retries = [];
   const timers = { setTimeout: (fn, ms) => { if (ms !== POLL_MS) retries.push(fn); return null; }, clearTimeout() {} };
@@ -985,7 +988,7 @@ test('an ending that fails to reach the disk is kept in memory: back on the old 
   assert.equal(h.exec.runs, 0);
   assert.deepEqual(h.answers(F1, body.request), []);
   assert.equal((await h.store.getGrant(grant)).revokedAt, undefined, 'not on disk yet');
-  // A→B 记下旧根 A 的一笔，B→A 记下旧根 B 的一笔（没有授权，同样等落盘）。
+  // A→B 记下旧作者 A 的一笔，B→A 记下旧作者 B 的一笔（没有授权，同样等落盘）。
   assert.equal(h.holder.pendingEnds(), 2);
   assert.equal(h.published('friends/rpc-grant').length, 1, 'neither published again nor withdrawn while the ending is not on disk');
   assert.ok(retries.length >= 1, 'a retry is scheduled');
@@ -994,7 +997,7 @@ test('an ending that fails to reach the disk is kept in memory: back on the old 
 
   disk.failing = false;
   for (const retry of retries.splice(0)) retry();
-  await until(async () => (await h.store.getGrant(grant)).endedBy === 'root_changed', '失效落盘');
+  await until(async () => (await h.store.getGrant(grant)).endedBy === 'author_changed', '失效落盘');
   await h.settle();
   assert.equal(h.holder.pendingEnds(), 0);
   assert.deepEqual(h.accord.calls.at(-1), { kind: 'friends/rpc-grant', id: grant, body: {}, audience: [], expectAuthor: ME });
@@ -1015,7 +1018,7 @@ function failingDisk(more = {}) {
 }
 
 test('an ending seen while the submit waits in the store queue is checked in that same store step: the command does not start, also when the ending cannot reach the disk', async t => {
-  for (const [what, code] of [['target', 'target_missing'], ['root', 'root_changed']]) {
+  for (const [what, code] of [['target', 'target_missing'], ['root', 'author_changed']]) {
     let fire = null;
     // markSubmitted 进了 store 的队、还没轮到时，来一个删除再重建（或 A→B→A）的事件。
     const disk = failingDisk(store => ({ markSubmitted: (...args) => { const run = store.markSubmitted(...args); fire?.(); fire = null; return run; } }));
@@ -1060,7 +1063,7 @@ test('the same ending key seen twice keeps one retry: delete, rebuild, delete, r
   }
 });
 
-test('an ending not yet on disk keeps a grant record from being published and shows in grants.list: a delete during the directory lookup, a rebuild under the same id, a return to the old root', async t => {
+test('an ending not yet on disk keeps a grant record from being published and shows in grants.list: a delete during the directory lookup, a rebuild under the same id, a return to the old author', async t => {
   const disk = failingDisk(() => ({}));
   const h = await holderOf(t, disk);
   const release = h.accord.hold(input => input.kind === 'friends/rpc-grant');
@@ -1083,7 +1086,79 @@ test('an ending not yet on disk keeps a grant record from being published and sh
   await h.accord.change({ author: ME });
   await h.settle();
   assert.equal((await h.store.getGrant(second)).revokedAt, undefined, 'not on disk yet');
-  assert.equal(await status(second), 'root_changed');
+  assert.equal(await status(second), 'author_changed');
+});
+
+// ---- 作者：机器钥匙与个人身份 ----
+
+// F1 是个人作者（绑了个人身份、证书有效），F2 是机器作者；`certified` 是好友表里说的（coda#3012）。
+const PERSON_AND_MACHINE = [{ node: 'n1', author: F1, bound: true, certified: true }, { node: 'n2', author: F2, bound: true, certified: false }];
+
+test('a holder with no personal identity grants, takes requests, runs them and answers with its machine key, to a personal caller and a machine caller alike', async t => {
+  const h = await holderOf(t, { accordOptions: { author: MACHINE_KEY, certificate: null, friends: PERSON_AND_MACHINE } });
+  const person = await h.grant(F1), machine = await h.grant(F2);
+  assert.deepEqual([person.status, machine.status], ['available', 'available']);
+  const rows = Object.fromEntries((await h.store.listGrants()).map(row => [row.grantee, row]));
+  assert.deepEqual([rows[F1].holder, rows[F1].granteePerson, rows[F2].granteePerson], [{ author: MACHINE_KEY, person: false, machine: TEST_OWNER }, true, false]);
+  assert.deepEqual(h.published('friends/rpc-grant').map(call => [call.audience[0], call.expectAuthor, call.body.holder]), [[F1, MACHINE_KEY, MACHINE_KEY], [F2, MACHINE_KEY, MACHINE_KEY]]);
+  // 个人作者（证书有效、好友绑定在）与机器作者的请求都被接受、执行、回答。
+  const fromPerson = send(h, { from: F1, grant: person.grant }), fromMachine = send(h, { from: F2, grant: machine.grant });
+  await h.settle();
+  assert.equal(h.exec.runs, 2);
+  for (const [caller, body] of [[F1, fromPerson], [F2, fromMachine]]) {
+    assert.deepEqual(h.answers(caller, body.request), ['running', 'completed']);
+    const answer = h.lastAnswer(caller, body.request);
+    assert.deepEqual([answer.expectAuthor, answer.body.holder, answer.body.caller, answer.audience], [MACHINE_KEY, MACHINE_KEY, caller, [caller]]);
+    assert.equal(answer.body.result.stdout, `ran ${body.input.command}`);
+  }
+  assert.equal((await h.ledger({ outcome: 'completed' })).length, 2);
+  assert.deepEqual(await rejections(h), []);
+});
+
+test('a personal caller whose certificate expired is no longer bound, and its request is refused', async t => {
+  const h = await holderOf(t, { accordOptions: { author: MACHINE_KEY, certificate: null, friends: PERSON_AND_MACHINE } });
+  const { grant } = await h.grant(F1);
+  // 替身照基座的做法：调用方的证书过期，它的好友绑定判为未绑定。
+  await h.accord.change({ friends: [{ ...PERSON_AND_MACHINE[0], bound: false }, PERSON_AND_MACHINE[1]] });
+  const body = send(h, { from: F1, grant });
+  await h.settle();
+  assert.equal(h.exec.runs, 0);
+  assert.deepEqual(h.answers(F1, body.request), []);
+  assert.equal((await rejections(h, 'not_friend')).length, 1);
+});
+
+test('binding a personal identity (machine key to root) and unbinding it again each end the grants made under the author before, at once; requests on them are refused and their retraction waits for that author', async t => {
+  const h = await holderOf(t, { accordOptions: { author: MACHINE_KEY, certificate: null } });
+  const first = (await h.grant(F1)).grant;
+  // 绑了个人身份：作者从机器钥匙变成根，事件里就失效落盘。
+  await h.accord.change({ author: ME, certificate: ACTIVE });
+  await until(async () => (await h.store.getGrant(first)).endedBy === 'author_changed', '绑定后失效落盘');
+  await h.settle();
+  const second = (await h.grant(F1)).grant;
+  assert.deepEqual((await h.store.getGrant(second)).holder, { author: ME, person: true, machine: TEST_OWNER });
+  const stale = send(h, { grant: first });
+  await h.settle();
+  assert.equal(h.exec.runs, 0);
+  assert.deepEqual(h.answers(F1, stale.request), []);
+  assert.equal((await rejections(h, 'author_changed')).length, 1);
+  assert.equal((await h.store.getGrant(first)).retractedAt, undefined, 'the root does not sign the machine key\'s retraction');
+  assert.equal(h.accord.calls.filter(call => call.id === first).length, 1);
+  assert.equal((await h.holder.self['grants.list']()).grants.find(row => row.grant === first).status, 'author_changed');
+
+  // 解绑：作者从根变回机器钥匙。根下的授权同样失效、撤回待补；机器钥匙这时能签，补上第一条授权的撤回。
+  await h.accord.change({ author: MACHINE_KEY, certificate: null });
+  await until(async () => (await h.store.getGrant(second)).endedBy === 'author_changed', '解绑后失效落盘');
+  await h.settle();
+  assert.equal((await h.store.getGrant(second)).retractedAt, undefined);
+  assert.equal(h.accord.calls.filter(call => call.id === second).length, 1);
+  assert.notEqual((await h.store.getGrant(first)).retractedAt, undefined);
+  assert.deepEqual(h.accord.calls.filter(call => call.id === first).at(-1), { kind: 'friends/rpc-grant', id: first, body: {}, audience: [], expectAuthor: MACHINE_KEY });
+  const again = send(h, { grant: second });
+  await h.settle();
+  assert.equal(h.exec.runs, 0);
+  assert.deepEqual(h.answers(F1, again.request), []);
+  // 同一作者、同一原因、同一分钟合成一行计数。
+  assert.deepEqual((await rejections(h, 'author_changed')).map(row => row.count), [2]);
 });
 
 // ---- coda self ----
