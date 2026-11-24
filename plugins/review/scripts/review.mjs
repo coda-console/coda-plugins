@@ -50,7 +50,7 @@ const commit = process.argv[2] === 'commit', foreign = process.argv[2] === 'fore
 const event = json('PULL_REQUEST', null), automatic = !!event?.head?.sha;
 let pr = commit ? null : event;
 if (!commit && !automatic) {
-  const asked = (process.env.PR ?? '').trim();
+  const asked = process.env.PR ?? '';
   if (!asked) fail('请填写 GitHub 返回的完整 PR 地址');
   const at = parsePrUrl(asked);
   if (!at) fail('不是 GitHub 上的 PR，需要标准 HTTPS PR 地址');

@@ -19,7 +19,10 @@ function fixture(t, devices = true) {
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, CODA_ARTIFACTS: artifacts, RUNNER_TEMP: root,
     GITHUB_RUN_ID: 'run-1', REPO_URL: 'https://github.com/example/coda', GITHUB_OUTPUT: join(root, 'outputs'), TITLE: '交付 输入框', DEVICES: String(devices), FIXTURE: root,
     GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid', GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.invalid',
-    GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'commit.gpgsign', GIT_CONFIG_VALUE_0: 'false', GIT_CONFIG_KEY_1: 'core.hooksPath', GIT_CONFIG_VALUE_1: '/dev/null' };
+    GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'commit.gpgsign', GIT_CONFIG_VALUE_0: 'false', GIT_CONFIG_KEY_1: 'core.hooksPath', GIT_CONFIG_VALUE_1: '/dev/null',
+    GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
+  // 宿主的 SSH 命令和 Git 配置不进夹具：测 SSH 配置的用例自己注入。
+  delete env.GIT_SSH_COMMAND;
   const git = (...args) => {
     const result = spawnSync('git', args, { cwd: work, env, encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr);
@@ -46,8 +49,17 @@ function fixture(t, devices = true) {
   // 测试里 origin 是本地 bare 目录：设了 ORIGIN_URL 时只让 git remote get-url origin 返回它，其余照旧走真 git。
   writeFileSync(join(bin, 'git'), `#!/bin/sh\nif [ -n "$ORIGIN_URL" ] && [ "$1 $2 $3" = "remote get-url origin" ]; then echo "$ORIGIN_URL"; exit 0; fi\nPATH=\${PATH#${bin}:}\nexec git "$@"\n`);
   chmodSync(join(bin, 'git'), 0o755);
-  // ssh -G 的桩：把别名按 SSH_HOSTS（JSON）解析成 hostname，没写的原样返回。
-  writeFileSync(join(bin, 'ssh'), `#!${process.execPath}\nconst map = JSON.parse(process.env.SSH_HOSTS ?? '{}'), host = process.argv[3];\nconsole.log('hostname ' + (map[host] ?? host));\n`);
+  // ssh -G 的桩：记下参数；设了 SSH_EXIT 就不输出、以它退出，端口超出 65535 像 OpenSSH 一样以 255 失败；
+  // 主机是最后一个参数，有 -F 时按那个配置文件里的 Host/HostName 解析，否则按 SSH_HOSTS（JSON），没写的原样返回。
+  writeFileSync(join(bin, 'ssh'), `#!${process.execPath}\n` + String.raw`
+const { appendFileSync, readFileSync } = require('node:fs');
+const args = process.argv.slice(2), host = args.at(-1), file = args[args.indexOf('-F') + 1];
+appendFileSync(require('node:path').join(process.env.FIXTURE, 'ssh-calls'), JSON.stringify(args) + '\n');
+if (process.env.SSH_EXIT) process.exit(Number(process.env.SSH_EXIT));
+if (args.includes('-p') && !(Number(args[args.indexOf('-p') + 1]) <= 65535)) { console.error('Bad port'); process.exit(255); }
+const map = args.includes('-F') ? Object.fromEntries([...readFileSync(file, 'utf8').matchAll(/^Host (\S+)\n\s+HostName (\S+)$/gm)].map(([, a, b]) => [a, b])) : JSON.parse(process.env.SSH_HOSTS ?? '{}');
+console.log('hostname ' + (map[host] ?? host));
+`);
   chmodSync(join(bin, 'ssh'), 0o755);
   const gh = join(bin, 'gh');
   writeFileSync(gh, `#!${process.execPath}\n` + String.raw`
@@ -161,7 +173,7 @@ test('origin 是标准远端地址时，用它的 host/owner/repo 查本仓库�
   assert.match(failed.stderr, /与 origin 不在同一主机/);
 });
 
-test('origin 的 SSH 主机是别名时按 ssh -G 解析：别名解析成域名就用它，SSH 专用入口保留原主机，解析不出域名就交给 gh', t => {
+test('origin 的 SSH 主机是别名时按 ssh -G 解析：别名解析成域名就用它，SSH 专用入口保留原主机', t => {
   const f = fixture(t);
   const one = f.member(2, 'one', 'one');
   one.url = 'https://git.example.org/example/coda/pull/2';
@@ -178,9 +190,78 @@ test('origin 的 SSH 主机是别名时按 ssh -G 解析：别名解析成域名
   f.members[1].url = 'https://github.com/example/coda/pull/2';
   assert.equal(f.confirm().commit, one.headRefOid);
   assert.deepEqual(f.calls().at(-1), ['repo', 'view', 'github.com/example/coda', '--json', 'url,nameWithOwner,defaultBranchRef']);
-  f.env.ORIGIN_URL = 'git@unresolved:example/coda.git';
+});
+
+test('origin 带 userinfo 的标准 HTTPS 地址只取 host/owner/repo；非法的带凭据地址照样拒绝且不回显', t => {
+  const f = fixture(t);
+  const one = f.member(2, 'one', 'one');
+  one.url = 'https://git.example.org/example/coda/pull/2';
+  f.env.REPO_URL = 'https://git.example.org/example/coda';
+  f.env.ORIGIN_URL = 'https://git@git.example.org/example/coda.git';
   assert.equal(f.confirm().commit, one.headRefOid);
-  assert.deepEqual(f.calls().at(-1), ['repo', 'view', '--json', 'url,nameWithOwner,defaultBranchRef']);
+  assert.deepEqual(f.calls().at(-1), ['repo', 'view', 'git.example.org/example/coda', '--json', 'url,nameWithOwner,defaultBranchRef']);
+  const before = f.calls().length;
+  for (const origin of ['https://x-access-token:FAKE_TOKEN_123@127.0.0.1/example/coda.git', 'https://x-access-token:FAKE_TOKEN_123@git.example.org:8443/example/coda.git',
+    'https://x-access-token:FAKE_TOKEN_123@git.example.org/example/../coda.git', 'https://git FAKE_TOKEN_123@git.example.org/example/coda.git',
+    'https://git\tFAKE_TOKEN_123@git.example.org/example/coda.git', 'https://git\x01FAKE_TOKEN_123@git.example.org/example/coda.git']) {
+    f.env.ORIGIN_URL = origin;
+    const failed = f.run('confirm', { RESPONSE: JSON.stringify({ choice: 'start', note: f.members.map(pr => pr.url).join('\n') }) }, 1);
+    assert.match(failed.stderr, /无法解析 origin 仓库地址，需要标准 HTTPS 或 SSH 仓库地址/, origin);
+    assert.doesNotMatch(failed.stderr, /FAKE_TOKEN_123/, origin);
+  }
+  assert.ok(f.calls().slice(before).every(call => call[0] !== 'repo'));
+});
+
+test('SSH 别名按 Git 实际的 SSH 配置解析：GIT_SSH_COMMAND 或 core.sshCommand 的 -F、地址里的用户和端口都传给 ssh -G', t => {
+  const f = fixture(t);
+  const one = f.member(2, 'one', 'one');
+  one.url = 'https://git.example.org/example/coda/pull/2';
+  f.env.REPO_URL = 'https://git.example.org/example/coda';
+  const config = join(f.root, 'ssh config');
+  writeFileSync(config, 'Host work\n  HostName git.example.org\n');
+  const sshCalls = () => readFileSync(join(f.root, 'ssh-calls'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  f.env.ORIGIN_URL = 'git@work:example/coda.git';
+  // 按词识别：别的参数引号里的 -F 不算。
+  for (const command of [`ssh -F "${config}"`, `ssh -F'${config}' -o BatchMode=yes`, `ssh -i 'my -F identity' -F "${config}"`, `ssh -i "my -F identity" -F${config.replace(' ', '\\ ')}`]) {
+    Object.assign(f.env, { GIT_CONFIG_COUNT: '3', GIT_CONFIG_KEY_2: 'core.sshCommand', GIT_CONFIG_VALUE_2: command });
+    assert.equal(f.confirm().commit, one.headRefOid, command);
+    assert.deepEqual(f.calls().at(-1), ['repo', 'view', 'git.example.org/example/coda', '--json', 'url,nameWithOwner,defaultBranchRef'], command);
+    assert.deepEqual(sshCalls().at(-1), ['-F', config, '-l', 'git', '-G', '--', 'work'], command);
+  }
+  f.env.GIT_CONFIG_COUNT = '2';
+  f.env.GIT_SSH_COMMAND = `ssh -F${join(f.root, 'env_config')} -o BatchMode=yes`;
+  writeFileSync(join(f.root, 'env_config'), 'Host work\n  HostName git.example.org\n');
+  assert.equal(f.confirm().commit, one.headRefOid);
+  assert.deepEqual(sshCalls().at(-1), ['-F', join(f.root, 'env_config'), '-l', 'git', '-G', '--', 'work']);
+  delete f.env.GIT_SSH_COMMAND;
+  f.env.SSH_HOSTS = JSON.stringify({ work: 'git.example.org' });
+  f.env.ORIGIN_URL = 'ssh://git@work:2222/example/coda.git';
+  assert.equal(f.confirm().commit, one.headRefOid);
+  assert.deepEqual(sshCalls().at(-1), ['-l', 'git', '-p', '2222', '-G', '--', 'work']);
+});
+
+test('解析不出域名的 SSH 别名和 IPv6 主机明确失败，不退回 gh 的默认仓库（也不用 GH_REPO）', t => {
+  const f = fixture(t);
+  f.member(2, 'one', 'one');
+  f.env.GH_REPO = 'github.com/example/coda';
+  // POSIX 上 x: 开头不是盘符，是单字母的 SCP 主机。
+  for (const origin of ['git@unresolved:example/coda.git', 'ssh://git@unresolved/example/coda.git', 'ssh://git@[::1]/example/coda.git', 'git@[::1]:example/coda.git', 'x:example/coda.git']) {
+    f.env.ORIGIN_URL = origin;
+    const failed = f.run('confirm', { RESPONSE: JSON.stringify({ choice: 'start', note: f.members.map(pr => pr.url).join('\n') }) }, 1);
+    assert.match(failed.stderr, /无法解析 origin 仓库地址，需要标准 HTTPS 或 SSH 仓库地址/, origin);
+  }
+  assert.ok(f.calls().every(call => call[0] !== 'repo'), '没有调用 gh repo view');
+});
+
+test('ssh -G 失败或没给出 hostname 时明确失败，不退回地址里的原始主机', t => {
+  const f = fixture(t);
+  f.member(2, 'one', 'one');
+  const confirm = extra => f.run('confirm', { RESPONSE: JSON.stringify({ choice: 'start', note: f.members.map(pr => pr.url).join('\n') }), ...extra }, 1);
+  f.env.ORIGIN_URL = 'ssh://git@github.com:99999/example/coda.git';
+  assert.match(confirm().stderr, /无法解析 origin 仓库地址，需要标准 HTTPS 或 SSH 仓库地址/);
+  f.env.ORIGIN_URL = 'git@github.com:example/coda.git';
+  for (const code of ['255', '0']) assert.match(confirm({ SSH_EXIT: code }).stderr, /无法解析 origin 仓库地址，需要标准 HTTPS 或 SSH 仓库地址/, code);
+  assert.ok(f.calls().every(call => call[0] !== 'repo'), '没有调用 gh repo view');
 });
 
 test('origin、本仓库或成员的地址结构不对时明确失败，不退回到不带主机的匹配', t => {

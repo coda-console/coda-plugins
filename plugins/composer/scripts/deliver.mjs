@@ -34,17 +34,21 @@ const OWNER_REPO = new RegExp(`^(${SEG})/(${SEG})$`);
 const FQDN = new RegExp(`^(?:${LABEL}\\.)+${LABEL}$`);
 const REPO_URL = new RegExp(`^[hH][tT][tT][pP][sS]://((?:${LABEL}\\.)+${LABEL})/(${SEG})/(${SEG})$`);
 const PR_URL = new RegExp(`^[hH][tT][tT][pP][sS]://((?:${LABEL}\\.)+${LABEL})/(${SEG})/(${SEG})/pull/[1-9][0-9]*$`);
-const SSH_URL = /^ssh:\/\/(?:[A-Za-z0-9_.-]+@)?([A-Za-z0-9][A-Za-z0-9.-]*)(?::\d+)?\/(.*)$/;
-const SCP_URL = /^(?:[A-Za-z0-9_.-]+@)?([A-Za-z0-9][A-Za-z0-9.-]*):(?!\/)(.*)$/;
+// origin 的 HTTPS 远端可以带 userinfo（https://git@host/...、https://token@host/...）：只取 host/owner/repo，userinfo 不进参数也不进报错。
+const ORIGIN_HTTPS = new RegExp(`^[hH][tT][tT][pP][sS]://(?:[^\\s@/?#\\x00-\\x1f\\x7f]*@)?((?:${LABEL}\\.)+${LABEL})/(${SEG})/(${SEG})$`);
+const SSH_URL = /^ssh:\/\/(?:(?<user>[A-Za-z0-9_.-]+)@)?(?<host>[A-Za-z0-9][A-Za-z0-9.-]*)(?::(?<port>\d+))?\/(?<path>.*)$/;
+const SCP_URL = /^(?:(?<user>[A-Za-z0-9_.-]+)@)?(?<host>[A-Za-z0-9][A-Za-z0-9.-]*):(?!\/)(?<path>.*)$/;
 // 完整域名：总长不超过 253，末段标签不全是数字（排除 IPv4 字面量）。
 const isFqdn = host => FQDN.test(host) && host.length <= 253 && !/^\d+$/.test(host.split('.').at(-1));
 // 地址可能带凭据（https://token@host/...）：报错只说明是哪类地址要求什么格式，不回显原始字符串。
 const BAD = { origin: '无法解析 origin 仓库地址，需要标准 HTTPS 或 SSH 仓库地址', repo: '无法解析仓库地址，需要标准 HTTPS 仓库地址', pr: '无法解析成员 PR 地址，需要标准 HTTPS PR 地址' };
 const bad = what => { throw new Error(BAD[what]); };
-const idOf = (host, owner, repo, what) => {
+// owner/repo 两段：去掉 .git 后不能为空、. 或 ..。
+const pathOf = (owner, repo, what) => {
   const name = repo.replace(/\.git$/i, '');
-  return !isFqdn(host) || [owner, name].some(part => !part || part === '.' || part === '..') ? bad(what) : `${host}/${owner}/${name}`.toLowerCase();
+  return [owner, name].some(part => !part || part === '.' || part === '..') ? bad(what) : `${owner}/${name}`;
 };
+const idOf = (host, owner, repo, what) => isFqdn(host) ? `${host}/${pathOf(owner, repo, what)}`.toLowerCase() : bad(what);
 // 仓库地址：https://<host>/<owner>/<repo>(.git)。
 const repoIdOf = (url, what = 'repo') => {
   const [, host, owner, repo] = url.match(REPO_URL) ?? bad(what);
@@ -55,22 +59,50 @@ const prIdOf = url => {
   const [, host, owner, repo] = url.match(PR_URL) ?? bad('pr');
   return /\.git$/i.test(repo) ? bad('pr') : idOf(host, owner, repo, 'pr');
 };
-// SSH 主机可能是 ~/.ssh/config 里的别名：取 ssh -G 解析出的 hostname。Host <域名> → HostName ssh.<域名> 这类走 SSH 专用入口的写法保留原主机；
-// GitHub 公网的 SSH 443 入口 ssh.github.com 就是 github.com。解析后仍是单段别名就返回 null，交给 gh 自己处理；其余不是合法域名的（IP、超长、非法标签）直接报错。
-const sshHost = host => {
-  const resolved = /^hostname (\S+)$/mi.exec(spawnSync('ssh', ['-G', host], { encoding: 'utf8' }).stdout ?? '')?.[1] ?? host;
+// 按 shell 的引号和反斜杠把命令拆成词：单引号原样，双引号里 \ 只转义 " \ $ `，引号外 \ 转义下一个字符。
+const words = command => {
+  const out = [];
+  let word = null, quote = null;
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+    if (quote === "'") { if (c === "'") quote = null; else word += c; }
+    else if (quote === '"') { if (c === '"') quote = null; else word += c === '\\' && /["\\$`]/.test(command[i + 1] ?? '') ? command[++i] : c; }
+    else if (/\s/.test(c)) { if (word !== null) out.push(word); word = null; }
+    else { word ??= ''; if (c === "'" || c === '"') quote = c; else word += c === '\\' ? command[++i] ?? '' : c; }
+  }
+  if (word !== null) out.push(word);
+  return out;
+};
+// Git 用的 SSH 配置文件：GIT_SSH_COMMAND（没设时 core.sshCommand）拆词后的 -F <文件> 或 -F<文件>；有多个时和 OpenSSH 一样取最后一个。
+const sshConfig = () => {
+  const command = env.GIT_SSH_COMMAND || spawnSync('git', ['config', '--get', 'core.sshCommand'], { encoding: 'utf8' }).stdout || '';
+  const parts = words(command);
+  let file = null;
+  for (let i = 1; i < parts.length; i++) if (parts[i].startsWith('-F')) file = parts[i] === '-F' ? parts[++i] : parts[i].slice(2);
+  return file ? ['-F', file] : [];
+};
+// SSH 主机可能是 SSH 配置里的别名：按 Git 实际的 SSH 配置和地址里的用户、端口取 ssh -G 解析出的 hostname。Host <域名> → HostName ssh.<域名> 这类走 SSH 专用入口的写法保留原主机；
+// GitHub 公网的 SSH 443 入口 ssh.github.com 就是 github.com。解析后仍不是合法域名（单段别名、IP、超长、非法标签）就报错，不交给 gh 的默认仓库。
+const sshHost = (host, user, port) => {
+  const args = [...sshConfig(), ...user ? ['-l', user] : [], ...port ? ['-p', port] : [], '-G', '--', host];
+  const done = spawnSync('ssh', args, { encoding: 'utf8' });
+  // ssh -G 失败（端口不对、配置有错）或没给出 hostname 时不猜，直接报错。
+  const resolved = (done.status === 0 && /^hostname (\S+)$/mi.exec(done.stdout)?.[1]) || bad('origin');
   const kept = isFqdn(host) && resolved.toLowerCase() === `ssh.${host}`.toLowerCase() ? host : resolved;
   const name = kept.toLowerCase() === 'ssh.github.com' ? 'github.com' : kept;
-  return isFqdn(name) ? name : new RegExp(`^${LABEL}$`).test(name) ? null : bad('origin');
+  return isFqdn(name) ? name : bad('origin');
 };
-// origin 的仓库标识：https://、ssh://[user@]host[:port]/owner/repo(.git) 或 [user@]host:owner/repo(.git)；本地路径和解析不出域名的 SSH 别名返回 null。
+// origin 的仓库标识：https://[userinfo@]host/owner/repo(.git)、ssh://[user@]host[:port]/owner/repo(.git) 或 [user@]host:owner/repo(.git)。
+// 带协议头的和 SCP 写法（冒号前没有斜线；只有 Windows 上 X: 开头是盘符）都是网络远端，不合上面的格式就报错；只有本地路径返回 null。
 const originIdOf = url => {
-  if (/^https:\/\//i.test(url)) return repoIdOf(url, 'origin');
-  const ssh = url.match(SSH_URL) ?? url.match(SCP_URL);
-  if (!ssh) return null;
-  const [, owner, repo] = ssh[2].match(OWNER_REPO) ?? bad('origin');
-  const host = sshHost(ssh[1]);
-  return host && idOf(host, owner, repo, 'origin');
+  const https = url.match(ORIGIN_HTTPS);
+  if (https) return idOf(https[1], https[2], https[3], 'origin');
+  const scp = /^[^/]*:/.test(url) && !(process.platform === 'win32' && /^[A-Za-z]:/.test(url));
+  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url) && !scp) return null;
+  const { user, host, port, path } = (url.match(SSH_URL) ?? url.match(SCP_URL) ?? bad('origin')).groups;
+  const [, owner, repo] = path.match(OWNER_REPO) ?? bad('origin');
+  const ownerRepo = pathOf(owner, repo, 'origin');
+  return `${sshHost(host, user, port)}/${ownerRepo}`.toLowerCase();
 };
 const localMembers = () => state.members.filter(member => prIdOf(member.url) === state.repository);
 // 人工任务的必填备注由脚本检查，缺少时回到同一张卡。用户附上的文件也算附言，路径随反馈交回主 Agent。

@@ -19,7 +19,7 @@
   <message id="closed" name="pull_request.closed" />
   <process id="pull-request" name="PR 生命流程" isExecutable="true" coda:autoRun="=vars.review.autoRun"
     coda:key='=lower case(if github.event.pull_request.html_url != null then github.event.pull_request.html_url
-      else if matches(inputs.pr, "^[hH][tT][tT][pP][sS]://([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?[.])+[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?/([A-Za-z0-9_.-]{3,}|[A-Za-z0-9_-][A-Za-z0-9_.-]?|[.][A-Za-z0-9_-])/([A-Za-z0-9_.-]{3,}|[A-Za-z0-9_-][A-Za-z0-9_.-]?|[.][A-Za-z0-9_-])/pull/[1-9][0-9]*$") and not(matches(inputs.pr, "^[hH][tT][tT][pP][sS]://[^/]*[.][0-9]+/")) and string length(substring before(substring after(inputs.pr, "://"), "/")) <= 253 then inputs.pr else null)'
+      else if matches(inputs.pr, "^[hH][tT][tT][pP][sS]://([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?[.])+[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?/([A-Za-z0-9_.-]{3,}|[A-Za-z0-9_-][A-Za-z0-9_.-]?|[.][A-Za-z0-9_-])/([A-Za-z0-9_.-]{3,}|[A-Za-z0-9_-][A-Za-z0-9_.-]?|[.][A-Za-z0-9_-])/pull/[1-9][0-9]*$") and not(matches(inputs.pr, "^[hH][tT][tT][pP][sS]://[^/]*[.][0-9]+/")) and 253 >= string length(substring before(substring after(inputs.pr, "://"), "/")) then inputs.pr else null)'
     coda:title='PR {{if github.event.coda.heard = null then (if review.pr = null then inputs.pr else review.pr) else "#" + string(github.event.number) + " " + github.event.pull_request.title}}'>
     <extensionElements>
       <coda:input name="pr" label="PR 地址" required="true" description="GitHub 返回的完整 PR 地址，不带末尾斜线、查询参数或片段；编号先用 gh pr view 解析。已有未结束运行时复用它" />

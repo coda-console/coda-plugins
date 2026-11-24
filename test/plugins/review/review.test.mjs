@@ -11,9 +11,10 @@ import { evaluate } from 'feelin';
 
 const script = fileURLToPath(new URL('../../../plugins/review/scripts/review.mjs', import.meta.url));
 
-test('GitHub-returned PR URLs share the event key without deriving repository identity from origin', () => {
+test('GitHub-returned PR URLs share the event key without deriving repository identity from origin', async () => {
   const source = readFileSync(new URL('../../../plugins/review/.coda/workflows/pull-request.bpmn', import.meta.url), 'utf8');
-  const expression = /coda:key='=([^']+)'/.exec(source)?.[1];
+  const { root, problem } = await readWorkflow(source, 'pull-request'); assert.ok(!problem, problem);
+  const expression = root.rootElements.find(e => e.$type === 'bpmn:Process').key?.replace(/^=/, '');
   assert.ok(expression);
   const key = (pr, event = {}, repository = 'Owner/Repo') => evaluate(expression, { inputs: { pr }, github: { event, repository } }).value;
   const expected = 'https://github.com/owner/repo/pull/402';

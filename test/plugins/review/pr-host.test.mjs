@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { readWorkflow } from '@coda-console/protocol/workflow';
 import { evaluate } from 'feelin';
 import { parsePrUrl } from '../../../plugins/review/scripts/step.mjs';
 
@@ -42,9 +43,10 @@ test('parsePrUrl takes the standard HTTPS address of any host and nothing else',
 });
 
 for (const flow of ['pull-request', 'pull-request-review']) {
-  test(`${flow} keys a manual PR by host, as the event does, and refuses what parsePrUrl refuses`, () => {
+  test(`${flow} keys a manual PR by host, as the event does, and refuses what parsePrUrl refuses`, async () => {
     const source = readFileSync(new URL(`../../../plugins/review/.coda/workflows/${flow}.bpmn`, import.meta.url), 'utf8');
-    const expression = /coda:key='=([^']+)'/.exec(source)?.[1];
+    const { root, problem } = await readWorkflow(source, flow); assert.ok(!problem, problem);
+    const expression = root.rootElements.find(e => e.$type === 'bpmn:Process').key?.replace(/^=/, '');
     assert.ok(expression);
     const key = (pr, event = {}) => evaluate(expression, { inputs: { pr }, github: { event } }).value;
     for (const url of [PUBLIC, ...GHE, 'https://github.com/.../app/pull/7']) {
@@ -127,6 +129,14 @@ test('the base is read, the checks waited for and the merge made on the PR\'s ow
     assert.deepEqual([merge.code, merge.said, merge.calls.length], [1, '不知道要合并哪个 PR 的哪个提交', 0], url);
     const base = f.run('base', { URL: url });
     assert.deepEqual([base.code, base.calls.length], [1, 0], url);
+  }
+});
+
+test('a manual review takes the PR address as given: with a space around it, it is refused before gh is asked', t => {
+  const f = fixture(t), env = { REVIEWERS: JSON.stringify({ '*': { agent: 'codex' } }), SESSION: JSON.stringify({ agent: 'codex' }) };
+  for (const pr of [`${GHE[0]} `, ` ${GHE[0]}`]) {
+    const done = f.run('review', { ...env, PR: pr });
+    assert.deepEqual([done.code, done.said, done.calls.length], [1, '不是 GitHub 上的 PR，需要标准 HTTPS PR 地址', 0], JSON.stringify(pr));
   }
 });
 
