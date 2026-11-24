@@ -8,7 +8,7 @@
 // 已知边界：好友撤回记录后，还没同步到的那台会让旧数多显示一会儿，不处理。
 // 某台已弃用的旧来源 ID（回包的 retired，不受本机用量读没读到影响）在同一作者下统一不要；再按作者汇总，排序沿用 aggregateLeaderboard。名片字段取回包里的 people。
 
-import { Tally, compareEntries } from './usage.mjs';
+import { Tally, compareEntries, shortAuthor } from './usage.mjs';
 
 export const STALE_PLUGIN = '这台的 Token 消耗榜插件需要更新';
 export const LOCAL_FAILED = '读不到本机用量';
@@ -21,11 +21,28 @@ const better = (source, held) => {
   return (source.totalTokens - held.totalTokens || source.turns - held.turns) > 0;
 };
 
+// Accord 公钥昵称规则 v1：从最高位起每次读 7 位，最多读 36 组。
+function accordId(author) {
+  if (typeof author !== 'string' || !/^ed25519:[0-9a-f]{64}$/.test(author)) return null;
+  const bytes = author.slice(8).match(/../g).map(pair => Number.parseInt(pair, 16));
+  let id = '';
+  for (let group = 0; group < 36; group++) {
+    let value = 0;
+    for (let bit = group * 7; bit < (group + 1) * 7; bit++) {
+      value = (value << 1) | ((bytes[bit >> 3] >> (7 - (bit & 7))) & 1);
+    }
+    if (value < 78) id += String.fromCharCode(97 + value % 26);
+    else if (value < 88) id += String(value - 78);
+    else if (id.length >= 2) break;
+  }
+  return id.length >= 2 ? id : null;
+}
+
 /**
  * members：视图里的每台机器 `{ machine: { id, name }, board }`（读到了回包）、`{ machine, problem }`（读不到，problem 是原因）或 `{ machine, pending: true }`（还在等回包）。
  * 没带 `sources` 的回包来自旧版插件，按读不到处理；回包里本机用量没读到（`local` 为 null）的，榜单照用，但记一条 `partial` 的 problem。
  * 返回：
- * - `entries`：榜单，每个作者一行，格式同单台的 entries；
+ * - `entries`：榜单，每个作者一行，带消歧后的 `displayId`；
  * - `locals`：本机用量，每个身份一块 `{ author, machines, ...合计与分模型, truncated }`；同一身份（selfAuthor）的几台相加，没有身份的每台各算一块；
  * - `problems`：`[{ machine, reason, partial? }]`，`pending`：还在等回包的机器；`incomplete` 为真表示合计还不全；
  * - `readable`：有没有读到回包的机器；`friends`：读到回包的机器里有没有哪台有好友（回包的 `friendCount`，与榜上谁是「我」无关）；`accord`、`noAccord`（读到了但没有 Accord 身份的机器）、`errors`（各台回包里的提示 `{ machine, text }`）、`truncated`。
@@ -55,20 +72,29 @@ export function mergeBoards(members) {
 
   const people = new Map();
   const person = author => {
-    if (!people.has(author)) people.set(author, { author, shortId: null, self: false, shared: false, name: null, emoji: null, color: null, tally: new Tally() });
+    if (!people.has(author)) people.set(author, { author, self: false, shared: false, emoji: null, color: null, tally: new Tally() });
     return people.get(author);
   };
   for (const { board } of boards) {
     for (const entry of board.people ?? []) {
       const one = person(entry.author);
-      one.shortId ??= entry.shortId;
       one.self ||= entry.self === true;
       one.shared ||= entry.shared === true;
-      for (const field of ['name', 'emoji', 'color']) one[field] ??= entry[field] ?? null;
+      for (const field of ['emoji', 'color']) one[field] ??= entry[field] ?? null;
     }
   }
   for (const source of chosen.values()) addModels(person(source.author).tally, source);
-  const entries = [...people.values()].map(({ tally, ...one }) => ({ ...one, ...tally.result() })).sort(compareEntries);
+  const ids = new Map(), counts = new Map();
+  for (const author of people.keys()) {
+    const id = accordId(author);
+    ids.set(author, id);
+    if (id) counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
+  const entries = [...people.values()].map(({ tally, ...one }) => {
+    const id = ids.get(one.author);
+    const displayId = id ? (counts.get(id) > 1 ? `${id}(${one.author.slice(-4)})` : id) : `${shortAuthor(one.author)}…`;
+    return { ...one, displayId, ...tally.result() };
+  }).sort(compareEntries);
   entries.forEach((entry, index) => { entry.rank = index + 1; });
 
   const groups = new Map();

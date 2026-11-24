@@ -23,6 +23,23 @@ test('同一作者的两台各有本机数据，又互相读到对方已发布�
   assert.equal(merged.incomplete, false);
 });
 
+test('用 Accord 公钥映射 ID：同一个公钥多台只算一次，重名公钥加末四位', () => {
+  const sakura = 'ed25519:24005142202c7fffffffffffffffffffffffffffffffffffffffffffffff01ab';
+  const sameId = sakura.slice(0, -4) + '3d2a';
+  const digits = 'ed25519:9d56c050a142850a142850a142850a142850a142850a142850a142850a142710';
+  const noId = `ed25519:${'f'.repeat(64)}`;
+  const first = member(X, reply({ selfAuthor: sakura, sourceId: 'x', friends: [{ author: digits }, { author: noId }] }));
+  const second = member(Y, reply({ selfAuthor: sakura, sourceId: 'y' }));
+  const displayIds = merged => Object.fromEntries(merged.entries.map(e => [e.author, e.displayId]));
+  assert.deepEqual(displayIds(mergeBoards([first, second])), {
+    [sakura]: 'sakura', [digits]: '07', [noId]: 'ffffffff…',
+  });
+  const third = member({ id: 'z', name: 'NAS' }, reply({ selfAuthor: sameId, sourceId: 'z', friends: [{ author: sakura, note: '好友备注' }] }));
+  assert.deepEqual(displayIds(mergeBoards([first, second, third])), {
+    [sakura]: 'sakura(01ab)', [sameId]: 'sakura(3d2a)', [digits]: '07', [noId]: 'ffffffff…',
+  });
+});
+
 test('同一条好友记录被两台读到：只算一次，两份版本不同时用最新的', () => {
   const phone = [bucket(DAY + 1000, 10)];
   const same = mergeBoards([
@@ -92,10 +109,10 @@ test('只有一台时，合并结果和这台自己的回包一致', () => {
 
 test('榜单按总量降序排名；名片字段取第一台读到的，提示与截断带上是哪台', () => {
   const merged = mergeBoards([
-    member(X, { ...reply({ selfAuthor: A, sourceId: 'x', friends: [{ author: B, note: '老王' }], records: [dayRec(B, 'phone', [bucket(DAY + 1000, 50)])] }), errors: ['读不到好友的用量'], truncated: { usage: true, friends: true, profiles: false } }),
-    member(Y, reply({ selfAuthor: A, sourceId: 'y', friends: [{ author: B, note: '王' }], local: [bucket(DAY + 2000, 20)] })),
+    member(X, { ...reply({ selfAuthor: A, sourceId: 'x', friends: [{ author: B, emoji: '🙂', color: 'blue' }], records: [dayRec(B, 'phone', [bucket(DAY + 1000, 50)])] }), errors: ['读不到好友的用量'], truncated: { usage: true, friends: true, profiles: false } }),
+    member(Y, reply({ selfAuthor: A, sourceId: 'y', friends: [{ author: B, emoji: '😺', color: 'green' }], local: [bucket(DAY + 2000, 20)] })),
   ]);
-  assert.deepEqual(merged.entries.map(e => [e.rank, e.author, e.name]), [[1, B, '老王'], [2, A, null]]);
+  assert.deepEqual(merged.entries.map(e => [e.rank, e.author, e.emoji, e.color]), [[1, B, '🙂', 'blue'], [2, A, null, null]]);
   assert.deepEqual(merged.errors, [{ machine: X, text: '读不到好友的用量' }]);
   assert.equal(merged.truncated.friends, true);
   assert.equal(merged.locals[0].truncated, true);
