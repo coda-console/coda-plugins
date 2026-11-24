@@ -276,8 +276,9 @@ export function createRpcStore(stateDir, { now = Date.now } = {}) {
    * admitted → submitted，提交给内核之前调用：已标了取消的不让提交（`canceled`）；同一个串行操作里读最新的授权行、按此刻判最晚启动时刻，
    * 授权没了、撤了或失效了给 `revoked`（`reason` 是失效的原因），过了最晚启动时刻给 `expired`；同时执行的配额也在这里判（`busy`）。
    * 已经是 submitted 的原样给回（重启后再提交用同一个幂等键）；已是终态的给 `terminal`。
+   * `ended(grant)` 是调用方另外的失效判定（还没落盘的失效），也在同一个串行操作里、决定提交的那一刻调用，给原因就当失效（`revoked`）。
    */
-  const markSubmitted = (caller, request) => serial(async () => {
+  const markSubmitted = (caller, request, ended = () => null) => serial(async () => {
     const grants = await load('grants');
     return updateNow(caller, request, (entry, entries) => {
       if (entry.state === 'submitted') return entry;
@@ -285,6 +286,8 @@ export function createRpcStore(stateDir, { now = Date.now } = {}) {
       if (entry.canceled) return { ok: false, code: 'canceled', entry };
       const grant = grants[entry.grant];
       if (!grant || grant.revokedAt !== undefined) return { ok: false, code: 'revoked', ...(grant?.endedBy ? { reason: grant.endedBy } : {}), entry };
+      const reason = ended(grant);
+      if (reason) return { ok: false, code: 'revoked', reason, entry };
       if (now() >= entry.notAfter) return { ok: false, code: 'expired', entry };
       return tallyVerdict('executing', counts(entries, caller).executing) ?? { ...entry, state: 'submitted' };
     });

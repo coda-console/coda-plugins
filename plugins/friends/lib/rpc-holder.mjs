@@ -109,13 +109,15 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
     return null;
   }
   // 事件里观察到的失效：先记进内存的表，再落盘；落盘失败不丢，按退避重试到成功为止。
+  // 同一个键再来一次（同一目标又删一次、又从同一个根换走）：新条目替掉旧的。同键的 `match` 相同，旧条目管的授权（授出在旧事件之前）
+  // 新条目都管，只是 `after` 从这次事件重新算；旧条目的重试不再做，免得按旧的 `after` 撤掉之后新授出的授权。
   function endGrants(key, match, endedBy) {
     const one = { match, endedBy, after: new Set() };
     pendingEnds.set(key, one);
     persistEnd(key, one, END_RETRY_MS);
   }
   function persistEnd(key, one, delay) {
-    if (stopped) return;
+    if (stopped || pendingEnds.get(key) !== one) return;
     store.endGrants(grant => !one.after.has(grant.id) && one.match(grant), one.endedBy).then(ended => {
       if (pendingEnds.get(key) === one) pendingEnds.delete(key);
       for (const grant of ended) dirtyGrants.add(grant.id);
@@ -181,7 +183,9 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
     if (stopped || !signing(me)) return false;
     const record = grantRecord({ holder: row.holder.root, grantee: row.grantee, grant: row.id, spec: pickSpec(target.spec), available: target.status?.available === true, grantedAt: row.createdAt });
     const [mine] = (await coda.query(ACCORD, 'records', { kind: KIND_GRANT, author: me.root, id, limit: 1 }))?.records ?? [];
-    if (stopped || (await store.getGrant(id))?.revokedAt !== undefined) return false;
+    // 签之前再读一次：撤了，或这时落进了待落盘的失效，都不发（失效落盘后再来撤）。
+    const latest = await store.getGrant(id);
+    if (stopped || latest?.revokedAt !== undefined || pendingEnd(latest)) return false;
     if (mine?.local !== true || !isDeepStrictEqual(mine.body, record.body)) await signRpc(record);
     return true;
   }
@@ -319,7 +323,8 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
     const problem = grantProblem(grant, me, grant ? await targetOf(grant.target) : null);
     if (stopped || problem === 'no_identity') return null;
     if (problem) { await invalidate(grant, problem); return end(entry, refused(problem)); }
-    const marked = await store.markSubmitted(entry.caller, entry.request);
+    // 待落盘的失效也在 store 的同一个串行操作里查：排队期间才观察到的失效同样挡住提交。
+    const marked = await store.markSubmitted(entry.caller, entry.request, pendingEnd);
     if (marked.ok || marked.code === 'terminal') return marked.entry;
     if (marked.code === 'canceled') return end(marked.entry, canceledOutcome());
     if (marked.code === 'revoked' || marked.code === 'expired') return end(marked.entry, refused(marked.reason ?? marked.code));
@@ -493,11 +498,11 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
   }
 
   // 一条授权此刻的状态：available（可用）、target_off（目标已关）、target_missing（目标不在）、needs_cert（等证书）、
-  // revoked（已撤）、root_changed（本机的根换了，旧根下的授权停用）。
+  // revoked（已撤）、root_changed（本机的根换了，旧根下的授权停用）。在待落盘的失效里的，与准入一样当作已失效。
   function describe(row, me, target) {
-    const status = row.revokedAt !== undefined ? (row.endedBy ?? 'revoked')
-      : isAuthor(me.root) && row.holder.root !== me.root ? 'root_changed' : targetProblem(row, target) ? 'target_missing'
-        : !signing(me) ? 'needs_cert' : target.status?.available === true ? 'available' : 'target_off';
+    const status = row.revokedAt !== undefined ? (row.endedBy ?? 'revoked') : pendingEnd(row)
+      ?? (isAuthor(me.root) && row.holder.root !== me.root ? 'root_changed' : targetProblem(row, target) ? 'target_missing'
+        : !signing(me) ? 'needs_cert' : target.status?.available === true ? 'available' : 'target_off');
     return { grant: row.id, friend: row.grantee, target: { kind: row.target.kind, id: row.target.id, name: target?.spec?.name ?? null },
       createdAt: row.createdAt, ...(row.revokedAt === undefined ? {} : { revokedAt: row.revokedAt }), status };
   }

@@ -1005,6 +1005,87 @@ test('an ending that fails to reach the disk is kept in memory: back on the old 
   assert.equal(h.exec.runs, 0);
 });
 
+// 失效落盘失败时的几处交错：`endGrants`、`revokeGrant` 写不进去，直到 `disk.failing` 改回 false；失效落盘的重试记在 `retries`，由测试放行。
+function failingDisk(more = {}) {
+  const disk = { failing: true, retries: [] };
+  const failing = write => (...args) => disk.failing ? Promise.reject(new Error('写不进去')) : write(...args);
+  disk.timers = { setTimeout: (fn, ms) => { if (ms !== POLL_MS) disk.retries.push(fn); return null; }, clearTimeout() {} };
+  disk.wrapStore = store => ({ ...store, endGrants: failing(store.endGrants), revokeGrant: failing(store.revokeGrant), ...more(store) });
+  return disk;
+}
+
+test('an ending seen while the submit waits in the store queue is checked in that same store step: the command does not start, also when the ending cannot reach the disk', async t => {
+  for (const [what, code] of [['target', 'target_missing'], ['root', 'root_changed']]) {
+    let fire = null;
+    // markSubmitted 进了 store 的队、还没轮到时，来一个删除再重建（或 A→B→A）的事件。
+    const disk = failingDisk(store => ({ markSubmitted: (...args) => { const run = store.markSubmitted(...args); fire?.(); fire = null; return run; } }));
+    disk.failing = false;
+    const h = await holderOf(t, disk);
+    const { grant } = await h.grant();
+    disk.failing = true;
+    fire = what === 'target' ? () => { h.targets.remove('rx-1'); h.targets.set('rx-1'); } : () => { h.accord.change({ author: NEW_ROOT }); h.accord.change({ author: ME }); };
+    const body = send(h, { grant });
+    await h.settle();
+    assert.equal(fire, null, `${what}: the event fired`);
+    assert.equal(h.exec.runs, 0, what);
+    assert.deepEqual(h.answers(F1, body.request), ['running', 'failed'], what);
+    assert.equal(h.lastAnswer(F1, body.request).body.error.code, code, what);
+    assert.equal((await h.store.getGrant(grant)).revokedAt, undefined, `${what}: not on disk yet`);
+  }
+});
+
+test('the same ending key seen twice keeps one retry: delete, rebuild, delete, rebuild (or A to B and back, twice) with both writes failing; once the disk recovers the old grants end and the newest stays', async t => {
+  for (const what of ['target', 'root']) {
+    const disk = failingDisk(() => ({}));
+    const h = await holderOf(t, disk);
+    const flip = what === 'target' ? async () => { h.targets.remove('rx-1'); h.targets.set('rx-1'); }
+      : async () => { h.accord.change({ author: NEW_ROOT }); await h.accord.change({ author: ME }); };
+    const first = (await h.grant()).grant;
+    await flip();
+    const second = (await h.grant()).grant;
+    await until(() => disk.retries.length >= 1, '第一次失效的重试排上');
+    await flip();
+    const newest = (await h.grant()).grant;
+    await h.settle();
+    disk.failing = false;
+    // 先放旧事件的重试，再放新的。
+    for (const retry of disk.retries.splice(0)) retry();
+    await until(async () => (await h.store.getGrant(second)).revokedAt !== undefined, `${what}: 失效落盘`);
+    await h.settle();
+    assert.equal(h.holder.pendingEnds(), 0, what);
+    const ended = Object.fromEntries((await h.store.listGrants()).map(row => [row.id, row.revokedAt !== undefined]));
+    assert.deepEqual([ended[first], ended[second], ended[newest]], [true, true, false], what);
+    const { grants } = await h.holder.self['grants.list']();
+    assert.equal(grants.find(row => row.grant === newest).status, 'available', what);
+  }
+});
+
+test('an ending not yet on disk keeps a grant record from being published and shows in grants.list: a delete during the directory lookup, a rebuild under the same id, a return to the old root', async t => {
+  const disk = failingDisk(() => ({}));
+  const h = await holderOf(t, disk);
+  const release = h.accord.hold(input => input.kind === 'friends/rpc-grant');
+  const granting = h.grant();
+  await until(() => h.accord.held(), '初次发布卡在目录查询');
+  h.targets.remove('rx-1');
+  release();
+  const { grant } = await granting;
+  await h.settle();
+  h.targets.set('rx-1');
+  await h.settle();
+  assert.deepEqual(h.published('friends/rpc-grant').filter(call => call.audience.length), [], 'no grant record with a body was signed');
+  assert.equal((await h.store.getGrant(grant)).revokedAt, undefined, 'not on disk yet');
+  const status = async id => (await h.holder.self['grants.list']()).grants.find(row => row.grant === id).status;
+  assert.equal(await status(grant), 'target_missing');
+
+  const second = (await h.grant()).grant;
+  assert.equal(await status(second), 'available');
+  h.accord.change({ author: NEW_ROOT });
+  await h.accord.change({ author: ME });
+  await h.settle();
+  assert.equal((await h.store.getGrant(second)).revokedAt, undefined, 'not on disk yet');
+  assert.equal(await status(second), 'root_changed');
+});
+
 // ---- coda self ----
 
 test('coda self grants.list, grants.grant, grants.revoke and ledger.list go through the activated module', async t => {
