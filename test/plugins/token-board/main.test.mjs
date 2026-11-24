@@ -311,7 +311,8 @@ for (const [name, setup] of [
     assert.equal(board.accord, false);
     assert.equal(board.selfAuthor, null);
     assert.equal(board.friendCount, 0);
-    assert.deepEqual(board.entries, []);
+    assert.deepEqual(board.people, []);
+    assert.deepEqual(board.sources, []);
     assert.equal(board.syncState, 'no_gateway');
     assert.equal(board.local.totalTokens, 116);
     assert.equal(board.curve.reduce((n, slot) => n + slot.totalTokens, 0), 116);
@@ -327,6 +328,23 @@ for (const [name, setup] of [
     assert.deepEqual(off.errors, []);
   });
 }
+
+test('榜单按页面发来的 from、to 查本机用量：落在窗口内、但在这台当地午夜之前的用量也算', async t => {
+  freeze(t);
+  const midnight = startOfBucket(new Date(new Date(now).getFullYear(), new Date(now).getMonth(), new Date(now).getDate()).getTime());
+  const early = bucket(midnight - 3_600_000), asked = { from: midnight - 7_200_000, to: now + 1 };
+  const state = mkdir(t), host = fake({ state, usage: [early] });
+  activate(host.coda);
+  const page = host.open();
+  page.tell({ type: 'board', range: 'today', ...asked, id: 1 });
+  const board = await page.waitFor('board');
+  assert.deepEqual([board.from, board.to], [asked.from, asked.to]);
+  assert.equal(board.local.totalTokens, 116, '自己的「今天」从当地午夜起算，会漏掉这条');
+  const seen = page.got.length;
+  page.tell({ type: 'board', range: 'today', id: 2 });
+  const own = await page.waitFor('board', seen);
+  assert.equal(own.local.totalTokens, 0, '没带窗口时仍按自己的当地时间算今天');
+});
 
 test('没有好友插件：手动撤回不假装成功，保留本机已知发布 ID 索引，提示清晰；装回来之后能撤', async t => {
   freeze(t);
@@ -551,8 +569,10 @@ test('从随机 UUID 换成机器 ID：同一台机器的旧记录不被当成�
   page.tell({ type: 'board', range: 'today', id: 1 });
   const board = await page.waitFor('board');
   assert.deepEqual(sourceFile(state), { source: 'machine', sourceId: 'machine-1', legacy: [old] });
-  const self = board.entries.find(e => e.self);
-  assert.equal(self.totalTokens, 116 + 1000, '本机一次 + 兄弟机器，不含旧 UUID 的三种旧记录');
+  const owned = author => board.sources.filter(source => source.author === author).reduce((n, source) => n + source.totalTokens, 0);
+  assert.equal(owned(board.selfAuthor), 116 + 1000, '本机一次 + 兄弟机器，不含旧 UUID 的三种旧记录');
+  assert.deepEqual(board.sources.map(source => [source.sourceId, source.local]).sort(), [['machine-1', true], ['tablet', false]], '回包带每个来源的合计，旧 UUID 不在里面');
+  assert.equal(board.sources.find(source => source.local).totalTokens, 116);
   assert.equal(board.curve.reduce((n, slot) => n + slot.totalTokens, 0), 116 + 1000);
   assert.equal(host.published.length, 0, '没同步就不发');
 
@@ -784,15 +804,16 @@ test('页面取榜单：本机用量、经网关按作者翻页读记录（沿 c
   assert.equal(board.accord, true);
   assert.equal(board.selfAuthor, AUTHOR);
   assert.equal(board.friendCount, 1);
-  assert.deepEqual(board.entries.map(e => [e.rank, e.author, e.self]), [[1, FRIEND, false], [2, AUTHOR, true]]);
-  assert.equal(board.entries[0].totalTokens, 3000, '三页都读到了');
-  assert.equal(board.entries[0].name, '备注 小明', '备注优先于名片');
-  assert.equal(board.entries[0].emoji, '🦊');
-  assert.equal(board.entries[0].color, 'orange');
-  assert.equal(board.entries[1].name, '我<i>自己</i>');
-  assert.equal(board.entries[1].emoji, '🧑');
-  assert.equal(board.entries[1].color, 'teal');
-  assert.equal(board.entries[1].totalTokens, 116);
+  assert.deepEqual(board.people.map(e => [e.author, e.self]), [[FRIEND, false], [AUTHOR, true]]);
+  assert.equal(board.sources.filter(source => source.author === FRIEND).reduce((n, source) => n + source.totalTokens, 0), 3000, '三页都读到了');
+  assert.equal(board.people[0].name, '备注 小明', '备注优先于名片');
+  assert.equal(board.people[0].emoji, '🦊');
+  assert.equal(board.people[0].color, 'orange');
+  assert.equal(board.people[1].name, '我<i>自己</i>');
+  assert.equal(board.people[1].emoji, '🧑');
+  assert.equal(board.people[1].color, 'teal');
+  assert.equal(board.sources.find(source => source.local).totalTokens, 116);
+  assert.ok(!('entries' in board), '不再另发一份按作者聚合的统计');
   assert.deepEqual(board.truncated, { usage: false, friends: false, profiles: false });
   assert.equal(board.syncState, 'disabled');
   assert.equal(board.curve.at(-1).totalTokens + board.curve.at(-2).totalTokens, 116);
@@ -838,9 +859,25 @@ test('读用量失败不拖垮页面；未知范围按设置里的；坏消息�
   const board = await page.waitFor('board');
   assert.equal(board.range, '7d');
   assert.ok(board.errors.some(e => e.includes('boom')));
+  assert.equal(board.local, null, '没读到本机用量不能当成没有用量');
+  assert.deepEqual(board.sources, [], '也不交出一份零值的本机来源');
   for (const bad of [null, 5, 'x', {}, { type: 'unknown' }]) page.tell(bad);
   await host.settle();
   assert.equal(page.got.filter(m => m.type === 'error').length, 0);
+});
+
+test('榜单回包超过宿主消息上限：回一个送得到的失败（带请求标识），不发 board', async t => {
+  freeze(t);
+  const at = startOfBucket(now), host = fake({ state: mkdir(t), usage: Array.from({ length: 1500 }, (_, i) => bucket(at, { model: `model-${i}-${'x'.repeat(40)}` })) });
+  activate(host.coda);
+  const page = host.open();
+  page.tell({ type: 'board', range: 'today', id: 9 });
+  const failure = await page.waitFor('error');
+  assert.deepEqual([failure.request, failure.id], ['board', 9]);
+  assert.ok(failure.message.includes('超过宿主'));
+  assert.equal(page.last('board'), undefined);
+  page.tell({ type: 'board', range: 'today', id: 10 });
+  assert.equal((await page.waitFor('error', page.got.length)).id, 10);
 });
 
 test('deactivate 后首跳和定时器不再运行', async t => {
@@ -931,7 +968,7 @@ test('好友查询失败时统计与曲线照常，只记一条提示；记录�
   assert.equal(second.local.totalTokens, 116);
   assert.equal(second.curve.reduce((n, slot) => n + slot.totalTokens, 0), 116);
   assert.ok(second.errors.some(e => e.includes('好友')));
-  assert.equal(second.entries.find(e => e.self).totalTokens, 116);
+  assert.equal(second.sources.find(source => source.local).totalTokens, 116);
   host.recordsError = null;
   page.tell({ type: 'sync' });
   await host.settle();

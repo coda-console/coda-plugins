@@ -643,3 +643,19 @@ test('榜单：好友行自带的备注优先于名片名，没有名片记录�
   assert.equal(named.find(e => e.author === B).name, '记录名', '没有备注时名片记录优先于好友行的 profileName');
   assert.equal(named.find(e => e.author === B).color, 'orange');
 });
+
+test('榜单 sources：每个（作者, 来源）一份合计，本机的标 local，其余没有 local；本机用量没读到或没有身份就没有本机来源', () => {
+  const day = Date.UTC(2026, 10, 20), instant = day + 4 * 3_600_000;
+  const { entries, sources } = aggregateLeaderboard({
+    selfAuthor: A, selfSourceId: 'machine-1', friends: [{ author: B }], from: day, to: instant, localBuckets: [one(day + 1000, 100)],
+    dayRecords: [dayRec(B, 'phone', [one(day + 1000, 10)], '2026-11', 4), dayRec(A, 'machine-1', [one(day + 1000, 100)]), dayRec(A, 'tablet', [one(day + 1000, 7)], '2026-11', 2)],
+    todayRecords: [todayRec(B, 'phone', [one(day + 1000, 10)], instant, 6)],
+  });
+  const view = sources.map(s => [s.author, s.sourceId, s.local, s.input]).sort();
+  assert.deepEqual(view, [[A, 'machine-1', true, 100], [A, 'tablet', false, 7], [B, 'phone', false, 10]].sort());
+  assert.deepEqual(sources.find(s => s.sourceId === 'tablet').models.map(m => [m.model, m.totalTokens]), [['opus', 7]]);
+  assert.equal(entries.find(e => e.author === A).input, 107, '作者的合计就是它名下各来源之和');
+  assert.deepEqual(aggregateLeaderboard({ from: day, to: instant, localBuckets: [one(day + 1000, 100)] }).sources, []);
+  const failed = aggregateLeaderboard({ selfAuthor: A, selfSourceId: 'machine-1', from: day, to: instant, localBuckets: null, dayRecords: [dayRec(A, 'machine-1', [one(day + 1000, 100)])] });
+  assert.deepEqual(failed.sources.map(s => [s.sourceId, s.local, s.input]), [['machine-1', false, 100]], '本机用量没读到：不交出本机来源，自己发布过的副本照常算');
+});
