@@ -92,7 +92,7 @@ test('with the switch off the command is not run, the refusal is `disabled`, and
 test('the log line has the time, call id, the caller as it came, the command and directory, the exit status and the duration', async t => {
   const dir = scratch(t), { host, id } = await run(t, { command: 'exit 2', cwd: dir });
   const [line] = host.lines();
-  assert.deepEqual(Object.keys(line).sort(), ['caller', 'id', 'ms', 'operation', 'params', 'result', 'time']);
+  assert.deepEqual(Object.keys(line).sort(), ['caller', 'id', 'ms', 'op', 'operation', 'params', 'result', 'time']);
   assert.equal(line.id, id);
   assert.deepEqual(line.caller, caller);
   assert.deepEqual(line.params, { command: 'exit 2', cwd: dir });

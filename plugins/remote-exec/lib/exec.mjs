@@ -1,10 +1,12 @@
 // 执行：/bin/sh -c 跑一条命令，等它结束，回退出码与（截短的）输出。
 import { stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { cleanEnv, shellArgs } from './environ.mjs';
 import { defaultCwd } from './host.mjs';
 import { terminate } from './kill.mjs';
 import { timeLimit } from './limits.mjs';
-import { openOutputs } from './output.mjs';
+import { openOutputs, sweepOutputs } from './output.mjs';
 import { absolute, begin, fsError } from './operation.mjs';
 
 async function checkCwd(coda, cwd) {
@@ -17,21 +19,43 @@ async function checkCwd(coda, cwd) {
 // 终止之后等输出收完的时间上限：命令里起的脱离进程组的进程（新会话）会拿着继承来的输出管道，组已经没了管道还不关。
 export const DRAIN = 2000;
 
+// 同时在跑的执行至多这么多，再来的以 `too_many_running` 拒绝（什么都没做）。
+export const MAX_RUNNING = 8;
+let running = 0;
+export const runningCount = () => running;
+// 正在用的输出目录：回收时跳过它们。
+const activeOutputs = new Set();
+
 // 一路输出读到结束，按块交给收集器；写不进去就抛。
 const pump = async (stream, sink) => { for await (const chunk of stream) await sink.write(chunk); };
 
 // 起进程、收输出、到点或被取消就结束整个进程组。成功回结果；取消与到期（外部）抛 `ctx.signal.reason`；失败抛错。
 // 终止之后只再等 `DRAIN` 毫秒让输出收完；还没收完（脱离进程组的后代拿着管道）就销毁两路输出、不再等，按已收到的输出走原来的结局。
 // 不论哪种结局，进程都已结束；没人要的输出目录已删。
-async function run(coda, input, ctx, cwd) {
+async function run(coda, input, ctx, cwd, max = MAX_RUNNING) {
+  if (running >= max) {
+    throw coda.error('too_many_running', `这台机器上已有 ${running} 个执行在跑（上限 ${max}），稍后再试`, { effects: 'none', retryAfterMs: 5000 });
+  }
+  running++;
+  try { return await runSlot(coda, input, ctx, cwd); } finally { running--; }
+}
+
+async function runSlot(coda, input, ctx, cwd) {
   await checkCwd(coda, cwd);
   const limit = timeLimit(input.timeout, ctx.deadline);
+  await sweepOutputs(tmpdir(), { active: activeOutputs });
   const outputs = await openOutputs(ctx.id);
+  activeOutputs.add(outputs.dir);
+  try { return await runWith(coda, input, ctx, cwd, limit, outputs); } finally { activeOutputs.delete(outputs.dir); }
+}
+
+async function runWith(coda, input, ctx, cwd, limit, outputs) {
   const started = Date.now();
   let child;
   try {
-    // 执行进程不能看到插件令牌；env 会 exec 成 sh，进程组的根不变。
-    child = await ctx.spawn('/usr/bin/env', ['-u', 'CODA_TOKEN', '/bin/sh', '-c', input.command], { cwd });
+    // 不继承后端的环境：`env -i` 清空，只带白名单（见 environ.mjs）；env 会 exec 成 sh，进程组的根不变。
+    const [command, args] = shellArgs(input.command, cleanEnv());
+    child = await ctx.spawn(command, args, { cwd });
   } catch (error) {
     await outputs.discard();
     throw error;
@@ -87,7 +111,7 @@ export async function exec(env, input, ctx) {
   const cwd = input.cwd ?? defaultCwd();
   const op = begin(env, 'exec', ctx, { command: input.command, cwd, timeout: input.timeout });
   // 判定点拿到完整的执行输入（含 stdin 与实际生效的 cwd）；记录只记命令全文、目录与传入的时限（没给就不写），不记 stdin。
-  const result = await op.guard({ command: input.command, cwd, timeout: input.timeout, stdin: input.stdin }, () => run(env.coda, input, ctx, cwd));
+  const result = await op.guard({ command: input.command, cwd, timeout: input.timeout, stdin: input.stdin }, () => run(env.coda, input, ctx, cwd, env.maxRunning));
   await op.record({ result: { exitCode: result.exitCode, signal: result.signal, timedOut: result.timedOut } });
   return result;
 }

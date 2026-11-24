@@ -1,5 +1,6 @@
 // 拉取（读的流）与推送（写的流）。错误都在第一个字节之前以带码的错误抛，读的 effects 一律 none。
 import { randomBytes } from 'node:crypto';
+import { constants } from 'node:fs';
 import { mkdir, open, readlink, realpath, rename, rm, rmdir, stat } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import { writeAll } from './output.mjs';
@@ -8,16 +9,23 @@ import { absolute, begin, errorCode, fsError } from './operation.mjs';
 // `length` 不给就不声明长度。
 const octet = length => ({ status: 200, headers: { 'content-type': 'application/octet-stream', ...(length === undefined ? {} : { 'content-length': String(length) }) } });
 
+// 推送的大小上限：请求体超过它就拒绝（`too_large`），临时文件删掉，原文件不动。
+export const MAX_PUSH = 1024 * 1024 * 1024;
+
 // 打开普通文件，目录与特殊节点（FIFO、设备、套接字）不行；回 `{ handle, size }`。
-// `open` 之前先 `stat`：打开没有写端的 FIFO 会一直挂住；`open` 之后再确认一次，防的是两步之间被换掉。
+// 非阻塞打开（没有写端的 FIFO 也不会挂住），打开之后对句柄判类型；对普通文件的读不受非阻塞影响。
 async function openFile(coda, path) {
   const check = info => {
     if (info.isDirectory()) throw coda.error('is_a_directory', `${path}：是目录，不能当文件读`, { effects: 'none' });
     if (!info.isFile()) throw coda.error('not_a_regular_file', `${path}：不是普通文件（FIFO、设备或套接字），不能读`, { effects: 'none' });
   };
-  try { check(await stat(path)); } catch (error) { throw fsError(coda, error, path); }
   let handle;
-  try { handle = await open(path, 'r'); } catch (error) { throw fsError(coda, error, path); }
+  try { handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK); } catch (error) {
+    // 有的特殊节点（如 Unix 套接字）根本打不开：看一眼路径是什么，是特殊节点就照样按类型拒绝，别的打开错误照原规则。
+    const info = await stat(path).catch(() => null);
+    if (info) check(info);
+    throw fsError(coda, error, path);
+  }
   try {
     const info = await handle.stat();
     check(info);
@@ -53,11 +61,12 @@ export async function pull(env, request, ctx) {
     const record = fields => { if (!recorded) { recorded = true; return op.record(fields); } };
     // 调用被中止：文件关掉，响应体当场以取消的原因出错（预读的块随之丢掉），并记一行，不等调用方再读。
     // 响应体建立之前（还在读第一块）只关文件：随后 next 抛出取消的原因，由 guard 记那一行。
+    // 先记再让响应体出错：调用方看到结束时，记录已经写完。
     const onAbort = () => {
       file.destroy();
       if (!controller) return;
-      controller.error(ctx.signal.reason);
-      record({ error: errorCode(ctx.signal.reason) });
+      const reason = ctx.signal.reason;
+      Promise.resolve(record({ error: errorCode(reason) })).finally(() => { try { controller.error(reason); } catch { /* 已经结束 */ } });
     };
     ctx.signal.addEventListener('abort', onAbort, { once: true });
     // 下一块；读完回 null。读失败、读到的比声明的短（文件在读的过程中被截短）都是错误，不当成功。
@@ -85,10 +94,11 @@ export async function pull(env, request, ctx) {
         try {
           const chunk = pending ?? await next();
           pending = null;
-          if (chunk === null) { controller.close(); await record({ result: { bytes: sent } }); } else controller.enqueue(chunk);
+          // 先记再结束响应：调用方读到结尾时，这一行已经写完（不会在它清理之后才迟到地追加）。
+          if (chunk === null) { await record({ result: { bytes: sent } }); controller.close(); } else controller.enqueue(chunk);
         } catch (error) {
-          controller.error(error);
           await record({ error: errorCode(error) });
+          controller.error(error);
         }
       },
       // 读的人走了：关掉文件。
@@ -164,11 +174,16 @@ export async function push(env, request, ctx) {
           throw coda.error('group_unavailable', `${path}：改不成原文件的属组（gid ${existing.gid}），不替换：${error.message}`, { effects: 'none' });
         }
       }
+      const cap = env.maxPush ?? MAX_PUSH;   // 测试里换小
+      const tooLarge = () => coda.error('too_large', `${path}：超过推送的大小上限 ${cap} 字节，没有写入`, { effects: 'none' });
+      const declared = Number(request.headers?.get?.('content-length'));
+      if (Number.isFinite(declared) && declared > cap) throw tooLarge();
       reader = request.body?.getReader();
       ctx.signal.throwIfAborted();   // 取消若在拿到 reader 之前到，监听没有东西可取消
       while (reader) {
         const { value, done } = await reader.read();
         if (done) break;
+        if (written + value.length > cap) throw tooLarge();
         await writeAll(handle, value);
         written += value.length;
       }
