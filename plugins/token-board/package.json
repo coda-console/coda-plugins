@@ -2,9 +2,9 @@
   "name": "@coda-console/token-board",
   "id": "token-board",
   "displayName": "Token 消耗榜",
-  "description": "看本机的 Token 用量，并和好友比一比（可选，默认不分享）",
+  "description": "看本机的 Token 用量，并和好友比一比（默认向好友分享，可关闭）",
   "icon": { "symbol": "chart.bar.fill", "color": "orange" },
-  "version": "0.4.0",
+  "version": "0.4.1",
   "categories": [
     "Skills 与工具"
   ],
@@ -31,7 +31,7 @@
           "title": "向好友分享用量",
           "type": "boolean",
           "order": 0,
-          "default": false,
+          "default": true,
           "description": "开启后每 10 分钟向好友发布按月归档的每日汇总和最近 48 小时的 30 分钟曲线：只有按 Agent 和模型的 Token 数与回合数，不含会话、目录、正文和费用。关闭后会撤回已发布的记录。"
         },
         "token-board.range": {

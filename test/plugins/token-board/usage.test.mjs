@@ -107,16 +107,12 @@ test('一天太大时合并成按小时，再不行合并成整天一块，且�
   assert.ok(Object.keys(body.blocks).length <= 24);
 });
 
-test('名片清洗：去控制字符、截断、颜色只认 #RRGGBB、缺字段回退', () => {
-  assert.deepEqual(sanitizeProfile({ body: { name: '  小\u0000明\n\t同学‮ ', emoji: '🦊', color: '#FF8800' } }), { name: '小 明 同学', emoji: '🦊', color: '#ff8800' });
-  assert.equal(sanitizeProfile({ body: { name: 'x'.repeat(100) } }).name.length, 40);
-  assert.equal(Array.from(sanitizeProfile({ body: { name: '😀'.repeat(60) } }).name).length, 40);
+test('名片清洗：只提取头像与颜色，头像去控制字符并截断', () => {
+  assert.deepEqual(sanitizeProfile({ body: { name: '名片名', emoji: ' \u0000🦊\n ', color: '#FF8800' } }), { emoji: '🦊', color: '#ff8800' });
   assert.equal(Array.from(sanitizeProfile({ body: { emoji: '😀'.repeat(20) } }).emoji).length, 8);
-  assert.equal(sanitizeProfile({ body: { color: 'red; background:url(x)' } }).color, null);
-  assert.equal(sanitizeProfile({ body: { name: '<img src=x onerror=alert(1)>' } }).name, '<img src=x onerror=alert(1)>', '当文本留着，由页面用 textContent 渲染');
-  assert.deepEqual(sanitizeProfile({ body: { name: 42, emoji: { a: 1 }, color: [] } }), { name: null, emoji: null, color: null });
-  assert.deepEqual(sanitizeProfile({ body: { name: '\u0000\u0001  ' } }), { name: null, emoji: null, color: null });
-  for (const bad of [null, undefined, {}, { body: null }, { body: 'x' }, 7]) assert.deepEqual(sanitizeProfile(bad), { name: null, emoji: null, color: null });
+  assert.deepEqual(sanitizeProfile({ body: { emoji: { a: 1 }, color: [] } }), { emoji: null, color: null });
+  assert.equal(sanitizeProfile({ body: { emoji: '\u0000\u0001  ' } }).emoji, null);
+  for (const bad of [null, undefined, {}, { body: null }, { body: 'x' }, 7]) assert.deepEqual(sanitizeProfile(bad), { emoji: null, color: null });
 });
 
 test('名片颜色：好友插件的命名色板和 #RRGGBB 通过，其他一律丢弃', () => {
@@ -214,21 +210,19 @@ test('恶意记录体：坏键、负数、小数、超大数、非对象都被�
   assert.ok(b.models.every(m => typeof m.model === 'string' && !/[\u0000-\u001f]/.test(m.model)));
 });
 
-test('名片：同一作者取最新版本；缺名片时没有名字（页面回退短码）', () => {
+test('名片：仅使用已知作者的最新版本，缺名片时头像与颜色为空', () => {
+  const stranger = 'ed25519:' + 'd'.repeat(64);
   const { entries } = aggregateLeaderboard({
     selfAuthor: A, selfSourceId: 'me', from: FROM, to: TO, friends: [{ author: B }, { author: C }],
     profileRecords: [
-      { author: B, kind: 'profile', id: 'self', version: 1, body: { name: '旧名' } },
-      { author: B, kind: 'profile', id: 'self', version: 5, body: { name: '新\u0007名', emoji: '🐼' } },
-      { author: 'ed25519:' + 'd'.repeat(64), kind: 'profile', id: 'self', version: 9, body: { name: '陌生人' } },
+      { author: B, kind: 'profile', id: 'self', version: 1, body: { emoji: '🐶', color: 'blue' } },
+      { author: B, kind: 'profile', id: 'self', version: 5, body: { emoji: '🐼', color: 'teal' } },
+      { author: stranger, kind: 'profile', id: 'self', version: 9, body: { emoji: '🐈' } },
     ],
   });
-  const b = entries.find(e => e.author === B), c = entries.find(e => e.author === C);
-  assert.equal(b.name, '新 名');
-  assert.equal(b.emoji, '🐼');
-  assert.equal(c.name, null);
-  assert.equal(c.shortId, 'cccccccc');
-  assert.ok(!entries.some(e => e.name === '陌生人'));
+  assert.deepEqual(entries.map(({ author, emoji, color }) => [author, emoji, color]), [
+    [A, null, null], [B, '🐼', 'teal'], [C, null, null],
+  ]);
 });
 
 test('排序：总 Token 降序，平局按回合数降序，再按 author 升序', () => {
@@ -620,28 +614,26 @@ test('UTC+8 本地零点（前一 UTC 日 16:00 起）：归档因过半不在�
   });
 });
 
-test('榜单：好友行自带的备注优先于名片名，没有名片记录时回落好友行的 profileName / title / emoji / color（经清洗）；自己和既有 profileRecords 不受影响', () => {
-  const from = DAY0, to = DAY0 + DAY_MS;
+test('榜单：名片缺少头像或颜色时，使用好友行的对应字段', () => {
   const friends = [
-    { author: B, note: '  老王\u0007  ', profileName: '王二', title: '老王', emoji: '🐶', color: 'blue' },
-    { author: C, note: '', profileName: '', title: '好友 cccccccc', emoji: '', color: 'javascript:alert(1)' },
+    { author: B, emoji: ' \u0007🐶 ', color: 'blue' },
+    { author: C, emoji: '', color: 'javascript:alert(1)' },
   ];
-  const profile = (author, name, extra = {}) => ({ author, kind: 'profile', id: 'self', version: 1, body: { name, ...extra } });
-  const { entries } = aggregateLeaderboard({ selfAuthor: A, selfSourceId: 'me', friends, from, to, profileRecords: [profile(A, '我自己', { emoji: '🧑' }), profile(B, '名片里的王', { color: 'teal' })] });
-  const by = author => entries.find(e => e.author === author);
-  assert.equal(by(B).name, '老王', '备注优先于名片记录');
-  assert.equal(by(B).color, 'teal', '名片记录有的颜色优先');
-  assert.equal(by(B).emoji, '🐶', '名片记录没有 emoji，用好友行的');
-  assert.equal(by(A).name, '我自己');
-  assert.equal(by(A).emoji, '🧑');
-  // 没有名片记录、没有备注：回落 profileName，再回落 title；非法颜色丢掉。
-  const fallback = aggregateLeaderboard({ selfAuthor: A, selfSourceId: 'me', friends: [{ author: B, note: '', profileName: '王二', title: '王二' }, friends[1]], from, to }).entries;
-  assert.equal(fallback.find(e => e.author === B).name, '王二');
-  assert.equal(fallback.find(e => e.author === C).name, '好友 cccccccc');
-  assert.equal(fallback.find(e => e.author === C).color, null);
-  const named = aggregateLeaderboard({ selfAuthor: A, selfSourceId: 'me', friends: [{ author: B, profileName: '王二', title: '王二', color: 'orange' }], from, to, profileRecords: [profile(B, '记录名')] }).entries;
-  assert.equal(named.find(e => e.author === B).name, '记录名', '没有备注时名片记录优先于好友行的 profileName');
-  assert.equal(named.find(e => e.author === B).color, 'orange');
+  const profile = (author, body) => ({ author, kind: 'profile', id: 'self', version: 1, body });
+  const { entries } = aggregateLeaderboard({
+    selfAuthor: A, selfSourceId: 'me', friends, from: DAY0, to: DAY0 + DAY_MS,
+    profileRecords: [profile(A, { emoji: '🧑' }), profile(B, { color: 'teal' })],
+  });
+  assert.deepEqual(entries.map(({ author, emoji, color }) => [author, emoji, color]), [
+    [A, '🧑', null], [B, '🐶', 'teal'], [C, null, null],
+  ]);
+
+  const fallback = aggregateLeaderboard({
+    selfAuthor: A, selfSourceId: 'me', friends, from: DAY0, to: DAY0 + DAY_MS,
+    profileRecords: [profile(B, { emoji: '🐼' })],
+  }).entries.find(e => e.author === B);
+  assert.equal(fallback.emoji, '🐼');
+  assert.equal(fallback.color, 'blue');
 });
 
 test('榜单 sources：每个（作者, 来源）一份合计，本机的标 local，其余没有 local；本机用量没读到或没有身份就没有本机来源', () => {

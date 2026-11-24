@@ -233,16 +233,16 @@ export function cleanText(value, max) {
   const chars = Array.from(text);
   return chars.length ? chars.slice(0, max).join('').trim() || null : null;
 }
-/** 好友名片记录（kind `profile`）的 body 里能展示的部分：名字 ≤ 40 字、emoji ≤ 8 字、颜色只认命名色板（blue、orange…）和 #RRGGBB。 */
+/** 好友名片的头像样式：emoji ≤ 8 字，颜色只认命名色板（blue、orange…）和 #RRGGBB。 */
 export function sanitizeProfile(record) {
   const body = record && typeof record === 'object' && record.body && typeof record.body === 'object' ? record.body : {};
-  return { name: cleanText(body.name, 40), emoji: cleanText(body.emoji, 8), color: cleanColor(body.color) };
+  return { emoji: cleanText(body.emoji, 8), color: cleanColor(body.color) };
 }
 function cleanColor(value) {
   const raw = typeof value === 'string' ? value.trim() : '';
   return HEX_COLOR.test(raw) || NAMED_COLORS.includes(raw) ? raw.toLowerCase() : null;
 }
-/** `ed25519:` 后的前 8 位，名片缺失时顶替名字。 */
+/** `ed25519:` 后的前 8 位，用于无法映射出 Accord ID 的作者。 */
 export function shortAuthor(author) {
   const hex = String(author ?? '').replace(/^ed25519:/, '');
   return hex.slice(0, 8) || '未知';
@@ -398,15 +398,15 @@ function remoteRows({ days, today }, from, to) {
  * - 好友（和自己的其他设备）按 `author` + `sourceId` 汇总：`dayRecords`（coda/token-day）与 `todayRecords`（coda/token-today）按窗口拼接，
  *   同一 (author, id) 只取版本最新的一条；某台机器有任何新版记录，就不再读它旧版的 `legacyUsageRecords`（coda/token-usage），只有旧版好友才回退读旧记录。
  * - `person` 只切本机桶：远端记录里没有人的标签。
- * - 只认 `selfAuthor` 和 `friends` 里出现过的作者；`profileRecords` 同一作者取版本最新的一条。`friends` 行若带 `note`（备注）、`profileName`、`title`、`emoji`、`color`，
- *   名字取 备注 > 名片记录 > profileName > title，emoji 与颜色名片记录优先、缺了才用好友行的。
+ * - 只认 `selfAuthor` 和 `friends` 里出现过的作者。头像与颜色优先取作者最新的 `profileRecords`，缺项时用好友行对应的字段。
  * 按总 Token 降序，平局按回合数降序、再按 author 升序。
  * `sources` 是每个 (author, sourceId) 的合计 `{ author, sourceId, local, ...合计与分模型 }`：`local` 是这台自己的本机数据；`todayVersion` 是这个来源当天曲线记录（coda/token-today）的版本，没有这条记录就没有这个字段。
  * `localBuckets` 为 null 表示本机用量没读到：不交出本机来源。多台机器读到同一批记录时，页面按它去重（见 merge.mjs）。
  */
 export function aggregateLeaderboard({ selfAuthor, selfSourceId, excludedSourceIds = [], localBuckets = [], legacyUsageRecords = [], dayRecords = [], todayRecords = [], profileRecords = [], friends = [], from, to, person }) {
-  const friendAuthors = new Set(friends.map(friend => friend?.author).filter(author => typeof author === 'string' && author));
-  const known = new Set([...friendAuthors, ...(selfAuthor ? [selfAuthor] : [])]);
+  const friendRows = new Map();
+  for (const friend of friends) if (typeof friend?.author === 'string' && friend.author && !friendRows.has(friend.author)) friendRows.set(friend.author, friend);
+  const known = new Set([...friendRows.keys(), ...(selfAuthor ? [selfAuthor] : [])]);
   // 本机用量没读到（localBuckets 为 null）时，没有本机数据可以优先：自己发布过的副本照常算，也不交出本机来源。
   const excluded = new Set(localBuckets ? [selfSourceId, ...excludedSourceIds] : excludedSourceIds);
 
@@ -457,19 +457,13 @@ export function aggregateLeaderboard({ selfAuthor, selfSourceId, excludedSourceI
     if (!profiles.has(record.author) || record.version > profiles.get(record.author).version) profiles.set(record.author, record);
   }
 
-  // 好友网关给的好友行自带备注和名片：备注最优先，其次名片记录，再回落好友行里的名片名、标题。
-  const friendRows = new Map();
-  for (const friend of friends) if (typeof friend?.author === 'string' && friend.author && !friendRows.has(friend.author)) friendRows.set(friend.author, friend);
   const entries = [...tallies].map(([author, tally]) => {
-    const profile = profiles.has(author) ? sanitizeProfile(profiles.get(author)) : { name: null, emoji: null, color: null };
+    const profile = sanitizeProfile(profiles.get(author));
     const friend = friendRows.get(author);
-    if (friend) {
-      profile.name = cleanText(friend.note, 40) ?? profile.name ?? cleanText(friend.profileName, 40) ?? cleanText(friend.title, 40);
-      profile.emoji ??= cleanText(friend.emoji, 8);
-      profile.color ??= cleanColor(friend.color);
-    }
-    return { author, shortId: shortAuthor(author), self: author === selfAuthor, shared: author === selfAuthor || shared.has(author),
-      ...profile, ...tally.result() };
+    const emoji = profile.emoji ?? cleanText(friend?.emoji, 8);
+    const color = profile.color ?? cleanColor(friend?.color);
+    return { author, self: author === selfAuthor, shared: author === selfAuthor || shared.has(author),
+      emoji, color, ...tally.result() };
   }).sort(compareEntries);
   entries.forEach((entry, index) => { entry.rank = index + 1; });
   return { from, to, entries, sources: breakdown };

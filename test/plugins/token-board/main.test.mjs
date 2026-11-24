@@ -29,11 +29,11 @@ const retracts = host => host.retractCalls.map(call => [call.kind, call.id]);
 
 function fake({ settings = {}, usage = [], records = [], friends, state } = {}) {
   const calls = [], published = [], attempts = [], retractCalls = [], queued = [], touched = new Set(), views = new Map(), listeners = [], own = new Map();
-  let current = { 'token-board.share': false, 'token-board.range': '7d', ...settings }, version = 0;
+  let current = { 'token-board.range': '7d', ...settings }, version = 0;
   const host = {
     calls, published, attempts, retractCalls, queued, touched, views, records,
     usage,
-    friends: friends ?? [{ node: 'n1', author: FRIEND, status: 'bound', note: '', profileName: '', title: `好友 ${'b'.repeat(8)}`, emoji: '', color: 'gray' }],
+    friends: friends ?? [{ node: 'n1', author: FRIEND, status: 'bound', emoji: '', color: 'gray' }],
     machine: undefined,        // 本机的机器 ID；Error 表示读不到
     gateway: true,             // 好友插件在不在
     listError: null,           // 非空就让列出好友网关抛它
@@ -218,7 +218,7 @@ test('分享没开：同步不发布；开启后发布，关闭后只撤回本�
     { author: AUTHOR, kind: dayKind, id: 'other-machine/2026-01', version: 1, local: false, body: buildArchiveBodies([bucket(Date.UTC(2026, 0, 1))])['2026-01'] },
     { author: AUTHOR, kind: todayKind, id: 'other-machine', version: 1, local: false, body: buildTodayBody([bucket(at)], { now }) },
   ];
-  const host = fake({ state, usage: [bucket(at)], records: others });
+  const host = fake({ state, settings: { 'token-board.share': false }, usage: [bucket(at)], records: others });
   activate(host.coda);
   const page = host.open();
   page.tell({ type: 'hello' });
@@ -251,11 +251,12 @@ test('分享没开：同步不发布；开启后发布，关闭后只撤回本�
 test('设置里把分享打开 / 关掉，模块跟着发布 / 撤回；只改范围不动记录', async t => {
   freeze(t);
   const state = mkdir(t);
-  const host = fake({ state, usage: [bucket(startOfBucket(now))] });
+  const host = fake({ state, settings: { 'token-board.share': false }, usage: [bucket(startOfBucket(now))] });
   activate(host.coda);
   const page = host.open();
   page.tell({ type: 'hello' });
   await page.waitFor('status');
+  assert.equal(page.last('status').share, false);
   await host.change({ 'token-board.share': true });
   await host.settle();
   assert.equal(host.published.length, 2);
@@ -271,9 +272,11 @@ test('设置里把分享打开 / 关掉，模块跟着发布 / 撤回；只改�
 
 test('页面上临时切的分享开关，被设置里的改动盖过', async t => {
   const state = mkdir(t);
-  const host = fake({ state, usage: [bucket(startOfBucket(now))] });
+  const host = fake({ state, settings: { 'token-board.share': false }, usage: [bucket(startOfBucket(now))] });
   activate(host.coda);
   const page = host.open();
+  page.tell({ type: 'hello' });
+  await page.waitFor('status');
   page.tell({ type: 'set-share', on: true });
   await host.settle();
   assert.equal(page.last('status').share, true);
@@ -282,6 +285,23 @@ test('页面上临时切的分享开关，被设置里的改动盖过', async t 
   await host.settle();
   assert.equal(page.last('status').share, true);
   assert.equal(page.last('status').fromSettings, true);
+});
+
+test('默认开启后，重启仍尊重页面保存的关闭选择；只改范围不恢复分享', async t => {
+  const state = mkdir(t), { drain } = timed(t);
+  writeFileSync(join(state, 'prefs.json'), JSON.stringify({ share: false }));
+  const host = fake({ state });
+  activate(host.coda);
+  const page = host.open();
+  page.tell({ type: 'hello' });
+  await drain();
+  assert.equal(page.last('status').share, false);
+  assert.equal(page.last('status').fromSettings, false);
+  await host.change({ 'token-board.range': '30d' });
+  mock.timers.tick(5_000);
+  await drain();
+  assert.equal(page.last('status').share, false);
+  assert.equal(host.attempts.length, 0);
 });
 
 // ——— 没有好友插件 ———
@@ -786,7 +806,7 @@ test('撤回没完成（排队、证书过期、出错）：保留本机索引�
 
 // ——— 榜单 ———
 
-test('页面取榜单：本机用量、经网关按作者翻页读记录（沿 cursor）、好友备注与自己名片、截断标记', async t => {
+test('页面取榜单：本机用量、经网关按作者翻页读记录（沿 cursor）、自己与好友的头像样式、截断标记', async t => {
   const state = mkdir(t), at = startOfBucket(now), clock = new Date(at).toISOString().slice(11, 16), day = new Date(at).toISOString().slice(0, 10);
   const block = { blocks: { [clock]: { codex: { gpt: { input: 1000, output: 0, cacheRead: 0, cacheWrite: 0, turns: 4, reportedTurns: 4 } } } } };
   const host = fake({ state, usage: [bucket(at)], records: [
@@ -804,14 +824,11 @@ test('页面取榜单：本机用量、经网关按作者翻页读记录（沿 c
   assert.equal(board.accord, true);
   assert.equal(board.selfAuthor, AUTHOR);
   assert.equal(board.friendCount, 1);
-  assert.deepEqual(board.people.map(e => [e.author, e.self]), [[FRIEND, false], [AUTHOR, true]]);
+  assert.deepEqual(board.people, [
+    { author: FRIEND, self: false, shared: true, emoji: '🦊', color: 'orange' },
+    { author: AUTHOR, self: true, shared: true, emoji: '🧑', color: 'teal' },
+  ]);
   assert.equal(board.sources.filter(source => source.author === FRIEND).reduce((n, source) => n + source.totalTokens, 0), 3000, '三页都读到了');
-  assert.equal(board.people[0].name, '备注 小明', '备注优先于名片');
-  assert.equal(board.people[0].emoji, '🦊');
-  assert.equal(board.people[0].color, 'orange');
-  assert.equal(board.people[1].name, '我<i>自己</i>');
-  assert.equal(board.people[1].emoji, '🧑');
-  assert.equal(board.people[1].color, 'teal');
   assert.equal(board.sources.find(source => source.local).totalTokens, 116);
   assert.ok(!('entries' in board), '不再另发一份按作者聚合的统计');
   assert.deepEqual(board.truncated, { usage: false, friends: false, profiles: false });
@@ -898,9 +915,9 @@ const timed = t => {
   return { start, drain: async () => { for (let i = 0; i < 40; i++) await new Promise(r => setImmediate(r)); } };
 };
 
-test('分享开着：首跳 5 秒后发布，之后每 10 分钟查一次；内容没变没有新写入，跨过 30 分钟边界曲线才有新写入', async t => {
+test('默认开启分享：首跳 5 秒后发布，之后每 10 分钟查一次；内容没变没有新写入，跨过 30 分钟边界曲线才有新写入', async t => {
   const state = mkdir(t), { start, drain } = timed(t), at = Date.UTC(2026, 10, 20, 10, 0);
-  const host = fake({ state, settings: { 'token-board.share': true }, usage: [bucket(at)] });
+  const host = fake({ state, usage: [bucket(at)] });
   activate(host.coda);
   await drain();
   assert.equal(host.published.length, 0, '首跳之前什么都没发生');
