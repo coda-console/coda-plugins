@@ -381,7 +381,8 @@ export function createGateway(coda, dir) {
   }
   const missing = kind => kind === KIND_CALL ? '本机没有可用的签名证书' : '读不出本机的机器钥匙';
 
-  async function signRpc({ kind, id, body, audience } = {}) {
+  // `beforePublish`（可省）：读完签名身份、真正发布之前最后调一次，它抛错就什么也不发（调用方在这里看取消与期限）。
+  async function signRpc({ kind, id, body, audience } = {}, { beforePublish } = {}) {
     live();
     if (!RPC_KINDS.includes(kind)) throw invalid(`只能签 ${RPC_KINDS.join('、')}`);
     checkId(id);
@@ -393,6 +394,7 @@ export function createGateway(coda, dir) {
     const { author, canSign, signer } = await signingAs(kind);
     if (!canSign) throw coda.error('invalid_state', `${missing(kind)}，好友调用的记录没有发出`, { effects: 'none' });
     if (author !== sender) throw coda.error('invalid_state', '本机此刻该署的作者不是这条记录写的发送方，好友调用的记录没有发出', { effects: 'none' });
+    beforePublish?.();
     return coda.call(ACCORD, 'publish', { kind, id, body, audience, ...(signer ? { signer } : {}), expectAuthor: sender });
   }
 

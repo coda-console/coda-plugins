@@ -143,11 +143,12 @@ const SHAPES = {
 };
 
 // 回答按状态核对字段组合（只在收到时核对）：running 不带 result、error；completed 带合格的 exec 结果；failed 带 error，effects 取值合法；
-// canceled 照上面的形状。exec 结果的必需字段与类型照 remote-exec/machine@1 的协议定义（plugins/remote-exec/package.json）。
+// canceled 照上面的形状。exec 结果的字段与类型照 remote-exec/machine@1 的协议定义（plugins/remote-exec/package.json）：字段一个不少，也不多（additionalProperties: false）。
 const EFFECTS = ['none', 'some', 'unknown'];
 const EXEC_RESULT = { exitCode: v => v === null || Number.isInteger(v), signal: v => v === null || isText(v), stdout: isText, stderr: isText,
   timedOut: v => typeof v === 'boolean', truncated: v => typeof v === 'boolean', outputDir: v => v === null || isText(v), ms: v => Number.isInteger(v) && v >= 0 };
-const execResultOk = result => isPlain(result) && Object.entries(EXEC_RESULT).every(([key, check]) => Object.hasOwn(result, key) && check(result[key]));
+const execResultOk = result => isPlain(result) && Object.keys(result).length === Object.keys(EXEC_RESULT).length
+  && Object.entries(EXEC_RESULT).every(([key, check]) => Object.hasOwn(result, key) && check(result[key]));
 const ANSWER_STATE_OK = {
   running: body => !Object.hasOwn(body, 'result') && !Object.hasOwn(body, 'error'),
   completed: body => execResultOk(body.result),

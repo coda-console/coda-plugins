@@ -938,6 +938,85 @@ test('when my author changes A→B→A while resume is reading the outgoing entr
   await rejectsWith(resumed, 'interrupted', 'unknown', [LOST, call.request]);
 });
 
+// ---- 恢复索引与没发出的调用 ----
+
+test('a final answer read but not yet handed back when I restart: the request is retracted, the outgoing entry is kept, and resume hands back the real outcome', async t => {
+  const world = worldFake(), h = await holderOf(t, world), writes = holdWrites('settleOutgoing');
+  const first = await callerOf(t, world, { wrapStore: writes.wrap });
+  const grant = await granted(h, first);
+  writes.arm();
+  const call = first.exec({ grant, input: { command: 'echo kept' } });
+  await until(() => writes.waiting(), '拿到结局、写盘挂住');
+  const release = first.node.holdGet();
+  writes.release();
+  await until(() => first.node.getHeld(), '交回之前读作者挂住');
+  await until(() => first.retracted(call.request), '拿到结局就撤回请求');
+  await first.caller.tick();
+  assert.ok(await first.store.getOutgoing(call.request), '结局还没交回宿主，发出项留着');
+  first.stop();
+  const next = await restarted(t, world, first);
+  await next.caller.tick();
+  assert.ok(await next.store.getOutgoing(call.request), '重启后的清扫不删恢复期内的发出项');
+  assert.equal((await next.resume({ grant, id: call.id })).stdout, 'ran echo kept');
+  await until(async () => !(await next.store.getOutgoing(call.request)), '交回之后清掉发出项');
+  release();
+});
+
+test('a request expired 24 hours and more when I restart keeps its outgoing entry through the resume window, and resume hands back the holder\'s signed final answer', async t => {
+  const world = worldFake(), h = await holderOf(t, world);
+  const { first, grant, call } = await sentThenStopped(t, world, h);
+  h.node.deaf = false;
+  await h.holder.tick();
+  await until(() => h.lastAnswer(ROOT, call.request)?.state === 'completed', '持有方答完');
+  h.node.deaf = true;
+  await h.holder.tick();
+  world.clock.now = START + 5 * MINUTE + 24 * 60 * MINUTE + MINUTE;
+  const next = await restarted(t, world, first);
+  await next.caller.tick();
+  assert.ok(next.retracted(call.request), '撤回请求照旧');
+  assert.ok(await next.store.getOutgoing(call.request), '过期满 24 小时的发出项在恢复期内也不删');
+  assert.equal((await next.resume({ grant, id: call.id })).stdout, 'ran echo late');
+});
+
+for (const [why, code, act] of [
+  ['canceled', 'canceled', call => call.controller.abort()],
+  ['timed out', 'timeout', call => call.controller.abort(new DOMException('到期了', 'TimeoutError'))],
+  ['past its deadline', 'timeout', (call, world) => { world.clock.now += 6 * MINUTE; }],
+]) {
+  test(`a call ${why} while the outgoing table is being written ends as ${code}, none without signing the request: the holder never sees it`, async t => {
+    const world = worldFake(), h = await holderOf(t, world), writes = holdWrites('addOutgoing');
+    const c = await callerOf(t, world, { wrapStore: writes.wrap });
+    const grant = await granted(h, c);
+    writes.arm();
+    const call = c.exec({ grant });
+    await until(() => writes.waiting(), '写发出表挂住');
+    act(call, world);
+    writes.release();
+    await until(async () => !(await pending(call.promise)), '不签请求就结束');
+    await rejectsWith(call.promise, code, 'none');
+    await h.holder.tick();
+    assert.deepEqual([c.requests(), c.cancels(call.request), h.exec.runs, h.lastAnswer(ROOT, call.request)], [[], [], 0, undefined]);
+  });
+}
+
+test('a call canceled while the gateway reads my signing identity ends as canceled, none: the holder never sees the request', async t => {
+  const world = worldFake(), h = await holderOf(t, world), writes = holdWrites('addOutgoing');
+  const c = await callerOf(t, world, { wrapStore: writes.wrap });
+  const grant = await granted(h, c);
+  writes.arm();
+  const call = c.exec({ grant });
+  await until(() => writes.waiting(), '写发出表挂住');
+  // 调用方自己读身份在写发出表之前：此后的下一次读本机 Accord 是网关签名前读签名身份。
+  const release = c.node.holdGet();
+  writes.release();
+  await until(() => c.node.getHeld(), '网关读签名身份挂住');
+  call.controller.abort();
+  release();
+  await rejectsWith(call.promise, 'canceled', 'none');
+  await h.holder.tick();
+  assert.deepEqual([c.requests(), c.cancels(call.request), h.exec.runs, h.lastAnswer(ROOT, call.request)], [[], [], 0, undefined]);
+});
+
 // ---- 大小 ----
 
 test('a request over 56 KiB is refused on the spot; a truncated answer is handed back with truncated set', async t => {

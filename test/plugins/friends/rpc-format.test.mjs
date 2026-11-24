@@ -143,6 +143,7 @@ test('a body with the wrong version, an unknown field, a missing field or a wron
   }
   assert.equal(check(bodyOf({ result: { ...EXEC, ms: -1 } })), 'bad_body');
   assert.equal(check(bodyOf({ result: { ...EXEC, exitCode: '0' } })), 'bad_body');
+  assert.equal(check(bodyOf({ result: { ...EXEC, extra: 1 } })), 'bad_body', 'completed with a field the protocol does not have');
   assert.equal(check({ ...noResult, state: 'failed' }), 'bad_body', 'failed without error');
   assert.equal(check({ ...noResult, state: 'failed', error: { code: 'x', message: 'y' } }), 'bad_body', 'failed without effects');
   assert.equal(check({ ...noResult, state: 'failed', error: { ...failedError, effects: 'maybe' } }), 'bad_body', 'failed with unknown effects');
