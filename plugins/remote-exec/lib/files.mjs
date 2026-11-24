@@ -20,7 +20,12 @@ async function openFile(coda, path) {
     if (!info.isFile()) throw coda.error('not_a_regular_file', `${path}：不是普通文件（FIFO、设备或套接字），不能读`, { effects: 'none' });
   };
   let handle;
-  try { handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK); } catch (error) { throw fsError(coda, error, path); }
+  try { handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK); } catch (error) {
+    // 有的特殊节点（如 Unix 套接字）根本打不开：看一眼路径是什么，是特殊节点就照样按类型拒绝，别的打开错误照原规则。
+    const info = await stat(path).catch(() => null);
+    if (info) check(info);
+    throw fsError(coda, error, path);
+  }
   try {
     const info = await handle.stat();
     check(info);

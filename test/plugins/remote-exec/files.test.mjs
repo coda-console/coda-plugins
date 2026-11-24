@@ -6,6 +6,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { execFileSync } from 'node:child_process';
+import { createServer } from 'node:net';
 import { truncateSync } from 'node:fs';
 import { createAuditLog } from '../../../plugins/remote-exec/lib/audit.mjs';
 import { pull, push } from '../../../plugins/remote-exec/lib/files.mjs';
@@ -94,6 +95,13 @@ test('pull: a FIFO with no writer is refused at once (opened without blocking, t
   const one = reading(t, { path: fifo });
   await assert.rejects(one.response, { code: 'not_a_regular_file', effects: 'none' });
   assert.deepEqual(one.host.lines().map(line => line.error), ['not_a_regular_file']);
+  // Unix 套接字打不开（ENXIO / EOPNOTSUPP）：照样是 not_a_regular_file，不是 io_error。
+  const socket = join(dir, 's'), server = createServer();
+  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(socket, resolve); });
+  t.after(() => server.close());
+  const viaSocket = reading(t, { path: socket });
+  await assert.rejects(viaSocket.response, { code: 'not_a_regular_file', effects: 'none' });
+  assert.deepEqual(viaSocket.host.lines().map(line => line.error), ['not_a_regular_file']);
   // 打开的句柄不是普通文件：对句柄的判断要拦住。
   await withFailingFile(real => ({ stat: async () => ({ isDirectory: () => false, isFile: () => false, size: 0 }), close: () => real.close() }), async () => {
     await assert.rejects(reading(t, { path: file }).response, { code: 'not_a_regular_file', effects: 'none' });
