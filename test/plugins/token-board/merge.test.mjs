@@ -34,7 +34,7 @@ test('用 Accord 公钥映射 ID：同一个公钥多台只算一次，重名公
   assert.deepEqual(displayIds(mergeBoards([first, second])), {
     [sakura]: 'sakura', [digits]: '07', [noId]: 'ffffffff…',
   });
-  const third = member({ id: 'z', name: 'NAS' }, reply({ selfAuthor: sameId, sourceId: 'z', friends: [{ author: sakura, note: '好友备注' }] }));
+  const third = member({ id: 'z', name: 'NAS' }, reply({ selfAuthor: sameId, sourceId: 'z', friends: [{ author: sakura }] }));
   assert.deepEqual(displayIds(mergeBoards([first, second, third])), {
     [sakura]: 'sakura(01ab)', [sameId]: 'sakura(3d2a)', [digits]: '07', [noId]: 'ffffffff…',
   });

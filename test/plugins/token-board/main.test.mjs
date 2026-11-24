@@ -33,7 +33,7 @@ function fake({ settings = {}, usage = [], records = [], friends, state } = {}) 
   const host = {
     calls, published, attempts, retractCalls, queued, touched, views, records,
     usage,
-    friends: friends ?? [{ node: 'n1', author: FRIEND, status: 'bound', note: '', profileName: '', title: `好友 ${'b'.repeat(8)}`, emoji: '', color: 'gray' }],
+    friends: friends ?? [{ node: 'n1', author: FRIEND, status: 'bound', emoji: '', color: 'gray' }],
     machine: undefined,        // 本机的机器 ID；Error 表示读不到
     gateway: true,             // 好友插件在不在
     listError: null,           // 非空就让列出好友网关抛它
@@ -806,7 +806,7 @@ test('撤回没完成（排队、证书过期、出错）：保留本机索引�
 
 // ——— 榜单 ———
 
-test('页面取榜单：本机用量、经网关按作者翻页读记录（沿 cursor）、好友备注与自己名片、截断标记', async t => {
+test('页面取榜单：本机用量、经网关按作者翻页读记录（沿 cursor）、自己与好友的头像样式、截断标记', async t => {
   const state = mkdir(t), at = startOfBucket(now), clock = new Date(at).toISOString().slice(11, 16), day = new Date(at).toISOString().slice(0, 10);
   const block = { blocks: { [clock]: { codex: { gpt: { input: 1000, output: 0, cacheRead: 0, cacheWrite: 0, turns: 4, reportedTurns: 4 } } } } };
   const host = fake({ state, usage: [bucket(at)], records: [
@@ -824,14 +824,11 @@ test('页面取榜单：本机用量、经网关按作者翻页读记录（沿 c
   assert.equal(board.accord, true);
   assert.equal(board.selfAuthor, AUTHOR);
   assert.equal(board.friendCount, 1);
-  assert.deepEqual(board.people.map(e => [e.author, e.self]), [[FRIEND, false], [AUTHOR, true]]);
+  assert.deepEqual(board.people, [
+    { author: FRIEND, self: false, shared: true, emoji: '🦊', color: 'orange' },
+    { author: AUTHOR, self: true, shared: true, emoji: '🧑', color: 'teal' },
+  ]);
   assert.equal(board.sources.filter(source => source.author === FRIEND).reduce((n, source) => n + source.totalTokens, 0), 3000, '三页都读到了');
-  assert.equal(board.people[0].name, '备注 小明', '备注优先于名片');
-  assert.equal(board.people[0].emoji, '🦊');
-  assert.equal(board.people[0].color, 'orange');
-  assert.equal(board.people[1].name, '我<i>自己</i>');
-  assert.equal(board.people[1].emoji, '🧑');
-  assert.equal(board.people[1].color, 'teal');
   assert.equal(board.sources.find(source => source.local).totalTokens, 116);
   assert.ok(!('entries' in board), '不再另发一份按作者聚合的统计');
   assert.deepEqual(board.truncated, { usage: false, friends: false, profiles: false });

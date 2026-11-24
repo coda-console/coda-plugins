@@ -6,7 +6,7 @@
 //    各台读到的可直接比，不受归档分块变化影响；不比合计，因为旧曲线盖不满查询窗口时后端改用整日归档，把窗口外的用量也算进来，旧副本的合计反而更大；
 // 2. todayVersion 相同，或两份都没有曲线记录（只有旧版记录的来源）：比 Token 合计大的，再比回合数。
 // 已知边界：好友撤回记录后，还没同步到的那台会让旧数多显示一会儿，不处理。
-// 某台已弃用的旧来源 ID（回包的 retired，不受本机用量读没读到影响）在同一作者下统一不要；再按作者汇总，排序沿用 aggregateLeaderboard。名片字段取回包里的 people。
+// 某台已弃用的旧来源 ID（回包的 retired，不受本机用量读没读到影响）在同一作者下统一不要；再按作者汇总，排序沿用 aggregateLeaderboard。头像与颜色取回包里的 people。
 
 import { Tally, compareEntries, shortAuthor } from './usage.mjs';
 

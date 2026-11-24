@@ -285,8 +285,8 @@ class Board {
     }
     const shared = { selfAuthor, selfSourceId: this.sourceId, excludedSourceIds: this.source.legacy, localBuckets, friends };
     const board = aggregateLeaderboard({ ...shared, legacyUsageRecords: records[USAGE_RECORD_KIND], dayRecords: records[DAY_ARCHIVE_KIND], todayRecords: records[TODAY_CURVE_KIND], profileRecords: profiles, from, to });
-    // 页面只用每来源的明细（sources）算合计；这里只给每个人的名片字段，不重复发一份按作者聚合的统计。
-    result.people = board.entries.map(({ author, shortId, self, shared, name, emoji, color }) => ({ author, shortId, self, shared, name, emoji, color }));
+    // 页面用 sources 算合计，用 people 的作者地址映射显示 ID，并读取分享状态与头像样式。
+    result.people = board.entries.map(({ author, self, shared, emoji, color }) => ({ author, self, shared, emoji, color }));
     result.sources = board.sources;
     result.retired = this.source.legacy;   // 这台已弃用的旧来源 ID：别的机器读到它们的旧副本时统一不算
     result.curve = aggregateTodayCurve({ ...shared, localBuckets: localBuckets ?? [], todayRecords: records[TODAY_CURVE_KIND], range: rangeWindow('today', now), slotMs: SLOT_MS }).curve;
