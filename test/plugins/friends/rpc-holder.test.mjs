@@ -139,6 +139,8 @@ function execFake() {
   };
   fake.release = (id, result = ok(fake.jobs.get(id).input.command)) => fake.jobs.get(id).resolve(result);
   fake.pending = () => [...fake.jobs.values()].filter(job => !job.settled).length;
+  // 内核过了保留期，忘掉所有幂等键：之后同一个键再调就是新调用。
+  fake.forget = () => fake.jobs.clear();
   // 把还挂着的都放掉，等持有方接着做完；挂着的会再挂起，所以按轮放。
   fake.releaseAll = async settle => { for (let round = 0; round < 4 && fake.pending(); round++) { for (const [id, job] of fake.jobs) if (!job.settled) fake.release(id); await settle(); } };
   return fake;
@@ -1157,7 +1159,8 @@ test('the check before submitting reads the latest grant and the clock in the sa
   slow();
   await h.settle();
   assert.equal(h.exec.runs, 0);
-  assert.deepEqual(h.answers(F1, late.request), ['running', 'failed']);
+  // 过了最晚启动时刻的不再签 running，直接答失败。
+  assert.deepEqual(h.answers(F1, late.request), ['failed']);
   assert.equal(h.lastAnswer(F1, late.request).body.error.code, 'expired');
 });
 
@@ -1269,7 +1272,7 @@ test('an outcome that could not be signed is kept past its expiry plus 24 hours 
   assert.deepEqual(h.answers(F1, body.request), ['running', 'completed', 'retracted']);
 });
 
-test('after a shutdown across the expiry plus 24 hours a submitted request is still there on restart and recovers', async t => {
+test('after a shutdown across the expiry plus 24 hours a submitted request is still there on restart and ends interrupted without calling the kernel again', async t => {
   const h = await holderOf(t);
   const { grant } = await h.grant();
   h.exec.plan = () => 'hang';
@@ -1280,8 +1283,174 @@ test('after a shutdown across the expiry plus 24 hours a submitted request is st
   h.exec.release(idempotencyKey(F1, body.request));
   const again = await holderOf(t, h);
   await again.settle();
-  assert.deepEqual(again.answers(F1, body.request), ['running', 'completed']);
+  assert.deepEqual(again.answers(F1, body.request), ['running', 'failed']);
+  assert.deepEqual([again.lastAnswer(F1, body.request).body.error.code, again.lastAnswer(F1, body.request).body.error.effects], ['interrupted', 'unknown']);
+  assert.equal(h.exec.calls.length, 1);
+});
+
+test('a stop after submitted is on disk and before the first call: past the latest start the restart never calls the kernel and ends interrupted with unknown effects; within it the same key carries on', async t => {
+  for (const late of [true, false]) {
+    // 首次调用之前停住：markSubmitted 落了盘，之后一直挂着，命令没发到内核。
+    const gap = submitGap();
+    const h = await holderOf(t, gap);
+    const { grant } = await h.grant();
+    gap.hook = () => new Promise(() => {});
+    const body = send(h, { grant });
+    await h.holder.tick();
+    await until(async () => (await h.store.get(F1, body.request))?.state === 'submitted', 'submitted 落盘');
+    h.stop();
+    if (late) h.clock.now = body.expiresAt;
+    const again = await holderOf(t, h);
+    await again.settle();
+    if (late) {
+      assert.equal(h.exec.calls.length, 0, 'the kernel was never called');
+      assert.deepEqual(again.answers(F1, body.request), ['running', 'failed']);
+      assert.deepEqual([again.lastAnswer(F1, body.request).body.error.code, again.lastAnswer(F1, body.request).body.error.effects], ['interrupted', 'unknown']);
+    } else {
+      assert.deepEqual(h.exec.calls.map(call => call.id), [idempotencyKey(F1, body.request)]);
+      assert.deepEqual(again.answers(F1, body.request), ['running', 'completed']);
+    }
+  }
+});
+
+test('a submitted call whose key the kernel has forgotten (disabled past its retention) is not run again on restart: it ends interrupted with unknown effects', async t => {
+  const h = await holderOf(t);
+  const { grant } = await h.grant();
+  h.exec.plan = () => 'hang';
+  const body = send(h, { grant });
+  await h.settle();
+  h.stop();
+  h.exec.release(idempotencyKey(F1, body.request));
+  h.exec.forget();
+  h.clock.now += 8 * 24 * 60 * MINUTE;
+  const again = await holderOf(t, h);
+  await again.settle();
+  assert.equal(h.exec.runs, 1, 'not run again');
+  assert.equal(h.exec.calls.length, 1);
+  assert.deepEqual(again.answers(F1, body.request), ['running', 'failed']);
+  assert.deepEqual([again.lastAnswer(F1, body.request).body.error.code, again.lastAnswer(F1, body.request).body.error.effects], ['interrupted', 'unknown']);
+});
+
+test('a known request whose caller is no longer bound is not driven into the kernel on restart, even within its window: it ends interrupted with unknown effects', async t => {
+  const h = await holderOf(t);
+  const { grant } = await h.grant();
+  h.exec.plan = () => 'hang';
+  const body = send(h, { grant });
+  await h.settle();
+  h.stop();
+  h.accord.friends = FRIENDS.map(friend => friend.author === F1 ? { ...friend, bound: false } : friend);
+  const again = await holderOf(t, h);
+  await again.settle();
+  assert.equal(h.exec.calls.length, 1, 'the kernel is not called again');
+  assert.deepEqual(again.answers(F1, body.request), ['running', 'failed']);
+  assert.deepEqual([again.lastAnswer(F1, body.request).body.error.code, again.lastAnswer(F1, body.request).body.error.effects], ['interrupted', 'unknown']);
+  // 终态不回退：绑定恢复后也不再调内核。
+  await h.accord.change({ friends: FRIENDS });
+  await again.settle();
+  assert.equal(h.exec.calls.length, 1);
+  assert.deepEqual(again.answers(F1, body.request), ['running', 'failed']);
+});
+
+test('the clock passing the latest start while the grant is read on restart: the kernel is not called and the call ends interrupted with unknown effects', async t => {
+  const h = await holderOf(t);
+  const { grant } = await h.grant();
+  h.exec.plan = () => 'hang';
+  const body = send(h, { grant });
+  await h.settle();
+  h.stop();
+  const calls = h.exec.calls.length;
+  // 恢复检查里那次授权读取挂住（按调用栈认出是 mayStartNow 发的）。
+  let open, held = false;
+  const gate = new Promise(resolve => { open = resolve; });
+  const again = await holderOf(t, { ...h, wrapStore: store => ({ ...store, getGrant: async id => {
+    if (!held && new Error().stack.includes('mayStartNow')) { held = true; await gate; }
+    return store.getGrant(id);
+  } }) });
+  again.holder.tick();
+  await until(() => held, '恢复检查的授权读取挂住');
+  h.clock.now = body.expiresAt;
+  open();
+  await again.settle();
+  assert.equal(h.exec.calls.length, calls, 'the kernel is not called on restart');
+  assert.deepEqual(again.answers(F1, body.request), ['running', 'failed']);
+  assert.deepEqual([again.lastAnswer(F1, body.request).body.error.code, again.lastAnswer(F1, body.request).body.error.effects], ['interrupted', 'unknown']);
+});
+
+test('an admitted request found past its latest start is answered expired without submitting, even if the clock steps back before the submit', async t => {
+  let h, target = null, submits = 0;
+  h = await holderOf(t, { wrapStore: store => ({ ...store, markSubmitted: async (caller, request, ...rest) => {
+    // 走到提交时钟往回拨了一点（不到 5 分钟），又回到最晚启动时刻之前。
+    if (request === target?.request) { submits++; h.clock.now = target.expiresAt - 1_000; }
+    return store.markSubmitted(caller, request, ...rest);
+  } }) });
+  const { grant } = await h.grant();
+  h.exec.plan = () => 'hang';
+  const busy = Array.from({ length: LIMITS.executing.author }, () => send(h, { grant }));
+  await h.settle();
+  const waiting = send(h, { grant, expiresAt: h.clock.now + MINUTE });
+  await h.settle();
+  assert.equal((await h.store.get(F1, waiting.request)).state, 'admitted');
+  submits = 0;
+  target = waiting;
+  h.clock.now = waiting.expiresAt + 30_000;
+  for (const one of busy) h.exec.release(idempotencyKey(F1, one.request));
+  await h.settle();
+  assert.equal(submits, 0, 'never submitted');
+  assert.equal(h.exec.runs, LIMITS.executing.author);
+  assert.deepEqual(h.answers(F1, waiting.request), ['running', 'failed']);
+  assert.equal(h.lastAnswer(F1, waiting.request).body.error.code, 'expired');
+});
+
+test('a stop while running is being signed: once the signature returns the request is not submitted and the command never runs', async t => {
+  const h = await holderOf(t);
+  const { grant } = await h.grant();
+  const publish = h.accord.call;
+  let open, signing = false;
+  const gate = new Promise(resolve => { open = resolve; });
+  h.accord.call = async (ref, operation, input) => {
+    if (input.kind === 'friends/rpc-answer' && input.body.state === 'running') { signing = true; await gate; }
+    return publish(ref, operation, input);
+  };
+  const body = send(h, { grant });
+  h.holder.tick();
+  await until(() => signing, 'running 签名挂住');
+  h.stop();
+  open();
+  await until(() => h.holder.busy() === 0, '在途项停下');
+  assert.equal((await h.store.get(F1, body.request)).state, 'admitted');
+  assert.equal(h.exec.calls.length, 0);
+});
+
+test('the command does not start until running is signed: a failing first signature leaves it admitted, and it starts once running goes out; on restart an admitted request signs running first', async t => {
+  const h = await holderOf(t);
+  const { grant } = await h.grant();
+  const publish = h.accord.call;
+  let refuse = true;
+  h.accord.call = async (ref, operation, input) => {
+    if (refuse && input.kind === 'friends/rpc-answer') throw fail('unavailable', '目录暂时不可用');
+    return publish(ref, operation, input);
+  };
+  const body = send(h, { grant });
+  await h.settle();
+  await h.settle();
+  assert.equal(h.exec.calls.length, 0);
+  assert.equal((await h.store.get(F1, body.request)).state, 'admitted');
+  refuse = false;
+  await h.settle();
   assert.equal(h.exec.runs, 1);
+  assert.deepEqual(h.answers(F1, body.request), ['running', 'completed']);
+
+  // 重启后接手的 admitted 项：先补签 running，才提交。
+  refuse = true;
+  const later = send(h, { grant });
+  await h.settle();
+  assert.equal((await h.store.get(F1, later.request)).state, 'admitted');
+  h.stop();
+  refuse = false;
+  const again = await holderOf(t, h);
+  await again.settle();
+  assert.equal(h.exec.runs, 2);
+  assert.deepEqual(again.answers(F1, later.request), ['running', 'completed']);
 });
 
 test('the ledger row is kept with the terminal state: a stop before it is written is made up exactly once on restart, also when the row was written but not yet marked', async t => {
@@ -1294,7 +1463,7 @@ test('the ledger row is kept with the terminal state: a stop before it is writte
     assert.deepEqual(h.answers(F1, body.request), ['running', 'completed'], what);
     assert.notEqual((await h.store.get(F1, body.request)).ledger, undefined, what);
     h.stop();
-    const again = await holderOf(t, { ...h, wrapStore: undefined });
+    const again = await holderOf(t, h);
     await again.settle();
     assert.equal((await again.ledger({ request: body.request })).length, 1, what);
     assert.equal((await again.store.get(F1, body.request)).ledger, undefined, what);
@@ -1619,7 +1788,7 @@ test('after a stop and start on the same data directory the first read of the di
   assert.deepEqual((await rejections(again, 'window_expired')).map(row => row.friend), [F1]);
 });
 
-test('after an uninstall and reinstall (the data directory empty: no grants, no handled table) the requests left in the directory are refused for want of a grant and no command runs', async t => {
+test('after the state directory is cleared (no grants, no handled table) the requests left in the directory are refused for want of a grant and no command runs', async t => {
   const h = await holderOf(t);
   const { grant } = await h.grant();
   const handled = send(h, { grant, expiresAt: START + 10 * MINUTE });

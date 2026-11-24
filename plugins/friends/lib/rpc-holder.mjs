@@ -27,8 +27,6 @@ const HOUR = 3_600_000;
 export const POLL_MS = 15_000, ANSWER_KEEP_MS = 24 * HOUR;
 // exec 不给 timeout 时 remote-exec 的默认时限（秒）；remote-exec 的操作时限比命令时限多 30 秒（630 对 600），收尾用。
 const DEFAULT_TIMEOUT_S = 120, EXEC_GRACE_MS = 30_000;
-// 重启后再取一个已提交的调用：原来的期限已过，也至少等这么久，让内核按幂等键交回结局。
-const RESUME_MS = 30_000;
 // 见过的最大时刻至多每分钟落一次盘。
 const CLOCK_STEP_MS = 60_000;
 // 失效落盘失败后重试的退避：从 1 秒起翻倍，至多 1 分钟。
@@ -69,6 +67,7 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
   const drives = new Map(); // 在途键 → { again }：同一项同时只有一个在做
   const running = new Map(); // 在途键 → 已提交那次调用的 AbortController
   const unissued = new Set(); // 在途键：本进程提交了、还没向内核发过调用的，留到首次调用发出或终态落盘成功（重启后接手的不在里面，之前发没发过无从知道）
+  const announced = new Set(); // 在途键：本进程已签出 running 的（重启后接手的 admitted 项要补签）
   const outcomes = new Map(); // 在途键 → 已得出、还没落盘成功的结局：终态写盘失败重来时照它补写，不再调内核
   const since = new Map(); // 在途键 → 本进程开始经手它的单调时刻
   const availability = new Map(); // 目标记录 id → 上次看到的 available
@@ -293,10 +292,6 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
     const admitted = await store.admit({ caller: author, request: body.request, grant: grant.id, digest, key: idempotencyKey(author, body.request),
       notAfter: body.expiresAt, call: { target: grant.target, input: input.input }, canceled: body.cancel === true, version: record.version });
     if (!admitted.ok) { since.delete(key); await reject(author, admitted.code); return true; }
-    // 取消先于请求到达：只留标记，直接答 canceled。
-    if (body.cancel !== true) {
-      try { await signRpc(answerRecord(answerBody(admitted.entry, grant, { state: 'running' }))); } catch { /* 没签出 running：照常往下，调用方收不到回执会自己取消 */ }
-    }
     drive(author, body.request);
     return true;
   }
@@ -364,9 +359,18 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
     const problem = grantProblem(grant, me, grant ? await targetOf(grant.target) : null);
     if (stopped || problem === 'no_identity') return null;
     if (problem) { await invalidate(grant, problem); return end(entry, refused(problem)); }
-    // 待落盘的失效也在 store 的同一个串行操作里查：排队期间才观察到的失效同样挡住提交。
+    // 已过最晚启动时刻：答失败，不签 running、不提交。
+    if (now() >= entry.notAfter) return end(entry, refused('expired'));
+    // 签出 running 才提交：没签出留在 admitted，下一拍再签；等签名期间停了的，不再提交。
+    const key = inflightKey(entry.caller, entry.request);
+    if (!announced.has(key)) {
+      try { await signRpc(answerRecord(answerBody(entry, grant, { state: 'running' }))); } catch { return null; }
+      announced.add(key);
+      if (stopped) return null;
+    }
+    // 签出之后再复查取消、授权与窗口。待落盘的失效也在 store 的同一个串行操作里查：排队期间才观察到的失效同样挡住提交。
     const marked = await store.markSubmitted(entry.caller, entry.request, pendingEnd);
-    if (marked.ok) unissued.add(inflightKey(entry.caller, entry.request));
+    if (marked.ok) unissued.add(key);
     if (marked.ok || marked.code === 'terminal') return marked.entry;
     if (marked.code === 'canceled') return end(marked.entry, canceledOutcome());
     if (marked.code === 'revoked' || marked.code === 'expired') return end(marked.entry, refused(marked.reason ?? marked.code));
@@ -396,10 +400,13 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
         // 「没发出」的标记留到终态落盘成功：落盘失败重来时仍签 canceled。重启后接手的不在 `unissued` 里。
         const by = (await store.get(entry.caller, entry.request))?.canceledBy;
         outcome = unissued.has(key) ? canceledOutcome(by) : interrupted('重启前这次调用是否已发出无法确认，已取消、不再重调');
+      } else if (outcome === undefined && !unissued.has(key) && !(await mayStartNow(entry))) {
+        // 重启后接手、此刻已不允许首次启动：内核里可能没有这个幂等键（没发出，或超过保留期已忘），再调就会当新调用执行，所以不再调。
+        outcome = interrupted('重启前这次调用是否已发出无法确认，此刻已不允许首次启动、不再重调');
       } else if (outcome === undefined) try {
         unissued.delete(key);
         outcome = { state: 'completed', result: await coda.call({ kind: target.kind, id: target.id }, 'exec', input,
-          { id: entry.key, timeout: Math.max(deadline - now(), RESUME_MS), signal: controller.signal }) };
+          { id: entry.key, timeout: deadline - now(), signal: controller.signal }) };
       } catch (e) {
         const by = (await store.get(entry.caller, entry.request))?.canceledBy;
         // 中止后交回的是中止原因（AbortError），不是原调用的结局；中止前已自己结束的，照它的结局分类。
@@ -426,6 +433,15 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
     }
   }
 
+  // 重启后接手的已提交项，只有此刻仍允许首次启动才用原幂等键再调（内核查不到就会新建）：没过最晚启动时刻、时钟没有回拨、授权没撤（也不在待落盘的失效里）、
+  // 调用方此刻的好友绑定仍有效。时钟与窗口在读身份、授权之后再查一次：读的期间过了截止也不调。
+  async function mayStartNow(entry) {
+    const timely = () => now() < entry.notAfter && !clockWentBack(now(), maxSeen);
+    if (!timely()) return false;
+    const [me, grant] = await Promise.all([identity(), store.getGrant(entry.grant)]);
+    return timely() && grant !== null && grant.revokedAt === undefined && !pendingEnd(grant) && me.bound.has(entry.caller);
+  }
+
   // 落终态（先落盘），连同要写进操作记录的那一行一起落：之后中途退出，重启照它补写。已有终态的不改。
   // 耗时用单调时钟，从本进程开始经手它算起（重启后接手的，从接手时算）。
   async function end(entry, { state, result, error }) {
@@ -437,6 +453,7 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
       ms: Math.round(monotonic() - (since.get(key) ?? monotonic())) };
     const done = await store.finish(entry.caller, entry.request, { state, finishedAt, ...(result === undefined ? {} : { result }), ...(error === undefined ? {} : { error }) }, row);
     since.delete(key);
+    announced.delete(key);
     return done.entry;
   }
 

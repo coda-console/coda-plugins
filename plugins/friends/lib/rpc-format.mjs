@@ -240,19 +240,29 @@ function shorten(text, keep) {
 /**
  * 回答正文序列化后（UTF-8 字节，含转义）不超过 60 KiB：超了就把 `result` 里的 stdout、stderr 各留头尾、中间注明省略的字节数，
  * `result.truncated` 置 true，`cut: true` 放在回答外层（不进 result）。`result` 的其余各项不动（remote-exec 自己截短过的，`outputDir` 照给）。
+ * 失败回答截 `error.message`（同样留头尾），`code`、`effects` 不动；截到最短仍超限的，消息换成一句固定的话，终态总签得出。
  * 没有 `result` 可截、或截到最短仍超限的，抛 `too_large`。没超限的原样返回。
  */
 export function fitAnswer(body) {
   if (bytesOf(body) <= MAX_ANSWER_BYTES) return body;
-  const { result } = body;
+  const { result, error } = body;
+  if (isPlain(error) && isText(error.message)) {
+    const cut = keep => ({ ...body, error: { ...error, message: shorten(error.message, keep) }, cut: true });
+    if (bytesOf(cut(0)) > MAX_ANSWER_BYTES) return { ...body, error: { code: error.code, message: '错误消息超出回答的大小上限，已略去', effects: error.effects }, cut: true };
+    return cut(largestFit(cut, codePoints(error.message).length));
+  }
   const cut = keep => ({ ...body, result: { ...result, stdout: shorten(result.stdout, keep), stderr: shorten(result.stderr, keep), truncated: true }, cut: true });
   if (!isPlain(result) || !isText(result.stdout) || !isText(result.stderr) || bytesOf(cut(0)) > MAX_ANSWER_BYTES)
     throw Object.assign(new Error('回答超过大小上限，截短也放不下'), { code: 'too_large', effects: 'none' });
-  // 保留的码点数越多正文越大：二分找出还放得下的最大值。
-  let low = 0, high = Math.max(codePoints(result.stdout).length, codePoints(result.stderr).length);
+  return cut(largestFit(cut, Math.max(codePoints(result.stdout).length, codePoints(result.stderr).length)));
+}
+
+// 保留的码点数越多正文越大：二分找出 `cut(keep)` 还放得下的最大 keep（`cut(0)` 须已放得下）。
+function largestFit(cut, high) {
+  let low = 0;
   while (low < high) {
     const middle = Math.ceil((low + high) / 2);
     if (bytesOf(cut(middle)) <= MAX_ANSWER_BYTES) low = middle; else high = middle - 1;
   }
-  return cut(low);
+  return low;
 }

@@ -360,6 +360,19 @@ test('a failed answer is thrown with its code, message and effects', async t => 
   await rejectsWith(c.exec({ grant }).promise, 'disk_full', 'some', '磁盘满了');
 });
 
+// 不拨定时器、只等真实的几毫秒：等的是持有方自己答的终态。
+const settles = promise => { let done = false; promise.then(() => { done = true; }, () => { done = true; }); return until(() => done, '调用结束'); };
+
+test('a failed answer whose message is too long to fit is cut on the holder and still thrown with its code and effects', async t => {
+  const world = worldFake(), h = await holderOf(t, world), c = await callerOf(t, world);
+  const grant = await granted(h, c);
+  h.exec.plan = () => fail('ENAMETOOLONG', `ENAMETOOLONG: ${'/d'.repeat(40_000)}`, 'none');
+  const call = c.exec({ grant });
+  await settles(call.promise);
+  await rejectsWith(call.promise, 'ENAMETOOLONG', 'none', '省略了');
+  assert.equal(h.lastAnswer(ROOT, call.request).cut, true);
+});
+
 test('a running receipt keeps the call waiting past 75 seconds until the final answer; the outgoing table records the call meanwhile', async t => {
   const world = worldFake(), h = await holderOf(t, world), c = await callerOf(t, world);
   const grant = await granted(h, c);

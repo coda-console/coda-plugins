@@ -322,8 +322,22 @@ test('the cut counts bytes after escaping and for multi-byte text: Han, emoji, c
   }
 });
 
+test('a failed answer with an overlong message is cut to fit: code and effects kept, cut set; past the limit even when cut, a fixed message stands in', () => {
+  const failed = message => answer({ state: 'failed', result: undefined, error: { code: 'ENAMETOOLONG', message, effects: 'none' } });
+  const cut = failed(`ENAMETOOLONG: ${'/d'.repeat(35_000)}`);
+  assert.ok(BYTES(cut.body) <= MAX_ANSWER_BYTES, `${BYTES(cut.body)}`);
+  assert.ok(BYTES(cut.body) > MAX_ANSWER_BYTES - 700, `fills the room: ${BYTES(cut.body)}`);
+  assert.equal(cut.body.cut, true);
+  assert.deepEqual([cut.body.error.code, cut.body.error.effects], ['ENAMETOOLONG', 'none']);
+  assert.match(cut.body.error.message, /^ENAMETOOLONG: \/d[\s\S]*省略了 \d+ 字节[\s\S]*\/d$/);
+  // 一条短消息不动，也不设 cut。
+  assert.equal(failed('short').body.cut, undefined);
+  // 其他字段已占满上限（这里拿超长的 code 来占），截消息也放不下：换成固定的一句，code、effects 照留。
+  const fixed = fitAnswer({ ...answer().body, state: 'failed', result: undefined, error: { code: 'c'.repeat(MAX_ANSWER_BYTES), message: 'm'.repeat(70_000), effects: 'unknown' } });
+  assert.deepEqual([fixed.cut, fixed.error.code.length, fixed.error.effects, fixed.error.message], [true, MAX_ANSWER_BYTES, 'unknown', '错误消息超出回答的大小上限，已略去']);
+});
+
 test('an answer that cannot be cut to fit is refused', () => {
-  assert.throws(() => answer({ state: 'failed', result: undefined, error: { code: 'x', message: 'm'.repeat(70_000), effects: 'none' } }), { code: 'too_large' });
   assert.throws(() => fitAnswer({ ...answer().body, result: { ...EXEC, outputDir: '/'.repeat(70_000) } }), { code: 'too_large' });
   // 收到的整条超过 60 KiB 也拒。
   const built = answer(), body = { ...built.body, error: { code: 'x', message: 'm'.repeat(70_000), effects: 'none' } };
