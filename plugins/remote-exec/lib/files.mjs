@@ -34,13 +34,17 @@ export async function pull(env, request, ctx) {
   const op = begin(env, 'pull', ctx, { path, offset, length });
   return op.guard({ path, offset, length }, async () => {
     absolute(coda, path);
+    ctx.signal.throwIfAborted();
     const { handle, size } = await openFile(coda, path);
+    // 打开之后到读第一块之间没有别的等待：这一次检查也管空范围与首块预读。
+    if (ctx.signal.aborted) { await handle.close(); throw ctx.signal.reason; }
     // `stat` 的大小为 0 的普通文件不一定是空的（如 /proc/cpuinfo）：读到 EOF 为准，一律不声明长度。
     // 超出安全整数的 offset、length 在建读流之前收口：offset 超过末尾就是空体，length 超大就是读到末尾。
     const unsized = size === 0, limit = unsized ? Infinity : size, declared = length => unsized ? undefined : length;
     const start = Math.min(Number(offset ?? 0), unsized ? Number.MAX_SAFE_INTEGER : size), end = length === undefined ? limit : Math.min(limit, start + Number(length));
     if (end <= start) {
       await handle.close();
+      ctx.signal.throwIfAborted();
       await op.record({ result: { bytes: 0 } });
       return new Response(null, octet(declared(0)));
     }
@@ -109,6 +113,7 @@ async function resolveTarget(coda, path) {
       if (error.code === 'ENOENT') return current;
       throw error;
     }
+    if (link.endsWith('/')) throw coda.error('is_a_directory', `${path}：符号链接指向目录（${link}），不能当文件写`, { effects: 'none' });
     try { current = join(await realpath(isAbsolute(link) ? dirname(link) : `${dirname(current)}/${dirname(link)}`), basename(link)); } catch (error) {
       if (error.code === 'ENOENT') throw coda.error('not_found', `${path}：符号链接指向的目录不存在（${link}）`, { effects: 'none' });
       throw error;
@@ -141,17 +146,24 @@ export async function push(env, request, ctx) {
     ctx.signal.addEventListener('abort', onAbort, { once: true });
     try {
       ctx.signal.throwIfAborted();
+      // 先把路径上的父目录建好，再解析最终目标：`missing/../x` 建出 `missing` 之后指向的可能是已有的文件。
+      await makeDirectories(dirname(path), made);
       const target = await resolveTarget(coda, path);
       const existing = await stat(target).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
       if (existing?.isDirectory()) throw coda.error('is_a_directory', `${path}：是目录，不能当文件写`, { effects: 'none' });
       if (existing && !existing.isFile()) throw coda.error('not_a_regular_file', `${path}：已有的不是普通文件（FIFO、设备或套接字），不替换`, { effects: 'none' });
-      await makeDirectories(dirname(target), made);
+      if (existing && existing.uid !== process.getuid()) throw coda.error('owner_mismatch', `${path}：已有的文件属于别的用户（uid ${existing.uid}），不替换`, { effects: 'none' });
       // 临时文件与目标在内核解析出的同一个父目录里；原始路径里的 `..` 与符号链接不做词法拼接。
       const parent = await realpath(dirname(target)), destination = join(parent, basename(target));
       const candidate = join(parent, `.coda-push-${randomBytes(8).toString('hex')}`);
       // 写的过程中只有自己能读写，最终权限在写满之后、改名之前才给。
       handle = await open(candidate, 'wx', 0o600);
       temp = candidate;
+      if (existing && (await handle.stat()).gid !== existing.gid) {
+        try { await handle.chown(-1, existing.gid); } catch (error) {
+          throw coda.error('group_unavailable', `${path}：改不成原文件的属组（gid ${existing.gid}），不替换：${error.message}`, { effects: 'none' });
+        }
+      }
       reader = request.body?.getReader();
       ctx.signal.throwIfAborted();   // 取消若在拿到 reader 之前到，监听没有东西可取消
       while (reader) {
@@ -162,7 +174,7 @@ export async function push(env, request, ctx) {
       }
       ctx.signal.throwIfAborted();
       await handle.sync();
-      await handle.chmod(existing ? existing.mode & 0o7777 : 0o666 & ~process.umask());
+      await handle.chmod(existing ? existing.mode & 0o777 : 0o666 & ~process.umask());
       await handle.close();
       handle = null;
       ctx.signal.throwIfAborted();

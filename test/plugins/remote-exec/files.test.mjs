@@ -1,6 +1,6 @@
 import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, statSync, readlinkSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, statSync, readlinkSync, symlinkSync, writeFileSync } from 'node:fs';
 import fsp from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
@@ -531,4 +531,120 @@ test('pull and push are refused with audit_unavailable, effects none, when the l
   await assert.rejects(reading(t, { path: source }, { host }).response, { code: 'audit_unavailable', effects: 'none' });
   await assert.rejects(writing(t, { path: target }, 'x', { host }).done, { code: 'audit_unavailable', effects: 'none' });
   assert.equal(existsSync(join(dir, 'new')), false);
+});
+
+test('push: the parent directories are made before the target is resolved: "missing/../private" is the existing private file, replaced with its 0600 kept; a FIFO under that shape is refused and nothing is made', async t => {
+  const dir = scratch(t), path = `${dir}/missing/../private`;
+  writeFileSync(join(dir, 'private'), 'secret');
+  chmodSync(join(dir, 'private'), 0o600);
+  assert.deepEqual((await pushed(t, path, 'new')).json, { path, size: 3 });
+  assert.equal(readFileSync(join(dir, 'private'), 'utf8'), 'new');
+  assert.equal(statSync(join(dir, 'private')).mode & 0o7777, 0o600);
+  assert.deepEqual(names(dir), ['missing', 'private']);   // 成功的推送留下它建的目录
+  execFileSync('mkfifo', [join(dir, 'fifo')]);
+  await assert.rejects(pushed(t, `${dir}/gone/../fifo`, 'x'), { code: 'not_a_regular_file', effects: 'none' });
+  assert.equal(statSync(join(dir, 'fifo')).isFIFO(), true);
+  assert.deepEqual(names(dir), ['fifo', 'missing', 'private']);
+});
+
+test('push: a dangling link whose target ends with "/" points to a directory: refused with is_a_directory, no file is made, the link is left alone', async t => {
+  const dir = scratch(t);
+  mkdirSync(join(dir, 'real'));
+  for (const [name, target] of [['a', 'missing/'], ['b', 'real/missing/']]) {
+    symlinkSync(target, join(dir, name));
+    await assert.rejects(pushed(t, join(dir, name), 'x'), { code: 'is_a_directory', effects: 'none' });
+    assert.equal(readlinkSync(join(dir, name)), target);
+  }
+  assert.deepEqual(names(dir), ['a', 'b', 'real']);
+  assert.deepEqual(names(join(dir, 'real')), []);
+});
+
+test('pull: a call that is already aborted, even for an empty range, throws the reason and writes exactly one cancelled line; one aborted while the file is being opened too', async t => {
+  const file = join(scratch(t), 'f'), away = new DOMException('away', 'AbortError');
+  writeFileSync(file, 'abc');
+  const host0 = setup(t), controller0 = new AbortController(), opened = fsp.open;
+  let opens = 0;
+  controller0.abort(away);
+  fsp.open = (...args) => { opens++; return opened(...args); };
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(pull(host0.env, request(), { caller, record, input: { path: file, length: '0' }, signal: controller0.signal }), error => error === away);
+  } finally { fsp.open = opened; syncBuiltinESMExports(); }
+  assert.equal(opens, 0, '已经取消：不开文件');
+  assert.deepEqual(host0.lines().map(line => line.error), ['cancelled']);
+  // 已经取消的 signal 在开始任何 I/O 之前就被看到；在 open 的过程中取消的，由打开之后的那次检查接住（空范围不能当成功）。
+  const host = setup(t), controller = new AbortController(), original = fsp.open;
+  let closed = false;
+  fsp.open = async (...args) => { const real = await original(...args); controller.abort(away); return { stat: () => real.stat(), close: () => { closed = true; return real.close(); } }; };
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(pull(host.env, request(), { caller, record, input: { path: file, length: '0' }, signal: controller.signal }), error => error === away);
+  } finally { fsp.open = original; syncBuiltinESMExports(); }
+  assert.equal(closed, true);
+  assert.deepEqual(host.lines().map(line => line.error), ['cancelled']);
+});
+
+test('push: a replace keeps the permission bits but not setuid, setgid or sticky (the old file\'s stat is injected: a normal user cannot keep those bits on a file on every system)', async t => {
+  const dir = realpathSync(scratch(t)), path = join(dir, 'f'), original = fsp.stat;   // push 对解析后的路径 stat
+  writeFileSync(path, 'old');
+  chmodSync(path, 0o755);
+  let special = 0;
+  fsp.stat = async (...args) => {
+    const info = await original(...args);
+    return args[0] === path ? Object.create(info, { mode: { value: (info.mode & ~0o7777) | special } }) : info;
+  };
+  syncBuiltinESMExports();
+  try {
+    for (special of [0o6755, 0o1755]) {
+      await pushed(t, path, `new ${special}`);
+      assert.equal(readFileSync(path, 'utf8'), `new ${special}`);
+      assert.equal(statSync(path).mode & 0o7777, 0o755);
+    }
+  } finally { fsp.stat = original; syncBuiltinESMExports(); }
+});
+
+test('push: a file owned by another user is refused with owner_mismatch, effects none, and nothing is left behind', async t => {
+  const dir = scratch(t), path = join(dir, 'f'), uid = process.getuid;
+  writeFileSync(path, 'old');
+  process.getuid = () => uid.call(process) + 1;
+  try { await assert.rejects(pushed(t, path, 'new'), { code: 'owner_mismatch', effects: 'none' }); } finally { process.getuid = uid; }
+  assert.equal(readFileSync(path, 'utf8'), 'old');
+  assert.deepEqual(names(dir), ['f']);
+});
+
+test('push: when the group of the old file differs the temporary file gets it with fchown; when that fails the push is refused with a code, effects none, and the temporary file is gone', async t => {
+  const dir = scratch(t), path = join(dir, 'f'), original = fsp.open, calls = [];
+  writeFileSync(path, 'old');
+  const gid = statSync(path).gid;
+  let failing = false;
+  fsp.open = async (...args) => {
+    const real = await original(...args);
+    if (args[1] !== 'wx') return real;
+    return new Proxy(real, { get(target, name) {
+      if (name === 'stat') return async () => ({ ...(await target.stat()), gid: gid + 1 });
+      if (name === 'chown') return async (...chownArgs) => { calls.push(chownArgs); if (failing) throw Object.assign(new Error('EPERM'), { code: 'EPERM' }); };
+      const value = Reflect.get(target, name, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    } });
+  };
+  syncBuiltinESMExports();
+  try {
+    await pushed(t, path, 'new');
+    assert.deepEqual(calls, [[-1, gid]]);
+    assert.equal(readFileSync(path, 'utf8'), 'new');
+    failing = true;
+    await assert.rejects(pushed(t, path, 'newer'), { code: 'group_unavailable', effects: 'none' });
+  } finally { fsp.open = original; syncBuiltinESMExports(); }
+  assert.equal(readFileSync(path, 'utf8'), 'new');
+  assert.deepEqual(names(dir), ['f']);
+});
+
+test('pull: aborted while the file of an empty range is being closed, the reason is thrown and exactly one cancelled line is written, not a success', async t => {
+  const file = join(scratch(t), 'f'), away = new DOMException('away', 'AbortError');
+  writeFileSync(file, 'abc');
+  const host = setup(t), controller = new AbortController();
+  await withFailingFile(real => ({ stat: () => real.stat(), close: async () => { controller.abort(away); await real.close(); } }), async () => {
+    await assert.rejects(pull(host.env, request(), { caller, record, input: { path: file, length: '0' }, signal: controller.signal }), error => error === away);
+  });
+  assert.deepEqual(host.lines().map(line => line.error), ['cancelled']);
 });
