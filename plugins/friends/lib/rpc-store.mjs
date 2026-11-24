@@ -1,7 +1,7 @@
 // 好友签名网关的本机状态：插件状态目录下 `rpc/` 里的四样东西。
 //   grants.json    授权表（持有方）：本机授权行是权威，撤权先落盘。
 //   inflight.json  在途与去重表（持有方）：键是 (调用方作者, 请求号)，状态只进不退，终态先落盘。
-//   outgoing.json  发出表（调用方）：本人查账用。
+//   outgoing.json  发出表（调用方）：本人查账用；也存着请求正文与核对回答要的各项（发出时的作者、持有方、授权号、摘要），重启后收尾、补发取消、撤回都照它。
 //   ledger-YYYY-MM.jsonl  操作记录（持有方）：每个请求一行，拒绝按「作者、原因、分钟」合并成一行，留 90 天。
 //   clock.json     持有方见过的最大时刻：本机时钟大幅回拨时据此暂停准入。
 // 表文件与操作记录的月份文件都原子写入（临时文件 + rename，文件 0600、目录 0700）。读出来不是合法 JSON、或形状不对，就抛 `corrupt`，调用方据此停止准入，
@@ -10,7 +10,7 @@ import { createHash } from 'node:crypto';
 import { chmod, mkdir, open, readFile, readdir, rename, rm, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { isAuthor, rebuildExecInput } from './rpc-format.mjs';
+import { isAuthor, rebuildExecInput, requestDigest } from './rpc-format.mjs';
 
 const MINUTE = 60_000, DAY = 24 * 60 * MINUTE;
 export const LIMITS = Object.freeze({
@@ -24,7 +24,8 @@ export const BUSY_RETRY_MS = 5_000;
 export const KEEP_AFTER_EXPIRY_MS = DAY, LEDGER_KEEP_MS = 90 * DAY;
 export const SUMMARY_CHARS = 80;
 const TERMINAL = ['completed', 'failed', 'canceled'], STATES = ['admitted', 'submitted', ...TERMINAL];
-const OUT_STATES = ['sent', 'canceled', 'finished'];
+// cancel_pending：取消没发出去，待发；canceled：取消已发出。
+const OUT_STATES = ['sent', 'cancel_pending', 'canceled', 'finished'];
 
 const isPlain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const isText = value => typeof value === 'string' && value !== '';
@@ -64,8 +65,11 @@ const inflightOk = entry => {
   return entry.signed === true ? entry.outcome === undefined : entry.outcome !== undefined;
 };
 
+// 发出项：`body` 是签出的请求正文（补发取消要用原文），`author`（发出时的本机作者）、`holder`、`grant`、`digest` 取自它；
+// `settled` 是处理函数已经了结这次调用（run 结束，或重启后 resume 收尾），之前清扫不动它。
 const outgoingOk = entry => isPlain(entry) && isText(entry.request) && isText(entry.call) && isText(entry.key) && isText(entry.machine)
-  && (entry.parent === null || isText(entry.parent)) && isTime(entry.expiresAt) && OUT_STATES.includes(entry.state);
+  && (entry.parent === null || isText(entry.parent)) && isTime(entry.expiresAt) && OUT_STATES.includes(entry.state)
+  && isAuthor(entry.author) && isAuthor(entry.holder) && isText(entry.grant) && isText(entry.digest) && isPlain(entry.body) && optional(entry.settled, value => value === true);
 
 const TABLES = {
   grants: { file: 'grants.json', field: 'grants', ok: grantOk, keyOf: entry => entry.id },
@@ -359,8 +363,11 @@ export function createRpcStore(stateDir, { now = Date.now } = {}) {
 
   // ---- 发出表 ----
 
-  const addOutgoing = ({ request, call, key, machine, parent = null, expiresAt }) => serial(async () => {
-    const entry = { request, call, key, machine, parent, expiresAt, state: 'sent' };
+  // `body` 是要签出的请求正文：请求号、期限、作者、持有方、授权号、摘要都取自它。
+  const addOutgoing = ({ call, key, machine, parent = null, body }) => serial(async () => {
+    const entry = { request: body?.request, call, key, machine, parent, expiresAt: body?.expiresAt, author: body?.caller, holder: body?.holder, grant: body?.grant,
+      digest: isPlain(body) ? requestDigest(body) : undefined, body, state: 'sent' };
+    const { request } = entry;
     if (!outgoingOk(entry)) throw invalid('发出项的各项不合格');
     const entries = await load('outgoing');
     entries[request] = entry;
@@ -372,6 +379,13 @@ export function createRpcStore(stateDir, { now = Date.now } = {}) {
     const entries = await load('outgoing');
     if (!entries[request]) return null;
     entries[request] = { ...entries[request], state };
+    await save('outgoing', entries);
+    return entries[request];
+  });
+  const settleOutgoing = request => serial(async () => {
+    const entries = await load('outgoing');
+    if (!entries[request]) return null;
+    entries[request] = { ...entries[request], settled: true };
     await save('outgoing', entries);
     return entries[request];
   });
@@ -491,7 +505,7 @@ export function createRpcStore(stateDir, { now = Date.now } = {}) {
     listInflight: () => serial(async () => Object.values(await load('inflight'))),
     listOutgoing: () => serial(async () => Object.values(await load('outgoing'))),
     getOutgoing: request => serial(async () => (await load('outgoing'))[request] ?? null),
-    addOutgoing, setOutgoingState, removeOutgoing,
+    addOutgoing, setOutgoingState, settleOutgoing, removeOutgoing,
     appendLedger, appendLedgerRow, recordRejection, readLedger, pruneLedger: () => serial(pruneNow),
   };
 }

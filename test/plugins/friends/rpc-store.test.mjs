@@ -5,6 +5,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mock, test } from 'node:test';
+import { requestDigest } from '../../../plugins/friends/lib/rpc-format.mjs';
 import { BUSY_RETRY_MS, KEEP_AFTER_EXPIRY_MS, LEDGER_KEEP_MS, LIMITS, commandInfo, createRpcStore, inflightKey, isCorrupt } from '../../../plugins/friends/lib/rpc-store.mjs';
 
 const author = n => `ed25519:${String(n).repeat(64).slice(0, 64)}`;
@@ -32,26 +33,28 @@ const candidate = (clock, more = {}) => {
 };
 const readRaw = (dir, name) => readFile(join(dir, 'rpc', name), 'utf8');
 const mode = async path => (await stat(path)).mode & 0o777;
+// 调用方签出的请求正文：发出项的请求号、期限、作者、持有方、授权号、摘要都取自它。
+const sentBody = (n, more = {}) => ({ v: 1, caller: A, holder: B, grant: GRANT, request: `c${hex(n)}`, op: 'exec', input: { command: 'ls' }, createdAt: START, expiresAt: START + MINUTE, ...more });
 const finished = (more = {}) => ({ state: 'completed', finishedAt: START + 1, result: { exitCode: 0 }, ...more });
 
 test('state files are written atomically with private permissions, and no temporary file is left', async t => {
   const { dir, rpc, store, clock } = await setup(t);
   await store.addGrant({ id: GRANT, holder: { machine: A }, grantee: B, granteePerson: null, target: TARGET, createdAt: START });
   await store.admit(candidate(clock));
-  await store.addOutgoing({ request: `c${hex(1)}`, call: 'call-1', key: 'friend:x', machine: 'm2', parent: null, expiresAt: START + MINUTE });
+  await store.addOutgoing({ call: 'call-1', key: 'friend:x', machine: 'm2', parent: null, body: sentBody(1) });
   await store.appendLedger({ request: 'c1', friend: B, grant: GRANT, target: { kind: TARGET.kind, id: TARGET.id, name: 'box' }, command: 'ls', outcome: 'completed', ms: 3 });
   assert.equal(await mode(rpc), 0o700);
   assert.deepEqual((await readdir(rpc)).sort(), ['grants.json', 'inflight.json', 'ledger-2026-11.jsonl', 'outgoing.json']);
   for (const name of await readdir(rpc)) assert.equal(await mode(join(rpc, name)), 0o600, name);
   assert.deepEqual(JSON.parse(await readRaw(dir, 'grants.json')), { v: 1, grants: { [GRANT]: { id: GRANT, holder: { machine: A }, grantee: B, granteePerson: null, target: TARGET, ops: ['exec'], createdAt: START } } });
   // 同时发起很多写：排成一条队，没有丢更新，文件始终是完整的 JSON。
-  await Promise.all(Array.from({ length: 20 }, (_, i) => store.addOutgoing({ request: `c${hex(100 + i)}`, call: `call-${i}`, key: 'friend:x', machine: 'm2', expiresAt: START + MINUTE })));
+  await Promise.all(Array.from({ length: 20 }, (_, i) => store.addOutgoing({ call: `call-${i}`, key: 'friend:x', machine: 'm2', body: sentBody(100 + i) })));
   assert.equal((await store.listOutgoing()).length, 21);
   assert.deepEqual((await readdir(rpc)).filter(name => name.endsWith('.tmp')), []);
   // 目录已存在但权限宽了：写之前收紧。
   await rm(rpc, { recursive: true });
   await mkdir(rpc, { mode: 0o755 });
-  await store.addOutgoing({ request: `c${hex(999)}`, call: 'call-x', key: 'friend:x', machine: 'm2', expiresAt: START + MINUTE });
+  await store.addOutgoing({ call: 'call-x', key: 'friend:x', machine: 'm2', body: sentBody(999) });
   assert.equal(await mode(rpc), 0o700);
 });
 
@@ -68,7 +71,8 @@ test('a missing file is an empty table; a file that is not JSON or not the right
   const everything = () => [() => store.getGrant(GRANT), () => store.addGrant({ ...goodGrant, id: '11111111-1111-4111-8111-111111111111' }), () => store.revokeGrant(GRANT),
     () => store.admit(candidate(clock)), () => store.get(A, 'c1'), () => store.cancel(A, 'c1'), () => store.markSubmitted(A, 'c1'),
     () => store.finish(A, 'c1', finished()), () => store.markSigned(A, 'c1'), () => store.purge(), () => store.quota(A),
-    () => store.addOutgoing({ request: 'c1', call: 'x', key: 'k', machine: 'm', expiresAt: 1 }), () => store.setOutgoingState('c1', 'sent'), () => store.removeOutgoing('c1'),
+    () => store.addOutgoing({ call: 'x', key: 'k', machine: 'm', body: sentBody(1) }), () => store.setOutgoingState('c1', 'sent'), () => store.settleOutgoing('c1'),
+    () => store.removeOutgoing('c1'),
     ...Object.values(reads)];
   const shapeBad = [['', '空文件'], ['{', '半截 JSON'], ['null', 'null'], ['[]', '数组'], ['{"v":1}', '缺表'], ['{"v":2,"grants":{},"entries":{}}', '版本不对'],
     ['{"v":1,"grants":[],"entries":[]}', '表是数组']];
@@ -339,18 +343,25 @@ test('the per-minute quota: 30 per author and 120 in all in a sliding minute, wi
   assert.equal((await send(E)).ok, true);
 });
 
-test('the outgoing table: added, its state changed, removed, and a bad entry is refused', async t => {
+test('the outgoing table keeps the request body with the author, holder, grant and digest taken from it; its state and settlement change; a bad entry is refused', async t => {
   const { store } = await setup(t);
-  const entry = { request: `c${hex(1)}`, call: 'call-1', key: 'friend:aaaa:grant', machine: 'm2', parent: 'parent-1', expiresAt: START + MINUTE };
-  assert.deepEqual(await store.addOutgoing(entry), { ...entry, state: 'sent' });
-  assert.equal((await store.addOutgoing({ ...entry, request: `c${hex(2)}`, parent: undefined })).parent, null);
-  assert.deepEqual((await store.getOutgoing(entry.request)).state, 'sent');
-  assert.equal((await store.setOutgoingState(entry.request, 'finished')).state, 'finished');
+  const body = sentBody(1), entry = { call: 'call-1', key: 'friend:aaaa:grant', machine: 'm2', parent: 'parent-1', body };
+  const kept = { request: body.request, call: 'call-1', key: 'friend:aaaa:grant', machine: 'm2', parent: 'parent-1', expiresAt: body.expiresAt,
+    author: A, holder: B, grant: GRANT, digest: requestDigest(body), body, state: 'sent' };
+  assert.deepEqual(await store.addOutgoing(entry), kept);
+  assert.equal((await store.addOutgoing({ ...entry, body: sentBody(2), parent: undefined })).parent, null);
+  assert.deepEqual(await store.getOutgoing(body.request), kept);
+  assert.equal((await store.setOutgoingState(body.request, 'cancel_pending')).state, 'cancel_pending');
+  assert.equal((await store.setOutgoingState(body.request, 'finished')).state, 'finished');
   assert.equal(await store.setOutgoingState('cnope', 'finished'), null);
-  await assert.rejects(store.setOutgoingState(entry.request, 'lost'), { code: 'invalid_input' });
-  await assert.rejects(store.addOutgoing({ ...entry, expiresAt: 'soon' }), { code: 'invalid_input' });
-  assert.equal(await store.removeOutgoing(entry.request), true);
-  assert.equal(await store.removeOutgoing(entry.request), false);
+  await assert.rejects(store.setOutgoingState(body.request, 'lost'), { code: 'invalid_input' });
+  assert.deepEqual(await store.settleOutgoing(body.request), { ...kept, state: 'finished', settled: true });
+  assert.equal(await store.settleOutgoing('cnope'), null);
+  await assert.rejects(store.addOutgoing({ ...entry, body: sentBody(3, { expiresAt: 'soon' }) }), { code: 'invalid_input' });
+  await assert.rejects(store.addOutgoing({ ...entry, body: sentBody(3, { caller: 'someone' }) }), { code: 'invalid_input' });
+  await assert.rejects(store.addOutgoing({ ...entry, body: undefined }), { code: 'invalid_input' });
+  assert.equal(await store.removeOutgoing(body.request), true);
+  assert.equal(await store.removeOutgoing(body.request), false);
   assert.deepEqual((await store.listOutgoing()).map(one => one.request), [`c${hex(2)}`]);
 });
 

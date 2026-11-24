@@ -1,4 +1,4 @@
-// 好友模块：备注的视图消息与 `coda self`、社交网关的登记；备注存在插件状态目录。activate 里 Accord 只读本机记录、监听变化，不查询、不发布。
+// 好友模块：备注的视图消息与 `coda self`、社交网关与签名网关调用方的登记；备注存在插件状态目录。activate 里 Accord 只读本机记录、监听变化，不查询、不发布。
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -31,8 +31,10 @@ test('activate registers the notes and policy handlers, the gateway operations a
   t.after(deactivate);
   await activate(h.coda);
   assert.deepEqual([...h.self.keys()].sort(), ['grants.grant', 'grants.list', 'grants.revoke', 'ledger.list', 'notes.delete', 'notes.list', 'notes.set', 'policy.get', 'policy.setKind']);
-  assert.deepEqual(h.operations.sort(), ['friends', 'outbox', 'post-feed', 'publish', 'records', 'retract', 'send-dm', 'set-card'].map(name => `friends/social@1/${name}`));
-  assert.deepEqual(h.streams, ['friends/social@1/dm', 'friends/social@1/feed']);
+  assert.deepEqual(h.operations.sort(), [...['friends', 'outbox', 'post-feed', 'publish', 'records', 'retract', 'send-dm', 'set-card'].map(name => `friends/social@1/${name}`),
+    'remote-exec/machine@1/exec']);
+  // 调用方的代理记录：exec 转给好友，pull、push 报不支持。
+  assert.deepEqual(h.streams, ['friends/social@1/dm', 'friends/social@1/feed', 'remote-exec/machine@1/pull', 'remote-exec/machine@1/push']);
   assert.deepEqual([...h.views.keys()], ['friends']);
 });
 

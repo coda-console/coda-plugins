@@ -6,13 +6,15 @@
 //   发布策略用 `coda self policy.get|policy.setKind` 读写；
 // - 签名网关的持有方（lib/rpc-holder.mjs）：把本机 remote-exec 记录的 exec 授给好友、转发好友签名的调用，
 //   授权与操作记录用 `coda self grants.list|grants.grant|grants.revoke|ledger.list` 读写。持有方出错不影响社交网关。
+// - 签名网关的调用方（lib/rpc-caller.mjs）：把好友授给本机的记录登记成代理记录，接住对它的 exec 转给好友签名执行。调用方出错不影响社交网关与持有方。
 import { createGateway } from './lib/gateway.mjs';
 import { deleteNote, readNotes, setNote } from './lib/notes.mjs';
+import { createCaller } from './lib/rpc-caller.mjs';
 import { createHolder } from './lib/rpc-holder.mjs';
 import { createRpcStore } from './lib/rpc-store.mjs';
 
 const HOLDER_ACTIONS = ['grants.list', 'grants.grant', 'grants.revoke', 'ledger.list'];
-let dir = null, gateway = null, holder = null;
+let dir = null, gateway = null, holder = null, caller = null;
 const handles = [];
 
 export async function activate(coda) {
@@ -41,11 +43,15 @@ export async function activate(coda) {
   for (const [name, fn] of Object.entries(gateway.policy)) handles.push(coda.self.handle(name, input => fn(input ?? {})));
   await gateway.start();
   if (dir) {
+    const store = createRpcStore(dir), rpc = { store, signRpc: gateway.signRpc, retractRpc: gateway.retractRpc, onAccord: gateway.onAccord, pages: gateway.pages };
     try {
-      holder = createHolder(coda, { store: createRpcStore(dir), signRpc: gateway.signRpc, retractRpc: gateway.retractRpc,
-        onAccord: gateway.onAccord, pages: gateway.pages });
+      holder = createHolder(coda, rpc);
       holder.start().catch(() => {});
     } catch { holder = null; }
+    try {
+      caller = createCaller(coda, { ...rpc, dir });
+      caller.start().catch(() => {});
+    } catch { caller = null; }
   }
   for (const name of HOLDER_ACTIONS) handles.push(coda.self.handle(name, input => {
     if (!holder) throw new Error('这台机器没有插件状态目录，好友授权存不下');
@@ -54,6 +60,8 @@ export async function activate(coda) {
 }
 
 export function deactivate() {
+  caller?.stop();
+  caller = null;
   holder?.stop();
   holder = null;
   gateway?.stop();
