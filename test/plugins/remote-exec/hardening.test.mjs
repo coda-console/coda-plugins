@@ -1,16 +1,19 @@
 // 发布前的几处收紧：执行环境只带白名单、输出落盘有上限并回收、推送有大小上限、同时在跑的执行有上限、操作记录先记后做。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { AUDIT_FILE } from '../../../plugins/remote-exec/lib/audit.mjs';
 import { cleanEnv, FALLBACK_PATH, shellArgs } from '../../../plugins/remote-exec/lib/environ.mjs';
 import { exec, runningCount } from '../../../plugins/remote-exec/lib/exec.mjs';
-import { push } from '../../../plugins/remote-exec/lib/files.mjs';
-import { HEAD, PREFIX, TAIL, openOutputs, sweepOutputs } from '../../../plugins/remote-exec/lib/output.mjs';
+import { pull, push } from '../../../plugins/remote-exec/lib/files.mjs';
+import { HEAD, KEEP_MS, KEEP_TOTAL, PREFIX, TAIL, openOutputs, outputRoot, sweepOutputs } from '../../../plugins/remote-exec/lib/output.mjs';
+import { activate, deactivate, SWEEP_EVERY } from '../../../plugins/remote-exec/main.mjs';
+import { createMockCoda } from '../../helpers/mock-coda.mjs';
 import { caller, fakeSpawn, scratch, setup, waitFor } from './support.mjs';
 
 const record = { kind: 'remote-exec/machine@1', id: 'r-1', key: 'host' };
+const manifest = JSON.parse(readFileSync(new URL('../../../plugins/remote-exec/package.json', import.meta.url), 'utf8'));
 let serial = 0;
 function context(t, spawnOptions) {
   const id = `hardening-${process.pid}-${++serial}`, controller = new AbortController();
@@ -150,4 +153,85 @@ test('executions over the concurrency cap are refused with too_many_running, eff
   const third = context(t);
   assert.equal((await exec(host.env, { command: 'true' }, third.ctx)).exitCode, 0);
   assert.deepEqual(host.lines().map(line => line.error ?? 'ok'), ['cancelled', 'too_many_running', 'ok']);
+});
+
+// ——— 0.1.2：输出只在这个实例私有的根下，留下时当场回收，激活时与每小时也回收；拉取取消不交付预读的块 ———
+
+const old = (dir, ms) => { const when = (Date.now() - ms) / 1000; utimesSync(dir, when, when); };
+const leftover = (root, name, bytes = 1) => {
+  const dir = join(root, `${PREFIX}${name}`);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'stdout'), Buffer.alloc(bytes));
+  return dir;
+};
+
+test('the output root is <real path of the state directory>/outputs, made 0700; a symlink there is refused, not followed; two instances do not see each other', async t => {
+  const base = scratch(t), state = join(base, 'state'), linkedState = join(base, 'state-link');
+  mkdirSync(state);
+  symlinkSync(state, linkedState);
+  const root = await outputRoot(linkedState);
+  assert.equal(root, join(realpathSync(state), 'outputs'));
+  assert.equal(statSync(root).mode & 0o777, 0o700);
+  // outputs 被换成指向别处的链接：拒绝，不往那边放。
+  const other = join(base, 'other'), elsewhere = join(base, 'elsewhere');
+  mkdirSync(other); mkdirSync(elsewhere);
+  symlinkSync(elsewhere, join(other, 'outputs'));
+  await assert.rejects(outputRoot(other), /不是目录/);
+  await assert.rejects(outputRoot(null), /没有插件状态目录/);
+  // 两个实例各回收各的：另一个实例根下过期的目录不归这个实例删，系统临时目录里同名前缀的也不碰。
+  const second = await outputRoot(join(base, 'second-state'));
+  const theirs = leftover(second, 'theirs'); old(theirs, 2 * KEEP_MS);
+  const mine = leftover(root, 'mine'); old(mine, 2 * KEEP_MS);
+  const outside = leftover(base, 'outside'); old(outside, 2 * KEEP_MS);
+  assert.deepEqual(await sweepOutputs(root), [mine]);
+  assert.ok(existsSync(theirs) && existsSync(outside));
+});
+
+test('an execution that keeps its output puts it under the private root and sweeps right then: an expired one goes, and a total over the cap goes oldest first', async t => {
+  const host = setup(t), root = await outputRoot(host.state);
+  const expired = leftover(root, 'expired'); old(expired, 2 * KEEP_MS);
+  const { ctx } = context(t);
+  const result = await exec(host.env, { command: `head -c ${4 * (HEAD + TAIL)} /dev/zero` }, ctx);
+  assert.equal(result.truncated, true);
+  assert.ok(result.outputDir.startsWith(`${root}/${PREFIX}`), result.outputDir);
+  assert.ok(result.stdout.includes(join(result.outputDir, 'stdout')));
+  assert.equal(existsSync(expired), false, '留下输出时当场回收过期的');
+  assert.ok(existsSync(result.outputDir));
+  // 总量：先放两份大的旧输出，合计超过上限；留下这一份时从最旧的删起，这一份留着。
+  const big = KEEP_TOTAL / 2 + 1, first = leftover(root, 'first', big), second = leftover(root, 'second', big);
+  old(first, 3000); old(second, 2000);
+  const again = await exec(host.env, { command: `head -c ${4 * (HEAD + TAIL)} /dev/zero` }, context(t).ctx);
+  assert.equal(existsSync(first), false);
+  assert.ok(existsSync(second) && existsSync(again.outputDir) && existsSync(result.outputDir));
+});
+
+test('activation sweeps the private root once and then every hour, and stops when deactivated', async t => {
+  const state = scratch(t), root = await outputRoot(state), stale = leftover(root, 'stale');
+  old(stale, 2 * KEEP_MS);
+  const host = createMockCoda({ plugin: { id: 'remote-exec', protocols: manifest.contributes.protocols, state }, settings: {} });
+  const intervals = [];
+  await activate(host.coda, { every: (fn, ms) => { const timer = { fn, ms, stopped: false }; intervals.push(timer); return timer; }, stopEvery: timer => { timer.stopped = true; } });
+  t.after(() => { deactivate(); host.close(); });
+  assert.equal(existsSync(stale), false, '激活时回收');
+  assert.deepEqual(intervals.map(timer => timer.ms), [SWEEP_EVERY]);
+  const later = leftover(root, 'later'); old(later, 2 * KEEP_MS);
+  await intervals[0].fn();
+  assert.equal(existsSync(later), false, '每小时回收');
+  deactivate();
+  assert.equal(intervals[0].stopped, true);
+});
+
+test('pull: a cancel errors the body at once and drops the read-ahead chunk even while the result line is still being written; the line still lands', async t => {
+  const file = join(scratch(t), 'f');
+  writeFileSync(file, Buffer.alloc(256 * 1024, 7));
+  const host = setup(t), real = host.env.audit, hold = Promise.withResolvers();
+  // 结果那一行写得很慢：取消时响应体不能等它。
+  host.env.audit = { start: line => real.start(line), end: async (...args) => { await hold.promise; return real.end(...args); } };
+  const controller = new AbortController(), away = new DOMException('away', 'AbortError');
+  const response = await pull(host.env, new Request('http://stream/'), { caller, record, input: { path: file }, signal: controller.signal });
+  controller.abort(away);
+  await assert.rejects(response.body.getReader().read(), error => error === away);
+  hold.resolve();
+  const [line] = await waitFor(() => host.lines().length === 1 && host.lines(), '记录');
+  assert.equal(line.error, 'cancelled');
 });

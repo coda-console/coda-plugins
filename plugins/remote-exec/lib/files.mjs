@@ -57,16 +57,17 @@ export async function pull(env, request, ctx) {
       return new Response(null, octet(declared(0)));
     }
     const expected = unsized ? 0 : end - start, file = handle.createReadStream({ start, end: Number.isSafeInteger(end) ? end - 1 : Infinity }), chunks = file[Symbol.asyncIterator]();
-    let sent = 0, recorded = false, controller;
+    let sent = 0, recorded = false, controller, pending = null;
     const record = fields => { if (!recorded) { recorded = true; return op.record(fields); } };
-    // 调用被中止：文件关掉，响应体当场以取消的原因出错（预读的块随之丢掉），并记一行，不等调用方再读。
+    // 取消：当场关文件、丢掉预读的块、让响应体出错，调用方不会再读到任何数据；结果那一行随后补上，不等调用方再读。
     // 响应体建立之前（还在读第一块）只关文件：随后 next 抛出取消的原因，由 guard 记那一行。
-    // 先记再让响应体出错：调用方看到结束时，记录已经写完。
     const onAbort = () => {
       file.destroy();
+      pending = null;
       if (!controller) return;
       const reason = ctx.signal.reason;
-      Promise.resolve(record({ error: errorCode(reason) })).finally(() => { try { controller.error(reason); } catch { /* 已经结束 */ } });
+      try { controller.error(reason); } catch { /* 已经结束 */ }
+      record({ error: errorCode(reason) });
     };
     ctx.signal.addEventListener('abort', onAbort, { once: true });
     // 下一块；读完回 null。读失败、读到的比声明的短（文件在读的过程中被截短）都是错误，不当成功。
@@ -82,7 +83,7 @@ export async function pull(env, request, ctx) {
       return null;
     };
     // 第一块在回答之前读出来：这之前的失败还能按错误码答复。
-    let pending = await next();
+    pending = await next();
     if (unsized && pending === null) {   // 真的是空的
       ctx.signal.removeEventListener('abort', onAbort);
       await record({ result: { bytes: 0 } });
@@ -95,10 +96,10 @@ export async function pull(env, request, ctx) {
           const chunk = pending ?? await next();
           pending = null;
           // 先记再结束响应：调用方读到结尾时，这一行已经写完（不会在它清理之后才迟到地追加）。
-          if (chunk === null) { await record({ result: { bytes: sent } }); controller.close(); } else controller.enqueue(chunk);
+          if (chunk === null) { await record({ result: { bytes: sent } }); if (!ctx.signal.aborted) controller.close(); } else controller.enqueue(chunk);
         } catch (error) {
           await record({ error: errorCode(error) });
-          controller.error(error);
+          try { controller.error(error); } catch { /* 取消时已经出错 */ }
         }
       },
       // 读的人走了：关掉文件。

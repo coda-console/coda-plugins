@@ -4,7 +4,7 @@
   "displayName": "远程执行",
   "description": "让空间里别的机器上的 Agent 在这台机器上执行命令、拉取和推送文件",
   "icon": { "symbol": "terminal", "color": "blue" },
-  "version": "0.1.1",
+  "version": "0.1.2",
   "coda": { "channels": ["preview"] },
   "categories": ["机器与资源"],
   "type": "module",

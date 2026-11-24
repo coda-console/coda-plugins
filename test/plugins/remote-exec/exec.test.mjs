@@ -22,7 +22,10 @@ function context(t, spawnOptions, extra = {}) {
   const id = `exec-test-${process.pid}-${++serial}`, controller = new AbortController();
   return { ctx: { id, caller, record, signal: controller.signal, deadline: null, spawn: fakeSpawn(t, spawnOptions), ...extra }, id, controller };
 }
-const leftovers = id => readdirSync(tmpdir()).filter(name => name.startsWith(`coda-remote-exec-${id}-`));
+// 这次调用留下的输出目录：输出在各个测试状态目录的 outputs/ 下（见 support.mjs 的 setup）。
+const leftovers = id => readdirSync(tmpdir()).filter(name => name.startsWith('remote-exec-test-')).flatMap(name => {
+  try { return readdirSync(join(tmpdir(), name, 'outputs')); } catch { return []; }
+}).filter(name => name.startsWith(`coda-remote-exec-${id}-`));
 const running = async (t, input, spawnOptions, extra) => {
   const host = setup(t), { ctx, id, controller } = context(t, spawnOptions, extra);
   return { host, ctx, id, controller, done: exec(host.env, input, ctx) };

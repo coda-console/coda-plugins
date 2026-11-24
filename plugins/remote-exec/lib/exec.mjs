@@ -1,6 +1,5 @@
 // 执行：/bin/sh -c 跑一条命令，等它结束，回退出码与（截短的）输出。
 import { stat } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { cleanEnv, shellArgs } from './environ.mjs';
 import { defaultCwd } from './host.mjs';
@@ -24,7 +23,7 @@ export const MAX_RUNNING = 8;
 let running = 0;
 export const runningCount = () => running;
 // 正在用的输出目录：回收时跳过它们。
-const activeOutputs = new Set();
+export const activeOutputs = new Set();
 
 // 一路输出读到结束，按块交给收集器；写不进去就抛。
 const pump = async (stream, sink) => { for await (const chunk of stream) await sink.write(chunk); };
@@ -32,21 +31,27 @@ const pump = async (stream, sink) => { for await (const chunk of stream) await s
 // 起进程、收输出、到点或被取消就结束整个进程组。成功回结果；取消与到期（外部）抛 `ctx.signal.reason`；失败抛错。
 // 终止之后只再等 `DRAIN` 毫秒让输出收完；还没收完（脱离进程组的后代拿着管道）就销毁两路输出、不再等，按已收到的输出走原来的结局。
 // 不论哪种结局，进程都已结束；没人要的输出目录已删。
-async function run(coda, input, ctx, cwd, max = MAX_RUNNING) {
+// `rootOf`：回输出根目录的函数（见 output.mjs 的 `outputRoot`）。
+async function run(coda, input, ctx, cwd, rootOf, max = MAX_RUNNING) {
   if (running >= max) {
     throw coda.error('too_many_running', `这台机器上已有 ${running} 个执行在跑（上限 ${max}），稍后再试`, { effects: 'none', retryAfterMs: 5000 });
   }
   running++;
-  try { return await runSlot(coda, input, ctx, cwd); } finally { running--; }
+  try { return await runSlot(coda, input, ctx, cwd, rootOf); } finally { running--; }
 }
 
-async function runSlot(coda, input, ctx, cwd) {
+async function runSlot(coda, input, ctx, cwd, rootOf) {
   await checkCwd(coda, cwd);
   const limit = timeLimit(input.timeout, ctx.deadline);
-  await sweepOutputs(tmpdir(), { active: activeOutputs });
-  const outputs = await openOutputs(ctx.id);
+  let root;
+  try { root = await rootOf(); } catch (error) { throw coda.error('output_unavailable', `执行的输出无处可放，没有执行：${error.message}`, { effects: 'none' }); }
+  const outputs = await openOutputs(ctx.id, root);
   activeOutputs.add(outputs.dir);
-  try { return await runWith(coda, input, ctx, cwd, limit, outputs); } finally { activeOutputs.delete(outputs.dir); }
+  let result;
+  try { result = await runWith(coda, input, ctx, cwd, limit, outputs); } finally { activeOutputs.delete(outputs.dir); }
+  // 留下了这次的输出：把它算进总量，当场回收超额与过期的（正在写的跳过）。
+  if (result.outputDir) await sweepOutputs(root, { active: activeOutputs });
+  return result;
 }
 
 async function runWith(coda, input, ctx, cwd, limit, outputs) {
@@ -111,7 +116,7 @@ export async function exec(env, input, ctx) {
   const cwd = input.cwd ?? defaultCwd();
   const op = begin(env, 'exec', ctx, { command: input.command, cwd, timeout: input.timeout });
   // 判定点拿到完整的执行输入（含 stdin 与实际生效的 cwd）；记录只记命令全文、目录与传入的时限（没给就不写），不记 stdin。
-  const result = await op.guard({ command: input.command, cwd, timeout: input.timeout, stdin: input.stdin }, () => run(env.coda, input, ctx, cwd, env.maxRunning));
+  const result = await op.guard({ command: input.command, cwd, timeout: input.timeout, stdin: input.stdin }, () => run(env.coda, input, ctx, cwd, env.outputRoot, env.maxRunning));
   await op.record({ result: { exitCode: result.exitCode, signal: result.signal, timedOut: result.timedOut } });
   return result;
 }
