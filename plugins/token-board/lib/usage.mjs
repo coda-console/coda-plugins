@@ -333,9 +333,9 @@ export function readTodayRecord(record) {
 // ——— 排行榜 ———
 
 const total = c => c.input + c.output + c.cacheRead + c.cacheWrite;
-const compare = (a, b) => b.totalTokens - a.totalTokens || b.turns - a.turns || (a.author < b.author ? -1 : a.author > b.author ? 1 : 0);
+export const compareEntries = (a, b) => b.totalTokens - a.totalTokens || b.turns - a.turns || (a.author < b.author ? -1 : a.author > b.author ? 1 : 0);
 
-class Tally {
+export class Tally {
   constructor() { this.sum = zero(); this.models = new Map(); }
   add(row) {
     add(this.sum, row);
@@ -401,21 +401,25 @@ function remoteRows({ days, today }, from, to) {
  * - 只认 `selfAuthor` 和 `friends` 里出现过的作者；`profileRecords` 同一作者取版本最新的一条。`friends` 行若带 `note`（备注）、`profileName`、`title`、`emoji`、`color`，
  *   名字取 备注 > 名片记录 > profileName > title，emoji 与颜色名片记录优先、缺了才用好友行的。
  * 按总 Token 降序，平局按回合数降序、再按 author 升序。
+ * `sources` 是每个 (author, sourceId) 的合计 `{ author, sourceId, local, ...合计与分模型 }`：`local` 是这台自己的本机数据；`todayVersion` 是这个来源当天曲线记录（coda/token-today）的版本，没有这条记录就没有这个字段。
+ * `localBuckets` 为 null 表示本机用量没读到：不交出本机来源。多台机器读到同一批记录时，页面按它去重（见 merge.mjs）。
  */
 export function aggregateLeaderboard({ selfAuthor, selfSourceId, excludedSourceIds = [], localBuckets = [], legacyUsageRecords = [], dayRecords = [], todayRecords = [], profileRecords = [], friends = [], from, to, person }) {
   const friendAuthors = new Set(friends.map(friend => friend?.author).filter(author => typeof author === 'string' && author));
   const known = new Set([...friendAuthors, ...(selfAuthor ? [selfAuthor] : [])]);
-  const excluded = new Set([selfSourceId, ...excludedSourceIds]);
+  // 本机用量没读到（localBuckets 为 null）时，没有本机数据可以优先：自己发布过的副本照常算，也不交出本机来源。
+  const excluded = new Set(localBuckets ? [selfSourceId, ...excludedSourceIds] : excludedSourceIds);
 
   const tallies = new Map([...known].map(author => [author, new Tally()]));
   const shared = new Set();
-  if (selfAuthor) for (const row of localRows(filterBucketsByPerson(localBuckets, person), from, to)) tallies.get(selfAuthor).add(row);
+  const localTally = new Tally();
+  if (selfAuthor && localBuckets) for (const row of localRows(filterBucketsByPerson(localBuckets, person), from, to)) { tallies.get(selfAuthor).add(row); localTally.add(row); }
 
   const sources = new Map();
   const source = (author, sourceId) => {
     if (author === selfAuthor && excluded.has(sourceId)) return null;
     const key = JSON.stringify([author, sourceId]);
-    if (!sources.has(key)) sources.set(key, { author, days: [], today: null, current: false, legacy: [] });
+    if (!sources.has(key)) sources.set(key, { author, sourceId, days: [], today: null, current: false, legacy: [], todayVersion: null });
     return sources.get(key);
   };
   // 换拆法（整月 ↔ 半月 ↔ 周）时，新旧块可能同时被读到：同一 (author, sourceId, UTC 日) 只采用版本最大的那条记录里的。
@@ -432,15 +436,19 @@ export function aggregateLeaderboard({ selfAuthor, selfSourceId, excludedSourceI
   for (const { target, day } of dayOwner.values()) target.days.push(day);
   for (const record of latestOf(todayRecords, TODAY_CURVE_KIND, known)) {
     const read = readTodayRecord(record), target = read && source(record.author, read.sourceId);
-    if (target) { target.current = true; target.today = read; }
+    if (target) { target.current = true; target.today = read; if (Number.isFinite(record.version)) target.todayVersion = record.version; }
   }
   for (const record of latestOf(legacyUsageRecords, USAGE_RECORD_KIND, known)) {
     const read = readUsageRecord(record, { from, to }), target = read && source(record.author, read.sourceId);
     if (target) target.legacy.push(...read.rows);
   }
+  // 每个 (作者, 来源) 的合计也交出去：多台机器各自读到同一批记录，页面按它去重后再按作者汇总。
+  const breakdown = selfAuthor && localBuckets ? [{ author: selfAuthor, sourceId: selfSourceId, local: true, ...localTally.result() }] : [];
   for (const target of sources.values()) {
     shared.add(target.author);
-    for (const row of target.current ? remoteRows(target, from, to) : target.legacy) tallies.get(target.author).add(row);
+    const tally = new Tally();
+    for (const row of target.current ? remoteRows(target, from, to) : target.legacy) { tallies.get(target.author).add(row); tally.add(row); }
+    breakdown.push({ author: target.author, sourceId: target.sourceId, local: false, ...(target.todayVersion === null ? {} : { todayVersion: target.todayVersion }), ...tally.result() });
   }
 
   const profiles = new Map();
@@ -462,9 +470,9 @@ export function aggregateLeaderboard({ selfAuthor, selfSourceId, excludedSourceI
     }
     return { author, shortId: shortAuthor(author), self: author === selfAuthor, shared: author === selfAuthor || shared.has(author),
       ...profile, ...tally.result() };
-  }).sort(compare);
+  }).sort(compareEntries);
   entries.forEach((entry, index) => { entry.rank = index + 1; });
-  return { from, to, entries };
+  return { from, to, entries, sources: breakdown };
 }
 
 /**

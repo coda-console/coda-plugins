@@ -52,9 +52,9 @@ h2 { display: flex; align-items: baseline; gap: 6px; margin: 0 0 8px; font-size:
 
 .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
 .btn { padding: 4px 12px; border-radius: 8px; background: var(--coda-fill, rgba(120, 120, 128, .12)); }
-.machines { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
-.btn[aria-pressed="true"] { background: var(--coda-accent, #0a84ff); color: #fff; }
 .btn.primary { background: var(--coda-accent, #0a84ff); color: #fff; }
+.group + .group { margin-top: 12px; }
+.shares { display: flex; flex-direction: column; gap: 4px; }
 .pill { display: inline-flex; align-items: center; gap: 6px; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--coda-tertiary, #c7c7cc); }
 .dot.on { background: var(--coda-green, #34c759); }

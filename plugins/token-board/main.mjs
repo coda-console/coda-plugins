@@ -21,6 +21,7 @@ export const SYNC_INTERVAL_MS = 10 * 60_000;
 export const FIRST_SYNC_DELAY_MS = 5_000;
 const ARCHIVE_DAYS = 32;   // 归档从 32 天前所在的月初起，盖住「近 30 天」
 const MAX_PAGES = 50;
+const MESSAGE_LIMIT = 128 * 1024;   // 宿主转给页面的消息上限（plugin-host 的 MESSAGE_LIMIT，按 JSON.stringify 的长度量）
 const SOURCE_ID = /^[^\s/]{1,100}$/;
 const SHARED_KINDS = [DAY_ARCHIVE_KIND, TODAY_CURVE_KIND, USAGE_RECORD_KIND];
 const message = e => String(e?.message ?? e).slice(0, 200);
@@ -185,7 +186,7 @@ class Board {
 
   open(view) {
     this.views.add(view);
-    view.onMessage(request => { this.handle(view, request).catch(e => view.postMessage({ type: 'error', message: message(e) })); });
+    view.onMessage(request => { this.handle(view, request).catch(e => view.postMessage({ type: 'error', request: request?.type, id: request?.id, message: message(e) })); });
     view.onClose(() => this.views.delete(view));
   }
   status() {
@@ -206,7 +207,10 @@ class Board {
         return;
       case 'board': {
         const range = RANGES.includes(request.range) ? request.range : this.settings.range;
-        view.postMessage(await this.board(range, request.id));
+        const result = await this.board(range, request.id, request);
+        // 宿主丢弃超过上限的消息，页面既收不到回包也收不到错误：量过，放不下就回一个送得到的失败。
+        if (JSON.stringify({ message: result }).length > MESSAGE_LIMIT) throw new Error(`榜单明细超过宿主 ${MESSAGE_LIMIT / 1024} KiB 的消息上限，没能送达`);
+        view.postMessage(result);
         return;
       }
       case 'set-share':
@@ -231,19 +235,20 @@ class Board {
   // ——— 榜单 ———
 
   // 统计只靠本机用量和已读到的记录：好友网关、好友、各种记录读不到都只记一条提示，本机统计与曲线照常返回。
-  async board(range, id) {
+  // 窗口优先用页面发来的 from、to（几台电脑共用同一段时间）；没带或不成窗口才按本机的当地时间由 range 算。
+  async board(range, id, asked) {
     const now = Date.now();
-    const { from, to } = rangeWindow(range, now);
+    const { from, to } = Number.isFinite(asked?.from) && Number.isFinite(asked?.to) && asked.from < asked.to ? asked : rangeWindow(range, now);
     await this.refreshSource();
     const result = { type: 'board', id, range, from, to, share: this.share, accord: false, selfAuthor: null, errors: [], truncated: { usage: false, friends: false, profiles: false },
-      friendCount: 0, local: null, entries: [], curve: [], syncState: this.share ? 'no_gateway' : 'disabled' };
-    let localBuckets = [];
+      friendCount: 0, local: null, people: [], sources: [], retired: [], curve: [], syncState: this.share ? 'no_gateway' : 'disabled' };
+    let localBuckets = null;   // null：本机用量没读到，不能当成「没有用量」
     try {
       const fetched = await fetchUsageBuckets(input => this.coda.query(USAGE, 'buckets', input), { from, to });
       localBuckets = fetched.buckets;
       result.truncated.usage = fetched.truncated;
     } catch (e) { result.errors.push(`读不到本机用量：${message(e)}`); }
-    result.local = summarizeBuckets(localBuckets, { from, to });
+    result.local = localBuckets && summarizeBuckets(localBuckets, { from, to });
 
     let gateway = null, friends = [], selfAuthor = null;
     try { gateway = await this.gateway(); } catch (e) { result.errors.push(`读不到好友：${message(e)}`); }
@@ -279,8 +284,12 @@ class Board {
       }
     }
     const shared = { selfAuthor, selfSourceId: this.sourceId, excludedSourceIds: this.source.legacy, localBuckets, friends };
-    result.entries = aggregateLeaderboard({ ...shared, legacyUsageRecords: records[USAGE_RECORD_KIND], dayRecords: records[DAY_ARCHIVE_KIND], todayRecords: records[TODAY_CURVE_KIND], profileRecords: profiles, from, to }).entries;
-    result.curve = aggregateTodayCurve({ ...shared, todayRecords: records[TODAY_CURVE_KIND], range: rangeWindow('today', now), slotMs: SLOT_MS }).curve;
+    const board = aggregateLeaderboard({ ...shared, legacyUsageRecords: records[USAGE_RECORD_KIND], dayRecords: records[DAY_ARCHIVE_KIND], todayRecords: records[TODAY_CURVE_KIND], profileRecords: profiles, from, to });
+    // 页面只用每来源的明细（sources）算合计；这里只给每个人的名片字段，不重复发一份按作者聚合的统计。
+    result.people = board.entries.map(({ author, shortId, self, shared, name, emoji, color }) => ({ author, shortId, self, shared, name, emoji, color }));
+    result.sources = board.sources;
+    result.retired = this.source.legacy;   // 这台已弃用的旧来源 ID：别的机器读到它们的旧副本时统一不算
+    result.curve = aggregateTodayCurve({ ...shared, localBuckets: localBuckets ?? [], todayRecords: records[TODAY_CURVE_KIND], range: rangeWindow('today', now), slotMs: SLOT_MS }).curve;
     result.syncState = this.syncStateFor(selfAuthor);
     // 榜单读到的状态和页面上次拿到的不一样（比如好友网关没了），把最新状态推给页面，免得旧的状态盖住它。
     if (result.syncState !== this.pushedState) this.tell(this.notice);
