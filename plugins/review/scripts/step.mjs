@@ -12,13 +12,15 @@ export const output = (name, value) => {
 export const summary = text => { if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${text}\n`); };
 
 // A pull request's standard HTTPS address on any GitHub host (github.com or an Enterprise one): `https://host/owner/name/pull/N`
-// and nothing else (`pull` in lower case, as gh has it); the host is lower-cased. Null for anything else.
+// and nothing else (`pull` in lower case, as gh has it); the host is lower-cased, at most 253 characters, and no IP literal (its last
+// label is not all digits). Null for anything else.
 const LABEL = '[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?';
 const PR_URL = new RegExp(`^[hH][tT][tT][pP][sS]://((?:${LABEL}\\.)+${LABEL})/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)$`);
 export function parsePrUrl(url) {
   const at = PR_URL.exec(url ?? '');
   if (!at || [at[2], at[3]].some(part => part === '.' || part === '..')) return null;
   const [, , owner, name, number] = at, host = at[1].toLowerCase();
+  if (host.length > 253 || /^\d+$/.test(host.split('.').at(-1))) return null;
   return { host, owner, name, repo: `${owner}/${name}`, number, url: `https://${host}/${owner}/${name}/pull/${number}` };
 }
 
@@ -26,7 +28,7 @@ export function parsePrUrl(url) {
 // its number; asked a few times a few seconds apart. `error` says why when it cannot be read.
 export async function baseOf(url) {
   const parsed = parsePrUrl(url);
-  if (!parsed) return { error: `不是 GitHub 上的 PR：${url}` };
+  if (!parsed) return { error: '不是 GitHub 上的 PR，需要标准 HTTPS PR 地址' };
   let error = '';
   for (let i = 1; i <= 3; i++) {
     if (i > 1) await delay(3000);

@@ -13,13 +13,17 @@ import { parsePrUrl } from '../../../plugins/review/scripts/step.mjs';
 const script = name => fileURLToPath(new URL(`../../../plugins/review/scripts/${name}.mjs`, import.meta.url));
 const GHE = ['https://git.example.org/acme/app/pull/7', 'https://ghe.corp.internal/acme/app/pull/7'];
 const PUBLIC = 'https://github.com/acme/app/pull/7';
+// 4 labels of 63 characters: 255 characters, over the 253 a host may have; dropping two characters gives 253.
+const LONG = ['a', 'b', 'c', 'd'].map(c => c.repeat(63)).join('.'), LONG_OK = LONG.slice(0, -2);
+const SECRET = 'https://x-access-token:FAKE_TOKEN_123@git.example.org/example/coda';
 const BAD = ['http://github.com/acme/app/pull/7', 'https://github/acme/app/pull/7', 'https://localhost/acme/app/pull/7',
   'https://user@github.com/acme/app/pull/7', 'https://github.com:443/acme/app/pull/7', 'https://-ghe.example.org/acme/app/pull/7',
   'https://ghe..example.org/acme/app/pull/7', 'https://github.com/./app/pull/7', 'https://github.com/acme/../pull/7',
   'https://github.com/acme/app/pull/0', 'https://github.com/acme/app/pull/07', 'https://github.com/acme/app/pull/7/files',
   'https://github.com/acme/app/pull/7?q=1', 'https://github.com/acme/app/pull/7#top', 'https://github.com/acme/app/pull/7/',
   'https://github.com/acme/app/pull/7x', 'https://github.com/acme/app/pull/7\n', ' https://github.com/acme/app/pull/7',
-  'https://github.com/acme/app/pull/7 ', 'https://github.com/acme/app/issues/7', 'https://github.com/acme/pull/7', '', null, undefined];
+  'https://github.com/acme/app/pull/7 ', 'https://github.com/acme/app/issues/7', 'https://github.com/acme/pull/7', '', null, undefined,
+  'https://127.0.0.1/acme/app/pull/1', 'https://ghe.example.123/acme/app/pull/1', `https://${LONG}/acme/app/pull/1`];
 
 test('parsePrUrl takes the standard HTTPS address of any host and nothing else', () => {
   assert.deepEqual(parsePrUrl(PUBLIC), { host: 'github.com', owner: 'acme', name: 'app', repo: 'acme/app', number: '7', url: PUBLIC });
@@ -30,6 +34,11 @@ test('parsePrUrl takes the standard HTTPS address of any host and nothing else',
   assert.equal(parsePrUrl('https://github.com/acme/app/PULL/7'), null, '/pull/ is lower case, as gh has it');
   assert.equal(parsePrUrl('https://github.com/acme/app/Pull/7'), null);
   for (const url of BAD) assert.equal(parsePrUrl(url), null, String(url));
+  assert.equal(LONG.length, 255);
+  assert.equal(LONG_OK.length, 253);
+  assert.equal(parsePrUrl(`https://${LONG_OK}/acme/app/pull/1`).host, LONG_OK);
+  assert.equal(parsePrUrl('https://xn--nxasmq6b.example.org/acme/app/pull/1').host, 'xn--nxasmq6b.example.org');
+  assert.equal(parsePrUrl('https://ghe.example.org2/acme/app/pull/1').host, 'ghe.example.org2');
 });
 
 for (const flow of ['pull-request', 'pull-request-review']) {
@@ -48,6 +57,7 @@ for (const flow of ['pull-request', 'pull-request-review']) {
     const keys = [PUBLIC, ...GHE, 'https://git.example.org/other/app/pull/7', 'https://git.example.org/acme/app/pull/8'].map(url => key(url));
     assert.equal(new Set(keys).size, keys.length, 'the same owner/name and number on another host is another run');
     for (const url of BAD.filter(Boolean)) assert.equal(key(url), null, url);
+    assert.equal(key(`https://${LONG_OK}/acme/app/pull/1`), `https://${LONG_OK}/acme/app/pull/1`);
   });
 }
 
@@ -112,10 +122,21 @@ test('the base is read, the checks waited for and the merge made on the PR\'s ow
   }
   for (const url of BAD.filter(Boolean)) {
     const checks = f.run('checks', { URL: url });
-    assert.deepEqual([checks.code, checks.said, checks.calls.length], [1, `不是 GitHub 上的 PR：${url}`.trim(), 0], url);
+    assert.deepEqual([checks.code, checks.said, checks.calls.length], [1, '不是 GitHub 上的 PR，需要标准 HTTPS PR 地址', 0], url);
     const merge = f.run('merge', { URL: url, HEAD: head });
     assert.deepEqual([merge.code, merge.said, merge.calls.length], [1, '不知道要合并哪个 PR 的哪个提交', 0], url);
     const base = f.run('base', { URL: url });
     assert.deepEqual([base.code, base.calls.length], [1, 0], url);
+  }
+});
+
+test('an address that is refused is not echoed: the credentials in it reach neither stderr nor the summary', t => {
+  const f = fixture(t);
+  for (const url of [`${SECRET}.git`, `${SECRET}/pull/1`]) {
+    for (const [name, env] of [['mine', { URL: url }], ['checks', { URL: url }], ['base', { URL: url }]]) {
+      const done = f.run(name, env);
+      assert.deepEqual([done.code, done.calls.length], [1, 0], `${name} ${url}`);
+      assert.doesNotMatch(done.said + done.summary, /FAKE_TOKEN_123/, `${name} ${url}`);
+    }
   }
 });

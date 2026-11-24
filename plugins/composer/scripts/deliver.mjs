@@ -36,36 +36,41 @@ const REPO_URL = new RegExp(`^[hH][tT][tT][pP][sS]://((?:${LABEL}\\.)+${LABEL})/
 const PR_URL = new RegExp(`^[hH][tT][tT][pP][sS]://((?:${LABEL}\\.)+${LABEL})/(${SEG})/(${SEG})/pull/[1-9][0-9]*$`);
 const SSH_URL = /^ssh:\/\/(?:[A-Za-z0-9_.-]+@)?([A-Za-z0-9][A-Za-z0-9.-]*)(?::\d+)?\/(.*)$/;
 const SCP_URL = /^(?:[A-Za-z0-9_.-]+@)?([A-Za-z0-9][A-Za-z0-9.-]*):(?!\/)(.*)$/;
-const bad = url => { throw new Error(`无法从地址解析 host/owner/repo：${url}`); };
-const idOf = (host, owner, repo, url) => {
+// 完整域名：总长不超过 253，末段标签不全是数字（排除 IPv4 字面量）。
+const isFqdn = host => FQDN.test(host) && host.length <= 253 && !/^\d+$/.test(host.split('.').at(-1));
+// 地址可能带凭据（https://token@host/...）：报错只说明是哪类地址要求什么格式，不回显原始字符串。
+const BAD = { origin: '无法解析 origin 仓库地址，需要标准 HTTPS 或 SSH 仓库地址', repo: '无法解析仓库地址，需要标准 HTTPS 仓库地址', pr: '无法解析成员 PR 地址，需要标准 HTTPS PR 地址' };
+const bad = what => { throw new Error(BAD[what]); };
+const idOf = (host, owner, repo, what) => {
   const name = repo.replace(/\.git$/i, '');
-  return [owner, name].some(part => !part || part === '.' || part === '..') ? bad(url) : `${host}/${owner}/${name}`.toLowerCase();
+  return !isFqdn(host) || [owner, name].some(part => !part || part === '.' || part === '..') ? bad(what) : `${host}/${owner}/${name}`.toLowerCase();
 };
 // 仓库地址：https://<host>/<owner>/<repo>(.git)。
-const repoIdOf = url => {
-  const [, host, owner, repo] = url.match(REPO_URL) ?? bad(url);
-  return idOf(host, owner, repo, url);
+const repoIdOf = (url, what = 'repo') => {
+  const [, host, owner, repo] = url.match(REPO_URL) ?? bad(what);
+  return idOf(host, owner, repo, what);
 };
 // PR 地址：https://<host>/<owner>/<repo>/pull/<编号>；PR 地址里的仓库名不带 .git。
 const prIdOf = url => {
-  const [, host, owner, repo] = url.match(PR_URL) ?? bad(url);
-  return /\.git$/i.test(repo) ? bad(url) : idOf(host, owner, repo, url);
+  const [, host, owner, repo] = url.match(PR_URL) ?? bad('pr');
+  return /\.git$/i.test(repo) ? bad('pr') : idOf(host, owner, repo, 'pr');
 };
-// SSH 主机可能是 ~/.ssh/config 里的别名：取 ssh -G 解析出的 hostname。Host github.com → HostName ssh.github.com 这类走 SSH 专用入口的写法保留原主机；
-// 解析后仍不是完整域名（单段别名）就返回 null，交给 gh 自己处理。
+// SSH 主机可能是 ~/.ssh/config 里的别名：取 ssh -G 解析出的 hostname。Host <域名> → HostName ssh.<域名> 这类走 SSH 专用入口的写法保留原主机；
+// GitHub 公网的 SSH 443 入口 ssh.github.com 就是 github.com。解析后仍是单段别名就返回 null，交给 gh 自己处理；其余不是合法域名的（IP、超长、非法标签）直接报错。
 const sshHost = host => {
   const resolved = /^hostname (\S+)$/mi.exec(spawnSync('ssh', ['-G', host], { encoding: 'utf8' }).stdout ?? '')?.[1] ?? host;
-  const name = FQDN.test(host) && resolved.toLowerCase() === `ssh.${host}`.toLowerCase() ? host : resolved;
-  return FQDN.test(name) ? name : null;
+  const kept = isFqdn(host) && resolved.toLowerCase() === `ssh.${host}`.toLowerCase() ? host : resolved;
+  const name = kept.toLowerCase() === 'ssh.github.com' ? 'github.com' : kept;
+  return isFqdn(name) ? name : new RegExp(`^${LABEL}$`).test(name) ? null : bad('origin');
 };
 // origin 的仓库标识：https://、ssh://[user@]host[:port]/owner/repo(.git) 或 [user@]host:owner/repo(.git)；本地路径和解析不出域名的 SSH 别名返回 null。
 const originIdOf = url => {
-  if (/^https:\/\//i.test(url)) return repoIdOf(url);
+  if (/^https:\/\//i.test(url)) return repoIdOf(url, 'origin');
   const ssh = url.match(SSH_URL) ?? url.match(SCP_URL);
   if (!ssh) return null;
-  const [, owner, repo] = ssh[2].match(OWNER_REPO) ?? bad(url);
+  const [, owner, repo] = ssh[2].match(OWNER_REPO) ?? bad('origin');
   const host = sshHost(ssh[1]);
-  return host && idOf(host, owner, repo, url);
+  return host && idOf(host, owner, repo, 'origin');
 };
 const localMembers = () => state.members.filter(member => prIdOf(member.url) === state.repository);
 // 人工任务的必填备注由脚本检查，缺少时回到同一张卡。用户附上的文件也算附言，路径随反馈交回主 Agent。
@@ -88,12 +93,13 @@ switch (action) {
   case 'confirm': {
     const { choice, note } = JSON.parse(env.RESPONSE);
     if (!answer(choice === 'stop' ? 'stop' : env.DEVICES === 'true' ? 'integrate' : 'report', choice === 'start') || choice === 'stop') break;
-    state.members = note.trim().split(/\r?\n/).map(url => JSON.parse(gh('pr', 'view', url.trim(), '--json', 'url,headRefOid,headRefName,baseRefName')));
+    // 先校验成员地址再交给 gh：非法地址（可能带凭据）既不传出去，也不进报错。
+    state.members = note.trim().split(/\r?\n/).map(url => (prIdOf(url.trim()), JSON.parse(gh('pr', 'view', url.trim(), '--json', 'url,headRefOid,headRefName,baseRefName'))));
     // 集成向 origin 取提交，本仓库必须是 origin 指的那个；origin 是本地路径时用 gh 的默认仓库。
     const origin = originIdOf(git('remote', 'get-url', 'origin'));
     const repo = JSON.parse(gh('repo', 'view', ...origin ? [origin] : [], '--json', 'url,nameWithOwner,defaultBranchRef'));
     state.repository = repoIdOf(repo.url);
-    if (origin && state.repository.split('/')[0] !== origin.split('/')[0]) throw new Error(`gh 的仓库 ${repo.url} 与 origin 不在同一主机：${origin}`);
+    if (origin && state.repository.split('/')[0] !== origin.split('/')[0]) throw new Error(`gh 的仓库 ${state.repository} 与 origin 不在同一主机：${origin}`);
     const local = localMembers();
     state.base = local[0]?.baseRefName ?? repo.defaultBranchRef.name;
     state.round += 1;

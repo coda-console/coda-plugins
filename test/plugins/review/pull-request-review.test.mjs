@@ -95,6 +95,15 @@ for (const [verdict, decision] of [['approve', 'APPROVE'], ['changes', 'REQUEST_
   });
 }
 
+test('a manual address that is no pull request is refused before gh is asked, and is not echoed', t => {
+  const f = fixture(t);
+  for (const PR of ['https://x-access-token:FAKE_TOKEN_123@git.example.org/example/coda/pull/1', 'https://127.0.0.1/acme/app/pull/7', 'http://github.com/acme/app/pull/7', '7']) {
+    const done = f.review({ PR, VIEW: '{}' });
+    assert.deepEqual([done.code, done.said, done.calls.length], [1, '不是 GitHub 上的 PR，需要标准 HTTPS PR 地址', 0], PR);
+    assert.doesNotMatch(done.said + done.summary, /FAKE_TOKEN_123/, PR);
+  }
+});
+
 test('someone else\'s pull request on another host is read from that host, and an address that is no pull request is not reviewed', t => {
   const f = fixture(t);
   for (const host of ['git.example.org', 'ghe.corp.internal']) {
@@ -104,9 +113,11 @@ test('someone else\'s pull request on another host is read from that host, and a
     assert.equal(reads.length, 2, host);
     assert.ok(reads.every(c => c.args[1] === '--hostname' && c.args[2] === host), host);
   }
-  for (const html_url of ['https://github.com/acme/app/pull/7/files', 'https://github/acme/app/pull/7', 'http://github.com/acme/app/pull/7']) {
+  for (const html_url of ['https://github.com/acme/app/pull/7/files', 'https://github/acme/app/pull/7', 'http://github.com/acme/app/pull/7', 'https://127.0.0.1/acme/app/pull/7',
+    'https://x-access-token:FAKE_TOKEN_123@git.example.org/example/coda/pull/1']) {
     const done = f.review({ PULL_REQUEST: JSON.stringify({ ...f.event, html_url }), DIFF: 'd' });
-    assert.deepEqual([done.code, done.said, done.calls.length], [1, `不是 GitHub 上的 PR：${html_url}`, 0], html_url);
+    assert.deepEqual([done.code, done.said, done.calls.length], [1, '不是 GitHub 上的 PR，需要标准 HTTPS PR 地址', 0], html_url);
+    assert.doesNotMatch(done.said + done.summary, /FAKE_TOKEN_123/, html_url);
   }
 });
 

@@ -191,12 +191,12 @@ test('origin、本仓库或成员的地址结构不对时明确失败，不退�
     'https://git.example.org/example/coda/../coda', 'https:git.example.org/example/coda', 'https://git.example.org/example/coda?x=1', 'https://git.example.org/example/coda#top',
     'https://user@git.example.org/example/coda', 'https://git.example.org//example/coda', 'https://git.example.org/example/coda/']) {
     f.env.REPO_URL = url;
-    assert.match(confirm().stderr, /无法从地址解析 host\/owner\/repo/, url);
+    assert.match(confirm().stderr, /无法解析仓库地址，需要标准 HTTPS 仓库地址/, url);
   }
   f.env.REPO_URL = 'https://github.com/example/coda';
   for (const origin of ['https://github.com/example', 'https://github.com/example/coda?x=1', 'git@github.com:example/coda/extra.git', 'git@github.com:example/..', 'ssh://git@github.com/example', 'ssh://git@github.com/example/./coda']) {
     f.env.ORIGIN_URL = origin;
-    assert.match(confirm().stderr, /无法从地址解析 host\/owner\/repo/, origin);
+    assert.match(confirm().stderr, /无法解析 origin 仓库地址，需要标准 HTTPS 或 SSH 仓库地址/, origin);
   }
   delete f.env.ORIGIN_URL;
   for (const url of ['https://github.com/example', 'https://git.example.org/example/pull/2', 'https://github.com/example/coda/pull/x',
@@ -205,8 +205,85 @@ test('origin、本仓库或成员的地址结构不对时明确失败，不退�
     'https://git.example.org/example/coda.git/pull/2', 'https://git.example.org/example/coda.GIT/pull/2', 'https://git.example.org/example/coda/pull/2?x=1', 'https://git.example.org/example/coda/pull/2#top',
     'https://user@git.example.org/example/coda/pull/2', 'https://git.example.org:8443/example/coda/pull/2', 'https://git.example.org//example/coda/pull/2', 'https://localhost/example/coda/pull/2']) {
     f.members[1].url = url;
-    assert.match(confirm().stderr, /无法从地址解析 host\/owner\/repo/, url);
+    assert.match(confirm().stderr, /无法解析成员 PR 地址，需要标准 HTTPS PR 地址/, url);
   }
+});
+
+test('GitHub 公网的 SSH 443 入口 ssh.github.com 规范化为 github.com：直接写法和 ssh -G 解析出的别名都一致', t => {
+  const f = fixture(t);
+  const one = f.member(2, 'one', 'one');
+  f.env.SSH_HOSTS = JSON.stringify({ 'gh-443': 'ssh.github.com', 'ghe-443': 'ssh.git.example.org' });
+  for (const origin of ['ssh://git@ssh.github.com:443/example/coda.git', 'git@ssh.github.com:example/coda.git', 'git@SSH.GitHub.com:Example/Coda.git', 'git@gh-443:example/coda.git', 'ssh://git@gh-443:443/example/coda.git']) {
+    f.env.ORIGIN_URL = origin;
+    assert.equal(f.confirm().commit, one.headRefOid, origin);
+    assert.deepEqual(f.calls().at(-1), ['repo', 'view', 'github.com/example/coda', '--json', 'url,nameWithOwner,defaultBranchRef'], origin);
+    assert.equal(f.state().repository, 'github.com/example/coda', origin);
+  }
+  // 不同 GHE 实例互相隔离：ssh.git.example.org 不是 github.com，别名解析到它仍是它自己。
+  f.env.ORIGIN_URL = 'git@ghe-443:example/coda.git';
+  assert.match(f.run('confirm', { RESPONSE: JSON.stringify({ choice: 'start', note: f.members.map(pr => pr.url).join('\n') }) }, 1).stderr, /与 origin 不在同一主机/);
+  assert.deepEqual(f.calls().at(-1), ['repo', 'view', 'ssh.git.example.org/example/coda', '--json', 'url,nameWithOwner,defaultBranchRef']);
+});
+
+test('IP 字面量和超长主机名不是合法主机：仓库、origin、成员地址都明确失败', t => {
+  const f = fixture(t);
+  f.member(2, 'one', 'one');
+  const confirm = () => f.run('confirm', { RESPONSE: JSON.stringify({ choice: 'start', note: f.members.map(pr => pr.url).join('\n') }) }, 1);
+  const label = char => char.repeat(63), long = [label('a'), label('b'), label('c'), label('d')].join('.'), ok = [label('a'), label('b'), label('c'), 'd'.repeat(61)].join('.');
+  assert.equal(long.length, 255);
+  assert.equal(ok.length, 253);
+  for (const host of ['127.0.0.1', 'git.example.123', long]) {
+    f.env.REPO_URL = `https://${host}/example/coda`;
+    assert.match(confirm().stderr, /无法解析仓库地址/, host);
+  }
+  f.env.REPO_URL = 'https://github.com/example/coda';
+  for (const host of ['127.0.0.1', 'git.example.123', long]) {
+    f.env.ORIGIN_URL = `https://${host}/example/coda`;
+    assert.match(confirm().stderr, /无法解析 origin 仓库地址/, host);
+  }
+  delete f.env.ORIGIN_URL;
+  for (const host of ['127.0.0.1', 'git.example.123', long]) {
+    f.members[1].url = `https://${host}/example/coda/pull/2`;
+    assert.match(confirm().stderr, /无法解析成员 PR 地址/, host);
+  }
+  // ≤ 253 字符的合法多段域名照常通过。
+  f.env.REPO_URL = `https://${ok}/example/coda`;
+  f.members[1].url = `https://${ok}/example/coda/pull/2`;
+  assert.equal(f.confirm().commit, f.members[1].headRefOid);
+  assert.equal(f.state().repository, `${ok}/example/coda`);
+});
+
+test('SSH origin 的主机不是合法域名也不是单段别名（IP、纯数字末段、超长）时明确失败，不退回默认仓库', t => {
+  const f = fixture(t);
+  f.member(2, 'one', 'one');
+  const long = ['a', 'b', 'c', 'd'].map(c => c.repeat(63)).join('.');
+  f.env.SSH_HOSTS = JSON.stringify({ 'alias-ip': '127.0.0.1', 'alias-num': 'git.example.123', 'alias-long': long });
+  const confirm = () => f.run('confirm', { RESPONSE: JSON.stringify({ choice: 'start', note: f.members.map(pr => pr.url).join('\n') }) }, 1);
+  for (const host of ['127.0.0.1', 'git.example.123', long, 'alias-ip', 'alias-num', 'alias-long']) {
+    for (const origin of [`git@${host}:example/coda.git`, `ssh://git@${host}/example/coda.git`]) {
+      f.env.ORIGIN_URL = origin;
+      assert.match(confirm().stderr, /无法解析 origin 仓库地址/, origin.slice(0, 40));
+    }
+  }
+  assert.ok(f.calls().every(call => call[0] !== 'repo'), '没有退回到无参的 gh repo view');
+});
+
+test('地址被拒绝时报错不回显原始地址，凭据不会进入日志', t => {
+  const f = fixture(t);
+  f.member(2, 'one', 'one');
+  const confirm = () => f.run('confirm', { RESPONSE: JSON.stringify({ choice: 'start', note: f.members.map(pr => pr.url).join('\n') }) }, 1);
+  const secret = 'https://x-access-token:FAKE_TOKEN_123@git.example.org/example/coda';
+  f.env.REPO_URL = `${secret}.git`;
+  assert.doesNotMatch(confirm().stderr, /FAKE_TOKEN_123/);
+  f.env.REPO_URL = 'https://github.com/example/coda';
+  f.env.ORIGIN_URL = `${secret}.git`;
+  assert.doesNotMatch(confirm().stderr, /FAKE_TOKEN_123/);
+  delete f.env.ORIGIN_URL;
+  f.members[1].url = `${secret}/pull/2`;
+  const failed = confirm();
+  assert.match(failed.stderr, /无法解析成员 PR 地址/);
+  assert.doesNotMatch(failed.stderr, /FAKE_TOKEN_123/);
+  assert.ok(f.calls().every(call => !JSON.stringify(call).includes('FAKE_TOKEN_123')), '非法成员地址没有传给 gh');
 });
 
 test('设备退回后刷新成员，从新工作区重建同一个交付分支，去掉被替换的 head', t => {

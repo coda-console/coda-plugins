@@ -7,8 +7,8 @@ import { output, parsePrUrl, summary } from './step.mjs';
 const url = process.env.URL ?? '';
 const parsed = parsePrUrl(url);
 if (!parsed) {
-  console.error(`不是 GitHub 上的 PR：${url}`);
-  summary(`没能确认 PR ${url} 是不是自己的：不是 GitHub 上的 PR`);
+  console.error('不是 GitHub 上的 PR，需要标准 HTTPS PR 地址');
+  summary('没能确认 PR 是不是自己的：不是 GitHub 上的 PR，需要标准 HTTPS PR 地址');
   process.exit(1);
 }
 const { owner, name, number } = parsed;

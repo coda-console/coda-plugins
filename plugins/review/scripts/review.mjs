@@ -52,9 +52,11 @@ let pr = commit ? null : event;
 if (!commit && !automatic) {
   const asked = (process.env.PR ?? '').trim();
   if (!asked) fail('请填写 GitHub 返回的完整 PR 地址');
+  const at = parsePrUrl(asked);
+  if (!at) fail('不是 GitHub 上的 PR，需要标准 HTTPS PR 地址');
   let view;
-  try { view = JSON.parse(execFileSync('gh', ['pr', 'view', asked, '--json', 'number,url,title,body,headRefOid,headRefName,baseRefOid,baseRefName'], { encoding: 'utf8' })); }
-  catch (e) { fail(`读不到 PR ${asked}：${e.stderr?.toString().trim() || e.message}`); }
+  try { view = JSON.parse(execFileSync('gh', ['pr', 'view', at.url, '--json', 'number,url,title,body,headRefOid,headRefName,baseRefOid,baseRefName'], { encoding: 'utf8' })); }
+  catch (e) { fail(`读不到 PR ${at.url}：${e.stderr?.toString().trim() || e.message}`); }
   pr = { number: view.number, html_url: view.url, title: view.title, body: view.body, head: { sha: view.headRefOid, ref: view.headRefName }, base: { sha: view.baseRefOid, ref: view.baseRefName } };
 }
 const head = hex(pr ? pr.head?.sha : process.env.HEAD), base = hex(pr ? pr.base?.sha : process.env.BASE);
@@ -68,7 +70,7 @@ const named = pr ? `PR #${Number(pr.number)}` : `提交 ${head.slice(0, 12)}`;
 // Somebody else's pull request is read from GitHub, bound to the two commits of this review: what the author pushes after the
 // event is not in it. Its commits are not fetched, and the step has no repository to ask.
 const parsed = foreign ? parsePrUrl(pr.html_url) : null;
-if (foreign && !parsed) fail(`不是 GitHub 上的 PR：${pr.html_url}`);
+if (foreign && !parsed) fail('不是 GitHub 上的 PR，需要标准 HTTPS PR 地址');
 const repo = parsed?.repo;
 const api = (path, accept) => spawnSync('gh', ['api', '--hostname', parsed.host, '-H', `Accept: ${accept}`, path], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 120_000 });
 const reason = done => (done.stderr || done.error?.message || '').trim().split('\n').at(-1);

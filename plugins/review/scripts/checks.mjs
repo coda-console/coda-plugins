@@ -8,7 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { output, parsePrUrl, summary } from './step.mjs';
 
 const every = (Number(process.env.EVERY) || 10) * 1000, parsed = parsePrUrl(process.env.URL);
-if (!parsed) { console.error(`不是 GitHub 上的 PR：${process.env.URL}`); process.exit(1); }
+if (!parsed) { console.error('不是 GitHub 上的 PR，需要标准 HTTPS PR 地址'); process.exit(1); }
 
 // The checks as GitHub has them now; null when GitHub could not be asked. gh exits 8 while some are pending and 1 when
 // one failed or none is reported, saying so.
