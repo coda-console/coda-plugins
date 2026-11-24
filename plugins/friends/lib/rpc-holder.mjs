@@ -10,7 +10,8 @@
 // - 要核验的是调用方：准入时已验的作者须是被授权者、好友绑定此刻有效（个人作者证书过期即无效，只拒不失效）；
 //   被授权的作者在好友表里已经对不上（调用方绑了个人身份、解绑、换了根，或通道已不在），授权就此失效，要重新授予。
 // - 请求经网关已有的 Accord 变化通知与每 15 秒的兜底查询发现，翻页读全（一轮读不完下一轮从游标续）；每条过 verifyCall 与准入的各项，
-//   先写在途项再签 running，最后提交。时钟回拨只暂停新请求的准入，已知请求的取消照常处理。
+//   先写在途项再签 running，最后提交。时钟回拨、时钟基准落盘失败只暂停新请求的准入，已知请求的取消照常处理；
+//   时钟基准没读到时同样不提交、不按原键重调，已提交、此刻接不上的按结果不明收尾。
 // - 在途表是唯一的工作队列：准入、提交、终态（连同要记的那一行操作记录）、记账、签出、撤回答都落在它上面，重启与证书恢复后照它接着做；
 //   这几步都做完的才会被清掉。
 // - 签名只经网关的内部入口（signRpc、retractRpc），签不了时什么也不发。
@@ -56,10 +57,13 @@ const EFFECTS = ['none', 'some', 'unknown'];
 /**
  * `store`：rpc-store；`signRpc`、`retractRpc`、`onAccord`、`pages`：网关的内部签名、撤回入口、Accord 变化通知、翻页读取。
  * `now` 是墙钟（窗口、时刻），`monotonic` 是单调时钟（只用来算操作记录里的耗时）。
+ * 时钟基准落盘失败用 `clock_maintenance` 错误交给 `onMaintenanceError`（与 rpc-store 的同一个出口，默认写到 stderr），下一轮再写。
  */
-export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages, now = Date.now, monotonic = () => performance.now(), timers = globalThis, pollMs = POLL_MS } = {}) {
-  // clockLoaded：时钟基准已读到（或确认 clock.json 不存在）；读不出来之前不放新准入，每一轮再读。
-  let stopped = false, corrupt = null, maxSeen = null, persistedClock = 0, clockLoaded = false, timer = null, lastIdentity = null, lastMachine = null, lastFriends = null;
+export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages, now = Date.now, monotonic = () => performance.now(), timers = globalThis, pollMs = POLL_MS,
+  onMaintenanceError = e => console.error(e.message) } = {}) {
+  // clockLoaded：时钟基准已读到（或确认 clock.json 不存在）；读不出来之前不放新准入、不提交、不按原键重调，每一轮再读。
+  // clockWritten：该落盘的基准上一次写成了；没写成只暂停新准入，下一轮再写。
+  let stopped = false, corrupt = null, maxSeen = null, persistedClock = 0, clockLoaded = false, clockWritten = true, timer = null, lastIdentity = null, lastMachine = null, lastFriends = null;
   let ticking = Promise.resolve(), queued = null, wantGrants = false;
   // 孤儿授权记录（见 readOrphans）：目录读全了没有、正在读的那一次。
   let orphansRead = false, orphanRead = null;
@@ -168,16 +172,27 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
     try { maxSeen = await store.readClock(); persistedClock = maxSeen ?? 0; clockLoaded = true; } catch { /* 下一轮再读 */ }
   }
 
-  // 本机时钟：基准还没读到、或比见过的最大时刻早 5 分钟以上就暂停准入；否则记下。见过的最大时刻比已落盘的大出一分钟就落盘，
-  // 写成了才算落过。
+  // 本机时钟靠不住：基准还没读到，或比见过的最大时刻早 5 分钟以上。这时不放新准入、不提交、不按原键重调。
+  const clockUnsure = () => !clockLoaded || clockWentBack(now(), maxSeen);
+  // 此刻放不放新准入（grants.list 的 admitting 同用这一个判断）：状态文件没坏、时钟靠得住、该落盘的基准写成了。
+  const admissionOpen = () => !corrupt && clockWritten && !clockUnsure();
+
+  // 每轮扫请求前：基准没读到就再读；时钟靠得住就记下此刻，见过的最大时刻比已落盘的大出一分钟就落盘，写成了才算落过。
+  // 落盘失败只暂停新准入（已有项的取消与收尾照常），报出去，下一轮再写。
   async function clockOk() {
     if (!clockLoaded) await loadClock();
-    if (!clockLoaded) return false;
-    const at = now();
-    if (clockWentBack(at, maxSeen)) return false;
-    if (maxSeen === null || at > maxSeen) maxSeen = at;
-    if (maxSeen - persistedClock >= CLOCK_STEP_MS) { const high = maxSeen; await store.writeClock(high); persistedClock = high; }
-    return true;
+    if (!clockUnsure()) {
+      const at = now();
+      if (maxSeen === null || at > maxSeen) maxSeen = at;
+      if (maxSeen - persistedClock >= CLOCK_STEP_MS) {
+        const high = maxSeen;
+        try { await store.writeClock(high); persistedClock = high; clockWritten = true; } catch (cause) {
+          clockWritten = false;
+          onMaintenanceError(Object.assign(new Error(`好友调用的时钟基准落盘失败（${cause?.message ?? cause}），暂停新准入，下一轮再写`), { code: 'clock_maintenance', cause }));
+        }
+      }
+    }
+    return admissionOpen();
   }
 
   const reject = (friend, code) => isAuthor(friend) ? store.recordRejection({ friend, code }).catch(() => {}) : undefined;
@@ -402,10 +417,10 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
   }
 
   // 提交之前：标了取消的答 canceled；核对身份、好友绑定与目标，不过的答失败；然后在 store 的同一个串行操作里读最新的授权行、
-  // 按此刻判最晚启动时刻，都过了才改成 submitted。同时执行的名额满了就留在 admitted，等有名额时再来；时钟回拨、读不出身份时也先等着。
+  // 按此刻判最晚启动时刻，都过了才改成 submitted。同时执行的名额满了就留在 admitted，等有名额时再来；时钟基准没读到、时钟回拨、读不出身份时也先等着。
   async function start(entry) {
     if (entry.canceled) return end(entry, canceledOutcome());
-    if (clockWentBack(now(), maxSeen)) return null;
+    if (clockUnsure()) return null;
     const [me, grant] = await Promise.all([identity(), store.getGrant(entry.grant)]);
     const problem = grantProblem(grant, me, grant ? await targetOf(grant.target) : null);
     if (stopped || problem === 'no_identity') return null;
@@ -484,10 +499,10 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
     }
   }
 
-  // 重启后接手的已提交项，只有此刻仍允许首次启动才用原幂等键再调（内核查不到就会新建）：没过最晚启动时刻、时钟没有回拨、授权没撤（也不在待落盘的失效里）、
+  // 重启后接手的已提交项，只有此刻仍允许首次启动才用原幂等键再调（内核查不到就会新建）：没过最晚启动时刻、时钟基准已读到且没有回拨、授权没撤（也不在待落盘的失效里）、
   // 调用方此刻的好友绑定仍有效。时钟与窗口在读身份、授权之后再查一次：读的期间过了截止也不调。
   async function mayStartNow(entry) {
-    const timely = () => now() < entry.notAfter && !clockWentBack(now(), maxSeen);
+    const timely = () => now() < entry.notAfter && !clockUnsure();
     if (!timely()) return false;
     const [me, grant] = await Promise.all([identity(), store.getGrant(entry.grant)]);
     return timely() && grant !== null && grant.revokedAt === undefined && !pendingEnd(grant) && me.bound.has(entry.caller);
@@ -669,7 +684,7 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
     try { grants = await store.listGrants(); revoking = await submittedGrants(); } catch (e) { note(e); if (!isCorrupt(e)) throw e; }
     const rows = [];
     for (const row of grants) rows.push(describe(row, me, await targetOf(row.target).catch(() => null), revoking));
-    return { certState: me.certState, admitting: !corrupt && clockLoaded && !clockWentBack(now(), maxSeen), corrupt, grants: rows };
+    return { certState: me.certState, admitting: admissionOpen(), corrupt, grants: rows };
   }
 
   function ledger({ limit = 50, friend } = {}) {

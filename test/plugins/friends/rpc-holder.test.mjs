@@ -208,7 +208,7 @@ async function holderOf(t, shared = {}) {
   await gateway.start();
   const store = createRpcStore(dir, { now: () => clock.now });
   const holder = createHolder(coda, { store: shared.wrapStore?.(store) ?? store, signRpc: gateway.signRpc, retractRpc: gateway.retractRpc, onAccord: gateway.onAccord, pages: gateway.pages, now: () => clock.now,
-    timers: shared.timers ?? { setTimeout: () => null, clearTimeout() {} } });
+    timers: shared.timers ?? { setTimeout: () => null, clearTimeout() {} }, onMaintenanceError: shared.onMaintenanceError });
   const h = { dir, instances, clock, accord, exec, targets, host, gateway, store, holder, stopped: false };
   h.stop = () => { if (h.stopped) return; h.stopped = true; holder.stop(); gateway.stop(); host.close(); };
   instances.push(h);
@@ -925,6 +925,67 @@ test('an I/O error reading clock.json is not taken as no baseline: no new reques
   again.clock.now = START + 1;
   await again.settle();
   assert.deepEqual(again.answers(F1, body.request), ['running', 'completed']);
+});
+
+test('while clock.json cannot be read on restart, an old admitted request is not started and an old submitted one is not called again; once it can be read the admitted one carries on and the ended one stays ended', async t => {
+  const h = await holderOf(t);
+  const { grant } = await h.grant();
+  h.exec.plan = () => 'hang';
+  const busy = Array.from({ length: LIMITS.executing.author }, () => send(h, { grant }));
+  await h.settle();
+  const waiting = send(h, { grant });
+  await h.settle();
+  assert.equal((await h.store.get(F1, waiting.request)).state, 'admitted');
+  assert.equal((await h.store.get(F1, busy[0].request)).state, 'submitted');
+  h.stop();
+  // 内核忘了原来的幂等键：再调就会当新调用执行。
+  h.exec.forget();
+  h.exec.plan = input => ({ exitCode: 0, signal: null, stdout: `ran ${input.command}`, stderr: '', timedOut: false, truncated: false, outputDir: null, ms: 7 });
+  const calls = h.exec.calls.length, runs = h.exec.runs;
+  const disk = { failing: true };
+  const again = await holderOf(t, { ...h, wrapStore: store => ({ ...store,
+    readClock: () => disk.failing ? Promise.reject(Object.assign(new Error('读不出'), { code: 'EIO' })) : store.readClock() }) });
+  await again.settle();
+  assert.deepEqual([h.exec.calls.length - calls, h.exec.runs - runs], [0, 0]);
+  assert.equal((await again.store.get(F1, waiting.request)).state, 'admitted');
+  for (const one of busy) {
+    assert.deepEqual(again.answers(F1, one.request), ['running', 'failed']);
+    assert.deepEqual([again.lastAnswer(F1, one.request).body.error.code, again.lastAnswer(F1, one.request).body.error.effects], ['interrupted', 'unknown']);
+  }
+  disk.failing = false;
+  await again.settle();
+  assert.deepEqual(h.exec.calls.slice(calls).map(call => call.id), [idempotencyKey(F1, waiting.request)]);
+  assert.equal(again.lastAnswer(F1, waiting.request).body.state, 'completed');
+  for (const one of busy) assert.deepEqual(again.answers(F1, one.request), ['running', 'failed']);
+});
+
+test('while the clock high-water mark cannot be written, a cancel of a running call still aborts it and its outcome goes out; new requests wait until the write succeeds', async t => {
+  const disk = { failing: false }, errors = [];
+  const h = await holderOf(t, { onMaintenanceError: e => errors.push(e.code), wrapStore: store => ({ ...store,
+    writeClock: at => disk.failing ? Promise.reject(new Error('写不进去')) : store.writeClock(at) }) });
+  const { grant } = await h.grant();
+  h.exec.plan = () => 'hang';
+  const body = send(h, { grant });
+  await h.settle();
+  assert.equal(h.exec.pending(), 1);
+  disk.failing = true;
+  h.clock.now = START + MINUTE;
+  const fresh = send(h, { grant, expiresAt: START + 10 * MINUTE });
+  await h.settle();
+  assert.ok(errors.length > 0 && errors.every(code => code === 'clock_maintenance'));
+  assert.equal((await h.holder.self['grants.list']()).admitting, false);
+  assert.deepEqual(h.answers(F1, fresh.request), []);
+  cancelOf(h, body);
+  await h.settle();
+  assert.equal(h.exec.pending(), 0, 'aborted');
+  assert.deepEqual(h.answers(F1, body.request), ['running', 'failed']);
+  assert.equal(h.lastAnswer(F1, body.request).body.error.code, 'interrupted');
+  assert.deepEqual(h.answers(F1, fresh.request), []);
+  disk.failing = false;
+  h.exec.plan = input => ({ exitCode: 0, signal: null, stdout: `ran ${input.command}`, stderr: '', timedOut: false, truncated: false, outputDir: null, ms: 7 });
+  await h.settle();
+  assert.equal((await h.holder.self['grants.list']()).admitting, true);
+  assert.deepEqual(h.answers(F1, fresh.request), ['running', 'completed']);
 });
 
 test('a failed write of the clock high-water mark is written again on the next round', async t => {
