@@ -14,7 +14,7 @@ const expected = {
   agent: ['on-request', 'auto_review', 'workspaceWrite'],
   'read-only': ['on-request', 'user', 'workspaceWrite'],
 };
-async function session(t, { load, initial, mcpServers = [] } = {}) {
+async function session(t, { load, initial, mcpServers = [], sessionTmp, additionalDirectories } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'coda-codex-permissions-'));
   let proc;
   t.after(async () => { if (proc) { await proc.terminate(1000); proc.kill(); } rmSync(root, { recursive: true, force: true }); });
@@ -24,17 +24,20 @@ async function session(t, { load, initial, mcpServers = [] } = {}) {
   const env = { ...cleared(process.env), CODEX_PATH: program, CODEX_HOME: join(root, 'home'), FAKE_CODEX_STATE: root };
   delete env.INITIAL_AGENT_MODE; delete env.CODEX_CONFIG;
   if (initial) env.INITIAL_AGENT_MODE = initial;
+  delete env.CODA_SESSION_TMP;
+  if (sessionTmp) env.CODA_SESSION_TMP = sessionTmp(root);
   proc = new AgentProcess({ command: `exec ${quote(process.execPath)} ${quote(join(pluginDir('codex'), 'agent/entry.mjs'))}`, cwd: root, env });
   const request = async (method, params) => {
     const reply = await proc.request(method, params, { timeout: 10000 });
     assert.equal(reply.error, undefined, JSON.stringify(reply.error)); return reply.result;
   };
   await request('initialize', { protocolVersion: 1, clientCapabilities: clientCapabilities() });
-  const result = await request(load ? 'session/load' : 'session/new', { cwd: root, mcpServers, ...(load ? { sessionId: 'fake-thread' } : {}) });
+  const result = await request(load ? 'session/load' : 'session/new', { cwd: root, mcpServers, ...(additionalDirectories ? { additionalDirectories } : {}),
+    ...(load ? { sessionId: 'fake-thread' } : {}) });
   const sessionId = result.sessionId ?? 'fake-thread';
   const nativeConfig = readFileSync(join(root, 'threads.ndjson'), 'utf8').trim().split('\n').map(JSON.parse)
     .find(call => ['thread/start', 'thread/resume'].includes(call.method) && !call.params.ephemeral).params.config;
-  return { result, nativeConfig, set: modeId => request('session/set_mode', { sessionId, modeId }),
+  return { root, result, nativeConfig, set: modeId => request('session/set_mode', { sessionId, modeId }),
     async turn() {
       await request('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'permission check' }] });
       return readFileSync(join(root, 'prompts.ndjson'), 'utf8').trim().split('\n').map(JSON.parse)
@@ -73,4 +76,30 @@ test('the entry applies Coda MCP approval policy while an explicitly automatic s
   const s = await session(t, { initial: 'agent', mcpServers });
   assert.equal(s.nativeConfig.mcp_servers.coda.default_tools_approval_mode, 'approve');
   policy(await s.turn(), 'agent');
+});
+
+test('the session\'s own temporary directory joins the workspace-write roots of every mode that has them, and only it', async t => {
+  for (const load of [false, true]) await t.test(load ? 'load' : 'new', async t => {
+    const s = await session(t, { load, initial: 'agent', additionalDirectories: ['/coda/uploads'],
+      sessionTmp: root => join(root, 'state', 'session-tmp', 'this-session') });
+    const own = join(s.root, 'state', 'session-tmp', 'this-session');
+    assert.deepEqual(s.nativeConfig.sandbox_workspace_write.writable_roots, ['/coda/uploads', own]);
+    for (const mode of ['agent', 'read-only']) {
+      await s.set(mode);
+      const turn = await s.turn();
+      policy(turn, mode);
+      // Exactly the session's directory beside the ACP ones: not session-tmp/ (other sessions' directories are under it).
+      assert.deepEqual(turn.sandboxPolicy.writableRoots, ['/coda/uploads', own]);
+    }
+    await s.set('agent-full-access');
+    policy(await s.turn(), 'agent-full-access');
+  });
+});
+
+test('without an absolute CODA_SESSION_TMP the sandbox roots stay as codex-acp makes them', async t => {
+  for (const sessionTmp of [undefined, () => 'relative/session-tmp/this-session']) await t.test(sessionTmp ? 'relative' : 'unset', async t => {
+    const s = await session(t, { initial: 'agent', sessionTmp });
+    assert.equal(s.nativeConfig.sandbox_workspace_write, undefined);
+    assert.deepEqual((await s.turn()).sandboxPolicy.writableRoots, []);
+  });
 });
