@@ -30,7 +30,7 @@ test('activate registers the notes and policy handlers, the gateway operations a
   const h = await host(t);
   t.after(deactivate);
   await activate(h.coda);
-  assert.deepEqual([...h.self.keys()].sort(), ['notes.delete', 'notes.list', 'notes.set', 'policy.get', 'policy.setKind']);
+  assert.deepEqual([...h.self.keys()].sort(), ['grants.grant', 'grants.list', 'grants.revoke', 'ledger.list', 'notes.delete', 'notes.list', 'notes.set', 'policy.get', 'policy.setKind']);
   assert.deepEqual(h.operations.sort(), ['friends', 'outbox', 'post-feed', 'publish', 'records', 'retract', 'send-dm', 'set-card'].map(name => `friends/social@1/${name}`));
   assert.deepEqual(h.streams, ['friends/social@1/dm', 'friends/social@1/feed']);
   assert.deepEqual([...h.views.keys()], ['friends']);
@@ -74,9 +74,10 @@ test('without a state directory notes fail plainly, and deactivate disposes what
   const h = await host(t, null);
   await activate(h.coda);
   await assert.rejects(Promise.resolve().then(() => h.self.get('notes.list')({})), /状态目录/);
+  await assert.rejects(Promise.resolve().then(() => h.self.get('grants.list')({})), /状态目录/);
   deactivate();
   assert.deepEqual(h.disposed.sort(), ['friends/social@1/friends', 'friends/social@1/outbox', 'friends/social@1/post-feed', 'friends/social@1/publish', 'friends/social@1/records',
-    'friends/social@1/retract', 'friends/social@1/send-dm', 'friends/social@1/set-card', 'notes.delete', 'notes.list', 'notes.set', 'policy.get', 'policy.setKind',
+    'friends/social@1/retract', 'friends/social@1/send-dm', 'friends/social@1/set-card', 'grants.grant', 'grants.list', 'grants.revoke', 'ledger.list', 'notes.delete', 'notes.list', 'notes.set', 'policy.get', 'policy.setKind',
     'stream friends/social@1/dm', 'stream friends/social@1/feed', 'watch']);
   deactivate();
 });

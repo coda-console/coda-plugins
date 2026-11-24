@@ -1217,7 +1217,8 @@ test('a flush drops queued friends/rpc- entries without signing them, including 
   await writeFile(join(g.dir, 'outbox.json'), JSON.stringify({ seq: 5, entries: seeded }));
   await g.accord.change({ certificate: ACTIVE });
   await until(async () => Object.keys(await g.outbox()).every(key => !key.includes('friends/rpc-')) && g.accord.calls.length >= 1, '冲洗掉了旧队列');
-  await until(async () => (await g.status()).pendingCount === 0, '其余条目照常发完');
+  // 网关记录在冲洗完才刷新，冲洗途中它还是播种前的 0：同时等队列里只剩发出去的那条。
+  await until(async () => (await g.status()).pendingCount === 0 && Object.keys(await g.outbox()).length === 1, '其余条目照常发完');
   assert.deepEqual(g.accord.calls.map(call => call.kind), ['x'], 'only the ordinary entry is signed');
   assert.deepEqual(Object.keys(await g.outbox()), ['p:x:ok']);
   assert.equal(g.accord.queries.some(query => query.kind.startsWith('friends/rpc-')), false);

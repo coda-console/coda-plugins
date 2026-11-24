@@ -19,7 +19,7 @@ const interrupted = effects => Object.assign(new Error('好友网关已停止'),
 
 export function createGateway(coda, dir) {
   let stopped = false, watching = null, chain = Promise.resolve();
-  const handles = [];
+  const handles = [], accordListeners = new Set();
   const stateDir = () => {
     if (!dir) throw new Error('这台机器没有插件状态目录，网关的待发队列存不下');
     return dir;
@@ -41,19 +41,20 @@ export function createGateway(coda, dir) {
     return { accord, author: accord?.spec?.author ?? null, certState: certStateOf(accord) };
   }
 
-  // 翻页读 coda/accord@1 的记录，至多 `maxPages` 页；cursor 重复就停，不会原地打转。
+  // 翻页读 coda/accord@1 的记录，至多 `maxPages` 页；cursor 重复就停，不会原地打转。`input.cursor` 给了就从那一页续读。
+  // 页数用完还没读全时带 `nextCursor`，下次从那里接着读；游标缺失或重复（续不上）时没有。
   async function pages(input, maxPages = MAX_PAGES) {
     const records = [], seen = new Set();
-    let cursor;
+    let cursor = input.cursor;
     for (let page = 0; page < maxPages; page++) {
       const read = await coda.query(ACCORD, 'records', { ...input, limit: 200, ...(cursor ? { cursor } : {}) });
       records.push(...(read?.records ?? []));
       cursor = read?.nextCursor;
       if (!read?.truncated) return { records, truncated: false };
-      if (!cursor || seen.has(cursor)) break;
+      if (!cursor || seen.has(cursor)) return { records, truncated: true };
       seen.add(cursor);
     }
-    return { records, truncated: true };
+    return { records, truncated: true, nextCursor: cursor };
   }
 
   // 本机在 Accord 里有没有这条记录。
@@ -385,6 +386,26 @@ export function createGateway(coda, dir) {
     return coda.call(ACCORD, 'publish', { kind, id, body, audience, expectAuthor: sender });
   }
 
+  // 撤回同一入口签过的一条：同一种类、同一 id，正文为空、受众为空。`author` 是本机此刻应署的根，作为 expectAuthor 传下去；
+  // 只撤本机此刻这个根署名的、Accord 里还在的记录：没有就给 `{ state: 'absent' }`，不为从没发过的 id 生成墓碑。
+  // 证书不是 active、或此刻的根不是 `author`，当场失败（invalid_state），什么也不发。
+  async function retractRpc({ kind, id, author } = {}) {
+    live();
+    if (!RPC_KINDS.includes(kind)) throw invalid(`只能撤 ${RPC_KINDS.join('、')}`);
+    checkId(id);
+    if (!isAuthor(author)) throw invalid('author 须是本机此刻应署的根');
+    const current = await accordState();
+    live();
+    if (current.certState !== 'active' || !current.author) throw coda.error('invalid_state', '本机没有可用的签名证书，好友调用的记录没有撤回', { effects: 'none' });
+    if (current.author !== author) throw coda.error('invalid_state', '本机此刻署名的作者不是这条记录的作者，好友调用的记录没有撤回', { effects: 'none' });
+    const read = await coda.query(ACCORD, 'records', { kind, author, id, limit: 1 });
+    const held = (read?.records ?? []).some(record => record?.local === true && record.author === author && record.id === id && Object.keys(record.body ?? {}).length > 0);
+    live();
+    if (!held) return { state: 'absent' };
+    const result = await coda.call(ACCORD, 'publish', { kind, id, body: {}, audience: [], expectAuthor: author });
+    return { state: 'retracted', ...(Number.isSafeInteger(result?.version) ? { version: result.version } : {}) };
+  }
+
   // ---- 实时流 dm、feed ----
   // 每条流一个 hub（内存里的投影与变化环缓冲）和它的订阅者；有订阅者、或新流连入时才翻页读 Accord，读全了才比对出增量推给订阅者，
   // 读不全（截断、查询失败）不动 hub，留着上一份完整的投影。`ready`：hub 里已有过一份完整的投影。
@@ -487,6 +508,7 @@ export function createGateway(coda, dir) {
     const ready = type !== 'DELETED' && certStateOf(entry) === 'active';
     serial(async () => { if (ready) await flushNow(); await refreshNow(); }).catch(() => {});
     pullWatched();
+    for (const listener of accordListeners) { try { listener({ type, entry }); } catch { /* 听的人出错不影响网关 */ } }
   };
 
   return {
@@ -502,8 +524,12 @@ export function createGateway(coda, dir) {
         });
       },
     },
-    // 内部签名入口，见上；不对外登记。
-    signRpc,
+    // 内部签名、撤回入口，见上；不对外登记。
+    signRpc, retractRpc,
+    // 翻页读 Accord 记录（见上），持有方扫请求用。
+    pages,
+    // 本机 Accord 记录的变化（网关已在 watch 它），转告给持有方等内部的听众；给回 dispose。
+    onAccord(listener) { accordListeners.add(listener); return { dispose: () => accordListeners.delete(listener) }; },
     // 实时流此刻的订阅者数，`{ dm, feed }`。
     subscriberCount: () => ({ dm: hubs.dm.subs.size, feed: hubs.feed.subs.size }),
     async start() {
@@ -519,6 +545,7 @@ export function createGateway(coda, dir) {
       for (const handle of handles.splice(0)) handle?.dispose?.();
       watching?.dispose?.();
       watching = null;
+      accordListeners.clear();
       for (const one of Object.values(hubs)) for (const sub of [...one.subs]) sub.close();
     },
   };

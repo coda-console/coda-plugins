@@ -3,11 +3,16 @@
 // - 好友的本地备注：存在插件自己的持久目录 notes.json 里，不外发，页面通过视图消息读写，
 //   也能用 `coda self notes.list|notes.set|notes.delete` 读写；
 // - 业务无关的社交网关 friends/social@1（lib/gateway.mjs）：别的插件经它读好友、发布与撤回记录，全部透传 coda/accord@1；
-//   发布策略用 `coda self policy.get|policy.setKind` 读写。
+//   发布策略用 `coda self policy.get|policy.setKind` 读写；
+// - 签名网关的持有方（lib/rpc-holder.mjs）：把本机 remote-exec 记录的 exec 授给好友、转发好友签名的调用，
+//   授权与操作记录用 `coda self grants.list|grants.grant|grants.revoke|ledger.list` 读写。持有方出错不影响社交网关。
 import { createGateway } from './lib/gateway.mjs';
 import { deleteNote, readNotes, setNote } from './lib/notes.mjs';
+import { createHolder } from './lib/rpc-holder.mjs';
+import { createRpcStore } from './lib/rpc-store.mjs';
 
-let dir = null, gateway = null;
+const HOLDER_ACTIONS = ['grants.list', 'grants.grant', 'grants.revoke', 'ledger.list'];
+let dir = null, gateway = null, holder = null;
 const handles = [];
 
 export async function activate(coda) {
@@ -35,9 +40,22 @@ export async function activate(coda) {
   gateway = createGateway(coda, dir);
   for (const [name, fn] of Object.entries(gateway.policy)) handles.push(coda.self.handle(name, input => fn(input ?? {})));
   await gateway.start();
+  if (dir) {
+    try {
+      holder = createHolder(coda, { store: createRpcStore(dir), signRpc: gateway.signRpc, retractRpc: gateway.retractRpc,
+        onAccord: gateway.onAccord, pages: gateway.pages });
+      holder.start().catch(() => {});
+    } catch { holder = null; }
+  }
+  for (const name of HOLDER_ACTIONS) handles.push(coda.self.handle(name, input => {
+    if (!holder) throw new Error('这台机器没有插件状态目录，好友授权存不下');
+    return holder.self[name](input ?? {});
+  }));
 }
 
 export function deactivate() {
+  holder?.stop();
+  holder = null;
   gateway?.stop();
   gateway = null;
   for (const handle of handles.splice(0)) handle?.dispose?.();

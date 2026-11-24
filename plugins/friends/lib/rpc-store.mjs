@@ -3,6 +3,7 @@
 //   inflight.json  在途与去重表（持有方）：键是 (调用方作者, 请求号)，状态只进不退，终态先落盘。
 //   outgoing.json  发出表（调用方）：本人查账用。
 //   ledger-YYYY-MM.jsonl  操作记录（持有方）：每个请求一行，拒绝按「作者、原因、分钟」合并成一行，留 90 天。
+//   clock.json     持有方见过的最大时刻：本机时钟大幅回拨时据此暂停准入。
 // 表文件与操作记录的月份文件都原子写入（临时文件 + rename，文件 0600、目录 0700）。读出来不是合法 JSON、或形状不对，就抛 `corrupt`，调用方据此停止准入，
 // 绝不当成空表继续；文件不存在才是空表。同一个 store 里所有读改写排成一条队。
 import { createHash } from 'node:crypto';
@@ -39,10 +40,11 @@ export const isCorrupt = error => error?.code === 'corrupt';
 
 const grantOk = entry => isPlain(entry) && isText(entry.id) && isPlain(entry.holder) && isAuthor(entry.holder.root) && isText(entry.holder.machine)
   && isAuthor(entry.grantee) && isTarget(entry.target) && Array.isArray(entry.ops) && entry.ops.length === 1 && entry.ops[0] === 'exec'
-  && isTime(entry.createdAt) && optional(entry.revokedAt, isTime);
+  && isTime(entry.createdAt) && optional(entry.revokedAt, isTime) && optional(entry.endedBy, isText) && optional(entry.retractedAt, isTime);
 
 // 在途项按状态校验：非终态要有完整的子调用参数（固定目标、重建后的输入；幂等键与最晚启动时刻每项都有），且不带结局与「已签出」；
-// 终态带结局或「已签出」之一（签出后结局释放）；取消标记与取消时刻成对出现。
+// 终态带结局或「已签出」之一（签出后结局释放，留下终态时刻；回答撤回后另记一笔）；取消标记与取消时刻成对出现。
+// 终态还带着要写进操作记录的那一行（`ledger`），写进去以后去掉。`version` 是准入时那条请求的版本，取消须比它新。
 const inflightOk = entry => {
   // 存的是重建后的 exec 输入：按 rpc-format 的重建规则能原样重建（结果与存的完全相同）才算。
   const inputOk = input => { const rebuilt = rebuildExecInput(input); return rebuilt.ok && isDeepStrictEqual(rebuilt.input, input); };
@@ -50,7 +52,10 @@ const inflightOk = entry => {
   if (!(isPlain(entry) && isAuthor(entry.caller) && isText(entry.request) && isText(entry.grant) && isText(entry.digest) && isText(entry.key)
     && isTime(entry.notAfter) && isTime(entry.admittedAt) && STATES.includes(entry.state)
     && optional(entry.call, callOk) && optional(entry.canceled, value => value === true) && optional(entry.canceledAt, isTime)
-    && optional(entry.signed, value => value === true) && optional(entry.outcome, outcome => isPlain(outcome) && isTime(outcome.finishedAt)))) return false;
+    && optional(entry.signed, value => value === true) && optional(entry.outcome, outcome => isPlain(outcome) && isTime(outcome.finishedAt))
+    && optional(entry.finishedAt, isTime) && optional(entry.retracted, value => value === true) && optional(entry.version, Number.isSafeInteger)
+    && optional(entry.ledger, row => row?.outcome !== 'rejected' && completedRowOk(row)))) return false;
+  if (entry.ledger !== undefined && !TERMINAL.includes(entry.state)) return false;
   if ((entry.canceled === undefined) !== (entry.canceledAt === undefined)) return false;
   if (!TERMINAL.includes(entry.state)) return callOk(entry.call) && entry.outcome === undefined && entry.signed === undefined;
   return entry.signed === true ? entry.outcome === undefined : entry.outcome !== undefined;
@@ -162,12 +167,33 @@ export function createRpcStore(stateDir, { now = Date.now } = {}) {
     return entry;
   });
 
-  // 撤权：先落盘再返回；已撤的不改撤回时刻。没有这条授权给 null。
-  const revokeGrant = (id, at = now()) => serial(async () => {
+  // 撤权：先落盘再返回；已撤的不改撤回时刻。没有这条授权给 null。`endedBy` 写明不是本人撤的（目标不在了、本机的根换了而失效）。
+  // 撤权与失效不可逆；授权记录的撤回另记（markGrantRetracted），要等原作者能签时才补发。
+  const revokeGrant = (id, at = now(), endedBy) => serial(async () => {
     const grants = await load('grants'), entry = grants[id];
     if (!entry) return null;
     if (entry.revokedAt === undefined) {
-      grants[id] = { ...entry, revokedAt: at };
+      grants[id] = { ...entry, revokedAt: at, ...(endedBy === undefined ? {} : { endedBy }) };
+      await save('grants', grants);
+    }
+    return grants[id];
+  });
+
+  // 让 `match` 选中的、还有效的授权一并失效（同一个串行操作里落盘），`endedBy` 是原因；给回这次失效的那些。
+  const endGrants = (match, endedBy, at = now()) => serial(async () => {
+    const grants = await load('grants'), ended = Object.values(grants).filter(entry => entry.revokedAt === undefined && match(entry));
+    if (!ended.length) return [];
+    for (const entry of ended) grants[entry.id] = { ...entry, revokedAt: at, endedBy };
+    await save('grants', grants);
+    return ended.map(entry => grants[entry.id]);
+  });
+
+  // 授权记录已撤回（或本来就没发出去）：只对撤了的授权。
+  const markGrantRetracted = (id, at = now()) => serial(async () => {
+    const grants = await load('grants'), entry = grants[id];
+    if (!entry || entry.revokedAt === undefined) return null;
+    if (entry.retractedAt === undefined) {
+      grants[id] = { ...entry, retractedAt: at };
       await save('grants', grants);
     }
     return grants[id];
@@ -176,7 +202,9 @@ export function createRpcStore(stateDir, { now = Date.now } = {}) {
   // ---- 在途与去重 ----
 
   const live = entries => Object.values(entries).filter(entry => now() < entry.notAfter);
-  const purged = entries => Object.fromEntries(Object.entries(entries).filter(([, entry]) => now() < entry.notAfter + KEEP_AFTER_EXPIRY_MS));
+  // 只清做完了的：结局签出、回答撤回、操作记录写进去了，且过期满 24 小时。没恢复的、没签出的、没撤回答的、没记账的一律留着。
+  const purged = entries => Object.fromEntries(Object.entries(entries).filter(([, entry]) =>
+    !(entry.retracted === true && entry.ledger === undefined && now() >= entry.notAfter + KEEP_AFTER_EXPIRY_MS)));
 
   const counts = (entries, caller) => {
     const tally = state => {
@@ -207,8 +235,9 @@ export function createRpcStore(stateDir, { now = Date.now } = {}) {
    * `table_full`（没过期的项已达 4096，不挤掉任何一项）、`busy`（带 `limit`、`scope`、`retryAfterMs`）。
    * `canceled: true` 是取消先于请求到达：先留下标记，之后不会再启动。过期 24 小时的旧项顺手清掉。
    */
-  const admit = ({ caller, request, grant, digest, key, notAfter, call, canceled }) => serial(async () => {
-    const at = now(), entry = { caller, request, grant, digest, key, notAfter, admittedAt: at, state: 'admitted', call, ...(canceled ? { canceled: true, canceledAt: at } : {}) };
+  const admit = ({ caller, request, grant, digest, key, notAfter, call, canceled, version }) => serial(async () => {
+    const at = now(), entry = { caller, request, grant, digest, key, notAfter, admittedAt: at, state: 'admitted', call, ...(canceled ? { canceled: true, canceledAt: at } : {}),
+      ...(version === undefined ? {} : { version }) };
     if (!inflightOk(entry) || !call) throw invalid('在途项的各项不合格');
     const entries = purged(await load('inflight')), slot = inflightKey(caller, request), old = entries[slot];
     if (old) return old.digest === digest ? { ok: false, code: 'duplicate', entry: old } : { ok: false, code: 'digest_conflict', entry: old };
@@ -220,8 +249,9 @@ export function createRpcStore(stateDir, { now = Date.now } = {}) {
     return { ok: true, entry };
   });
 
-  // 改一项：`change(entry, entries)` 给新的一项，或给 `{ ok: false, ... }` 拒绝；落盘后才返回。
-  const update = (caller, request, change) => serial(async () => {
+  // 改一项：`change(entry, entries)` 给新的一项，或给 `{ ok: false, ... }` 拒绝；落盘后才返回。`updateNow` 须已在队里。
+  const update = (caller, request, change) => serial(() => updateNow(caller, request, change));
+  const updateNow = async (caller, request, change) => {
     const entries = await load('inflight'), slot = inflightKey(caller, request), entry = entries[slot];
     if (!entry) return { ok: false, code: 'unknown' };
     const next = change(entry, entries);
@@ -232,7 +262,7 @@ export function createRpcStore(stateDir, { now = Date.now } = {}) {
       await save('inflight', entries);
     }
     return { ok: true, entry: next };
-  });
+  };
 
   const get = (caller, request) => serial(async () => (await load('inflight'))[inflightKey(caller, request)] ?? null);
 
@@ -243,33 +273,54 @@ export function createRpcStore(stateDir, { now = Date.now } = {}) {
   });
 
   /**
-   * admitted → submitted，提交给内核之前调用：已标了取消的不让提交（`canceled`），同时执行的配额也在这里判（`busy`）；
+   * admitted → submitted，提交给内核之前调用：已标了取消的不让提交（`canceled`）；同一个串行操作里读最新的授权行、按此刻判最晚启动时刻，
+   * 授权没了、撤了或失效了给 `revoked`（`reason` 是失效的原因），过了最晚启动时刻给 `expired`；同时执行的配额也在这里判（`busy`）。
    * 已经是 submitted 的原样给回（重启后再提交用同一个幂等键）；已是终态的给 `terminal`。
    */
-  const markSubmitted = (caller, request) => update(caller, request, (entry, entries) => {
-    if (entry.state === 'submitted') return entry;
-    if (TERMINAL.includes(entry.state)) return { ok: false, code: 'terminal', entry };
-    if (entry.canceled) return { ok: false, code: 'canceled', entry };
-    return tallyVerdict('executing', counts(entries, caller).executing) ?? { ...entry, state: 'submitted' };
+  const markSubmitted = (caller, request) => serial(async () => {
+    const grants = await load('grants');
+    return updateNow(caller, request, (entry, entries) => {
+      if (entry.state === 'submitted') return entry;
+      if (TERMINAL.includes(entry.state)) return { ok: false, code: 'terminal', entry };
+      if (entry.canceled) return { ok: false, code: 'canceled', entry };
+      const grant = grants[entry.grant];
+      if (!grant || grant.revokedAt !== undefined) return { ok: false, code: 'revoked', ...(grant?.endedBy ? { reason: grant.endedBy } : {}), entry };
+      if (now() >= entry.notAfter) return { ok: false, code: 'expired', entry };
+      return tallyVerdict('executing', counts(entries, caller).executing) ?? { ...entry, state: 'submitted' };
+    });
   });
 
   /**
    * 落终态：`outcome` 是 `{ state: 'completed'|'failed'|'canceled', finishedAt, result?, error? }`。终态先落盘，之后不得改回非终态、也不再改结局
-   * （再落终态给 `terminal`，带原来那一项）。子调用的参数不再需要，一并去掉。
+   * （再落终态给 `terminal`，带原来那一项）。子调用的参数不再需要，一并去掉。`ledger` 是要写进操作记录的那一行，与终态一起落盘，
+   * 写进操作记录后用 markLogged 去掉；中途退出了，重启后照它补写。
    */
-  const finish = (caller, request, { state, ...rest }) => update(caller, request, entry => {
+  const finish = (caller, request, { state, ...rest }, ledger) => update(caller, request, entry => {
     if (!TERMINAL.includes(state)) throw invalid('终态须是 completed、failed 或 canceled');
     if (TERMINAL.includes(entry.state)) return { ok: false, code: 'terminal', entry };
     const { call, ...kept } = entry;
-    return { ...kept, state, outcome: rest };
+    return { ...kept, state, outcome: rest, ...(ledger === undefined ? {} : { ledger }) };
   });
 
-  // 结局已签出：之后用不着结局的内容了，只留 `signed`，表不会越长越大。
+  // 操作记录已写进去：去掉随终态落盘的那一行。
+  const markLogged = (caller, request) => update(caller, request, entry => {
+    if (entry.ledger === undefined) return entry;
+    const { ledger, ...kept } = entry;
+    return kept;
+  });
+
+  // 结局已签出：之后用不着结局的内容了，只留 `signed` 与终态时刻（到时撤回答用），表不会越长越大。
   const markSigned = (caller, request) => update(caller, request, entry => {
     if (!TERMINAL.includes(entry.state)) return { ok: false, code: 'not_terminal', entry };
     if (entry.signed) return entry;
     const { outcome, ...kept } = entry;
-    return { ...kept, signed: true };
+    return { ...kept, signed: true, finishedAt: outcome.finishedAt };
+  });
+
+  // 回答已撤回：只对签出过的项。
+  const markRetracted = (caller, request) => update(caller, request, entry => {
+    if (entry.signed !== true) return { ok: false, code: 'not_signed', entry };
+    return entry.retracted ? entry : { ...entry, retracted: true };
   });
 
   const purge = () => serial(async () => {
@@ -282,6 +333,22 @@ export function createRpcStore(stateDir, { now = Date.now } = {}) {
   const quota = caller => serial(async () => {
     const entries = await load('inflight'), tally = counts(entries, caller);
     return { ...tally, verdict: tallyVerdict('inflight', tally.inflight) ?? rateVerdict(entries, caller) ?? { ok: true } };
+  });
+
+  // ---- 见过的最大时刻 ----
+
+  // 读出见过的最大时刻（没有给 null）；文件不对就是损坏。
+  const readClock = () => serial(async () => {
+    let text;
+    try { text = await readFile(join(dir, 'clock.json'), 'utf8'); } catch (e) { if (e?.code === 'ENOENT') return null; throw e; }
+    let parsed;
+    try { parsed = JSON.parse(text); } catch { throw corrupt('clock.json', '不是合法的 JSON'); }
+    if (!isPlain(parsed) || parsed.v !== 1 || !isTime(parsed.maxSeen)) throw corrupt('clock.json', '形状不对');
+    return parsed.maxSeen;
+  });
+  const writeClock = at => serial(() => {
+    if (!isTime(at)) throw invalid('时刻不合格');
+    return writeAtomic(dir, 'clock.json', `${JSON.stringify({ v: 1, maxSeen: at })}\n`);
   });
 
   // ---- 发出表 ----
@@ -367,6 +434,20 @@ export function createRpcStore(stateDir, { now = Date.now } = {}) {
     return row;
   });
 
+  /**
+   * 补写一个请求的那一行（`row` 是 appendLedger 那样的整行，命令已是摘要）：按「调用方 + 请求号」幂等，当月已有这一行就不再写。
+   * 给 `{ written }`。
+   */
+  const appendLedgerRow = row => serial(async () => {
+    if (!completedRowOk(row)) throw invalid('操作记录的各项不合格');
+    await ledgerPrepare();
+    const name = ledgerName(row.at), rows = await readMonth(name);
+    if (rows.some(old => old.outcome !== 'rejected' && old.friend === row.friend && old.request === row.request)) return { written: false };
+    rows.push(row);
+    await writeMonth(name, rows);
+    return { written: true };
+  });
+
   /** 记一次拒绝：同一个 (作者、原因、分钟) 合并成当月文件里的一行，`count` 累加，不为每条非法输入各写一行。 */
   const recordRejection = ({ friend, code, at = now() }) => serial(async () => {
     const row = { v: 1, at: Math.floor(at / MINUTE) * MINUTE, friend, outcome: 'rejected', code, count: 1 };
@@ -399,12 +480,12 @@ export function createRpcStore(stateDir, { now = Date.now } = {}) {
   return {
     listGrants: () => serial(async () => Object.values(await load('grants'))),
     getGrant: id => serial(async () => (await load('grants'))[id] ?? null),
-    addGrant, revokeGrant,
-    admit, get, cancel, markSubmitted, finish, markSigned, purge, quota,
+    addGrant, revokeGrant, endGrants, markGrantRetracted,
+    admit, get, cancel, markSubmitted, finish, markLogged, markSigned, markRetracted, purge, quota, readClock, writeClock,
     listInflight: () => serial(async () => Object.values(await load('inflight'))),
     listOutgoing: () => serial(async () => Object.values(await load('outgoing'))),
     getOutgoing: request => serial(async () => (await load('outgoing'))[request] ?? null),
     addOutgoing, setOutgoingState, removeOutgoing,
-    appendLedger, recordRejection, readLedger, pruneLedger: () => serial(pruneNow),
+    appendLedger, appendLedgerRow, recordRejection, readLedger, pruneLedger: () => serial(pruneNow),
   };
 }

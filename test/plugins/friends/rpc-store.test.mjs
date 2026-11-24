@@ -12,6 +12,8 @@ const A = author(1), B = author(2), C = author(3), D = author(4), E = author(5);
 const GRANT = '3f2b8c1e-4d5a-4e6f-8a7b-9c0d1e2f3a4b';
 const TARGET = { owner: 'machine-1', provider: 'remote-exec', kind: 'remote-exec/machine@1', id: 'rec-1' };
 const START = Date.UTC(2026, 10, 24, 12, 0, 0);
+// 提交前要读到这条授权：用到 markSubmitted 的用例先把它写进授权表。
+const GRANTED = { id: GRANT, holder: { root: A, machine: 'm1' }, grantee: B, target: TARGET, createdAt: START };
 const MINUTE = 60_000, DAY = 86_400_000;
 
 async function setup(t) {
@@ -128,6 +130,7 @@ test('grants: added once, revoked to disk first, and a revoked grant stays in th
 
 test('an inflight entry only moves forward: admitted, submitted, then a terminal state that is written once and never undone', async t => {
   const { dir, store, clock } = await setup(t);
+  await store.addGrant(GRANTED);
   const one = candidate(clock), { entry } = await store.admit(one);
   assert.deepEqual([entry.state, entry.admittedAt, entry.call.input.command], ['admitted', START, one.call.input.command]);
   const sub = await store.markSubmitted(A, one.request);
@@ -189,6 +192,7 @@ test('a duplicate keeps the first entry, and the same request id with another di
 
 test('a cancel that arrives before the request leaves a mark; the request is then a duplicate carrying it, and it cannot be submitted', async t => {
   const { store, clock } = await setup(t);
+  await store.addGrant(GRANTED);
   const early = candidate(clock), marked = await store.admit({ ...early, canceled: true });
   assert.deepEqual([marked.ok, marked.entry.canceled, marked.entry.canceledAt], [true, true, START]);
   const arrival = await store.admit(early);
@@ -219,7 +223,7 @@ const seed = async (dir, entries) => {
   await writeFile(join(dir, 'rpc', 'inflight.json'), JSON.stringify({ v: 1, entries: Object.fromEntries(entries.map(entry => [inflightKey(entry.caller, entry.request), entry])) }));
 };
 const settled = (n, notAfter, more = {}) => ({ caller: B, request: `c${hex(n)}`, grant: GRANT, digest: `d${hex(n)}`.padEnd(64, '0'), key: `friend:${hex(n)}`, notAfter, admittedAt: START - DAY,
-  state: 'completed', signed: true, ...more });
+  state: 'completed', signed: true, retracted: true, ...more });
 
 test('a full table refuses new requests and evicts nothing unexpired; expired entries do not count and go 24 hours after expiry', async t => {
   const { dir, store, clock } = await setup(t);
@@ -242,10 +246,10 @@ test('a full table refuses new requests and evicts nothing unexpired; expired en
   assert.ok(!kept.includes(`c${hex(5002)}`) && !kept.includes(`c${hex(5003)}`), 'expired for 24 hours is cleared');
   assert.equal(kept.length, LIMITS.table - 1 + 2 + 1, '4095 unexpired + 2 recently expired + the new one');
   assert.equal((await store.admit(candidate(clock))).code, 'table_full');
-  // 单独清：时间过去后一次清完。
+  // 单独清：时间过去后做完了的一次清完；刚准入、还没做完的那一项留着等恢复。
   clock.now += 2 * DAY;
-  assert.equal(await store.purge(), LIMITS.table - 1 + 2 + 1);
-  assert.equal((await store.listInflight()).length, 0);
+  assert.equal(await store.purge(), LIMITS.table - 1 + 2);
+  assert.deepEqual((await store.listInflight()).map(entry => entry.state), ['admitted']);
 });
 
 test('the in-flight quota: 8 per author and 32 in all; a finished request frees its slot', async t => {
@@ -270,6 +274,7 @@ test('the in-flight quota: 8 per author and 32 in all; a finished request frees 
 
 test('the executing quota: 4 per author and 8 in all, judged when it is submitted', async t => {
   const { store, clock } = await setup(t);
+  await store.addGrant(GRANTED);
   const admit = async caller => { const one = candidate(clock, { caller }); await store.admit(one); return one; };
   const own = [];
   for (let i = 0; i < LIMITS.executing.author; i++) { const one = await admit(A); own.push(one); assert.equal((await store.markSubmitted(A, one.request)).ok, true); }
