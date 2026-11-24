@@ -301,19 +301,25 @@ test('granting the same friend the same target twice gives back the one live gra
   assert.deepEqual((await live()).map(row => row.id).sort(), [renewed.grant, other.grant, elsewhere.grant].sort());
 });
 
-test('when the target\'s availability changes the grant record is published again under the same id; nothing changes, nothing is sent', async t => {
+test('when the target\'s availability or a published spec field (the machine name) changes the grant record is published again under the same id; nothing published changes, nothing is sent', async t => {
   const h = await holderOf(t);
   const { grant } = await h.grant();
   h.targets.set('rx-1', { spec: { ...SPEC, name: 'renamed' } });
   await h.settle();
-  assert.equal(h.published('friends/rpc-grant').length, 1, 'only availability is watched');
-  h.targets.set('rx-1', { status: { available: false } });
-  await h.settle();
-  const grants = h.published('friends/rpc-grant');
-  assert.equal(grants.length, 2);
-  assert.deepEqual([grants[1].id, grants[1].body.available, grants[1].body.spec.name], [grant, false, 'renamed']);
+  let grants = h.published('friends/rpc-grant');
+  assert.equal(grants.length, 2, 'a rename is published');
+  assert.deepEqual([grants[1].id, grants[1].body.available, grants[1].body.spec.name], [grant, true, 'renamed']);
+  // 公开内容没变（只是记录又触发了一次）：不发。
+  h.targets.set('rx-1', { spec: { ...SPEC, name: 'renamed' } });
   await h.settle();
   assert.equal(h.published('friends/rpc-grant').length, 2);
+  h.targets.set('rx-1', { status: { available: false } });
+  await h.settle();
+  grants = h.published('friends/rpc-grant');
+  assert.equal(grants.length, 3);
+  assert.deepEqual([grants[2].id, grants[2].body.available, grants[2].body.spec.name], [grant, false, 'renamed']);
+  await h.settle();
+  assert.equal(h.published('friends/rpc-grant').length, 3);
 });
 
 test('revoking is written to disk first and takes effect even when the retraction cannot be sent; it is sent once the machine key can be read, whatever the certificate', async t => {

@@ -69,7 +69,7 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
   const announced = new Set(); // 在途键：本进程已签出 running 的（重启后接手的 admitted 项要补签）
   const outcomes = new Map(); // 在途键 → 已得出、还没落盘成功的结局：终态写盘失败重来时照它补写，不再调内核
   const since = new Map(); // 在途键 → 本进程开始经手它的单调时刻
-  const availability = new Map(); // 目标记录 id → 上次看到的 available
+  const availability = new Map(); // 目标记录 id → 上次看到的授权记录里公开的内容（spec 的公开字段与 available）
   const dirtyGrants = new Set(); // 授权记录还没跟上（发或撤还没成）的授权号
   const grantQueues = new Map(); // 授权号 → 这条授权的发与撤排成的队
   // 待落盘的失效：`machine:<旧机器钥匙>`、`grantee:<对不上的好友作者>`、`target:<目标 id>` → { match, endedBy, after }。落盘成功才去掉；在表里的授权一律当作已失效。
@@ -215,11 +215,12 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
   }
   const pickSpec = spec => ({ name: spec?.name, os: spec?.os, user: spec?.user, cwd: spec?.cwd });
 
-  // 跟上一条授权：成了从待补里去掉，没成留着下次再补。
+  // 跟上一条授权：开始前先取走它的待补标记，没成再标回去；同步进行中新来的标记留着，由随后的节拍再补一次。
   async function settle(id) {
+    dirtyGrants.delete(id);
     let done = false;
     try { done = await syncGrant(id); } catch (e) { note(e); }
-    if (done) dirtyGrants.delete(id); else dirtyGrants.add(id);
+    if (!done) dirtyGrants.add(id);
   }
 
   async function syncGrants(filter = () => true) {
@@ -544,14 +545,14 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
     lastIdentity = current;
     tick({ grants: changed }).catch(() => {});
   }
-  // 目标记录变了：没了就地把指向它的授权失效落盘（之后同 id 重建的也不再生效），再去补撤回；available 变了就重发它的授权记录。
+  // 目标记录变了：没了就地把指向它的授权失效落盘（之后同 id 重建的也不再生效），再去补撤回；公开的 spec 字段或 available 变了就重发它的授权记录。
   function onTarget({ type, id, entry } = {}) {
     if (type === 'DELETED') {
       availability.delete(id);
       endGrants(`target:${id}`, grant => grant.target.kind === PROTOCOL && grant.target.id === id, ENDING.target_missing);
       return;
     }
-    const before = availability.get(id), after = entry?.status?.available === true;
+    const before = availability.get(id), after = JSON.stringify([pickSpec(entry?.spec), entry?.status?.available === true]);
     availability.set(id, after);
     if (before === undefined || before === after) return;
     store.listGrants().then(grants => { for (const grant of grants) if (grant.target.id === id) dirtyGrants.add(grant.id); kick(); }, note);

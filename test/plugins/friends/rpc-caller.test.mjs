@@ -172,9 +172,12 @@ function execFake() {
 // 持有方本机的目标记录 rx-1（remote-exec 提供）。
 function targetsFake() {
   const row = { kind: MACHINE, id: 'rx-1', owner: TEST_OWNER, location: 'local', plugin: 'remote-exec', local: true, spec: { ...SPEC }, status: { available: true }, version: '1' };
+  const listeners = new Set();
   return {
     get: async id => { if (id !== row.id) throw fail('not_found', `没有记录 ${id}`); return structuredClone(row); },
-    watch: async listener => { listener({ type: 'ADDED', id: row.id, entry: structuredClone(row) }); return { dispose() {} }; },
+    watch: async listener => { listeners.add(listener); listener({ type: 'ADDED', id: row.id, entry: structuredClone(row) }); return { dispose: () => listeners.delete(listener) }; },
+    // 改目标记录的 spec 并通知监听方（持有方机器改名）。
+    rename(name) { row.spec = { ...row.spec, name }; for (const listener of listeners) listener({ type: 'MODIFIED', id: row.id, entry: structuredClone(row) }); },
   };
 }
 
@@ -226,7 +229,7 @@ async function holderOf(t, world, { author = HM, certificate = null, machine = H
     now: () => world.clock.now, timers: { setTimeout: () => null, clearTimeout() {} } });
   await holder.start();
   t.after(() => { holder.stop(); gateway.stop(); base.host.close(); });
-  return { ...base, node, exec, holder,
+  return { ...base, node, exec, targets, holder,
     grant: async friend => (await holder.self['grants.grant']({ friend, target: { kind: MACHINE, id: 'rx-1' } })).grant,
     answers: (caller, request) => node.calls.filter(call => call.kind === ANSWER && call.id === answerId(caller, request)).map(call => call.body.state ?? 'retracted'),
     lastAnswer: (caller, request) => node.calls.filter(call => call.kind === ANSWER && call.id === answerId(caller, request)).at(-1)?.body };
@@ -304,6 +307,26 @@ test('a grant becomes a proxy record named machine@friend with the holder machin
 
   await h.holder.self['grants.revoke']({ grant });
   await until(() => c.mine().length === 0, '撤回后删掉代理记录');
+});
+
+test('a holder machine renamed after the grant: the grant record is published again under the same id and the caller\'s proxy name follows', async t => {
+  const world = worldFake(), h = await holderOf(t, world), c = await callerOf(t, world);
+  const grant = await granted(h, c);
+  assert.equal(c.mine()[0].spec.name, `box@好友 ${'c'.repeat(8)}`);
+  h.targets.rename('renamed');
+  await until(() => c.mine()[0].spec.name === `renamed@好友 ${'c'.repeat(8)}`, '代理名跟着改名');
+  assert.deepEqual(c.mine().map(row => row.key), [proxyKey(HM, grant)], 'same grant, same proxy');
+});
+
+test('a second rename while the first rename\'s grant record is still being published is not lost: the caller ends up with the second name', async t => {
+  const world = worldFake(), h = await holderOf(t, world), c = await callerOf(t, world);
+  await granted(h, c);
+  const release = h.node.hold(input => input.kind === 'friends/rpc-grant');
+  h.targets.rename('first');
+  await until(() => h.node.held(), '第一次改名的发布还在路上');
+  h.targets.rename('second');
+  release();
+  await until(() => c.mine()[0].spec.name === `second@好友 ${'c'.repeat(8)}`, '代理名是第二个名字');
 });
 
 test('list gives the proxies a friend granted to me, read only: filtered by the friend\'s bound channel, with the status I would meet now', async t => {

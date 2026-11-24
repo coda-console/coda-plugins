@@ -1153,18 +1153,28 @@ test('a grant whose message could not be sent is a plain failure: the row rolls 
   assert.deepEqual(rows().map(row => badgeOf(page, row)), ['可用']);
 });
 
-test('a grant with no answer is never rolled back by lists that do not show it: it stays granting, its target stays taken, and no second grant is sent until the list shows it', async t => {
+test('a grant with no answer stays granting through the first lists that do not show it; after three such lists it rolls back with the reason, the target is selectable again, and the retry leaves the holder with one grant', async t => {
   const timers = stubTimers(t);
-  let listed = [];
-  const { page, log, detail, picker } = await openShare(t, { share: { 'grants.targets': () => TARGETS, 'grants.list': () => ({ grants: listed }), 'grants.grant': () => deferred().promise } });
-  page.button('授予…').fire('click');
-  await flush();
-  chooseTarget(page, picker, '车库的 Linux').fire('click');
-  await flush();
+  const held = [];
+  let listed = [], lost = true;
+  const { page, log, detail, picker } = await openShare(t, { share: { 'grants.targets': () => TARGETS, 'grants.list': () => ({ grants: [...held, ...listed] }),
+    'grants.grant': () => {
+      if (lost) return deferred().promise;
+      // 持有方对同一目标的授予幂等：已有就给回那一条。
+      if (!held.length) held.push(grantRow('g8', { target: { kind: GRANT_KIND, id: 'rx-3', name: '车库的 Linux' } }));
+      return held[0];
+    } } });
+  const choose = async () => {
+    page.button('授予…').fire('click');
+    await flush();
+    chooseTarget(page, picker, '车库的 Linux').fire('click');
+    await flush();
+  };
+  await choose();
   timers.fire(10_000);
   await flush();
   const rows = () => listRows(page, detail);
-  for (let round = 0; round < 6; round++) {
+  for (let round = 0; round < 2; round++) {
     timers.fire(3000);
     await flush();
   }
@@ -1176,10 +1186,45 @@ test('a grant with no answer is never rolled back by lists that do not show it: 
   assert.ok('disabled' in taken.attrs && taken.textContent.includes('已授给 TA'));
   taken.fire('click');
   await flush();
-  assert.equal(sentOf(log, 'grants.grant').length, 1, 'no second grant while the first has no outcome');
-  // 列表里出现它，才算授出。
-  listed = [grantRow('g8', { target: { kind: GRANT_KIND, id: 'rx-3', name: '车库的 Linux' } })];
+  assert.equal(sentOf(log, 'grants.grant').length, 1, 'no second grant while it may still land');
+  // 第三遍列表仍没有它：回滚，写明原因，不再轮询。
   timers.fire(3000);
+  await flush();
+  assert.deepEqual(rows().map(row => [badgeOf(page, row), row.textContent.includes('没有确认授予成功，请重试')]), [['未授予', true]]);
+  assert.ok(!timers.has(3000), 'polling stopped');
+  // 目标重新可选，重试发出；持有方那边只有一条。
+  page.button('授予…').fire('click');
+  await flush();
+  assert.ok(!('disabled' in chooseTarget(page, picker, '车库的 Linux').attrs), 'the target can be chosen again');
+  page.dispatch('keydown', { key: 'Escape' });
+  lost = false;
+  await choose();
+  assert.equal(sentOf(log, 'grants.grant').length, 2, 'the retry went out');
+  assert.deepEqual(rows().map(row => badgeOf(page, row)), ['可用']);
+  assert.deepEqual(held.map(row => row.grant), ['g8'], 'one grant on the holder');
+});
+
+test('a grant rolled back as not confirmed that did land afterwards: the next list shows it available only, the not-granted row is gone', async t => {
+  const timers = stubTimers(t);
+  let listed = [];
+  const { page, detail, picker } = await openShare(t, { share: { 'grants.targets': () => TARGETS, 'grants.list': () => ({ grants: listed }), 'grants.grant': () => deferred().promise } });
+  page.button('授予…').fire('click');
+  await flush();
+  chooseTarget(page, picker, '车库的 Linux').fire('click');
+  await flush();
+  timers.fire(10_000);
+  await flush();
+  const rows = () => listRows(page, detail);
+  for (let round = 0; round < 3; round++) {
+    timers.fire(3000);
+    await flush();
+  }
+  assert.deepEqual(rows().map(row => badgeOf(page, row)), ['未授予']);
+  listed = [grantRow('g8', { target: { kind: GRANT_KIND, id: 'rx-3', name: '车库的 Linux' } })];
+  // 回滚后不再轮询；再打开这位好友，读到列表。
+  page.dispatch('keydown', { key: 'Escape' });
+  await flush();
+  tiles(page)[0].fire('click');
   await flush();
   assert.deepEqual(rows().map(row => badgeOf(page, row)), ['可用']);
 });

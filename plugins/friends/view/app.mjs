@@ -19,6 +19,8 @@ const MACHINE_KIND = 'remote-exec/machine@1';
 const RECOVER_MS = 3000;
 // 结果不明的撤销：连续读到这么多遍有效列表、授权仍可用，就不再自动重发。
 const REVOKE_RETRIES = 3;
+// 结果不明的授予：连续读到这么多遍有效列表、里面都没有这条授权，就回滚这一行，允许重试（持有方对同一目标的授予幂等）。
+const GRANT_CONFIRMS = 3;
 const UPLOAD_ERRORS = { 404: '当前客户端还不支持上传头像，请升级 Coda 后再试', 413: '图片太大（超过 5 MiB），请换一张' };
 
 // 视图里的每台电脑（成员在页面生命周期内不变）各存一份数据；读不到的（unreachable）也在，只是不发请求。
@@ -655,7 +657,12 @@ async function readGrants(m, round = false) {
   } else {
     sh.grants = read.grants;
     // 授予：读到了就是授出了；读不到不算被拒，等这笔操作有确定的结果（回应晚到、或读到）。
-    sh.pending = sh.pending.filter(p => p.state !== 'granting' || !read.grants.some(g => g.friend === p.friend && g.target.id === p.target.id && g.revokedAt === undefined));
+    sh.pending = sh.pending.filter(p => (p.state !== 'granting' && !p.expired) || !read.grants.some(g => g.friend === p.friend && g.target.id === p.target.id && g.revokedAt === undefined));
+    // 结果不明的授予：列表连续读到上限遍都没有它，就当没授出，这一行回滚、目标重新可选。
+    for (const p of sh.pending) {
+      if (p.state !== 'granting' || !p.unknown || (p.misses = (p.misses ?? 0) + 1) < GRANT_CONFIRMS) continue;
+      Object.assign(p, { state: 'denied', reason: '没有确认授予成功，请重试', unknown: false, expired: true });
+    }
     // 结果不明的撤销：读到已撤或在撤销中就是核对完了，留下的是仍可用的，由恢复循环再发一次。
     for (const [grant, one] of sh.revoking) if (one.unknown && !read.grants.some(g => g.grant === grant && visibleGrant(g) && g.status !== 'revoking')) sh.revoking.delete(grant);
   }
