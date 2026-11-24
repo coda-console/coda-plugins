@@ -186,3 +186,16 @@ test('a refresh with hundreds of thousands of changes keeps only the last MAX_HI
   hub.applySnapshot(many.slice(1));
   assert.deepEqual([hub.seq, hub.oldestSeq], [300_001, 300_002 - MAX_HISTORY], 'a small change after it is appended and trimmed');
 });
+
+test('records under the reserved friends/rpc- prefix never reach a dm or feed projection, even when their body looks like one', () => {
+  const dm = { author: B, kind: 'friends/rpc-call', id: 'c1', version: 1, body: { to: A, text: '像私信', createdAt: 5 }, local: false };
+  const feed = { author: B, kind: 'friends/rpc-answer', id: 'a1', version: 1, body: { text: '像动态', createdAt: 5 }, local: false };
+  const own = { author: B, kind: 'friends/dm', id: 'm1', version: 1, body: { to: A, text: '真私信', createdAt: 6 }, local: false };
+  const post = { author: B, kind: 'friends/feed', id: 'p1', version: 1, body: { text: '真动态', createdAt: 6 }, local: false };
+  for (const kind of ['friends/rpc-call', 'friends/rpc-answer', 'friends/rpc-grant', 'friends/rpc-other']) {
+    assert.deepEqual(projectDmRecords([{ ...dm, kind }], { selfAuthor: A }), []);
+    assert.deepEqual(projectFeedRecords([{ ...feed, kind }]), []);
+  }
+  assert.deepEqual(projectDmRecords([dm, feed, own, post], { selfAuthor: A }).map(item => item.id), ['m1']);
+  assert.deepEqual(projectFeedRecords([dm, feed, post]).map(item => item.id), ['p1']);
+});

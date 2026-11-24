@@ -3,9 +3,10 @@
 // 发布、撤回、证书变化引起的冲洗互不交叉。
 import { CARD_KIND, PROFILE_ID, PROFILE_KIND, mergeFriendRows, normalizeCardInput, statusOf } from './friends.mjs';
 import { readNotes } from './notes.mjs';
-import { canSkip, canonicalHash, certStateOf, checkId, checkKind, checkPublish, entryKey, holdState, keyOf, retractKey, invalid, isPending, markRejected, markSynced,
+import { MAX_BODY_BYTES, canSkip, canonicalHash, certStateOf, checkId, checkKind, checkPublish, entryKey, holdState, keyOf, retractKey, invalid, isPending, markRejected, markSynced,
   nextSeq, queuePublish, queueRetract, readOutbox, withState, writeOutbox } from './outbox.mjs';
 import { readPolicy, setKindPaused } from './policy.mjs';
+import { RPC_KINDS, isAuthor, isRpcKind, senderField } from './rpc-format.mjs';
 import { DM_KIND, FEED_KIND, createStreamHub, frameOf, normalizeDmInput, normalizeFeedInput, projectDmRecords, projectFeedRecords, snapshotFrames, subjectOf } from './social-streams.mjs';
 
 const ACCORD = { kind: 'coda/accord@1', id: 'local' };
@@ -84,6 +85,12 @@ export function createGateway(coda, dir) {
   // 冲洗：能发的待发、待撤条目发出去；证书不对或 kind 暂停的只更新状态。
   async function flushNow() {
     const d = stateDir(), outbox = await readOutbox(d);
+    // 保留前缀 friends/rpc- 的条目一律不签、直接清掉（含升级前已经入队的）；这次冲洗的其余条目照常。
+    const reserved = Object.keys(outbox).filter(key => isRpcKind(outbox[key].kind));
+    if (reserved.length) {
+      for (const key of reserved) delete outbox[key];
+      await save(outbox);
+    }
     if (!Object.values(outbox).some(isPending)) return;
     const [{ author, certState }, { pausedKinds }] = await Promise.all([accordState(), readPolicy(d)]);
     let changed = false;
@@ -173,6 +180,7 @@ export function createGateway(coda, dir) {
 
   function records({ kind, author, id, limit, cursor, includeAudience }) {
     if (kind === 'binding') throw invalid('kind「binding」是保留类型，网关不读它');
+    if (isRpcKind(kind)) throw invalid(`kind「${kind}」是保留类型，网关不读它`);
     if (id !== undefined) checkId(id, { query: true });
     return coda.query(ACCORD, 'records', { kind, ...(author === undefined ? {} : { author }), ...(id === undefined ? {} : { id }),
       ...(limit === undefined ? {} : { limit }), ...(cursor === undefined ? {} : { cursor }), ...(includeAudience === undefined ? {} : { includeAudience }) });
@@ -356,6 +364,27 @@ export function createGateway(coda, dir) {
     return { author, certState, pausedKinds, pendingCount: Object.values(entries).filter(isPending).length, items };
   }
 
+  // ---- 内部签名入口 ----
+  // 只给好友插件自己的持有方、调用方用，不登记成 friends/social@1 的操作、也不经 coda self：签 friends/rpc-grant、rpc-call、rpc-answer。
+  // 受众必须是单人；发送方取自正文（grant、answer 是 holder，call 是 caller），先与本机此刻的作者核对，不符当场失败；符合就把它作为
+  // expectAuthor 传给 coda/accord@1.publish，实际署名的作者不符 Accord 拒签；不进待发队列；
+  // 证书不是 active（没有身份、已过期、未生效）当场失败，什么也不发。
+  async function signRpc({ kind, id, body, audience } = {}) {
+    live();
+    if (!RPC_KINDS.includes(kind)) throw invalid(`只能签 ${RPC_KINDS.join('、')}`);
+    checkId(id);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) throw invalid('body 须是对象');
+    if (Buffer.byteLength(JSON.stringify(body)) > MAX_BODY_BYTES) throw invalid(`body 最多 ${MAX_BODY_BYTES} 字节`);
+    if (!Array.isArray(audience) || audience.length !== 1 || !isAuthor(audience[0])) throw invalid('audience 须恰好是一位好友的公钥');
+    const sender = body[senderField(kind)];
+    if (!isAuthor(sender)) throw invalid(`body.${senderField(kind)} 须写明发送方的公钥`);
+    const { author, certState } = await accordState();
+    live();
+    if (certState !== 'active' || !author) throw coda.error('invalid_state', '本机没有可用的签名证书，好友调用的记录没有发出', { effects: 'none' });
+    if (author !== sender) throw coda.error('invalid_state', '本机此刻署名的作者不是这条记录写的发送方，好友调用的记录没有发出', { effects: 'none' });
+    return coda.call(ACCORD, 'publish', { kind, id, body, audience, expectAuthor: sender });
+  }
+
   // ---- 实时流 dm、feed ----
   // 每条流一个 hub（内存里的投影与变化环缓冲）和它的订阅者；有订阅者、或新流连入时才翻页读 Accord，读全了才比对出增量推给订阅者，
   // 读不全（截断、查询失败）不动 hub，留着上一份完整的投影。`ready`：hub 里已有过一份完整的投影。
@@ -473,6 +502,8 @@ export function createGateway(coda, dir) {
         });
       },
     },
+    // 内部签名入口，见上；不对外登记。
+    signRpc,
     // 实时流此刻的订阅者数，`{ dm, feed }`。
     subscriberCount: () => ({ dm: hubs.dm.subs.size, feed: hubs.feed.subs.size }),
     async start() {

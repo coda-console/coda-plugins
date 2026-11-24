@@ -3,8 +3,9 @@
 // 同步成功就释放 body，只留去重用的轻量元数据；撤回完成就删掉条目。
 import { createHash } from 'node:crypto';
 import { readJson, writeJson } from './json-file.mjs';
+import { isRpcKind } from './rpc-format.mjs';
 
-/** 网关不替业务发布、撤回的类型：好友关系、名片等 Accord 自己的记录。 */
+/** 网关不替业务发布、撤回的类型：好友关系、名片等 Accord 自己的记录；另有整个 `friends/rpc-` 前缀（按前缀判，见 `isRpcKind`），只有网关的内部入口能签。 */
 export const RESERVED_KINDS = new Set(['binding', 'profile', 'friends', 'coda/profile', 'coda/friends']);
 export const MAX_ID_CHARS = 200, MAX_ID_BYTES = 256, MAX_BODY_BYTES = 65536, MAX_AUDIENCE = 500;
 const KIND = /^[a-z][a-z0-9-]{0,63}(?:\/[a-z][a-z0-9-]{0,63})?$/;
@@ -17,12 +18,12 @@ const isPlain = value => {
   return proto === Object.prototype || proto === null;
 };
 
-export const validKind = kind => typeof kind === 'string' && KIND.test(kind) && !RESERVED_KINDS.has(kind);
+export const validKind = kind => typeof kind === 'string' && KIND.test(kind) && !RESERVED_KINDS.has(kind) && !isRpcKind(kind);
 
 /** kind 须符合 Accord 的格式，且不是保留类型。 */
 export function checkKind(kind) {
   if (typeof kind !== 'string' || !KIND.test(kind)) throw invalid('kind 须是小写字母开头的 name 或 ns/name（只含小写字母、数字、连字符，各段最长 64 位）');
-  if (RESERVED_KINDS.has(kind)) throw invalid(`kind「${kind}」是保留类型，网关不发布也不撤回它`);
+  if (RESERVED_KINDS.has(kind) || isRpcKind(kind)) throw invalid(`kind「${kind}」是保留类型，网关不发布也不撤回它`);
   return kind;
 }
 

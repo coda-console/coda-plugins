@@ -1,6 +1,7 @@
 // 私信 friends/dm 与好友动态 friends/feed 的纯逻辑：发布入参的清洗、Accord 记录的投影，以及实时流的变更集与游标。不碰 Coda，也不碰磁盘。
 // 记录照旧由 coda/accord@1 签名与保存；这里只把一页页读回来的记录投影成规范项，并在内存里比对前后两份投影，算出增量帧。
 import { normalizeContentPointer, readContentPointer } from './friends.mjs';
+import { isRpcKind } from './rpc-format.mjs';
 
 export const DM_KIND = 'friends/dm', FEED_KIND = 'friends/feed';
 export const MAX_TEXT = 8000, MAX_MEDIA = 4, MAX_HISTORY = 500;
@@ -86,10 +87,11 @@ export function normalizeFeedInput(input, { existingCreatedAt, now = Date.now() 
 // ---- 记录投影 ----
 
 // 每个 (author, id) 只留 version 最大的一条：最新的是撤回（空 body）或畸形，整条就算没了，不回落到旧版本。
+// 落在保留前缀 friends/rpc- 下的记录一律丢掉：这两条流只投影自己的种类，这是再加的一道防线。
 function latest(records) {
   const top = new Map();
   for (const record of records ?? []) {
-    if (!isPlain(record) || typeof record.author !== 'string' || typeof record.id !== 'string') continue;
+    if (!isPlain(record) || typeof record.author !== 'string' || typeof record.id !== 'string' || isRpcKind(record.kind)) continue;
     const key = JSON.stringify([record.author, record.id]), version = Number.isSafeInteger(record.version) ? record.version : 0;
     if (!top.has(key) || version > top.get(key).version) top.set(key, { record, version });
   }
