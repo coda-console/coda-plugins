@@ -1,7 +1,7 @@
 // Token 消耗榜页面：用量概览，和好友的消耗榜。数据都由模块（main.mjs）读好、算好，经页面消息送来；页面不直接读记录。
 // 视图里有几台机器就都读，按人合并（lib/merge.mjs）：时间范围由页首选，机器范围由 App 的全局视图定，页面不自己选机器。
 // 每一轮读取由页面按这台设备的当地时间定一组 from、to 发给每台：各台时区不同时，窗口也是同一段时间。
-// 名片头像、模型名等外来文字只经 textContent / 文本节点渲染，从不拼进 innerHTML。
+// 模型名等外来文字只经 textContent / 文本节点渲染，从不拼进 innerHTML。
 import { mergeBoards } from '../lib/merge.mjs';
 import { rangeWindow } from '../lib/usage.mjs';
 
@@ -9,10 +9,6 @@ const coda = window.coda;
 const root = document.getElementById('root');
 const RANGES = [{ id: 'today', label: '今天' }, { id: '7d', label: '近 7 天' }, { id: '30d', label: '近 30 天' }];
 const PARTS = [['input', '输入'], ['output', '输出'], ['cacheRead', '缓存读'], ['cacheWrite', '缓存写']];
-const SAFE_COLOR = /^#[0-9a-fA-F]{6}$/;
-// 好友插件的命名主题色，换成固定色值再用；#RRGGBB 原样用，其他一律不用。
-const NAMED_COLORS = { blue: '#3b82f6', orange: '#f97316', green: '#22c55e', purple: '#a855f7', pink: '#ec4899', teal: '#14b8a6', gray: '#6b7280' };
-const colorOf = value => (Object.hasOwn(NAMED_COLORS, value) ? NAMED_COLORS[value] : SAFE_COLOR.test(value ?? '') ? value : null);
 
 const saved = coda.getState?.() ?? {};
 let range = RANGES.find(r => r.id === saved?.range)?.id ?? null;
@@ -254,21 +250,17 @@ function leaderboard() {
       !merged.friends ? h('p', { class: 'empty' }, '还没有好友。添加好友后，这里会显示你们分享的用量。') : null,
       h('ul', { class: 'list' }, merged.entries.map(entry)),
       others.length && !others.some(e => e.shared) ? h('p', { class: 'hint' }, '好友们还没有分享用量。') : null,
-      merged.truncated.friends ? h('p', { class: 'note' }, '好友的记录太多，只取到了其中一部分，榜单可能不全。') : null,
-      merged.truncated.profiles ? h('p', { class: 'note' }, '好友名片太多，只取到了其中一部分，有些人可能显示默认头像。') : null];
+      merged.truncated.friends ? h('p', { class: 'note' }, '好友的记录太多，只取到了其中一部分，榜单可能不全。') : null];
   }
   return h('section', {}, h('h2', {}, '熟人榜', h('span', { class: 'secondary' }, rangeLabel()), partial()), content);
 }
 
 function entry(e) {
   const open = expanded.has(e.author);
-  const avatar = h('span', { class: 'avatar' }, e.emoji ?? '👤');
-  const color = colorOf(e.color);
-  if (color) avatar.style.background = `color-mix(in srgb, ${color} 28%, transparent)`;
   const sub = !e.shared ? '还没有分享' : e.totalTokens || e.turns ? `${tokens(e.input)} 入 · ${tokens(e.output)} 出 · 缓存 ${tokens(e.cacheRead + e.cacheWrite)} · ${count(e.turns)} 回合` : `${rangeLabel()}没有用量`;
   return h('li', { class: 'row' },
     h('button', { class: 'head', 'aria-expanded': open ? 'true' : 'false', onclick: () => { if (open) expanded.delete(e.author); else expanded.add(e.author); render(); } },
-      h('span', { class: 'rank num' }, String(e.rank)), avatar,
+      h('span', { class: 'rank num' }, String(e.rank)), h('span', { class: 'avatar' }, '👤'),
       h('span', { class: 'who' }, h('span', { class: 'line' }, h('span', { class: 'strong truncate' }, e.displayId), e.self ? h('span', { class: 'me' }, '我') : null), h('span', { class: 'secondary truncate' }, sub)),
       h('span', { class: 'amount' }, h('span', { class: 'strong num' }, tokens(e.totalTokens)))),
     open ? h('div', { class: 'detail' }, e.models.length

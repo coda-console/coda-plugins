@@ -1,7 +1,7 @@
 // Token 消耗榜的纯逻辑：把 Coda 的用量桶（coda/usage@1 的 buckets）拉全、按 UTC 日打成可分享的汇总、再和好友发来的汇总
 // 合成排行榜。不碰 coda 对象，也不读时钟，便于单测。
 //
-// 外来数据（好友的 Accord 记录与名片）一律当不可信：数字夹到安全整数、字符串去控制字符并截断，只当展示数据用。
+// 外来数据（好友的 Accord 记录）一律当不可信：数字夹到安全整数、字符串去控制字符并截断，只当展示数据用。
 
 export const BUCKET_MS = 600_000;           // 用量桶宽：UTC 十分钟
 export const DAY_MS = 86_400_000;
@@ -11,7 +11,6 @@ export const USAGE_RECORD_KIND = 'coda/token-usage';   // 0.1.0 的每日记录�
 export const DAY_ARCHIVE_KIND = 'coda/token-day';       // 月块日归档（UTC 日）
 export const TODAY_CURVE_KIND = 'coda/token-today';     // 48 小时滚动曲线（30 分钟槽位）
 export const SLOT_MS = 1_800_000;
-export const PROFILE_RECORD_KIND = 'profile';
 export const FIELDS = ['input', 'output', 'cacheRead', 'cacheWrite', 'turns', 'reportedTurns'];
 
 const BUCKET_KEY = b => JSON.stringify([b.start, b.agent, b.model]);
@@ -221,26 +220,14 @@ export function ownedBySource(kind, id, sourceId) {
   return id === sourceId;
 }
 
-// ——— 名片 ———
+// ——— 文本清洗 ———
 
 const CONTROL = /[\p{Cc}\u{2028}\u{2029}\u{061C}\u{200E}\u{200F}\u{202A}-\u{202E}\u{2066}-\u{2069}]/gu;
-const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
-// 好友插件（@coda-console/friends）发布的命名主题色。
-export const NAMED_COLORS = ['blue', 'orange', 'green', 'purple', 'pink', 'teal', 'gray'];
 export function cleanText(value, max) {
   if (typeof value !== 'string') return null;
   const text = value.replace(CONTROL, ' ').replace(/\s+/g, ' ').trim();
   const chars = Array.from(text);
   return chars.length ? chars.slice(0, max).join('').trim() || null : null;
-}
-/** 好友名片的头像样式：emoji ≤ 8 字，颜色只认命名色板（blue、orange…）和 #RRGGBB。 */
-export function sanitizeProfile(record) {
-  const body = record && typeof record === 'object' && record.body && typeof record.body === 'object' ? record.body : {};
-  return { emoji: cleanText(body.emoji, 8), color: cleanColor(body.color) };
-}
-function cleanColor(value) {
-  const raw = typeof value === 'string' ? value.trim() : '';
-  return HEX_COLOR.test(raw) || NAMED_COLORS.includes(raw) ? raw.toLowerCase() : null;
 }
 /** `ed25519:` 后的前 8 位，用于无法映射出 Accord ID 的作者。 */
 export function shortAuthor(author) {
@@ -398,15 +385,14 @@ function remoteRows({ days, today }, from, to) {
  * - 好友（和自己的其他设备）按 `author` + `sourceId` 汇总：`dayRecords`（coda/token-day）与 `todayRecords`（coda/token-today）按窗口拼接，
  *   同一 (author, id) 只取版本最新的一条；某台机器有任何新版记录，就不再读它旧版的 `legacyUsageRecords`（coda/token-usage），只有旧版好友才回退读旧记录。
  * - `person` 只切本机桶：远端记录里没有人的标签。
- * - 只认 `selfAuthor` 和 `friends` 里出现过的作者。头像与颜色优先取作者最新的 `profileRecords`，缺项时用好友行对应的字段。
+ * - 只认 `selfAuthor` 和 `friends` 里出现过的作者。
  * 按总 Token 降序，平局按回合数降序、再按 author 升序。
  * `sources` 是每个 (author, sourceId) 的合计 `{ author, sourceId, local, ...合计与分模型 }`：`local` 是这台自己的本机数据；`todayVersion` 是这个来源当天曲线记录（coda/token-today）的版本，没有这条记录就没有这个字段。
  * `localBuckets` 为 null 表示本机用量没读到：不交出本机来源。多台机器读到同一批记录时，页面按它去重（见 merge.mjs）。
  */
-export function aggregateLeaderboard({ selfAuthor, selfSourceId, excludedSourceIds = [], localBuckets = [], legacyUsageRecords = [], dayRecords = [], todayRecords = [], profileRecords = [], friends = [], from, to, person }) {
-  const friendRows = new Map();
-  for (const friend of friends) if (typeof friend?.author === 'string' && friend.author && !friendRows.has(friend.author)) friendRows.set(friend.author, friend);
-  const known = new Set([...friendRows.keys(), ...(selfAuthor ? [selfAuthor] : [])]);
+export function aggregateLeaderboard({ selfAuthor, selfSourceId, excludedSourceIds = [], localBuckets = [], legacyUsageRecords = [], dayRecords = [], todayRecords = [], friends = [], from, to, person }) {
+  const known = new Set(friends.map(friend => friend?.author).filter(author => typeof author === 'string' && author));
+  if (selfAuthor) known.add(selfAuthor);
   // 本机用量没读到（localBuckets 为 null）时，没有本机数据可以优先：自己发布过的副本照常算，也不交出本机来源。
   const excluded = new Set(localBuckets ? [selfSourceId, ...excludedSourceIds] : excludedSourceIds);
 
@@ -451,20 +437,7 @@ export function aggregateLeaderboard({ selfAuthor, selfSourceId, excludedSourceI
     breakdown.push({ author: target.author, sourceId: target.sourceId, local: false, ...(target.todayVersion === null ? {} : { todayVersion: target.todayVersion }), ...tally.result() });
   }
 
-  const profiles = new Map();
-  for (const record of profileRecords) {
-    if (!record || record.kind !== PROFILE_RECORD_KIND || !known.has(record.author)) continue;
-    if (!profiles.has(record.author) || record.version > profiles.get(record.author).version) profiles.set(record.author, record);
-  }
-
-  const entries = [...tallies].map(([author, tally]) => {
-    const profile = sanitizeProfile(profiles.get(author));
-    const friend = friendRows.get(author);
-    const emoji = profile.emoji ?? cleanText(friend?.emoji, 8);
-    const color = profile.color ?? cleanColor(friend?.color);
-    return { author, self: author === selfAuthor, shared: author === selfAuthor || shared.has(author),
-      emoji, color, ...tally.result() };
-  }).sort(compareEntries);
+  const entries = [...tallies].map(([author, tally]) => ({ author, self: author === selfAuthor, shared: author === selfAuthor || shared.has(author), ...tally.result() })).sort(compareEntries);
   entries.forEach((entry, index) => { entry.rank = index + 1; });
   return { from, to, entries, sources: breakdown };
 }

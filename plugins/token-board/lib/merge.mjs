@@ -6,7 +6,7 @@
 //    各台读到的可直接比，不受归档分块变化影响；不比合计，因为旧曲线盖不满查询窗口时后端改用整日归档，把窗口外的用量也算进来，旧副本的合计反而更大；
 // 2. todayVersion 相同，或两份都没有曲线记录（只有旧版记录的来源）：比 Token 合计大的，再比回合数。
 // 已知边界：好友撤回记录后，还没同步到的那台会让旧数多显示一会儿，不处理。
-// 某台已弃用的旧来源 ID（回包的 retired，不受本机用量读没读到影响）在同一作者下统一不要；再按作者汇总，排序沿用 aggregateLeaderboard。头像与颜色取回包里的 people。
+// 某台已弃用的旧来源 ID（回包的 retired，不受本机用量读没读到影响）在同一作者下统一不要；再按作者汇总，排序沿用 aggregateLeaderboard。
 
 import { Tally, compareEntries, shortAuthor } from './usage.mjs';
 
@@ -72,7 +72,7 @@ export function mergeBoards(members) {
 
   const people = new Map();
   const person = author => {
-    if (!people.has(author)) people.set(author, { author, self: false, shared: false, emoji: null, color: null, tally: new Tally() });
+    if (!people.has(author)) people.set(author, { author, self: false, shared: false, tally: new Tally() });
     return people.get(author);
   };
   for (const { board } of boards) {
@@ -80,7 +80,6 @@ export function mergeBoards(members) {
       const one = person(entry.author);
       one.self ||= entry.self === true;
       one.shared ||= entry.shared === true;
-      for (const field of ['emoji', 'color']) one[field] ??= entry[field] ?? null;
     }
   }
   for (const source of chosen.values()) addModels(person(source.author).tally, source);
@@ -114,6 +113,6 @@ export function mergeBoards(members) {
     accord: boards.some(({ board }) => board.accord),
     noAccord: boards.filter(({ board }) => !board.accord).map(({ machine }) => machine),
     errors: boards.flatMap(({ machine, board }) => (board.errors ?? []).map(text => ({ machine, text }))),
-    truncated: { friends: boards.some(({ board }) => board.truncated?.friends), profiles: boards.some(({ board }) => board.truncated?.profiles) },
+    truncated: { friends: boards.some(({ board }) => board.truncated?.friends) },
   };
 }
