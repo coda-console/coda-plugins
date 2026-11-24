@@ -5,6 +5,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createAuditLog, AUDIT_FILE } from '../../../plugins/remote-exec/lib/audit.mjs';
+import { outputRoot } from '../../../plugins/remote-exec/lib/output.mjs';
 
 export const SECRET = 'plugin-token-for-test';
 export const caller = { machine: 'm-1', plugin: 'other', parent: { kind: 'coda/thread@1', id: 't-1' }, future: 1 };
@@ -59,7 +60,7 @@ export function operations(raw) {
 // 处理函数的环境与记录：`lines()` 是合成后的每次操作（见 `operations`），`raw()` 是原始行。
 export function setup(t, { enabled = true } = {}) {
   const state = scratch(t), gate = { enabled };
-  const env = { coda, enabled: () => gate.enabled, audit: createAuditLog(state) };
+  const env = { coda, enabled: () => gate.enabled, audit: createAuditLog(state), outputRoot: () => outputRoot(state) };
   const raw = () => rawLines(join(state, AUDIT_FILE));
   return { env, state, lines: () => operations(raw()), raw, set: value => { gate.enabled = value; } };
 }

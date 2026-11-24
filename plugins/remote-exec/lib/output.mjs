@@ -1,8 +1,8 @@
 // 输出截短：输出边收边写进目标机的临时目录（每路至多 `DISK_CAP` 字节），内存里只留头和尾。结束时总量没超就删掉临时文件、原样给出；
 // 超了就保留头尾，中间插一行注明省略了多少字节和完整输出的路径（落盘也截断了的，注明只存了前多少字节），临时文件留着（用拉取取回）。
+// 输出都在这个插件实例私有的根目录下（插件状态目录里的 `outputs/`，见 `outputRoot`），创建与回收只在这个根下做。
 // 留下的输出目录由 `sweepOutputs` 回收：超过 `KEEP_MS` 的删掉，总量超过 `KEEP_TOTAL` 时从最旧的删起。
-import { lstat, mkdtemp, open, readdir, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { chmod, lstat, mkdir, mkdtemp, open, readdir, realpath, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
 // stdout 与 stderr 在结果里合计约 48 KiB：各留头 12 KiB、尾 12 KiB。
@@ -14,6 +14,20 @@ export const DISK_CAP = 16 * 1024 * 1024;
 export const KEEP_MS = 24 * 60 * 60 * 1000;
 export const KEEP_TOTAL = 256 * 1024 * 1024;
 export const PREFIX = 'coda-remote-exec-';
+export const OUTPUTS = 'outputs';
+
+// 这个插件实例放输出的根目录：`<状态目录的真实路径>/outputs`，建成 0700；它必须是真的目录（是符号链接或别的东西就抛），不跟着链接走。
+// 状态目录按后端实例分开、只有本人可进，所以两个后端实例各回收各的。回根的真实路径。
+export async function outputRoot(state) {
+  if (!state) throw new Error('没有插件状态目录，执行的输出无处可放');
+  await mkdir(state, { recursive: true });   // 同操作记录：状态目录不在就建
+  const root = join(await realpath(state), OUTPUTS);
+  try { await mkdir(root, { mode: 0o700 }); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+  const info = await lstat(root);
+  if (!info.isDirectory()) throw new Error(`${root} 不是目录（可能是符号链接），不放输出`);
+  if ((info.mode & 0o777) !== 0o700) await chmod(root, 0o700);
+  return root;
+}
 
 // 不把一个 UTF-8 字符切成两半：头去掉末尾不完整的字符，尾去掉开头残缺的字符（输出本身不合 UTF-8 时只退让至多三个字节）。
 function completeHead(bytes) {
@@ -73,11 +87,11 @@ async function collector(file, cap = DISK_CAP) {
   };
 }
 
-// 一次执行的两路输出，临时文件（stdout、stderr）在 `root`（默认系统临时目录）下这次新建的私有目录里：
+// 一次执行的两路输出，临时文件（stdout、stderr）在 `root`（`outputRoot` 给的根）下这次新建的私有目录里：
 // 目录名带调用编号再加随机串，原子创建、权限 0700，所以不会碰到别人预先放好的路径；清理只删这个目录。
 // `finish()` 回 { stdout, stderr, truncated, outputDir }：两路都没截短时整个目录删掉，`outputDir` 是 null；
 // 有一路截短，目录与里面两个文件都留着。`discard()` 不要这份输出了，整个目录删掉。
-export async function openOutputs(id, root = tmpdir(), { cap = DISK_CAP } = {}) {
+export async function openOutputs(id, root, { cap = DISK_CAP } = {}) {
   const dir = await mkdtemp(join(root, `${PREFIX}${String(id).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 40)}-`));
   let stdout, stderr;
   try {
@@ -103,12 +117,12 @@ export async function openOutputs(id, root = tmpdir(), { cap = DISK_CAP } = {}) 
   };
 }
 
-// 回收留下的输出目录：只看 `root` 下本插件建的（名字以 `PREFIX` 开头、是目录不是链接、属于后端所在用户）、不在 `active` 里的（正在用的）。
+// 回收留下的输出目录：只看 `root`（`outputRoot` 给的根）下本插件建的（名字以 `PREFIX` 开头、是目录不是链接、属于后端所在用户）、不在 `active` 里的（正在用的）。
 // 修改时间早于 `now - keepMs` 的删掉；剩下的合计超过 `keepTotal` 字节时，从最旧的删起。删不掉的跳过，写一行标准错误。
 // 回删掉的目录。
-export async function sweepOutputs(root = tmpdir(), { now = Date.now(), keepMs = KEEP_MS, keepTotal = KEEP_TOTAL, active = new Set(), warn = console.error } = {}) {
+export async function sweepOutputs(root, { now = Date.now(), keepMs = KEEP_MS, keepTotal = KEEP_TOTAL, active = new Set(), warn = console.error } = {}) {
   let names;
-  try { names = await readdir(root); } catch (error) { warn(`远程执行：读不了临时目录 ${root}：${error.message}`); return []; }
+  try { names = await readdir(root); } catch (error) { warn(`远程执行：读不了输出目录 ${root}：${error.message}`); return []; }
   const uid = process.getuid?.();
   const kept = [];
   for (const name of names) {
