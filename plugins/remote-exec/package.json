@@ -4,7 +4,7 @@
   "displayName": "远程执行",
   "description": "让空间里别的机器上的 Agent 在这台机器上执行命令、拉取和推送文件",
   "icon": { "symbol": "terminal", "color": "blue" },
-  "version": "0.1.0",
+  "version": "0.1.1",
   "coda": { "channels": ["preview"] },
   "categories": ["机器与资源"],
   "type": "module",
@@ -70,7 +70,7 @@
         "resource": { "columns": ["name", "os", "user", "cwd"], "symbol": "terminal" },
         "operations": {
           "exec": {
-            "description": "在目标机上用 /bin/sh -c 执行一条命令，以目标机后端所在的系统用户运行，等它结束后返回退出码、stdout 和 stderr。cwd 不给时在这台机器的默认目录运行；stdin 给了就一次写入后关闭，不给就是空输入。时限 timeout 以秒计，默认 120，最长 600；超时会结束整个进程组并返回 timedOut: true。stdout 与 stderr 各最多保留约 24 KiB（开头和结尾各一半，中间注明省略了多少字节），超出时 truncated 为 true，完整输出留在目标机上，outputDir 是它的目录，里面有 stdout、stderr 两个文件，用 pull 取回。命令被信号结束时 exitCode 为 null，signal 是信号名。请求和回答各自编码后都不能超过 1 MiB，大的内容用 pull、push 传。需要长时间运行的任务，放到后台再回来查。",
+            "description": "在目标机上用 /bin/sh -c 执行一条命令，以目标机后端所在的系统用户运行，等它结束后返回退出码、stdout 和 stderr。cwd 不给时在这台机器的默认目录运行；stdin 给了就一次写入后关闭，不给就是空输入。时限 timeout 以秒计，默认 120，最长 600；超时会结束整个进程组并返回 timedOut: true。stdout 与 stderr 各最多保留约 24 KiB（开头和结尾各一半，中间注明省略了多少字节），超出时 truncated 为 true，完整输出留在目标机上（每路至多存 16 MiB，至多保留 24 小时），outputDir 是它的目录，里面有 stdout、stderr 两个文件，用 pull 取回。命令的环境不继承后端，只有 PATH、HOME、USER、LOGNAME、SHELL、LANG、LC_*、TMPDIR、TZ。同时至多 8 个执行，超出的以 too_many_running 拒绝。命令被信号结束时 exitCode 为 null，signal 是信号名。请求和回答各自编码后都不能超过 1 MiB，大的内容用 pull、push 传。需要长时间运行的任务，放到后台再回来查。",
             "input": {
               "type": "object",
               "properties": {
@@ -116,7 +116,7 @@
             }
           },
           "push": {
-            "description": "把本地的一个文件整份写到目标机的 path，已有的同名文件被替换，目录不存在时先建。请求体就是文件的全部字节；回答是 JSON，写入的路径 path 与字节数 size。重复推送结果相同。",
+            "description": "把本地的一个文件整份写到目标机的 path，已有的同名文件被替换，目录不存在时先建；文件至多 1 GiB，超出的以 too_large 拒绝。请求体就是文件的全部字节；回答是 JSON，写入的路径 path 与字节数 size。重复推送结果相同。",
             "shape": "write",
             "input": {
               "type": "object",

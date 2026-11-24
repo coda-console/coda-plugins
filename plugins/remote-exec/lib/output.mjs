@@ -1,12 +1,19 @@
-// 输出截短：输出边收边完整写进目标机的临时目录，内存里只留头和尾。结束时总量没超就删掉临时文件、原样给出；
-// 超了就保留头尾，中间插一行注明省略了多少字节和完整输出的路径，临时文件留着（用拉取取回）。
-import { mkdtemp, open, rm } from 'node:fs/promises';
+// 输出截短：输出边收边写进目标机的临时目录（每路至多 `DISK_CAP` 字节），内存里只留头和尾。结束时总量没超就删掉临时文件、原样给出；
+// 超了就保留头尾，中间插一行注明省略了多少字节和完整输出的路径（落盘也截断了的，注明只存了前多少字节），临时文件留着（用拉取取回）。
+// 留下的输出目录由 `sweepOutputs` 回收：超过 `KEEP_MS` 的删掉，总量超过 `KEEP_TOTAL` 时从最旧的删起。
+import { lstat, mkdtemp, open, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 // stdout 与 stderr 在结果里合计约 48 KiB：各留头 12 KiB、尾 12 KiB。
 export const HEAD = 12 * 1024;
 export const TAIL = 12 * 1024;
+// 每路输出落盘的上限：超过后不再写，只继续数字节、留尾。
+export const DISK_CAP = 16 * 1024 * 1024;
+// 留下的输出目录：保留 24 小时；所有留下的合计超过 256 MiB 时，从最旧的删起。
+export const KEEP_MS = 24 * 60 * 60 * 1000;
+export const KEEP_TOTAL = 256 * 1024 * 1024;
+export const PREFIX = 'coda-remote-exec-';
 
 // 不把一个 UTF-8 字符切成两半：头去掉末尾不完整的字符，尾去掉开头残缺的字符（输出本身不合 UTF-8 时只退让至多三个字节）。
 function completeHead(bytes) {
@@ -35,19 +42,21 @@ export async function writeAll(handle, chunk) {
 
 // 一路输出的收集器，完整内容写进 `file`（独占创建，已有同名的就失败）。`write(chunk)` 回的 promise 在这块写进文件后 resolve，调用方 await 它就有回压；
 // `finish()` 回 { text, truncated, bytes }。
-async function collector(file) {
+async function collector(file, cap = DISK_CAP) {
   const handle = await open(file, 'wx', 0o600);
-  let head = Buffer.alloc(0), tail = Buffer.alloc(0), total = 0, queue = Promise.resolve();
+  let head = Buffer.alloc(0), tail = Buffer.alloc(0), total = 0, stored = 0, queue = Promise.resolve();
   return {
     write(chunk) {
       total += chunk.length;
+      const toDisk = chunk.subarray(0, Math.max(0, Math.min(chunk.length, cap - stored)));
+      stored += toDisk.length;
       const toHead = Math.min(chunk.length, HEAD - head.length);
       if (toHead > 0) head = Buffer.concat([head, chunk.subarray(0, toHead)]);
       if (chunk.length > toHead) {
         tail = Buffer.concat([tail, chunk.subarray(toHead)]);
         if (tail.length > TAIL) tail = tail.subarray(tail.length - TAIL);
       }
-      queue = queue.then(() => writeAll(handle, chunk));
+      if (toDisk.length) queue = queue.then(() => writeAll(handle, toDisk));
       queue.catch(() => {});
       return queue;
     },
@@ -58,7 +67,8 @@ async function collector(file) {
       }
       const start = completeHead(head), end = completeTail(tail);
       const omitted = total - start.length - end.length;
-      return { text: `${start.toString()}\n[… 省略了 ${omitted} 字节，完整输出在 ${file} …]\n${end.toString()}`, truncated: true, bytes: total };
+      const where = stored < total ? `落盘也截断了：${file} 只存了前 ${stored} 字节（共 ${total} 字节）` : `完整输出在 ${file}`;
+      return { text: `${start.toString()}\n[… 省略了 ${omitted} 字节，${where}，至多保留 24 小时 …]\n${end.toString()}`, truncated: true, bytes: total };
     },
   };
 }
@@ -67,18 +77,18 @@ async function collector(file) {
 // 目录名带调用编号再加随机串，原子创建、权限 0700，所以不会碰到别人预先放好的路径；清理只删这个目录。
 // `finish()` 回 { stdout, stderr, truncated, outputDir }：两路都没截短时整个目录删掉，`outputDir` 是 null；
 // 有一路截短，目录与里面两个文件都留着。`discard()` 不要这份输出了，整个目录删掉。
-export async function openOutputs(id, root = tmpdir()) {
-  const dir = await mkdtemp(join(root, `coda-remote-exec-${String(id).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 40)}-`));
+export async function openOutputs(id, root = tmpdir(), { cap = DISK_CAP } = {}) {
+  const dir = await mkdtemp(join(root, `${PREFIX}${String(id).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 40)}-`));
   let stdout, stderr;
   try {
-    stdout = await collector(join(dir, 'stdout')); stderr = await collector(join(dir, 'stderr'));
+    stdout = await collector(join(dir, 'stdout'), cap); stderr = await collector(join(dir, 'stderr'), cap);
   } catch (error) {
     await stdout?.finish().catch(() => {});
     await rm(dir, { recursive: true, force: true });
     throw error;
   }
   return {
-    stdout, stderr,
+    dir, stdout, stderr,
     async finish() {
       const [out, err] = await Promise.all([stdout.finish(), stderr.finish()]);
       const truncated = out.truncated || err.truncated;
@@ -91,4 +101,37 @@ export async function openOutputs(id, root = tmpdir()) {
       await rm(dir, { recursive: true, force: true });
     },
   };
+}
+
+// 回收留下的输出目录：只看 `root` 下本插件建的（名字以 `PREFIX` 开头、是目录不是链接、属于后端所在用户）、不在 `active` 里的（正在用的）。
+// 修改时间早于 `now - keepMs` 的删掉；剩下的合计超过 `keepTotal` 字节时，从最旧的删起。删不掉的跳过，写一行标准错误。
+// 回删掉的目录。
+export async function sweepOutputs(root = tmpdir(), { now = Date.now(), keepMs = KEEP_MS, keepTotal = KEEP_TOTAL, active = new Set(), warn = console.error } = {}) {
+  let names;
+  try { names = await readdir(root); } catch (error) { warn(`远程执行：读不了临时目录 ${root}：${error.message}`); return []; }
+  const uid = process.getuid?.();
+  const kept = [];
+  for (const name of names) {
+    if (!name.startsWith(PREFIX)) continue;
+    const dir = join(root, name);
+    if (active.has(dir)) continue;
+    let info;
+    try { info = await lstat(dir); } catch { continue; }
+    if (!info.isDirectory() || (uid !== undefined && info.uid !== uid)) continue;
+    let size = 0;
+    for (const file of ['stdout', 'stderr']) {
+      try { const one = await lstat(join(dir, file)); if (one.isFile()) size += one.size; } catch { /* 没有就是 0 */ }
+    }
+    kept.push({ dir, mtime: info.mtimeMs, size });
+  }
+  kept.sort((a, b) => a.mtime - b.mtime);
+  let total = kept.reduce((sum, one) => sum + one.size, 0);
+  const removed = [];
+  for (const one of kept) {
+    if (now - one.mtime <= keepMs && total <= keepTotal) continue;
+    try { await rm(one.dir, { recursive: true, force: true }); removed.push(one.dir); total -= one.size; } catch (error) {
+      warn(`远程执行：删不掉留下的输出目录 ${one.dir}：${error.message}`);
+    }
+  }
+  return removed;
 }

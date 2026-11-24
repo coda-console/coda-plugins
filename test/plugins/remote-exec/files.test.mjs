@@ -1,6 +1,6 @@
 import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, statSync, readlinkSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, statSync, readlinkSync, symlinkSync, writeFileSync } from 'node:fs';
 import fsp from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
@@ -32,6 +32,8 @@ const pushed = async (t, path, body, options) => {
   return { ...one, response, json: await response.json() };
 };
 const names = dir => readdirSync(dir).sort();
+// 拉取打开文件的那次 `open`（只读、非阻塞）；操作记录与推送的 `open` 不算。
+const isPullOpen = args => typeof args[1] === 'number' && (args[1] & (constants.O_WRONLY | constants.O_RDWR)) === 0;
 
 test('pull: the whole file as octet-stream with its length, and a log line with the path, the range and the bytes sent', async t => {
   const dir = scratch(t), file = join(dir, 'a.bin'), data = Buffer.from(Array.from({ length: 300_000 }, (_, i) => i % 251));
@@ -42,7 +44,7 @@ test('pull: the whole file as octet-stream with its length, and a log line with 
   assert.equal(response.headers.get('content-length'), String(data.length));
   assert.deepEqual(body, data);
   const [line] = await waitFor(() => host.lines().length === 1 && host.lines(), '记录');
-  assert.deepEqual(Object.keys(line).sort(), ['caller', 'ms', 'operation', 'params', 'result', 'time']);
+  assert.deepEqual(Object.keys(line).sort(), ['caller', 'ms', 'op', 'operation', 'params', 'result', 'time']);
   assert.deepEqual(line.caller, caller);
   assert.equal(line.operation, 'pull');
   assert.deepEqual(line.params, { path: file });
@@ -84,23 +86,15 @@ test('pull: a missing file, a directory, a relative path and a closed switch are
   assert.deepEqual(off.lines().map(line => line.error), ['disabled']);
 });
 
-test('pull: a FIFO is refused before it is opened, a node that is not a regular file when opened is refused too; both are not_a_regular_file with effects none', async t => {
+test('pull: a FIFO with no writer is refused at once (opened without blocking, then checked on the handle), a node that is not a regular file when opened is refused too; both are not_a_regular_file with effects none', { timeout: 10_000 }, async t => {
   const dir = scratch(t), fifo = join(dir, 'fifo'), file = join(dir, 'f');
   execFileSync('mkfifo', [fifo]);
   writeFileSync(file, 'abc');
-  // 测试自己占着 FIFO 的另一端，万一真的 open 了也不会挂住；要断言的是根本没去 open。
-  const hold = openSync(fifo, 'r+'), opened = [];
-  t.after(() => closeSync(hold));
-  const original = fsp.open;
-  fsp.open = async (...args) => { opened.push(args[0]); return original(...args); };
-  syncBuiltinESMExports();
-  try {
-    const one = reading(t, { path: fifo });
-    await assert.rejects(one.response, { code: 'not_a_regular_file', effects: 'none' });
-    assert.deepEqual(one.host.lines().map(line => line.error), ['not_a_regular_file']);
-  } finally { fsp.open = original; syncBuiltinESMExports(); }
-  assert.deepEqual(opened, []);
-  // stat 与 open 之间被换成了别的东西：open 之后的 fstat 要拦住。
+  // 没有人占着另一端：阻塞地打开会一直挂住（到测试的时限才失败）。
+  const one = reading(t, { path: fifo });
+  await assert.rejects(one.response, { code: 'not_a_regular_file', effects: 'none' });
+  assert.deepEqual(one.host.lines().map(line => line.error), ['not_a_regular_file']);
+  // 打开的句柄不是普通文件：对句柄的判断要拦住。
   await withFailingFile(real => ({ stat: async () => ({ isDirectory: () => false, isFile: () => false, size: 0 }), close: () => real.close() }), async () => {
     await assert.rejects(reading(t, { path: file }).response, { code: 'not_a_regular_file', effects: 'none' });
   });
@@ -185,7 +179,7 @@ test('push: a new file, with the parent directories made; the answer is { path, 
   assert.deepEqual(readFileSync(path), data);
   assert.deepEqual(names(join(dir, 'a', 'b')), ['c.txt']);
   const [line] = host.lines();
-  assert.deepEqual(Object.keys(line).sort(), ['caller', 'ms', 'operation', 'params', 'result', 'time']);
+  assert.deepEqual(Object.keys(line).sort(), ['caller', 'ms', 'op', 'operation', 'params', 'result', 'time']);
   assert.deepEqual(line.caller, caller);
   assert.equal(line.operation, 'push');
   assert.deepEqual(line.params, { path });
@@ -456,7 +450,7 @@ test('pull: a file cut short while it is being read ends the body with an error 
 // 把 `open` 换成给出替身的：真的文件打开了，但它的 stat 或读会失败（存储的 I/O 错误造不出来）。
 async function withFailingFile(make, run) {
   const original = fsp.open;
-  fsp.open = async (...args) => { const real = await original(...args); return args[1] === 'r' ? make(real) : real; };
+  fsp.open = async (...args) => { const real = await original(...args); return isPullOpen(args) ? make(real) : real; };
   syncBuiltinESMExports();
   try { return await run(); } finally { fsp.open = original; syncBuiltinESMExports(); }
 }
@@ -565,7 +559,7 @@ test('pull: a call that is already aborted, even for an empty range, throws the 
   const host0 = setup(t), controller0 = new AbortController(), opened = fsp.open;
   let opens = 0;
   controller0.abort(away);
-  fsp.open = (...args) => { opens++; return opened(...args); };
+  fsp.open = (...args) => { if (isPullOpen(args)) opens++; return opened(...args); };
   syncBuiltinESMExports();
   try {
     await assert.rejects(pull(host0.env, request(), { caller, record, input: { path: file, length: '0' }, signal: controller0.signal }), error => error === away);
@@ -575,7 +569,12 @@ test('pull: a call that is already aborted, even for an empty range, throws the 
   // 已经取消的 signal 在开始任何 I/O 之前就被看到；在 open 的过程中取消的，由打开之后的那次检查接住（空范围不能当成功）。
   const host = setup(t), controller = new AbortController(), original = fsp.open;
   let closed = false;
-  fsp.open = async (...args) => { const real = await original(...args); controller.abort(away); return { stat: () => real.stat(), close: () => { closed = true; return real.close(); } }; };
+  fsp.open = async (...args) => {
+    const real = await original(...args);
+    if (!isPullOpen(args)) return real;
+    controller.abort(away);
+    return { stat: () => real.stat(), close: () => { closed = true; return real.close(); } };
+  };
   syncBuiltinESMExports();
   try {
     await assert.rejects(pull(host.env, request(), { caller, record, input: { path: file, length: '0' }, signal: controller.signal }), error => error === away);

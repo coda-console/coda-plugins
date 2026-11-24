@@ -43,14 +43,25 @@ export function fakeSpawn(t, { reap = true, ready = false } = {}) {
   };
 }
 
-// 处理函数的环境与记录：`lines()` 读操作记录。
+// 操作记录文件的原始行。
+export const rawLines = file => {
+  try { return readFileSync(file, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line)); } catch { return []; }
+};
+// 每次操作的「开始」与结果按 `op` 合成一条：只给已经有结果的操作，按开始的先后；合成后的形状是开始那行加上结果的 result/error、ms。
+export function operations(raw) {
+  const ends = new Map(raw.filter(line => line.phase === 'end').map(line => [line.op, line]));
+  return raw.filter(line => line.phase === 'start' && ends.has(line.op)).map(({ phase, ...start }) => {
+    const { time, phase: _, op, operation, ...end } = ends.get(start.op);
+    return { ...start, ...end };
+  });
+}
+
+// 处理函数的环境与记录：`lines()` 是合成后的每次操作（见 `operations`），`raw()` 是原始行。
 export function setup(t, { enabled = true } = {}) {
   const state = scratch(t), gate = { enabled };
   const env = { coda, enabled: () => gate.enabled, audit: createAuditLog(state) };
-  const lines = () => {
-    try { return readFileSync(join(state, AUDIT_FILE), 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line)); } catch { return []; }
-  };
-  return { env, state, lines, set: value => { gate.enabled = value; } };
+  const raw = () => rawLines(join(state, AUDIT_FILE));
+  return { env, state, lines: () => operations(raw()), raw, set: value => { gate.enabled = value; } };
 }
 
 const gone = pid => { try { process.kill(pid, 0); return false; } catch (error) { return error.code === 'ESRCH'; } };

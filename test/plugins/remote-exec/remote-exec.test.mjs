@@ -2,18 +2,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { homedir, tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { definitionProblem, ownedProtocolsProblem } from '@coda-console/protocol/protocol';
 import { manifestProblem } from '@coda-console/protocol/validate';
 import { createMockCoda, TEST_OWNER } from '../../helpers/mock-coda.mjs';
 import { pluginDir } from '../plugin.mjs';
-import { waitFor } from './support.mjs';
+import { operations, rawLines, waitFor } from './support.mjs';
 import { activate, deactivate } from '../../../plugins/remote-exec/main.mjs';
 import { KEY, LOCAL_MACHINE, MACHINE, SETTING } from '../../../plugins/remote-exec/lib/definitions.mjs';
 import { admit, decide } from '../../../plugins/remote-exec/lib/gate.mjs';
-import { AUDIT_FILE, auditLine, createAuditLog } from '../../../plugins/remote-exec/lib/audit.mjs';
+import { AUDIT_FILE, createAuditLog, endLine, startLine } from '../../../plugins/remote-exec/lib/audit.mjs';
 import { HEAD, TAIL, openOutputs, writeAll } from '../../../plugins/remote-exec/lib/output.mjs';
 import { DEFAULT_TIMEOUT, MAX_TIMEOUT, timeLimit } from '../../../plugins/remote-exec/lib/limits.mjs';
 import { terminate } from '../../../plugins/remote-exec/lib/kill.mjs';
@@ -325,72 +326,78 @@ test('the order is switch, decision point: a refusal from the decision point kee
 
 // ——— 操作记录 ———
 
-test('a log line has time, call id, the caller as it came (unknown fields too), operation, params, result and duration', () => {
-  const line = auditLine({ time: new Date('2026-11-24T01:02:03.456Z'), id: 'call-1', caller, operation: 'exec',
-    params: { command: 'ls -l', cwd: '/srv' }, result: { exitCode: 0, signal: null, timedOut: false }, ms: 12 });
-  assert.ok(!line.includes('\n'));
-  assert.deepEqual(JSON.parse(line), { time: '2026-11-24T01:02:03.456Z', id: 'call-1', caller, operation: 'exec',
-    params: { command: 'ls -l', cwd: '/srv' }, result: { exitCode: 0, signal: null, timedOut: false }, ms: 12 });
-});
-
-test('a stream has no call id, a refused operation has an error code and is logged too', () => {
-  const pull = JSON.parse(auditLine({ caller, operation: 'pull', params: { path: '/etc/hosts', offset: '0', length: '10' }, result: { bytes: 10 }, ms: 3 }));
-  assert.equal('id' in pull, false);
-  assert.deepEqual(pull.result, { bytes: 10 });
-  const refused = JSON.parse(auditLine({ id: 'call-2', caller, operation: 'exec', params: { command: 'x' }, error: 'disabled', ms: 0 }));
+test('a start line has time, op, phase, call id, the caller as it came (unknown fields too), operation and params; an end line has op, the result or the error code and the duration', () => {
+  const start = startLine({ time: new Date('2026-11-24T01:02:03.456Z'), op: 'op-1', id: 'call-1', caller, operation: 'exec', params: { command: 'ls -l', cwd: '/srv' } });
+  assert.ok(!start.includes('\n'));
+  assert.deepEqual(JSON.parse(start), { time: '2026-11-24T01:02:03.456Z', op: 'op-1', phase: 'start', id: 'call-1', caller, operation: 'exec', params: { command: 'ls -l', cwd: '/srv' } });
+  const end = endLine({ time: new Date('2026-11-24T01:02:04Z'), op: 'op-1', operation: 'exec', result: { exitCode: 0, signal: null, timedOut: false }, ms: 12 });
+  assert.deepEqual(JSON.parse(end), { time: '2026-11-24T01:02:04.000Z', op: 'op-1', phase: 'end', operation: 'exec', result: { exitCode: 0, signal: null, timedOut: false }, ms: 12 });
+  // 流没有调用号；被拒绝的有错误码、没有 result。
+  assert.equal('id' in JSON.parse(startLine({ op: 'op-2', caller, operation: 'pull', params: { path: '/etc/hosts' } })), false);
+  const refused = JSON.parse(endLine({ op: 'op-3', operation: 'exec', error: 'disabled', ms: 0 }));
   assert.equal(refused.error, 'disabled');
   assert.equal('result' in refused, false);
 });
 
-test('lines are appended to a file in the state directory, one after another', async t => {
+test('lines are appended to a file in the state directory, one after another, and the file is made 0600', async t => {
   const state = join(scratch(t), 'state'), log = createAuditLog(state);
-  await log.write(auditLine({ id: 'a', caller, operation: 'exec', params: { command: '1' }, result: {}, ms: 1 }));
-  await log.write(auditLine({ id: 'b', caller, operation: 'exec', params: { command: '2' }, error: 'disabled', ms: 2 }));
+  await log.start(startLine({ op: 'a', caller, operation: 'exec', params: { command: '1' } }));
+  await log.end(endLine({ op: 'a', operation: 'exec', result: {}, ms: 1 }));
+  await createAuditLog(state).start(startLine({ op: 'b', caller, operation: 'push', params: {} }));
   const lines = readFileSync(join(state, AUDIT_FILE), 'utf8').split('\n');
   assert.equal(lines.at(-1), '');
-  assert.deepEqual(lines.slice(0, -1).map(line => JSON.parse(line).id), ['a', 'b']);
-  await createAuditLog(state).write(auditLine({ id: 'c', caller, operation: 'push', params: {}, result: { bytes: 1 }, ms: 1 }));
-  assert.equal(readFileSync(join(state, AUDIT_FILE), 'utf8').trim().split('\n').length, 3);
+  assert.deepEqual(lines.slice(0, -1).map(line => { const { op, phase } = JSON.parse(line); return [op, phase]; }), [['a', 'start'], ['a', 'end'], ['b', 'start']]);
+  assert.equal(statSync(join(state, AUDIT_FILE)).mode & 0o777, 0o600);
+  // 已有的文件权限更宽，也收成 0600。
+  chmodSync(join(state, AUDIT_FILE), 0o644);
+  await log.end(endLine({ op: 'b', operation: 'push', result: {}, ms: 1 }));
+  assert.equal(statSync(join(state, AUDIT_FILE)).mode & 0o777, 0o600);
 });
 
 test('lines written at the same time stay whole lines, and a failed write does not hold up the next', async t => {
   const state = scratch(t), log = createAuditLog(state);
-  const long = tag => auditLine({ id: tag, caller, operation: 'exec', params: { command: `${tag}${'x'.repeat(1.2 * 1024 * 1024)}` }, result: {}, ms: 1 });
-  await Promise.all([log.write(long('a')), log.write(long('b')), log.write(long('c'))]);
+  const long = tag => startLine({ op: tag, caller, operation: 'exec', params: { command: `${tag}${'x'.repeat(1.2 * 1024 * 1024)}` } });
+  await Promise.all([log.start(long('a')), log.start(long('b')), log.start(long('c'))]);
   const lines = readFileSync(join(state, AUDIT_FILE), 'utf8').split('\n').slice(0, -1);
-  assert.deepEqual(lines.map(line => JSON.parse(line).id), ['a', 'b', 'c']);
+  assert.deepEqual(lines.map(line => JSON.parse(line).op), ['a', 'b', 'c']);
   const broken = scratch(t), warned = [], again = createAuditLog(broken, { warn: message => warned.push(message) });
   mkdirSync(join(broken, AUDIT_FILE));
-  await Promise.all([again.write('x'), again.write('y')]);
+  await Promise.all([again.end('x'), again.end('y')]);
   assert.equal(warned.length, 2);
   rmSync(join(broken, AUDIT_FILE), { recursive: true });
-  await again.write('{"id":"z"}');
-  assert.equal(readFileSync(join(broken, AUDIT_FILE), 'utf8'), '{"id":"z"}\n');
+  await again.end('{"op":"z"}');
+  assert.equal(readFileSync(join(broken, AUDIT_FILE), 'utf8'), '{"op":"z"}\n');
 });
 
-test('without a state directory nothing is logged and standard error says so once; a failing write is reported, not thrown', async t => {
-  const said = [], log = createAuditLog(null, { warn: message => said.push(message) });
-  await log.write('x'); await log.write('y');
-  assert.equal(said.length, 1);
-  // A file where the state directory should be.
-  const blocked = join(scratch(t), 'file'), warned = [];
-  writeFileSync(blocked, '');
-  await createAuditLog(join(blocked, 'state'), { warn: message => warned.push(message) }).write('z');
-  assert.equal(warned.length, 1);
-  assert.match(warned[0], /写不进/);
-  // 操作之后写不进去，标准错误里说明是哪次调用。
-  const labelled = [];
-  await createAuditLog(join(blocked, 'state'), { warn: message => labelled.push(message) }).write('z', 'exec call-9 /srv');
-  assert.match(labelled[0], /exec call-9 \/srv/);
-});
-
-test('ready() says whether the log can be written before anything is done: no state directory, a state directory that cannot be made, a log file that cannot be opened; and it writes no line', async t => {
-  const root = scratch(t), blocked = join(root, 'file'), asDirectory = join(root, 'dir'), good = join(root, 'good', 'state');
+test('a start that cannot be written throws (the operation is then refused): no state directory, one that cannot be made, a log that is a directory, a symlink or a FIFO; nothing hangs and nothing is written through the link', { timeout: 10_000 }, async t => {
+  const root = scratch(t), blocked = join(root, 'file'), asDirectory = join(root, 'dir'), linked = join(root, 'linked'), piped = join(root, 'piped');
   writeFileSync(blocked, '');
   mkdirSync(join(asDirectory, AUDIT_FILE), { recursive: true });
-  for (const state of [null, join(blocked, 'state'), asDirectory]) await assert.rejects(createAuditLog(state).ready(), /./);
-  await createAuditLog(good).ready();
-  assert.equal(readFileSync(join(good, AUDIT_FILE), 'utf8'), '');
+  mkdirSync(linked);
+  const elsewhere = join(root, 'elsewhere');
+  writeFileSync(elsewhere, '');
+  symlinkSync(elsewhere, join(linked, AUDIT_FILE));
+  mkdirSync(piped);
+  execFileSync('mkfifo', [join(piped, AUDIT_FILE)]);
+  for (const state of [null, join(blocked, 'state'), asDirectory, linked, piped]) {
+    await assert.rejects(createAuditLog(state).start(startLine({ op: 'x', caller, operation: 'exec', params: {} })), /./, String(state));
+  }
+  assert.equal(readFileSync(elsewhere, 'utf8'), '', '不经符号链接写');
+  // 一个有读端的 FIFO 也不是普通文件。
+  const reader = openSync(join(piped, AUDIT_FILE), 'r+');
+  t.after(() => closeSync(reader));
+  await assert.rejects(createAuditLog(piped).start('x'), /不是普通文件/);
+});
+
+test('an end that cannot be written is reported on standard error, naming the call, not thrown', async t => {
+  const said = [];
+  await createAuditLog(null, { warn: message => said.push(message) }).end('x', 'exec op-9 /srv');
+  assert.equal(said.length, 1);
+  assert.match(said[0], /exec op-9 \/srv/);
+  const blocked = join(scratch(t), 'file'), warned = [];
+  writeFileSync(blocked, '');
+  await createAuditLog(join(blocked, 'state'), { warn: message => warned.push(message) }).end('z', 'pull op-1 /f');
+  assert.match(warned[0], /写不进.*pull op-1 \/f/);
 });
 
 // ——— 输出截短 ———
@@ -604,7 +611,7 @@ test('the operation and both streams are registered, read the switch as it is no
   assert.equal(await (await get()).text(), 'hello');
   await host.setSettings({ [SETTING]: false });
   await assert.rejects(get(), { code: 'disabled' });
-  const read = () => { try { return readFileSync(join(state, AUDIT_FILE), 'utf8').trim().split('\n').map(line => JSON.parse(line)); } catch { return []; } };
+  const read = () => operations(rawLines(join(state, AUDIT_FILE)));
   const lines = await waitFor(() => read().length === 4 && read(), '四行操作记录');
   assert.deepEqual(lines.map(line => [line.operation, line.error ?? 'ok']), [['exec', 'disabled'], ['pull', 'disabled'], ['pull', 'ok'], ['pull', 'disabled']]);
   deactivate();
