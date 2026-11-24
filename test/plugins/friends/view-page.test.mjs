@@ -335,28 +335,269 @@ test('the friend detail edits the local note, re-handshakes, and removes only af
   assert.equal(detail.hidden, true);
 });
 
+// 添加好友弹层的接受表单：粘贴区与分字段的输入框。邀请带一次性口令 bindingToken，口令不进任何输入框。
+const TOKEN_TEXT = 'bt-once-7f3a91c2d0e8';
+const inviteJson = (extra = {}) => JSON.stringify({ control: 'https://control.example', authKey: 'tskey-secret', bindingToken: TOKEN_TEXT, peerNode: 'node-5d2a8f', ...extra });
+const acceptForm = (page, scrim) => ({
+  paste: page.all(n => n.tag === 'textarea', scrim)[0],
+  control: page.all(n => n.attrs.placeholder === 'https://…', scrim)[0],
+  authKey: page.all(n => n.tag === 'input' && n.attrs.type === 'password', scrim)[0],
+  peerNode: page.all(n => n.tag === 'input' && n.attrs.placeholder === '可选', scrim)[0],
+  inputs: page.all(n => n.tag === 'input', scrim), // 粘贴区装着用户自己贴的整份邀请，另外断言它提交后是空的
+
+  submit: buttonIn(page, scrim, '接受邀请'),
+});
+const pasteInvite = (form, text) => { form.paste.value = text; form.paste.fire('input'); };
+// 后端的替身：照 main 上的规则，bindingToken 缺 peerNode 时拒。
+const backend = (accept = () => ({ node: 'n9' })) => input => {
+  if (input.control === undefined) return {};
+  if (input.bindingToken && !input.peerNode) throw Object.assign(new Error('invalid_input'), { effects: 'none' });
+  return accept(input);
+};
+const everywhere = (page, log, form) => [page.text(), ...form.inputs.map(n => n.value), JSON.stringify(log.states), JSON.stringify(log.sent), JSON.stringify(log.copied)].join('\n');
+
 test('the add-friend dialog clears the auth key the moment it is submitted, then accepts and handshakes', async t => {
   const gate = deferred();
   const { page, log } = await open(t, { call: input => (input.control ? gate.promise : {}) });
   page.button('添加好友').fire('click');
   const invite = scrims(page)[2];
   assert.equal(invite.hidden, false);
-  const authKey = page.all(n => n.tag === 'input' && n.attrs.type === 'password', invite)[0];
-  page.all(n => n.attrs.placeholder === 'https://…', invite)[0].value = 'https://control.example';
-  authKey.value = 'tskey-secret';
-  buttonIn(page, invite, '接受邀请').fire('click');
-  assert.equal(authKey.value, '', 'cleared before anything is awaited');
+  const form = acceptForm(page, invite);
+  pasteInvite(form, inviteJson());
+  assert.equal(form.authKey.value, 'tskey-secret', 'the paste is recognized into the fields');
+  form.submit.fire('click');
+  assert.equal(form.authKey.value, '', 'cleared before anything is awaited');
+  assert.equal(form.paste.value, '');
   gate.resolve({ node: 'n9' });
   await flush();
   assert.deepEqual(log.calls.map(c => c.op), ['accept', 'handshake']);
   assert.equal(log.calls[0].input.authKey, 'tskey-secret');
-  assert.deepEqual(log.calls[1].input, { node: 'n9' });
+  assert.deepEqual(log.calls[1].input, { node: 'n9', peerNode: 'node-5d2a8f' });
   assert.ok(invite.textContent.includes('好友已添加并完成互认'));
   page.dispatch('keydown', { key: 'Escape' });
   assert.equal(invite.hidden, true);
   page.button('添加好友').fire('click');
   invite.fire('click');
   assert.equal(invite.hidden, true, 'a click on the backdrop closes it');
+});
+
+test('accept carries the invite\'s bindingToken to the local backend, and afterwards it is nowhere: not in the form, the page or its state', async t => {
+  const gate = deferred();
+  const { page, log } = await open(t, { call: backend(() => gate.promise) });
+  page.button('添加好友').fire('click');
+  const invite = scrims(page)[2], form = acceptForm(page, invite);
+  pasteInvite(form, inviteJson({ scope: 'coda-tailnet/https://control.example', hostname: 'h1', peerPort: 8443 }));
+  assert.ok(invite.textContent.includes('已识别邀请'));
+  assert.ok(!everywhere(page, log, form).includes(TOKEN_TEXT), 'the recognized invite does not show the token, and no box holds it');
+  form.submit.fire('click');
+  assert.equal(form.paste.value, '');
+  assert.ok(!everywhere(page, log, form).includes(TOKEN_TEXT), 'gone before the call has answered');
+  gate.resolve({ node: 'n9' });
+  await flush();
+  const accept = log.calls.find(c => c.op === 'accept');
+  assert.deepEqual([accept.input.bindingToken, accept.input.peerNode, accept.input.control, accept.input.authKey, accept.input.hostname, accept.input.peerPort],
+    [TOKEN_TEXT, 'node-5d2a8f', 'https://control.example', 'tskey-secret', 'h1', 8443]);
+  assert.deepEqual(log.calls.filter(c => c.op === 'handshake').map(c => c.input), [{ node: 'n9', peerNode: 'node-5d2a8f' }], 'the handshake does not carry the token');
+  assert.ok(invite.textContent.includes('好友已添加并完成互认'));
+  assert.ok(!everywhere(page, log, form).includes(TOKEN_TEXT));
+  // 交出后再点一次：口令已经不在，不会再交出一次。
+  form.submit.fire('click');
+  await flush();
+  assert.equal(log.calls.filter(c => c.op === 'accept').length, 1);
+  assert.ok(invite.textContent.includes('缺少'));
+});
+
+test('when accept fails the token is cleared and not shown in the error either, and it is not handed out a second time', async t => {
+  let fail = true;
+  const { page, log } = await open(t, { call: backend(() => { if (fail) throw new Error('forbidden'); return { node: 'n9' }; }) });
+  page.button('添加好友').fire('click');
+  const invite = scrims(page)[2], form = acceptForm(page, invite);
+  pasteInvite(form, inviteJson());
+  form.submit.fire('click');
+  await flush();
+  assert.ok(invite.textContent.includes('接受邀请失败：forbidden'));
+  assert.equal(form.paste.value, '');
+  assert.ok(!everywhere(page, log, form).includes(TOKEN_TEXT));
+  assert.equal(form.authKey.value, '');
+  fail = false;
+  form.submit.fire('click');
+  await flush();
+  assert.equal(log.calls.filter(c => c.op === 'accept').length, 1, 'a second click has no token to hand out');
+  assert.ok(invite.textContent.includes('邀请缺少'));
+  pasteInvite(form, inviteJson({ bindingToken: 'bt-second' }));
+  form.submit.fire('click');
+  await flush();
+  assert.deepEqual(log.calls.filter(c => c.op === 'accept').map(c => c.input.bindingToken), [TOKEN_TEXT, 'bt-second']);
+});
+
+test('a paste without a bindingToken, or with one but no peerNode, is refused with the reason and nothing is sent', async t => {
+  const { page, log } = await open(t, { call: backend() });
+  page.button('添加好友').fire('click');
+  const invite = scrims(page)[2], form = acceptForm(page, invite);
+  pasteInvite(form, JSON.stringify({ control: 'https://control.example', authKey: 'tskey-secret', peerNode: 'p' }));
+  assert.ok(invite.textContent.includes('邀请缺少 bindingToken（一次性口令），请让对方重新生成邀请'));
+  form.submit.fire('click');
+  await flush();
+  assert.ok(invite.textContent.includes('邀请缺少 bindingToken（一次性口令），请让对方重新生成邀请'));
+  pasteInvite(form, JSON.stringify({ control: 'https://control.example', authKey: 'tskey-secret', bindingToken: TOKEN_TEXT }));
+  assert.ok(invite.textContent.includes('peerNode'));
+  assert.ok(!invite.textContent.includes(TOKEN_TEXT));
+  form.submit.fire('click');
+  await flush();
+  assert.ok(invite.textContent.includes('peerNode') && !invite.textContent.includes(TOKEN_TEXT));
+  assert.deepEqual(log.calls, []);
+});
+
+test('filling the fields by hand has no token to give: it is refused, but a paste that was not recognized yet is still read on submit', async t => {
+  const { page, log } = await open(t, { call: backend() });
+  page.button('添加好友').fire('click');
+  const invite = scrims(page)[2], form = acceptForm(page, invite);
+  form.control.value = 'https://control.example';
+  form.authKey.value = 'tskey-secret';
+  form.peerNode.value = 'node-5d2a8f';
+  form.submit.fire('click');
+  await flush();
+  assert.deepEqual(log.calls, []);
+  assert.ok(invite.textContent.includes('邀请缺少 bindingToken（一次性口令），请让对方重新生成邀请'));
+  assert.ok(!page.all(n => n.tag === 'input' && /口令|token/i.test(n.attrs.placeholder ?? ''), invite).length, 'there is no box for the token');
+  // 粘贴区有内容、输入框里没有手填：提交时再解析一次，口令随这份邀请。
+  form.control.value = ''; form.authKey.value = ''; form.peerNode.value = '';
+  form.paste.value = inviteJson();
+  form.submit.fire('click');
+  await flush();
+  assert.equal(log.calls.find(c => c.op === 'accept').input.bindingToken, TOKEN_TEXT);
+});
+
+test('a new paste replaces the old token, and editing the control address or the auth key drops it', async t => {
+  const { page, log } = await open(t, { call: backend() });
+  page.button('添加好友').fire('click');
+  const invite = scrims(page)[2], form = acceptForm(page, invite);
+  const accepted = () => log.calls.filter(c => c.op === 'accept').map(c => c.input.bindingToken);
+  pasteInvite(form, inviteJson({ bindingToken: 'bt-old' }));
+  pasteInvite(form, inviteJson({ bindingToken: 'bt-new' }));
+  form.submit.fire('click');
+  await flush();
+  assert.deepEqual(accepted(), ['bt-new']);
+  // 手改入网地址：另一份邀请，旧口令不再交出（输入框里的旧邀请也不会被当成手填的再读一遍）。
+  pasteInvite(form, inviteJson({ bindingToken: 'bt-edit-control' }));
+  form.control.value = 'https://other.example';
+  form.control.fire('input');
+  form.submit.fire('click');
+  await flush();
+  assert.deepEqual(accepted(), ['bt-new'], 'nothing was handed out');
+  assert.ok(invite.textContent.includes('邀请缺少 bindingToken（一次性口令），请让对方重新生成邀请'));
+  // 手改入网码同理。
+  pasteInvite(form, inviteJson({ bindingToken: 'bt-edit-key' }));
+  form.authKey.value = 'tskey-other';
+  form.authKey.fire('input');
+  form.submit.fire('click');
+  await flush();
+  assert.deepEqual(accepted(), ['bt-new']);
+  assert.ok(!everywhere(page, log, form).includes('bt-edit-control') && !everywhere(page, log, form).includes('bt-edit-key'));
+  // 改 peerNode、scope 不算换了邀请，口令照旧。
+  pasteInvite(form, inviteJson({ bindingToken: 'bt-same' }));
+  form.peerNode.value = 'node-other';
+  form.peerNode.fire('input');
+  form.submit.fire('click');
+  await flush();
+  assert.deepEqual(accepted(), ['bt-new', 'bt-same']);
+  assert.equal(log.calls.filter(c => c.op === 'accept')[1].input.peerNode, 'node-other');
+});
+
+test('editing the control address or the auth key drops the pasted text and the token with it: clearing both fields cannot bring the old invite back', async t => {
+  const { page, log } = await open(t, { call: backend() });
+  page.button('添加好友').fire('click');
+  const invite = scrims(page)[2], form = acceptForm(page, invite);
+  for (const edited of ['control', 'authKey']) {
+    pasteInvite(form, inviteJson());
+    form[edited].value = 'changed';
+    form[edited].fire('input');
+    assert.equal(form.paste.value, '', `${edited}: the pasted text is gone`);
+  }
+  pasteInvite(form, inviteJson());
+  form.control.value = '';
+  form.control.fire('input');
+  form.authKey.value = '';
+  form.authKey.fire('input');
+  form.submit.fire('click');
+  await flush();
+  assert.deepEqual(log.calls, [], 'nothing is parsed out of the old text and sent');
+  assert.ok(!everywhere(page, log, form).includes(TOKEN_TEXT));
+});
+
+test('once a paste is recognized into the fields the fields rule: a field that fails validation is reported and the pasted text is not submitted instead', async t => {
+  const { page, log } = await open(t, { call: backend() });
+  page.button('添加好友').fire('click');
+  const invite = scrims(page)[2], form = acceptForm(page, invite);
+  const linkId = page.all(n => n.tag === 'input' && n.attrs.placeholder === '留空自动生成', invite)[0];
+  pasteInvite(form, inviteJson());
+  form.peerNode.value = '';
+  form.submit.fire('click');
+  await flush();
+  assert.deepEqual(log.calls, []);
+  assert.ok(invite.textContent.includes('peerNode'));
+  pasteInvite(form, inviteJson());
+  linkId.value = 'Bad ID!';
+  form.submit.fire('click');
+  await flush();
+  assert.deepEqual(log.calls, []);
+  assert.ok(invite.textContent.includes('linkId'));
+  assert.ok(!everywhere(page, log, form).includes(TOKEN_TEXT));
+  linkId.value = 'mine-1';
+  form.submit.fire('click');
+  await flush();
+  assert.deepEqual(log.calls.filter(c => c.op === 'accept').map(c => c.input.linkId), ['mine-1'], 'fixing the field lets the same invite through');
+});
+
+test('a new paste that is not recognized drops the fields of the last one, and submitting reports this paste\'s own error', async t => {
+  const { page, log } = await open(t, { call: backend() });
+  page.button('添加好友').fire('click');
+  const invite = scrims(page)[2], form = acceptForm(page, invite);
+  pasteInvite(form, inviteJson());
+  assert.equal(form.control.value, 'https://control.example');
+  pasteInvite(form, JSON.stringify({ control: 'https://other.example', authKey: 'tskey-other', bindingToken: TOKEN_TEXT }));
+  assert.deepEqual([form.control.value, form.authKey.value, form.peerNode.value], ['', '', ''], 'the last invite\'s fields are gone');
+  form.submit.fire('click');
+  await flush();
+  assert.deepEqual(log.calls, [], 'neither the old nor the new invite is sent');
+  assert.ok(invite.textContent.includes('peerNode') && !invite.textContent.includes('缺少 control'));
+  assert.ok(!everywhere(page, log, form).includes(TOKEN_TEXT));
+});
+
+test('while the accept call is pending the page holds no token: not in the form, the text or its state', async t => {
+  const gate = deferred();
+  const { page, log } = await open(t, { call: backend(() => gate.promise) });
+  page.button('添加好友').fire('click');
+  const invite = scrims(page)[2], form = acceptForm(page, invite);
+  pasteInvite(form, inviteJson());
+  form.submit.fire('click');
+  await flush();
+  assert.equal(log.calls.filter(c => c.op === 'accept').length, 1, 'the call is out and unanswered');
+  assert.ok(invite.textContent.includes('正在接受邀请'));
+  assert.ok(!everywhere(page, log, form).includes(TOKEN_TEXT));
+  gate.reject(new Error('boom'));
+  await flush();
+  assert.ok(!everywhere(page, log, form).includes(TOKEN_TEXT));
+});
+
+test('re-handshake from the friend detail only calls handshake with the node: no accept, no token, no invite asked for again', async t => {
+  const { page, log } = await open(t, { call: backend() });
+  page.button('添加好友').fire('click');
+  const invite = scrims(page)[2], form = acceptForm(page, invite);
+  pasteInvite(form, inviteJson());
+  form.submit.fire('click');
+  await flush();
+  page.dispatch('keydown', { key: 'Escape' });
+  log.calls.length = 0;
+  log.watches[0].cb(accord({ friends: [{ node: 'n9', author: FRIEND, bound: false, peerNode: 'node-5d2a8f' }] }));
+  await flush();
+  tiles(page)[0].fire('click');
+  const detail = scrims(page)[1];
+  buttonIn(page, detail, '重新互认').fire('click');
+  await flush();
+  assert.deepEqual(log.calls.map(c => [c.op, c.input, c.machine]), [['handshake', { node: 'n9', peerNode: 'node-5d2a8f' }, 'a']]);
+  assert.ok(!everywhere(page, log, form).includes(TOKEN_TEXT));
+  assert.equal(form.paste.value, '', 'and the invite form was not asked to be filled again');
 });
 
 // ---- 视图里有几台：页面都读，名片按身份合并，好友按电脑分节 ----
@@ -503,8 +744,7 @@ test('an invite accepted in a section, and the handshake after it, go to that se
   addButtons(page)[1].fire('click');
   const invite = scrims(page)[2];
   assert.ok(invite.textContent.includes('添加好友 · B'));
-  page.all(n => n.attrs.placeholder === 'https://…', invite)[0].value = 'https://control.example';
-  page.all(n => n.tag === 'input' && n.attrs.type === 'password', invite)[0].value = 'key';
+  pasteInvite(acceptForm(page, invite), inviteJson());
   buttonIn(page, invite, '接受邀请').fire('click');
   await flush();
   assert.deepEqual(log.calls.map(c => [c.op, c.machine]), [['accept', 'b'], ['handshake', 'b']]);

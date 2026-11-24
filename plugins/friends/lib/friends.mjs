@@ -8,11 +8,11 @@ export const PROFILE_ID = 'self';
 export const CARD_KIND = 'friends/card';
 const MAX_NAME = 40, MAX_EMOJI = 8;
 // 邀请各字段的上限，与 coda/accord@1 的 accept 输入一致。
-const LIMITS = { control: 500, authKey: 500, linkId: 64, scope: 520, hostname: 100, peerNode: 100 };
-const LABELS = { control: '入网地址 control', authKey: '入网码 authKey', linkId: 'linkId', scope: 'scope', hostname: 'hostname', peerNode: 'peerNode', peerPort: 'peerPort' };
+const LIMITS = { control: 500, authKey: 500, linkId: 64, scope: 520, hostname: 100, peerNode: 100, bindingToken: 200 };
+const LABELS = { control: '入网地址 control', authKey: '入网码 authKey', linkId: 'linkId', scope: 'scope', hostname: 'hostname', peerNode: 'peerNode', peerPort: 'peerPort', bindingToken: 'bindingToken' };
 const LINK_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const ALIASES = { controlurl: 'control', control_url: 'control', authkey: 'authKey', auth_key: 'authKey', linkid: 'linkId', link_id: 'linkId',
-  link: 'linkId', peernode: 'peerNode', peer_node: 'peerNode', peerport: 'peerPort', peer_port: 'peerPort' };
+  link: 'linkId', peernode: 'peerNode', peer_node: 'peerNode', peerport: 'peerPort', peer_port: 'peerPort', bindingtoken: 'bindingToken', binding_token: 'bindingToken' };
 const CONTROL_CHARS = /[\p{Cc}\u2028\u2029]/gu;
 const length = text => [...text].length;
 
@@ -28,6 +28,7 @@ function fromObject(object) {
   for (const [key, value] of Object.entries(object)) {
     const name = field(key);
     if (!name || value === undefined || value === null) continue;
+    if (name === 'bindingToken' && typeof value !== 'string') fail('bindingToken 须是文本');
     if (typeof value !== 'string' && typeof value !== 'number') fail(`${LABELS[name]} 须是文本`);
     found[name] = String(value);
   }
@@ -56,7 +57,7 @@ function fromLines(text) {
 }
 
 /**
- * 把粘贴的邀请解析成 accept 的入参：`{ linkId, control, authKey, scope?, hostname?, peerNode?, peerPort? }`。
+ * 把粘贴的邀请解析成 accept 的入参：`{ linkId, control, authKey, bindingToken, peerNode, scope?, hostname?, peerPort? }`。
  * 接受 JSON 对象、coda-friend:// 或带查询串的链接、多行 key=value；错误抛出清晰的中文提示。
  */
 export function parseInvite(raw) {
@@ -92,6 +93,8 @@ export function checked(input) {
   }
   if (!invite.control) fail('邀请缺少 control（入网地址）');
   if (!invite.authKey) fail('邀请缺少 authKey（入网码）');
+  if (!invite.bindingToken) fail('邀请缺少 bindingToken（一次性口令），请让对方重新生成邀请');
+  if (!invite.peerNode) fail('邀请缺少 peerNode：bindingToken 须与 peerNode 一起给，请让对方重新生成邀请');
   for (const [name, max] of Object.entries(LIMITS)) if (invite[name] && length(invite[name]) > max) fail(`${LABELS[name]} 太长（最多 ${max} 字）`);
   const raw = input?.peerPort;
   if (raw !== undefined && raw !== null && typeof raw !== 'number' && typeof raw !== 'string') fail('peerPort 须是 1–65535 的整数');

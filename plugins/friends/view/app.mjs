@@ -441,8 +441,9 @@ invite.dialog.body.append(
       h('label', { class: 'field' }, h('span', { class: 'lbl' }, 'scope'), invite.scope),
       h('label', { class: 'field' }, h('span', { class: 'lbl' }, 'peerNode'), invite.peerNode))),
     h('div', { class: 'line' }, invite.button), invite.message)));
-// hostname、peerPort 只随识别出的那份邀请：手改入网地址或入网码就是另一份邀请了，丢掉；改 linkId、scope、peerNode 不算。
-function dropHidden() { invite.hidden = {}; }
+// hostname、peerPort、bindingToken（一次性口令）只随识别出的那份邀请，不进输入框：手改入网地址或入网码就是另一份邀请了，
+// 连粘贴区的原文一起丢掉，免得再从原文里解析出旧邀请；改 linkId、scope、peerNode 不算。
+function dropHidden() { invite.hidden = {}; invite.paste.value = ''; }
 function parsePaste() {
   invite.hidden = {};
   const text = invite.paste.value;
@@ -451,9 +452,13 @@ function parsePaste() {
     const found = parseInvite(text);
     for (const name of ['control', 'authKey', 'scope', 'peerNode']) if (found[name]) invite[name].value = found[name];
     if (found.linkId && !/^f-[0-9a-f]{8}$/.test(found.linkId)) invite.linkId.value = found.linkId;
-    invite.hidden = { hostname: found.hostname ?? '', peerPort: found.peerPort };
+    invite.hidden = { hostname: found.hostname ?? '', peerPort: found.peerPort, bindingToken: found.bindingToken };
     say(invite.message, '已识别邀请，核对后点「接受邀请」', 'ok');
-  } catch (e) { say(invite.message, e.message, 'error'); }
+  } catch (e) {
+    // 这份粘贴没识别成功：上次识别出的字段不再属于它，一起清掉，提交时报的是这份的解析错误。
+    for (const name of ['control', 'authKey', 'linkId', 'scope', 'peerNode']) invite[name].value = '';
+    say(invite.message, e.message, 'error');
+  }
 }
 function clearInvite() {
   for (const name of ['paste', 'control', 'authKey', 'linkId', 'scope', 'peerNode']) invite[name].value = '';
@@ -463,12 +468,14 @@ async function submitInvite() {
   let input;
   try {
     input = checked({ control: invite.control.value, authKey: invite.authKey.value, linkId: invite.linkId.value, scope: invite.scope.value,
-      peerNode: invite.peerNode.value, hostname: invite.hidden.hostname, peerPort: invite.hidden.peerPort });
+      peerNode: invite.peerNode.value, hostname: invite.hidden.hostname, peerPort: invite.hidden.peerPort, bindingToken: invite.hidden.bindingToken });
   } catch (e) {
-    // 只填了粘贴区、还没有识别出来：再试着从粘贴区解析一次。
-    try { input = parseInvite(invite.paste.value); } catch { return say(invite.message, e.message, 'error'); }
+    // 当前粘贴识别成功了（口令只在这时记着）、或没有粘贴，就以字段为准，校验不过只报错；
+    // 粘贴了却还没识别成功，才按粘贴原文再解析一次，成不了就报它的错。
+    if (invite.hidden.bindingToken || !invite.paste.value.trim()) return say(invite.message, e.message, 'error');
+    try { input = parseInvite(invite.paste.value); } catch (pasted) { return say(invite.message, pasted.message, 'error'); }
   }
-  // 入网码是凭据：取出后立刻清空所有输入框，不写进任何存储或日志。
+  // 入网码和一次性口令是凭据：取出后立刻清空所有输入框和记着的口令，不写进任何存储或日志。
   clearInvite();
   const target = invite.target, opts = via(target), show = (text, kind) => { if (invite.target === target) say(invite.message, text, kind); };
   invite.button.disabled = true;
@@ -476,13 +483,15 @@ async function submitInvite() {
   const peerNode = input.peerNode;
   let node;
   try {
-    ({ node } = await coda.call(LOCAL, 'accept', input, opts));
+    // 先发出调用，立刻放掉页面手里的入参（含口令），再等结果。
+    const pending = coda.call(LOCAL, 'accept', input, opts);
+    input = null;
+    ({ node } = await pending);
   } catch (e) {
     input = null;
     invite.button.disabled = false;
-    return show(`接受邀请失败：${e.message}。入网码已清空，请重新粘贴邀请再试`, 'error');
+    return show(`接受邀请失败：${e.message}。入网码和口令已清空，请重新粘贴邀请再试`, 'error');
   }
-  input = null;
   show('已加入通道，正在与对方互认…', 'progress');
   try {
     await coda.call(LOCAL, 'handshake', { node, ...(peerNode ? { peerNode } : {}) }, opts);
