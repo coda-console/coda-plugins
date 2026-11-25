@@ -13,7 +13,7 @@ export const TODAY_CURVE_KIND = 'coda/token-today';     // 48 小时滚动曲线
 export const SLOT_MS = 1_800_000;
 export const FIELDS = ['input', 'output', 'cacheRead', 'cacheWrite', 'turns', 'reportedTurns'];
 
-const BUCKET_KEY = b => JSON.stringify([b.start, b.agent, b.model]);
+const BUCKET_KEY = b => JSON.stringify([b.start, b.person, b.agent, b.service, b.asked, b.served, b.model]);
 const pad = n => String(n).padStart(2, '0');
 
 // ——— 拉取 ———
@@ -21,7 +21,7 @@ const pad = n => String(n).padStart(2, '0');
 /**
  * 把 [from, to) 里的桶全拉出来。`queryBuckets(input)` 就是 `coda.query(usage, 'buckets', input)`。
  * 单次查询最多 500 桶（约 83 小时），所以按 24 小时分片；某片被截断（truncated）就把窗口对半分，一直分到单桶 10 分钟。
- * 同一 (start, agent, model) 只留一条。返回按时间升序的桶；`truncated` 为真表示最小窗口仍被截断，数据可能不全。
+ * 同一 (start, person, agent, service, asked, served, model) 只留一条（同桶内不同身份的分层行互不覆盖）。返回按时间升序的桶；`truncated` 为真表示最小窗口仍被截断，数据可能不全。
  */
 export async function fetchUsageBuckets(queryBuckets, { from, to }) {
   const found = new Map();
@@ -43,7 +43,52 @@ export async function fetchUsageBuckets(queryBuckets, { from, to }) {
     for (const bucket of buckets) found.set(BUCKET_KEY(bucket), bucket);
   };
   for (let start = from; start < to; start += DAY_MS) await window(start, Math.min(start + DAY_MS, to));
-  return { buckets: [...found.values()].sort((a, b) => a.start - b.start || (a.agent < b.agent ? -1 : a.agent > b.agent ? 1 : 0) || (a.model < b.model ? -1 : 1)), truncated };
+  const order = b => [b.agent, b.model, b.person, b.service, b.asked, b.served].map(value => value ?? '');
+  const compare = (a, b) => { const x = order(a), y = order(b); for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return x[i] < y[i] ? -1 : 1; return 0; };
+  return { buckets: [...found.values()].sort((a, b) => a.start - b.start || compare(a, b)), truncated };
+}
+
+// ——— 一行用量：型号名与请求项 ———
+
+/** 接口种类：模型服务引用 `coda://<接口种类>/<UUID>` 里的种类名；没有服务返回 null。服务的 UUID 不出这台机器。 */
+export const serviceKind = ref => (typeof ref === 'string' ? /^coda:\/\/([a-z][a-z0-9-]*)\//.exec(ref)?.[1] ?? null : null);
+/**
+ * 一行显示用的型号名：实际型号 `served`，没有取请求的 `asked`，再没有取未分层的旧标签 `model`；
+ * 后端允许只带 `service` 的行，这时取服务的接口种类名。全插件只在这里算。
+ * `same` 是「同型号映射」的接入点：把不同名字归成一个底层型号，默认不映射、原样返回。
+ */
+export const modelName = (row, same = name => name) => same(row.served ?? row.asked ?? row.model ?? row.api);
+/** 本机桶（coda/usage@1 的 buckets 一行）→ 统一的一行：`api` 是服务的接口种类，计数夹成非负安全整数。 */
+const rowOf = bucket => ({ start: bucket.start, agent: bucket.agent, api: serviceKind(bucket.service), asked: bucket.asked ?? null, served: bucket.served ?? null, model: bucket.model ?? null,
+  ...Object.fromEntries(FIELDS.map(field => [field, counter(bucket[field])])) });
+const identityKey = row => JSON.stringify([row.api ?? null, row.asked ?? null, row.served ?? null, row.model ?? null]);
+/**
+ * 本机桶里算作 identity（这台后端当前的根身份）名下的：`person` 是它，或是空字符串的无身份行；别的身份的行不算。
+ * 同桶不同身份的行本来就不相加，这里只决定谁的行算进当前作者的用量。
+ */
+export const ownBuckets = (buckets, identity) => buckets.filter(bucket => !bucket.person || bucket.person === identity);
+/**
+ * 轮数记在请求行（`served` 为空）上，Token 可能在带 `served` 的行上。请求行只有轮数没有 Token 时，轮数记到同一请求项
+ * （Agent、接口种类、`asked`）下 Token 最多的型号行上（并列取型号名靠前的），请求行随之清空；请求项下没有带 Token 的型号行，轮数就留在请求行。
+ * 同一轮因此只在一行上算。只在读取端的 Tally 里做一次，范围就是这次聚合的全部行（当次查询窗口）；写签名记录时各行原样保留。返回新的行，空行去掉。
+ */
+export function settleTurns(rows) {
+  const copies = rows.map(row => ({ ...row })), groups = new Map();
+  for (const row of copies) {
+    if (row.asked == null) continue;
+    const key = JSON.stringify([row.agent ?? null, row.api ?? null, row.asked]);
+    groups.set(key, [...(groups.get(key) ?? []), row]);
+  }
+  for (const group of groups.values()) {
+    const heaviest = group.filter(row => row.served != null && total(row) > 0).sort((a, b) => total(b) - total(a) || (a.served < b.served ? -1 : 1))[0];
+    if (!heaviest) continue;
+    for (const row of group) {
+      if (row.served != null || total(row) > 0) continue;
+      heaviest.turns += row.turns; heaviest.reportedTurns += row.reportedTurns;
+      row.turns = 0; row.reportedTurns = 0;
+    }
+  }
+  return copies.filter(row => !isEmpty(row));
 }
 
 // ——— 每日汇总（要分享出去的） ———
@@ -93,53 +138,46 @@ function blocksOf(list, clock) {
 
 // ——— 紧凑格式：月块日归档与 48 小时曲线（要分享出去的） ———
 
-// 一条计数就是 [input, output, cacheRead, cacheWrite, turns, reportedTurns]，6 个非负安全整数。
+// 一行的 `n` 就是 [input, output, cacheRead, cacheWrite, turns, reportedTurns]，6 个非负安全整数。
 const KEEPS = [Infinity, 32, 8, 2, 1, 0, 'total'];
 const sortedObject = (map, inner) => Object.fromEntries([...map].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([key, value]) => [key, inner(value)]));
-const zeroRow = () => FIELDS.map(() => 0);
-const addRow = (to, from) => { from.forEach((value, i) => { to[i] += value; }); return to; };
 
-// 桶按 keyOf(start) 分组成 Map<key, Map<agent, Map<model, 计数>>>，空桶不要。
+// 桶按 keyOf(start) 分组成 Map<key, Map<agent, 行[]>>：同一身份的行相加，空桶不要；各行原样保留（含只有轮数的请求行），轮数在读取端的 Tally 里记定。
 function collect(buckets, keyOf) {
   const tree = new Map();
   for (const bucket of buckets ?? []) {
     if (!bucket || isEmpty(bucket) || !Number.isSafeInteger(bucket.start)) continue;
-    const key = keyOf(bucket.start);
+    const key = keyOf(bucket.start), row = rowOf(bucket);
     if (!tree.has(key)) tree.set(key, new Map());
     const agents = tree.get(key);
-    if (!agents.has(bucket.agent)) agents.set(bucket.agent, new Map());
-    const models = agents.get(bucket.agent);
-    models.set(bucket.model, addRow(models.get(bucket.model) ?? zeroRow(), FIELDS.map(field => counter(bucket[field]))));
+    if (!agents.has(row.agent)) agents.set(row.agent, new Map());
+    const rows = agents.get(row.agent), id = identityKey(row);
+    rows.set(id, add(rows.get(id) ?? { ...row, ...zero() }, row));
   }
-  return tree;
+  return new Map([...tree].map(([key, agents]) => [key, new Map([...agents].map(([agent, rows]) => [agent, [...rows.values()]]))]));
 }
-const treeObject = tree => sortedObject(tree, agents => sortedObject(agents, models => sortedObject(models, row => row)));
-// 每个 Agent 只留总量最大的 keep 个模型，其余并进 'other'；总量不变。
+// 一行写成 `{ a: asked, s: served, i: 接口种类, m: 未分层的旧标签, n: [6 个数] }`，没有的不写；不带服务的 UUID。
+const wireKey = row => JSON.stringify([row.asked ?? '', row.served ?? '', row.api ?? '', row.model ?? '']);
+const wireRow = row => ({ ...(row.asked == null ? {} : { a: row.asked }), ...(row.served == null ? {} : { s: row.served }), ...(row.api == null ? {} : { i: row.api }),
+  ...(row.model == null ? {} : { m: row.model }), n: FIELDS.map(field => row[field]) });
+const treeObject = tree => sortedObject(tree, agents => sortedObject(agents, rows => [...rows].sort((a, b) => (wireKey(a) < wireKey(b) ? -1 : wireKey(a) > wireKey(b) ? 1 : 0)).map(wireRow)));
+const labelRow = (model, rows) => ({ api: null, asked: null, served: null, model, ...rows.reduce(add, zero()) });
+// 每个 Agent 只留总量（按型号名）最大的 keep 个型号，其余各行并成一行旧标签 'other'；总量不变。
 function fold(tree, keep) {
   if (keep === Infinity) return tree;
-  // 最终兜底：每格所有 Agent 和模型合成一条 { _: { _: 合计 } }。
-  if (keep === 'total') return new Map([...tree].map(([key, agents]) => [key, new Map([['_', new Map([['_', [...agents.values()].flatMap(models => [...models.values()]).reduce(addRow, zeroRow())]])]])]));
+  // 最终兜底：每格所有 Agent 和型号合成一条 { _: [{ m: '_' }] }。
+  if (keep === 'total') return new Map([...tree].map(([key, agents]) => [key, new Map([['_', [labelRow('_', [...agents.values()].flat())]]])]));
   const totals = new Map();
-  for (const agents of tree.values()) for (const [agent, models] of agents) {
+  for (const agents of tree.values()) for (const [agent, rows] of agents) {
     if (!totals.has(agent)) totals.set(agent, new Map());
-    for (const [model, row] of models) totals.get(agent).set(model, (totals.get(agent).get(model) ?? 0) + row[0] + row[1] + row[2] + row[3]);
+    for (const row of rows) totals.get(agent).set(modelName(row), (totals.get(agent).get(modelName(row)) ?? 0) + total(row));
   }
-  const kept = new Map([...totals].map(([agent, models]) => [agent,
-    new Set([...models].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, keep).map(([model]) => model))]));
-  const out = new Map();
-  for (const [key, agents] of tree) {
-    const next = new Map();
-    for (const [agent, models] of agents) {
-      const merged = new Map();
-      for (const [model, row] of models) {
-        const name = kept.get(agent).has(model) ? model : 'other';
-        merged.set(name, addRow(merged.get(name) ?? zeroRow(), row));
-      }
-      next.set(agent, merged);
-    }
-    out.set(key, next);
-  }
-  return out;
+  const kept = new Map([...totals].map(([agent, names]) => [agent,
+    new Set([...names].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, keep).map(([name]) => name))]));
+  return new Map([...tree].map(([key, agents]) => [key, new Map([...agents].map(([agent, rows]) => {
+    const rest = rows.filter(row => !kept.get(agent).has(modelName(row)));
+    return [agent, [...rows.filter(row => kept.get(agent).has(modelName(row))), ...(rest.length ? [labelRow('other', rest)] : [])]];
+  }))]));
 }
 // 先原样，放不下再逐步合并小模型、最后合成一条合计，直到 maxBytes 以内；合计也放不下（预算小得离谱）就抛错，不返回超限的记录体。
 function fitted(build, maxBytes) {
@@ -148,12 +186,16 @@ function fitted(build, maxBytes) {
   throw new Error(`记录体即使合成合计也有 ${size(body)} 字节，超过 ${maxBytes} 字节的预算`);
 }
 
+// 签名记录的版本：3 起每行带 asked、served、接口种类（见 wireRow）；读取端也认 2（每个型号一个旧标签）。
+const RECORD_VERSION = 3;
+const READABLE_VERSIONS = [2, 3];
+
 // 一月的块：整月；放不下按半月（-1：1–15 日，-2：16–31 日）；再不行按周（-w1…-w5，每 7 日）。同一个月只用一种拆法，id 不会互相覆盖。
 const MONTH_PARTS = [() => '', day => (day <= 15 ? '-1' : '-2'), day => `-w${Math.ceil(day / 7)}`];
 
 /**
- * 按 UTC 日打成月块日归档 `{ 'YYYY-MM[-1|-2|-wN]': { v: 2, days: { 'YYYY-MM-DD': { [agent]: { [model]: [6 个数] } } } } }`。
- * 记录 id 是 `<sourceId>/<键>`。每块序列化后不超过 maxBytes：先拆半月、再拆周，仍超就合并小模型。
+ * 按 UTC 日打成月块日归档 `{ 'YYYY-MM[-1|-2|-wN]': { v: 3, days: { 'YYYY-MM-DD': { [agent]: [{ a, s, i, m, n }] } } } }`（一行的写法见 wireRow）。
+ * 记录 id 是 `<sourceId>/<键>`。每块序列化后不超过 maxBytes：先拆半月、再拆周，仍超就合并小型号。
  */
 export function buildArchiveBodies(buckets, { maxBytes = MAX_BODY_BYTES } = {}) {
   const days = collect(buckets, utcDate);
@@ -165,7 +207,7 @@ export function buildArchiveBodies(buckets, { maxBytes = MAX_BODY_BYTES } = {}) 
   }
   const bodies = {};
   for (const [month, monthDays] of months) {
-    const build = chunk => keep => ({ v: 2, days: treeObject(fold(chunk, keep)) });
+    const build = chunk => keep => ({ v: RECORD_VERSION, days: treeObject(fold(chunk, keep)) });
     for (let level = 0; level < MONTH_PARTS.length; level++) {
       const chunks = new Map();
       for (const [date, tree] of monthDays) {
@@ -182,15 +224,15 @@ export function buildArchiveBodies(buckets, { maxBytes = MAX_BODY_BYTES } = {}) 
 }
 
 /**
- * 最近 windowHours 小时的滚动曲线 `{ v: 2, slotMs, windowStart, windowEnd, slots: { '<槽起点毫秒>': { [agent]: { [model]: [6 个数] } } } }`，
+ * 最近 windowHours 小时的滚动曲线 `{ v: 3, slotMs, windowStart, windowEnd, slots: { '<槽起点毫秒>': { [agent]: [{ a, s, i, m, n }] } } }`，
  * 窗口 [windowStart, windowEnd) 对齐 slotMs 且包含 now 所在的槽。记录 id 就是 sourceId，每次覆盖。
- * 超过 maxBytes 先降成 60 分钟槽，再合并小模型。
+ * 超过 maxBytes 先降成 60 分钟槽，再合并小型号。
  */
 export function buildTodayBody(buckets, { now, slotMs = SLOT_MS, windowHours = 48, maxBytes = MAX_BODY_BYTES } = {}) {
   const build = (ms, keep) => {
     const windowEnd = (Math.floor(now / ms) + 1) * ms, windowStart = windowEnd - windowHours * 3_600_000;
     const inside = (buckets ?? []).filter(bucket => bucket?.start >= windowStart && bucket.start < windowEnd);
-    return { v: 2, slotMs: ms, windowStart, windowEnd, slots: treeObject(fold(collect(inside, at => Math.floor(at / ms) * ms), keep)) };
+    return { v: RECORD_VERSION, slotMs: ms, windowStart, windowEnd, slots: treeObject(fold(collect(inside, at => Math.floor(at / ms) * ms), keep)) };
   };
   const coarse = slotMs < 3_600_000 ? 3_600_000 : slotMs;
   const first = build(slotMs, Infinity);
@@ -271,24 +313,39 @@ export function readUsageRecord(record, { from, to }) {
 const ARCHIVE_ID = /^([^\s/]{1,100})\/(\d{4})-(\d{2})(?:-(1|2|w[1-5]))?$/;
 const SOURCE_ID = /^[^\s/]{1,100}$/;
 const validRow = row => Array.isArray(row) && row.length === FIELDS.length && row.every(value => Number.isSafeInteger(value) && value >= 0);
-// { [agent]: { [model]: [6 个数] } } 摊平成行；不合格的丢掉。
-function rowsOf(agents) {
+const API_KIND = /^[a-z][a-z0-9-]{0,63}$/;
+const countsOf = row => Object.fromEntries(FIELDS.map((field, i) => [field, row[i]]));
+// asked、served、旧标签是身份：记录两端原样保存、按字符串完全相等比较，边界上只验类型与长度（同后端：1–200 字、不含 NUL）；清洗留给渲染层。
+const validName = value => typeof value === 'string' && value.length > 0 && Array.from(value).length <= 200 && !value.includes('\0');
+// v3 的一行 `{ a, s, i, m, n }`：旧标签 m 单独成立，否则 a、s、i 至少有一个（只带服务的行也合法）；任何一项不合格整行丢弃，返回 null。
+function wireRead(item) {
+  if (!item || typeof item !== 'object' || !validRow(item.n)) return null;
+  const [asked, served, model] = [item.a, item.s, item.m].map(value => value ?? null), api = item.i ?? null;
+  if ([asked, served, model].some(value => value !== null && !validName(value)) || (api !== null && !(typeof api === 'string' && API_KIND.test(api)))) return null;
+  if (model !== null ? asked !== null || served !== null || api !== null : asked === null && served === null && api === null) return null;
+  return { api, asked, served, model, ...countsOf(item.n) };
+}
+// 一格里的 Agent → 行摊平成行；不合格的丢掉。v2 是 { [agent]: { [model]: [6 个数] } }（旧标签），v3 是 { [agent]: [{ a, s, i, m, n }] }。
+function rowsOf(agents, version) {
   const rows = [];
   if (!agents || typeof agents !== 'object') return rows;
-  for (const [agent, models] of Object.entries(agents)) {
-    if (!models || typeof models !== 'object') continue;
-    for (const [model, row] of Object.entries(models)) {
-      if (validRow(row)) rows.push({ agent: cleanText(agent, 100) ?? '?', model: cleanText(model, 200) ?? '?', ...Object.fromEntries(FIELDS.map((field, i) => [field, row[i]])) });
+  for (const [agent, list] of Object.entries(agents)) {
+    const name = cleanText(agent, 100) ?? '?';
+    if (version === 2) {
+      if (!list || typeof list !== 'object') continue;
+      for (const [model, row] of Object.entries(list)) if (validRow(row)) rows.push({ agent: name, api: null, asked: null, served: null, model: cleanText(model, 200) ?? '?', ...countsOf(row) });
+    } else if (Array.isArray(list)) {
+      for (const item of list) { const row = wireRead(item); if (row) rows.push({ agent: name, ...row }); }
     }
   }
   return rows;
 }
 const partRange = part => (part === '1' ? [1, 15] : part === '2' ? [16, 31] : part ? [Number(part[1]) * 7 - 6, Number(part[1]) * 7 + (part[1] === '5' ? 3 : 0)] : [1, 31]);
 
-/** 一条 `coda/token-day` 记录：`{ sourceId, days: [{ date, start（UTC 零点）, rows }] }`；id 或版本不对返回 null，日期不在 id 的月份与分块里的、计数不合格的丢掉。 */
+/** 一条 `coda/token-day` 记录（v2、v3）：`{ sourceId, days: [{ date, start（UTC 零点）, rows }] }`；id 或版本不对返回 null，日期不在 id 的月份与分块里的、计数不合格的丢掉。 */
 export function readArchiveRecord(record) {
   const matched = ARCHIVE_ID.exec(String(record?.id ?? ''));
-  if (!matched || record.body?.v !== 2 || !record.body.days || typeof record.body.days !== 'object') return null;
+  if (!matched || !READABLE_VERSIONS.includes(record.body?.v) || !record.body.days || typeof record.body.days !== 'object') return null;
   const [, sourceId, year, month, part] = matched;
   const [first, last] = partRange(part);
   const days = [];
@@ -297,22 +354,22 @@ export function readArchiveRecord(record) {
     if (!at || at[1] !== year || at[2] !== month) continue;
     const start = Date.UTC(Number(year), Number(month) - 1, Number(at[3]));
     if (utcDate(start) !== date || Number(at[3]) < first || Number(at[3]) > last) continue;
-    days.push({ date, start, rows: rowsOf(agents) });
+    days.push({ date, start, rows: rowsOf(agents, record.body.v) });
   }
   return { sourceId, days };
 }
 
-/** 一条 `coda/token-today` 记录：`{ sourceId, slotMs, windowStart, windowEnd, slots: [{ start, rows }] }`；窗口、槽位对不齐或不在窗口内的丢掉。 */
+/** 一条 `coda/token-today` 记录（v2、v3）：`{ sourceId, slotMs, windowStart, windowEnd, slots: [{ start, rows }] }`；窗口、槽位对不齐或不在窗口内的丢掉。 */
 export function readTodayRecord(record) {
   const id = String(record?.id ?? ''), body = record?.body;
-  if (!SOURCE_ID.test(id) || body?.v !== 2 || ![SLOT_MS, 3_600_000].includes(body.slotMs)) return null;
+  if (!SOURCE_ID.test(id) || !READABLE_VERSIONS.includes(body?.v) || ![SLOT_MS, 3_600_000].includes(body.slotMs)) return null;
   const { slotMs, windowStart, windowEnd } = body;
   if (!Number.isSafeInteger(windowStart) || !Number.isSafeInteger(windowEnd) || windowStart % slotMs || windowEnd % slotMs || windowEnd <= windowStart || !body.slots || typeof body.slots !== 'object') return null;
   const slots = [];
   for (const [key, agents] of Object.entries(body.slots)) {
     const start = /^\d{1,16}$/.test(key) ? Number(key) : NaN;
     if (!Number.isSafeInteger(start) || start % slotMs || start < windowStart || start >= windowEnd) continue;
-    slots.push({ start, rows: rowsOf(agents) });
+    slots.push({ start, rows: rowsOf(agents, body.v) });
   }
   return { sourceId: id, slotMs, windowStart, windowEnd, slots };
 }
@@ -322,25 +379,54 @@ export function readTodayRecord(record) {
 const total = c => c.input + c.output + c.cacheRead + c.cacheWrite;
 export const compareEntries = (a, b) => b.totalTokens - a.totalTokens || b.turns - a.turns || (a.author < b.author ? -1 : a.author > b.author ? 1 : 0);
 
+// 汇总里一个型号名下的请求项（asked、接口种类）；旧标签行的 asked 取标签本身。
+const itemOf = cell => ({ asked: cell.asked, api: cell.api, ...Object.fromEntries(FIELDS.map(field => [field, cell[field]])), totalTokens: total(cell) });
+const text = value => value ?? '';
+const byCount = (a, b) => total(b) - total(a) || b.turns - a.turns;
+
+/**
+ * 按型号名（modelName）聚合：同名的行合成一行，名下按请求项（asked、接口种类）分开列出；轮数按 settleTurns 记在请求项上，
+ * 型号行的轮数是它名下请求项之和，同一轮只算一次。`add` 收一行（`{ agent, api, asked, served, model, ...计数 }`），
+ * `addModel` 收另一份 `result().models` 里的一项，合并多台、多个来源时用。
+ */
 export class Tally {
-  constructor() { this.sum = zero(); this.models = new Map(); }
+  constructor() { this.sum = zero(); this.rows = new Map(); this.cells = new Map(); }
   add(row) {
     add(this.sum, row);
-    if (!this.models.has(row.model)) this.models.set(row.model, zero());
-    add(this.models.get(row.model), row);
+    const key = JSON.stringify([row.agent ?? null, identityKey(row)]);
+    if (!this.rows.has(key)) this.rows.set(key, { agent: row.agent ?? null, api: row.api ?? null, asked: row.asked ?? null, served: row.served ?? null, model: row.model ?? null, ...zero() });
+    add(this.rows.get(key), row);
+  }
+  addModel(model) {
+    add(this.sum, model);
+    for (const item of model.items ?? []) this.put(this.cells, model.model, item.api, item.asked, item);
+  }
+  put(cells, name, api, asked, counts) {
+    const key = JSON.stringify([name, api, asked]);
+    if (!cells.has(key)) cells.set(key, { model: name, api, asked, ...zero() });
+    add(cells.get(key), counts);
   }
   get empty() { return FIELDS.every(field => this.sum[field] === 0); }
   result() {
-    const models = [...this.models].map(([model, counts]) => ({ model, ...counts, totalTokens: total(counts) }))
-      .sort((a, b) => b.totalTokens - a.totalTokens || b.turns - a.turns || (a.model < b.model ? -1 : 1));
-    return { ...this.sum, totalTokens: total(this.sum), models };
+    const cells = new Map([...this.cells].map(([key, cell]) => [key, { ...cell }]));
+    for (const row of settleTurns([...this.rows.values()])) this.put(cells, modelName(row), row.api, row.asked ?? row.model, row);
+    const models = new Map();
+    for (const cell of cells.values()) {
+      if (!models.has(cell.model)) models.set(cell.model, { model: cell.model, ...zero(), items: [] });
+      const model = models.get(cell.model);
+      add(model, cell);
+      model.items.push(itemOf(cell));
+    }
+    const list = [...models.values()].map(model => ({ ...model, totalTokens: total(model), items: model.items.sort((a, b) => byCount(a, b) || (text(a.asked) < text(b.asked) ? -1 : text(a.asked) > text(b.asked) ? 1 : text(a.api) < text(b.api) ? -1 : 1)) }))
+      .sort((a, b) => byCount(a, b) || (a.model < b.model ? -1 : 1));
+    return { ...this.sum, totalTokens: total(this.sum), models: list };
   }
 }
 
 /** 汇总一批桶（本机自己的）。 */
 export function summarizeBuckets(buckets, { from, to }) {
   const tally = new Tally();
-  for (const bucket of buckets ?? []) if (bucket.start >= from && bucket.start < to) tally.add({ ...bucket, ...Object.fromEntries(FIELDS.map(field => [field, counter(bucket[field])])) });
+  for (const bucket of buckets ?? []) if (bucket.start >= from && bucket.start < to) tally.add(rowOf(bucket));
   return tally.result();
 }
 
@@ -354,8 +440,7 @@ function latestOf(records, kind, known) {
   }
   return [...latest.values()];
 }
-const localRows = (buckets, from, to) => buckets.filter(bucket => bucket.start >= from && bucket.start < to)
-  .map(bucket => ({ ...bucket, ...Object.fromEntries(FIELDS.map(field => [field, counter(bucket[field])])) }));
+const localRows = (buckets, from, to) => buckets.filter(bucket => bucket.start >= from && bucket.start < to).map(rowOf);
 
 // 一台远端机器（author + sourceId）在 [from, to) 里的行。逐个 UTC 日选来源：
 // - 这一日在查询窗口内的那一段 [max(from, 日零点), min(to, 日末))，完整落在曲线的 [windowStart, windowEnd) 里：取曲线槽位（精确到窗口边界）；

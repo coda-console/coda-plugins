@@ -361,3 +361,36 @@ test('分享状态：A 回报关闭、B 的 hello 被拒：B 那一行写读取�
   page.reply(status(false), { id: 'y' });
   assert.ok(!page.text().includes('读取分享状态失败') && page.text().includes('没有向好友分享'), '之后回报了就恢复');
 });
+
+test('型号行可展开看请求项：多个请求项或有服务才可展开，点开列出 asked、接口种类、Token 与回合；只有同名请求项且没有服务的不可展开', async t => {
+  const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, turns: 0, reportedTurns: 0 };
+  const row = over => ({ start: DAY + 1000, person: '', agent: 'codex', service: null, asked: 'gpt-5', served: null, ...zero, ...over });
+  const local = [row({ service: 'coda://openai-responses/11111111-2222-3333-4444-555555555555', served: 'gpt-5-2025', input: 900 }), row({ service: 'coda://openai-responses/11111111-2222-3333-4444-555555555555', turns: 2, reportedTurns: 2 }),
+    row({ asked: 'gpt-5-latest', served: 'gpt-5-2025', input: 100 }), row({ asked: 'plain', input: 50, turns: 1, reportedTurns: 1 })];
+  const { page, log } = await open(t, [X]);
+  page.reply(status(false), { id: 'x' });
+  await flush();
+  answer(page, log, 'x', reply({ selfAuthor: A, sourceId: 'x', local }));
+  const heads = () => page.all(n => n.tag === 'button' && n.attrs['aria-expanded'] !== undefined && n.attrs.class === 'bar-head');
+  assert.equal(heads().length, 1, '只有 gpt-5-2025 可展开；plain 只有一个同名请求项且没有服务');
+  assert.ok(!page.text().includes('openai-responses'));
+  heads()[0].fire('click');
+  const items = page.all(n => n.attrs.class === 'items')[0];
+  assert.deepEqual(items.children.map(item => item.textContent), ['gpt-5openai-responses900 · 2 回合', 'gpt-5-latest100 · 0 回合']);
+  assert.ok(!page.text().includes('11111111'));
+  heads()[0].fire('click');
+  assert.equal(page.all(n => n.attrs.class === 'items').length, 0);
+});
+
+test('本机页面：只带服务的行显示接口种类名，不是空白标题；名字里的控制字符只在显示时清洗', async t => {
+  const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, turns: 0, reportedTurns: 0 };
+  const local = [{ start: DAY + 1000, person: '', agent: 'codex', service: 'coda://openai-responses/11111111-2222-3333-4444-555555555555', asked: null, served: null, ...zero, input: 900, turns: 1, reportedTurns: 1 },
+    { start: DAY + 1000, person: '', agent: 'codex', service: null, asked: 'gpt‮-5', served: null, ...zero, input: 100 }];
+  const { page, log } = await open(t, [X]);
+  page.reply(status(false), { id: 'x' });
+  await flush();
+  answer(page, log, 'x', reply({ selfAuthor: A, sourceId: 'x', local }));
+  const names = page.all(n => n.tag === 'span' && n.attrs.class === 'truncate').map(n => n.textContent);
+  assert.ok(names.includes('openai-responses') && names.includes('gpt -5'), names.join('|'));
+  assert.equal(page.all(n => n.attrs.class === 'bar-head').length, 0, '只有一个请求项且名字就是服务名：不展开');
+});

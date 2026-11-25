@@ -189,10 +189,10 @@ test('分享开着：经网关发布月块日归档与 48 小时曲线（只给 
   const [day, today] = host.published;
   assert.equal(day.id, `${sourceId}/${monthOf(at)}`);
   assert.deepEqual(day.body, buildArchiveBodies([bucket(at)])[monthOf(at)]);
-  assert.deepEqual(day.body.days[new Date(at).toISOString().slice(0, 10)].claude.opus, [10, 5, 100, 1, 2, 2]);
+  assert.deepEqual(day.body.days[new Date(at).toISOString().slice(0, 10)].claude.find(row => row.m === 'opus').n, [10, 5, 100, 1, 2, 2]);
   assert.equal(today.id, sourceId);
   assert.equal(today.body.slotMs, 1_800_000);
-  assert.deepEqual(today.body.slots[Math.floor(at / 1_800_000) * 1_800_000].claude.opus, [10, 5, 100, 1, 2, 2]);
+  assert.deepEqual(today.body.slots[Math.floor(at / 1_800_000) * 1_800_000].claude.find(row => row.m === 'opus').n, [10, 5, 100, 1, 2, 2]);
   assert.equal(page.last('status').syncState, 'synced');
   // 再同步：网关报已同步过（skipped），没有新写入。
   page.tell({ type: 'sync' });
@@ -616,7 +616,7 @@ test('分享时月块拆法变了，同月不再用的旧块被逐条撤回', as
   mock.timers.enable({ apis: ['Date'], now: at });
   t.after(() => mock.timers.reset());
   const big = [];
-  for (let d = 1; d <= 20; d++) for (let m = 0; m < 60; m++) big.push(bucket(Date.UTC(2026, 10, d, 1), { model: `model-${m}-${'x'.repeat(30)}` }));
+  for (let d = 1; d <= 20; d++) for (let m = 0; m < 50; m++) big.push(bucket(Date.UTC(2026, 10, d, 1), { model: `model-${m}-${'x'.repeat(30)}` }));
   const host = fake({ state, settings: { 'token-board.share': true }, usage: [bucket(Date.UTC(2026, 10, 1, 1))] });
   activate(host.coda);
   const page = await openAndSync(host);
@@ -844,6 +844,48 @@ test('页面取榜单：本机用量、经网关按作者翻页读记录（沿 c
   assert.ok(social.every(([, op, input]) => op !== 'records' || input.limit === 200));
   for (const kind of [dayKind, todayKind]) assert.ok(social.some(([, , input]) => input.kind === kind && input.author === FRIEND), kind);
   assert.ok(social.some(([, , input]) => input.kind === dayKind && input.author === AUTHOR), '自己的也读');
+});
+
+// 本机桶按 person（这台后端的根身份）归属：当前身份与无身份（空字符串）的行算当前作者的，别的身份的行不算，也不进以它签名的记录。
+const OTHER = `ed25519:${'c'.repeat(64)}`;
+const tagged = (at, person, over = {}) => bucket(at, { person, service: 'coda://openai-responses/11111111-2222-3333-4444-555555555555', asked: 'gpt-5', served: null, model: undefined, input: 1000, output: 0, cacheRead: 0, cacheWrite: 0, ...over });
+
+test('本机用量按身份归属：别的 person 的行不计入当前作者，页面概览、榜单与曲线都一样；无身份的行照算', async t => {
+  const state = mkdir(t), at = startOfBucket(now);
+  const host = fake({ state, usage: [tagged(at, AUTHOR), tagged(at, ''), tagged(at, OTHER, { input: 50_000 }), tagged(at, AUTHOR, { served: 'gpt-5-2025', input: 20 })] });
+  activate(host.coda);
+  const page = host.open();
+  page.tell({ type: 'board', range: 'today', id: 1 });
+  const board = await page.waitFor('board');
+  assert.equal(board.local.input, 2020, '页面概览：自己的、无身份的算，别人的 50000 不算');
+  assert.equal(board.sources.find(source => source.local).input, 2020);
+  assert.equal(board.curve.reduce((n, slot) => n + slot.input, 0), 2020);
+  assert.deepEqual(board.local.models.map(m => [m.model, m.input]), [['gpt-5', 2000], ['gpt-5-2025', 20]]);
+});
+
+test('本机用量按身份归属：身份读不到时没有作者可归属，本机统计照常（不按身份切）', async t => {
+  const state = mkdir(t), at = startOfBucket(now);
+  const host = fake({ state, usage: [tagged(at, AUTHOR), tagged(at, OTHER)] });
+  host.gateway = false;
+  activate(host.coda);
+  const page = host.open();
+  page.tell({ type: 'board', range: 'today', id: 1 });
+  assert.equal((await page.waitFor('board')).local.input, 2000);
+});
+
+test('分享：以当前作者签名发布的记录只含它自己与无身份的行，别的 person 的行不进，记录里也没有服务引用', async t => {
+  freeze(t);
+  const state = mkdir(t), at = startOfBucket(now);
+  const host = fake({ state, settings: { 'token-board.share': true }, usage: [tagged(at, AUTHOR), tagged(at, ''), tagged(at, OTHER, { asked: 'secret-model', input: 50_000 })] });
+  activate(host.coda);
+  await openAndSync(host);
+  const [day, today] = host.published;
+  assert.deepEqual(day.body, buildArchiveBodies([tagged(at, AUTHOR), tagged(at, '')])[monthOf(at)]);
+  assert.deepEqual(today.body, buildTodayBody([tagged(at, AUTHOR), tagged(at, '')], { now }));
+  const text = JSON.stringify(host.published);
+  assert.ok(!text.includes('secret-model') && !text.includes('11111111') && !text.includes('coda://'));
+  assert.ok(text.includes('"i":"openai-responses"') && text.includes('"a":"gpt-5"'));
+  assert.equal(day.body.days[new Date(at).toISOString().slice(0, 10)].claude[0].n[0], 2000);
 });
 
 test('网关的 friends 带 truncated 也不影响榜单：榜单不再读它', async t => {
@@ -1141,7 +1183,7 @@ test('统一汇总：旧块 / legacy 的撤回返回 queued、needs_cert 时整�
   // 本机上一轮记着一个整月块；这一轮月块拆成半月，整月块是要撤的旧块。
   writeFileSync(join(state, 'published.json'), JSON.stringify({ [`${AUTHOR}:${dayKind}:machine-1/2026-11`]: true }));
   const big = [];
-  for (let d = 1; d <= 20; d++) for (let m = 0; m < 60; m++) big.push(bucket(Date.UTC(2026, 10, d, 1), { model: `model-${m}-${'x'.repeat(30)}` }));
+  for (let d = 1; d <= 20; d++) for (let m = 0; m < 50; m++) big.push(bucket(Date.UTC(2026, 10, d, 1), { model: `model-${m}-${'x'.repeat(30)}` }));
   const host = fake({ state, settings: { 'token-board.share': true }, usage: big });
   activate(host.coda);
   const page = host.open();

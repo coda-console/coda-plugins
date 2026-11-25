@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { join } from 'node:path';
 import {
   DAY_ARCHIVE_KIND, DAY_MS, RANGES, SLOT_MS, TODAY_CURVE_KIND, USAGE_RECORD_KIND, aggregateLeaderboard, aggregateTodayCurve, buildArchiveBodies, buildTodayBody,
-  fetchUsageBuckets, isWithdrawn, ownedBySource, rangeWindow, summarizeBuckets,
+  fetchUsageBuckets, isWithdrawn, ownBuckets, ownedBySource, rangeWindow, summarizeBuckets,
 } from './lib/usage.mjs';
 
 const USAGE = { kind: 'coda/usage@1', id: 'local' };
@@ -242,13 +242,12 @@ class Board {
     await this.refreshSource();
     const result = { type: 'board', id, range, from, to, share: this.share, accord: false, selfAuthor: null, errors: [], truncated: { usage: false, friends: false },
       friendCount: 0, local: null, people: [], sources: [], retired: [], curve: [], syncState: this.share ? 'no_gateway' : 'disabled' };
-    let localBuckets = null;   // null：本机用量没读到，不能当成「没有用量」
+    let fetchedBuckets = null;   // null：本机用量没读到，不能当成「没有用量」
     try {
       const fetched = await fetchUsageBuckets(input => this.coda.query(USAGE, 'buckets', input), { from, to });
-      localBuckets = fetched.buckets;
+      fetchedBuckets = fetched.buckets;
       result.truncated.usage = fetched.truncated;
     } catch (e) { result.errors.push(`读不到本机用量：${message(e)}`); }
-    result.local = localBuckets && summarizeBuckets(localBuckets, { from, to });
 
     let gateway = null, friends = [], selfAuthor = null;
     try { gateway = await this.gateway(); } catch (e) { result.errors.push(`读不到好友：${message(e)}`); }
@@ -276,6 +275,10 @@ class Board {
         if (failed) result.errors.push('读不到一位好友的用量');
       }
     }
+    // 本机桶按 person（这台后端的根身份）归属：只有当前身份与无身份的行算当前作者的。身份读不到时没有作者可归属，本机统计照常，不按身份切。
+    const identity = selfAuthor ?? gateway?.status.author ?? null;
+    const localBuckets = fetchedBuckets && (identity ? ownBuckets(fetchedBuckets, identity) : fetchedBuckets);
+    result.local = localBuckets && summarizeBuckets(localBuckets, { from, to });
     const shared = { selfAuthor, selfSourceId: this.sourceId, excludedSourceIds: this.source.legacy, localBuckets, friends };
     const board = aggregateLeaderboard({ ...shared, legacyUsageRecords: records[USAGE_RECORD_KIND], dayRecords: records[DAY_ARCHIVE_KIND], todayRecords: records[TODAY_CURVE_KIND], from, to });
     // 页面用 sources 算合计，用 people 的作者地址映射显示 ID，并读取分享状态。
@@ -361,7 +364,8 @@ class Board {
         const { certState, pausedKinds = [] } = gateway.status;
         const now = Date.now(), d = new Date(now - ARCHIVE_DAYS * DAY_MS);
         const from = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1), sourceId = this.sourceId;
-        const { buckets } = await fetchUsageBuckets(input => this.coda.query(USAGE, 'buckets', input), { from, to: now + 1 });
+        // 发布的只有这个作者名下的用量：person 是它或无身份的行；别的身份的行不进以它签名的记录。
+        const buckets = ownBuckets((await fetchUsageBuckets(input => this.coda.query(USAGE, 'buckets', input), { from, to: now + 1 })).buckets, author);
         const jobs = [...Object.entries(buildArchiveBodies(buckets)).map(([part, body]) => [DAY_ARCHIVE_KIND, `${sourceId}/${part}`, body]), [TODAY_CURVE_KIND, sourceId, buildTodayBody(buckets, { now })]];
         const sent = [];
         let switched = false;
