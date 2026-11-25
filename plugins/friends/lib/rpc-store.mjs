@@ -42,7 +42,7 @@ export const isCorrupt = error => error?.code === 'corrupt';
 
 // ---- 条目的形状 ----
 
-// 授权行：`holder.machine` 是授予时本机的机器钥匙（持有方始终以机器出现，机器是 `target.owner`）；`granteePerson` 是被授权的好友当时是不是个人作者
+// 授权行：`holder.machine` 是授予时本机的机器钥匙（持有方始终以机器出现）；`target.owner` 是目标记录所在的后端：本机的，或同一空间里本机作网关授出的别的机器；`granteePerson` 是被授权的好友当时是不是个人作者
 // （好友表的 `certified`，宿主还不写时是 null）。
 const isFlag = value => typeof value === 'boolean';
 // 授权号以外的各项：新授权在 store 里查重没命中才生成授权号，先按这些校验。
