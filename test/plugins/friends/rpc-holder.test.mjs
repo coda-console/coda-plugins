@@ -138,6 +138,8 @@ function execFake() {
     return Promise.race([job.done, local]);
   };
   fake.release = (id, result = ok(fake.jobs.get(id).input.command)) => fake.jobs.get(id).resolve(result);
+  // 到了调用给的时限内核放弃（同 coda.call 的 timeout：放弃并发取消），以 timeout、unknown 失败。
+  fake.expire = id => fake.jobs.get(id).reject(fail('timeout', '调用超过了期限，已放弃', 'unknown'));
   fake.pending = () => [...fake.jobs.values()].filter(job => !job.settled).length;
   // 内核过了保留期，忘掉所有幂等键：之后同一个键再调就是新调用。
   fake.forget = () => fake.jobs.clear();
@@ -243,6 +245,12 @@ const cancelOf = (h, body, at = h.clock.now) => {
   h.accord.inject({ author: body.caller, kind: 'friends/rpc-call', id: body.request, body: cancelRecord(body, at).body, audience: [body.holder] });
 };
 const rejections = async (h, code) => (await h.ledger({ outcome: 'rejected' })).filter(row => code === undefined || row.code === code);
+// 准入前就拒、又签回了失败终态的（授权在、请求方是被授权人且仍是好友）：回答只有一条 failed，effects none，操作记录记 failed 与原因。
+const refusedWith = (h, body) => {
+  const all = h.answers(body.caller, body.request), last = h.lastAnswer(body.caller, body.request)?.body;
+  return all.length === 1 && last?.state === 'failed' && last.error.effects === 'none' ? last.error.code : `answers ${JSON.stringify(all)}`;
+};
+const refusals = async (h, code) => (await h.ledger({ outcome: 'failed' })).filter(row => row.code === code);
 
 // ---- 授予与撤销 ----
 
@@ -306,9 +314,9 @@ test('granting the same friend the same target twice gives back the one live gra
   assert.deepEqual(await live(), []);
   const body = send(h, { grant: first.grant });
   await h.settle();
-  assert.deepEqual(h.answers(F1, body.request), []);
+  assert.equal(refusedWith(h, body), 'revoked');
   assert.equal(h.exec.runs, 0);
-  assert.equal((await rejections(h, 'revoked'))[0].count, 1);
+  assert.equal((await refusals(h, 'revoked')).length, 1);
 
   const renewed = await h.grant();
   assert.notEqual(renewed.grant, first.grant);
@@ -353,9 +361,9 @@ test('revoking is written to disk first and takes effect even when the retractio
   assert.deepEqual(h.accord.calls.at(-1), { kind: 'friends/rpc-grant', id: grant, body: {}, audience: [], signer: 'machine', expectAuthor: MK });
   const body = send(h, { grant });
   await h.settle();
-  assert.deepEqual(h.answers(F1, body.request), []);
+  assert.equal(refusedWith(h, body), 'revoked');
   assert.equal(h.exec.runs, 0);
-  assert.equal((await rejections(h, 'revoked'))[0].count, 1);
+  assert.equal((await refusals(h, 'revoked')).length, 1);
   await assert.rejects(h.holder.self['grants.revoke']({ grant: 'no-such-grant' }), error => error.code === 'not_found');
 });
 
@@ -378,7 +386,7 @@ test('a grant whose target is gone ends for good: it is no longer admitted, its 
   const body = send(h, { grant });
   await h.settle();
   assert.equal(h.exec.runs, 0);
-  assert.deepEqual(h.answers(F1, body.request), []);
+  assert.equal(refusedWith(h, body), 'target_missing');
 });
 
 // ---- 执行 ----
@@ -394,9 +402,9 @@ test('a request runs once: running is answered first, then the outcome; the answ
   assert.deepEqual(h.exec.calls.map(call => [call.ref, call.input, call.id]), [
     [{ kind: MACHINE, id: 'rx-1' }, { command: 'echo one', cwd: '/tmp', timeout: 30, stdin: 'x' }, idempotencyKey(F1, request)],
     [{ kind: MACHINE, id: 'rx-1' }, { command: 'echo two' }, idempotencyKey(F2, request)]]);
-  // 期限到最晚启动时刻加命令时限（再加 remote-exec 自己的 30 秒收尾）。
-  assert.equal(h.exec.calls[0].timeout, one.expiresAt - START + 30_000 + 30_000);
-  assert.equal(h.exec.calls[1].timeout, two.expiresAt - START + 120_000 + 30_000);
+  // 跨机调用的时限是命令时限加 60 秒（remote-exec 自己的 30 秒收尾，再留 30 秒送回结局），与最晚启动时刻无关：排着没送出的到点就放弃。
+  assert.equal(h.exec.calls[0].timeout, 30_000 + 60_000);
+  assert.equal(h.exec.calls[1].timeout, 120_000 + 60_000);
   assert.notEqual(answerId(F1, request), answerId(F2, request));
   for (const [caller, body, text] of [[F1, one, 'ran echo one'], [F2, two, 'ran echo two']]) {
     assert.deepEqual(h.answers(caller, request), ['running', 'completed']);
@@ -458,7 +466,7 @@ test('revoking: what was submitted is aborted and recorded as interrupted with u
   await h.settle();
   for (const one of bodies.slice(0, 4)) {
     assert.deepEqual(h.answers(F1, one.request), ['running', 'failed']);
-    assert.deepEqual(h.lastAnswer(F1, one.request).body.error, { code: 'interrupted', message: '对方撤销了授权，已中止这次调用；命令可能已在本机执行，结果不明', effects: 'unknown' });
+    assert.deepEqual(h.lastAnswer(F1, one.request).body.error, { code: 'interrupted', message: '对方撤销了授权，已中止这次调用；命令可能已经执行，结果不明', effects: 'unknown' });
     assert.equal((await h.store.get(F1, one.request)).state, 'failed');
     // 取消之后不再用同一个幂等键调内核。
     assert.equal(h.exec.calls.filter(call => call.id === idempotencyKey(F1, one.request)).length, 1);
@@ -530,7 +538,7 @@ test('revoking a submitted call that may have run: interrupted with unknown effe
   await h.holder.self['grants.revoke']({ grant });
   await h.settle();
   assert.deepEqual(h.answers(F1, body.request), ['running', 'failed']);
-  assert.deepEqual(h.lastAnswer(F1, body.request).body.error, { code: 'interrupted', message: '对方撤销了授权，已中止这次调用；命令可能已在本机执行，结果不明', effects: 'unknown' });
+  assert.deepEqual(h.lastAnswer(F1, body.request).body.error, { code: 'interrupted', message: '对方撤销了授权，已中止这次调用；命令可能已经执行，结果不明', effects: 'unknown' });
 });
 
 test('an ending found by the re-check cancels the submitted call at once, with the Accord query hung', async t => {
@@ -708,7 +716,7 @@ test('a cancel while the first call is still being routed, before the kernel has
     assert.deepEqual(h.answers(F1, body.request), ['running', 'failed'], what);
     const error = h.lastAnswer(F1, body.request).body.error;
     assert.deepEqual([error.code, error.effects], ['interrupted', 'unknown'], what);
-    assert.match(error.message, /命令可能已在本机执行，结果不明/, what);
+    assert.match(error.message, /命令可能已经执行，结果不明/, what);
   }
 });
 
@@ -744,7 +752,7 @@ test('a target deleted under a submitted call and back at once: the call is abor
   assert.deepEqual(h.answers(F1, body.request), ['running', 'failed']);
   const error = h.lastAnswer(F1, body.request).body.error;
   assert.deepEqual([error.code, error.effects], ['interrupted', 'unknown']);
-  assert.equal(error.message, '授权的目标记录已不在了，已中止这次调用；命令可能已在本机执行，结果不明');
+  assert.equal(error.message, '授权的目标记录已不在了，已中止这次调用；命令可能已经执行，结果不明');
 });
 
 test('an ending that has not reached the disk only blocks new admissions and submissions; the submitted call is canceled once the ending is written', async t => {
@@ -842,15 +850,15 @@ test('requests are refused after the machine key changed, when the friend is unb
 
   // 目标的 provider 变了、目标不在了（准入时才发现）。
   h.targets.set('rx-1', { plugin: 'friends' }, { quiet: true });
+  // 授权在、请求方是被授权人且仍是好友：签回失败终态，effects none。换了钥匙的旧授权、解了绑的好友照旧不回话（上面）。
   const proxied = send(h, { grant: fresh });
   await h.settle();
-  assert.deepEqual(h.answers(F1, proxied.request), []);
-  assert.equal((await rejections(h, 'target_changed')).length, 1);
+  assert.equal(refusedWith(h, proxied), 'target_changed');
   h.targets.remove('rx-1', { quiet: true });
   const missing = send(h, { grant: fresh });
   await h.settle();
-  assert.deepEqual(h.answers(F1, missing.request), []);
-  assert.equal((await rejections(h, 'target_missing')).length, 1);
+  assert.equal(refusedWith(h, missing), 'target_missing');
+  assert.deepEqual(await rejections(h, 'target_changed'), [], 'answered, not only recorded');
   assert.equal(h.exec.runs, 0);
 });
 
@@ -1087,7 +1095,7 @@ test('cancel: before the request arrives, after it was admitted but not started,
   cancelOf(h, busy[0]);
   await h.settle();
   assert.deepEqual(h.answers(F1, busy[0].request), ['running', 'failed']);
-  assert.deepEqual(h.lastAnswer(F1, busy[0].request).body.error, { code: 'interrupted', message: '调用方取消了这次调用，已中止；命令可能已在本机执行，结果不明', effects: 'unknown' });
+  assert.deepEqual(h.lastAnswer(F1, busy[0].request).body.error, { code: 'interrupted', message: '调用方取消了这次调用，已中止；命令可能已经执行，结果不明', effects: 'unknown' });
   // 名额空出来以后，标了取消的那个也不再启动。
   for (const one of busy.slice(1)) h.exec.release(idempotencyKey(F1, one.request));
   await h.settle();
@@ -1416,11 +1424,11 @@ test('a machine key change ends a grant for good, written at once; the retractio
   assert.deepEqual(h.accord.calls.at(-1), { kind: 'friends/rpc-grant', id: grant, body: {}, audience: [], signer: 'machine', expectAuthor: MK });
   assert.notEqual((await h.store.getGrant(grant)).retractedAt, undefined);
   assert.equal((await h.holder.self['grants.list']()).grants[0].status, 'machine_changed');
+  // 回到授权时那把钥匙：授权已停用，签回失败终态。
   const body = send(h, { grant });
   await h.settle();
-  assert.deepEqual(h.answers(F1, body.request), []);
+  assert.equal(refusedWith(h, body), 'machine_changed');
   assert.equal(h.exec.runs, 0);
-  assert.equal((await rejections(h, 'machine_changed')).length, 1);
 });
 
 test('a target deleted while the machine key cannot be read ends the grant at once; rebuilt under the same id it does not revive it', async t => {
@@ -1439,7 +1447,7 @@ test('a target deleted while the machine key cannot be read ends the grant at on
   const body = send(h, { grant });
   await h.settle();
   assert.equal(h.exec.runs, 0);
-  assert.deepEqual(h.answers(F1, body.request), []);
+  assert.equal(refusedWith(h, body), 'target_missing');
 });
 
 test('while admission is paused for the clock, a newer cancel of a known request still aborts the running call', async t => {
@@ -1722,10 +1730,10 @@ test('the events themselves end the grants: machine key A to B and back to A, or
   const body = send(h, { grant });
   await h.settle();
   assert.equal(h.exec.runs, 0);
-  assert.deepEqual(h.answers(F1, body.request), []);
+  assert.equal(refusedWith(h, body), 'machine_changed');
   assert.equal((await h.store.getGrant(grant)).endedBy, 'machine_changed');
   // 之后的补查只补撤回：A 能签，撤回发了。
-  assert.deepEqual(h.accord.calls.at(-1), { kind: 'friends/rpc-grant', id: grant, body: {}, audience: [], signer: 'machine', expectAuthor: MK });
+  assert.deepEqual(h.published('friends/rpc-grant').at(-1), { kind: 'friends/rpc-grant', id: grant, body: {}, audience: [], signer: 'machine', expectAuthor: MK });
 
   // 删除的事件里就让指向它的授权失效；同 id、同 owner、同 provider 马上重建出来也不再生效。
   const second = (await h.grant()).grant;
@@ -1734,9 +1742,9 @@ test('the events themselves end the grants: machine key A to B and back to A, or
   const late = send(h, { grant: second });
   await h.settle();
   assert.equal(h.exec.runs, 0);
-  assert.deepEqual(h.answers(F1, late.request), []);
+  assert.equal(refusedWith(h, late), 'target_missing');
   assert.equal((await h.store.getGrant(second)).endedBy, 'target_missing');
-  assert.deepEqual(h.accord.calls.at(-1), { kind: 'friends/rpc-grant', id: second, body: {}, audience: [], signer: 'machine', expectAuthor: MK });
+  assert.deepEqual(h.published('friends/rpc-grant').at(-1), { kind: 'friends/rpc-grant', id: second, body: {}, audience: [], signer: 'machine', expectAuthor: MK });
 });
 
 test('an answer is withdrawn 24 hours after its terminal state even while its ledger row cannot be written; the entry stays until the row is in', async t => {
@@ -1776,6 +1784,7 @@ test('an ending that fails to reach the disk is kept in memory: back on the old 
   const body = send(h, { grant });
   await h.settle();
   assert.equal(h.exec.runs, 0);
+  // 还没落盘的失效同样挡住准入；失效写不进去，这条请求留到下一轮再看，先不回话。
   assert.deepEqual(h.answers(F1, body.request), []);
   assert.equal((await h.store.getGrant(grant)).revokedAt, undefined, 'not on disk yet');
   // A→B 记下旧钥匙 A 的一笔，B→A 记下旧钥匙 B 的一笔（没有授权，同样等落盘）。
@@ -1790,11 +1799,13 @@ test('an ending that fails to reach the disk is kept in memory: back on the old 
   await until(async () => (await h.store.getGrant(grant)).endedBy === 'machine_changed', '失效落盘');
   await h.settle();
   assert.equal(h.holder.pendingEnds(), 0);
-  assert.deepEqual(h.accord.calls.at(-1), { kind: 'friends/rpc-grant', id: grant, body: {}, audience: [], signer: 'machine', expectAuthor: MK });
+  assert.deepEqual(h.published('friends/rpc-grant').at(-1), { kind: 'friends/rpc-grant', id: grant, body: {}, audience: [], signer: 'machine', expectAuthor: MK });
   assert.equal((await h.store.getGrant(later)).revokedAt, undefined);
+  // 落盘之后，挡下的那条与新来的都签回失败终态。
   const again = send(h, { grant });
   await h.settle();
-  assert.deepEqual(h.answers(F1, again.request), []);
+  assert.equal(refusedWith(h, body), 'machine_changed');
+  assert.equal(refusedWith(h, again), 'machine_changed');
   assert.equal(h.exec.runs, 0);
 });
 
@@ -2179,10 +2190,10 @@ test('every admission and submission checks the other machine\'s record again: o
     h.targets.set('rx-b', more, { quiet: true });
     const body = send(h, { grant });
     await h.settle();
-    assert.deepEqual(h.answers(F1, body.request), [], JSON.stringify(more));
+    assert.equal(refusedWith(h, body), 'target_unreachable', JSON.stringify(more));
     h.targets.set('rx-b', { owner: B, location: 'garage', plugin: 'remote-exec' }, { quiet: true });
   }
-  assert.equal((await rejections(h, 'target_unreachable'))[0].count, 2);
+  assert.equal((await refusals(h, 'target_unreachable')).length, 2);
   assert.equal((await h.store.getGrant(grant)).revokedAt, undefined, 'the grant stays');
   assert.equal(h.exec.runs, 0);
   // 提交前那一刻读不到（排队期间那台被移出空间）：答失败，不提交，授权还在。
@@ -2190,7 +2201,7 @@ test('every admission and submission checks the other machine\'s record again: o
   h.targets.remove('rx-b', { quiet: true });
   const late = send(h, { grant });
   await h.settle();
-  assert.deepEqual(h.answers(F1, late.request), []);
+  assert.equal(refusedWith(h, late), 'target_unreachable');
   addMachineB(h, { quiet: true });
   const back = send(h, { grant });
   await h.settle();
@@ -2198,27 +2209,67 @@ test('every admission and submission checks the other machine\'s record again: o
   assert.equal(h.exec.runs, 1);
 });
 
-test('while the other machine is offline the grant stays: it reads as offline, a call fails plainly with nothing run, and once it is back calls work again', async t => {
+test('while the other machine is known to be offline the grant stays and a call is refused before anything is sent, with a terminal answer of no effects; once it is back calls work again', async t => {
   const h = await holderOf(t);
   addMachineB(h);
   const { grant } = await grantB(h);
   const records = h.published('friends/rpc-grant').length;
-  // 离线：目录库留着它的副本（照样读得到），机器记录说离线，没有变化事件；调用连不上。
+  // 离线：目录库留着它的副本（照样读得到），机器记录说离线，没有变化事件。
   h.targets.machines.set(B, { offline: true });
-  h.targets.offline.add(B);
   assert.equal(await statusOf(h, grant), 'target_offline');
   const body = send(h, { grant });
   await h.settle();
-  assert.deepEqual(h.answers(F1, body.request), ['running', 'failed']);
-  assert.deepEqual(h.lastAnswer(F1, body.request).body.error, { code: 'peer_offline', message: '持有方此刻连不上', effects: 'none' });
+  assert.equal(refusedWith(h, body), 'target_offline');
+  assert.deepEqual(h.lastAnswer(F1, body.request).body.error, { code: 'target_offline', message: '授权的目标机器此刻离线，命令没有启动', effects: 'none' });
+  assert.equal(h.exec.calls.length, 0, 'nothing handed to the kernel');
   assert.equal((await h.store.getGrant(grant)).revokedAt, undefined);
   assert.equal(h.published('friends/rpc-grant').length, records, 'the grant record is left as it was');
   h.targets.machines.set(B, { offline: false });
-  h.targets.offline.delete(B);
   assert.equal(await statusOf(h, grant), 'available');
   const again = send(h, { grant });
   await h.settle();
   assert.deepEqual(h.answers(F1, again.request), ['running', 'completed']);
+});
+
+test('admitted, then known offline before it is submitted: refused at submission, nothing sent', async t => {
+  const h = await holderOf(t);
+  addMachineB(h);
+  const { grant } = await grantB(h);
+  // 名额占满，第 5 条准入后等着；这时 B 被读出离线，轮到它提交时拒绝。
+  h.exec.plan = () => 'hang';
+  for (let i = 0; i < LIMITS.executing.author; i++) send(h, { grant });
+  await h.settle();
+  const waiting = send(h, { grant });
+  await h.settle();
+  assert.equal((await h.store.get(F1, waiting.request)).state, 'admitted');
+  h.targets.machines.set(B, { offline: true });
+  h.exec.release(h.exec.calls[0].id);
+  await h.settle();
+  assert.deepEqual(h.answers(F1, waiting.request), ['running', 'failed']);
+  assert.deepEqual(h.lastAnswer(F1, waiting.request).body.error, { code: 'target_offline', message: '授权的目标机器此刻离线，命令没有启动', effects: 'none' });
+  assert.ok(!h.exec.calls.some(call => call.id === idempotencyKey(F1, waiting.request)));
+});
+
+test('offline but not yet known so: the call is bounded by the command\'s own time limit plus a fixed margin, and when the kernel gives it up there the friend gets a terminal answer; the grant stays', async t => {
+  const h = await holderOf(t);
+  addMachineB(h);
+  const { grant } = await grantB(h);
+  // B 停了，机器记录还没读出离线：调用照常交给内核，排着送不出去。
+  h.exec.plan = () => 'hang';
+  const body = send(h, { grant, input: { command: 'printf queued', timeout: 8 } });
+  await h.settle();
+  const [call] = h.exec.calls;
+  assert.equal(call.timeout, 8_000 + 60_000, 'the command\'s 8 seconds plus 60, not the request window');
+  assert.ok(call.signaled);
+  h.exec.expire(call.id);
+  await h.settle();
+  assert.deepEqual(h.answers(F1, body.request), ['running', 'failed']);
+  const { error } = h.lastAnswer(F1, body.request).body;
+  assert.deepEqual([error.code, error.effects], ['timeout', 'unknown']);
+  assert.match(error.message, /已放弃这次调用/);
+  assert.ok(!error.message.includes('本机'));
+  assert.equal(h.exec.calls.length, 1, 'not called again');
+  assert.equal((await h.store.getGrant(grant)).revokedAt, undefined);
 });
 
 test('the other machine removed from the space (its record and its machine record gone together) does not end the grant: calls are refused, and it works again once the machine is back', async t => {
@@ -2236,13 +2287,14 @@ test('the other machine removed from the space (its record and its machine recor
   assert.equal(await statusOf(h, grant), 'target_unreachable');
   const body = send(h, { grant });
   await h.settle();
-  assert.deepEqual(h.answers(F1, body.request), []);
-  assert.equal((await rejections(h, 'target_unreachable')).length, 1);
+  assert.equal(refusedWith(h, body), 'target_unreachable');
+  assert.equal(h.lastAnswer(F1, body.request).body.error.message, '此刻读不到授权的目标机器上的这条记录（那台不在空间里），命令没有启动');
+  assert.equal(h.exec.calls.length, 0);
   // 本机此刻没有 remote-exec 协议（远程执行插件不在）：同样只拒不失效。
   h.targets.absent = true;
   const absent = send(h, { grant });
   await h.settle();
-  assert.deepEqual(h.answers(F1, absent.request), []);
+  assert.equal(refusedWith(h, absent), 'target_unreachable');
   assert.equal((await h.store.getGrant(grant)).revokedAt, undefined);
   h.targets.absent = false;
   addMachineB(h);
@@ -2266,8 +2318,7 @@ test('the other machine\'s record really gone (the machine still in the space) e
     if (quiet) {
       const body = send(h, { grant });
       await h.settle();
-      assert.deepEqual(h.answers(F1, body.request), [], 'refused at admission');
-      assert.equal((await rejections(h, 'target_missing')).length, 1);
+      assert.equal(refusedWith(h, body), 'target_missing', 'refused at admission');
     }
     await until(async () => (await h.store.getGrant(grant)).endedBy === 'target_missing', `${quiet}: 失效落盘`);
     await h.settle();
@@ -2281,7 +2332,7 @@ test('the other machine\'s record really gone (the machine still in the space) e
     await h.settle();
     const after = send(h, { grant });
     await h.settle();
-    assert.deepEqual(h.answers(F1, after.request), []);
+    assert.equal(refusedWith(h, after), 'target_missing');
     assert.equal(await statusOf(h, grant), 'target_missing');
   }
 });
@@ -2316,7 +2367,33 @@ test('revoking a grant of the other machine refuses new calls at once and aborts
   assert.deepEqual(h.lastAnswer(F1, body.request).body.error.code, 'interrupted');
   const after = send(h, { grant });
   await h.settle();
-  assert.deepEqual(h.answers(F1, after.request), []);
-  assert.equal((await rejections(h, 'revoked')).length, 1);
+  assert.equal(refusedWith(h, after), 'revoked');
+  assert.equal(h.lastAnswer(F1, after.request).body.error.message, '授权已撤销，命令没有启动');
   assert.equal(h.exec.calls.length, 1);
+});
+
+test('a refusal is answered only within the friend\'s quota and only to the grantee who is still a bound friend: over the quota, for another friend\'s grant, or to an unbound friend it stays silent', async t => {
+  const h = await holderOf(t);
+  const { grant } = await h.grant();
+  const other = (await h.grant(F2)).grant;
+  await h.holder.self['grants.revoke']({ grant });
+  await h.settle();
+  // 每分钟新请求的名额照算：名额内的签回失败终态，超出的只记账。
+  const bodies = Array.from({ length: LIMITS.perMinute.author + 1 }, () => send(h, { grant }));
+  await h.settle();
+  const answered = bodies.filter(body => refusedWith(h, body) === 'revoked');
+  assert.equal(answered.length, LIMITS.perMinute.author);
+  assert.deepEqual(h.answers(F1, bodies.at(-1).request), [], 'over the quota: silent');
+  assert.equal((await rejections(h, 'revoked'))[0].count, 1);
+  // 拿别人的授权号：没有给它的授权，不回话。
+  h.clock.now += 2 * MINUTE;
+  const foreign = send(h, { grant: other });
+  // 解绑了的好友：不回话。
+  await h.accord.change({ friends: [FRIENDS[0], { ...FRIENDS[1], bound: false }, FRIENDS[2]] });
+  const unbound = send(h, { from: F2, grant: other });
+  await h.holder.self['grants.revoke']({ grant: other });
+  await h.settle();
+  assert.deepEqual(h.answers(F1, foreign.request), []);
+  assert.deepEqual(h.answers(F2, unbound.request), []);
+  assert.equal(h.exec.runs, 0);
 });

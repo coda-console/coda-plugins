@@ -4,7 +4,7 @@
   "displayName": "好友",
   "description": "管理 Accord 身份与熟人好友通道，并提供业务无关的好友网关",
   "icon": { "symbol": "person.2.fill", "color": "blue" },
-  "version": "0.9.0",
+  "version": "0.9.1",
   "categories": [
     "Skills 与工具"
   ],

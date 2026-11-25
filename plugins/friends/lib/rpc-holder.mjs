@@ -4,7 +4,10 @@
 // - 目标可以是本机的记录，也可以是同一空间里别的机器自己的 remote-exec 记录（本机作网关，调用经 Coda 的跨机调用转到那台）；逐条授予，
 //   好友分享来的代理记录（provider 是 friends）不能转授。授权记下目标归哪台机器（`target.owner`），每次准入、提交前核对目标仍是那台机器上
 //   remote-exec 的那条记录。别台的记录读不到时，那台的机器记录（coda/machine@1）还在才算记录确实没了、授权失效；那台被移出空间或分不清时
-//   只拒不失效（那台离线时目录库留着它的副本，读得到，调用以连不上失败）。
+//   只拒不失效。那台离线时目录库留着它的副本，读得到：机器记录已说离线（空间约 3 分钟没听到它）的，准入与提交前就拒绝；还没说离线的那几分钟，
+//   跨机调用排在本机调用内核的发件箱里，到「命令时限 + 余量」由内核放弃（放弃即发取消，取消顶替还没送到的调用信，那台回来先收到取消，不再执行）。
+// - 准入前就拒绝的请求：授权在、请求方就是被授权人、此刻仍是已绑定的好友、本机机器钥匙仍是授权时那把，就照提交前拒绝的同一条路
+//   签回失败终态（原因写明，effects none），对方立刻知道没执行；其余（没有这条授权、不是好友、超了配额）照旧只记账、不回话。
 //
 // - 授权表（rpc-store 的 grants.json）是权威：撤权与失效先落盘、不可逆，之后尚未提交的不再启动，已提交的走「对方发来取消」同一条路径取消；授权记录（friends/rpc-grant）的发与撤
 //   按授权号排成一条队，发不出去等能发了再补，撤回要等原来那把机器钥匙能签时补发。启动后查一次目录，本机机器钥匙签出、授权表里却没有对应有效授权的
@@ -32,7 +35,8 @@ const ACCORD = { kind: 'coda/accord@1', id: 'local' };
 const PROVIDER = 'remote-exec', MACHINE_KIND = 'coda/machine@1';
 export const POLL_MS = 15_000;
 // exec 不给 timeout 时 remote-exec 的默认时限（秒）；remote-exec 的操作时限比命令时限多 30 秒（630 对 600），收尾用。
-const DEFAULT_TIMEOUT_S = 120, EXEC_GRACE_MS = 30_000;
+// 跨机调用的总时限是命令时限加 CALL_GRACE_MS（remote-exec 的 30 秒余量，再留 30 秒给结局送回）：到点由内核放弃，排着没送出的不会再执行。
+const DEFAULT_TIMEOUT_S = 120, CALL_GRACE_MS = 60_000;
 // 见过的最大时刻至多每分钟落一次盘。
 const CLOCK_STEP_MS = 60_000;
 // 失效落盘失败后重试的退避：从 1 秒起翻倍，至多 1 分钟。
@@ -53,6 +57,7 @@ const REASONS = {
   target_missing: '授权的目标记录已不在了',
   target_changed: '授权的目标不再是授权时那台机器上 remote-exec 提供的那条记录',
   target_unreachable: '此刻读不到授权的目标机器上的这条记录（那台不在空间里）',
+  target_offline: '授权的目标机器此刻离线',
   expired: '过了最晚启动时刻',
 };
 
@@ -122,7 +127,8 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
   // remote-exec 的那条记录。本机的目标照旧：不在了是 target_missing，换了样子是 target_changed，都让授权失效。
   // 别台的目标：读不到时那台的机器记录还在（还在空间里），才是 target_missing；那台被移出空间（目录库不再跟随它，它的副本连同机器记录一起没了）、
   // 本机此刻没有这个协议、或读到的不是那台的那条，都是 target_unreachable：只拒绝，不失效，那台回来就接着能用。
-  async function targetCheck(grant, me) {
+  // `live`（准入、提交、列出时）另看别台的机器记录：已说离线的是 target_offline，同样只拒不失效。发授权记录时不看，离线不妨碍授出。
+  async function targetCheck(grant, me, { live = false } = {}) {
     const here = me?.owner != null && grant.target.owner === me.owner;
     let entry;
     try { entry = await coda.get({ kind: grant.target.kind, id: grant.target.id }); } catch (e) {
@@ -134,7 +140,8 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
     if (entry) {
       // owner 相同就是同一台上的那条（本机的 owner 是本机，别台的副本 owner 是那台）。
       const same = entry.plugin === grant.target.provider && entry.owner === grant.target.owner;
-      return { entry, problem: same ? null : here ? 'target_changed' : 'target_unreachable' };
+      if (!same) return { entry, problem: here ? 'target_changed' : 'target_unreachable' };
+      return { entry, problem: live && entry.local !== true && await machineOffline(entry.owner) ? 'target_offline' : null };
     }
     if (here) return { entry: null, problem: 'target_missing' };
     return { entry: null, problem: await machineInSpace(grant.target.owner) ? 'target_missing' : 'target_unreachable' };
@@ -375,8 +382,12 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
     }
     if (!admitting) return false;
     const grant = await store.getGrant(body.grant);
-    const problem = grant && grant.grantee !== author ? 'no_grant' : grantProblem(grant, me, grant ? await targetCheck(grant, me) : null);
-    if (problem) { await invalidate(grant, problem); await reject(author, problem); return true; }
+    const problem = grant && grant.grantee !== author ? 'no_grant' : grantProblem(grant, me, grant ? await targetCheck(grant, me, { live: true }) : null);
+    if (problem) {
+      await invalidate(grant, problem);
+      if (!(await answerRefusal(record, body, digest, grant, me, problem))) await reject(author, problem);
+      return true;
+    }
     const window = replayWindow(body.createdAt, body.expiresAt, now());
     if (!window.ok) { await reject(author, window.code); return true; }
     const { verdict } = await store.quota(author);
@@ -390,6 +401,24 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
       notAfter: body.expiresAt, call: { target: grant.target, input: input.input }, canceled: body.cancel === true, version: record.version });
     if (!admitted.ok) { since.delete(key); await reject(author, admitted.code); return true; }
     drive(author, body.request);
+    return true;
+  }
+
+  // 准入前就拒绝、又该让对方知道的（见文件头）：照常准入一项（同号去重、配额照算），随即以拒绝落终态，签回答走在途表的老路（之后照常撤回）。
+  // 给 true 是已经这样处理了；窗口、输入不合，或配额、表容量不让准入的，给 false，由调用方照旧只记账。先到的取消（没人在等）也不回话。
+  async function answerRefusal(record, body, digest, grant, me, problem) {
+    const caller = body.caller;
+    if (!grant || !REASONS[problem] || grant.grantee !== caller || !me.bound.has(caller) || me.machine !== grant.holder.machine || body.cancel === true || stopped) return false;
+    if (!replayWindow(body.createdAt, body.expiresAt, now()).ok) return false;
+    const input = rebuildExecInput(body.input);
+    if (!input.ok) return false;
+    const key = inflightKey(caller, body.request);
+    since.set(key, monotonic());
+    const admitted = await store.admit({ caller, request: body.request, grant: grant.id, digest, key: idempotencyKey(caller, body.request),
+      notAfter: body.expiresAt, call: { target: grant.target, input: input.input }, version: record.version });
+    if (!admitted.ok) { since.delete(key); return false; }
+    await end(admitted.entry, refused(problem));
+    drive(caller, body.request);
     return true;
   }
 
@@ -453,7 +482,7 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
     if (entry.canceled) return end(entry, canceledOutcome());
     if (clockUnsure()) return null;
     const [me, grant] = await Promise.all([identity(), store.getGrant(entry.grant)]);
-    const problem = grantProblem(grant, me, grant ? await targetCheck(grant, me) : null);
+    const problem = grantProblem(grant, me, grant ? await targetCheck(grant, me, { live: true }) : null);
     if (stopped || problem === 'no_identity') return null;
     if (problem) { await invalidate(grant, problem); return end(entry, refused(problem)); }
     // 已过最晚启动时刻：答失败，不签 running、不提交。
@@ -476,7 +505,7 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
   const refused = problem => ({ state: 'failed', error: { code: problem, message: `${REASONS[problem]}，命令没有启动`, effects: 'none' } });
   const endedReason = by => by === 'revoked' ? '对方撤销了授权' : REASONS[by];
   const canceledOutcome = by => ({ state: 'canceled', error: { code: 'canceled', message: by ? `${endedReason(by)}，命令没有启动` : '调用方取消了这次调用，命令没有启动', effects: 'none' } });
-  const interrupted = why => ({ state: 'failed', error: { code: 'interrupted', message: `${why}；命令可能已在本机执行，结果不明`, effects: 'unknown' } });
+  const interrupted = why => ({ state: 'failed', error: { code: 'interrupted', message: `${why}；命令可能已经执行，结果不明`, effects: 'unknown' } });
 
   // 调那条记录的 exec（别台的由 Coda 转过去），带内核幂等键：重启后再调接上原来的调用、拿到它的结局，不会再执行一遍。
   // 取消之后绝不再用这个幂等键调内核（SDK 没有只查不建的调用，路由期间取消的那次还没登记，再调就会新建、把命令跑起来），结局只按本进程确认得了的写：
@@ -491,7 +520,7 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
       // 先登记中止的手柄、再读一次：取消落在这之前的，这里看得到；落在之后的，会经手柄中止。
       if ((await store.get(entry.caller, entry.request))?.canceled) controller.abort();
       const { target, input } = entry.call;
-      const deadline = entry.notAfter + (input.timeout ?? DEFAULT_TIMEOUT_S) * 1000 + EXEC_GRACE_MS;
+      const limit = (input.timeout ?? DEFAULT_TIMEOUT_S) * 1000 + CALL_GRACE_MS;
       let outcome = outcomes.get(key);
       if (outcome === undefined && controller.signal.aborted) {
         // 「没发出」的标记留到终态落盘成功：落盘失败重来时仍签 canceled。重启后接手的不在 `unissued` 里。
@@ -503,7 +532,7 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
       } else if (outcome === undefined) try {
         unissued.delete(key);
         outcome = { state: 'completed', result: await coda.call({ kind: target.kind, id: target.id }, 'exec', input,
-          { id: entry.key, timeout: deadline - now(), signal: controller.signal }) };
+          { id: entry.key, timeout: limit, signal: controller.signal }) };
       } catch (e) {
         const by = (await store.get(entry.caller, entry.request))?.canceledBy;
         // 中止后交回的是中止原因（AbortError），不是原调用的结局；中止前已自己结束的，照它的结局分类。
@@ -514,6 +543,9 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
           // 调用内核确认是取消的才记 canceled；跑完的照实完成，执行端以别的原因失败的（interrupted 等）照实记它自己的错误，拿不到结局的效果记 unknown。
           if (by && ['canceled', 'cancelled'].includes(e?.code)) {
             outcome = { state: 'canceled', error: { code: 'canceled', message: `${endedReason(by)}，调用已取消`, effects } };
+          } else if (e?.code === 'timeout') {
+            // 到了命令时限加余量还没结局（多半是目标机器连不上）：内核已放弃并发了取消，还没送到的不会再执行。
+            outcome = { state: 'failed', error: { code: 'timeout', message: `命令时限加 ${CALL_GRACE_MS / 1000} 秒内没有结局，已放弃这次调用（目标机器可能连不上）；命令可能已经执行，结果不明`, effects } };
           } else outcome = { state: 'failed', error: { code: String(e?.code ?? 'internal'), message: message(e), effects } };
         }
       }
@@ -710,17 +742,17 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
     return new Set((await store.listInflight()).filter(entry => entry.state === 'submitted').map(entry => entry.grant));
   }
 
-  // 一条授权此刻的状态：available（可用）、target_off（目标已关）、target_offline（别台的目标此刻离线）、target_missing（目标不在）、
+  // 一条授权此刻的状态：available（可用）、target_off（目标已关）、target_offline（别台的目标此刻离线，这期间的请求被拒）、target_missing（目标不在）、
   // target_unreachable（别台的目标此刻读不到，授权仍在）、no_identity（读不出本机的机器钥匙）、
   // revoking（已撤或失效，名下已提交的调用还没都落到终态）、revoked（已撤）、machine_changed（本机的机器钥匙变了，旧钥匙下的授权停用）、grantee_changed（这位好友换了签名身份，授给旧身份的停用）。
   // 在待落盘的失效里的，与准入一样当作已失效。本机证书过期不影响这里。
-  // `check` 是 targetCheck 的结果，`offline` 是别台的目标所在的机器此刻离线。
-  function describe(row, me, check, revoking = new Set(), offline = false) {
+  // `check` 是 targetCheck 的结果。
+  function describe(row, me, check, revoking = new Set()) {
     const target = check?.entry ?? null, problem = check?.problem ?? null;
     const status = row.revokedAt !== undefined ? (revoking.has(row.id) ? 'revoking' : row.endedBy ?? 'revoked') : pendingEnd(row)
       ?? (isAuthor(me.machine) && row.holder.machine !== me.machine ? 'machine_changed' : granteeGone(row, me) ? 'grantee_changed'
-        : problem === 'target_unreachable' ? 'target_unreachable' : problem ? 'target_missing' : !isAuthor(me.machine) ? 'no_identity'
-          : target.status?.available !== true ? 'target_off' : offline ? 'target_offline' : 'available');
+        : ['target_unreachable', 'target_offline'].includes(problem) ? problem : problem ? 'target_missing' : !isAuthor(me.machine) ? 'no_identity'
+          : target.status?.available === true ? 'available' : 'target_off');
     return { grant: row.id, friend: row.grantee, target: { kind: row.target.kind, id: row.target.id, name: target?.spec?.name ?? null },
       createdAt: row.createdAt, ...(row.revokedAt === undefined ? {} : { revokedAt: row.revokedAt }), status };
   }
@@ -731,13 +763,13 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
     try { grants = await store.listGrants(); revoking = await submittedGrants(); } catch (e) { note(e); if (!isCorrupt(e)) throw e; }
     const rows = [];
     for (const row of grants) {
-      const check = await targetCheck(row, me).catch(() => ({ entry: null, problem: 'target_unreachable' }));
-      rows.push(describe(row, me, check, revoking, row.revokedAt === undefined && check.entry?.local === false && await machineOffline(check.entry.owner)));
+      const check = await targetCheck(row, me, { live: row.revokedAt === undefined }).catch(() => ({ entry: null, problem: 'target_unreachable' }));
+      rows.push(describe(row, me, check, revoking));
     }
     return { certState: me.certState, admitting: admissionOpen(), corrupt, grants: rows };
   }
 
-  // 别台的机器此刻离线（它的机器记录的 status.offline，读的时候算）：只用来显示。
+  // 别台的机器此刻离线（它的机器记录的 status.offline，读的时候算）。读不出按不离线：调用另有「命令时限 + 余量」兜底。
   async function machineOffline(owner) {
     try { return (await coda.get({ kind: MACHINE_KIND, id: owner }))?.status?.offline === true; } catch { return false; }
   }
