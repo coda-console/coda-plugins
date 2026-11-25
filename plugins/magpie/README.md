@@ -49,10 +49,20 @@ Pi 等选用模型服务的插件直接选它，不用填地址和 Key。Magpie 
 **怎样在 Magpie 里声明同型号**：在 Magpie 里为一个模型声明它「同于」哪个型号名，Magpie 把它存在 `settings.json` 的 `modelSameAs`（键是 `provider/model`，值是型号名）；
 声明过的模型，不管在 `auto/` 组还是你手建的组里，都按这个名字算。手建组要归并，就让它的每个成员归到同一个名字：名字本来不同的成员（如带 `-free` 的、对端 Magpie 的 `rig/…`）声明成同一个即可。
 
+**直接写明型号**：自动推导对不上时（手建组的成员里有带 `-free` 的免费来源、经别台 Magpie 转来的，名字本来就不同），用设置 `magpie.modelNames` 直接写明某个请求型号就是哪个底层型号，不用去改 Magpie 的配置（那会改变它的自动分组与路由）。
+值是一张表，行名是请求的模型 ID，值是底层型号名，默认空。例如把手建组 `group/ds-flash` 归到 `deepseek-v4.1-flash`：
+
+```json
+{ "magpie.modelNames": { "group/ds-flash": "deepseek-v4.1-flash" } }
+```
+
+写明的**优先于上面的自动推导**：写明的行直接用写明的名字，不管自动推导给了别的名字还是没有；名字与行名相同（如 `"group/ds-flash": "group/ds-flash"`）表示这个型号不归并，也盖掉自动推导。
+行名或名字不是 1–200 字的非空文本的行被忽略。写明的行不依赖 Magpie 在线（它不在网关的模型列表里也照样给），所以没装 Magpie、没启动或读取超时时它们仍然返回；`services` 单独向 Coda 取，取不到就是空（没有 `services`，Token 榜不套映射）。
+
 数据来源（只读，不要 Magpie 的图形界面开着）：网关的 `GET /v1/models`（有哪些模型 ID）、`~/.config/magpie/settings.json` 的 `modelSameAs`、
 `magpie group show group/<id>`（每个手建组的成员，运行时带 `MAGPIE_NO_ACCOUNTS=1`，让它不读 Agent 的登录）。
 插件自己不打开存着 Key 的 `providers.json`，不读取也不输出任何 Key；读手建组成员是调用 Magpie 命令行完成的，命令行读它自己的配置、启动时做它自己的设置迁移，是 Magpie 本身的行为，和你平时运行它一样。
-没装 Magpie、没启动、读不到，或整次读取（含读设置、运行命令）8 秒内没读完，返回空映射（不返回读到的一部分），不报错；`modelSameAs` 的格式读不懂就当没声明。
+没装 Magpie、没启动、读不到，或整次读取（含读设置、运行命令）8 秒内没读完，自动推导的部分为空（不返回读到的一部分），不报错；`modelSameAs` 的格式读不懂就当没声明。
 记录命令是 `scripts/models.mjs`，操作命令是 `scripts/names.mjs`，规则在 `scripts/same.mjs`。
 
 ## 安装
@@ -75,8 +85,9 @@ provider 和账号在 Magpie 里加：Mac 打开 magpie.app，或在终端里 `m
 | 设置 | 默认 | 内容 |
 | --- | --- | --- |
 | `magpie.accountDiscovery`（读取 Agent 自己的登录） | 开 | 开着时 Magpie 读这台机器上 Codex（`~/.codex/auth.json` 与钥匙串）、Claude Code、Gemini、Copilot、Cursor 等自己的登录，把它们的订阅作为模型提供。关掉后一个都不读，只用在 Magpie 里以 API Key 添加的服务；它存下的登录副本留着，再打开就回来。Magpie 只有这一个总开关，不能只关某一家 |
+| `magpie.modelNames`（指定请求型号的底层型号） | 空表 | 一行一个：行名是请求的模型 ID（如 `group/ds-flash`），值是底层型号名（如 `deepseek-v4.1-flash`）；写明的优先于自动推导，值与行名相同表示不归并，见[同型号映射](#同型号映射) |
 
-它就是 Magpie 的「Settings › Privacy › Subscription accounts」（`magpie accounts discovery on|off`）。设置动作每次运行都按这里写进 Magpie，
+`magpie.accountDiscovery` 就是 Magpie 的「Settings › Privacy › Subscription accounts」（`magpie accounts discovery on|off`）。设置动作每次运行都按这里写进 Magpie，
 所以以这里为准：在 Magpie 里改了，下次安装、更新或改这个设置时会被改回来。运行中的网关立即照新的来，不用重启。
 
 卸载插件不会卸掉 Magpie 和它的服务；要去掉就 `magpie daemon uninstall`，再删 App 与 `~/.local/bin/magpie`。

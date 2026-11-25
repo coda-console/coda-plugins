@@ -55,6 +55,18 @@ export function sameNames({ ids = [], same = {}, groups = {} }) {
 }
 
 /**
+ * `names` with what the user wrote (the plugin setting `magpie.modelNames`, `{ "<asked ID>": "<name>" }`) over it: a written ID has
+ * its written name, whatever the rules gave it or none, and one written as its own name has none (the user says it is not merged).
+ * An entry that is not a non-empty text of 1 to 200 characters on each side is ignored.
+ */
+export function withWritten(names, written) {
+  const text = value => (typeof value === 'string' && value.trim().length <= 200 ? value.trim() : '');
+  const entries = Object.entries(written && typeof written === 'object' ? written : {}).map(([id, name]) => [text(id), text(name)]).filter(([id, name]) => id && name);
+  const ids = new Set(entries.map(([id]) => id));
+  return Object.fromEntries([...Object.entries(names).filter(([id]) => !ids.has(id)), ...entries.filter(([id, name]) => id !== name)]);
+}
+
+/**
  * The members of a group as `magpie group show <ref>` lists them (`ref`: `group/<id>`), in order; null for any output that is
  * not exactly what Magpie's showGroup prints (internal/cli/groups_cli.go): the group is then not taken apart. Lines are `  <key>  <value>`
  * with the key on the first line of a section only, and 12 spaces before a later line of it. Only the `models` section is read:

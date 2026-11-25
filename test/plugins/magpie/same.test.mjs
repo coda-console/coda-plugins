@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { groupMembers, sameNames } from '../../../plugins/magpie/scripts/same.mjs';
+import { groupMembers, sameNames, withWritten } from '../../../plugins/magpie/scripts/same.mjs';
 
 test('provider/model: the declared name, else the model without its provider; a name equal to the ID is not an entry', () => {
   const ids = ['deepseek/deepseek-v4', 'workbuddy/deepseek-v4.1-flash', 'rig/opencode-go/deepseek-v4.1-flash', 'bare-model', 'x/same-as-itself'];
@@ -99,4 +99,15 @@ test('output that is not what Magpie prints is not read: another group, a remove
     ['  G  auto/g  found by magpie\n  models    1 a/x\n', 'auto/g'], ['  G  group/g\n  routing   order\n', 'group/g'], ['  G  group/g\n  models    2 a/x\n', 'group/g'],
     ['  G  group/g\n  models    1 a/x\n            3 b/x\n', 'group/g'], ['  G  group/g\n  models    1 a/*\n', 'group/g'], ['  G  group/g\n  models    a/x\n', 'group/g'],
     ['  G  group/g\n  note      two\n lines\n  models    1 a/x\n', 'group/g']]) assert.equal(groupMembers(text, ref), null, text);
+});
+
+test('what the user wrote is over the rules: its name whatever they gave, an entry as its own name removes the ID, bad entries are ignored', () => {
+  const names = { 'group/a': 'x', 'opencode-go/m': 'm', 'group/c': 'c' };
+  assert.deepEqual(withWritten(names, {}), names);
+  assert.deepEqual(withWritten(names, { 'group/new': 'deepseek-v4.1-flash' }), { ...names, 'group/new': 'deepseek-v4.1-flash' });
+  assert.deepEqual(withWritten(names, { 'group/a': 'y', 'opencode-go/m': ' z ' }), { 'group/a': 'y', 'opencode-go/m': 'z', 'group/c': 'c' });
+  assert.deepEqual(withWritten(names, { 'group/a': 'group/a', 'group/free': 'group/free' }), { 'opencode-go/m': 'm', 'group/c': 'c' });
+  const bad = { '': 'x', ' ': 'x', 'group/a': '', 'group/b': '  ', 'group/c': 7, 'group/d': null, 'group/e': ['x'], 'group/f': 'x'.repeat(201), ['k'.repeat(201)]: 'x', 'group/ok': 'x'.repeat(200) };
+  assert.deepEqual(withWritten(names, bad), { ...names, 'group/ok': 'x'.repeat(200) });
+  for (const nothing of [null, undefined, 'nope', 5]) assert.deepEqual(withWritten(names, nothing), names, String(nothing));
 });

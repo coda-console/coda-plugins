@@ -34,8 +34,9 @@ const LOCAL = [U(1), U(4), U(5)].map((uuid, i) => `coda://${['openai-completions
 // The plugin and the machine it runs on: the gateway's model list (`answer`: none, nothing listens; `hang`: it never answers), the
 // settings Magpie keeps, the magpie command (`binary`: false for none, and nothing of the machine's /Applications is found either) and
 // what it is asked, `coda` and what it says of the services. Runs `file` of the plugin once. `slow`: `magpie group show` never ends, after
-// the gateway's model list has been read, which the reading's 8 seconds (a signal of the test's) end.
-async function ran(t, { answer = { data: IDS.map(id => ({ id })) }, settings = {}, binary = true, slow = false, file = 'scripts/names.mjs' } = {}) {
+// the gateway's model list has been read, which the reading's 8 seconds (a signal of the test's) end. `written`: the plugin setting
+// `magpie.modelNames` as Coda gives it to the command (`CODA_PLUGIN_SETTINGS`).
+async function ran(t, { answer = { data: IDS.map(id => ({ id })) }, settings = {}, binary = true, slow = false, written, file = 'scripts/names.mjs' } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'coda-magpie-names-')), gate = join(home, 'gate'), asked = join(home, 'asked');
   t.after(() => rmSync(home, { recursive: true, force: true }));
   let address = '127.0.0.1:9';
@@ -94,7 +95,7 @@ syncBuiltinESMExports();
 AbortSignal.timeout = ms => ms === 8_000 ? budget.signal : timeout.call(AbortSignal, ms);
 setInterval(() => { if (existsSync(process.env.TEST_GATE)) budget.abort(new DOMException('', 'TimeoutError')); }, 10).unref();
 `);
-  const env = { ...pluginEnv('magpie', { CODA_NODE: process.execPath }), CODA_PLUGIN_PATH: copy, HOME: home, PATH: await barePath(home, bin), TEST_GATE: gate, NODE_OPTIONS: `--import=${pathToFileURL(preload).href}` };
+  const env = { ...pluginEnv('magpie', { CODA_NODE: process.execPath }), CODA_PLUGIN_PATH: copy, CODA_PLUGIN_SETTINGS: JSON.stringify(written === undefined ? {} : { 'magpie.modelNames': written }), HOME: home, PATH: await barePath(home, bin), TEST_GATE: gate, NODE_OPTIONS: `--import=${pathToFileURL(preload).href}` };
   const result = await run(join(copy, file), env);
   return { ...result, refused: existsSync(`${gate}.refused`) ? readFileSync(`${gate}.refused`, 'utf8').trim().split('\n') : [], asked: existsSync(asked) ? readFileSync(asked, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line)) : [] };
 }
@@ -154,18 +155,21 @@ test('no magpie command (and no magpie.app found): what needs no group is still 
   assert.equal(services.length, 3);
 });
 
-test('a gateway that does not answer, answers what is not a model list or never answers: none, not an error', async t => {
+test('a gateway that does not answer, answers what is not a model list or never answers: no names, not an error, and the services asked apart', async t => {
   for (const answer of [null, { data: 'no' }, { hang: true }]) {
     const { code, stdout, stderr } = await ran(t, { answer });
     assert.equal(code, 0, stderr);
-    assert.deepEqual(JSON.parse(stdout), { names: {}, services: [] }, JSON.stringify(answer));
+    const { names, services } = JSON.parse(stdout);
+    assert.deepEqual(names, {}, JSON.stringify(answer));
+    // The test's 8 seconds end as the gateway has the request: the services, asked beside it, may or may not have been had.
+    if (!answer?.hang) assert.deepEqual(services.sort(), [...LOCAL].sort(), JSON.stringify(answer));
   }
 });
 
-test('one reading has one deadline: a command that does not end by it makes the whole answer none, not what was read before', async t => {
+test('one reading has one deadline: a command that does not end by it makes the names none, not what was read before', async t => {
   const { code, stdout, stderr } = await ran(t, { slow: true });
   assert.equal(code, 0, stderr);
-  assert.deepEqual(JSON.parse(stdout), { names: {}, services: [] });
+  assert.deepEqual(JSON.parse(stdout).names, {});
 });
 
 test('settings that cannot be read declare nothing', async t => {
@@ -173,4 +177,42 @@ test('settings that cannot be read declare nothing', async t => {
   assert.equal(code, 0);
   assert.equal(JSON.parse(stdout).names['group/declared'], undefined);
   assert.equal(JSON.parse(stdout).names['group/same'], 'deepseek-v4.1-flash');
+});
+
+test('what the user wrote (magpie.modelNames) is over the rules: written, over the rules\' own, none for its own name, bad entries ignored', async t => {
+  const written = {
+    'group/differ': 'deepseek-v4.1-flash',                                       // the rules gave none
+    'group/same': 'my-flash', 'opencode-go/deepseek-v4.1-flash': 'my-flash',   // the rules gave another
+    'auto/deepseek-v4.1-flash': 'auto/deepseek-v4.1-flash',                    // its own name: not merged, whatever the rules gave
+    'group/not-listed': 'deepseek-v4.1-flash',                                 // not in the gateway's list: still written
+    'group/empty': '', 'group/number': 5, 'group/long': 'x'.repeat(201), '': 'x',
+  };
+  const { code, stdout, stderr } = await ran(t, { written });
+  assert.equal(code, 0, stderr);
+  const { names, services } = JSON.parse(stdout);
+  assert.deepEqual(names, {
+    'group/differ': 'deepseek-v4.1-flash', 'group/same': 'my-flash', 'opencode-go/deepseek-v4.1-flash': 'my-flash', 'group/not-listed': 'deepseek-v4.1-flash',
+    'opencode-go/deepseek-v4.1-flash-free': 'deepseek-v4.1-flash-free', 'workbuddy/deepseek-v4.1-flash': 'deepseek-v4.1-flash' });
+  assert.deepEqual(services.sort(), [...LOCAL].sort());
+});
+
+test('without Magpie (no gateway, none that answers in time, no command) what the user wrote is still given, with the services', async t => {
+  const written = { 'group/ds-flash': 'deepseek-v4.1-flash', 'group/off': 'group/off' };
+  for (const options of [{ answer: null }, { answer: { hang: true } }, { slow: true }, { binary: false, answer: null }]) {
+    const { code, stdout, stderr } = await ran(t, { written, ...options });
+    assert.equal(code, 0, stderr);
+    const { names, services } = JSON.parse(stdout);
+    assert.equal(names['group/ds-flash'], 'deepseek-v4.1-flash', JSON.stringify(options));
+    assert.equal(Object.hasOwn(names, 'group/off'), false);
+    if (!options.slow && !options.answer?.hang) assert.deepEqual(services.sort(), [...LOCAL].sort());
+  }
+});
+
+test('a setting that is not a table of texts writes nothing', async t => {
+  for (const written of ['nope', 5, null, []]) {
+    const { code, stdout, stderr } = await ran(t, { written });
+    assert.equal(code, 0, stderr);
+    assert.equal(JSON.parse(stdout).names['group/same'], 'deepseek-v4.1-flash', JSON.stringify(written));
+    assert.equal(Object.hasOwn(JSON.parse(stdout).names, '0'), false);
+  }
 });
