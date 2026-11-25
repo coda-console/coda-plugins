@@ -14,11 +14,13 @@ const accord = status => ({ type: 'MODIFIED', entry: { spec: { author: AUTHOR },
 // 严格多机的 window.coda：不指明 machine 的调用直接拒绝；记下每次发往哪台。页面不查询 Accord 记录；给模块的消息只有「共享」一节的。
 // 「共享」一节读写持有方的消息默认都答空；`share` 按消息类型换成自己的答复（返回值就是 value，抛错是明确的拒绝，永不返回是没有回应）。
 const SHARE = { 'grants.list': () => ({ grants: [] }), 'proxies.list': () => [], 'ledger.list': () => [], 'grants.targets': () => [] };
-function strictCoda(page, { silent, sendFail, watch, call, machines = [A], share = {}, inviteFriend, copy } = {}) {
-  const log = { sent: [], calls: [], watches: [], copied: [], queries: [], toolbars: [], states: [], invites: [] };
+function strictCoda(page, { silent, sendFail, watch, call, machines = [A], share = {}, inviteFriend, copy, friendNodes, removeFriendNode } = {}) {
+  const log = { sent: [], calls: [], watches: [], copied: [], queries: [], toolbars: [], states: [], invites: [], nodes: [] };
   const coda = {
     machine: A, machines, getState: () => ({}), setState(state) { log.states.push(state); }, on() {},
     copy: async text => { if (copy) await copy(text); log.copied.push(text); },
+    ...(friendNodes ? { friendNodes: async options => { log.nodes.push(['friendNodes', options]); return friendNodes(options); } } : {}),
+    ...(removeFriendNode ? { removeFriendNode: async options => { log.nodes.push(['removeFriendNode', options]); return removeFriendNode(options); } } : {}),
     ...(inviteFriend ? { inviteFriend: async options => { log.invites.push(options); return inviteFriend(options); } } : {}),
     toolbar: async items => { log.toolbars.push(items); }, header: async () => {},
     async postMessage(msg, options) {
@@ -1263,4 +1265,413 @@ test('the recovery loop starts the next round only when this one has read and re
   await flush();
   assert.equal(sentOf(log, 'grants.list').length, reads + 1);
   assert.equal(sentOf(log, 'grants.revoke').length, 2, 'no valid list, no retry');
+});
+
+// ---- 网络节点：分节入口、抽屉、网络节点待移除 ----
+const netEntries = page => page.all(n => n.tag === 'button' && n.attrs['aria-label'] === '网络节点');
+const netNode = (node, name, state, extra = {}) => ({ node, name, online: false, attributed: false, state, ...extra });
+const netRead = (nodes, extra = {}) => ({ machine: 'a', space: '家里', network: { name: 'coda-home', kind: 'headscale' }, complete: true, unreadable: [], nodes, ...extra });
+const netError = (code, message = code, effects = 'none') => Object.assign(new Error(message), { code, effects });
+const SINCE = Date.UTC(2026, 10, 24, 6, 30);
+const fmtTime = ms => new Date(ms).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+const gRows = (page, node) => page.all(n => n.tag === 'li' && cls(n).startsWith('g-row'), node);
+const rowWith = (page, node, text) => gRows(page, node).find(row => row.textContent.includes(text));
+const isDisabled = node => 'disabled' in node.attrs;
+const netBlock = page => page.all(n => cls(n) === 'netblock')[0];
+// status 按电脑 ID 给；页面按各台 Accord 记录里的 networkRemovals 显示待移除。
+async function openNetPage(t, { machines = [A], status = {}, ...options } = {}) {
+  const { page, log } = await open(t, { machines, ...options });
+  for (const m of machines.filter(x => !x.unreachable)) feed(log, m.id, status[m.id] ?? {});
+  await flush();
+  return { page, log };
+}
+async function openDrawer(page, index = 0) {
+  netEntries(page)[index].fire('click');
+  await flush();
+  return scrims(page)[3];
+}
+const removal = (node, since = SINCE) => ({ node, since });
+
+test('without window.coda.friendNodes there is no network entry and no pending-removal block, even when networkRemovals is not empty', async t => {
+  const { page } = await openNetPage(t, { machines: [A, B], status: { a: { networkRemovals: [removal('41')] }, b: { networkRemovals: [removal('42')] } } });
+  assert.deepEqual(netEntries(page), []);
+  assert.equal(netBlock(page), undefined);
+  assert.ok(!page.text().includes('待移除'));
+  // 只有 removeFriendNode 也不算有这块能力。
+  const only = await openNetPage(t, { removeFriendNode: () => ({}), status: { a: { networkRemovals: [removal('41')] } } });
+  assert.deepEqual(netEntries(only.page), []);
+  assert.equal(netBlock(only.page), undefined);
+});
+
+test('with friendNodes each reachable section has an icon entry at the end of its heading row; one machine puts it on the Friends row; nothing is called on open or on receiving removals', async t => {
+  const { page, log } = await openNetPage(t, { machines: [A, B, { id: 'c', name: 'C', unreachable: '离线' }], friendNodes: () => netRead([]), status: { a: { networkRemovals: [removal('41')] } } });
+  const entries = netEntries(page);
+  assert.equal(entries.length, 2, 'the unreachable section has none');
+  for (const entry of entries) assert.deepEqual([entry.attrs.title, cls(entry), entry.children[0].namespaceURI, isDisabled(entry)], ['网络节点', 'kebab', SVG_NS, false]);
+  const heads = page.all(n => n.tag === 'h2' && cls(n) === 'sec');
+  assert.deepEqual(heads.map(head => head.children.includes(entries[0]) || head.children.includes(entries[1])), [true, true, false]);
+  assert.ok(cls(heads[0].children.at(-2)).includes('spacer') && heads[0].children.at(-1) === entries[0]);
+  assert.deepEqual(log.nodes, [], 'opening the page and receiving removals never calls friendNodes');
+
+  const single = await openNetPage(t, { friendNodes: () => netRead([]) });
+  const [entry] = netEntries(single.page);
+  assert.equal(entry.parentNode, undefined);
+  const [head] = single.page.all(n => n.tag === 'h2' && cls(n) === 'sec');
+  assert.equal(head.children[0], '好友');
+  assert.equal(head.children.at(-1), entry);
+  assert.equal(netBlock(single.page), undefined, 'no removals, no block');
+});
+
+test('pending removals show under the friend list with the node ID when no name has been read, and offer a retry; they are per section', async t => {
+  const { page } = await openNetPage(t, { machines: [A, B], friendNodes: () => netRead([]), status: { a: { friends: [{ node: 'n1', author: FRIEND, bound: true }], networkRemovals: [removal('41'), removal('44', SINCE + 1)] } } });
+  const blocks = page.all(n => cls(n) === 'netblock');
+  assert.equal(blocks.length, 1, 'only the section that has removals');
+  const block = blocks[0];
+  assert.equal(page.all(n => n.tag === 'h3' && cls(n) === 'sub-head', block)[0].textContent, '网络节点待移除2');
+  const rows = gRows(page, block);
+  assert.deepEqual(rows.map(row => cls(row)), ['g-row', 'g-row']);
+  assert.ok(rows[0].textContent.includes('节点 41') && rows[0].textContent.includes(`${fmtTime(SINCE)} 移除`));
+  assert.ok(page.all(n => cls(n).includes('mono'), rows[0]).length);
+  assert.deepEqual(rows.map(row => buttonIn(page, row, '重试')?.attrs.class), ['btn quiet small', 'btn quiet small']);
+  const section = page.all(n => n.tag === 'section').find(n => n.children.includes(block));
+  assert.ok(section.children.indexOf(block) > section.children.findIndex(n => cls(n) === 'friends'), 'below the friend list');
+});
+
+test('the drawer reads once for its machine, groups the leftovers, leaves out friends, and shows network, presence and state', async t => {
+  const gate = deferred();
+  const lastSeen = '2026-11-23T06:02:00Z', numericSeen = Date.UTC(2026, 10, 20, 8, 5);
+  const nodes = [
+    netNode('41', 'mei-iphone', 'pending', { attributed: true, lastSeen }),
+    netNode('42', 'kept-laptop', 'friend', { attributed: true, online: true, heldBy: ['a'] }),
+    netNode('44', 'ipad-7c1e', 'candidate', { attributed: true, lastSeen: numericSeen }),
+    netNode('47', 'rob-laptop', 'candidate', { attributed: true, online: true, inviteOpen: true }),
+    netNode('29', 'DESKTOP-4KQ2', 'candidate', { lastSeen: 'bad' }),
+    netNode('33', 'localhost', 'candidate', { online: true }),
+  ];
+  const { page, log } = await openNetPage(t, { machines: [A, B], friendNodes: () => gate.promise });
+  netEntries(page)[1].fire('click');
+  const drawer = scrims(page)[3];
+  assert.equal(drawer.hidden, false);
+  assert.deepEqual(log.nodes, [['friendNodes', { machine: 'b' }]]);
+  assert.equal(drawer.children[0].children[1].children[0].textContent, '网络节点 · B');
+  assert.equal(buttonIn(page, drawer, '完成').textContent, '完成');
+  assert.equal(page.all(n => cls(n) === 'empty', drawer)[0].textContent, '正在读取…');
+  assert.equal(buttonIn(page, drawer, '重新读取'), undefined, 'no manual read button');
+  gate.resolve(netRead(nodes));
+  await flush();
+  assert.equal(log.nodes.length, 1);
+  assert.deepEqual(page.all(n => cls(n) === 'tag', drawer).map(n => n.textContent), ['Headscale']);
+  assert.ok(drawer.textContent.includes('coda-home'));
+  const heads = page.all(n => n.tag === 'h4' && cls(n) === 'sub-head', drawer);
+  assert.deepEqual(heads.map(n => n.textContent), ['本空间邀请带入的3', '归属未确认2']);
+  assert.deepEqual(heads.map(n => cls(n.children[0])), ['dot ok-dot', 'dot warn-dot']);
+  const rows = gRows(page, drawer);
+  assert.deepEqual(rows.map(row => cls(row)), ['g-row stripe attr', 'g-row stripe attr', 'g-row stripe attr', 'g-row stripe unk', 'g-row stripe unk']);
+  assert.ok(!drawer.textContent.includes('kept-laptop'), 'friends do not go in the drawer');
+  const meta = row => page.all(n => cls(n) === 'g-sub meta', row)[0];
+  assert.equal(meta(rows[0]).textContent, `${fmtTime(Date.parse(lastSeen))} 离线 · 已断交`);
+  assert.equal(cls(meta(rows[0]).children[0]), 'dot off-dot');
+  assert.equal(meta(rows[1]).textContent, `${fmtTime(numericSeen)} 离线 · 未完成互认`, 'a millisecond lastSeen works too');
+  assert.equal(meta(rows[2]).textContent, '在线 · 未完成互认');
+  assert.equal(cls(meta(rows[2]).children[0]), 'dot ok-dot');
+  assert.equal(meta(rows[3]).textContent, '离线 · 未完成互认', 'a lastSeen that cannot be parsed is left out');
+  assert.equal(meta(rows[4]).textContent, '在线 · 未完成互认');
+  assert.ok(!drawer.textContent.includes('已互认'), 'it says 未完成互认, never 未互认 on its own');
+  // 邀请待用：只有徽标，没有删除。
+  assert.deepEqual([...rows.map(row => Boolean(buttonIn(page, row, '删除')))], [true, true, false, true, true]);
+  assert.equal(page.all(n => cls(n) === 'badge pending', rows[2])[0].textContent, '邀请待用');
+  // Escape 收起。
+  page.dispatch('keydown', { key: 'Escape' });
+  assert.equal(drawer.hidden, true);
+});
+
+test('with one machine the drawer is titled 网络节点, a Tailscale network is labeled, and an empty list says there are no leftovers', async t => {
+  const { page } = await openNetPage(t, { friendNodes: () => netRead([netNode('52', 'a-friend', 'friend', { heldBy: ['a'] })], { network: { name: 'tailnet.example', kind: 'tailscale' } }) });
+  const drawer = await openDrawer(page);
+  assert.equal(drawer.children[0].children[1].children[0].textContent, '网络节点');
+  assert.deepEqual(page.all(n => cls(n) === 'tag', drawer).map(n => n.textContent), ['Tailscale']);
+  assert.ok(drawer.textContent.includes('tailnet.example') && drawer.textContent.includes('没有残留节点'));
+  assert.deepEqual(page.all(n => n.tag === 'h4', drawer), []);
+});
+
+test('delete goes to the section\'s machine; success or effects some removes the row silently, canceled leaves it silent, other errors say why on the row', async t => {
+  const nodes = [netNode('44', 'ipad', 'candidate', { attributed: true }), netNode('45', 'phone', 'candidate'), netNode('46', 'tablet', 'candidate'), netNode('48', 'watch', 'candidate')];
+  const outcomes = {
+    44: () => ({ node: '44', removed: true }), 45: () => { throw netError('service_unavailable', '节点已删，待移除记录没结清，下次查看好友节点时会补上', 'some'); },
+    46: () => { throw netError('canceled'); }, 48: () => { throw netError('invalid_state', 'rob-mac 还认着它', 'none'); },
+  };
+  const { page, log } = await openNetPage(t, { machines: [A, B], friendNodes: () => netRead(nodes), removeFriendNode: ({ node }) => outcomes[node](), status: { b: { networkRemovals: [removal('44'), removal('46')] } } });
+  const drawer = await openDrawer(page, 1);
+  const press = async name => { buttonIn(page, rowWith(page, drawer, name), '删除').fire('click'); await flush(); };
+  await press('ipad');
+  assert.deepEqual(log.nodes.at(-1), ['removeFriendNode', { machine: 'b', node: '44' }]);
+  assert.equal(rowWith(page, drawer, 'ipad'), undefined, 'success: the row is gone');
+  assert.equal(gRows(page, netBlock(page)).length, 1, 'and so is its pending removal, though networkRemovals did not change');
+  await press('phone');
+  assert.deepEqual(log.nodes.at(-1), ['removeFriendNode', { machine: 'b', node: '45' }]);
+  assert.equal(rowWith(page, drawer, 'phone'), undefined, 'effects some: the node is deleted');
+  assert.ok(!drawer.textContent.includes('没结清'), 'no message for it');
+  await press('tablet');
+  const tablet = rowWith(page, drawer, 'tablet');
+  assert.ok(tablet && !page.all(n => cls(n).includes('error'), tablet).length, 'canceled leaves the row, with no text');
+  assert.ok(buttonIn(page, tablet, '删除') && !isDisabled(buttonIn(page, tablet, '删除')));
+  assert.equal(tablet.textContent, 'tablet离线 · 未完成互认删除');
+  await press('watch');
+  const watch = rowWith(page, drawer, 'watch');
+  assert.equal(page.all(n => cls(n) === 'g-sub error', watch)[0].textContent, 'rob-mac 还认着它');
+  assert.ok(buttonIn(page, watch, '删除'));
+  assert.deepEqual(log.nodes.map(c => c[1].machine), ['b', 'b', 'b', 'b', 'b']);
+});
+
+test('a delete shows 正在删除… on its row while it is in flight', async t => {
+  const gate = deferred();
+  const { page } = await openNetPage(t, { friendNodes: () => netRead([netNode('44', 'ipad', 'candidate')]), removeFriendNode: () => gate.promise });
+  const drawer = await openDrawer(page);
+  buttonIn(page, drawer, '删除').fire('click');
+  await flush();
+  const row = rowWith(page, drawer, 'ipad');
+  assert.equal(page.all(n => cls(n) === 'badge busy', row)[0].textContent, '正在删除…');
+  assert.equal(buttonIn(page, row, '删除'), undefined);
+  gate.resolve({ node: '44', removed: true });
+  await flush();
+  assert.equal(rowWith(page, drawer, 'ipad'), undefined);
+});
+
+test('an incomplete read names the unreadable machines, disables every delete, and 重新读取 reads again', async t => {
+  const reads = [
+    netRead([netNode('44', 'ipad', 'candidate', { attributed: true }), netNode('45', 'phone', 'candidate')], { complete: false, unreadable: [{ machine: 'r', name: 'rig' }, { machine: 'x', name: 'x1' }] }),
+    netRead([netNode('44', 'ipad', 'candidate', { attributed: true }), netNode('45', 'phone', 'candidate')]),
+  ];
+  const { page, log } = await openNetPage(t, { friendNodes: () => reads.shift() });
+  const drawer = await openDrawer(page);
+  const note = page.all(n => cls(n) === 'note-box', drawer)[0];
+  assert.ok(note.textContent.startsWith('rig、x1 读不到，暂时不能删除'));
+  const deletes = () => page.all(n => n.tag === 'button' && n.textContent === '删除', drawer);
+  assert.equal(deletes().length, 2);
+  assert.ok(deletes().every(isDisabled));
+  buttonIn(page, note, '重新读取').fire('click');
+  await flush();
+  assert.equal(log.nodes.filter(c => c[0] === 'friendNodes').length, 2);
+  assert.equal(page.all(n => cls(n) === 'note-box', drawer).length, 0);
+  assert.ok(deletes().every(n => !isDisabled(n)));
+});
+
+test('a read that fails: canceled quietly closes the drawer, not_found says where to remove and marks the machine, any other error shows its message with 重新读取', async t => {
+  const answers = [() => { throw netError('canceled'); }, () => { throw netError('service_unavailable', '控制服务器没有应答'); }, () => netRead([])];
+  const { page, log } = await openNetPage(t, { friendNodes: () => answers.shift()(), status: { a: { networkRemovals: [removal('41')] } } });
+  const drawer = await openDrawer(page);
+  assert.equal(drawer.hidden, true, 'canceled: closed, nothing said');
+  assert.ok(!page.text().includes('读不到') && !page.text().includes('canceled'));
+  assert.ok(buttonIn(page, netBlock(page), '重试'), 'canceled does not mark the machine');
+  await openDrawer(page);
+  assert.equal(drawer.hidden, false);
+  assert.equal(page.all(n => cls(n) === 'error selectable', drawer)[0].textContent, '控制服务器没有应答');
+  buttonIn(page, drawer, '重新读取').fire('click');
+  await flush();
+  assert.ok(drawer.textContent.includes('没有残留节点'));
+  assert.equal(log.nodes.length, 3);
+});
+
+test('without network credentials (not_found) the drawer says to remove elsewhere, and the pending rows lose their retry for that machine only', async t => {
+  const { page, log } = await openNetPage(t, { machines: [A, B], friendNodes: ({ machine }) => { throw netError('not_found', machine === 'a' ? '没有凭据' : '另一个'); },
+    status: { a: { networkRemovals: [removal('41')] }, b: { networkRemovals: [removal('41')] } } });
+  const blocks = () => page.all(n => cls(n) === 'netblock');
+  assert.equal(blocks().length, 2);
+  const drawer = await openDrawer(page, 0);
+  assert.equal(page.all(n => cls(n) === 'empty', drawer)[0].textContent, '需在有网络凭据的设备上移除');
+  assert.ok(!drawer.textContent.includes('没有凭据'), 'not the raw message');
+  const [first, second] = blocks();
+  assert.equal(buttonIn(page, first, '重试'), undefined);
+  assert.equal(gRows(page, first)[0].textContent, '节点 41需在有网络凭据的设备上移除');
+  assert.ok(buttonIn(page, second, '重试'), 'the other machine still has its retry');
+  assert.equal(log.nodes.length, 1);
+});
+
+test('retry reads first and only then removes; the row takes the node name, and the result lands on the row without a prompt', async t => {
+  const { page, log } = await openNetPage(t, { machines: [A, B], friendNodes: () => netRead([netNode('41', 'mei-iphone', 'pending', { attributed: true })]), removeFriendNode: () => ({ node: '41', removed: true }),
+    status: { a: { networkRemovals: [removal('41')] }, b: { networkRemovals: [removal('41')] } } });
+  buttonIn(page, page.all(n => cls(n) === 'netblock')[0], '重试').fire('click');
+  await flush();
+  assert.deepEqual(log.nodes, [['friendNodes', { machine: 'a' }], ['removeFriendNode', { machine: 'a', node: '41' }]]);
+  assert.equal(page.all(n => cls(n) === 'netblock').length, 1, 'removed: gone though networkRemovals did not change');
+  assert.ok(page.all(n => cls(n) === 'netblock')[0].textContent.includes('节点 41'), 'names are kept per machine: B still has no name for 41');
+  assert.ok(!page.all(n => cls(n) === 'netblock')[0].textContent.includes('mei-iphone'));
+});
+
+test('retry shows the node name after a read that still leaves the node; a held node says which machines hold it and is not deleted', async t => {
+  const state = { read: netRead([netNode('41', 'mei-iphone', 'friend', { heldBy: ['b', 'zz'] })]) };
+  const { page, log } = await openNetPage(t, { machines: [A, B], friendNodes: () => state.read, removeFriendNode: () => ({ removed: true }), status: { a: { networkRemovals: [removal('41')] } } });
+  buttonIn(page, netBlock(page), '重试').fire('click');
+  await flush();
+  const row = gRows(page, netBlock(page))[0];
+  assert.ok(row.textContent.startsWith('mei-iphone'), 'the name replaces 节点 41');
+  assert.equal(page.all(n => cls(n) === 'g-sub error', row)[0].textContent, 'B 等 2 台还认着它，先在那几台上移除好友', 'only part of them can be named: the count is of all');
+  assert.deepEqual(log.nodes.map(c => c[0]), ['friendNodes']);
+  state.read = netRead([netNode('41', 'mei-iphone', 'friend', { heldBy: ['a', 'b'] })]);
+  buttonIn(page, netBlock(page), '重试').fire('click');
+  await flush();
+  assert.equal(page.all(n => cls(n) === 'g-sub error', netBlock(page))[0].textContent, 'A、B 还认着它，先在那几台上移除好友');
+  state.read = netRead([netNode('41', 'mei-iphone', 'friend', { heldBy: ['unknown'] })]);
+  buttonIn(page, netBlock(page), '重试').fire('click');
+  await flush();
+  assert.equal(page.all(n => cls(n) === 'g-sub error', netBlock(page))[0].textContent, '还有后端认着它，先在那台上移除好友');
+  state.read = netRead([netNode('41', 'mei-iphone', 'friend', { heldBy: ['unknown', 'zz'] })]);
+  buttonIn(page, netBlock(page), '重试').fire('click');
+  await flush();
+  assert.equal(page.all(n => cls(n) === 'g-sub error', netBlock(page))[0].textContent, '还有后端认着它，先在那几台上移除好友');
+  assert.deepEqual(log.nodes.map(c => c[0]), ['friendNodes', 'friendNodes', 'friendNodes', 'friendNodes']);
+});
+
+test('two removals held by B: retrying the second keeps the first one\'s hold notice, and a node with no notice still shows its removal time', async t => {
+  const held = { read: netRead([netNode('41', 'mei-iphone', 'friend', { heldBy: ['b'] }), netNode('44', 'ipad', 'friend', { heldBy: ['b'] }), netNode('50', 'watch', 'friend', { heldBy: ['b'] })]) };
+  const { page } = await openNetPage(t, { machines: [A, B], friendNodes: () => held.read, status: { a: { networkRemovals: [removal('41'), removal('44'), removal('50', SINCE + 1)] } } });
+  const retryRow = async i => { buttonIn(page, gRows(page, netBlock(page))[i], '重试').fire('click'); await flush(); };
+  const subs = () => gRows(page, netBlock(page)).map(row => page.all(n => cls(n).startsWith('g-sub'), row)[0].textContent);
+  await retryRow(0);
+  await retryRow(1);
+  assert.deepEqual(subs(), ['B 还认着它，先在那台上移除好友', 'B 还认着它，先在那台上移除好友', `${fmtTime(SINCE + 1)} 移除`]);
+  // 之后 B 放手了：已有提示的行跟着新结果清掉，没点过的行仍是移除时间。
+  held.read = netRead([netNode('41', 'mei-iphone', 'candidate'), netNode('44', 'ipad', 'friend', { heldBy: ['a'] }), netNode('50', 'watch', 'friend', { heldBy: ['b'] })]);
+  await retryRow(2);
+  assert.deepEqual(subs(), [`${fmtTime(SINCE)} 移除`, 'A 还认着它，先在那台上移除好友', 'B 还认着它，先在那台上移除好友']);
+});
+
+test('a failed read on retry is not kept once a later read succeeds: neither the drawer row nor the pending row shows it, while a failed delete stays', async t => {
+  const reads = [() => { throw netError('service_unavailable', '控制服务器没有应答'); }, () => netRead([netNode('41', 'mei-iphone', 'candidate'), netNode('44', 'ipad', 'candidate')])];
+  const { page } = await openNetPage(t, { friendNodes: () => reads.shift()(), removeFriendNode: ({ node }) => { throw netError('invalid_state', `${node} 删不掉`); }, status: { a: { networkRemovals: [removal('41'), removal('44')] } } });
+  buttonIn(page, gRows(page, netBlock(page))[0], '重试').fire('click');
+  await flush();
+  assert.ok(gRows(page, netBlock(page))[0].textContent.includes('控制服务器没有应答'));
+  const drawer = await openDrawer(page);
+  assert.ok(!gRows(page, netBlock(page))[0].textContent.includes('控制服务器没有应答'), 'the pending row');
+  assert.ok(!drawer.textContent.includes('控制服务器没有应答'), 'the drawer row');
+  buttonIn(page, rowWith(page, drawer, 'ipad'), '删除').fire('click');
+  await flush();
+  assert.ok(gRows(page, netBlock(page))[1].textContent.includes('44 删不掉'), 'a failed delete is not cleared by reads');
+});
+
+test('retry on an incomplete read says who cannot be read and does not delete; a node that is gone from a complete read is treated as removed without a delete', async t => {
+  const state = { read: netRead([netNode('41', 'mei-iphone', 'pending')], { complete: false, unreadable: [{ machine: 'r', name: 'rig' }] }) };
+  const { page, log } = await openNetPage(t, { friendNodes: () => state.read, removeFriendNode: () => ({ removed: true }), status: { a: { networkRemovals: [removal('41'), removal('50')] } } });
+  buttonIn(page, gRows(page, netBlock(page))[0], '重试').fire('click');
+  await flush();
+  assert.equal(page.all(n => cls(n) === 'g-sub error', netBlock(page))[0].textContent, 'rig 读不到，暂时不能移除');
+  state.read = netRead([], { complete: false, unreadable: [{ machine: 'r', name: 'rig' }] });
+  buttonIn(page, gRows(page, netBlock(page))[1], '重试').fire('click');
+  await flush();
+  assert.equal(gRows(page, netBlock(page)).length, 2, 'not found but incomplete: it may be held by one we cannot read');
+  state.read = netRead([]);
+  buttonIn(page, gRows(page, netBlock(page))[1], '重试').fire('click');
+  await flush();
+  assert.equal(gRows(page, netBlock(page)).length, 1, 'complete and gone: removed');
+  assert.deepEqual(log.nodes.map(c => c[0]), ['friendNodes', 'friendNodes', 'friendNodes'], 'removeFriendNode is never called');
+});
+
+test('retry errors: canceled and not_found leave nothing on the row (not_found drops the retry), other errors and a failed delete show their message', async t => {
+  const reads = [() => { throw netError('canceled'); }, () => { throw netError('service_unavailable', '控制服务器没有应答'); }, () => netRead([netNode('41', 'mei-iphone', 'candidate')])];
+  const { page, log } = await openNetPage(t, { friendNodes: () => reads.shift()(), removeFriendNode: () => { throw netError('invalid_state', 'rig 还认着它'); }, status: { a: { networkRemovals: [removal('41')] } } });
+  const retry = () => buttonIn(page, netBlock(page), '重试');
+  retry().fire('click');
+  await flush();
+  assert.equal(gRows(page, netBlock(page))[0].textContent, `节点 41${fmtTime(SINCE)} 移除重试`);
+  retry().fire('click');
+  await flush();
+  assert.ok(gRows(page, netBlock(page))[0].textContent.includes('控制服务器没有应答'));
+  assert.ok(retry(), 'a failed read can be retried');
+  retry().fire('click');
+  await flush();
+  assert.ok(gRows(page, netBlock(page))[0].textContent.includes('rig 还认着它'));
+  assert.deepEqual(log.nodes.map(c => c[0]), ['friendNodes', 'friendNodes', 'friendNodes', 'removeFriendNode']);
+  assert.equal(page.all(n => n.tag === 'button' && n.textContent === '重试').length, 1, 'a failed attempt can be retried');
+});
+
+test('retry hitting not_found on the read, or on the delete, marks the machine without credentials', async t => {
+  const first = await openNetPage(t, { friendNodes: () => netRead([netNode('41', 'x', 'candidate')]), removeFriendNode: () => { throw netError('not_found'); }, status: { a: { networkRemovals: [removal('41')] } } });
+  buttonIn(first.page, netBlock(first.page), '重试').fire('click');
+  await flush();
+  assert.equal(buttonIn(first.page, netBlock(first.page), '重试'), undefined);
+  assert.equal(gRows(first.page, netBlock(first.page))[0].textContent, 'x需在有网络凭据的设备上移除');
+});
+
+test('a successful read clears the machine\'s no-credentials mark, so the retry comes back', async t => {
+  const reads = [() => { throw netError('not_found'); }, () => netRead([netNode('41', 'x', 'candidate')])];
+  const { page } = await openNetPage(t, { friendNodes: () => reads.shift()(), status: { a: { networkRemovals: [removal('41')] } } });
+  buttonIn(page, netBlock(page), '重试').fire('click');
+  await flush();
+  assert.equal(buttonIn(page, netBlock(page), '重试'), undefined);
+  assert.ok(netBlock(page).textContent.includes('需在有网络凭据的设备上移除'));
+  await openDrawer(page);
+  assert.ok(buttonIn(page, netBlock(page), '重试'));
+  assert.ok(!netBlock(page).textContent.includes('需在有网络凭据的设备上移除'));
+});
+
+test('a successful read clears what an earlier read blocked the row for, but not a failed delete', async t => {
+  const reads = [netRead([netNode('41', 'x', 'candidate')], { complete: false, unreadable: [{ machine: 'r', name: 'rig' }] }), netRead([netNode('41', 'x', 'friend', { heldBy: ['a'] })]),
+    netRead([netNode('41', 'x', 'candidate')]), netRead([netNode('41', 'x', 'candidate')]), netRead([netNode('41', 'x', 'candidate')])];
+  const { page, log } = await openNetPage(t, { friendNodes: () => reads.shift(), removeFriendNode: () => { throw netError('invalid_state', 'rig 还认着它'); }, status: { a: { networkRemovals: [removal('41')] } } });
+  const retry = async () => { buttonIn(page, netBlock(page), '重试').fire('click'); await flush(); };
+  const hint = () => page.all(n => cls(n) === 'g-sub error', netBlock(page))[0]?.textContent;
+  await retry();
+  assert.equal(hint(), 'rig 读不到，暂时不能移除');
+  await retry();
+  assert.equal(hint(), 'A 还认着它，先在那台上移除好友');
+  const drawer = await openDrawer(page);
+  assert.equal(hint(), undefined, 'the drawer read is complete and the node is no longer a friend');
+  assert.ok(!isDisabled(buttonIn(page, rowWith(page, drawer, 'x'), '删除')));
+  await retry();
+  assert.equal(hint(), 'rig 还认着它', 'a failed delete stays');
+  await openDrawer(page);
+  assert.equal(hint(), 'rig 还认着它', 'a successful read does not clear a delete error');
+  assert.deepEqual(log.nodes.map(c => c[0]), ['friendNodes', 'friendNodes', 'friendNodes', 'friendNodes', 'removeFriendNode', 'friendNodes']);
+});
+
+test('only one friend-node operation is in flight: while one runs every entry, delete, retry and re-read is disabled and extra clicks send nothing', async t => {
+  const gate = deferred();
+  const nodes = [netNode('44', 'ipad', 'candidate'), netNode('45', 'phone', 'candidate')];
+  const { page, log } = await openNetPage(t, { machines: [A, B], friendNodes: () => netRead(nodes), removeFriendNode: () => gate.promise,
+    status: { a: { networkRemovals: [removal('41')] }, b: { networkRemovals: [removal('42')] } } });
+  const drawer = await openDrawer(page, 0);
+  buttonIn(page, rowWith(page, drawer, 'ipad'), '删除').fire('click');
+  await flush();
+  const [pageRoot] = page.all(n => cls(n) === 'page');
+  const all = () => [...netEntries(page), ...page.all(n => n.tag === 'button' && ['删除', '重试'].includes(n.textContent), pageRoot)];
+  const inDrawer = () => page.all(n => n.tag === 'button' && n.textContent === '删除', drawer);
+  assert.ok(all().length >= 4 && inDrawer().length === 1);
+  assert.ok([...all(), ...inDrawer(), buttonIn(page, drawer, '重新读取')].filter(Boolean).every(isDisabled), 'every other button is disabled');
+  for (const button of [...all(), ...inDrawer()]) button.fire('click');
+  await flush();
+  assert.deepEqual(log.nodes.map(c => c[0]), ['friendNodes', 'removeFriendNode'], 'no second call');
+  // 抽屉关掉后，结果照常落下，抽屉不会重新打开。
+  buttonIn(page, drawer, '完成').fire('click');
+  assert.equal(drawer.hidden, true);
+  gate.resolve({ node: '44', removed: true });
+  await flush();
+  assert.equal(drawer.hidden, true);
+  assert.ok(all().every(n => !isDisabled(n)));
+  const again = await openDrawer(page, 0);
+  assert.ok(rowWith(page, again, 'ipad'), 'a node the read still lists shows again, whatever was recorded as removed');
+  assert.ok(rowWith(page, again, 'phone'));
+  // 读的时候同样互斥。
+  const slow = deferred();
+  const second = await openNetPage(t, { friendNodes: () => slow.promise, status: { a: { networkRemovals: [removal('41')] } } });
+  buttonIn(second.page, netBlock(second.page), '重试').fire('click');
+  assert.ok([...netEntries(second.page), ...second.page.all(n => n.tag === 'button' && n.textContent === '重试')].every(isDisabled));
+  assert.equal(second.page.all(n => cls(n) === 'badge busy', netBlock(second.page))[0].textContent, '正在移除…');
+  netEntries(second.page)[0].fire('click');
+  assert.equal(second.log.nodes.length, 1);
+  slow.resolve(netRead([]));
+  await flush();
+});
+
+test('node names and messages are shown as text, never as markup', async t => {
+  const name = '<b>evil</b><img src=x onerror=alert(1)>';
+  const { page } = await openNetPage(t, { friendNodes: () => netRead([netNode('44', name, 'candidate', { attributed: true })], { network: { name: '<i>net</i>', kind: 'headscale' } }), removeFriendNode: () => { throw netError('invalid_state', '<u>no</u>'); },
+    status: { a: { networkRemovals: [removal('44')] } } });
+  const drawer = await openDrawer(page);
+  assert.ok(drawer.textContent.includes(name) && drawer.textContent.includes('<i>net</i>'));
+  buttonIn(page, rowWith(page, drawer, 'evil'), '删除').fire('click');
+  await flush();
+  assert.ok(drawer.textContent.includes('<u>no</u>'));
+  assert.ok(netBlock(page).textContent.includes(name), 'the pending row takes the name read in the drawer');
+  assert.deepEqual(page.all(n => ['b', 'i', 'u', 'img'].includes(n.tag)), []);
 });

@@ -188,6 +188,22 @@ details[open] > summary { margin-bottom: 10px; }
 .pick { width: 100%; display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--card); text-align: left; }
 .pick .why { font-size: .85em; color: var(--orange); }
 
+/* 网络节点：分节标题行右端的图标按钮、抽屉里的分组与行、待移除块 */
+.sec .kebab { margin: -6px -6px -6px 0; }
+.page > section > .netblock { margin-top: 16px; }
+h3.sub-head, h4.sub-head { font-size: 1em; }
+.sub-head .count { font-weight: 400; }
+.sub-head .dot { margin-right: 1px; }
+.g-sub.meta { display: flex; align-items: center; gap: 5px; }
+.g-row.stripe { padding-left: 14px; }
+.g-row.stripe::before { content: ""; position: absolute; left: 0; top: 10px; bottom: 10px; width: 3px; border-radius: 0 3px 3px 0; background: var(--s); opacity: .8; }
+.g-row.attr { --s: var(--green); }
+.g-row.unk { --s: var(--orange); }
+.g-row .btn.danger { align-self: center; }
+.note-box { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; padding: 9px 11px; border-radius: 11px; background: color-mix(in srgb, var(--orange) 13%, transparent); color: var(--orange); font-size: .92em; }
+.group + .group { margin-top: 16px; }
+.dlg-body .group > .glist { margin-top: 0; }
+
 @media (min-width: 680px) {
   .page { padding: 18px 24px 28px; gap: 20px; }
   .hero-body { padding: 14px 20px 18px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 320px); align-items: end; column-gap: 18px; }
