@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   BUCKET_MS, DAY_MS, aggregateLeaderboard, aggregateTodayCurve, buildArchiveBodies, buildDailyUsageBodies, buildTodayBody, fetchUsageBuckets, filterBucketsByPerson,
-  Tally, isWithdrawn, modelName, ownBuckets, ownedBySource, rangeWindow, readArchiveRecord, readTodayRecord, serviceKind, settleTurns, shortAuthor, summarizeBuckets, withdrawnBody,
+  Tally, isWithdrawn, markSame, modelName, needsSame, ownBuckets, ownedBySource, rangeWindow, readArchiveRecord, readTodayRecord, serviceKind, settleTurns, shortAuthor, summarizeBuckets, withdrawnBody,
 } from '../../../plugins/token-board/lib/usage.mjs';
 
 const bucket = (start, over = {}) => ({ start, agent: 'claude', model: 'opus', input: 10, output: 5, cacheRead: 100, cacheWrite: 1, turns: 2, reportedTurns: 2, ...over });
@@ -284,7 +284,7 @@ test('readArchiveRecord：id 与 v 要对，日期要在 id 的月份与分块�
   const read = readArchiveRecord(record('dev-1/2026-11', good));
   assert.equal(read.sourceId, 'dev-1');
   assert.deepEqual(read.days.map(d => [d.date, d.start, d.rows.length]), [['2026-11-03', Date.UTC(2026, 10, 3), 1]]);
-  assert.deepEqual(read.days[0].rows[0], { agent: 'claude', api: null, asked: null, served: null, model: 'opus', input: 10, output: 5, cacheRead: 100, cacheWrite: 1, turns: 2, reportedTurns: 2 }, 'v2 的行按旧标签读');
+  assert.deepEqual(read.days[0].rows[0], { agent: 'claude', api: null, asked: null, served: null, same: null, model: 'opus', input: 10, output: 5, cacheRead: 100, cacheWrite: 1, turns: 2, reportedTurns: 2 }, 'v2 的行按旧标签读');
   assert.deepEqual(readArchiveRecord(record('dev-1/2026-11-2', good)).days, [], '16–31 日的块里不收 3 日');
   assert.equal(readArchiveRecord(record('dev-1/2026-11-w1', good)).days.length, 1);
   assert.equal(readArchiveRecord(record('dev-1/2026-11-w5', { v: 2, days: { '2026-11-30': { a: { b: ROW } } } })).days.length, 1);
@@ -635,11 +635,13 @@ test('本机行按身份归属：person 是当前根身份或空字符串的算�
   assert.deepEqual(ownBuckets(list, null).map(row => row.person ?? ''), ['', '']);
 });
 
-test('型号名：served，没有取 asked，再没有取旧标签；映射参数默认原样，可接同型号映射', () => {
+test('型号名：served，没有取归并名 same，再没有取 asked，再没有取旧标签', () => {
   assert.equal(modelName({ asked: 'a', served: 's', model: null }), 's');
   assert.equal(modelName({ asked: 'a', served: null, model: null }), 'a');
   assert.equal(modelName({ asked: null, served: null, model: 'label' }), 'label');
-  assert.equal(modelName({ asked: 'a', served: 's' }, name => `<${name}>`), '<s>');
+  assert.equal(modelName({ asked: 'a', served: 's', same: 'u' }), 's', '实际型号优先');
+  assert.equal(modelName({ asked: 'a', served: null, same: 'u' }), 'u');
+  assert.equal(modelName({ asked: null, served: null, model: null, api: 'openai-responses' }), 'openai-responses');
   assert.equal(serviceKind(SERVICE), 'openai-responses');
   assert.equal(serviceKind(null), null);
 });
@@ -774,4 +776,85 @@ test('只带 service 的行：两种记录都保留（Token 不丢），明细�
   assert.deepEqual(archive.models, local.models);
   assert.deepEqual(today.models, local.models);
   assert.equal(archive.totalTokens, 55);
+});
+
+// ——— 同型号映射（Magpie）：只套本机行，展开仍是原请求项 ———
+
+const SERVICES = [SERVICE, OTHER_SERVICE], FOREIGN = 'coda://openai-responses/99999999-8888-7777-6666-555555555555';   // 本机 Magpie 插件提供的服务；另一台的 Magpie 的服务
+const NAMES = { 'group/ds-flash': 'deepseek-v4.1-flash', 'opencode-go/deepseek-v4.1-flash': 'deepseek-v4.1-flash', 'auto/gpt-5': 'gpt-5' };
+const viaMagpie = (start, asked, over = {}) => layered(start, { asked, ...tokensOf(10), ...turnsOf(1), ...over });
+
+test('markSame：只套带服务、没有 served、asked 在映射里的本机行；有 served、旧标签、没有服务、不在映射里的原样；不改原桶', () => {
+  const rows = [viaMagpie(DAY0, 'group/ds-flash'), viaMagpie(DAY0, 'group/ds-flash', { served: 'real' }), viaMagpie(DAY0, 'group/ds-flash', { service: null }),
+    bucket(DAY0, { model: 'group/ds-flash' }), viaMagpie(DAY0, 'other/model'), viaMagpie(DAY0, 'constructor'), viaMagpie(DAY0, '__proto__'), viaMagpie(DAY0, 'group/ds-flash', { service: FOREIGN })];
+  const marked = markSame(rows, NAMES, SERVICES);
+  assert.deepEqual(marked.map(row => row.same), ['deepseek-v4.1-flash', undefined, undefined, undefined, undefined, undefined, undefined, undefined], '别台的 Magpie 的服务，asked 命中也不套');
+  assert.deepEqual(markSame(rows, NAMES, []), rows, '不知道哪些是本机 Magpie 的服务：一个都不套');
+  assert.equal(rows[0].same, undefined);
+  assert.deepEqual(markSame(rows, {}, SERVICES), rows);
+  assert.deepEqual([needsSame(rows), needsSame(rows.slice(1, 4)), needsSame([])], [true, false, false]);
+});
+
+test('本机行套映射：同型号的请求项并成一个型号行，展开得到原来的 asked 与接口种类；有 served 的行不套', () => {
+  const rows = markSame([viaMagpie(DAY0, 'group/ds-flash'), viaMagpie(DAY0, 'opencode-go/deepseek-v4.1-flash', { service: OTHER_SERVICE, ...tokensOf(20) }), viaMagpie(DAY0, 'auto/gpt-5'),
+    viaMagpie(DAY0, 'group/ds-flash', { served: 'real-model', ...tokensOf(3) }), layered(DAY0, { asked: 'deepseek-v4.1-flash', ...tokensOf(5) })], NAMES, SERVICES);
+  const { models } = summarizeBuckets(rows, { from: DAY0, to: DAY0 + BUCKET_MS });
+  assert.deepEqual(models.map(m => [m.model, m.totalTokens]), [['deepseek-v4.1-flash', 35], ['gpt-5', 10], ['real-model', 3]]);
+  assert.deepEqual(models[0].items.map(item => [item.asked, item.api, item.totalTokens]),
+    [['opencode-go/deepseek-v4.1-flash', 'anthropic-messages', 20], ['group/ds-flash', 'openai-responses', 10], ['deepseek-v4.1-flash', 'openai-responses', 5]]);
+  assert.deepEqual(models[2].items.map(item => item.asked), ['group/ds-flash'], '有 served 的行不套，请求项还是 asked');
+  assert.ok(!JSON.stringify(models).includes('11111111'));
+});
+
+test('映射为空或不命中：结果与不映射完全相同', () => {
+  const rows = [viaMagpie(DAY0, 'group/ds-flash'), viaMagpie(DAY0, 'x/y', { served: 'z' }), bucket(DAY0)];
+  const plain = summarizeBuckets(rows, { from: DAY0, to: DAY0 + BUCKET_MS });
+  assert.deepEqual(summarizeBuckets(markSame(rows, {}, SERVICES), { from: DAY0, to: DAY0 + BUCKET_MS }), plain);
+  assert.deepEqual(summarizeBuckets(markSame(rows, { 'nothing/here': 'q' }, SERVICES), { from: DAY0, to: DAY0 + BUCKET_MS }), plain);
+});
+
+test('签名记录带归并名 u：asked、接口种类照旧，不混进 a 或 s；写出再读回，聚合与本机一样；没有归并的行不带 u', () => {
+  const at = DAY0 + 3_600_000;
+  const list = markSame([viaMagpie(at, 'group/ds-flash'), viaMagpie(at, 'opencode-go/deepseek-v4.1-flash', { service: OTHER_SERVICE }), viaMagpie(at, 'plain-model'),
+    viaMagpie(at, 'group/ds-flash', { served: 'real-model' })], NAMES, SERVICES);
+  const body = buildArchiveBodies(list)['2026-11'], today = buildTodayBody(list, { now: at + 5 * 60_000 });
+  const rows = body.days['2026-11-01'].codex;
+  assert.deepEqual(rows.map(row => [row.a, row.s ?? null, row.u ?? null, row.i]).sort((a, b) => (a[0] + a[1] < b[0] + b[1] ? -1 : 1)),
+    [['group/ds-flash', null, 'deepseek-v4.1-flash', 'openai-responses'], ['group/ds-flash', 'real-model', null, 'openai-responses'],
+      ['opencode-go/deepseek-v4.1-flash', null, 'deepseek-v4.1-flash', 'anthropic-messages'], ['plain-model', null, null, 'openai-responses']]);
+  const expected = summarizeBuckets(list, { from: DAY0, to: DAY0 + DAY_MS });
+  const fromRecords = read => { const tally = new Tally(); for (const row of read) tally.add(row); return tally.result(); };
+  assert.deepEqual(fromRecords(readArchiveRecord({ id: 'dev/2026-11', body }).days.flatMap(d => d.rows)), expected);
+  assert.deepEqual(fromRecords(readTodayRecord({ id: 'dev', body: today }).slots.flatMap(slot => slot.rows)), expected);
+  assert.deepEqual(expected.models.find(m => m.model === 'deepseek-v4.1-flash').items.map(item => item.asked).sort(), ['group/ds-flash', 'opencode-go/deepseek-v4.1-flash']);
+});
+
+test('读到别人记录里的 u 就用它；没有 u 的行不拿本机映射去套（映射只在 markSame 里套本机桶）', () => {
+  const at = DAY0 + 3_600_000, day = DAY0;
+  const line = (extra, n = [10, 0, 0, 0, 1, 1]) => ({ a: 'group/ds-flash', i: 'openai-responses', ...extra, n });
+  const record = rows => ({ author: B, kind: 'coda/token-day', id: 'dev-b/2026-11', version: 1, body: { v: 3, days: { '2026-11-01': { codex: rows } } } });
+  const board = aggregateLeaderboard({ selfAuthor: A, selfSourceId: 'me', friends: [{ author: B }], from: day, to: day + DAY_MS, localBuckets: markSame([viaMagpie(at, 'group/ds-flash')], NAMES, SERVICES),
+    dayRecords: [record([line({ u: 'their-name' }), line({}, [5, 0, 0, 0, 0, 0]), line({ s: 'real', u: 'ignored' }, [7, 0, 0, 0, 0, 0])])] });
+  assert.deepEqual(board.entries.find(entry => entry.author === A).models.map(m => m.model), ['deepseek-v4.1-flash']);
+  assert.deepEqual(board.entries.find(entry => entry.author === B).models.map(m => [m.model, m.totalTokens]).sort(), [['group/ds-flash', 5], ['real', 7], ['their-name', 10]].sort());
+  assert.deepEqual(board.entries.find(entry => entry.author === B).models.find(m => m.model === 'their-name').items.map(item => [item.asked, item.api]), [['group/ds-flash', 'openai-responses']]);
+  for (const bad of [{ u: '' }, { u: 5 }, { u: 'x'.repeat(201) }, { u: 'a\0b' }]) assert.equal(readArchiveRecord(record([line(bad)])).days[0].rows.length, 0, JSON.stringify(bad));
+  assert.equal(readArchiveRecord(record([{ m: 'label', u: 'x', n: [1, 0, 0, 0, 0, 0] }])).days[0].rows.length, 0, '旧标签行不带 u');
+});
+
+test('超出预算折叠小型号时按归并后的型号名算', () => {
+  const at = DAY0 + 3_600_000;
+  const list = markSame([viaMagpie(at, 'group/ds-flash', tokensOf(100)), viaMagpie(at, 'opencode-go/deepseek-v4.1-flash', tokensOf(100)), viaMagpie(at, 'tiny/model', tokensOf(1))], NAMES, SERVICES);
+  const small = buildTodayBody(list, { now: at, maxBytes: JSON.stringify(buildTodayBody(list, { now: at })).length - 10 });
+  const rows = Object.values(small.slots).flatMap(agents => Object.values(agents).flat());
+  assert.deepEqual(rows.map(row => row.u ?? row.m ?? row.a).sort(), ['deepseek-v4.1-flash', 'deepseek-v4.1-flash', 'other']);
+});
+
+test('不属于本机 Magpie 的服务的行：asked 命中映射也不归并，不进签名记录的归并名', () => {
+  const at = DAY0 + 3_600_000;
+  const list = markSame([viaMagpie(at, 'group/ds-flash'), viaMagpie(at, 'group/ds-flash', { service: FOREIGN, ...tokensOf(5) })], NAMES, SERVICES);
+  const { models } = summarizeBuckets(list, { from: DAY0, to: DAY0 + DAY_MS });
+  assert.deepEqual(models.map(m => [m.model, m.totalTokens, m.items.map(item => item.asked)]), [['deepseek-v4.1-flash', 10, ['group/ds-flash']], ['group/ds-flash', 5, ['group/ds-flash']]]);
+  const rows = buildArchiveBodies(list)['2026-11'].days['2026-11-01'].codex;
+  assert.deepEqual(rows.map(row => [row.a, row.u ?? null, row.n[0]]).sort((a, b) => a[2] - b[2]), [['group/ds-flash', null, 5], ['group/ds-flash', 'deepseek-v4.1-flash', 10]]);
 });

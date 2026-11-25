@@ -53,15 +53,23 @@ export async function fetchUsageBuckets(queryBuckets, { from, to }) {
 /** 接口种类：模型服务引用 `coda://<接口种类>/<UUID>` 里的种类名；没有服务返回 null。服务的 UUID 不出这台机器。 */
 export const serviceKind = ref => (typeof ref === 'string' ? /^coda:\/\/([a-z][a-z0-9-]*)\//.exec(ref)?.[1] ?? null : null);
 /**
- * 一行显示用的型号名：实际型号 `served`，没有取请求的 `asked`，再没有取未分层的旧标签 `model`；
- * 后端允许只带 `service` 的行，这时取服务的接口种类名。全插件只在这里算。
- * `same` 是「同型号映射」的接入点：把不同名字归成一个底层型号，默认不映射、原样返回。
+ * 一行显示用的型号名：实际型号 `served`，没有取同型号映射归并后的名字 `same`，再没有取请求的 `asked`，再没有取未分层的旧标签 `model`；
+ * 后端允许只带 `service` 的行，这时取服务的接口种类名。全插件只在这里算。`same` 只在本机行取数时（markSame）或读到别人记录里的 `u` 时才有，
+ * 展开的请求项仍是 `asked` 与接口种类。
  */
-export const modelName = (row, same = name => name) => same(row.served ?? row.asked ?? row.model ?? row.api);
+export const modelName = row => row.served ?? row.same ?? row.asked ?? row.model ?? row.api;
+/**
+ * 同型号映射（Magpie 插件的 `magpie/models@1`：`names` 是 `{ [asked]: 名字 }`，`services` 是本机 Magpie 插件提供的模型服务的资源引用）套到本机桶上：
+ * 只套 `service` 在 `services` 里、没有实际型号（`served` 为空）、`asked` 在 `names` 里的行，名字记在桶的 `same` 上；
+ * 有 `served` 的行、旧标签行、别台或别的插件提供的服务的行、映射里没有的 `asked` 都不动。映射只属于本机，别人记录里的行不走这里。
+ */
+const mappable = (bucket, services) => services.includes(bucket.service) && bucket.served == null && typeof bucket.asked === 'string';
+export const needsSame = buckets => buckets.some(bucket => bucket.service && bucket.served == null && typeof bucket.asked === 'string');
+export const markSame = (buckets, names, services) => buckets.map(bucket => (mappable(bucket, services) && Object.hasOwn(names, bucket.asked) ? { ...bucket, same: names[bucket.asked] } : bucket));
 /** 本机桶（coda/usage@1 的 buckets 一行）→ 统一的一行：`api` 是服务的接口种类，计数夹成非负安全整数。 */
-const rowOf = bucket => ({ start: bucket.start, agent: bucket.agent, api: serviceKind(bucket.service), asked: bucket.asked ?? null, served: bucket.served ?? null, model: bucket.model ?? null,
+const rowOf = bucket => ({ start: bucket.start, agent: bucket.agent, api: serviceKind(bucket.service), asked: bucket.asked ?? null, served: bucket.served ?? null, same: bucket.same ?? null, model: bucket.model ?? null,
   ...Object.fromEntries(FIELDS.map(field => [field, counter(bucket[field])])) });
-const identityKey = row => JSON.stringify([row.api ?? null, row.asked ?? null, row.served ?? null, row.model ?? null]);
+const identityKey = row => JSON.stringify([row.api ?? null, row.asked ?? null, row.served ?? null, row.same ?? null, row.model ?? null]);
 /**
  * 本机桶里算作 identity（这台后端当前的根身份）名下的：`person` 是它，或是空字符串的无身份行；别的身份的行不算。
  * 同桶不同身份的行本来就不相加，这里只决定谁的行算进当前作者的用量。
@@ -156,12 +164,12 @@ function collect(buckets, keyOf) {
   }
   return new Map([...tree].map(([key, agents]) => [key, new Map([...agents].map(([agent, rows]) => [agent, [...rows.values()]]))]));
 }
-// 一行写成 `{ a: asked, s: served, i: 接口种类, m: 未分层的旧标签, n: [6 个数] }`，没有的不写；不带服务的 UUID。
-const wireKey = row => JSON.stringify([row.asked ?? '', row.served ?? '', row.api ?? '', row.model ?? '']);
-const wireRow = row => ({ ...(row.asked == null ? {} : { a: row.asked }), ...(row.served == null ? {} : { s: row.served }), ...(row.api == null ? {} : { i: row.api }),
+// 一行写成 `{ a: asked, s: served, u: 同型号映射归并后的名字, i: 接口种类, m: 未分层的旧标签, n: [6 个数] }`，没有的不写；不带服务的 UUID。
+const wireKey = row => JSON.stringify([row.asked ?? '', row.served ?? '', row.same ?? '', row.api ?? '', row.model ?? '']);
+const wireRow = row => ({ ...(row.asked == null ? {} : { a: row.asked }), ...(row.served == null ? {} : { s: row.served }), ...(row.same == null ? {} : { u: row.same }), ...(row.api == null ? {} : { i: row.api }),
   ...(row.model == null ? {} : { m: row.model }), n: FIELDS.map(field => row[field]) });
 const treeObject = tree => sortedObject(tree, agents => sortedObject(agents, rows => [...rows].sort((a, b) => (wireKey(a) < wireKey(b) ? -1 : wireKey(a) > wireKey(b) ? 1 : 0)).map(wireRow)));
-const labelRow = (model, rows) => ({ api: null, asked: null, served: null, model, ...rows.reduce(add, zero()) });
+const labelRow = (model, rows) => ({ api: null, asked: null, served: null, same: null, model, ...rows.reduce(add, zero()) });
 // 每个 Agent 只留总量（按型号名）最大的 keep 个型号，其余各行并成一行旧标签 'other'；总量不变。
 function fold(tree, keep) {
   if (keep === Infinity) return tree;
@@ -317,13 +325,13 @@ const API_KIND = /^[a-z][a-z0-9-]{0,63}$/;
 const countsOf = row => Object.fromEntries(FIELDS.map((field, i) => [field, row[i]]));
 // asked、served、旧标签是身份：记录两端原样保存、按字符串完全相等比较，边界上只验类型与长度（同后端：1–200 字、不含 NUL）；清洗留给渲染层。
 const validName = value => typeof value === 'string' && value.length > 0 && Array.from(value).length <= 200 && !value.includes('\0');
-// v3 的一行 `{ a, s, i, m, n }`：旧标签 m 单独成立，否则 a、s、i 至少有一个（只带服务的行也合法）；任何一项不合格整行丢弃，返回 null。
+// v3 的一行 `{ a, s, u, i, m, n }`：旧标签 m 单独成立，否则 a、s、i 至少有一个（只带服务的行也合法），`u` 是可选的归并名；任何一项不合格整行丢弃，返回 null。
 function wireRead(item) {
   if (!item || typeof item !== 'object' || !validRow(item.n)) return null;
-  const [asked, served, model] = [item.a, item.s, item.m].map(value => value ?? null), api = item.i ?? null;
-  if ([asked, served, model].some(value => value !== null && !validName(value)) || (api !== null && !(typeof api === 'string' && API_KIND.test(api)))) return null;
-  if (model !== null ? asked !== null || served !== null || api !== null : asked === null && served === null && api === null) return null;
-  return { api, asked, served, model, ...countsOf(item.n) };
+  const [asked, served, same, model] = [item.a, item.s, item.u, item.m].map(value => value ?? null), api = item.i ?? null;
+  if ([asked, served, same, model].some(value => value !== null && !validName(value)) || (api !== null && !(typeof api === 'string' && API_KIND.test(api)))) return null;
+  if (model !== null ? asked !== null || served !== null || same !== null || api !== null : asked === null && served === null && api === null) return null;
+  return { api, asked, served, same, model, ...countsOf(item.n) };
 }
 // 一格里的 Agent → 行摊平成行；不合格的丢掉。v2 是 { [agent]: { [model]: [6 个数] } }（旧标签），v3 是 { [agent]: [{ a, s, i, m, n }] }。
 function rowsOf(agents, version) {
@@ -333,7 +341,7 @@ function rowsOf(agents, version) {
     const name = cleanText(agent, 100) ?? '?';
     if (version === 2) {
       if (!list || typeof list !== 'object') continue;
-      for (const [model, row] of Object.entries(list)) if (validRow(row)) rows.push({ agent: name, api: null, asked: null, served: null, model: cleanText(model, 200) ?? '?', ...countsOf(row) });
+      for (const [model, row] of Object.entries(list)) if (validRow(row)) rows.push({ agent: name, api: null, asked: null, served: null, same: null, model: cleanText(model, 200) ?? '?', ...countsOf(row) });
     } else if (Array.isArray(list)) {
       for (const item of list) { const row = wireRead(item); if (row) rows.push({ agent: name, ...row }); }
     }
@@ -394,7 +402,7 @@ export class Tally {
   add(row) {
     add(this.sum, row);
     const key = JSON.stringify([row.agent ?? null, identityKey(row)]);
-    if (!this.rows.has(key)) this.rows.set(key, { agent: row.agent ?? null, api: row.api ?? null, asked: row.asked ?? null, served: row.served ?? null, model: row.model ?? null, ...zero() });
+    if (!this.rows.has(key)) this.rows.set(key, { agent: row.agent ?? null, api: row.api ?? null, asked: row.asked ?? null, served: row.served ?? null, same: row.same ?? null, model: row.model ?? null, ...zero() });
     add(this.rows.get(key), row);
   }
   addModel(model) {

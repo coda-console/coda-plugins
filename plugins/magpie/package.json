@@ -4,7 +4,7 @@
   "displayName": "Magpie",
   "description": "把本机 Magpie 网关提供为模型服务",
   "icon": { "symbol": "bird.fill", "color": "indigo" },
-  "version": "1.5.1",
+  "version": "1.6.0",
   "engines": {
     "coda": 6
   },
@@ -42,13 +42,60 @@
         "url": "http://127.0.0.1:3425"
       }
     ],
+    "protocols": [
+      {
+        "name": "magpie/models@1",
+        "title": "Magpie 同型号映射",
+        "description": "本机 Magpie 的同型号映射：请求的模型 ID（provider/model、group/<id>、auto/<名字>）按用户在 Magpie 里的同型号声明与组成员归并到的底层型号名，连同本机 Magpie 插件提供的模型服务的资源引用（映射只对走这些服务的请求有效）。",
+        "spec": {
+          "type": "object",
+          "properties": { "version": { "const": 1 } },
+          "required": ["version"],
+          "additionalProperties": false
+        },
+        "status": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        },
+        "operations": {
+          "names": {
+            "safe": true,
+            "input": { "type": "object", "additionalProperties": false },
+            "result": {
+              "type": "object",
+              "properties": {
+                "names": {
+                  "type": "object",
+                  "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 200 }
+                },
+                "services": {
+                  "type": "array",
+                  "items": { "type": "string", "minLength": 1 }
+                }
+              },
+              "required": ["names", "services"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "permissions": {
+          "read": { "title": "读取本机 Magpie 的同型号映射", "read": true, "operations": ["names"] }
+        }
+      }
+    ],
     "protocolImplementations": [
-      "coda/resource@1"
+      "coda/resource@1",
+      { "kind": "magpie/models@1", "commands": { "names": "scripts/names.mjs" } }
     ],
     "records": [
       {
         "kind": "coda/resource@1",
         "command": "scripts/quotas.mjs"
+      },
+      {
+        "kind": "magpie/models@1",
+        "command": "scripts/models.mjs"
       }
     ],
     "setup": {

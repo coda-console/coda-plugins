@@ -2,6 +2,8 @@
 // - 读本机用量（coda/usage@1 的 buckets，只读、不推送，所以按需拉取）；统计、多机聚合和当天曲线只靠本机用量与已读到的记录，不依赖签名发布；
 // - 好友能力只经可选的 friends/social@1 网关：分享开着时，每 10 分钟把月块日归档（`coda/token-day`）和 48 小时曲线（`coda/token-today`）交给网关发布，
 //   规范哈希去重、证书过期与暂停的排队、恢复后自动补发都由网关负责；没装或停用好友插件时，本机统计与曲线照常，分享状态报 no_gateway；
+// - 同型号映射只来自可选的 magpie/models@1（本机 Magpie 插件）：取数时读一次，只套本机自己的行；发布的记录各行带上归并名（`u`），别台读到后直接用，不拿本机映射去套别人的行；
+//   没装 Magpie 插件或读不到时没有映射，榜单与现在一样；
 // - 来源 ID 优先用 coda/machine@1 里本机的稳定 ID，读不到就沿用上次的，不会因为一时读不到换成新的随机 UUID；
 // - 关掉分享或手动撤回，就按本机 sourceId 筛出自己的记录，逐条（带 id）经网关撤回，好友不再看得到；绝不按 kind 批量撤回，免得误撤同作者其他设备的记录；
 // - 页面（view `board`）通过消息读状态、切开关、立即同步、取榜单。
@@ -11,14 +13,16 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { join } from 'node:path';
 import {
   DAY_ARCHIVE_KIND, DAY_MS, RANGES, SLOT_MS, TODAY_CURVE_KIND, USAGE_RECORD_KIND, aggregateLeaderboard, aggregateTodayCurve, buildArchiveBodies, buildTodayBody,
-  fetchUsageBuckets, isWithdrawn, ownBuckets, ownedBySource, rangeWindow, summarizeBuckets,
+  fetchUsageBuckets, isWithdrawn, markSame, needsSame, ownBuckets, ownedBySource, rangeWindow, summarizeBuckets,
 } from './lib/usage.mjs';
 
 const USAGE = { kind: 'coda/usage@1', id: 'local' };
 const SOCIAL = 'friends/social@1';
+const SAME = 'magpie/models@1';
 const MACHINE = 'coda/machine@1';
 export const SYNC_INTERVAL_MS = 10 * 60_000;
 export const FIRST_SYNC_DELAY_MS = 5_000;
+const SAME_TIMEOUT_MS = 10_000;   // Magpie 插件自己 8 秒读不完就交空映射
 const ARCHIVE_DAYS = 32;   // 归档从 32 天前所在的月初起，盖住「近 30 天」
 const MAX_PAGES = 50;
 const MESSAGE_LIMIT = 128 * 1024;   // 宿主转给页面的消息上限（plugin-host 的 MESSAGE_LIMIT，按 JSON.stringify 的长度量）
@@ -245,7 +249,7 @@ class Board {
     let fetchedBuckets = null;   // null：本机用量没读到，不能当成「没有用量」
     try {
       const fetched = await fetchUsageBuckets(input => this.coda.query(USAGE, 'buckets', input), { from, to });
-      fetchedBuckets = fetched.buckets;
+      fetchedBuckets = markSame(fetched.buckets, ...await this.sameNames(fetched.buckets));
       result.truncated.usage = fetched.truncated;
     } catch (e) { result.errors.push(`读不到本机用量：${message(e)}`); }
 
@@ -292,6 +296,16 @@ class Board {
     return result;
   }
 
+  // 本机 Magpie 插件的同型号映射，`[names, services]`：`names` 是 `{ [asked]: 名字 }`，`services` 是本机 Magpie 插件提供的模型服务的引用（只有走这些服务的行才套映射）。
+  // 只在有行用得上时读，没装、没启动、读不到或超时都是没有映射，不抛错。
+  async sameNames(buckets) {
+    if (!needsSame(buckets)) return [{}, []];
+    try {
+      const entry = (await this.coda.list(SAME, { scope: 'local' }))?.[0];
+      const { names, services } = await this.coda.query({ kind: SAME, id: entry.id }, 'names', {}, { timeout: SAME_TIMEOUT_MS });
+      return [names, services];
+    } catch { return [{}, []]; }
+  }
   // 好友网关（friends/social@1）：本机记录里取第一条；没装、没权限、服务没就绪，或没有记录，都是 null（没有网关），不抛错。
   async gateway() {
     let entry;
@@ -365,7 +379,8 @@ class Board {
         const now = Date.now(), d = new Date(now - ARCHIVE_DAYS * DAY_MS);
         const from = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1), sourceId = this.sourceId;
         // 发布的只有这个作者名下的用量：person 是它或无身份的行；别的身份的行不进以它签名的记录。
-        const buckets = ownBuckets((await fetchUsageBuckets(input => this.coda.query(USAGE, 'buckets', input), { from, to: now + 1 })).buckets, author);
+        const fetched = (await fetchUsageBuckets(input => this.coda.query(USAGE, 'buckets', input), { from, to: now + 1 })).buckets;
+        const buckets = ownBuckets(markSame(fetched, ...await this.sameNames(fetched)), author);
         const jobs = [...Object.entries(buildArchiveBodies(buckets)).map(([part, body]) => [DAY_ARCHIVE_KIND, `${sourceId}/${part}`, body]), [TODAY_CURVE_KIND, sourceId, buildTodayBody(buckets, { now })]];
         const sent = [];
         let switched = false;
