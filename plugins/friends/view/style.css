@@ -145,6 +145,49 @@ details[open] > summary { margin-bottom: 10px; }
 .key-full { overflow-wrap: anywhere; word-break: break-all; }
 .warn-box { margin: 0 0 8px; padding: 9px 11px; border-radius: 11px; background: color-mix(in srgb, var(--red) 11%, transparent); color: var(--red); font-size: .92em; }
 
+/* 添加好友：「邀请对方」与「接受对方的邀请」各一块，结果区高度固定，状态变化只换里面的内容 */
+.blk { display: flex; flex-direction: column; gap: 10px; }
+.blk + .blk { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line); }
+.blk .sec { margin: 0; }
+.result { height: 208px; display: flex; flex-direction: column; gap: 8px; }
+.res-box { flex: 1 1 auto; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 12px; text-align: center; border: 1px dashed var(--line); border-radius: 12px; color: var(--fg2); font-size: .92em; overflow: auto; }
+.res-box.code { display: block; text-align: left; border: 1px solid var(--line); background: var(--card); color: var(--fg); margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono); font-size: .86em; line-height: 1.5; -webkit-user-select: text; user-select: text; }
+.res-box.err { color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, transparent); }
+.copyrow { flex: none; display: flex; align-items: center; gap: 10px; min-height: 28px; }
+
+/* 好友详情里的「共享」 */
+.share { padding-top: 12px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 16px; }
+.share > h4 { margin: 0; font-size: 1.12em; font-weight: 700; }
+.sub-head { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font-weight: 650; color: var(--fg2); }
+.glist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.g-row { position: relative; display: flex; align-items: center; gap: 10px; min-height: 56px; padding: 8px 8px 8px 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--card); }
+.g-info { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.g-name { font-weight: 650; }
+.g-sub { font-size: .85em; color: var(--fg3); }
+.g-sub.error { color: var(--red); }
+.badge.busy { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
+.badge.busy::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 5px; border-radius: 50%; background: currentColor; animation: pulse 1s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .25; } }
+.kebab, .kebab-slot { flex: none; width: 32px; height: 32px; }
+.kebab { display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--fg2); }
+.kebab:not(:disabled):hover { background: var(--fill); }
+.kebab svg { pointer-events: none; }
+.g-empty { min-height: 56px; display: flex; align-items: center; justify-content: center; padding: 0 16px; }
+.menu { position: absolute; top: 44px; right: 8px; z-index: 5; min-width: 150px; padding: 4px; border-radius: 12px; border: 1px solid var(--line); background: var(--bg); box-shadow: 0 8px 24px rgba(0, 0, 0, .18); }
+.menu button { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; width: 100%; padding: 8px 12px; border: 0; border-radius: 8px; background: none; text-align: left; font-weight: 600; }
+.menu button.danger { color: var(--red); }
+.menu button:hover { background: var(--fill); }
+.menu button.danger:hover { background: color-mix(in srgb, var(--red) 10%, transparent); }
+.menu-note { font-size: .85em; font-weight: 400; color: var(--fg2); }
+.ops-list { display: flex; flex-direction: column; gap: 6px; }
+.op { padding: 8px 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--card); display: flex; flex-direction: column; gap: 3px; }
+.op-top { display: flex; align-items: center; gap: 8px; font-size: .88em; }
+.op-time { color: var(--fg3); }
+.op-cmd { font-family: var(--mono); font-size: .86em; }
+.dur { color: var(--fg2); font-variant-numeric: tabular-nums; min-width: 4.2em; text-align: right; }
+.pick { width: 100%; display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--card); text-align: left; }
+.pick .why { font-size: .85em; color: var(--orange); }
+
 @media (min-width: 680px) {
   .page { padding: 18px 24px 28px; gap: 20px; }
   .hero-body { padding: 14px 20px 18px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 320px); align-items: end; column-gap: 18px; }

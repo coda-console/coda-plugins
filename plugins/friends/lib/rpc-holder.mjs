@@ -1,0 +1,723 @@
+// 好友签名网关的持有方：把本机一条 remote-exec/machine@1 记录的 exec 授给一位好友，收好友签名的调用请求（friends/rpc-call），
+// 验过、核对本机授权后调本机那条记录的 exec，再签回答（friends/rpc-answer）发回去。格式、窗口、配额、恢复以 coda#3011 为准。
+//
+// - 授权表（rpc-store 的 grants.json）是权威：撤权与失效先落盘、不可逆，之后尚未提交的不再启动，已提交的走「对方发来取消」同一条路径取消；授权记录（friends/rpc-grant）的发与撤
+//   按授权号排成一条队，发不出去等能发了再补，撤回要等原来那把机器钥匙能签时补发。启动后查一次目录，本机机器钥匙签出、授权表里却没有对应有效授权的
+//   （清过状态目录后留下的）也排进这条队撤回；授权表损坏时不查。
+// - 持有方始终以机器出现：授权记录与回答用本机机器钥匙签（rpc-format 的 machineOf，网关带 `signer: "machine"`），与有没有绑个人身份、
+//   证书是否有效无关；证书过期照常准入、执行、签回答、撤回答。授权记下授予时的机器钥匙，机器钥匙变了授权就此失效；
+//   本机绑定、解绑个人身份或换根都不影响它授出的授权。
+// - 要核验的是调用方：准入时已验的作者须是被授权者、好友绑定此刻有效（个人作者证书过期即无效，只拒不失效）；
+//   被授权的作者在好友表里已经对不上（调用方绑了个人身份、解绑、换了根，或通道已不在），授权就此失效，要重新授予。
+// - 请求经网关已有的 Accord 变化通知与每 15 秒的兜底查询发现，翻页读全（一轮读不完下一轮从游标续）；每条过 verifyCall 与准入的各项，
+//   先写在途项再签 running，最后提交。时钟回拨、时钟基准落盘失败只暂停新请求的准入，已知请求的取消照常处理；
+//   时钟基准没读到时同样不提交、不按原键重调，已提交、此刻接不上的按结果不明收尾。
+// - 在途表是唯一的工作队列：准入、提交、终态（连同要记的那一行操作记录）、记账、签出、撤回答都落在它上面，重启与证书恢复后照它接着做；
+//   这几步都做完的才会被清掉。
+// - 签名只经网关的内部入口（signRpc、retractRpc），签不了时什么也不发。
+import { performance } from 'node:perf_hooks';
+import { isDeepStrictEqual } from 'node:util';
+import { certStateOf, statusOf } from './friends.mjs';
+import { KIND_ANSWER, KIND_CALL, KIND_GRANT, PROTOCOL, answerId, answerRecord, clockWentBack, grantRecord, idempotencyKey, isAuthor, rebuildExecInput,
+  machineNameOk, machineOf, replayWindow, requestDigest, verifyCall } from './rpc-format.mjs';
+import { answerDueAt, commandInfo, inflightKey, isCorrupt } from './rpc-store.mjs';
+export { ANSWER_KEEP_MS } from './rpc-store.mjs';
+
+const ACCORD = { kind: 'coda/accord@1', id: 'local' };
+const PROVIDER = 'remote-exec';
+export const POLL_MS = 15_000;
+// exec 不给 timeout 时 remote-exec 的默认时限（秒）；remote-exec 的操作时限比命令时限多 30 秒（630 对 600），收尾用。
+const DEFAULT_TIMEOUT_S = 120, EXEC_GRACE_MS = 30_000;
+// 见过的最大时刻至多每分钟落一次盘。
+const CLOCK_STEP_MS = 60_000;
+// 失效落盘失败后重试的退避：从 1 秒起翻倍，至多 1 分钟。
+const END_RETRY_MS = 1_000, END_RETRY_MAX_MS = 60_000;
+const TERMINAL = ['completed', 'failed', 'canceled'];
+// 状态文件里这几个坏了就停止准入；操作记录坏了只是记不下。
+const ADMISSION_FILES = ['grants.json', 'inflight.json'];
+// 一观察到就让授权失效（写进授权表、不可逆）的原因，及记在授权行上的失效原因。
+const ENDING = { machine_changed: 'machine_changed', grantee_changed: 'grantee_changed', target_missing: 'target_missing', target_changed: 'target_missing' };
+
+// 准入与提交前核对不过的原因；提交前不过的，作为失败回答的 code 与 message。
+const REASONS = {
+  no_grant: '没有这条授权，或授权不是给这位好友的',
+  revoked: '授权已撤销',
+  machine_changed: '本机的机器钥匙变了，旧钥匙下的授权已停用',
+  grantee_changed: '这位好友的签名身份变了，授给旧身份的授权已停用',
+  not_friend: '和这位好友的通道已不在',
+  target_missing: '授权的目标记录已不在本机',
+  target_changed: '授权的目标不再是本机 remote-exec 提供的那条记录',
+  expired: '过了最晚启动时刻',
+};
+
+const message = e => String(e?.message ?? e);
+const invalid = text => Object.assign(new Error(text), { code: 'invalid_input', effects: 'none' });
+const EFFECTS = ['none', 'some', 'unknown'];
+
+/**
+ * `store`：rpc-store；`signRpc`、`retractRpc`、`onAccord`、`pages`：网关的内部签名、撤回入口、Accord 变化通知、翻页读取。
+ * `now` 是墙钟（窗口、时刻），`monotonic` 是单调时钟（只用来算操作记录里的耗时）。
+ * 时钟基准落盘失败用 `clock_maintenance` 错误交给 `onMaintenanceError`（与 rpc-store 的同一个出口，默认写到 stderr），下一轮再写。
+ */
+export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages, now = Date.now, monotonic = () => performance.now(), timers = globalThis, pollMs = POLL_MS,
+  onMaintenanceError = e => console.error(e.message) } = {}) {
+  // clockLoaded：时钟基准已读到（或确认 clock.json 不存在）；读不出来之前不放新准入、不提交、不按原键重调，每一轮再读。
+  // clockWritten：该落盘的基准上一次写成了；没写成只暂停新准入，下一轮再写。
+  let stopped = false, corrupt = null, maxSeen = null, persistedClock = 0, clockLoaded = false, clockWritten = true, timer = null, lastIdentity = null, lastMachine = null, lastFriends = null;
+  let ticking = Promise.resolve(), queued = null, wantGrants = false;
+  // 孤儿授权记录（见 readOrphans）：目录读全了没有、正在读的那一次。
+  let orphansRead = false, orphanRead = null;
+  const orphans = new Map(); // 授权号 → 签出它的机器钥匙：查到了、还没撤成的孤儿授权记录
+  const orphanBusy = new Set(); // 授权号：撤回正排在它的队里
+  // 扫请求：一轮读不完时下一轮从 `scanCursor` 续；`passPresent` 是这一遍（可能跨几轮）见到的记录，整遍读完才拿它清 `seen`。
+  let scanCursor = null, passPresent = new Set();
+  const subscriptions = [];
+  const seen = new Map(); // `${作者}/${请求号}` → 已经处理过的版本
+  const drives = new Map(); // 在途键 → { again }：同一项同时只有一个在做
+  const running = new Map(); // 在途键 → 已提交那次调用的 AbortController
+  const unissued = new Set(); // 在途键：本进程提交了、还没向内核发过调用的，留到首次调用发出或终态落盘成功（重启后接手的不在里面，之前发没发过无从知道）
+  const announced = new Set(); // 在途键：本进程已签出 running 的（重启后接手的 admitted 项要补签）
+  const outcomes = new Map(); // 在途键 → 已得出、还没落盘成功的结局：终态写盘失败重来时照它补写，不再调内核
+  const since = new Map(); // 在途键 → 本进程开始经手它的单调时刻
+  const availability = new Map(); // 目标记录 id → 上次看到的授权记录里公开的内容（spec 的公开字段与 available）
+  const dirtyGrants = new Set(); // 授权记录还没跟上（发或撤还没成）的授权号
+  const grantQueues = new Map(); // 授权号 → 这条授权的发与撤排成的队
+  // 待落盘的失效：`machine:<旧机器钥匙>`、`grantee:<对不上的好友作者>`、`target:<目标 id>` → { match, endedBy, after }。落盘成功才去掉；在表里的授权一律当作已失效。
+  // `after` 是事件之后才授出的授权号，不归这一笔失效管。重启后内存清空，由启动时的补查兜底。
+  const pendingEnds = new Map();
+
+  const fail = (code, text) => coda.error(code, text, { effects: 'none' });
+  // 状态文件损坏：停止准入，授权列表与 coda self 能看出来。
+  const note = e => { if (isCorrupt(e) && ADMISSION_FILES.includes(e.file)) corrupt ??= e.file; };
+
+  async function identity() {
+    let accord = null;
+    try { accord = await coda.get(ACCORD); } catch { /* 没有 Accord：没有身份 */ }
+    // `author` 是本机此刻的作者（机器钥匙或根），只用来认出本机自己署的请求。
+    return { machine: machineOf(accord), author: accord?.spec?.author ?? null, certState: certStateOf(accord), ...friendsOf(accord) };
+  }
+  // `bound`：此刻绑定有效的好友作者 → 是不是个人作者（好友表的 `certified`，宿主还不写时是 null）；个人作者证书过期的不在里面。
+  // `listed`：好友表里出现的所有作者（证书过期的仍以原作者列着）；好友表读不出时是 null，不拿它判失效。
+  function friendsOf(accord) {
+    const friends = accord?.status?.friends;
+    if (!Array.isArray(friends)) return { bound: new Map(), listed: null };
+    return { bound: new Map(friends.filter(friend => statusOf(friend) === 'bound' && isAuthor(friend.author))
+      .map(friend => [friend.author, typeof friend.certified === 'boolean' ? friend.certified : null])),
+    listed: new Set(friends.map(friend => friend?.author).filter(isAuthor)) };
+  }
+  // 被授权的好友作者在好友表里已经对不上：换了作者（绑了个人身份、解绑、换根），或通道已不在。
+  const granteeGone = (grant, me) => me.listed !== null && !me.listed.has(grant.grantee);
+
+  async function targetOf({ kind, id }) {
+    try { return await coda.get({ kind, id }); } catch (e) { if (e?.code === 'not_found') return null; throw e; }
+  }
+  const targetProblem = (grant, target) => {
+    if (!target) return 'target_missing';
+    if (target.local !== true || target.plugin !== grant.target.provider || target.owner !== grant.target.owner) return 'target_changed';
+    return null;
+  };
+  // 授权此刻还能不能用来准入、提交：没撤（撤了的给失效原因）、本机机器钥匙仍是授权时记下的那把、被授权的好友作者还在好友表里、
+  // 它的好友绑定此刻有效、目标仍是授权时那条本机 remote-exec 记录。读不出本机的机器钥匙（没有 Accord）不算钥匙变了，给 `no_identity`。
+  const grantProblem = (grant, me, target) => {
+    if (!grant) return 'no_grant';
+    if (grant.revokedAt !== undefined) return grant.endedBy ?? 'revoked';
+    const pending = pendingEnd(grant);
+    if (pending) return pending;
+    if (!isAuthor(me.machine)) return 'no_identity';
+    if (me.machine !== grant.holder.machine) return 'machine_changed';
+    if (granteeGone(grant, me)) return 'grantee_changed';
+    if (!me.bound.has(grant.grantee)) return 'not_friend';
+    return targetProblem(grant, target);
+  };
+  // 这条授权在不在待落盘的失效里：在就给失效原因。
+  function pendingEnd(grant) {
+    for (const one of pendingEnds.values()) if (!one.after.has(grant.id) && one.match(grant)) return one.endedBy;
+    return null;
+  }
+  // 事件里观察到的失效：先记进内存的表，再落盘；落盘失败不丢，按退避重试到成功为止。
+  // 同一个键再来一次（同一目标又删一次、又从同一把钥匙换走）：新条目替掉旧的。同键的 `match` 相同，旧条目管的授权（授出在旧事件之前）
+  // 新条目都管，只是 `after` 从这次事件重新算；旧条目的重试不再做，免得按旧的 `after` 撤掉之后新授出的授权。
+  function endGrants(key, match, endedBy) {
+    const one = { match, endedBy, after: new Set() };
+    pendingEnds.set(key, one);
+    persistEnd(key, one, END_RETRY_MS);
+  }
+  function persistEnd(key, one, delay) {
+    if (stopped || pendingEnds.get(key) !== one) return;
+    store.endGrants(grant => !one.after.has(grant.id) && one.match(grant), one.endedBy).then(ended => {
+      if (pendingEnds.get(key) === one) pendingEnds.delete(key);
+      for (const grant of ended) dirtyGrants.add(grant.id);
+      cancelNow();
+      kick();
+    }, e => {
+      note(e);
+      if (!stopped) timers.setTimeout(() => persistEnd(key, one, Math.min(delay * 2, END_RETRY_MAX_MS)), delay)?.unref?.();
+    });
+  }
+  // 看到机器钥匙变了、被授权的好友换了作者、目标没了：授权就此失效，写进授权表（不等证书），授权记录的撤回留作待补。
+  async function invalidate(grant, problem) {
+    if (!grant || grant.revokedAt !== undefined || !ENDING[problem]) return;
+    await endGrant(grant.id, ENDING[problem]);
+    dirtyGrants.add(grant.id);
+  }
+  // 失效落盘，随即独立调度已提交调用的取消，不等授权记录的撤回。
+  async function endGrant(id, endedBy) {
+    const row = await store.revokeGrant(id, now(), endedBy);
+    cancelNow();
+    return row;
+  }
+
+  // 读时钟基准：文件不存在是没有基准；别的读取错误（I/O 错误、内容不合法）只让准入暂停，留着没读到，每一轮再读。
+  async function loadClock() {
+    try { maxSeen = await store.readClock(); persistedClock = maxSeen ?? 0; clockLoaded = true; } catch { /* 下一轮再读 */ }
+  }
+
+  // 本机时钟靠不住：基准还没读到，或比见过的最大时刻早 5 分钟以上。这时不放新准入、不提交、不按原键重调。
+  const clockUnsure = () => !clockLoaded || clockWentBack(now(), maxSeen);
+  // 此刻放不放新准入（grants.list 的 admitting 同用这一个判断）：状态文件没坏、时钟靠得住、该落盘的基准写成了。
+  const admissionOpen = () => !corrupt && clockWritten && !clockUnsure();
+
+  // 每轮扫请求前：基准没读到就再读；时钟靠得住就记下此刻，见过的最大时刻比已落盘的大出一分钟就落盘，写成了才算落过。
+  // 落盘失败只暂停新准入（已有项的取消与收尾照常），报出去，下一轮再写。
+  async function clockOk() {
+    if (!clockLoaded) await loadClock();
+    if (!clockUnsure()) {
+      const at = now();
+      if (maxSeen === null || at > maxSeen) maxSeen = at;
+      if (maxSeen - persistedClock >= CLOCK_STEP_MS) {
+        const high = maxSeen;
+        try { await store.writeClock(high); persistedClock = high; clockWritten = true; } catch (cause) {
+          clockWritten = false;
+          onMaintenanceError(Object.assign(new Error(`好友调用的时钟基准落盘失败（${cause?.message ?? cause}），暂停新准入，下一轮再写`), { code: 'clock_maintenance', cause }));
+        }
+      }
+    }
+    return admissionOpen();
+  }
+
+  const reject = (friend, code) => isAuthor(friend) ? store.recordRejection({ friend, code }).catch(() => {}) : undefined;
+
+  // ---- 授权记录 ----
+
+  // 同一授权号的发与撤排成一条队，队里读最新的授权行再决定发还是撤。
+  function syncGrant(id, work = () => syncGrantNow(id)) {
+    const run = (grantQueues.get(id) ?? Promise.resolve()).then(work);
+    const tail = run.then(() => {}, () => {});
+    grantQueues.set(id, tail);
+    tail.then(() => { if (grantQueues.get(id) === tail) grantQueues.delete(id); });
+    return run;
+  }
+
+  // 让一条授权在 Accord 里的样子跟上授权表，成了给 true，要等（读不出机器钥匙、原来那把钥匙此刻签不了、中途撤了）给 false：
+  // - 机器钥匙变了、被授权的好友换了作者、目标没了：先失效落盘；
+  // - 撤了或失效的：用原来那把机器钥匙签撤回，签过记下，已撤的绝不再发；
+  // - 有效的：Accord 里的不一样就发（目标的 available 变了就是重发同号），签之前再读一次授权行，撤了就不发。
+  async function syncGrantNow(id) {
+    const me = await identity();
+    let row = await store.getGrant(id), target = null;
+    if (!row) return true;
+    // 失效还没落盘：不发也不撤，等它落盘后再来。
+    if (row.revokedAt === undefined && pendingEnd(row)) return false;
+    if (row.revokedAt === undefined) {
+      if (isAuthor(me.machine) && me.machine !== row.holder.machine) row = await endGrant(id, ENDING.machine_changed);
+      else if (granteeGone(row, me)) row = await endGrant(id, ENDING.grantee_changed);
+      else {
+        target = await targetOf(row.target);
+        if (targetProblem(row, target)) row = await endGrant(id, ENDING.target_missing);
+      }
+    }
+    if (row.revokedAt !== undefined) {
+      if (row.retractedAt !== undefined) return true;
+      if (stopped || me.machine !== row.holder.machine) return false;
+      await retractRpc({ kind: KIND_GRANT, id, author: me.machine });
+      await store.markGrantRetracted(id);
+      return true;
+    }
+    if (stopped || !isAuthor(me.machine)) return false;
+    const record = grantRecord({ holder: row.holder.machine, grantee: row.grantee, grant: row.id, spec: pickSpec(target.spec), available: target.status?.available === true, grantedAt: row.createdAt });
+    const [mine] = (await coda.query(ACCORD, 'records', { kind: KIND_GRANT, author: me.machine, id, limit: 1 }))?.records ?? [];
+    // 签之前再读一次：撤了，或这时落进了待落盘的失效，都不发（失效落盘后再来撤）。
+    const latest = await store.getGrant(id);
+    if (stopped || latest?.revokedAt !== undefined || pendingEnd(latest)) return false;
+    if (mine?.local !== true || !isDeepStrictEqual(mine.body, record.body)) await signRpc(record);
+    return true;
+  }
+  const pickSpec = spec => ({ name: spec?.name, os: spec?.os, user: spec?.user, cwd: spec?.cwd });
+
+  // 跟上一条授权：开始前先取走它的待补标记，没成再标回去；同步进行中新来的标记留着，由随后的节拍再补一次。
+  async function settle(id) {
+    dirtyGrants.delete(id);
+    let done = false;
+    try { done = await syncGrant(id); } catch (e) { note(e); }
+    if (!done) dirtyGrants.add(id);
+  }
+
+  async function syncGrants(filter = () => true) {
+    for (const grant of (await store.listGrants()).filter(filter)) {
+      if (stopped) return;
+      await settle(grant.id);
+    }
+  }
+
+  // 孤儿授权记录的清理，节拍只触发、不等它：启动后目录还没读全就再读一次（同时只读一次），读全了就只让没撤成的各自重试。
+  function orphanWork() {
+    if (stopped) return;
+    if (orphansRead) retryOrphans();
+    else orphanRead ??= readOrphans().catch(note).finally(() => { orphanRead = null; });
+  }
+  // 启动后读一遍目录：本机机器钥匙签出、还没撤回、授权表里却没有对应有效授权的授权记录（清过状态目录后留下的），记下来交给 retryOrphans。
+  // 授权表读不出（损坏）就不做，不拿空表当依据；表不存在算空表。读不到机器钥匙、读目录失败或没读全，下一拍再读；读全了就不再读。
+  async function readOrphans() {
+    const me = await identity();
+    if (!isAuthor(me.machine)) return;
+    const live = new Set((await store.listGrants()).filter(grant => grant.revokedAt === undefined).map(grant => grant.id));
+    const { records, truncated } = await pages({ kind: KIND_GRANT, author: me.machine }, Infinity);
+    if (truncated) return;
+    for (const record of records) {
+      if (record?.local === true && record.author === me.machine && !live.has(record.id) && Object.keys(record.body ?? {}).length) orphans.set(record.id, me.machine);
+    }
+    orphansRead = true;
+    retryOrphans();
+  }
+  // 没撤成的孤儿各自排进自己授权号的队，同一号同时只排一次；撤成了（或表里这一号有效）就不再管，没成的下一拍再排。
+  function retryOrphans() {
+    for (const [id, machine] of orphans) {
+      if (stopped || orphanBusy.has(id)) continue;
+      orphanBusy.add(id);
+      syncGrant(id, () => retractOrphan(id, machine)).then(done => { if (done) orphans.delete(id); }, note).finally(() => orphanBusy.delete(id));
+    }
+  }
+  // 队里再按授权号对一次：表里这一号有效就不动；撤了的照常跟上；表里没有的，用签出它的那把机器钥匙撤回。
+  async function retractOrphan(id, machine) {
+    const row = await store.getGrant(id);
+    if (row) return row.revokedAt === undefined || syncGrantNow(id);
+    if (stopped) return false;
+    await retractRpc({ kind: KIND_GRANT, id, author: machine });
+    return true;
+  }
+
+  // ---- 请求 ----
+
+  // 一轮：从上一轮停下的游标续读（读不完照样记下游标）；准入暂停时只处理已知请求。整遍读完才按缺失清 `seen`。
+  async function scan() {
+    if (corrupt) return;
+    const me = await identity();
+    if (!isAuthor(me.machine)) return;
+    const grants = await store.listGrants();
+    // 期望的发送方：本机这把机器钥匙授出过的被授权者（撤了的也算：他们还能取消已在跑的）。
+    const grantees = new Set(grants.filter(grant => grant.holder.machine === me.machine).map(grant => grant.grantee));
+    if (!grantees.size) return;
+    const admitting = await clockOk();
+    const read = await pages({ kind: KIND_CALL, includeAudience: true, ...(scanCursor ? { cursor: scanCursor } : {}) });
+    for (const record of read.records) {
+      if (stopped || corrupt) return;
+      if (record?.local === true || record?.author === me.machine || record?.author === me.author) continue;
+      const slot = `${record?.author}/${record?.id}`;
+      passPresent.add(slot);
+      if (seen.get(slot) === record?.version) continue;
+      if (await consider(record, me, grantees, admitting)) seen.set(slot, record?.version);
+    }
+    if (read.nextCursor) { scanCursor = read.nextCursor; return; }
+    // 这一遍读到了头才清；截断了又续不上（游标缺失或重复），下一轮从头再来一遍，不清。
+    if (!read.truncated) for (const slot of seen.keys()) if (!passPresent.has(slot)) seen.delete(slot);
+    scanCursor = null;
+    passPresent = new Set();
+  }
+
+  // 一条请求：验签后的作者与受众、同号去重、取消，新的再走授权、窗口、配额、输入重建，准入后签 running 再交给 drive。
+  // 处理完（含拒绝）给 true；准入暂停时的新请求给 false，留到恢复后再看。
+  async function consider(record, me, grantees, admitting) {
+    const author = record?.author;
+    if (!grantees.has(author)) { await reject(author, 'bad_author'); return true; }
+    // 受众与正文的 holder 都须恰好是本机机器钥匙（写成本机的根也不行）。
+    const checked = verifyCall(record, { self: me.machine, peer: author });
+    if (!checked.ok) { await reject(author, checked.code); return true; }
+    const { body } = checked, digest = requestDigest(body);
+    const existing = await store.get(author, body.request);
+    if (existing) {
+      if (existing.digest !== digest) await reject(author, 'digest_conflict');
+      // 取消：比准入时那条请求的版本新才算。
+      else if (body.cancel === true) { if (existing.version === undefined || record.version > existing.version) await cancel(existing); }
+      // 同号同摘要：不再准入，只补发已有的结局。
+      else drive(author, body.request);
+      return true;
+    }
+    if (!admitting) return false;
+    const grant = await store.getGrant(body.grant);
+    const problem = grant && grant.grantee !== author ? 'no_grant' : grantProblem(grant, me, grant ? await targetOf(grant.target) : null);
+    if (problem) { await invalidate(grant, problem); await reject(author, problem); return true; }
+    const window = replayWindow(body.createdAt, body.expiresAt, now());
+    if (!window.ok) { await reject(author, window.code); return true; }
+    const { verdict } = await store.quota(author);
+    if (!verdict.ok) { await reject(author, verdict.code); return true; }
+    const input = rebuildExecInput(body.input);
+    if (!input.ok) { await reject(author, input.code); return true; }
+    if (stopped) return false;
+    const key = inflightKey(author, body.request);
+    since.set(key, monotonic());
+    const admitted = await store.admit({ caller: author, request: body.request, grant: grant.id, digest, key: idempotencyKey(author, body.request),
+      notAfter: body.expiresAt, call: { target: grant.target, input: input.input }, canceled: body.cancel === true, version: record.version });
+    if (!admitted.ok) { since.delete(key); await reject(author, admitted.code); return true; }
+    drive(author, body.request);
+    return true;
+  }
+
+  const answerBody = (entry, grant, { state, finishedAt, result, error }) =>
+    ({ holder: grant.holder.machine, caller: entry.caller, grant: entry.grant, request: entry.request, digest: entry.digest, state, acceptedAt: entry.admittedAt, finishedAt, result, error });
+
+  // 取消：没提交的标记后答 canceled；已提交的中止那次调用，结局见 execute。`by` 是授权失效的原因：撤销与失效取消已提交的调用时给，
+  // 记在在途项上，结局与回答里写明。
+  async function cancel(entry, by) {
+    if (!TERMINAL.includes(entry.state)) {
+      await store.cancel(entry.caller, entry.request, by);
+      running.get(inflightKey(entry.caller, entry.request))?.abort();
+    }
+    drive(entry.caller, entry.request);
+  }
+
+  // ---- 在途项的推进 ----
+
+  // 授权已撤销或失效落盘：它名下已提交、还没取消的调用走取消的路径（失效还没落盘的只挡新的准入与提交，不在这里）。
+  // 撤销与失效一落盘就独立调度，不排在授权记录的同步、扫请求后面；没取消成的，下一轮扫在途表再补。
+  async function cancelEnded() {
+    const grants = new Map((await store.listGrants()).map(grant => [grant.id, grant]));
+    for (const entry of await store.listInflight()) {
+      if (stopped) return;
+      const grant = entry.state === 'submitted' && !entry.canceled ? grants.get(entry.grant) : null;
+      // 逐条隔离：一条取消写不进去，只记下它，其余的接着取消。
+      if (grant?.revokedAt !== undefined) try { await cancel(entry, grant.endedBy ?? 'revoked'); } catch (e) { note(e); }
+    }
+  }
+  const cancelNow = () => { cancelEnded().catch(note); };
+
+  // 同一项同时只有一个在做；做的时候又被叫，做完再从头看一遍。
+  function drive(caller, request) {
+    const key = inflightKey(caller, request), current = drives.get(key);
+    if (current) { current.again = true; return; }
+    const job = { again: true };
+    drives.set(key, job);
+    (async () => {
+      while (job.again && !stopped) {
+        job.again = false;
+        try { await step(caller, request); } catch (e) { note(e); }
+      }
+      drives.delete(key);
+    })();
+  }
+
+  async function step(caller, request) {
+    let entry = await store.get(caller, request);
+    if (!entry) return;
+    if (!since.has(inflightKey(caller, request))) since.set(inflightKey(caller, request), monotonic());
+    if (entry.state === 'admitted') entry = await start(entry);
+    if (entry?.state === 'submitted') entry = await execute(entry);
+    if (!entry || !TERMINAL.includes(entry.state)) return;
+    if (entry.ledger) entry = await log(entry);
+    if (!entry.signed) await deliver(entry);
+  }
+
+  // 提交之前：标了取消的答 canceled；核对身份、好友绑定与目标，不过的答失败；然后在 store 的同一个串行操作里读最新的授权行、
+  // 按此刻判最晚启动时刻，都过了才改成 submitted。同时执行的名额满了就留在 admitted，等有名额时再来；时钟基准没读到、时钟回拨、读不出身份时也先等着。
+  async function start(entry) {
+    if (entry.canceled) return end(entry, canceledOutcome());
+    if (clockUnsure()) return null;
+    const [me, grant] = await Promise.all([identity(), store.getGrant(entry.grant)]);
+    const problem = grantProblem(grant, me, grant ? await targetOf(grant.target) : null);
+    if (stopped || problem === 'no_identity') return null;
+    if (problem) { await invalidate(grant, problem); return end(entry, refused(problem)); }
+    // 已过最晚启动时刻：答失败，不签 running、不提交。
+    if (now() >= entry.notAfter) return end(entry, refused('expired'));
+    // 签出 running 才提交：没签出留在 admitted，下一拍再签；等签名期间停了的，不再提交。
+    const key = inflightKey(entry.caller, entry.request);
+    if (!announced.has(key)) {
+      try { await signRpc(answerRecord(answerBody(entry, grant, { state: 'running' }))); } catch { return null; }
+      announced.add(key);
+      if (stopped) return null;
+    }
+    // 签出之后再复查取消、授权与窗口。待落盘的失效也在 store 的同一个串行操作里查：排队期间才观察到的失效同样挡住提交。
+    const marked = await store.markSubmitted(entry.caller, entry.request, pendingEnd);
+    if (marked.ok) unissued.add(key);
+    if (marked.ok || marked.code === 'terminal') return marked.entry;
+    if (marked.code === 'canceled') return end(marked.entry, canceledOutcome());
+    if (marked.code === 'revoked' || marked.code === 'expired') return end(marked.entry, refused(marked.reason ?? marked.code));
+    return null;
+  }
+  const refused = problem => ({ state: 'failed', error: { code: problem, message: `${REASONS[problem]}，命令没有启动`, effects: 'none' } });
+  const endedReason = by => by === 'revoked' ? '对方撤销了授权' : REASONS[by];
+  const canceledOutcome = by => ({ state: 'canceled', error: { code: 'canceled', message: by ? `${endedReason(by)}，命令没有启动` : '调用方取消了这次调用，命令没有启动', effects: 'none' } });
+  const interrupted = why => ({ state: 'failed', error: { code: 'interrupted', message: `${why}；命令可能已在本机执行，结果不明`, effects: 'unknown' } });
+
+  // 调本机那条记录的 exec，带内核幂等键：重启后再调接上原来的调用、拿到它的结局，不会再执行一遍。
+  // 取消之后绝不再用这个幂等键调内核（SDK 没有只查不建的调用，路由期间取消的那次还没登记，再调就会新建、把命令跑起来），结局只按本进程确认得了的写：
+  // - 首次调用发出之前就取消了：canceled、效果 none，命令一次也没跑；
+  // - 那次调用在中止生效之前自己结束了：照它的结局；
+  // - 其余（已发出，或重启后接手、发没发过不知道）：interrupted、效果 unknown。
+  // SDK 的 coda.call 中止后立即以 signal 的中止原因失败，之后内核怎么结束不再交回，所以中止之后拿不到原调用的结局。
+  async function execute(entry) {
+    const key = inflightKey(entry.caller, entry.request), controller = new AbortController();
+    running.set(key, controller);
+    try {
+      // 先登记中止的手柄、再读一次：取消落在这之前的，这里看得到；落在之后的，会经手柄中止。
+      if ((await store.get(entry.caller, entry.request))?.canceled) controller.abort();
+      const { target, input } = entry.call;
+      const deadline = entry.notAfter + (input.timeout ?? DEFAULT_TIMEOUT_S) * 1000 + EXEC_GRACE_MS;
+      let outcome = outcomes.get(key);
+      if (outcome === undefined && controller.signal.aborted) {
+        // 「没发出」的标记留到终态落盘成功：落盘失败重来时仍签 canceled。重启后接手的不在 `unissued` 里。
+        const by = (await store.get(entry.caller, entry.request))?.canceledBy;
+        outcome = unissued.has(key) ? canceledOutcome(by) : interrupted('重启前这次调用是否已发出无法确认，已取消、不再重调');
+      } else if (outcome === undefined && !unissued.has(key) && !(await mayStartNow(entry))) {
+        // 重启后接手、此刻已不允许首次启动：内核里可能没有这个幂等键（没发出，或超过保留期已忘），再调就会当新调用执行，所以不再调。
+        outcome = interrupted('重启前这次调用是否已发出无法确认，此刻已不允许首次启动、不再重调');
+      } else if (outcome === undefined) try {
+        unissued.delete(key);
+        outcome = { state: 'completed', result: await coda.call({ kind: target.kind, id: target.id }, 'exec', input,
+          { id: entry.key, timeout: deadline - now(), signal: controller.signal }) };
+      } catch (e) {
+        const by = (await store.get(entry.caller, entry.request))?.canceledBy;
+        // 中止后交回的是中止原因（AbortError），不是原调用的结局；中止前已自己结束的，照它的结局分类。
+        if (controller.signal.aborted && (e === controller.signal.reason || e?.name === 'AbortError')) {
+          outcome = interrupted(by ? `${endedReason(by)}，已中止这次调用` : '调用方取消了这次调用，已中止');
+        } else {
+          const effects = EFFECTS.includes(e?.effects) ? e.effects : 'unknown';
+          // 调用内核确认是取消的才记 canceled；跑完的照实完成，执行端以别的原因失败的（interrupted 等）照实记它自己的错误，拿不到结局的效果记 unknown。
+          if (by && ['canceled', 'cancelled'].includes(e?.code)) {
+            outcome = { state: 'canceled', error: { code: 'canceled', message: `${endedReason(by)}，调用已取消`, effects } };
+          } else outcome = { state: 'failed', error: { code: String(e?.code ?? 'internal'), message: message(e), effects } };
+        }
+      }
+      outcomes.set(key, outcome);
+      // 停了就不再落盘、不签：下次启动用同一个幂等键取回结局。
+      if (stopped) return null;
+      const done = await end(entry, outcome);
+      outcomes.delete(key);
+      unissued.delete(key);
+      return done;
+    } finally {
+      running.delete(key);
+      kick();
+    }
+  }
+
+  // 重启后接手的已提交项，只有此刻仍允许首次启动才用原幂等键再调（内核查不到就会新建）：没过最晚启动时刻、时钟基准已读到且没有回拨、授权没撤（也不在待落盘的失效里）、
+  // 调用方此刻的好友绑定仍有效。时钟与窗口在读身份、授权之后再查一次：读的期间过了截止也不调。
+  async function mayStartNow(entry) {
+    const timely = () => now() < entry.notAfter && !clockUnsure();
+    if (!timely()) return false;
+    const [me, grant] = await Promise.all([identity(), store.getGrant(entry.grant)]);
+    return timely() && grant !== null && grant.revokedAt === undefined && !pendingEnd(grant) && me.bound.has(entry.caller);
+  }
+
+  // 落终态（先落盘），连同要写进操作记录的那一行一起落：之后中途退出，重启照它补写。已有终态的不改。
+  // 耗时用单调时钟，从本进程开始经手它算起（重启后接手的，从接手时算）。
+  async function end(entry, { state, result, error }) {
+    const finishedAt = now(), key = inflightKey(entry.caller, entry.request), { target, input } = entry.call;
+    let name = target.id;
+    try { name = (await targetOf(target))?.spec?.name || target.id; } catch { /* 名字只是展示 */ }
+    const row = { v: 1, at: finishedAt, request: entry.request, friend: entry.caller, grant: entry.grant, target: { kind: target.kind, id: target.id, name }, op: 'exec',
+      command: commandInfo(input.command), outcome: state, ...(error ? { code: error.code } : {}), ...(result && 'exitCode' in result ? { exitCode: result.exitCode } : {}),
+      ms: Math.round(monotonic() - (since.get(key) ?? monotonic())) };
+    const done = await store.finish(entry.caller, entry.request, { state, finishedAt, ...(result === undefined ? {} : { result }), ...(error === undefined ? {} : { error }) }, row);
+    since.delete(key);
+    announced.delete(key);
+    return done.entry;
+  }
+
+  // 把随终态落盘的那一行写进操作记录（按调用方 + 请求号幂等），再去掉它。写不进去不吞掉：留在在途项上，下一次扫在途表时补写。
+  async function log(entry) {
+    try {
+      await store.appendLedgerRow(entry.ledger);
+      return (await store.markLogged(entry.caller, entry.request)).entry;
+    } catch (e) { note(e); return entry; }
+  }
+
+  // 签结局（截到 60 KiB，用本机机器钥匙），然后标「已签出」。读不出、或机器钥匙变了，签不出去，留着等下次。
+  async function deliver(entry) {
+    const grant = await store.getGrant(entry.grant);
+    if (!grant || stopped) return;
+    await signRpc(answerRecord(answerBody(entry, grant, { state: entry.state, ...entry.outcome })));
+    await store.markSigned(entry.caller, entry.request);
+  }
+
+  // 扫一遍在途表：没做完的接着做（恢复、记账、补签），签出 24 小时的撤回答（记账没成也照撤）；最后清掉这几步都做完、过期满 24 小时的。
+  async function sweep() {
+    const entries = await store.listInflight();
+    // 取消没跟上的（落盘失败、重启）这里补上。
+    await cancelEnded().catch(note);
+    let me = null;
+    for (const entry of entries) {
+      if (stopped) return;
+      if (!entry.signed) { drive(entry.caller, entry.request); continue; }
+      // 操作记录还没写成的另外接着补写，不挡着到期撤回答。
+      if (entry.ledger) drive(entry.caller, entry.request);
+      if (entry.retracted || now() < answerDueAt(entry.finishedAt)) continue;
+      me ??= await identity();
+      try { await retractAnswer(entry, me); } catch (e) { note(e); }
+    }
+    await store.purge();
+  }
+  async function retractAnswer(entry, me) {
+    const grant = await store.getGrant(entry.grant);
+    // 读不到本机机器钥匙：留着待撤，下次扫在途表再试。
+    if (!isAuthor(me.machine)) return;
+    // 旧机器钥匙署的回答本机不再能撤：不再惦记它。
+    if (grant && grant.holder.machine === me.machine) await retractRpc({ kind: KIND_ANSWER, id: answerId(entry.caller, entry.request), author: me.machine });
+    await store.markRetracted(entry.caller, entry.request);
+  }
+
+  // ---- 节拍 ----
+
+  // 一次节拍：授权记录跟上（`grants` 时全部，否则只补待补的）、找请求、扫在途表；孤儿授权记录的清理只在这里触发、不等。排成一条队，排着的只留一次。
+  function tick({ grants = false } = {}) {
+    wantGrants ||= grants;
+    if (queued) return queued;
+    const run = ticking.then(async () => {
+      queued = null;
+      if (stopped) return;
+      const all = wantGrants;
+      wantGrants = false;
+      orphanWork();
+      for (const work of [() => syncGrants(all ? undefined : grant => dirtyGrants.has(grant.id)), scan, sweep]) {
+        if (stopped) return;
+        try { await work(); } catch (e) { note(e); }
+      }
+    });
+    queued = run;
+    ticking = run.catch(() => {});
+    return run;
+  }
+  const kick = () => { if (!stopped) tick().catch(() => {}); };
+  const schedule = () => {
+    if (stopped) return;
+    timer = timers.setTimeout(() => { tick().finally(schedule); }, pollMs);
+    // 兜底查询不该把进程拖住。
+    timer?.unref?.();
+  };
+
+  // 本机 Accord 变了（网关已在 watch）：可能来了新请求；机器钥匙变了、好友表变了，授权记录全部过一遍、结局补发。
+  // - 机器钥匙从记下的那把变成了别的：就地把旧钥匙授出的授权一并失效落盘（撤回留给旧钥匙能签时补发），不等后面再查；
+  // - 好友表里原来有的作者不见了（好友绑了个人身份、解绑、换根，或通道已不在）：授给它的授权一并失效落盘；
+  // - 本机绑定、解绑个人身份或换根，机器钥匙不变，什么也不失效。
+  function onAccordChange({ type, entry } = {}) {
+    const live = type === 'DELETED' ? null : entry, machine = machineOf(live), { listed } = friendsOf(live);
+    if (isAuthor(machine) && isAuthor(lastMachine) && machine !== lastMachine) {
+      const old = lastMachine;
+      endGrants(`machine:${old}`, grant => grant.holder.machine === old, ENDING.machine_changed);
+    }
+    if (isAuthor(machine)) lastMachine = machine;
+    if (listed && lastFriends) for (const gone of lastFriends) if (!listed.has(gone)) endGrants(`grantee:${gone}`, grant => grant.grantee === gone, ENDING.grantee_changed);
+    if (listed) lastFriends = listed;
+    const current = machine === null ? 'none' : `${machine}/${[...(listed ?? [])].sort().join(',')}`;
+    const changed = current !== lastIdentity;
+    lastIdentity = current;
+    tick({ grants: changed }).catch(() => {});
+  }
+  // 目标记录变了：没了就地把指向它的授权失效落盘（之后同 id 重建的也不再生效），再去补撤回；公开的 spec 字段或 available 变了就重发它的授权记录。
+  function onTarget({ type, id, entry } = {}) {
+    if (type === 'DELETED') {
+      availability.delete(id);
+      endGrants(`target:${id}`, grant => grant.target.kind === PROTOCOL && grant.target.id === id, ENDING.target_missing);
+      return;
+    }
+    const before = availability.get(id), after = JSON.stringify([pickSpec(entry?.spec), entry?.status?.available === true]);
+    availability.set(id, after);
+    if (before === undefined || before === after) return;
+    store.listGrants().then(grants => { for (const grant of grants) if (grant.target.id === id) dirtyGrants.add(grant.id); kick(); }, note);
+  }
+
+  // ---- 授予、撤销与列出 ----
+
+  async function grant({ friend, target } = {}) {
+    if (stopped) throw fail('interrupted', '好友网关已停止');
+    if (!isAuthor(friend)) throw invalid('friend 须是好友的公钥（ed25519:…）');
+    if (!target || typeof target !== 'object' || target.kind !== PROTOCOL || typeof target.id !== 'string' || !target.id) throw invalid(`target 须是本机一条 ${PROTOCOL} 记录的 { kind, id }`);
+    const entry = await targetOf(target);
+    if (!entry) throw fail('not_found', `本机没有记录 ${target.kind}/${target.id}`);
+    if (entry.local !== true) throw invalid('只能授出本机的记录');
+    if (entry.plugin !== PROVIDER) throw invalid(`只能授出 ${PROVIDER} 提供的记录，这条是 ${entry.plugin ?? '未知插件'} 的`);
+    if (!machineNameOk(entry.spec?.name)) throw invalid('本机这台机器的名字含控制字符、换行、双向控制符，或首尾有空白，对方不会登记它：请先改名');
+    const me = await identity();
+    if (!me.bound.has(friend)) throw invalid('这位不是已绑定好友通道的好友');
+    if (!isAuthor(me.machine)) throw fail('invalid_state', '读不出本机的机器钥匙，不能授权');
+    // 同一好友、同一目标已有没撤、也不在待落盘失效里的授权时，store 原样给回那一条（页面重试授予拿到的还是它），这里什么也不另做。
+    const added = await store.addGrant({ holder: { machine: me.machine }, grantee: friend, granteePerson: me.bound.get(friend),
+      target: { owner: entry.owner, provider: entry.plugin, kind: target.kind, id: target.id }, createdAt: now() }, pendingEnd), row = added.entry;
+    // 新授出的：不归此前的失效管，并发出授权记录。
+    if (added.created) {
+      for (const one of pendingEnds.values()) one.after.add(row.id);
+      await settle(row.id);
+    }
+    return describe(row, me, entry);
+  }
+
+  async function revoke({ grant: id } = {}) {
+    if (typeof id !== 'string' || !id) throw invalid('grant 须是授权号');
+    // 撤权先落盘：之后排队中、恢复中尚未提交的都不再启动（提交前在同一个串行操作里再读授权行）。
+    const row = await store.revokeGrant(id);
+    if (!row) throw fail('not_found', `没有授权 ${id}`);
+    // 取消与授权记录的撤回各自另行进行，都不等：撤销落盘后立即返回。
+    cancelNow();
+    settle(id).then(kick);
+    // 返回值只用本地状态，不等读身份与目标。
+    return describe(row, null, null, await submittedGrants());
+  }
+
+  // 还有已提交、没落到终态的调用的授权号。
+  async function submittedGrants() {
+    return new Set((await store.listInflight()).filter(entry => entry.state === 'submitted').map(entry => entry.grant));
+  }
+
+  // 一条授权此刻的状态：available（可用）、target_off（目标已关）、target_missing（目标不在）、no_identity（读不出本机的机器钥匙）、
+  // revoking（已撤或失效，名下已提交的调用还没都落到终态）、revoked（已撤）、machine_changed（本机的机器钥匙变了，旧钥匙下的授权停用）、grantee_changed（这位好友换了签名身份，授给旧身份的停用）。
+  // 在待落盘的失效里的，与准入一样当作已失效。本机证书过期不影响这里。
+  function describe(row, me, target, revoking = new Set()) {
+    const status = row.revokedAt !== undefined ? (revoking.has(row.id) ? 'revoking' : row.endedBy ?? 'revoked') : pendingEnd(row)
+      ?? (isAuthor(me.machine) && row.holder.machine !== me.machine ? 'machine_changed' : granteeGone(row, me) ? 'grantee_changed'
+        : targetProblem(row, target) ? 'target_missing' : !isAuthor(me.machine) ? 'no_identity' : target.status?.available === true ? 'available' : 'target_off');
+    return { grant: row.id, friend: row.grantee, target: { kind: row.target.kind, id: row.target.id, name: target?.spec?.name ?? null },
+      createdAt: row.createdAt, ...(row.revokedAt === undefined ? {} : { revokedAt: row.revokedAt }), status };
+  }
+
+  async function list() {
+    const me = await identity();
+    let grants = [], revoking = new Set();
+    try { grants = await store.listGrants(); revoking = await submittedGrants(); } catch (e) { note(e); if (!isCorrupt(e)) throw e; }
+    const rows = [];
+    for (const row of grants) rows.push(describe(row, me, await targetOf(row.target).catch(() => null), revoking));
+    return { certState: me.certState, admitting: admissionOpen(), corrupt, grants: rows };
+  }
+
+  function ledger({ limit = 50, friend } = {}) {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) throw invalid('limit 须是 1 到 1000 的整数');
+    if (friend !== undefined && !isAuthor(friend)) throw invalid('friend 须是好友的公钥（ed25519:…）');
+    return store.readLedger({ limit, ...(friend === undefined ? {} : { friend }) });
+  }
+
+  return {
+    // `coda self` 的处理函数。
+    self: { 'grants.list': list, 'grants.grant': grant, 'grants.revoke': revoke, 'ledger.list': ledger },
+    tick: () => tick(),
+    // 测试与诊断用：此刻还在推进的在途项数。
+    busy: () => drives.size,
+    // 测试与诊断用：此刻待落盘的失效有几笔。
+    pendingEnds: () => pendingEnds.size,
+    async start() {
+      await loadClock();
+      if (stopped) return;
+      ({ machine: lastMachine, listed: lastFriends } = await identity());
+      if (onAccord) subscriptions.push(onAccord(onAccordChange));
+      try { subscriptions.push(await coda.watch(PROTOCOL, onTarget)); } catch { /* 没有 remote-exec：授权照样能列 */ }
+      if (stopped) { for (const one of subscriptions.splice(0)) one?.dispose?.(); return; }
+      lastIdentity = null;
+      schedule();
+      await tick({ grants: true });
+    },
+    // 停了不再发起新的签名、落盘；已提交的调用不中止（内核按幂等键留着结局，下次启动取回）。
+    stop() {
+      stopped = true;
+      if (timer) timers.clearTimeout(timer);
+      timer = null;
+      for (const one of subscriptions.splice(0)) one?.dispose?.();
+    },
+  };
+}

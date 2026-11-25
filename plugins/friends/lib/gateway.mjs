@@ -2,9 +2,10 @@
 // 自己不建第二份目录库，只在 outbox.json 里留还没发出去的 body（同步成功即释放）。所有会写盘、会外发的动作排成一条队，
 // 发布、撤回、证书变化引起的冲洗互不交叉。
 import { mergeFriendRows, statusOf } from './friends.mjs';
-import { canSkip, canonicalHash, certStateOf, checkId, checkKind, checkPublish, entryKey, holdState, keyOf, retractKey, invalid, isPending, markRejected, markSynced,
+import { MAX_BODY_BYTES, canSkip, canonicalHash, certStateOf, checkId, checkKind, checkPublish, entryKey, holdState, keyOf, retractKey, invalid, isPending, markRejected, markSynced,
   nextSeq, queuePublish, queueRetract, readOutbox, withState, writeOutbox } from './outbox.mjs';
 import { readPolicy, setKindPaused } from './policy.mjs';
+import { KIND_CALL, RPC_KINDS, isAuthor, isRpcKind, machineOf, senderField, signerOf } from './rpc-format.mjs';
 
 const ACCORD = { kind: 'coda/accord@1', id: 'local' };
 const SOCIAL = 'friends/social@1';
@@ -15,7 +16,7 @@ const interrupted = effects => Object.assign(new Error('好友网关已停止'),
 
 export function createGateway(coda, dir) {
   let stopped = false, watching = null, chain = Promise.resolve();
-  const handles = [];
+  const handles = [], accordListeners = new Set();
   const stateDir = () => {
     if (!dir) throw new Error('这台机器没有插件状态目录，网关的待发队列存不下');
     return dir;
@@ -37,19 +38,20 @@ export function createGateway(coda, dir) {
     return { accord, author: accord?.spec?.author ?? null, certState: certStateOf(accord) };
   }
 
-  // 翻页读 coda/accord@1 的记录，至多 MAX_PAGES 页；cursor 重复就停，不会原地打转。
-  async function pages(input) {
+  // 翻页读 coda/accord@1 的记录，至多 `maxPages` 页；cursor 重复就停，不会原地打转。`input.cursor` 给了就从那一页续读。
+  // 页数用完还没读全时带 `nextCursor`，下次从那里接着读；游标缺失或重复（续不上）时没有。
+  async function pages(input, maxPages = MAX_PAGES) {
     const records = [], seen = new Set();
-    let cursor;
-    for (let page = 0; page < MAX_PAGES; page++) {
+    let cursor = input.cursor;
+    for (let page = 0; page < maxPages; page++) {
       const read = await coda.query(ACCORD, 'records', { ...input, limit: 200, ...(cursor ? { cursor } : {}) });
       records.push(...(read?.records ?? []));
       cursor = read?.nextCursor;
       if (!read?.truncated) return { records, truncated: false };
-      if (!cursor || seen.has(cursor)) break;
+      if (!cursor || seen.has(cursor)) return { records, truncated: true };
       seen.add(cursor);
     }
-    return { records, truncated: true };
+    return { records, truncated: true, nextCursor: cursor };
   }
 
   // 本机在 Accord 里有没有这条记录。
@@ -73,7 +75,7 @@ export function createGateway(coda, dir) {
     }
   }
 
-  // 读出待发队列；旧版残留的保留类型条目（如 friends/card）已被读表丢掉，这里把清理落盘，之后不再补发，也不挡着别的条目。
+  // 读出待发队列；旧版残留的保留类型条目（如 friends/card、升级前入队的 friends/rpc-*）已被读表丢掉，这里把清理落盘，之后不再补发，也不挡着别的条目。
   async function purgeReserved() {
     const outbox = await readOutbox(stateDir());
     if (outbox.dropped) await persist(outbox);
@@ -168,6 +170,7 @@ export function createGateway(coda, dir) {
 
   function records({ kind, author, id, limit, cursor, includeAudience }) {
     if (kind === 'binding') throw invalid('kind「binding」是保留类型，网关不读它');
+    if (isRpcKind(kind)) throw invalid(`kind「${kind}」是保留类型，网关不读它`);
     if (id !== undefined) checkId(id, { query: true });
     return coda.query(ACCORD, 'records', { kind, ...(author === undefined ? {} : { author }), ...(id === undefined ? {} : { id }),
       ...(limit === undefined ? {} : { limit }), ...(cursor === undefined ? {} : { cursor }), ...(includeAudience === undefined ? {} : { includeAudience }) });
@@ -308,6 +311,58 @@ export function createGateway(coda, dir) {
     return { author, certState, pausedKinds, pendingCount: Object.values(entries).filter(isPending).length, items };
   }
 
+  // ---- 内部签名入口 ----
+  // 只给好友插件自己的持有方、调用方用，不登记成 friends/social@1 的操作、也不经 coda self：签 friends/rpc-grant、rpc-call、rpc-answer。
+  // 受众必须是单人；发送方取自正文（grant、answer 是 holder，call 是 caller），先与本机此刻该署的作者核对，不符当场失败；符合就把它作为
+  // expectAuthor 传给 coda/accord@1.publish，实际署名的作者不符 Accord 拒签；不进待发队列。
+  // 该署谁按种类分（signingAs）：
+  // - 授权记录与回答是持有方发的，持有方始终以机器出现：带 `signer: "machine"` 用本机机器钥匙签，不看有没有绑个人身份、证书是否有效；
+  // - 调用请求署本机此刻的作者（signerOf）：机器作者（没绑个人身份）用机器钥匙签，不看证书；个人作者的证书不是 active（已过期、未生效）当场失败，什么也不发。
+  async function signingAs(kind) {
+    const { accord } = await accordState();
+    live();
+    if (kind === KIND_CALL) return signerOf(accord);
+    const machine = machineOf(accord);
+    return { author: machine, canSign: machine !== null, signer: 'machine' };
+  }
+  const missing = kind => kind === KIND_CALL ? '本机没有可用的签名证书' : '读不出本机的机器钥匙';
+
+  // `beforePublish`（可省）：读完签名身份、真正发布之前最后调一次，它抛错就什么也不发（调用方在这里看取消与期限）。
+  async function signRpc({ kind, id, body, audience } = {}, { beforePublish } = {}) {
+    live();
+    if (!RPC_KINDS.includes(kind)) throw invalid(`只能签 ${RPC_KINDS.join('、')}`);
+    checkId(id);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) throw invalid('body 须是对象');
+    if (Buffer.byteLength(JSON.stringify(body)) > MAX_BODY_BYTES) throw invalid(`body 最多 ${MAX_BODY_BYTES} 字节`);
+    if (!Array.isArray(audience) || audience.length !== 1 || !isAuthor(audience[0])) throw invalid('audience 须恰好是一位好友的公钥');
+    const sender = body[senderField(kind)];
+    if (!isAuthor(sender)) throw invalid(`body.${senderField(kind)} 须写明发送方的公钥`);
+    const { author, canSign, signer } = await signingAs(kind);
+    if (!canSign) throw coda.error('invalid_state', `${missing(kind)}，好友调用的记录没有发出`, { effects: 'none' });
+    if (author !== sender) throw coda.error('invalid_state', '本机此刻该署的作者不是这条记录写的发送方，好友调用的记录没有发出', { effects: 'none' });
+    beforePublish?.();
+    return coda.call(ACCORD, 'publish', { kind, id, body, audience, ...(signer ? { signer } : {}), expectAuthor: sender });
+  }
+
+  // 撤回同一入口签过的一条：同一种类、同一 id，正文为空、受众为空。`author` 是这条该署的作者（授权记录与回答是本机机器钥匙，
+  // 调用请求是本机此刻的作者），作为 expectAuthor 传下去；只撤这个作者署名的、Accord 里还在的记录：没有就给 `{ state: 'absent' }`，
+  // 不为从没发过的 id 生成墓碑。签不了（见 signRpc）、或此刻该署的不是 `author`，当场失败（invalid_state），什么也不发。
+  async function retractRpc({ kind, id, author } = {}) {
+    live();
+    if (!RPC_KINDS.includes(kind)) throw invalid(`只能撤 ${RPC_KINDS.join('、')}`);
+    checkId(id);
+    if (!isAuthor(author)) throw invalid('author 须是本机此刻应署的作者');
+    const current = await signingAs(kind);
+    if (!current.canSign) throw coda.error('invalid_state', `${missing(kind)}，好友调用的记录没有撤回`, { effects: 'none' });
+    if (current.author !== author) throw coda.error('invalid_state', '本机此刻该署的作者不是这条记录的作者，好友调用的记录没有撤回', { effects: 'none' });
+    const read = await coda.query(ACCORD, 'records', { kind, author, id, limit: 1 });
+    const held = (read?.records ?? []).some(record => record?.local === true && record.author === author && record.id === id && Object.keys(record.body ?? {}).length > 0);
+    live();
+    if (!held) return { state: 'absent' };
+    const result = await coda.call(ACCORD, 'publish', { kind, id, body: {}, audience: [], ...(current.signer ? { signer: current.signer } : {}), expectAuthor: author });
+    return { state: 'retracted', ...(Number.isSafeInteger(result?.version) ? { version: result.version } : {}) };
+  }
+
   const protocolHandlers = { friends, records, publish, retract, outbox };
   for (const [name, fn] of Object.entries(protocolHandlers)) handles.push(coda.handle(SOCIAL, name, input => fn(input ?? {})));
 
@@ -315,6 +370,7 @@ export function createGateway(coda, dir) {
   const onChange = ({ type, entry } = {}) => {
     const ready = type !== 'DELETED' && certStateOf(entry) === 'active';
     serial(async () => { if (ready) await flushNow(); await refreshNow(); }).catch(() => {});
+    for (const listener of accordListeners) { try { listener({ type, entry }); } catch { /* 听的人出错不影响网关 */ } }
   };
 
   return {
@@ -330,6 +386,12 @@ export function createGateway(coda, dir) {
         });
       },
     },
+    // 内部签名、撤回入口，见上；不对外登记。
+    signRpc, retractRpc,
+    // 翻页读 Accord 记录（见上），持有方扫请求用。
+    pages,
+    // 本机 Accord 记录的变化（网关已在 watch 它），转告给持有方等内部的听众；给回 dispose。
+    onAccord(listener) { accordListeners.add(listener); return { dispose: () => accordListeners.delete(listener) }; },
     async start() {
       if (dir) await serial(purgeReserved).catch(() => {});
       try { watching = await coda.watch(ACCORD.kind, onChange, { id: ACCORD.id }); } catch { /* 没有 Accord：网关记录照样写 */ }
@@ -340,6 +402,7 @@ export function createGateway(coda, dir) {
       for (const handle of handles.splice(0)) handle?.dispose?.();
       watching?.dispose?.();
       watching = null;
+      accordListeners.clear();
     },
   };
 }

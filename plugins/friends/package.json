@@ -4,13 +4,13 @@
   "displayName": "好友",
   "description": "管理 Accord 身份与熟人好友通道，并提供业务无关的好友网关",
   "icon": { "symbol": "person.2.fill", "color": "blue" },
-  "version": "0.6.0",
+  "version": "0.7.0",
   "categories": [
     "Skills 与工具"
   ],
   "type": "module",
   "engines": {
-    "coda": 13
+    "coda": 17
   },
   "main": "main.mjs",
   "activationEvents": [
@@ -21,6 +21,11 @@
       "read",
       "publish",
       "manage"
+    ]
+  },
+  "optionalUses": {
+    "remote-exec/machine@1": [
+      "use"
     ]
   },
   "contributes": {
@@ -203,6 +208,14 @@
     ],
     "protocolImplementations": [
       "friends/social@1"
+    ],
+    "optionalProtocolImplementations": [
+      "remote-exec/machine@1"
+    ],
+    "reservedAccordKinds": [
+      "friends/rpc-grant",
+      "friends/rpc-call",
+      "friends/rpc-answer"
     ]
   },
   "license": "MIT",

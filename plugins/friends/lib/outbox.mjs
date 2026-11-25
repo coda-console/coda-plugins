@@ -3,9 +3,14 @@
 // 同步成功就释放 body，只留去重用的轻量元数据；撤回完成就删掉条目。
 import { createHash } from 'node:crypto';
 import { readJson, writeJson } from './json-file.mjs';
+import { isRpcKind } from './rpc-format.mjs';
 
-/** 网关不替业务发布、撤回的类型：好友关系、名片等 Accord 自己的记录；friends/card 是已下线的旧名片，封住旧写路径。 */
+/**
+ * 网关不替业务发布、撤回的类型：好友关系、名片等 Accord 自己的记录；friends/card 是已下线的旧名片，封住旧写路径。
+ * 另有整个 `friends/rpc-` 前缀（按前缀判，见 `isRpcKind`），只有网关的内部入口能签。
+ */
 export const RESERVED_KINDS = new Set(['binding', 'profile', 'friends', 'coda/profile', 'coda/friends', 'friends/card']);
+const isReserved = kind => RESERVED_KINDS.has(kind) || isRpcKind(kind);
 export const MAX_ID_CHARS = 200, MAX_ID_BYTES = 256, MAX_BODY_BYTES = 65536, MAX_AUDIENCE = 500;
 const KIND = /^[a-z][a-z0-9-]{0,63}(?:\/[a-z][a-z0-9-]{0,63})?$/;
 const AUDIENCE = /^(?:public|ed25519:[0-9a-f]{64})$/;
@@ -17,12 +22,12 @@ const isPlain = value => {
   return proto === Object.prototype || proto === null;
 };
 
-export const validKind = kind => typeof kind === 'string' && KIND.test(kind) && !RESERVED_KINDS.has(kind);
+export const validKind = kind => typeof kind === 'string' && KIND.test(kind) && !isReserved(kind);
 
 /** kind 须符合 Accord 的格式，且不是保留类型。 */
 export function checkKind(kind) {
   if (typeof kind !== 'string' || !KIND.test(kind)) throw invalid('kind 须是小写字母开头的 name 或 ns/name（只含小写字母、数字、连字符，各段最长 64 位）');
-  if (RESERVED_KINDS.has(kind)) throw invalid(`kind「${kind}」是保留类型，网关不发布也不撤回它`);
+  if (isReserved(kind)) throw invalid(`kind「${kind}」是保留类型，网关不发布也不撤回它`);
   return kind;
 }
 
@@ -115,7 +120,7 @@ export function holdState(entry, certState, pausedKinds) {
 
 /**
  * 读出整张表 `{ 键: 条目 }`（磁盘上是 `{ seq, entries }`，旧版是直接平铺的条目）；键按条目内容重新规范（兼容旧键名），
- * 缺失、损坏、条目不成样子的都丢掉；保留类型（含旧版残留的 friends/card）的条目也丢掉，丢了的个数记在表上不可枚举的 `dropped`，
+ * 缺失、损坏、条目不成样子的都丢掉；保留类型（含旧版残留的 friends/card 与升级前入队的 friends/rpc-*）的条目也丢掉，丢了的个数记在表上不可枚举的 `dropped`，
  * 由冲洗落盘清理。序号计数器取顶层 `seq` 与现存条目最大序号中较大的。
  */
 export async function readOutbox(dir) {
@@ -126,7 +131,7 @@ export async function readOutbox(dir) {
   for (const entry of Object.values(stored)) {
     if (isPlain(entry) && typeof entry.kind === 'string' && typeof entry.id === 'string' && ['publish', 'retract'].includes(entry.desired) && typeof entry.state === 'string'
       && (entry.desired === 'publish' || typeof entry.targetAuthor === 'string')) {
-      if (RESERVED_KINDS.has(entry.kind)) dropped++; else entries[keyOf(entry)] = entry;
+      if (isReserved(entry.kind)) dropped++; else entries[keyOf(entry)] = entry;
     }
   }
   Object.defineProperty(entries, 'dropped', { value: dropped });

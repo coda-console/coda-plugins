@@ -20,6 +20,9 @@ for (const [hex, name, tail, shown] of VECTORS) {
     assert.equal(tailOf(key), tail);
     assert.equal(tailOf(key).slice(-4), shown);
     assert.equal(tailOf(key).length, 78);
+    // 代理记录的命名（rpc-caller）传的是 Buffer：同一套算法，结果一样。
+    assert.equal(nicknameOf(Buffer.from(hex, 'hex')), name);
+    assert.equal(tailOf(Buffer.from(hex, 'hex')), tail);
   });
 }
 
