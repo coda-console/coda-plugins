@@ -40,7 +40,7 @@ function accordFake({ author = ME, certificate = ACTIVE, machine = MK, friends =
   const fake = { author, certificate, machine, friends, records: [], calls: [], queries: [], listeners: new Set(), pageSize: 3 };
   // 机器钥匙读不出（machine 为 null）时证书项里不写 key。
   const certificateOf = () => fake.certificate === null ? null : { ...fake.certificate, ...(fake.machine ? { key: fake.machine } : {}) };
-  const entry = () => ({ kind: ACCORD, id: 'local', local: true, spec: { author: fake.author }, status: { friends: structuredClone(fake.friends), certificate: certificateOf() } });
+  const entry = () => ({ kind: ACCORD, id: 'local', owner: TEST_OWNER, local: true, spec: { author: fake.author }, status: { friends: structuredClone(fake.friends), certificate: certificateOf() } });
   const upsert = (by, kind, id, body, audience, local) => {
     const at = fake.records.findIndex(r => r.author === by && r.kind === kind && r.id === id);
     const version = (at < 0 ? 0 : fake.records[at].version) + 1;
@@ -146,9 +146,10 @@ function execFake() {
   return fake;
 }
 
-// 本机的目标记录：get 找不到给 not_found；改动告诉 watch（quiet 时不告诉，测「准入时才发现」）。
+// 目标记录（本机的，与 owner 写成别台、local: false 的别台副本）：get 找不到给 null（同 coda.get）；`absent` 时本机没有这个协议，get 报 not_found。
+// 改动告诉 watch（quiet 时不告诉，测「准入时才发现」）。`machines` 是空间里此刻读得到的机器记录（coda/machine@1，按后端 ID），`offline` 里的机器连不上。
 function targetsFake() {
-  const fake = { rows: new Map(), listeners: new Set() };
+  const fake = { rows: new Map(), listeners: new Set(), absent: false, machines: new Map([[TEST_OWNER, { offline: false }]]), offline: new Set() };
   Object.assign(fake, {
     set(id, more = {}, { quiet = false } = {}) {
       const row = { kind: MACHINE, id, owner: TEST_OWNER, location: 'local', plugin: 'remote-exec', local: true, spec: { ...SPEC }, status: { available: true }, version: '1', ...fake.rows.get(id), ...more };
@@ -171,9 +172,10 @@ function targetsFake() {
     get: async id => {
       const gate = fake.gate;
       if (gate && gate.pass-- <= 0) { gate.waiting++; await gate.promise; }
-      if (!fake.rows.has(id)) throw fail('not_found', `没有记录 ${id}`);
-      return structuredClone(fake.rows.get(id));
+      if (fake.absent) throw fail('not_found', '没有协议：remote-exec/machine@1');
+      return fake.rows.has(id) ? structuredClone(fake.rows.get(id)) : null;
     },
+    machine: async id => fake.machines.has(id) ? { kind: 'coda/machine@1', id, owner: id, local: id === TEST_OWNER, spec: { name: id }, status: { offline: fake.machines.get(id).offline } } : null,
     watch: async listener => {
       fake.listeners.add(listener);
       for (const row of fake.rows.values()) listener({ type: 'ADDED', id: row.id, entry: structuredClone(row) });
@@ -187,11 +189,14 @@ function targetsFake() {
 // 测试宿主上的 coda：Accord、remote-exec、目标记录走替身，其余（自用查询、错误、状态目录）走测试宿主。
 function routed(host, { accord, exec, targets }) {
   return { ...host.coda,
-    get: ref => ref.kind === ACCORD ? accord.get() : ref.kind === MACHINE ? targets.get(ref.id) : host.coda.get(ref),
+    get: ref => ref.kind === ACCORD ? accord.get() : ref.kind === MACHINE ? targets.get(ref.id) : ref.kind === 'coda/machine@1' ? targets.machine(ref.id) : host.coda.get(ref),
     query: accord.query,
     // 调用内核按目标记录路由：目标不在了，调用到不了执行端，以 not_found、none 失败。
+    // 目标所在的机器连不上：以 peer_offline、none 失败（同 Coda 对已知离线的持有方）。
     call: (ref, operation, input, options) => ref.kind === ACCORD ? accord.call(ref, operation, input)
-      : targets.rows.has(ref.id) ? exec.call(ref, operation, input, options) : Promise.reject(fail('not_found', `没有记录 ${ref.id}`)),
+      : !targets.rows.has(ref.id) ? Promise.reject(fail('not_found', `没有记录 ${ref.id}`))
+        : targets.offline.has(targets.rows.get(ref.id).owner) ? Promise.reject(fail('peer_offline', '持有方此刻连不上'))
+          : exec.call(ref, operation, input, options),
     watch: (kind, listener, selector) => kind === ACCORD ? accord.watch(kind, listener, selector) : kind === MACHINE ? targets.watch(listener) : host.coda.watch(kind, listener, selector) };
 }
 
@@ -243,11 +248,14 @@ const rejections = async (h, code) => (await h.ledger({ outcome: 'rejected' })).
 
 test('granting checks the target, the friend and the machine key, pins the target and the machine key, and publishes the grant to that friend alone, signed by the machine key', async t => {
   const h = await holderOf(t);
-  h.targets.set('other-machine', { owner: 'someone-else', location: 'x', local: false });
+  // 好友分享来的代理记录（本机的、空间里别的机器上的）、别的插件提供的同种记录：都不能授出。
+  h.targets.set('other-proxy', { owner: 'someone-else', location: 'x', local: false, plugin: 'friends' });
   h.targets.set('own-proxy', { plugin: 'friends' });
+  h.targets.set('other-plugin', { owner: 'someone-else', location: 'x', local: false, plugin: 'other' });
   const refused = async (input, code = 'invalid_input') => assert.rejects(h.holder.self['grants.grant'](input), error => error.code === code);
-  await refused({ friend: F1, target: { kind: MACHINE, id: 'other-machine' } });
+  await refused({ friend: F1, target: { kind: MACHINE, id: 'other-proxy' } });
   await refused({ friend: F1, target: { kind: MACHINE, id: 'own-proxy' } });
+  await refused({ friend: F1, target: { kind: MACHINE, id: 'other-plugin' } });
   await refused({ friend: F1, target: { kind: MACHINE, id: 'nope' } }, 'not_found');
   await refused({ friend: F1, target: { kind: 'other/kind@1', id: 'rx-1' } });
   await refused({ friend: F3, target: { kind: MACHINE, id: 'rx-1' } }, 'invalid_input');
@@ -615,7 +623,7 @@ const cancelInGap = (h, what, grant, body) => {
   cancelOf(h, body);
   return h.holder.tick();
 };
-const GAP_MESSAGE = { revoked: '对方撤销了授权，命令没有启动', ended: '授权的目标记录已不在本机，命令没有启动', caller: '调用方取消了这次调用，命令没有启动' };
+const GAP_MESSAGE = { revoked: '对方撤销了授权，命令没有启动', ended: '授权的目标记录已不在了，命令没有启动', caller: '调用方取消了这次调用，命令没有启动' };
 
 test('a cancel that lands after the submit is on disk and before the first call: the command never runs, whether the grant was revoked, ended or the caller canceled', async t => {
   for (const what of ['revoked', 'ended', 'caller']) {
@@ -736,7 +744,7 @@ test('a target deleted under a submitted call and back at once: the call is abor
   assert.deepEqual(h.answers(F1, body.request), ['running', 'failed']);
   const error = h.lastAnswer(F1, body.request).body.error;
   assert.deepEqual([error.code, error.effects], ['interrupted', 'unknown']);
-  assert.equal(error.message, '授权的目标记录已不在本机，已中止这次调用；命令可能已在本机执行，结果不明');
+  assert.equal(error.message, '授权的目标记录已不在了，已中止这次调用；命令可能已在本机执行，结果不明');
 });
 
 test('an ending that has not reached the disk only blocks new admissions and submissions; the submitted call is canceled once the ending is written', async t => {
@@ -2121,4 +2129,194 @@ test('coda self grants.list, grants.grant, grants.revoke and ledger.list go thro
   assert.deepEqual((await self('ledger.list')).map(row => row.friend).sort(), [F1, F2]);
   assert.deepEqual((await self('ledger.list', { friend: F2 })).map(row => row.code), ['busy']);
   assert.equal((await self('ledger.list', { limit: 1 })).length, 1);
+});
+
+// ---- 经本机（网关）授出空间里别的机器的记录 ----
+
+// 空间里另一台机器 B：它自己的 remote-exec 记录 rx-b，副本在本机读得到（local: false、owner 是 B）。
+const B = 'backend-b', B_SPEC = { name: 'garage', os: 'linux', user: 'b', cwd: '/home/b' };
+function addMachineB(h, { id = 'rx-b', quiet = false } = {}) {
+  h.targets.machines.set(B, { offline: false });
+  h.targets.set(id, { owner: B, location: 'garage', local: false, spec: { ...B_SPEC } }, { quiet });
+}
+const grantB = h => h.grant(F1, { kind: MACHINE, id: 'rx-b' });
+const statusOf = async (h, grant) => (await h.holder.self['grants.list']()).grants.find(row => row.grant === grant).status;
+
+test('another machine\'s own remote-exec record in the space can be granted: the grant pins its machine, the grant record carries its name, calls go to it; a proxy or another plugin\'s record there cannot', async t => {
+  const h = await holderOf(t);
+  addMachineB(h);
+  h.targets.set('px-b', { owner: B, location: 'garage', local: false, plugin: 'friends' });
+  h.targets.set('ot-b', { owner: B, location: 'garage', local: false, plugin: 'other' });
+  for (const id of ['px-b', 'ot-b']) await assert.rejects(h.grant(F1, { kind: MACHINE, id }), error => error.code === 'invalid_input', id);
+  await assert.rejects(h.grant(F1, { kind: MACHINE, id: 'nowhere' }), error => error.code === 'not_found');
+  // 本机没有 remote-exec 协议（读记录报 not_found）：授不出。
+  h.targets.absent = true;
+  await assert.rejects(grantB(h), error => error.code === 'not_found');
+  h.targets.absent = false;
+  assert.deepEqual(await h.store.listGrants(), []);
+
+  const granted = await grantB(h);
+  assert.deepEqual([granted.status, granted.target.name], ['available', 'garage']);
+  const [row] = await h.store.listGrants();
+  assert.deepEqual(row.target, { owner: B, provider: 'remote-exec', kind: MACHINE, id: 'rx-b' });
+  // 授权记录照旧由本机的机器钥匙签，名字是 B 的。
+  assert.deepEqual(h.published('friends/rpc-grant').map(call => [call.id, call.expectAuthor, call.body.holder, call.body.spec]), [[row.id, MK, MK, B_SPEC]]);
+  // 本机自己的授权照旧。
+  const local = await h.grant();
+  assert.equal(local.status, 'available');
+
+  const body = send(h, { grant: granted.grant });
+  await h.settle();
+  assert.deepEqual(h.exec.calls.map(call => call.ref), [{ kind: MACHINE, id: 'rx-b' }]);
+  assert.deepEqual(h.answers(F1, body.request), ['running', 'completed']);
+});
+
+test('every admission and submission checks the other machine\'s record again: one that reads as another machine\'s or another plugin\'s is refused without ending the grant, and works again once it is that record again', async t => {
+  const h = await holderOf(t);
+  addMachineB(h);
+  const { grant } = await grantB(h);
+  for (const more of [{ owner: 'backend-c', location: 'c' }, { plugin: 'friends' }]) {
+    h.targets.set('rx-b', more, { quiet: true });
+    const body = send(h, { grant });
+    await h.settle();
+    assert.deepEqual(h.answers(F1, body.request), [], JSON.stringify(more));
+    h.targets.set('rx-b', { owner: B, location: 'garage', plugin: 'remote-exec' }, { quiet: true });
+  }
+  assert.equal((await rejections(h, 'target_unreachable'))[0].count, 2);
+  assert.equal((await h.store.getGrant(grant)).revokedAt, undefined, 'the grant stays');
+  assert.equal(h.exec.runs, 0);
+  // 提交前那一刻读不到（排队期间那台被移出空间）：答失败，不提交，授权还在。
+  h.targets.machines.delete(B);
+  h.targets.remove('rx-b', { quiet: true });
+  const late = send(h, { grant });
+  await h.settle();
+  assert.deepEqual(h.answers(F1, late.request), []);
+  addMachineB(h, { quiet: true });
+  const back = send(h, { grant });
+  await h.settle();
+  assert.deepEqual(h.answers(F1, back.request), ['running', 'completed']);
+  assert.equal(h.exec.runs, 1);
+});
+
+test('while the other machine is offline the grant stays: it reads as offline, a call fails plainly with nothing run, and once it is back calls work again', async t => {
+  const h = await holderOf(t);
+  addMachineB(h);
+  const { grant } = await grantB(h);
+  const records = h.published('friends/rpc-grant').length;
+  // 离线：目录库留着它的副本（照样读得到），机器记录说离线，没有变化事件；调用连不上。
+  h.targets.machines.set(B, { offline: true });
+  h.targets.offline.add(B);
+  assert.equal(await statusOf(h, grant), 'target_offline');
+  const body = send(h, { grant });
+  await h.settle();
+  assert.deepEqual(h.answers(F1, body.request), ['running', 'failed']);
+  assert.deepEqual(h.lastAnswer(F1, body.request).body.error, { code: 'peer_offline', message: '持有方此刻连不上', effects: 'none' });
+  assert.equal((await h.store.getGrant(grant)).revokedAt, undefined);
+  assert.equal(h.published('friends/rpc-grant').length, records, 'the grant record is left as it was');
+  h.targets.machines.set(B, { offline: false });
+  h.targets.offline.delete(B);
+  assert.equal(await statusOf(h, grant), 'available');
+  const again = send(h, { grant });
+  await h.settle();
+  assert.deepEqual(h.answers(F1, again.request), ['running', 'completed']);
+});
+
+test('the other machine removed from the space (its record and its machine record gone together) does not end the grant: calls are refused, and it works again once the machine is back', async t => {
+  const h = await holderOf(t);
+  addMachineB(h);
+  const { grant } = await grantB(h);
+  const records = h.accord.calls.length;
+  // 移出空间：目录库不再跟随 B，它的副本连同机器记录一起没了，记录以 DELETED 交来。
+  h.targets.machines.delete(B);
+  h.targets.remove('rx-b');
+  await h.settle();
+  assert.equal(h.holder.pendingEnds(), 0);
+  assert.equal((await h.store.getGrant(grant)).revokedAt, undefined, 'the grant stays');
+  assert.equal(h.accord.calls.length, records, 'nothing retracted');
+  assert.equal(await statusOf(h, grant), 'target_unreachable');
+  const body = send(h, { grant });
+  await h.settle();
+  assert.deepEqual(h.answers(F1, body.request), []);
+  assert.equal((await rejections(h, 'target_unreachable')).length, 1);
+  // 本机此刻没有 remote-exec 协议（远程执行插件不在）：同样只拒不失效。
+  h.targets.absent = true;
+  const absent = send(h, { grant });
+  await h.settle();
+  assert.deepEqual(h.answers(F1, absent.request), []);
+  assert.equal((await h.store.getGrant(grant)).revokedAt, undefined);
+  h.targets.absent = false;
+  addMachineB(h);
+  await h.settle();
+  assert.equal(await statusOf(h, grant), 'available');
+  const back = send(h, { grant });
+  await h.settle();
+  assert.deepEqual(h.answers(F1, back.request), ['running', 'completed']);
+});
+
+test('the other machine\'s record really gone (the machine still in the space) ends the grant for good, seen as it happens or only at admission', async t => {
+  for (const quiet of [false, true]) {
+    const h = await holderOf(t);
+    addMachineB(h);
+    const { grant } = await grantB(h);
+    h.exec.plan = () => 'hang';
+    const running = send(h, { grant });
+    await h.settle();
+    assert.equal(h.exec.pending(), 1, `${quiet}: running on B`);
+    h.targets.remove('rx-b', { quiet });
+    if (quiet) {
+      const body = send(h, { grant });
+      await h.settle();
+      assert.deepEqual(h.answers(F1, body.request), [], 'refused at admission');
+      assert.equal((await rejections(h, 'target_missing')).length, 1);
+    }
+    await until(async () => (await h.store.getGrant(grant)).endedBy === 'target_missing', `${quiet}: 失效落盘`);
+    await h.settle();
+    assert.notEqual((await h.store.getGrant(grant)).retractedAt, undefined, `${quiet}: the grant record is withdrawn`);
+    // 已在 B 上跑的被中止。
+    assert.equal(h.exec.pending(), 0, `${quiet}: aborted`);
+    assert.equal((await h.store.get(F1, running.request)).canceledBy, 'target_missing');
+    assert.equal(await statusOf(h, grant), 'target_missing');
+    // 同 id 回来了也不恢复。
+    addMachineB(h);
+    await h.settle();
+    const after = send(h, { grant });
+    await h.settle();
+    assert.deepEqual(h.answers(F1, after.request), []);
+    assert.equal(await statusOf(h, grant), 'target_missing');
+  }
+});
+
+test('a record of the other machine that is gone and back before it is checked does not end the grant', async t => {
+  const h = await holderOf(t);
+  addMachineB(h);
+  const { grant } = await grantB(h);
+  // 收到 DELETED 后再读的那一次挂住，读之前它已回来。
+  const release = h.targets.hold(0);
+  h.targets.remove('rx-b');
+  await until(() => h.targets.waiting(), '复查挂住');
+  addMachineB(h);
+  release();
+  await h.settle();
+  assert.equal((await h.store.getGrant(grant)).revokedAt, undefined);
+  assert.equal(await statusOf(h, grant), 'available');
+});
+
+test('revoking a grant of the other machine refuses new calls at once and aborts the one running there through the call\'s cancel', async t => {
+  const h = await holderOf(t);
+  addMachineB(h);
+  const { grant } = await grantB(h);
+  h.exec.plan = () => 'hang';
+  const body = send(h, { grant });
+  await h.settle();
+  assert.deepEqual(h.exec.calls.map(call => [call.ref.id, call.signaled]), [['rx-b', true]]);
+  await h.holder.self['grants.revoke']({ grant });
+  await h.settle();
+  assert.equal(h.exec.pending(), 0);
+  assert.deepEqual(h.answers(F1, body.request), ['running', 'failed']);
+  assert.deepEqual(h.lastAnswer(F1, body.request).body.error.code, 'interrupted');
+  const after = send(h, { grant });
+  await h.settle();
+  assert.deepEqual(h.answers(F1, after.request), []);
+  assert.equal((await rejections(h, 'revoked')).length, 1);
+  assert.equal(h.exec.calls.length, 1);
 });

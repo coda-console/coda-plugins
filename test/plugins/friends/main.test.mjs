@@ -49,15 +49,17 @@ test('policy is read and written through `coda self` and kept in the state direc
   assert.deepEqual(JSON.parse(await readFile(join(h.dir, 'policy.json'), 'utf8')).pausedKinds, ['x']);
 });
 
-test('a page reads the sharing state by messages too: grants, ledger, the proxies friends granted, and the local remote-exec records it can grant', async t => {
+test('a page reads the sharing state by messages too: grants, ledger, the proxies friends granted, and the remote-exec records it can grant, this machine\'s first, then the space\'s, no proxies', async t => {
   const h = await host(t);
   t.after(deactivate);
   const rows = [{ id: 'rx-1', local: true, plugin: 'remote-exec', spec: { name: '书房的 Mac mini', os: 'macOS 15.2', user: 'leavan' }, status: { available: true } },
     { id: 'rx-2', local: true, plugin: 'remote-exec', spec: { name: '关着的' }, status: { available: false } },
     { id: 'px-1', local: true, plugin: 'friends', spec: { name: '代理记录' }, status: { available: true } },
-    { id: 'rx-3', local: false, plugin: 'remote-exec', spec: { name: '别的电脑' }, status: { available: true } }];
+    { id: 'rx-3', local: false, plugin: 'remote-exec', spec: { name: '别的电脑' }, status: { available: true } },
+    { id: 'px-2', local: false, plugin: 'friends', spec: { name: '别的电脑上的代理记录' }, status: { available: true } },
+    { id: 'ot-1', local: false, plugin: 'other', spec: { name: '别的插件的' }, status: { available: true } }];
   h.coda.error = (code, message, options) => Object.assign(new Error(message), { code, ...options });
-  h.coda.list = async (kind, filter) => { assert.deepEqual([kind, filter], ['remote-exec/machine@1', { scope: 'local' }]); return rows; };
+  h.coda.list = async (kind, filter) => { assert.equal(kind, 'remote-exec/machine@1'); return filter?.scope === 'local' ? rows.filter(row => row.local) : rows; };
   await activate(h.coda);
   const page = h.open();
   for (const [rid, type, more] of [['a', 'grants.list'], ['b', 'ledger.list', { friend: `ed25519:${'1'.repeat(64)}`, limit: 20 }], ['c', 'proxies.list', { friend: `ed25519:${'1'.repeat(64)}` }], ['d', 'grants.targets'], ['e', 'grants.revoke', { grant: 'nope' }]]) {
@@ -68,7 +70,8 @@ test('a page reads the sharing state by messages too: grants, ledger, the proxie
   assert.deepEqual(page.got[0].value, { certState: 'no_identity', admitting: true, corrupt: null, grants: [] });
   assert.deepEqual(page.got[1].value, []);
   assert.deepEqual(page.got[2].value, []);
-  assert.deepEqual(page.got[3].value, [{ id: 'rx-1', name: '书房的 Mac mini', os: 'macOS 15.2', user: 'leavan', available: true }, { id: 'rx-2', name: '关着的', os: '', user: '', available: false }]);
+  assert.deepEqual(page.got[3].value, [{ id: 'rx-1', name: '书房的 Mac mini', os: 'macOS 15.2', user: 'leavan', available: true, local: true },
+    { id: 'rx-2', name: '关着的', os: '', user: '', available: false, local: true }, { id: 'rx-3', name: '别的电脑', os: '', user: '', available: true, local: false }]);
   assert.match(page.got[4].error, /没有授权/);
   assert.equal(page.got[4].effects, 'none', 'a refusal says nothing was written');
   // 已下线的备注与别的类型、没带 id 的消息不答。

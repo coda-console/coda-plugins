@@ -394,7 +394,7 @@ function drawDetail() {
 // 本地先行：授予、撤销先改界面，进行中只显示在那一行的状态位置；模块明确拒绝（refused）就回滚、原因写在那一行；
 // 超时、发不出去这类结果不明的，保持本机的选择，后台每隔几秒重读授权恢复。
 const SHARE_STATUS = {
-  available: ['可用', 'bound'], target_off: ['目标已关闭', 'pending'], target_missing: ['目标不在了', 'pending'], no_identity: ['读不出本机身份', 'pending'],
+  available: ['可用', 'bound'], target_off: ['目标已关闭', 'pending'], target_missing: ['目标不在了', 'pending'], target_offline: ['目标离线', 'pending'], target_unreachable: ['读不到目标', 'pending'], no_identity: ['读不出本机身份', 'pending'],
   granting: ['授予中', 'busy'], revoking: ['撤销中', 'busy'], machine_changed: ['已停用', 'pending'], grantee_changed: ['已停用', 'pending'],
 };
 const PROXY_STATUS = {
@@ -595,7 +595,7 @@ function openPicker(m, row) {
   picker.dialog.scrim.hidden = false;
   drawPicker();
   const sh = shareOf(m);
-  ask(m, 'grants.targets').then(targets => { sh.targets = targets; sh.targetsProblem = null; }, e => { sh.targetsProblem = `读不到本机的远程执行记录：${e.message}`; }).then(drawPicker);
+  ask(m, 'grants.targets').then(targets => { sh.targets = targets; sh.targetsProblem = null; }, e => { sh.targetsProblem = `读不到远程执行记录：${e.message}`; }).then(drawPicker);
 }
 function closePicker() {
   picker.ctx = null;
@@ -611,7 +611,7 @@ function drawPicker() {
       return h('li', {}, h('button', { class: 'pick', type: 'button', disabled: Boolean(why), onclick: () => { if (!why) grantTo(m, row, target); } },
         h('span', { class: 'g-info' }, h('span', { class: 'g-name truncate' }, target.name), h('span', { class: 'g-sub truncate' }, `${target.os} · ${target.user}`), scope ? h('span', { class: 'g-sub truncate' }, scope) : null),
         why ? h('span', { class: 'why' }, why) : null));
-    }) : emptyRow('本机没有可授出的远程执行记录'));
+    }) : emptyRow('没有可授出的远程执行记录'));
 }
 
 // ---- 网络节点 ----

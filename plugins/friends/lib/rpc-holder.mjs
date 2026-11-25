@@ -1,5 +1,10 @@
-// 好友签名网关的持有方：把本机一条 remote-exec/machine@1 记录的 exec 授给一位好友，收好友签名的调用请求（friends/rpc-call），
-// 验过、核对本机授权后调本机那条记录的 exec，再签回答（friends/rpc-answer）发回去。格式、窗口、配额、恢复以 coda#3011 为准。
+// 好友签名网关的持有方：把一条 remote-exec/machine@1 记录的 exec 授给一位好友，收好友签名的调用请求（friends/rpc-call），
+// 验过、核对本机授权后调那条记录的 exec，再签回答（friends/rpc-answer）发回去。格式、窗口、配额、恢复以 coda#3011 为准。
+//
+// - 目标可以是本机的记录，也可以是同一空间里别的机器自己的 remote-exec 记录（本机作网关，调用经 Coda 的跨机调用转到那台）；逐条授予，
+//   好友分享来的代理记录（provider 是 friends）不能转授。授权记下目标归哪台机器（`target.owner`），每次准入、提交前核对目标仍是那台机器上
+//   remote-exec 的那条记录。别台的记录读不到时，那台的机器记录（coda/machine@1）还在才算记录确实没了、授权失效；那台被移出空间或分不清时
+//   只拒不失效（那台离线时目录库留着它的副本，读得到，调用以连不上失败）。
 //
 // - 授权表（rpc-store 的 grants.json）是权威：撤权与失效先落盘、不可逆，之后尚未提交的不再启动，已提交的走「对方发来取消」同一条路径取消；授权记录（friends/rpc-grant）的发与撤
 //   按授权号排成一条队，发不出去等能发了再补，撤回要等原来那把机器钥匙能签时补发。启动后查一次目录，本机机器钥匙签出、授权表里却没有对应有效授权的
@@ -24,7 +29,7 @@ import { answerDueAt, commandInfo, inflightKey, isCorrupt } from './rpc-store.mj
 export { ANSWER_KEEP_MS } from './rpc-store.mjs';
 
 const ACCORD = { kind: 'coda/accord@1', id: 'local' };
-const PROVIDER = 'remote-exec';
+const PROVIDER = 'remote-exec', MACHINE_KIND = 'coda/machine@1';
 export const POLL_MS = 15_000;
 // exec 不给 timeout 时 remote-exec 的默认时限（秒）；remote-exec 的操作时限比命令时限多 30 秒（630 对 600），收尾用。
 const DEFAULT_TIMEOUT_S = 120, EXEC_GRACE_MS = 30_000;
@@ -45,8 +50,9 @@ const REASONS = {
   machine_changed: '本机的机器钥匙变了，旧钥匙下的授权已停用',
   grantee_changed: '这位好友的签名身份变了，授给旧身份的授权已停用',
   not_friend: '和这位好友的通道已不在',
-  target_missing: '授权的目标记录已不在本机',
-  target_changed: '授权的目标不再是本机 remote-exec 提供的那条记录',
+  target_missing: '授权的目标记录已不在了',
+  target_changed: '授权的目标不再是授权时那台机器上 remote-exec 提供的那条记录',
+  target_unreachable: '此刻读不到授权的目标机器上的这条记录（那台不在空间里）',
   expired: '过了最晚启动时刻',
 };
 
@@ -93,8 +99,9 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
   async function identity() {
     let accord = null;
     try { accord = await coda.get(ACCORD); } catch { /* 没有 Accord：没有身份 */ }
-    // `author` 是本机此刻的作者（机器钥匙或根），只用来认出本机自己署的请求。
-    return { machine: machineOf(accord), author: accord?.spec?.author ?? null, certState: certStateOf(accord), ...friendsOf(accord) };
+    // `author` 是本机此刻的作者（机器钥匙或根），只用来认出本机自己署的请求；`owner` 是本机后端的 ID（本机记录的 owner），用来认出本机的目标。
+    return { machine: machineOf(accord), author: accord?.spec?.author ?? null, owner: typeof accord?.owner === 'string' ? accord.owner : null,
+      certState: certStateOf(accord), ...friendsOf(accord) };
   }
   // `bound`：此刻绑定有效的好友作者 → 是不是个人作者（好友表的 `certified`，宿主还不写时是 null）；个人作者证书过期的不在里面。
   // `listed`：好友表里出现的所有作者（证书过期的仍以原作者列着）；好友表读不出时是 null，不拿它判失效。
@@ -111,14 +118,34 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
   async function targetOf({ kind, id }) {
     try { return await coda.get({ kind, id }); } catch (e) { if (e?.code === 'not_found') return null; throw e; }
   }
-  const targetProblem = (grant, target) => {
-    if (!target) return 'target_missing';
-    if (target.local !== true || target.plugin !== grant.target.provider || target.owner !== grant.target.owner) return 'target_changed';
-    return null;
-  };
+  // 一条授权的目标此刻怎样：`{ entry, problem }`，`entry` 是读到的记录（没有是 null），`problem` 为 null 是目标仍是授权时那台机器上
+  // remote-exec 的那条记录。本机的目标照旧：不在了是 target_missing，换了样子是 target_changed，都让授权失效。
+  // 别台的目标：读不到时那台的机器记录还在（还在空间里），才是 target_missing；那台被移出空间（目录库不再跟随它，它的副本连同机器记录一起没了）、
+  // 本机此刻没有这个协议、或读到的不是那台的那条，都是 target_unreachable：只拒绝，不失效，那台回来就接着能用。
+  async function targetCheck(grant, me) {
+    const here = me?.owner != null && grant.target.owner === me.owner;
+    let entry;
+    try { entry = await coda.get({ kind: grant.target.kind, id: grant.target.id }); } catch (e) {
+      if (e?.code !== 'not_found') throw e;
+      // 本机的读不到就是没有；别台的 not_found 是本机没有这个协议（远程执行插件不在），分不清那台的记录在不在。
+      if (!here) return { entry: null, problem: 'target_unreachable' };
+      entry = null;
+    }
+    if (entry) {
+      // owner 相同就是同一台上的那条（本机的 owner 是本机，别台的副本 owner 是那台）。
+      const same = entry.plugin === grant.target.provider && entry.owner === grant.target.owner;
+      return { entry, problem: same ? null : here ? 'target_changed' : 'target_unreachable' };
+    }
+    if (here) return { entry: null, problem: 'target_missing' };
+    return { entry: null, problem: await machineInSpace(grant.target.owner) ? 'target_missing' : 'target_unreachable' };
+  }
+  // 那台机器此刻还在空间里：本机读得到它的机器记录。读的时候出错按「不知道」答 false，调用方据此只拒不失效（不会因读错让授权失效）。
+  async function machineInSpace(owner) {
+    try { return Boolean(await coda.get({ kind: MACHINE_KIND, id: owner })); } catch { return false; }
+  }
   // 授权此刻还能不能用来准入、提交：没撤（撤了的给失效原因）、本机机器钥匙仍是授权时记下的那把、被授权的好友作者还在好友表里、
-  // 它的好友绑定此刻有效、目标仍是授权时那条本机 remote-exec 记录。读不出本机的机器钥匙（没有 Accord）不算钥匙变了，给 `no_identity`。
-  const grantProblem = (grant, me, target) => {
+  // 它的好友绑定此刻有效、目标仍是授权时那台机器上那条 remote-exec 记录（`check` 是 targetCheck 的结果）。读不出本机的机器钥匙（没有 Accord）不算钥匙变了，给 `no_identity`。
+  const grantProblem = (grant, me, check) => {
     if (!grant) return 'no_grant';
     if (grant.revokedAt !== undefined) return grant.endedBy ?? 'revoked';
     const pending = pendingEnd(grant);
@@ -127,7 +154,7 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
     if (me.machine !== grant.holder.machine) return 'machine_changed';
     if (granteeGone(grant, me)) return 'grantee_changed';
     if (!me.bound.has(grant.grantee)) return 'not_friend';
-    return targetProblem(grant, target);
+    return check?.problem ?? null;
   };
   // 这条授权在不在待落盘的失效里：在就给失效原因。
   function pendingEnd(grant) {
@@ -155,6 +182,7 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
     });
   }
   // 看到机器钥匙变了、被授权的好友换了作者、目标没了：授权就此失效，写进授权表（不等证书），授权记录的撤回留作待补。
+  // 不在 ENDING 里的（target_unreachable 等）只拒不失效。
   async function invalidate(grant, problem) {
     if (!grant || grant.revokedAt !== undefined || !ENDING[problem]) return;
     await endGrant(grant.id, ENDING[problem]);
@@ -222,8 +250,11 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
       if (isAuthor(me.machine) && me.machine !== row.holder.machine) row = await endGrant(id, ENDING.machine_changed);
       else if (granteeGone(row, me)) row = await endGrant(id, ENDING.grantee_changed);
       else {
-        target = await targetOf(row.target);
-        if (targetProblem(row, target)) row = await endGrant(id, ENDING.target_missing);
+        const check = await targetCheck(row, me);
+        if (ENDING[check.problem]) row = await endGrant(id, ENDING[check.problem]);
+        // 别台的目标此刻读不到：已发出的授权记录原样留着（只拒不失效），那台回来后照常。
+        else if (check.problem) return true;
+        target = check.entry;
       }
     }
     if (row.revokedAt !== undefined) {
@@ -344,7 +375,7 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
     }
     if (!admitting) return false;
     const grant = await store.getGrant(body.grant);
-    const problem = grant && grant.grantee !== author ? 'no_grant' : grantProblem(grant, me, grant ? await targetOf(grant.target) : null);
+    const problem = grant && grant.grantee !== author ? 'no_grant' : grantProblem(grant, me, grant ? await targetCheck(grant, me) : null);
     if (problem) { await invalidate(grant, problem); await reject(author, problem); return true; }
     const window = replayWindow(body.createdAt, body.expiresAt, now());
     if (!window.ok) { await reject(author, window.code); return true; }
@@ -422,7 +453,7 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
     if (entry.canceled) return end(entry, canceledOutcome());
     if (clockUnsure()) return null;
     const [me, grant] = await Promise.all([identity(), store.getGrant(entry.grant)]);
-    const problem = grantProblem(grant, me, grant ? await targetOf(grant.target) : null);
+    const problem = grantProblem(grant, me, grant ? await targetCheck(grant, me) : null);
     if (stopped || problem === 'no_identity') return null;
     if (problem) { await invalidate(grant, problem); return end(entry, refused(problem)); }
     // 已过最晚启动时刻：答失败，不签 running、不提交。
@@ -447,7 +478,7 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
   const canceledOutcome = by => ({ state: 'canceled', error: { code: 'canceled', message: by ? `${endedReason(by)}，命令没有启动` : '调用方取消了这次调用，命令没有启动', effects: 'none' } });
   const interrupted = why => ({ state: 'failed', error: { code: 'interrupted', message: `${why}；命令可能已在本机执行，结果不明`, effects: 'unknown' } });
 
-  // 调本机那条记录的 exec，带内核幂等键：重启后再调接上原来的调用、拿到它的结局，不会再执行一遍。
+  // 调那条记录的 exec（别台的由 Coda 转过去），带内核幂等键：重启后再调接上原来的调用、拿到它的结局，不会再执行一遍。
   // 取消之后绝不再用这个幂等键调内核（SDK 没有只查不建的调用，路由期间取消的那次还没登记，再调就会新建、把命令跑起来），结局只按本进程确认得了的写：
   // - 首次调用发出之前就取消了：canceled、效果 none，命令一次也没跑；
   // - 那次调用在中止生效之前自己结束了：照它的结局；
@@ -612,11 +643,16 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
     lastIdentity = current;
     tick({ grants: changed }).catch(() => {});
   }
-  // 目标记录变了：没了就地把指向它的授权失效落盘（之后同 id 重建的也不再生效），再去补撤回；公开的 spec 字段或 available 变了就重发它的授权记录。
+  // 目标记录变了：本机的没了就地把指向它的授权失效落盘（之后同 id 重建的也不再生效），再去补撤回；公开的 spec 字段或 available 变了就重发它的授权记录。
+  // 别台的没了：那台被移出空间时它的副本也一起以 DELETED 交来，所以要那台的机器记录还在、这条也确实还读不到，才失效（见 targetCheck）。
   function onTarget({ type, id, entry } = {}) {
     if (type === 'DELETED') {
+      const owner = typeof entry?.owner === 'string' ? entry.owner : null;
+      const pointsHere = grant => grant.target.kind === PROTOCOL && grant.target.id === id && (owner === null || grant.target.owner === owner);
+      // 别台的：公开内容留着，那台回来时照它比，变了才重发。
+      if (entry?.local === false && owner !== null) { remoteGone(id, owner, pointsHere).catch(note); return; }
       availability.delete(id);
-      endGrants(`target:${id}`, grant => grant.target.kind === PROTOCOL && grant.target.id === id, ENDING.target_missing);
+      endGrants(`target:${id}`, pointsHere, ENDING.target_missing);
       return;
     }
     const before = availability.get(id), after = JSON.stringify([pickSpec(entry?.spec), entry?.status?.available === true]);
@@ -625,17 +661,24 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
     store.listGrants().then(grants => { for (const grant of grants) if (grant.target.id === id) dirtyGrants.add(grant.id); kick(); }, note);
   }
 
+  async function remoteGone(id, owner, pointsHere) {
+    const check = await targetCheck({ target: { kind: PROTOCOL, id, owner, provider: PROVIDER } }, null);
+    if (stopped || check.problem !== 'target_missing') return;
+    endGrants(`target:${owner}/${id}`, pointsHere, ENDING.target_missing);
+  }
+
   // ---- 授予、撤销与列出 ----
 
   async function grant({ friend, target } = {}) {
     if (stopped) throw fail('interrupted', '好友网关已停止');
     if (!isAuthor(friend)) throw invalid('friend 须是好友的公钥（ed25519:…）');
-    if (!target || typeof target !== 'object' || target.kind !== PROTOCOL || typeof target.id !== 'string' || !target.id) throw invalid(`target 须是本机一条 ${PROTOCOL} 记录的 { kind, id }`);
+    if (!target || typeof target !== 'object' || target.kind !== PROTOCOL || typeof target.id !== 'string' || !target.id) throw invalid(`target 须是一条 ${PROTOCOL} 记录的 { kind, id }`);
     const entry = await targetOf(target);
-    if (!entry) throw fail('not_found', `本机没有记录 ${target.kind}/${target.id}`);
-    if (entry.local !== true) throw invalid('只能授出本机的记录');
+    if (!entry) throw fail('not_found', `没有记录 ${target.kind}/${target.id}`);
+    // 本机的，或同一空间里别的机器自己的（目录库只跟随空间里的机器，好友的记录不在里面）；好友分享来的代理记录 provider 是 friends，在这里拒掉。
     if (entry.plugin !== PROVIDER) throw invalid(`只能授出 ${PROVIDER} 提供的记录，这条是 ${entry.plugin ?? '未知插件'} 的`);
-    if (!machineNameOk(entry.spec?.name)) throw invalid('本机这台机器的名字含控制字符、换行、双向控制符，或首尾有空白，对方不会登记它：请先改名');
+    if (typeof entry.owner !== 'string' || !entry.owner) throw invalid('读不出这条记录归哪台机器');
+    if (!machineNameOk(entry.spec?.name)) throw invalid('这台机器的名字含控制字符、换行、双向控制符，或首尾有空白，对方不会登记它：请先改名');
     const me = await identity();
     if (!me.bound.has(friend)) throw invalid('这位不是已绑定好友通道的好友');
     if (!isAuthor(me.machine)) throw fail('invalid_state', '读不出本机的机器钥匙，不能授权');
@@ -647,7 +690,7 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
       for (const one of pendingEnds.values()) one.after.add(row.id);
       await settle(row.id);
     }
-    return describe(row, me, entry);
+    return describe(row, me, { entry, problem: null });
   }
 
   async function revoke({ grant: id } = {}) {
@@ -667,13 +710,17 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
     return new Set((await store.listInflight()).filter(entry => entry.state === 'submitted').map(entry => entry.grant));
   }
 
-  // 一条授权此刻的状态：available（可用）、target_off（目标已关）、target_missing（目标不在）、no_identity（读不出本机的机器钥匙）、
+  // 一条授权此刻的状态：available（可用）、target_off（目标已关）、target_offline（别台的目标此刻离线）、target_missing（目标不在）、
+  // target_unreachable（别台的目标此刻读不到，授权仍在）、no_identity（读不出本机的机器钥匙）、
   // revoking（已撤或失效，名下已提交的调用还没都落到终态）、revoked（已撤）、machine_changed（本机的机器钥匙变了，旧钥匙下的授权停用）、grantee_changed（这位好友换了签名身份，授给旧身份的停用）。
   // 在待落盘的失效里的，与准入一样当作已失效。本机证书过期不影响这里。
-  function describe(row, me, target, revoking = new Set()) {
+  // `check` 是 targetCheck 的结果，`offline` 是别台的目标所在的机器此刻离线。
+  function describe(row, me, check, revoking = new Set(), offline = false) {
+    const target = check?.entry ?? null, problem = check?.problem ?? null;
     const status = row.revokedAt !== undefined ? (revoking.has(row.id) ? 'revoking' : row.endedBy ?? 'revoked') : pendingEnd(row)
       ?? (isAuthor(me.machine) && row.holder.machine !== me.machine ? 'machine_changed' : granteeGone(row, me) ? 'grantee_changed'
-        : targetProblem(row, target) ? 'target_missing' : !isAuthor(me.machine) ? 'no_identity' : target.status?.available === true ? 'available' : 'target_off');
+        : problem === 'target_unreachable' ? 'target_unreachable' : problem ? 'target_missing' : !isAuthor(me.machine) ? 'no_identity'
+          : target.status?.available !== true ? 'target_off' : offline ? 'target_offline' : 'available');
     return { grant: row.id, friend: row.grantee, target: { kind: row.target.kind, id: row.target.id, name: target?.spec?.name ?? null },
       createdAt: row.createdAt, ...(row.revokedAt === undefined ? {} : { revokedAt: row.revokedAt }), status };
   }
@@ -683,8 +730,16 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
     let grants = [], revoking = new Set();
     try { grants = await store.listGrants(); revoking = await submittedGrants(); } catch (e) { note(e); if (!isCorrupt(e)) throw e; }
     const rows = [];
-    for (const row of grants) rows.push(describe(row, me, await targetOf(row.target).catch(() => null), revoking));
+    for (const row of grants) {
+      const check = await targetCheck(row, me).catch(() => ({ entry: null, problem: 'target_unreachable' }));
+      rows.push(describe(row, me, check, revoking, row.revokedAt === undefined && check.entry?.local === false && await machineOffline(check.entry.owner)));
+    }
     return { certState: me.certState, admitting: admissionOpen(), corrupt, grants: rows };
+  }
+
+  // 别台的机器此刻离线（它的机器记录的 status.offline，读的时候算）：只用来显示。
+  async function machineOffline(owner) {
+    try { return (await coda.get({ kind: MACHINE_KIND, id: owner }))?.status?.offline === true; } catch { return false; }
   }
 
   function ledger({ limit = 50, friend } = {}) {

@@ -733,7 +733,7 @@ test('a stale friends/card is never sent when the certificate recovers, and does
 test('the protocol definition is valid and has only the friends, records, publish, retract and outbox operations, with no streams', () => {
   const [definition] = manifest.contributes.protocols;
   assert.equal(definitionProblem(definition, { namespace: 'friends', where: definition.name }), null);
-  assert.equal(manifest.version, '0.8.0');
+  assert.equal(manifest.version, '0.9.0');
   assert.deepEqual(Object.keys(definition.operations), ['friends', 'records', 'publish', 'retract', 'outbox']);
   assert.equal(definition.streams, undefined);
   assert.deepEqual(definition.permissions.read, { title: definition.permissions.read.title, read: true, operations: ['friends', 'records'] });

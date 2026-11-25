@@ -1675,3 +1675,18 @@ test('node names and messages are shown as text, never as markup', async t => {
   assert.ok(netBlock(page).textContent.includes(name), 'the pending row takes the name read in the drawer');
   assert.deepEqual(page.all(n => ['b', 'i', 'u', 'img'].includes(n.tag)), []);
 });
+
+test('the granting dialog lists another machine of the space by its name next to this one, granting it sends its record; its grant reads as offline or unreachable while it is', async t => {
+  const targets = [{ id: 'rx-1', name: '书房的 Mac mini', os: 'macOS 15.2', user: 'leavan', available: true, local: true },
+    { id: 'rx-b', name: '车库的 Linux', os: 'Ubuntu 24.04', user: 'coda', available: true, local: false }];
+  const { page, log, detail, picker } = await openShare(t, { share: { 'grants.targets': () => targets,
+    'grants.grant': () => grantRow('gb', { target: { kind: GRANT_KIND, id: 'rx-b', name: '车库的 Linux' } }),
+    'grants.list': () => ({ grants: [grantRow('g1', { status: 'target_offline' }), grantRow('g2', { status: 'target_unreachable' })] }) } });
+  assert.deepEqual(listRows(page, detail).map(row => badgeOf(page, row)), ['目标离线', '读不到目标']);
+  page.button('授予…').fire('click');
+  await flush();
+  assert.deepEqual(page.all(n => n.tag === 'button' && cls(n) === 'pick', picker).map(row => row.textContent.split('macOS')[0].split('Ubuntu')[0]), ['书房的 Mac mini', '车库的 Linux']);
+  chooseTarget(page, picker, '车库的 Linux').fire('click');
+  await flush();
+  assert.deepEqual(sentOf(log, 'grants.grant').map(s => s.msg.target), [{ kind: GRANT_KIND, id: 'rx-b' }]);
+});
