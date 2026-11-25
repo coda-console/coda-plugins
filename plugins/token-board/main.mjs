@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  DAY_ARCHIVE_KIND, DAY_MS, PROFILE_RECORD_KIND, RANGES, SLOT_MS, TODAY_CURVE_KIND, USAGE_RECORD_KIND, aggregateLeaderboard, aggregateTodayCurve, buildArchiveBodies, buildTodayBody,
+  DAY_ARCHIVE_KIND, DAY_MS, RANGES, SLOT_MS, TODAY_CURVE_KIND, USAGE_RECORD_KIND, aggregateLeaderboard, aggregateTodayCurve, buildArchiveBodies, buildTodayBody,
   fetchUsageBuckets, isWithdrawn, ownedBySource, rangeWindow, summarizeBuckets,
 } from './lib/usage.mjs';
 
@@ -240,7 +240,7 @@ class Board {
     const now = Date.now();
     const { from, to } = Number.isFinite(asked?.from) && Number.isFinite(asked?.to) && asked.from < asked.to ? asked : rangeWindow(range, now);
     await this.refreshSource();
-    const result = { type: 'board', id, range, from, to, share: this.share, accord: false, selfAuthor: null, errors: [], truncated: { usage: false, friends: false, profiles: false },
+    const result = { type: 'board', id, range, from, to, share: this.share, accord: false, selfAuthor: null, errors: [], truncated: { usage: false, friends: false },
       friendCount: 0, local: null, people: [], sources: [], retired: [], curve: [], syncState: this.share ? 'no_gateway' : 'disabled' };
     let localBuckets = null;   // null：本机用量没读到，不能当成「没有用量」
     try {
@@ -252,24 +252,17 @@ class Board {
 
     let gateway = null, friends = [], selfAuthor = null;
     try { gateway = await this.gateway(); } catch (e) { result.errors.push(`读不到好友：${message(e)}`); }
-    const records = { [USAGE_RECORD_KIND]: [], [DAY_ARCHIVE_KIND]: [], [TODAY_CURVE_KIND]: [] }, profiles = [];
+    const records = { [USAGE_RECORD_KIND]: [], [DAY_ARCHIVE_KIND]: [], [TODAY_CURVE_KIND]: [] };
     if (gateway) {
       result.accord = true;
       try {
         const read = await this.coda.query(gateway.ref, 'friends', { includePending: false });
         selfAuthor = read.selfAuthor ?? null;
         friends = Array.isArray(read.friends) ? read.friends : [];
-        if (read.truncated) result.truncated.profiles = true;
       } catch (e) { result.errors.push(`读不到好友：${message(e)}`); }
       result.selfAuthor = selfAuthor;
       this.observe(selfAuthor);
       result.friendCount = friends.length;
-      if (selfAuthor) {
-        try {
-          const read = await this.coda.query(gateway.ref, 'records', { kind: PROFILE_RECORD_KIND, author: selfAuthor, id: 'self', limit: 1 });
-          profiles.push(...(read.records ?? []));
-        } catch (e) { result.errors.push(`读不到自己的名片：${message(e)}`); }
-      }
       const authors = [...new Set([selfAuthor, ...friends.map(friend => friend?.author)].filter(author => typeof author === 'string' && author))];
       for (const author of authors) {
         let failed = false;
@@ -284,9 +277,9 @@ class Board {
       }
     }
     const shared = { selfAuthor, selfSourceId: this.sourceId, excludedSourceIds: this.source.legacy, localBuckets, friends };
-    const board = aggregateLeaderboard({ ...shared, legacyUsageRecords: records[USAGE_RECORD_KIND], dayRecords: records[DAY_ARCHIVE_KIND], todayRecords: records[TODAY_CURVE_KIND], profileRecords: profiles, from, to });
-    // 页面用 sources 算合计，用 people 的作者地址映射显示 ID，并读取分享状态与头像样式。
-    result.people = board.entries.map(({ author, self, shared, emoji, color }) => ({ author, self, shared, emoji, color }));
+    const board = aggregateLeaderboard({ ...shared, legacyUsageRecords: records[USAGE_RECORD_KIND], dayRecords: records[DAY_ARCHIVE_KIND], todayRecords: records[TODAY_CURVE_KIND], from, to });
+    // 页面用 sources 算合计，用 people 的作者地址映射显示 ID，并读取分享状态。
+    result.people = board.entries.map(({ author, self, shared }) => ({ author, self, shared }));
     result.sources = board.sources;
     result.retired = this.source.legacy;   // 这台已弃用的旧来源 ID：别的机器读到它们的旧副本时统一不算
     result.curve = aggregateTodayCurve({ ...shared, localBuckets: localBuckets ?? [], todayRecords: records[TODAY_CURVE_KIND], range: rangeWindow('today', now), slotMs: SLOT_MS }).curve;

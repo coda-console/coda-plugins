@@ -1,37 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { BLOB_MAX_BYTES, accordStatusSummary, blobReadUrl, blobUploadUrl, identiconPattern, initialChar, resolveAvatar } from '../../../plugins/friends/lib/avatar.mjs';
+import { accordStatusSummary, identiconPattern, initialChar, resolveAvatar } from '../../../plugins/friends/lib/avatar.mjs';
 
-const OWNER = '123e4567-e89b-42d3-a456-426614174000';
-const SHA = 'ab'.repeat(32);
-const POINTER = { owner: OWNER, path: `content/${SHA}`, sha256: SHA, mime: 'image/png', size: 1024 };
 const KEY_A = `ed25519:${'a1b2c3d4'.padEnd(64, '0')}`, KEY_B = `ed25519:${'ffeeddcc'.padEnd(64, '1')}`;
-
-test('BLOB_MAX_BYTES is 5 MiB', () => assert.equal(BLOB_MAX_BYTES, 5 * 1024 * 1024));
-
-test('blobReadUrl builds the read url and escapes the machine', () => {
-  const base = `coda-view://blob/${OWNER}/content/${SHA}`;
-  assert.equal(blobReadUrl(POINTER), base);
-  assert.equal(blobReadUrl(POINTER, '  '), base);
-  assert.equal(blobReadUrl(POINTER, 42), base);
-  assert.equal(blobReadUrl(POINTER, ' mac mini&1 '), `${base}?coda-machine=mac%20mini%261`);
-});
-
-test('blobReadUrl rejects anything but a content pointer', () => {
-  assert.equal(blobReadUrl({ ...POINTER, path: `uploads/${SHA}` }), null);
-  assert.equal(blobReadUrl({ ...POINTER, owner: 'NOT-A-UUID' }), null);
-  assert.equal(blobReadUrl({ ...POINTER, sha256: 'cd'.repeat(32) }), null);
-  assert.equal(blobReadUrl('content/x'), null);
-  assert.equal(blobReadUrl([POINTER]), null);
-  assert.equal(blobReadUrl(null), null);
-  assert.equal(blobReadUrl(undefined), null);
-});
-
-test('blobUploadUrl adds the machine only when given', () => {
-  assert.equal(blobUploadUrl(), 'coda-view://blob/content');
-  assert.equal(blobUploadUrl('   '), 'coda-view://blob/content');
-  assert.equal(blobUploadUrl(' a/b c '), 'coda-view://blob/content?coda-machine=a%2Fb%20c');
-});
 
 test('identiconPattern is a deterministic, mirrored 5x5 grid that is never empty or full', () => {
   const grid = identiconPattern(KEY_A);
@@ -63,35 +34,19 @@ test('initialChar takes the first character', () => {
   assert.equal(initialChar(undefined, '?'), '?');
 });
 
-test('resolveAvatar follows photo, emoji, identicon, monogram', () => {
-  const url = `coda-view://blob/${OWNER}/content/${SHA}?coda-machine=m1`;
-  const photo = resolveAvatar({ avatar: POINTER, emoji: '🐱', author: KEY_A, name: 'Alice', machine: 'm1' });
-  assert.equal(photo.kind, 'photo');
-  assert.equal(photo.url, url);
-  assert.deepEqual(photo.fallback, { kind: 'emoji', emoji: '🐱' });
-  assert.deepEqual(resolveAvatar({ avatar: POINTER, emoji: '🐱', author: KEY_A, name: 'Alice', photoFailed: true }), { kind: 'emoji', emoji: '🐱' });
-  assert.deepEqual(resolveAvatar({ emoji: ' 🐱 ', author: KEY_A }), { kind: 'emoji', emoji: '🐱' });
+test('resolveAvatar draws the identicon of a valid key, else the first character of the name', () => {
   assert.deepEqual(resolveAvatar({ author: KEY_A, name: 'Alice' }), { kind: 'identicon', grid: identiconPattern(KEY_A), author: KEY_A });
   assert.deepEqual(resolveAvatar({ name: 'alice' }), { kind: 'monogram', text: 'A' });
+  assert.deepEqual(resolveAvatar({ author: 'ed25519:xyz', name: 'node-1' }), { kind: 'monogram', text: 'N' });
   assert.deepEqual(resolveAvatar({ author: 'ed25519:xyz' }), { kind: 'monogram', text: '友' });
   assert.deepEqual(resolveAvatar(), { kind: 'monogram', text: '友' });
   assert.deepEqual(resolveAvatar({ fallback: '?' }), { kind: 'monogram', text: '?' });
 });
 
-test('resolveAvatar falls back past a photo that failed and ignores malformed pointers and long emoji', () => {
-  const failed = resolveAvatar({ avatar: POINTER, author: KEY_A, photoFailed: true });
-  assert.equal(failed.kind, 'identicon');
-  assert.equal(resolveAvatar({ avatar: { ...POINTER, path: `uploads/${SHA}` }, name: 'bob' }).kind, 'monogram');
-  assert.equal(resolveAvatar({ avatar: 'x', emoji: '123456789', name: 'bob' }).kind, 'monogram');
-  assert.equal(resolveAvatar({ emoji: '12345678' }).kind, 'emoji');
-});
-
-test('resolveAvatar prefer controls monogram versus identicon only', () => {
-  assert.equal(resolveAvatar({ author: KEY_A, name: 'Al', prefer: 'monogram' }).kind, 'monogram');
-  assert.equal(resolveAvatar({ author: KEY_A, name: 'Al', prefer: 'identicon' }).kind, 'identicon');
-  assert.equal(resolveAvatar({ author: KEY_A, name: 'Al', prefer: 'auto' }).kind, 'identicon');
-  assert.equal(resolveAvatar({ emoji: '🐱', author: KEY_A, prefer: 'monogram' }).kind, 'emoji');
-  assert.equal(resolveAvatar({ avatar: POINTER, prefer: 'monogram' }).kind, 'photo');
+test('resolveAvatar has no photo or emoji branch any more', () => {
+  const desc = resolveAvatar({ avatar: { owner: 'x' }, emoji: '🐱', author: KEY_A, name: 'Al' });
+  assert.equal(desc.kind, 'identicon');
+  assert.equal(resolveAvatar({ avatar: { owner: 'x' }, emoji: '🐱', name: 'Al' }).kind, 'monogram');
 });
 
 test('accordStatusSummary derives the certificate state like certStateOf', () => {

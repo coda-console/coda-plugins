@@ -7,7 +7,7 @@ import { TEST_OWNER, createMockCoda } from '../../helpers/mock-coda.mjs';
 import { pointProblem } from '@coda-console/protocol/validate';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -296,7 +296,7 @@ const rejectsWith = (promise, code, effects, text) => assert.rejects(promise, er
 
 // ---- 授予与发现 ----
 
-test('a grant becomes a proxy record named machine@nickname#tail with the holder machine key, grant and full tail labels; the note and card name do not touch it; revoking deletes it', async t => {
+test('a grant becomes a proxy record named machine@nickname#tail with the holder machine key, grant and full tail labels; revoking deletes it', async t => {
   const world = worldFake(), h = await holderOf(t, world), c = await callerOf(t, world);
   const grant = await granted(h, c);
   const [row] = c.mine();
@@ -306,12 +306,6 @@ test('a grant becomes a proxy record named machine@nickname#tail with the holder
   assert.deepEqual(row.labels, { 'friends-holder': HM, 'friends-grant': grant, tail: fullTail(HM) });
   assert.match(row.labels.tail, /^\d{78}$/);
   assert.ok(row.labels.tail.endsWith('1948'));
-  // 对方改名片名、本机改备注：标题与记录 ID 都不变。
-  world.inject({ author: HM, kind: 'friends/card', id: 'self', body: { name: '老王' }, audience: ['public'] });
-  await c.caller.tick();
-  await writeFile(join(c.dir, 'notes.json'), JSON.stringify({ 'n-h': '王哥' }));
-  await c.caller.tick();
-  assert.deepEqual(c.mine().map(one => [one.id, one.spec.name]), [[row.id, 'box@zzy#1948']]);
 
   await h.holder.self['grants.revoke']({ grant });
   await until(() => c.mine().length === 0, '撤回后删掉代理记录');
@@ -337,16 +331,15 @@ test('a second rename while the first rename\'s grant record is still being publ
   await until(() => c.mine()[0].spec.name === 'second@zzy#1948', '代理名是第二个名字');
 });
 
-// 两位好友各授出一台叫 box 的机器：通道背后的作者是 first、second，持有方机器钥匙是 HM、HM2；两位的名片名都是「老王」。
+// 两位好友各授出一台叫 box 的机器：通道背后的作者是 first、second，持有方机器钥匙是 HM、HM2。
 for (const [what, first, second, names] of [
-  ['another friend with the same card name gets a record named after its own key', XS, ZYV, ['box@xs#4084', 'box@zyv#4103']],
+  ['another friend granting a machine of the same name gets a record named after its own key', XS, ZYV, ['box@xs#4084', 'box@zyv#4103']],
   ['two keys with the same nickname keep their own last 4 digits', XS, XS_NEXT, ['box@xs#4084', 'box@xs#4085']],
   ['two keys with the same nickname and the same last 4 digits are both written to the shortest distinguishing length', XS, XS_FAR, ['box@xs#04084', 'box@xs#14084']],
 ]) {
   test(`naming: ${what}`, async t => {
     const world = worldFake(), h = await holderOf(t, world), h2 = await holderOf(t, world, { author: HM2, machine: HM2 });
     const c = await callerOf(t, world, { friends: [channel({ author: first }), { node: 'n-h2', author: second, bound: true, machine: HM2, certified: true }] });
-    for (const author of [first, second]) world.inject({ author, kind: 'friends/card', id: 'self', body: { name: '老王' }, audience: ['public'] });
     const grant = await granted(h, c), grant2 = await h2.grant(ROOT);
     await until(() => c.mine().length === 2, '第二条代理记录登记');
     await c.caller.tick();

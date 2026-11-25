@@ -1,4 +1,4 @@
-// 好友模块：备注的视图消息与 `coda self`、社交网关与签名网关调用方的登记；备注存在插件状态目录。activate 里 Accord 只读本机记录、监听变化，不查询、不发布。
+// 好友模块：策略的 `coda self` 处理函数、社交网关与签名网关调用方的登记，以及好友页「共享」一节的视图消息。activate 里 Accord 只读本机记录、监听变化，不查询、不发布。
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -26,50 +26,27 @@ async function host(t, state, listed = []) {
 }
 const settled = () => new Promise(resolve => setTimeout(resolve, 30));
 
-test('activate registers the notes and policy handlers, the gateway operations and streams and the view, without querying or publishing', async t => {
+test('activate registers the policy and sharing handlers, the gateway operations, the caller\'s proxy protocol and the view, with no notes or social streams, and without querying or publishing', async t => {
   const h = await host(t);
   t.after(deactivate);
   await activate(h.coda);
-  assert.deepEqual([...h.self.keys()].sort(), ['grants.grant', 'grants.list', 'grants.revoke', 'grants.targets', 'ledger.list', 'notes.delete', 'notes.list', 'notes.set', 'policy.get', 'policy.setKind', 'proxies.list']);
-  assert.deepEqual(h.operations.sort(), [...['friends', 'outbox', 'post-feed', 'publish', 'records', 'retract', 'send-dm', 'set-card'].map(name => `friends/social@1/${name}`),
-    'remote-exec/machine@1/exec']);
+  assert.deepEqual([...h.self.keys()].sort(), ['grants.grant', 'grants.list', 'grants.revoke', 'grants.targets', 'ledger.list', 'policy.get', 'policy.setKind', 'proxies.list']);
+  assert.deepEqual(h.operations.sort(), [...['friends', 'outbox', 'publish', 'records', 'retract'].map(name => `friends/social@1/${name}`), 'remote-exec/machine@1/exec']);
   // 调用方的代理记录：exec 转给好友，pull、push 报不支持。
-  assert.deepEqual(h.streams, ['friends/social@1/dm', 'friends/social@1/feed', 'remote-exec/machine@1/pull', 'remote-exec/machine@1/push']);
+  assert.deepEqual(h.streams, ['remote-exec/machine@1/pull', 'remote-exec/machine@1/push']);
   assert.deepEqual([...h.views.keys()], ['friends']);
 });
 
-test('notes are read and written through `coda self` and kept in the state directory', async t => {
+test('policy is read and written through `coda self` and kept in the state directory', async t => {
   const h = await host(t);
   t.after(deactivate);
   await activate(h.coda);
-  assert.deepEqual(await h.self.get('notes.list')({}), {});
-  assert.deepEqual(await h.self.get('notes.set')({ node: 'n1', note: '老王' }), { n1: '老王' });
-  assert.deepEqual(JSON.parse(await readFile(join(h.dir, 'notes.json'), 'utf8')), { n1: '老王' });
-  assert.deepEqual(await h.self.get('notes.delete')({ node: 'n1' }), {});
-  await assert.rejects(h.self.get('notes.set')({ node: '', note: 'x' }), /不合法/);
-});
-
-test('a page reads and writes notes by messages, each answer carrying its request id', async t => {
-  const h = await host(t);
-  t.after(deactivate);
-  await activate(h.coda);
-  const page = h.open();
-  page.tell({ type: 'notes.set', rid: 'a', node: 'n1', note: '备注' });
-  await settled();
-  page.tell({ type: 'notes.list', rid: 'b' });
-  await settled();
-  page.tell({ type: 'notes.set', rid: 'c', node: '', note: 'x' });
-  await settled();
-  page.tell({ type: 'other', rid: 'd' });
-  page.tell({ type: 'notes.list' });
-  page.tell(null);
-  await settled();
-  assert.deepEqual(page.got[0], { type: 'reply', rid: 'a', ok: true, value: { n1: '备注' } });
-  assert.deepEqual(page.got[1], { type: 'reply', rid: 'b', ok: true, value: { n1: '备注' } });
-  assert.equal(page.got[2].ok, false);
-  assert.equal(page.got[2].rid, 'c');
-  assert.match(page.got[2].error, /不合法/);
-  assert.equal(page.got.length, 3, 'unknown or id-less messages are ignored');
+  assert.deepEqual(await h.self.get('policy.get')({}), { pausedKinds: [] });
+  assert.deepEqual(await h.self.get('policy.setKind')({ kind: 'x', paused: true }), { pausedKinds: ['x'] });
+  assert.deepEqual(await h.self.get('policy.get')({}), { pausedKinds: ['x'] });
+  await assert.rejects(Promise.resolve().then(() => h.self.get('policy.setKind')({ kind: 'x', paused: 'yes' })), /paused/);
+  await assert.rejects(Promise.resolve().then(() => h.self.get('policy.setKind')({ kind: 'friends/card', paused: true })), error => error.code === 'invalid_input');
+  assert.deepEqual(JSON.parse(await readFile(join(h.dir, 'policy.json'), 'utf8')).pausedKinds, ['x']);
 });
 
 test('a page reads the sharing state by messages too: grants, ledger, the proxies friends granted, and the local remote-exec records it can grant', async t => {
@@ -94,17 +71,20 @@ test('a page reads the sharing state by messages too: grants, ledger, the proxie
   assert.deepEqual(page.got[3].value, [{ id: 'rx-1', name: '书房的 Mac mini', os: 'macOS 15.2', user: 'leavan', available: true }, { id: 'rx-2', name: '关着的', os: '', user: '', available: false }]);
   assert.match(page.got[4].error, /没有授权/);
   assert.equal(page.got[4].effects, 'none', 'a refusal says nothing was written');
+  // 已下线的备注与别的类型、没带 id 的消息不答。
+  for (const message of [{ type: 'notes.list', rid: 'f' }, { type: 'notes.set', rid: 'g', node: 'n1', note: 'x' }, { type: 'other', rid: 'h' }, { type: 'grants.list' }, null]) page.tell(message);
+  await settled();
+  assert.equal(page.got.length, 5, 'unknown or id-less messages are ignored');
 });
 
-test('without a state directory notes fail plainly, and deactivate disposes what activate registered', async t => {
+test('without a state directory policy and sharing fail plainly, and deactivate disposes what activate registered', async t => {
   const h = await host(t, null);
   await activate(h.coda);
-  await assert.rejects(Promise.resolve().then(() => h.self.get('notes.list')({})), /状态目录/);
+  await assert.rejects(Promise.resolve().then(() => h.self.get('policy.get')({})), /状态目录/);
   await assert.rejects(Promise.resolve().then(() => h.self.get('grants.list')({})), /状态目录/);
   deactivate();
-  assert.deepEqual(h.disposed.sort(), ['friends/social@1/friends', 'friends/social@1/outbox', 'friends/social@1/post-feed', 'friends/social@1/publish', 'friends/social@1/records',
-    'friends/social@1/retract', 'friends/social@1/send-dm', 'friends/social@1/set-card', 'grants.grant', 'grants.list', 'grants.revoke', 'grants.targets', 'ledger.list', 'notes.delete', 'notes.list', 'notes.set', 'policy.get', 'policy.setKind',
-    'proxies.list', 'stream friends/social@1/dm', 'stream friends/social@1/feed', 'watch']);
+  assert.deepEqual(h.disposed.sort(), ['friends/social@1/friends', 'friends/social@1/outbox', 'friends/social@1/publish', 'friends/social@1/records', 'friends/social@1/retract',
+    'grants.grant', 'grants.list', 'grants.revoke', 'grants.targets', 'ledger.list', 'policy.get', 'policy.setKind', 'proxies.list', 'watch']);
   deactivate();
 });
 
@@ -120,12 +100,13 @@ test('without the remote-exec protocol the caller still finishes starting: proxi
   await activate(h.coda);
   const page = h.open();
   page.tell({ type: 'proxies.list', rid: 'p', friend: `ed25519:${'1'.repeat(64)}` });
-  page.tell({ type: 'notes.list', rid: 'n' });
+  page.tell({ type: 'grants.list', rid: 'g' });
   await settled();
   const reply = rid => page.got.find(m => m.rid === rid);
   assert.equal(reply('p')?.ok, false);
   assert.match(reply('p').error, /这台没装远程执行插件/);
-  assert.equal(reply('n')?.ok, true);
+  assert.equal(reply('g')?.ok, true);
+  assert.deepEqual(await h.self.get('policy.get')({}), { pausedKinds: [] });
   assert.equal((await h.self.get('grants.list')({})).corrupt, null, 'the holder is not affected');
 });
 

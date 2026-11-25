@@ -33,10 +33,11 @@ function fake({ settings = {}, usage = [], records = [], friends, state } = {}) 
   const host = {
     calls, published, attempts, retractCalls, queued, touched, views, records,
     usage,
-    friends: friends ?? [{ node: 'n1', author: FRIEND, status: 'bound', emoji: '', color: 'gray' }],
+    friends: friends ?? [{ node: 'n1', author: FRIEND, status: 'bound' }],
     machine: undefined,        // 本机的机器 ID；Error 表示读不到
     gateway: true,             // 好友插件在不在
     listError: null,           // 非空就让列出好友网关抛它
+    friendsTruncated: false,   // 网关的 friends 查询带不带（已不再使用的）truncated
     friendsError: null,        // 非空就让网关的 friends 查询抛它
     recordsError: null,        // 非空就让网关的 records 查询抛它
     publishError: null,        // 非空就让 publish 抛它
@@ -75,7 +76,7 @@ function fake({ settings = {}, usage = [], records = [], friends, state } = {}) 
         assert.deepEqual(ref, { kind: SOCIAL, id: 'local' });
         if (operation === 'friends') {
           if (host.friendsError) throw host.friendsError;
-          return { selfAuthor: host.author, certState: host.author ? host.certState : 'no_identity', friends: host.friends, truncated: false };
+          return { selfAuthor: host.author, certState: host.author ? host.certState : 'no_identity', friends: host.friends, ...(host.friendsTruncated ? { truncated: true } : {}) };
         }
         if (operation === 'outbox') return { author: host.author, certState: host.author ? host.certState : 'no_identity', pausedKinds: host.pausedKinds, pendingCount: queued.length, items: queued.filter(item => item.kind === input.kind).map(item => ({ kind: item.kind, id: item.id, desired: 'publish', state: 'queued' })) };
         assert.equal(operation, 'records');
@@ -806,15 +807,13 @@ test('撤回没完成（排队、证书过期、出错）：保留本机索引�
 
 // ——— 榜单 ———
 
-test('页面取榜单：本机用量、经网关按作者翻页读记录（沿 cursor）、自己与好友的头像样式、截断标记', async t => {
+test('页面取榜单：本机用量、经网关按作者翻页读记录（沿 cursor）、不发名片查询、截断标记', async t => {
   const state = mkdir(t), at = startOfBucket(now), clock = new Date(at).toISOString().slice(11, 16), day = new Date(at).toISOString().slice(0, 10);
   const block = { blocks: { [clock]: { codex: { gpt: { input: 1000, output: 0, cacheRead: 0, cacheWrite: 0, turns: 4, reportedTurns: 4 } } } } };
   const host = fake({ state, usage: [bucket(at)], records: [
     ...['dev1', 'dev2', 'dev3'].map((dev, i) => ({ author: FRIEND, kind: usageKind, id: `${day}/${dev}`, version: i + 1, local: false, body: block })),
-    { author: AUTHOR, kind: 'profile', id: 'self', version: 3, local: true, body: { name: '我<i>自己</i>\u0000', emoji: '🧑', color: 'teal' } },
-    { author: FRIEND, kind: 'profile', id: 'self', version: 2, local: false, body: { name: '名片里的小明', emoji: '🦊' } },
   ] });
-  host.friends = [{ node: 'n1', author: FRIEND, status: 'bound', note: '  备注 小明  ', profileName: '名片里的小明', title: '备注 小明', emoji: '🦊', color: 'orange' }];
+  host.friends = [{ node: 'n1', author: FRIEND, status: 'bound', note: '  备注 小明  ', profileName: '名片里的小明', title: '备注 小明' }];
   host.pageSize = 1;
   activate(host.coda);
   const page = host.open();
@@ -825,13 +824,13 @@ test('页面取榜单：本机用量、经网关按作者翻页读记录（沿 c
   assert.equal(board.selfAuthor, AUTHOR);
   assert.equal(board.friendCount, 1);
   assert.deepEqual(board.people, [
-    { author: FRIEND, self: false, shared: true, emoji: '🦊', color: 'orange' },
-    { author: AUTHOR, self: true, shared: true, emoji: '🧑', color: 'teal' },
+    { author: FRIEND, self: false, shared: true },
+    { author: AUTHOR, self: true, shared: true },
   ]);
   assert.equal(board.sources.filter(source => source.author === FRIEND).reduce((n, source) => n + source.totalTokens, 0), 3000, '三页都读到了');
   assert.equal(board.sources.find(source => source.local).totalTokens, 116);
   assert.ok(!('entries' in board), '不再另发一份按作者聚合的统计');
-  assert.deepEqual(board.truncated, { usage: false, friends: false, profiles: false });
+  assert.deepEqual(board.truncated, { usage: false, friends: false });
   assert.equal(board.syncState, 'disabled');
   assert.equal(board.curve.at(-1).totalTokens + board.curve.at(-2).totalTokens, 116);
   const usageQuery = host.calls.find(([kind]) => kind === 'coda/usage@1');
@@ -839,12 +838,25 @@ test('页面取榜单：本机用量、经网关按作者翻页读记录（沿 c
   assert.ok(usageQuery[2].limit <= 500);
   const social = host.calls.filter(([kind]) => kind === SOCIAL);
   assert.deepEqual(social.find(([, op]) => op === 'friends')[2], { includePending: false });
-  assert.deepEqual(social.filter(([, op, input]) => op === 'records' && input.kind === 'profile').map(([, , input]) => input), [{ kind: 'profile', author: AUTHOR, id: 'self', limit: 1 }]);
+  assert.ok(social.every(([, op, input]) => op !== 'records' || input.kind !== 'profile'), '不再查名片');
   const pages = social.filter(([, op, input]) => op === 'records' && input.kind === usageKind && input.author === FRIEND).map(([, , input]) => input);
   assert.deepEqual(pages.map(input => input.cursor), [undefined, '1', '2'], '沿 nextCursor 翻页');
-  assert.ok(social.every(([, op, input]) => op !== 'records' || input.kind === 'profile' || input.limit === 200));
+  assert.ok(social.every(([, op, input]) => op !== 'records' || input.limit === 200));
   for (const kind of [dayKind, todayKind]) assert.ok(social.some(([, , input]) => input.kind === kind && input.author === FRIEND), kind);
   assert.ok(social.some(([, , input]) => input.kind === dayKind && input.author === AUTHOR), '自己的也读');
+});
+
+test('网关的 friends 带 truncated 也不影响榜单：榜单不再读它', async t => {
+  const state = mkdir(t), at = startOfBucket(now);
+  const host = fake({ state, usage: [bucket(at)] });
+  host.friendsTruncated = true;
+  activate(host.coda);
+  const page = host.open();
+  page.tell({ type: 'board', range: 'today', id: 1 });
+  const board = await page.waitFor('board');
+  assert.deepEqual(board.truncated, { usage: false, friends: false });
+  assert.deepEqual(board.errors, []);
+  assert.equal(board.friendCount, 1);
 });
 
 test('翻页保护：cursor 重复不死循环，页数封顶，标记 truncated；只记一条提示，不拖垮榜单', async t => {
