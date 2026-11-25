@@ -3,9 +3,9 @@
   "id": "codex",
   "displayName": "Codex",
   "description": "用 OpenAI Codex 跑会话",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "engines": {
-    "coda": 6
+    "coda": 20
   },
   "categories": [
     "Agent"

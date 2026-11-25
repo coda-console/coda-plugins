@@ -3,9 +3,9 @@
   "id": "claude",
   "displayName": "Claude",
   "description": "用 Claude Agent SDK 跑会话",
-  "version": "1.17.0",
+  "version": "1.17.1",
   "engines": {
-    "coda": 6
+    "coda": 20
   },
   "categories": [
     "Agent"
