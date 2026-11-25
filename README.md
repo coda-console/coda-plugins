@@ -20,7 +20,7 @@ plugins/git/             Git 源与快照：本机仓库 provider、运行关联
 plugins/host/            宿主资源：Xcode 构建、Apple 模拟器与项目要求排队的命令共用这台机器的一组名额（组 host、持锁执行 run-held、host-sim），资源「构建名额」
 plugins/magpie/          Magpie：把本机的 Magpie 网关作为模型服务提供给 Pi 等插件，安装时装好 Magpie 并让网关常驻
 plugins/network-log/     网络记录：默认关闭，按需开启建连等待与定时探测采集；关闭后仍可查看历史
-plugins/friends/         好友：Accord 身份与公开名片、接受好友邀请并互认、好友列表与仅存本机的备注
+plugins/friends/         好友：Accord 身份与好友关系管理、接受好友邀请并互认、业务无关的好友网关
 plugins/review/          PR 生命流程：会话开的 PR 先跑项目的检查、再交叉评审，你批准后合并、部署与发布，别人的 PR 只评审；也是写 PR 流程的样例
 plugins/desktop-pet/     桌面宠物：Coda 娘待在 Mac 桌面上，Agent 在跑时打字，有事等你时举卡片叫你（Coda 的浮窗）
 plugins/token-board/     Token 消耗榜：看本机的 Token 用量，默认向好友分享用量，可关闭；熟人消耗榜按 Accord 身份合并多台机器的用量（coda/usage@1 与 coda/machine@1 只读，friends/social@1 可选读与发布）

@@ -15,6 +15,6 @@ export const todayRec = (author, sourceId, buckets, now, version = 1) => ({ auth
 // window 换掉默认的查询窗口 [from, to)；today 是读到的当天曲线记录。
 export function reply({ selfAuthor, sourceId, local = [], excluded = [], records = [], today = [], friends = [], window = [FROM, TO] }) {
   const board = aggregateLeaderboard({ selfAuthor, selfSourceId: sourceId, excludedSourceIds: excluded, localBuckets: local, dayRecords: records, todayRecords: today, friends, from: window[0], to: window[1] });
-  return { type: 'board', accord: Boolean(selfAuthor), selfAuthor, friendCount: friends.length, errors: [], truncated: { usage: false, friends: false, profiles: false }, local: local && summarizeBuckets(local, { from: window[0], to: window[1] }),
-    retired: excluded, people: board.entries.map(({ author, self, shared, emoji, color }) => ({ author, self, shared, emoji, color })), sources: board.sources };
+  return { type: 'board', accord: Boolean(selfAuthor), selfAuthor, friendCount: friends.length, errors: [], truncated: { usage: false, friends: false }, local: local && summarizeBuckets(local, { from: window[0], to: window[1] }),
+    retired: excluded, people: board.entries.map(({ author, self, shared }) => ({ author, self, shared })), sources: board.sources };
 }

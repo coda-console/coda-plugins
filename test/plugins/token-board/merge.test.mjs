@@ -107,12 +107,12 @@ test('只有一台时，合并结果和这台自己的回包一致', () => {
   assert.equal(merged.locals[0].totalTokens, board.local.totalTokens);
 });
 
-test('榜单按总量降序排名；名片字段取第一台读到的，提示与截断带上是哪台', () => {
+test('榜单按总量降序排名；提示与截断带上是哪台', () => {
   const merged = mergeBoards([
-    member(X, { ...reply({ selfAuthor: A, sourceId: 'x', friends: [{ author: B, emoji: '🙂', color: 'blue' }], records: [dayRec(B, 'phone', [bucket(DAY + 1000, 50)])] }), errors: ['读不到好友的用量'], truncated: { usage: true, friends: true, profiles: false } }),
-    member(Y, reply({ selfAuthor: A, sourceId: 'y', friends: [{ author: B, emoji: '😺', color: 'green' }], local: [bucket(DAY + 2000, 20)] })),
+    member(X, { ...reply({ selfAuthor: A, sourceId: 'x', friends: [{ author: B }], records: [dayRec(B, 'phone', [bucket(DAY + 1000, 50)])] }), errors: ['读不到好友的用量'], truncated: { usage: true, friends: true } }),
+    member(Y, reply({ selfAuthor: A, sourceId: 'y', friends: [{ author: B }], local: [bucket(DAY + 2000, 20)] })),
   ]);
-  assert.deepEqual(merged.entries.map(e => [e.rank, e.author, e.emoji, e.color]), [[1, B, '🙂', 'blue'], [2, A, null, null]]);
+  assert.deepEqual(merged.entries.map(e => [e.rank, e.author]), [[1, B], [2, A]]);
   assert.deepEqual(merged.errors, [{ machine: X, text: '读不到好友的用量' }]);
   assert.equal(merged.truncated.friends, true);
   assert.equal(merged.locals[0].truncated, true);

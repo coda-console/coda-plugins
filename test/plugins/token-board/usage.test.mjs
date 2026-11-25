@@ -1,9 +1,9 @@
-// Token 消耗榜的纯逻辑：24 小时分片与截断二分、月块日归档与 48 小时曲线、person 切片、名片清洗、排行榜汇总与排序、当天曲线、跨记录无双计。
+// Token 消耗榜的纯逻辑：24 小时分片与截断二分、月块日归档与 48 小时曲线、person 切片、排行榜汇总与排序、当天曲线、跨记录无双计。
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   BUCKET_MS, DAY_MS, aggregateLeaderboard, aggregateTodayCurve, buildArchiveBodies, buildDailyUsageBodies, buildTodayBody, fetchUsageBuckets, filterBucketsByPerson,
-  isWithdrawn, ownedBySource, rangeWindow, readArchiveRecord, readTodayRecord, sanitizeProfile, shortAuthor, summarizeBuckets, withdrawnBody,
+  isWithdrawn, ownedBySource, rangeWindow, readArchiveRecord, readTodayRecord, shortAuthor, summarizeBuckets, withdrawnBody,
 } from '../../../plugins/token-board/lib/usage.mjs';
 
 const bucket = (start, over = {}) => ({ start, agent: 'claude', model: 'opus', input: 10, output: 5, cacheRead: 100, cacheWrite: 1, turns: 2, reportedTurns: 2, ...over });
@@ -107,21 +107,6 @@ test('一天太大时合并成按小时，再不行合并成整天一块，且�
   assert.ok(Object.keys(body.blocks).length <= 24);
 });
 
-test('名片清洗：只提取头像与颜色，头像去控制字符并截断', () => {
-  assert.deepEqual(sanitizeProfile({ body: { name: '名片名', emoji: ' \u0000🦊\n ', color: '#FF8800' } }), { emoji: '🦊', color: '#ff8800' });
-  assert.equal(Array.from(sanitizeProfile({ body: { emoji: '😀'.repeat(20) } }).emoji).length, 8);
-  assert.deepEqual(sanitizeProfile({ body: { emoji: { a: 1 }, color: [] } }), { emoji: null, color: null });
-  assert.equal(sanitizeProfile({ body: { emoji: '\u0000\u0001  ' } }).emoji, null);
-  for (const bad of [null, undefined, {}, { body: null }, { body: 'x' }, 7]) assert.deepEqual(sanitizeProfile(bad), { emoji: null, color: null });
-});
-
-test('名片颜色：好友插件的命名色板和 #RRGGBB 通过，其他一律丢弃', () => {
-  for (const color of ['blue', 'orange', 'green', 'purple', 'pink', 'teal', 'gray']) assert.equal(sanitizeProfile({ body: { color } }).color, color);
-  assert.equal(sanitizeProfile({ body: { color: ' Blue ' } }).color, null, '命名色只认小写原样，大小写不对不当作色板');
-  assert.equal(sanitizeProfile({ body: { color: '#ABCDEF' } }).color, '#abcdef');
-  for (const color of ['javascript:alert(1)', 'red', 'blue; background:url(x)', 'var(--x)', '#fff', '__proto__', 'constructor', '']) assert.equal(sanitizeProfile({ body: { color } }).color, null, color);
-});
-
 test('密钥短码取 ed25519: 后 8 位', () => {
   assert.equal(shortAuthor(`ed25519:${'0123456789abcdef'.repeat(4)}`), '01234567');
   assert.equal(shortAuthor(null), '未知');
@@ -208,21 +193,6 @@ test('恶意记录体：坏键、负数、小数、超大数、非对象都被�
   assert.equal(b.totalTokens, 0);
   assert.equal(b.turns, 3);
   assert.ok(b.models.every(m => typeof m.model === 'string' && !/[\u0000-\u001f]/.test(m.model)));
-});
-
-test('名片：仅使用已知作者的最新版本，缺名片时头像与颜色为空', () => {
-  const stranger = 'ed25519:' + 'd'.repeat(64);
-  const { entries } = aggregateLeaderboard({
-    selfAuthor: A, selfSourceId: 'me', from: FROM, to: TO, friends: [{ author: B }, { author: C }],
-    profileRecords: [
-      { author: B, kind: 'profile', id: 'self', version: 1, body: { emoji: '🐶', color: 'blue' } },
-      { author: B, kind: 'profile', id: 'self', version: 5, body: { emoji: '🐼', color: 'teal' } },
-      { author: stranger, kind: 'profile', id: 'self', version: 9, body: { emoji: '🐈' } },
-    ],
-  });
-  assert.deepEqual(entries.map(({ author, emoji, color }) => [author, emoji, color]), [
-    [A, null, null], [B, '🐼', 'teal'], [C, null, null],
-  ]);
 });
 
 test('排序：总 Token 降序，平局按回合数降序，再按 author 升序', () => {
@@ -612,28 +582,6 @@ test('UTC+8 本地零点（前一 UTC 日 16:00 起）：归档因过半不在�
     const { entries } = aggregateLeaderboard({ selfAuthor: A, selfSourceId: 'me', friends: [{ author: B }], from, to, todayRecords: [stale], dayRecords: [dayRec(B, 'phone', all)] });
     assert.equal(entries.find(e => e.author === B).input, 5);
   });
-});
-
-test('榜单：名片缺少头像或颜色时，使用好友行的对应字段', () => {
-  const friends = [
-    { author: B, emoji: ' \u0007🐶 ', color: 'blue' },
-    { author: C, emoji: '', color: 'javascript:alert(1)' },
-  ];
-  const profile = (author, body) => ({ author, kind: 'profile', id: 'self', version: 1, body });
-  const { entries } = aggregateLeaderboard({
-    selfAuthor: A, selfSourceId: 'me', friends, from: DAY0, to: DAY0 + DAY_MS,
-    profileRecords: [profile(A, { emoji: '🧑' }), profile(B, { color: 'teal' })],
-  });
-  assert.deepEqual(entries.map(({ author, emoji, color }) => [author, emoji, color]), [
-    [A, '🧑', null], [B, '🐶', 'teal'], [C, null, null],
-  ]);
-
-  const fallback = aggregateLeaderboard({
-    selfAuthor: A, selfSourceId: 'me', friends, from: DAY0, to: DAY0 + DAY_MS,
-    profileRecords: [profile(B, { emoji: '🐼' })],
-  }).entries.find(e => e.author === B);
-  assert.equal(fallback.emoji, '🐼');
-  assert.equal(fallback.color, 'blue');
 });
 
 test('榜单 sources：每个（作者, 来源）一份合计，本机的标 local，其余没有 local；本机用量没读到或没有身份就没有本机来源', () => {
