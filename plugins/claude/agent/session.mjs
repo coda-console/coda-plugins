@@ -15,7 +15,7 @@ import { agent, PROTOCOL_VERSION, RequestError } from '@agentclientprotocol/sdk'
 import { ClaudeSessionLimits, accountHash } from './limits.mjs';
 import { claudeFailure } from './errors.mjs';
 import { sdkEnvironment } from './auth.mjs';
-import { chosenServices, listedModels, serviceSettings } from './providers.mjs';
+import { chosenServices, listedModels, serviceReference, serviceSettings } from './providers.mjs';
 import { SessionTitle } from './titles.mjs';
 import { MODEL_EFFORT, MODES, claudeModels, configOptions, reportedModel } from './models.mjs';
 import { permissionRequest } from './permissions.mjs';
@@ -229,11 +229,14 @@ export class ClaudeSession {
   // opened goes on with the model, mode and effort chosen.
   start(at, model) {
     this.input = new InputStream();
-    const entry = this.served(model);
+    const entry = this.served(model), service = entry && this.services.find(service => service.ref === entry.service);
     const settings = { ...this.launch.settings, ...(this.current.effort ? { effortLevel: this.current.effort } : {}),
       ...(this.current.ultracode === true ? { ultracode: true } : {}),
-      ...(entry ? serviceSettings(this.services.find(service => service.ref === entry.service), entry.model) : {}) };
-    this.serviceModel = entry ? model : null; this.cacheUse.restarted(); this.usage.restarted(!!at.resume);
+      ...(entry ? serviceSettings(service, entry.model) : {}) };
+    // On a service its usage says the service and the model asked, when its address gives a reference (providers.mjs).
+    const reference = service && serviceReference(service.url);
+    this.serviceModel = entry ? model : null; this.cacheUse.restarted();
+    this.usage.restarted(!!at.resume, service ? reference ? { service: reference, asked: entry.model } : {} : null);
     // A compaction in the query moved off ends with it.
     this.compacting?.answer({ compacted: false, reason: '会话换到另一个模型，压缩没有做完' }); this.compacting = null;
     this.query = this.sdk.query({ prompt: this.input, options: { ...this.launch, ...at, settings,

@@ -1052,7 +1052,7 @@ test('the session publishes its title as session info, and a stopped turn starts
 
 // A model service of another plugin, as Coda hands it to Claude's processes (docs/plugins.md「模型服务」): listing `models`;
 // `env` chooses it alone.
-async function modelService(t, { ref = 'magpie/anthropic', title = 'Magpie · Anthropic', models = ['fake/alpha', 'fake/beta'] } = {}) {
+async function modelService(t, { ref = 'magpie/anthropic', title = 'Magpie · Anthropic', models = ['fake/alpha', 'fake/beta'], path = '' } = {}) {
   const { createServer } = await import('node:http');
   const asked = [];
   const server = createServer((request, response) => {
@@ -1062,7 +1062,7 @@ async function modelService(t, { ref = 'magpie/anthropic', title = 'Magpie · An
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => server.close());
-  const url = `http://127.0.0.1:${server.address().port}`, provided = { [ref]: { plugin: ref.split('/')[0], title, api: 'anthropic-messages', url } };
+  const url = `http://127.0.0.1:${server.address().port}${path}`, provided = { [ref]: { plugin: ref.split('/')[0], title, api: 'anthropic-messages', url } };
   return { asked, url, ref, provided, env: chosen(provided) };
 }
 // The services Coda hands Claude's processes, all chosen in this order.
@@ -1109,6 +1109,17 @@ test('the chosen model service\'s models are listed beside Claude\'s own; a turn
   // Between Claude's own models the query itself switches, as before.
   await set('model', 'fixture-model-v1');
   assert.deepEqual([queries.get(c.sessionId), fourth.model], [fourth, 'fixture-model-v1']);
+});
+
+test('a turn on a model service reached through Coda\'s injected address says that service and the model asked in its usage; an address of another shape says neither', async t => {
+  const id = '6f1a7c52-0d3b-4e8a-9a41-2b7d5c0e9f13';
+  for (const [path, told] of [[`/resources/anthropic-messages/${id}/v1`, { service: `coda://anthropic-messages/${id}`, asked: 'fake/alpha' }], ['/v1', {}]]) {
+    const service = await modelService(t, { path });
+    const c = await setup(t, { env: service.env });
+    await c.open();
+    await c.request('session/set_config_option', { sessionId: c.sessionId, configId: 'model', value: 'magpie/anthropic/fake/alpha' });
+    assert.deepEqual((await c.prompt('hello')).result, { stopReason: 'end_turn', usage: { totalTokens: 10, inputTokens: 10, outputTokens: 0, ...told } });
+  }
 });
 
 test('a session with nothing said yet starts afresh on the service\'s model, and no model of another service is chosen while what Claude runs goes on', async t => {

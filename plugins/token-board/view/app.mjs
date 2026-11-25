@@ -3,7 +3,7 @@
 // 每一轮读取由页面按这台设备的当地时间定一组 from、to 发给每台：各台时区不同时，窗口也是同一段时间。
 // 模型名等外来文字只经 textContent / 文本节点渲染，从不拼进 innerHTML。
 import { mergeBoards } from '../lib/merge.mjs';
-import { rangeWindow } from '../lib/usage.mjs';
+import { cleanText, rangeWindow } from '../lib/usage.mjs';
 
 const coda = window.coda;
 const root = document.getElementById('root');
@@ -206,7 +206,7 @@ function controls() {
 }
 
 function local() {
-  const loading = live.some(m => m.loading), blocks = merged.locals.map(group => h('div', { class: 'group' }, multi ? caption(group) : null, usageBody(group)));
+  const loading = live.some(m => m.loading), blocks = merged.locals.map((group, i) => h('div', { class: 'group' }, multi ? caption(group) : null, usageBody(group, `local${i}`)));
   const body = blocks.length ? blocks : h('p', { class: 'empty' }, loading ? '读取中…' : '还没有数据');
   return h('section', {}, h('h2', {}, multi ? '用量' : '本机', h('span', { class: 'secondary' }, rangeLabel()), partial()), body);
 }
@@ -216,14 +216,14 @@ function caption(group) {
   const who = entry ? `${entry.displayId} · ` : '';
   return h('p', { class: 'hint' }, `${who}${group.machines.length > 1 ? '合计 · ' : ''}${names(group.machines)}`);
 }
-function usageBody(mine) {
+function usageBody(mine, scope) {
   return !mine.totalTokens && !mine.turns ? h('p', { class: 'empty' }, `${rangeLabel()}没有用量`)
     : h('div', { class: 'card' },
       h('div', { class: 'big num' }, tokens(mine.totalTokens)),
       h('div', { class: 'secondary' }, `Token · ${count(mine.turns)} 个回合${mine.reportedTurns < mine.turns ? `，其中 ${count(mine.turns - mine.reportedTurns)} 个没有上报用量` : ''}`),
       stack(mine),
       h('div', { class: 'parts' }, PARTS.map(([key, label]) => h('div', { class: 'part' }, h('span', { class: 'secondary' }, label), h('span', { class: 'num strong' }, tokens(mine[key]))))),
-      modelBars(mine.models, mine.totalTokens));
+      modelBars(mine.models, mine.totalTokens, scope));
 }
 
 function stack(c) {
@@ -231,12 +231,21 @@ function stack(c) {
   return h('div', { class: 'stack' }, PARTS.map(([key]) => { const s = h('span', { class: `c-${key}` }); s.style.width = `${(c[key] / c.totalTokens) * 100}%`; return s; }));
 }
 
-function modelBars(models, total) {
+// 型号行：只有一个请求项、它的 asked 就是型号名、又没有服务时不展开；否则点开列出请求项（asked、接口种类、Token、回合）。
+const hasItems = m => m.items.length > 1 || m.items.some(item => (item.asked ?? m.model) !== m.model || (item.api && item.api !== m.model));
+// 型号名、asked 是身份，原样存取；清洗只在显示时做。
+const shown = text => cleanText(text, 200) ?? '?';
+function modelBars(models, total, scope) {
   if (!models?.length) return null;
   return h('ul', { class: 'bars' }, models.slice(0, 8).map(m => {
-    const fill = h('span', {});
+    const fill = h('span', {}), key = `${scope}|${m.model}`, open = expanded.has(key);
     fill.style.width = `${total ? Math.max(1, Math.round((m.totalTokens / total) * 100)) : 0}%`;
-    return h('li', {}, h('div', { class: 'bar-line' }, h('span', { class: 'truncate' }, m.model), h('span', { class: 'spacer' }), h('span', { class: 'num secondary' }, tokens(m.totalTokens))), h('div', { class: 'bar' }, fill));
+    const head = [h('div', { class: 'bar-line' }, h('span', { class: 'truncate' }, shown(m.model)), h('span', { class: 'spacer' }), h('span', { class: 'num secondary' }, tokens(m.totalTokens))), h('div', { class: 'bar' }, fill)];
+    return h('li', {},
+      hasItems(m) ? h('button', { class: 'bar-head', 'aria-expanded': open ? 'true' : 'false', onclick: () => { if (open) expanded.delete(key); else expanded.add(key); render(); } }, head) : head,
+      open && hasItems(m) ? h('ul', { class: 'items' }, m.items.map(item => h('li', { class: 'bar-line' },
+        h('span', { class: 'truncate' }, shown(item.asked ?? m.model)), item.api && item.api !== (item.asked ?? m.model) ? h('span', { class: 'secondary truncate' }, item.api) : null, h('span', { class: 'spacer' }),
+        h('span', { class: 'num secondary' }, `${tokens(item.totalTokens)} · ${count(item.turns)} 回合`)))) : null);
   }));
 }
 
@@ -264,7 +273,7 @@ function entry(e) {
       h('span', { class: 'who' }, h('span', { class: 'line' }, h('span', { class: 'strong truncate' }, e.displayId), e.self ? h('span', { class: 'me' }, '我') : null), h('span', { class: 'secondary truncate' }, sub)),
       h('span', { class: 'amount' }, h('span', { class: 'strong num' }, tokens(e.totalTokens)))),
     open ? h('div', { class: 'detail' }, e.models.length
-      ? [h('div', { class: 'secondary' }, `共 ${count(e.totalTokens)} Token`), modelBars(e.models, e.totalTokens)]
+      ? [h('div', { class: 'secondary' }, `共 ${count(e.totalTokens)} Token`), modelBars(e.models, e.totalTokens, e.author)]
       : h('p', { class: 'empty' }, '没有模型明细')) : null);
 }
 

@@ -555,7 +555,7 @@ CI 先装各插件的依赖再跑全部测试与静态校验：真实的握手�
 
 MIT，见 [LICENSE](LICENSE)。各插件的品牌图形归各自权利人所有，来源写在插件的 `icons/README.md`。
 
-`plugins/codex/agent/` 里的 `relay.mjs`、`titles.mjs`、`network.mjs`、`process-exit.mjs`、`options.mjs`、`subagents.mjs`、`instructions.mjs`、`steering.mjs`、`providers.mjs`、`sleep.mjs`、`mcp-policy.mjs` 在加载时给锁定版本的
+`plugins/codex/agent/` 里的 `relay.mjs`、`titles.mjs`、`network.mjs`、`process-exit.mjs`、`options.mjs`、`subagents.mjs`、`instructions.mjs`、`steering.mjs`、`providers.mjs`、`usage.mjs`、`sleep.mjs`、`mcp-policy.mjs` 在加载时给锁定版本的
 [codex-acp](https://github.com/agentclientprotocol/codex-acp)（Apache-2.0，Copyright 2025 JetBrains s.r.o.）打补丁，补丁里含 codex-acp 构建产物的原文片段。
 这些片段按 [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0) 使用，许可全文也随 npm 包装在 `node_modules/@agentclientprotocol/codex-acp/LICENSE`；
 codex-acp 本身作为 npm 依赖安装，不在本仓库里。

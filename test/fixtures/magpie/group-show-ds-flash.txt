@@ -1,0 +1,12 @@
+  DS Flash  group/ds-flash
+  routing   order
+  stays     off
+  models    1 opencode-zen/deepseek-v4.1-flash-free  OpenCode Zen · DeepSeek V4.1 Flash Free
+            2 macmini2/opencode-zen/deepseek-v4.1-flash-free  macmini2 Zen · DeepSeek V4.1 Flash Free · OpenCode Zen
+            3 rig/opencode-zen/deepseek-v4.1-flash-free  rig Magpie · DeepSeek V4.1 Flash Free · OpenCode Zen
+            4 workbuddy-ai/deepseek-v4.1-flash  not served: no provider workbuddy-ai now, skipped
+            5 workbuddy/deepseek-v4.1-flash  not served: no provider workbuddy now, skipped
+            6 rig/workbuddy/deepseek-v4.1-flash  rig Magpie · DeepSeek-V4.1-Flash · WorkBuddy
+            7 rig/opencode-go/deepseek-v4.1-flash  rig Magpie · DeepSeek V4.1 Flash 1017 · OpenCode Go
+            8 macmini2/opencode-go/deepseek-v4.1-flash  macmini2 Zen · DeepSeek V4.1 Flash 1017 · OpenCode Go 2
+            9 opencode-go/deepseek-v4.1-flash  OpenCode Go · DeepSeek V4.1 Flash 1017

@@ -13,7 +13,7 @@ import { Tally, compareEntries, shortAuthor } from './usage.mjs';
 export const STALE_PLUGIN = '这台的 Token 消耗榜插件需要更新';
 export const LOCAL_FAILED = '读不到本机用量';
 
-const addModels = (tally, usage) => { for (const model of usage.models ?? []) tally.add(model); };
+const addModels = (tally, usage) => { for (const model of usage.models ?? []) tally.addModel(model); };
 const fresher = (a, b) => (a === undefined ? false : b === undefined || a > b);
 const better = (source, held) => {
   if (source.local || held.local) return source.local && !held.local;

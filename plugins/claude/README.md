@@ -128,4 +128,10 @@ ACP 2.6.0 只使用默认 stable v1。逐项经过真实连接的解析测试：
   PKCE、令牌交换、凭据保存和续期都由 Claude CLI 负责，沿用服务账号的 `CLAUDE_CONFIG_DIR`。配置了 token 文件、OAuth token、API key 或云服务商时它们仍然优先，添加窗口里写明。
   SDK 0.3.296 的登录输出与原生二进制包布局是这里的版本边界，升级时复核。
 
+### 用量上报的模型身份
+
+回执 `usage` 的模型身份按 Coda 的 `coda/usage@1` 写（Coda 的 docs/plugins.md「Coda 的用量记录」）。
+- 这一轮用的是 Coda 注入的模型服务时：顶层带 `service`（由注入地址 `…/resources/<接口种类>/<UUID><路径>` 得到的 `coda://<接口种类>/<UUID>`）与 `asked`（发给服务的裸模型 ID，不带服务前缀）；地址不是这个形状就两者都不带。SDK 的键只是请求名，不是实际型号，不报 `served`；只用了一个模型就不带分项，用了多个模型时请求的那一项带 `service`、`asked`，其余项按 SDK 的名字作未分层的 `model` 标签。
+- 用 Claude 自己的模型时不带 `service`，分项里 SDK 给了 `canonicalModel` 的报 `served`，只有 SDK 的键的仍是未分层的 `model` 标签。
+
 「模型服务」设置的行为见仓库根 README 的「模型服务」。

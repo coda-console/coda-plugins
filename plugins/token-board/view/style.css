@@ -36,6 +36,8 @@ h2 { display: flex; align-items: baseline; gap: 6px; margin: 0 0 8px; font-size:
 
 .bars { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .bar-line { display: flex; gap: 8px; align-items: baseline; }
+.bar-head { display: block; width: 100%; }
+.items { list-style: none; margin: 6px 0 0; padding: 0 0 0 12px; display: flex; flex-direction: column; gap: 4px; }
 .bar { height: 6px; margin-top: 3px; border-radius: 3px; background: var(--coda-fill, rgba(120, 120, 128, .12)); overflow: hidden; }
 .bar > span { display: block; height: 100%; border-radius: 3px; background: var(--coda-accent, #0a84ff); }
 

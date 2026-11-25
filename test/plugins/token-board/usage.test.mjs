@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   BUCKET_MS, DAY_MS, aggregateLeaderboard, aggregateTodayCurve, buildArchiveBodies, buildDailyUsageBodies, buildTodayBody, fetchUsageBuckets, filterBucketsByPerson,
-  isWithdrawn, ownedBySource, rangeWindow, readArchiveRecord, readTodayRecord, shortAuthor, summarizeBuckets, withdrawnBody,
+  Tally, isWithdrawn, markSame, modelName, needsSame, ownBuckets, ownedBySource, rangeWindow, readArchiveRecord, readTodayRecord, serviceKind, settleTurns, shortAuthor, summarizeBuckets, withdrawnBody,
 } from '../../../plugins/token-board/lib/usage.mjs';
 
 const bucket = (start, over = {}) => ({ start, agent: 'claude', model: 'opus', input: 10, output: 5, cacheRead: 100, cacheWrite: 1, turns: 2, reportedTurns: 2, ...over });
@@ -229,9 +229,11 @@ test('本机汇总与时间范围', () => {
 
 const ROW = [10, 5, 100, 1, 2, 2];
 const sumRows = bodies => Object.values(bodies).reduce((total, body) => {
-  for (const agents of Object.values(body.days)) for (const models of Object.values(agents)) for (const row of Object.values(models)) row.forEach((v, i) => { total[i] += v; });
+  for (const agents of Object.values(body.days)) for (const rows of Object.values(agents)) for (const row of rows) row.n.forEach((v, i) => { total[i] += v; });
   return total;
 }, [0, 0, 0, 0, 0, 0]);
+// 一个 Agent 名下按旧标签 m 找一行的计数。
+const labelled = (rows, model) => rows.find(row => row.m === model).n;
 const bytes = body => Buffer.byteLength(JSON.stringify(body));
 
 test('月块日归档：按 UTC 日、每个计数 6 元数组，id 键是 YYYY-MM，空桶与多余字段不进', () => {
@@ -244,12 +246,12 @@ test('月块日归档：按 UTC 日、每个计数 6 元数组，id 键是 YYYY-
     bucket(Date.UTC(2026, 11, 1)),
   ]);
   assert.deepEqual(Object.keys(bodies), ['2026-11', '2026-12']);
-  assert.equal(bodies['2026-11'].v, 2);
+  assert.equal(bodies['2026-11'].v, 3);
   assert.deepEqual(Object.keys(bodies['2026-11'].days), ['2026-11-01', '2026-11-02']);
-  assert.deepEqual(bodies['2026-11'].days['2026-11-01'].claude.opus, [20, 10, 200, 2, 4, 4]);
-  assert.deepEqual(bodies['2026-11'].days['2026-11-01'].codex.gpt, ROW);
+  assert.deepEqual(labelled(bodies['2026-11'].days['2026-11-01'].claude, 'opus'), [20, 10, 200, 2, 4, 4]);
+  assert.deepEqual(labelled(bodies['2026-11'].days['2026-11-01'].codex, 'gpt'), ROW);
   assert.deepEqual(buildArchiveBodies([]), {});
-  assert.equal(Object.getOwnPropertyDescriptor(buildArchiveBodies([bucket(DAY0, { model: '__proto__' })])['2026-11'].days['2026-11-01'].claude, '__proto__').value.length, 6);
+  assert.equal(labelled(buildArchiveBodies([bucket(DAY0, { model: '__proto__' })])['2026-11'].days['2026-11-01'].claude, '__proto__').length, 6);
 });
 
 test('月块超 60 KiB 先拆半月（-1：1–15 日，-2：16–31 日），总量不变', () => {
@@ -282,12 +284,12 @@ test('readArchiveRecord：id 与 v 要对，日期要在 id 的月份与分块�
   const read = readArchiveRecord(record('dev-1/2026-11', good));
   assert.equal(read.sourceId, 'dev-1');
   assert.deepEqual(read.days.map(d => [d.date, d.start, d.rows.length]), [['2026-11-03', Date.UTC(2026, 10, 3), 1]]);
-  assert.deepEqual(read.days[0].rows[0], { agent: 'claude', model: 'opus', input: 10, output: 5, cacheRead: 100, cacheWrite: 1, turns: 2, reportedTurns: 2 });
+  assert.deepEqual(read.days[0].rows[0], { agent: 'claude', api: null, asked: null, served: null, same: null, model: 'opus', input: 10, output: 5, cacheRead: 100, cacheWrite: 1, turns: 2, reportedTurns: 2 }, 'v2 的行按旧标签读');
   assert.deepEqual(readArchiveRecord(record('dev-1/2026-11-2', good)).days, [], '16–31 日的块里不收 3 日');
   assert.equal(readArchiveRecord(record('dev-1/2026-11-w1', good)).days.length, 1);
   assert.equal(readArchiveRecord(record('dev-1/2026-11-w5', { v: 2, days: { '2026-11-30': { a: { b: ROW } } } })).days.length, 1);
   for (const id of ['dev-1/2026-11-3', 'dev-1/2026-11-w6', 'dev 1/2026-11', '2026-11', 'a/b/2026-11', `${'x'.repeat(101)}/2026-11`, 'dev/2026-1']) assert.equal(readArchiveRecord(record(id, good)), null, id);
-  assert.equal(readArchiveRecord(record('dev-1/2026-11', { ...good, v: 1 })), null);
+  for (const v of [1, 4]) assert.equal(readArchiveRecord(record('dev-1/2026-11', { ...good, v })), null);
   assert.equal(readArchiveRecord(record('dev-1/2026-11', { v: 2, days: null })), null);
   assert.equal(readArchiveRecord(null), null);
 });
@@ -303,12 +305,12 @@ test('48 小时曲线：30 分钟槽位，窗口对齐并含 now 所在的槽，
     bucket(NOW - 48 * 3_600_000 + 25 * 60_000),               // 窗口第一槽
     bucket(NOW - 49 * 3_600_000),                             // 窗口外
   ], { now: NOW });
-  assert.equal(body.v, 2);
+  assert.equal(body.v, 3);
   assert.equal(body.slotMs, 1_800_000);
   assert.equal(body.windowEnd, Date.UTC(2026, 10, 20, 10, 30));
   assert.equal(body.windowStart, body.windowEnd - 48 * 3_600_000);
   assert.deepEqual(Object.keys(body.slots), [String(body.windowStart), String(Date.UTC(2026, 10, 20, 10, 0))]);
-  assert.deepEqual(body.slots[Date.UTC(2026, 10, 20, 10, 0)].claude.opus, [20, 10, 200, 2, 4, 4]);
+  assert.deepEqual(labelled(body.slots[Date.UTC(2026, 10, 20, 10, 0)].claude, 'opus'), [20, 10, 200, 2, 4, 4]);
   assert.ok(Object.keys(body.slots).length <= 96);
 });
 
@@ -322,7 +324,7 @@ test('48 小时曲线超限先降成 60 分钟槽，再合并小模型', () => {
   assert.ok(bytes(small) <= 24_000);
   const tiny = buildTodayBody(buckets, { now: NOW, maxBytes: 6_000 });
   assert.ok(bytes(tiny) <= 6_000 && JSON.stringify(tiny).includes('"other"'));
-  const total = body => Object.values(body.slots).flatMap(a => Object.values(a)).flatMap(m => Object.values(m)).reduce((n, r) => n + r[0], 0);
+  const total = body => Object.values(body.slots).flatMap(a => Object.values(a)).flat().reduce((n, r) => n + r.n[0], 0);
   assert.equal(total(tiny), total(small));
   assert.equal(total(small), 10 * buckets.length);
 });
@@ -335,10 +337,11 @@ test('readTodayRecord：窗口与槽位必须对齐，坏槽位和坏计数丢�
   assert.equal(read.slotMs, 1_800_000);
   assert.deepEqual(read.slots.map(slot => [slot.start, slot.rows.length]), [[Date.UTC(2026, 10, 20, 10, 0), 1]]);
   const start = body.windowStart;
-  const messy = readTodayRecord(record('dev-1', { slots: { [start]: { a: { b: ROW } }, [start + 1]: { a: { b: ROW } }, [start - 1_800_000]: { a: { b: ROW } }, [body.windowEnd]: { a: { b: ROW } }, x: { a: { b: ROW } }, [start + 1_800_000]: { a: { b: [1, 2] } } } }));
+  const one = n => ({ a: [{ m: 'b', n }] });
+  const messy = readTodayRecord(record('dev-1', { slots: { [start]: one(ROW), [start + 1]: one(ROW), [start - 1_800_000]: one(ROW), [body.windowEnd]: one(ROW), x: one(ROW), [start + 1_800_000]: one([1, 2]) } }));
   assert.deepEqual(messy.slots.map(slot => [slot.start, slot.rows.length]), [[start, 1], [start + 1_800_000, 0]]);
   for (const id of ['a/b', 'a b', '']) assert.equal(readTodayRecord(record(id)), null, id);
-  for (const over of [{ v: 1 }, { slotMs: 600_000 }, { slotMs: 'x' }, { windowStart: start + 1 }, { windowEnd: start }, { slots: null }, { windowEnd: 'x' }]) assert.equal(readTodayRecord(record('dev-1', over)), null, JSON.stringify(over));
+  for (const over of [{ v: 1 }, { v: 4 }, { slotMs: 600_000 }, { slotMs: 'x' }, { windowStart: start + 1 }, { windowEnd: start }, { slots: null }, { windowEnd: 'x' }]) assert.equal(readTodayRecord(record('dev-1', over)), null, JSON.stringify(over));
   assert.equal(readTodayRecord({ id: 'dev-1', body: { ...body, slotMs: 3_600_000 } }), null, '60 分钟槽的窗口得对齐到整点');
   assert.equal(readTodayRecord(null), null);
 });
@@ -540,7 +543,7 @@ test('体积兜底：多 Agent 多槽位合并小模型也放不下时，每格�
   for (let d = 0; d < 28; d++) for (let a = 0; a < 400; a++) buckets.push(bucket(DAY0 + d * DAY_MS, { agent: `agent-${a}-${'x'.repeat(20)}`, model: 'm' }));
   const bodies = buildArchiveBodies(buckets);
   assert.ok(Object.values(bodies).every(body => bytes(body) <= 60 * 1024));
-  assert.ok(Object.values(bodies).some(body => JSON.stringify(body).includes('"_":{"_":[')));
+  assert.ok(Object.values(bodies).some(body => JSON.stringify(body).includes('"_":[{"m":"_"')));
   assert.deepEqual(sumRows(bodies), ROW.map(v => v * 28 * 400));
   const today = [];
   for (let i = 0; i < 288; i++) for (let a = 0; a < 400; a++) today.push(bucket(NOW - 47 * 3_600_000 + i * BUCKET_MS + 1, { agent: `agent-${a}-${'x'.repeat(20)}`, model: 'm' }));
@@ -548,7 +551,7 @@ test('体积兜底：多 Agent 多槽位合并小模型也放不下时，每格�
   assert.ok(bytes(body) <= 60 * 1024);
   assert.equal(body.slotMs, 3_600_000);
   assert.ok(Object.values(body.slots).every(agents => Object.keys(agents).join() === '_'));
-  assert.equal(Object.values(body.slots).flatMap(a => Object.values(a._)).reduce((n, row) => n + row[0], 0), 10 * today.length);
+  assert.equal(Object.values(body.slots).flatMap(a => a._).reduce((n, row) => n + row.n[0], 0), 10 * today.length);
   assert.throws(() => buildArchiveBodies([bucket(DAY0)], { maxBytes: 30 }), /预算/);
   assert.throws(() => buildTodayBody([bucket(NOW)], { now: NOW, maxBytes: 30 }), /预算/);
   assert.deepEqual(buildArchiveBodies([], { maxBytes: 30 }), {});
@@ -598,4 +601,260 @@ test('榜单 sources：每个（作者, 来源）一份合计，本机的标 loc
   assert.deepEqual(aggregateLeaderboard({ from: day, to: instant, localBuckets: [one(day + 1000, 100)] }).sources, []);
   const failed = aggregateLeaderboard({ selfAuthor: A, selfSourceId: 'machine-1', from: day, to: instant, localBuckets: null, dayRecords: [dayRec(A, 'machine-1', [one(day + 1000, 100)])] });
   assert.deepEqual(failed.sources.map(s => [s.sourceId, s.local, s.input]), [['machine-1', false, 100]], '本机用量没读到：不交出本机来源，自己发布过的副本照常算');
+});
+
+// ——— 分层的用量行：service、asked、served ———
+
+const SERVICE = 'coda://openai-responses/11111111-2222-3333-4444-555555555555', OTHER_SERVICE = 'coda://anthropic-messages/66666666-7777-8888-9999-000000000000';
+const counts0 = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, turns: 0, reportedTurns: 0 };
+// 分层的桶：没有旧标签；Token 在带 served 的行上，轮数在请求行（served 为 null）上。
+const layered = (start, over = {}) => ({ start, person: '', agent: 'codex', service: SERVICE, asked: 'gpt-5', served: null, ...counts0, ...over });
+const tokensOf = input => ({ input, output: 0, cacheRead: 0, cacheWrite: 0 });
+const turnsOf = n => ({ turns: n, reportedTurns: n });
+
+test('拉桶：同桶内 service、asked、served、person 不同的行各自保留，不互相覆盖', async () => {
+  const rows = [
+    layered(DAY0, { ...turnsOf(1) }),
+    layered(DAY0, { served: 'gpt-5-2025', ...tokensOf(10) }),
+    layered(DAY0, { service: OTHER_SERVICE, ...turnsOf(1) }),
+    layered(DAY0, { asked: 'gpt-5-mini', served: 'gpt-5-mini', ...tokensOf(3) }),
+    layered(DAY0, { person: A, served: 'gpt-5-2025', ...tokensOf(7) }),
+    layered(DAY0, { agent: 'claude', ...turnsOf(1) }),
+    bucket(DAY0, { person: '' }),
+  ];
+  const { query } = service(rows);
+  const { buckets } = await fetchUsageBuckets(query, { from: DAY0, to: DAY0 + BUCKET_MS });
+  assert.equal(buckets.length, rows.length);
+  const again = await fetchUsageBuckets(service([...rows].reverse()).query, { from: DAY0, to: DAY0 + BUCKET_MS });
+  assert.deepEqual(again.buckets, buckets, '返回顺序与来源的先后无关');
+});
+
+test('本机行按身份归属：person 是当前根身份或空字符串的算，别的身份的不算', () => {
+  const list = [layered(DAY0, { person: A }), layered(DAY0, { person: '' }), layered(DAY0, { person: B }), bucket(DAY0 + BUCKET_MS), layered(DAY0 + 2 * BUCKET_MS, { person: A, served: 'x' })];
+  assert.deepEqual(ownBuckets(list, A).map(row => [row.person ?? null, row.start - DAY0]), [[A, 0], ['', 0], [null, BUCKET_MS], [A, 2 * BUCKET_MS]]);
+  assert.deepEqual(ownBuckets(list, null).map(row => row.person ?? ''), ['', '']);
+});
+
+test('型号名：served，没有取归并名 same，再没有取 asked，再没有取旧标签', () => {
+  assert.equal(modelName({ asked: 'a', served: 's', model: null }), 's');
+  assert.equal(modelName({ asked: 'a', served: null, model: null }), 'a');
+  assert.equal(modelName({ asked: null, served: null, model: 'label' }), 'label');
+  assert.equal(modelName({ asked: 'a', served: 's', same: 'u' }), 's', '实际型号优先');
+  assert.equal(modelName({ asked: 'a', served: null, same: 'u' }), 'u');
+  assert.equal(modelName({ asked: null, served: null, model: null, api: 'openai-responses' }), 'openai-responses');
+  assert.equal(serviceKind(SERVICE), 'openai-responses');
+  assert.equal(serviceKind(null), null);
+});
+
+test('型号行：同一型号名经两个请求项合成一行，展开得到两项；旧标签与分层行同名也合；服务的 UUID 不出现', () => {
+  const rows = [
+    layered(DAY0, { served: 'gpt-5-2025', ...tokensOf(10) }),
+    layered(DAY0, { asked: 'gpt-5-latest', served: 'gpt-5-2025', ...tokensOf(5) }),
+    layered(DAY0, { service: OTHER_SERVICE, asked: 'gpt-5-2025', ...tokensOf(2) }),   // 没有 served：型号名取 asked，同名合并
+    bucket(DAY0, { model: 'gpt-5-2025', input: 1, output: 0, cacheRead: 0, cacheWrite: 0, turns: 0, reportedTurns: 0 }),
+  ];
+  const { models, totalTokens } = summarizeBuckets(rows, { from: DAY0, to: DAY0 + BUCKET_MS });
+  assert.equal(totalTokens, 18);
+  assert.deepEqual(models.map(m => [m.model, m.totalTokens]), [['gpt-5-2025', 18]]);
+  assert.deepEqual(models[0].items.map(item => [item.asked, item.api, item.totalTokens]),
+    [['gpt-5', 'openai-responses', 10], ['gpt-5-latest', 'openai-responses', 5], ['gpt-5-2025', 'anthropic-messages', 2], ['gpt-5-2025', null, 1]]);
+  assert.ok(!JSON.stringify(models).includes('11111111'));
+});
+
+test('轮数：请求行的轮数记到同一请求项下 Token 最多的型号行，同一轮不在两行各算一次', () => {
+  const rows = [
+    layered(DAY0, { ...turnsOf(3) }),
+    layered(DAY0, { served: 'gpt-5-2025', ...tokensOf(10) }),
+    layered(DAY0, { served: 'gpt-5-mini', ...tokensOf(4) }),
+    layered(DAY0, { asked: 'o3', ...turnsOf(2), ...tokensOf(6) }),   // 请求行自己带 Token：轮数留在它自己身上
+  ];
+  const sum = summarizeBuckets(rows, { from: DAY0, to: DAY0 + BUCKET_MS });
+  assert.equal(sum.turns, 5);
+  assert.deepEqual(sum.models.map(m => [m.model, m.totalTokens, m.turns]), [['gpt-5-2025', 10, 3], ['o3', 6, 2], ['gpt-5-mini', 4, 0]]);
+  assert.deepEqual(sum.models[0].items.map(item => [item.asked, item.turns]), [['gpt-5', 3]]);
+  assert.equal(sum.models.reduce((n, m) => n + m.turns, 0), sum.turns);
+  assert.deepEqual(summarizeBuckets([layered(DAY0, { ...turnsOf(2) })], { from: DAY0, to: DAY0 + BUCKET_MS }).models.map(m => [m.model, m.turns]), [['gpt-5', 2]], '请求项下没有型号行：轮数留在请求行');
+  const settled = settleTurns([{ agent: 'a', api: null, asked: 'x', served: null, model: null, ...counts0, ...turnsOf(1) }, { agent: 'a', api: null, asked: 'x', served: 's', model: null, ...counts0, input: 1 }]);
+  assert.deepEqual(settleTurns(settled), settled, '已落定的行再落定不变');
+});
+
+test('新版签名记录：生成后读回得到同样的聚合；不带服务的 UUID；旧标签行照原样', () => {
+  const at = DAY0 + 3_600_000;
+  const list = [
+    layered(at, { ...turnsOf(3) }), layered(at, { served: 'gpt-5-2025', ...tokensOf(10), output: 4 }), layered(at + BUCKET_MS, { served: 'gpt-5-mini', ...tokensOf(3) }),
+    layered(at, { service: OTHER_SERVICE, asked: 'gpt-5-2025', ...tokensOf(2), ...turnsOf(1) }),
+    bucket(at, { agent: 'claude' }), layered(at, { agent: 'claude', model: undefined, asked: 'opus', ...turnsOf(1) }),
+  ];
+  const body = buildArchiveBodies(list)['2026-11'], today = buildTodayBody(list, { now: at + 5 * 60_000 });
+  const text = JSON.stringify([body, today]);
+  assert.ok(!text.includes('11111111') && !text.includes('coda://'), '服务引用不出这台机器，只留接口种类');
+  assert.ok(text.includes('"i":"openai-responses"'));
+  const expected = summarizeBuckets(list, { from: DAY0, to: DAY0 + DAY_MS });
+  const fromRecords = read => { const tally = new Tally(); for (const row of read) tally.add(row); return tally.result(); };
+  const day = readArchiveRecord({ id: 'dev/2026-11', body });
+  assert.deepEqual(fromRecords(day.days.flatMap(d => d.rows)), expected);
+  const slots = readTodayRecord({ id: 'dev', body: today });
+  assert.deepEqual(fromRecords(slots.slots.flatMap(slot => slot.rows)), expected);
+  assert.ok(expected.models.some(m => m.model === 'opus' && m.items[0].api === null), '旧标签行还是旧标签');
+});
+
+test('v2 与旧版 coda/token-usage 仍可读：旧记录按旧标签显示', () => {
+  const day = Date.UTC(2026, 10, 20), at = day + 3_600_000, args = { selfAuthor: A, selfSourceId: 'me', friends: [{ author: B }], from: day, to: day + DAY_MS };
+  const v2 = { author: B, kind: 'coda/token-day', id: 'old-dev/2026-11', version: 1, body: { v: 2, days: { '2026-11-20': { claude: { opus: [10, 5, 100, 1, 2, 2], haiku: [1, 0, 0, 0, 1, 1] } } } } };
+  const v2today = { author: B, kind: 'coda/token-today', id: 'old-dev', version: 1, body: { v: 2, slotMs: 1_800_000, windowStart: day, windowEnd: day + DAY_MS, slots: { [at]: { claude: { opus: [20, 0, 0, 0, 1, 1] } } } } };
+  const usage = { author: B, kind: 'coda/token-usage', id: '2026-11-20/legacy-dev', version: 1, body: { blocks: { '01:00': { claude: { sonnet: { input: 7, output: 0, cacheRead: 0, cacheWrite: 0, turns: 1, reportedTurns: 1 } } } } } };
+  const entry = records => aggregateLeaderboard({ ...args, ...records }).entries.find(e => e.author === B);
+  assert.deepEqual(entry({ dayRecords: [v2] }).models.map(m => [m.model, m.input, m.items.map(item => [item.asked, item.api])]), [['opus', 10, [['opus', null]]], ['haiku', 1, [['haiku', null]]]]);
+  assert.equal(entry({ todayRecords: [v2today] }).input, 20);
+  assert.deepEqual(entry({ legacyUsageRecords: [usage] }).models.map(m => [m.model, m.input]), [['sonnet', 7]]);
+});
+
+test('新版记录读取：坏行丢掉（旧标签与 asked/served 同用、没有任何名字、计数不合格、接口种类乱写、名字类型或长度不对）；只带服务的行保留', () => {
+  const good = { a: 'gpt-5', s: 'gpt-5-2025', i: 'openai-responses', n: ROW };
+  const bad = [{ a: 'x', m: 'label', n: ROW }, { n: ROW }, { a: 'x', n: [1, 2] }, { a: 'x', i: 'Bad Kind!', n: ROW }, { a: '', n: ROW }, { a: 'x\u0000y', n: ROW }, { a: 'x'.repeat(201), n: ROW }, { a: 5, n: ROW }, null, 'x'];
+  const body = { v: 3, days: { '2026-11-03': { codex: [good, { m: 'label', n: ROW }, { s: 'only-served', n: ROW }, { i: 'openai-responses', n: ROW }, ...bad], claude: { opus: ROW } } } };
+  const read = readArchiveRecord({ id: 'dev/2026-11', body });
+  assert.deepEqual(read.days[0].rows.map(row => [row.agent, row.asked, row.served, row.api, row.model]),
+    [['codex', 'gpt-5', 'gpt-5-2025', 'openai-responses', null], ['codex', null, null, null, 'label'], ['codex', null, 'only-served', null, null], ['codex', null, null, 'openai-responses', null]]);
+});
+
+test('超过预算：新结构逐级折叠到 other 再只留总量，结果确定、不超限、总量（含轮数）不变', () => {
+  const list = [];
+  for (let d = 0; d < 3; d++) for (let m = 0; m < 700; m++) list.push(layered(DAY0 + d * DAY_MS, { asked: `req-${m}-${'x'.repeat(24)}`, served: `model-${m}-${'y'.repeat(24)}`, ...tokensOf(m + 1) }),
+    layered(DAY0 + d * DAY_MS, { asked: `req-${m}-${'x'.repeat(24)}`, ...turnsOf(1) }));
+  const bodies = buildArchiveBodies(list, { maxBytes: 20_000 });
+  assert.ok(Object.values(bodies).every(body => bytes(body) <= 20_000));
+  assert.deepEqual(buildArchiveBodies([...list].reverse(), { maxBytes: 20_000 }), bodies, '折叠与输入顺序无关');
+  assert.deepEqual(buildArchiveBodies(list, { maxBytes: 20_000 }), bodies);
+  const rows = Object.values(bodies).flatMap(body => Object.values(body.days)).flatMap(agents => Object.values(agents)).flat();
+  assert.ok(rows.some(row => row.m === 'other'), '小型号并进 other');
+  assert.deepEqual(sumRows(bodies), [3 * 700 * 701 / 2, 0, 0, 0, 3 * 700, 3 * 700]);
+  const total = buildArchiveBodies(list, { maxBytes: 2_000 });
+  assert.ok(Object.values(total).every(body => bytes(body) <= 2_000));
+  assert.deepEqual(sumRows(total), sumRows(bodies));
+});
+
+// 本机聚合与两种签名记录读回后的聚合：型号明细（含 Token 与轮数）要一致。
+const viaRecords = (list, from, to, now) => {
+  const fromRows = rows => { const tally = new Tally(); for (const row of rows) tally.add(row); return tally.result(); };
+  const archive = Object.entries(buildArchiveBodies(list)).flatMap(([month, body]) => readArchiveRecord({ id: `dev/${month}`, body }).days.flatMap(day => day.rows.map(row => ({ ...row, start: day.start }))));
+  const slots = readTodayRecord({ id: 'dev', body: buildTodayBody(list, { now }) }).slots.flatMap(slot => slot.rows);
+  return { archive: fromRows(archive), today: fromRows(slots), local: summarizeBuckets(list, { from, to }) };
+};
+
+test('轮数只在读取端的聚合里分配：同一请求项跨两个曲线槽、两个日块，各槽型号不同，本机与两种记录读回的型号明细一致，记录里保留只有轮数的请求行', () => {
+  const t1 = DAY0 + 3_600_000, t2 = DAY0 + DAY_MS + 3_600_000;   // 两个 UTC 日、两个 30 分钟槽，都在 now 前 48 小时内
+  const list = [
+    layered(t1, turnsOf(2)), layered(t1, { served: 'model-a', ...tokensOf(10) }),
+    layered(t2, turnsOf(3)), layered(t2, { served: 'model-b', ...tokensOf(20) }),
+  ];
+  const now = t2 + 5 * 60_000, body = buildArchiveBodies(list)['2026-11'], today = buildTodayBody(list, { now });
+  const requestRows = rows => rows.filter(row => row.a === 'gpt-5' && row.s === undefined);
+  assert.deepEqual(Object.values(body.days).flatMap(agents => requestRows(agents.codex)).map(row => row.n[4]), [2, 3], '日块里请求行的轮数原样保留');
+  assert.deepEqual(Object.values(today.slots).flatMap(agents => requestRows(agents.codex)).map(row => row.n[4]), [2, 3], '曲线槽里也是');
+  const { archive, today: fromToday, local } = viaRecords(list, DAY0, DAY0 + 3 * DAY_MS, now);
+  assert.deepEqual(local.models.map(m => [m.model, m.totalTokens, m.turns]), [['model-b', 20, 5], ['model-a', 10, 0]], '窗口内 Token 最多的型号拿全部轮数');
+  assert.deepEqual(archive.models, local.models);
+  assert.deepEqual(fromToday.models, local.models);
+  assert.equal(local.turns, 5);
+});
+
+test('asked、served、旧标签是身份：只有内部空白不同的两个 asked 往返后仍是两项，记录里原样保存', () => {
+  const list = [layered(DAY0, { asked: 'gpt  5', ...tokensOf(1) }), layered(DAY0, { asked: 'gpt 5', ...tokensOf(2) }), layered(DAY0, { agent: 'claude', model: ' pad  ded ', asked: null, service: null, ...tokensOf(4) })];
+  const now = DAY0 + 5 * 60_000, { archive, today, local } = viaRecords(list, DAY0, DAY0 + DAY_MS, now);
+  assert.deepEqual(local.models.map(m => [m.model, m.totalTokens]), [[' pad  ded ', 4], ['gpt 5', 2], ['gpt  5', 1]]);
+  assert.deepEqual(archive.models, local.models);
+  assert.deepEqual(today.models, local.models);
+});
+
+test('只带 service 的行：两种记录都保留（Token 不丢），明细里显示接口种类名，往返一致', () => {
+  const list = [layered(DAY0, { asked: null, ...tokensOf(50), ...turnsOf(1) }), layered(DAY0, { asked: 'gpt-5', served: 'gpt-5-2025', ...tokensOf(5) })];
+  const now = DAY0 + 5 * 60_000, { archive, today, local } = viaRecords(list, DAY0, DAY0 + DAY_MS, now);
+  assert.equal(local.totalTokens, 55);
+  assert.deepEqual(local.models.map(m => [m.model, m.totalTokens, m.turns, m.items.map(item => [item.asked, item.api])]),
+    [['openai-responses', 50, 1, [[null, 'openai-responses']]], ['gpt-5-2025', 5, 0, [['gpt-5', 'openai-responses']]]]);
+  assert.deepEqual(archive.models, local.models);
+  assert.deepEqual(today.models, local.models);
+  assert.equal(archive.totalTokens, 55);
+});
+
+// ——— 同型号映射（Magpie）：只套本机行，展开仍是原请求项 ———
+
+const SERVICES = [SERVICE, OTHER_SERVICE], FOREIGN = 'coda://openai-responses/99999999-8888-7777-6666-555555555555';   // 本机 Magpie 插件提供的服务；另一台的 Magpie 的服务
+const NAMES = { 'group/ds-flash': 'deepseek-v4.1-flash', 'opencode-go/deepseek-v4.1-flash': 'deepseek-v4.1-flash', 'auto/gpt-5': 'gpt-5' };
+const viaMagpie = (start, asked, over = {}) => layered(start, { asked, ...tokensOf(10), ...turnsOf(1), ...over });
+
+test('markSame：只套带服务、没有 served、asked 在映射里的本机行；有 served、旧标签、没有服务、不在映射里的原样；不改原桶', () => {
+  const rows = [viaMagpie(DAY0, 'group/ds-flash'), viaMagpie(DAY0, 'group/ds-flash', { served: 'real' }), viaMagpie(DAY0, 'group/ds-flash', { service: null }),
+    bucket(DAY0, { model: 'group/ds-flash' }), viaMagpie(DAY0, 'other/model'), viaMagpie(DAY0, 'constructor'), viaMagpie(DAY0, '__proto__'), viaMagpie(DAY0, 'group/ds-flash', { service: FOREIGN })];
+  const marked = markSame(rows, NAMES, SERVICES);
+  assert.deepEqual(marked.map(row => row.same), ['deepseek-v4.1-flash', undefined, undefined, undefined, undefined, undefined, undefined, undefined], '别台的 Magpie 的服务，asked 命中也不套');
+  assert.deepEqual(markSame(rows, NAMES, []), rows, '不知道哪些是本机 Magpie 的服务：一个都不套');
+  assert.equal(rows[0].same, undefined);
+  assert.deepEqual(markSame(rows, {}, SERVICES), rows);
+  assert.deepEqual([needsSame(rows), needsSame(rows.slice(1, 4)), needsSame([])], [true, false, false]);
+});
+
+test('本机行套映射：同型号的请求项并成一个型号行，展开得到原来的 asked 与接口种类；有 served 的行不套', () => {
+  const rows = markSame([viaMagpie(DAY0, 'group/ds-flash'), viaMagpie(DAY0, 'opencode-go/deepseek-v4.1-flash', { service: OTHER_SERVICE, ...tokensOf(20) }), viaMagpie(DAY0, 'auto/gpt-5'),
+    viaMagpie(DAY0, 'group/ds-flash', { served: 'real-model', ...tokensOf(3) }), layered(DAY0, { asked: 'deepseek-v4.1-flash', ...tokensOf(5) })], NAMES, SERVICES);
+  const { models } = summarizeBuckets(rows, { from: DAY0, to: DAY0 + BUCKET_MS });
+  assert.deepEqual(models.map(m => [m.model, m.totalTokens]), [['deepseek-v4.1-flash', 35], ['gpt-5', 10], ['real-model', 3]]);
+  assert.deepEqual(models[0].items.map(item => [item.asked, item.api, item.totalTokens]),
+    [['opencode-go/deepseek-v4.1-flash', 'anthropic-messages', 20], ['group/ds-flash', 'openai-responses', 10], ['deepseek-v4.1-flash', 'openai-responses', 5]]);
+  assert.deepEqual(models[2].items.map(item => item.asked), ['group/ds-flash'], '有 served 的行不套，请求项还是 asked');
+  assert.ok(!JSON.stringify(models).includes('11111111'));
+});
+
+test('映射为空或不命中：结果与不映射完全相同', () => {
+  const rows = [viaMagpie(DAY0, 'group/ds-flash'), viaMagpie(DAY0, 'x/y', { served: 'z' }), bucket(DAY0)];
+  const plain = summarizeBuckets(rows, { from: DAY0, to: DAY0 + BUCKET_MS });
+  assert.deepEqual(summarizeBuckets(markSame(rows, {}, SERVICES), { from: DAY0, to: DAY0 + BUCKET_MS }), plain);
+  assert.deepEqual(summarizeBuckets(markSame(rows, { 'nothing/here': 'q' }, SERVICES), { from: DAY0, to: DAY0 + BUCKET_MS }), plain);
+});
+
+test('签名记录带归并名 u：asked、接口种类照旧，不混进 a 或 s；写出再读回，聚合与本机一样；没有归并的行不带 u', () => {
+  const at = DAY0 + 3_600_000;
+  const list = markSame([viaMagpie(at, 'group/ds-flash'), viaMagpie(at, 'opencode-go/deepseek-v4.1-flash', { service: OTHER_SERVICE }), viaMagpie(at, 'plain-model'),
+    viaMagpie(at, 'group/ds-flash', { served: 'real-model' })], NAMES, SERVICES);
+  const body = buildArchiveBodies(list)['2026-11'], today = buildTodayBody(list, { now: at + 5 * 60_000 });
+  const rows = body.days['2026-11-01'].codex;
+  assert.deepEqual(rows.map(row => [row.a, row.s ?? null, row.u ?? null, row.i]).sort((a, b) => (a[0] + a[1] < b[0] + b[1] ? -1 : 1)),
+    [['group/ds-flash', null, 'deepseek-v4.1-flash', 'openai-responses'], ['group/ds-flash', 'real-model', null, 'openai-responses'],
+      ['opencode-go/deepseek-v4.1-flash', null, 'deepseek-v4.1-flash', 'anthropic-messages'], ['plain-model', null, null, 'openai-responses']]);
+  const expected = summarizeBuckets(list, { from: DAY0, to: DAY0 + DAY_MS });
+  const fromRecords = read => { const tally = new Tally(); for (const row of read) tally.add(row); return tally.result(); };
+  assert.deepEqual(fromRecords(readArchiveRecord({ id: 'dev/2026-11', body }).days.flatMap(d => d.rows)), expected);
+  assert.deepEqual(fromRecords(readTodayRecord({ id: 'dev', body: today }).slots.flatMap(slot => slot.rows)), expected);
+  assert.deepEqual(expected.models.find(m => m.model === 'deepseek-v4.1-flash').items.map(item => item.asked).sort(), ['group/ds-flash', 'opencode-go/deepseek-v4.1-flash']);
+});
+
+test('读到别人记录里的 u 就用它；没有 u 的行不拿本机映射去套（映射只在 markSame 里套本机桶）', () => {
+  const at = DAY0 + 3_600_000, day = DAY0;
+  const line = (extra, n = [10, 0, 0, 0, 1, 1]) => ({ a: 'group/ds-flash', i: 'openai-responses', ...extra, n });
+  const record = rows => ({ author: B, kind: 'coda/token-day', id: 'dev-b/2026-11', version: 1, body: { v: 3, days: { '2026-11-01': { codex: rows } } } });
+  const board = aggregateLeaderboard({ selfAuthor: A, selfSourceId: 'me', friends: [{ author: B }], from: day, to: day + DAY_MS, localBuckets: markSame([viaMagpie(at, 'group/ds-flash')], NAMES, SERVICES),
+    dayRecords: [record([line({ u: 'their-name' }), line({}, [5, 0, 0, 0, 0, 0]), line({ s: 'real', u: 'ignored' }, [7, 0, 0, 0, 0, 0])])] });
+  assert.deepEqual(board.entries.find(entry => entry.author === A).models.map(m => m.model), ['deepseek-v4.1-flash']);
+  assert.deepEqual(board.entries.find(entry => entry.author === B).models.map(m => [m.model, m.totalTokens]).sort(), [['group/ds-flash', 5], ['real', 7], ['their-name', 10]].sort());
+  assert.deepEqual(board.entries.find(entry => entry.author === B).models.find(m => m.model === 'their-name').items.map(item => [item.asked, item.api]), [['group/ds-flash', 'openai-responses']]);
+  for (const bad of [{ u: '' }, { u: 5 }, { u: 'x'.repeat(201) }, { u: 'a\0b' }]) assert.equal(readArchiveRecord(record([line(bad)])).days[0].rows.length, 0, JSON.stringify(bad));
+  assert.equal(readArchiveRecord(record([{ m: 'label', u: 'x', n: [1, 0, 0, 0, 0, 0] }])).days[0].rows.length, 0, '旧标签行不带 u');
+});
+
+test('超出预算折叠小型号时按归并后的型号名算', () => {
+  const at = DAY0 + 3_600_000;
+  const list = markSame([viaMagpie(at, 'group/ds-flash', tokensOf(100)), viaMagpie(at, 'opencode-go/deepseek-v4.1-flash', tokensOf(100)), viaMagpie(at, 'tiny/model', tokensOf(1))], NAMES, SERVICES);
+  const small = buildTodayBody(list, { now: at, maxBytes: JSON.stringify(buildTodayBody(list, { now: at })).length - 10 });
+  const rows = Object.values(small.slots).flatMap(agents => Object.values(agents).flat());
+  assert.deepEqual(rows.map(row => row.u ?? row.m ?? row.a).sort(), ['deepseek-v4.1-flash', 'deepseek-v4.1-flash', 'other']);
+});
+
+test('不属于本机 Magpie 的服务的行：asked 命中映射也不归并，不进签名记录的归并名', () => {
+  const at = DAY0 + 3_600_000;
+  const list = markSame([viaMagpie(at, 'group/ds-flash'), viaMagpie(at, 'group/ds-flash', { service: FOREIGN, ...tokensOf(5) })], NAMES, SERVICES);
+  const { models } = summarizeBuckets(list, { from: DAY0, to: DAY0 + DAY_MS });
+  assert.deepEqual(models.map(m => [m.model, m.totalTokens, m.items.map(item => item.asked)]), [['deepseek-v4.1-flash', 10, ['group/ds-flash']], ['group/ds-flash', 5, ['group/ds-flash']]]);
+  const rows = buildArchiveBodies(list)['2026-11'].days['2026-11-01'].codex;
+  assert.deepEqual(rows.map(row => [row.a, row.u ?? null, row.n[0]]).sort((a, b) => a[2] - b[2]), [['group/ds-flash', null, 5], ['group/ds-flash', 'deepseek-v4.1-flash', 10]]);
 });

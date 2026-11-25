@@ -11,7 +11,9 @@ import { createGateway } from '../../../plugins/friends/lib/gateway.mjs';
 import { activate, deactivate } from '../../../plugins/token-board/main.mjs';
 
 const AUTHOR = `ed25519:${'a'.repeat(64)}`, FRIEND = `ed25519:${'b'.repeat(64)}`;
-const now = Date.now();
+// 时钟与时区都固定：榜单的「今天」按本机日历日算，而记录里的日、时钟键是 UTC，用真实时间或本机时区的话，当地午夜附近（以及东八区早晨）这些用例会随跑的时刻变红。
+process.env.TZ = 'UTC';
+const now = Date.parse('2026-03-18T10:07:30Z');
 const startOfBucket = at => Math.floor(at / 600_000) * 600_000;
 const counts = { input: 10, output: 5, cacheRead: 100, cacheWrite: 1, turns: 2, reportedTurns: 2 };
 const bucket = (start, over = {}) => ({ start, agent: 'claude', model: 'opus', ...counts, ...over });
@@ -23,7 +25,7 @@ const dayKind = 'coda/token-day', todayKind = 'coda/token-today', usageKind = 'c
 const kindsOf = list => list.map(p => p.kind);
 // 把时钟固定在 now：同一个用例里连续同步，曲线窗口不会因为真实时间跨过 :00 / :30 而滚动。
 const freeze = t => { mock.timers.enable({ apis: ['Date'], now }); t.after(() => mock.timers.reset()); };
-const SOCIAL = 'friends/social@1';
+const SOCIAL = 'friends/social@1', SAME = 'magpie/models@1';
 const gone = code => Object.assign(new Error(`没有好友网关：${code}`), { code });
 const retracts = host => host.retractCalls.map(call => [call.kind, call.id]);
 
@@ -34,6 +36,9 @@ function fake({ settings = {}, usage = [], records = [], friends, state } = {}) 
     calls, published, attempts, retractCalls, queued, touched, views, records,
     usage,
     friends: friends ?? [{ node: 'n1', author: FRIEND, status: 'bound' }],
+    sameNames: undefined,      // 本机 Magpie 插件给的映射 { [asked]: 名字 }；undefined 是没装 Magpie 插件，Error 是 names 查询失败
+    sameServices: ['coda://openai-responses/11111111-2222-3333-4444-555555555555'],   // 本机 Magpie 插件提供的服务（用量行里 tagged 用的那个）
+    sameReads: 0,              // names 查询读了几次
     machine: undefined,        // 本机的机器 ID；Error 表示读不到
     gateway: true,             // 好友插件在不在
     listError: null,           // 非空就让列出好友网关抛它
@@ -60,6 +65,10 @@ function fake({ settings = {}, usage = [], records = [], friends, state } = {}) 
       list: async (kind, filter) => {
         touched.add(kind);
         assert.deepEqual(filter, { scope: 'local' });
+        if (kind === SAME) {
+          if (host.sameNames === undefined) throw gone('not_found');
+          return [{ id: 'magpie-1' }];
+        }
         if (kind === 'coda/machine@1') {
           if (host.machine instanceof Error) throw host.machine;
           return host.machine ? [{ id: 'other-machine', local: false }, { id: host.machine, local: true }] : [];
@@ -69,9 +78,16 @@ function fake({ settings = {}, usage = [], records = [], friends, state } = {}) 
         const status = { author: host.author, certState: host.author ? host.certState : 'no_identity', friendCount: host.friends.length, pendingCount: queued.length, pausedKinds: host.pausedKinds };
         return host.gateway ? [{ id: 'local', status }] : [];
       },
-      query: async (ref, operation, input) => {
+      query: async (ref, operation, input, options) => {
         touched.add(ref.kind);
         calls.push([ref.kind, operation, input]);
+        if (ref.kind === SAME) {
+          assert.deepEqual([ref, operation, input], [{ kind: SAME, id: 'magpie-1' }, 'names', {}]);
+          assert.ok(options.timeout > 0, '读映射要有期限');
+          host.sameReads += 1;
+          if (host.sameNames instanceof Error) throw host.sameNames;
+          return { names: host.sameNames, services: host.sameServices };
+        }
         if (ref.kind === 'coda/usage@1') return { buckets: host.usage.filter(b => b.start >= input.from && b.start < input.to), truncated: false };
         assert.deepEqual(ref, { kind: SOCIAL, id: 'local' });
         if (operation === 'friends') {
@@ -189,10 +205,10 @@ test('分享开着：经网关发布月块日归档与 48 小时曲线（只给 
   const [day, today] = host.published;
   assert.equal(day.id, `${sourceId}/${monthOf(at)}`);
   assert.deepEqual(day.body, buildArchiveBodies([bucket(at)])[monthOf(at)]);
-  assert.deepEqual(day.body.days[new Date(at).toISOString().slice(0, 10)].claude.opus, [10, 5, 100, 1, 2, 2]);
+  assert.deepEqual(day.body.days[new Date(at).toISOString().slice(0, 10)].claude.find(row => row.m === 'opus').n, [10, 5, 100, 1, 2, 2]);
   assert.equal(today.id, sourceId);
   assert.equal(today.body.slotMs, 1_800_000);
-  assert.deepEqual(today.body.slots[Math.floor(at / 1_800_000) * 1_800_000].claude.opus, [10, 5, 100, 1, 2, 2]);
+  assert.deepEqual(today.body.slots[Math.floor(at / 1_800_000) * 1_800_000].claude.find(row => row.m === 'opus').n, [10, 5, 100, 1, 2, 2]);
   assert.equal(page.last('status').syncState, 'synced');
   // 再同步：网关报已同步过（skipped），没有新写入。
   page.tell({ type: 'sync' });
@@ -616,7 +632,7 @@ test('分享时月块拆法变了，同月不再用的旧块被逐条撤回', as
   mock.timers.enable({ apis: ['Date'], now: at });
   t.after(() => mock.timers.reset());
   const big = [];
-  for (let d = 1; d <= 20; d++) for (let m = 0; m < 60; m++) big.push(bucket(Date.UTC(2026, 10, d, 1), { model: `model-${m}-${'x'.repeat(30)}` }));
+  for (let d = 1; d <= 20; d++) for (let m = 0; m < 50; m++) big.push(bucket(Date.UTC(2026, 10, d, 1), { model: `model-${m}-${'x'.repeat(30)}` }));
   const host = fake({ state, settings: { 'token-board.share': true }, usage: [bucket(Date.UTC(2026, 10, 1, 1))] });
   activate(host.coda);
   const page = await openAndSync(host);
@@ -808,6 +824,7 @@ test('撤回没完成（排队、证书过期、出错）：保留本机索引�
 // ——— 榜单 ———
 
 test('页面取榜单：本机用量、经网关按作者翻页读记录（沿 cursor）、不发名片查询、截断标记', async t => {
+  freeze(t);
   const state = mkdir(t), at = startOfBucket(now), clock = new Date(at).toISOString().slice(11, 16), day = new Date(at).toISOString().slice(0, 10);
   const block = { blocks: { [clock]: { codex: { gpt: { input: 1000, output: 0, cacheRead: 0, cacheWrite: 0, turns: 4, reportedTurns: 4 } } } } };
   const host = fake({ state, usage: [bucket(at)], records: [
@@ -846,6 +863,159 @@ test('页面取榜单：本机用量、经网关按作者翻页读记录（沿 c
   assert.ok(social.some(([, , input]) => input.kind === dayKind && input.author === AUTHOR), '自己的也读');
 });
 
+// 本机桶按 person（这台后端的根身份）归属：当前身份与无身份（空字符串）的行算当前作者的，别的身份的行不算，也不进以它签名的记录。
+const OTHER = `ed25519:${'c'.repeat(64)}`;
+const tagged = (at, person, over = {}) => bucket(at, { person, service: 'coda://openai-responses/11111111-2222-3333-4444-555555555555', asked: 'gpt-5', served: null, model: undefined, input: 1000, output: 0, cacheRead: 0, cacheWrite: 0, ...over });
+
+test('本机用量按身份归属：别的 person 的行不计入当前作者，页面概览、榜单与曲线都一样；无身份的行照算', async t => {
+  freeze(t);
+  const state = mkdir(t), at = startOfBucket(now);
+  const host = fake({ state, usage: [tagged(at, AUTHOR), tagged(at, ''), tagged(at, OTHER, { input: 50_000 }), tagged(at, AUTHOR, { served: 'gpt-5-2025', input: 20 })] });
+  activate(host.coda);
+  const page = host.open();
+  page.tell({ type: 'board', range: 'today', id: 1 });
+  const board = await page.waitFor('board');
+  assert.equal(board.local.input, 2020, '页面概览：自己的、无身份的算，别人的 50000 不算');
+  assert.equal(board.sources.find(source => source.local).input, 2020);
+  assert.equal(board.curve.reduce((n, slot) => n + slot.input, 0), 2020);
+  assert.deepEqual(board.local.models.map(m => [m.model, m.input]), [['gpt-5', 2000], ['gpt-5-2025', 20]]);
+});
+
+test('本机用量按身份归属：身份读不到时没有作者可归属，本机统计照常（不按身份切）', async t => {
+  freeze(t);
+  const state = mkdir(t), at = startOfBucket(now);
+  const host = fake({ state, usage: [tagged(at, AUTHOR), tagged(at, OTHER)] });
+  host.gateway = false;
+  activate(host.coda);
+  const page = host.open();
+  page.tell({ type: 'board', range: 'today', id: 1 });
+  assert.equal((await page.waitFor('board')).local.input, 2000);
+});
+
+test('分享：以当前作者签名发布的记录只含它自己与无身份的行，别的 person 的行不进，记录里也没有服务引用', async t => {
+  freeze(t);
+  const state = mkdir(t), at = startOfBucket(now);
+  const host = fake({ state, settings: { 'token-board.share': true }, usage: [tagged(at, AUTHOR), tagged(at, ''), tagged(at, OTHER, { asked: 'secret-model', input: 50_000 })] });
+  activate(host.coda);
+  await openAndSync(host);
+  const [day, today] = host.published;
+  assert.deepEqual(day.body, buildArchiveBodies([tagged(at, AUTHOR), tagged(at, '')])[monthOf(at)]);
+  assert.deepEqual(today.body, buildTodayBody([tagged(at, AUTHOR), tagged(at, '')], { now }));
+  const text = JSON.stringify(host.published);
+  assert.ok(!text.includes('secret-model') && !text.includes('11111111') && !text.includes('coda://'));
+  assert.ok(text.includes('"i":"openai-responses"') && text.includes('"a":"gpt-5"'));
+  assert.equal(day.body.days[new Date(at).toISOString().slice(0, 10)].claude[0].n[0], 2000);
+});
+
+// ——— 同型号映射：本机 Magpie 插件（magpie/models@1，可选）的 names，只套本机行 ———
+
+const NAMES = { 'group/ds-flash': 'deepseek-v4.1-flash', 'opencode-go/deepseek-v4.1-flash': 'deepseek-v4.1-flash' };
+const viaMagpie = (at, asked, over = {}) => tagged(at, AUTHOR, { asked, input: 100, ...over });
+const modelsOf = list => list.models.map(m => [m.model, m.totalTokens, m.items.map(item => item.asked)]);
+
+test('同型号映射：命中的本机行并入目标型号行，展开得到原请求项；有 served 的行不套；映射只读一次', async t => {
+  freeze(t);
+  const at = startOfBucket(now);
+  const host = fake({ state: mkdir(t), usage: [viaMagpie(at, 'group/ds-flash'), viaMagpie(at, 'opencode-go/deepseek-v4.1-flash', { input: 30 }), viaMagpie(at, 'group/ds-flash', { served: 'real', input: 7 }),
+    viaMagpie(at, 'unlisted/model', { input: 1 })] });
+  host.sameNames = NAMES;
+  activate(host.coda);
+  const page = host.open();
+  page.tell({ type: 'board', range: 'today', id: 1 });
+  const board = await page.waitFor('board');
+  assert.deepEqual(modelsOf(board.local), [['deepseek-v4.1-flash', 130, ['group/ds-flash', 'opencode-go/deepseek-v4.1-flash']], ['real', 7, ['group/ds-flash']], ['unlisted/model', 1, ['unlisted/model']]]);
+  assert.deepEqual(modelsOf(board.sources.find(source => source.local)), modelsOf(board.local));
+  assert.equal(host.sameReads, 1, '一次取数读一次，不是每行一次');
+});
+
+test('同型号映射：服务不是本机 Magpie 插件提供的（别台的 Magpie、别的插件），asked 命中也不套，也不进发布的记录', async t => {
+  freeze(t);
+  const at = startOfBucket(now), foreign = 'coda://openai-responses/99999999-8888-7777-6666-555555555555';
+  const host = fake({ state: mkdir(t), settings: { 'token-board.share': true }, usage: [viaMagpie(at, 'group/ds-flash'), viaMagpie(at, 'group/ds-flash', { service: foreign, input: 30 })] });
+  host.sameNames = NAMES;
+  activate(host.coda);
+  const page = await openAndSync(host);
+  page.tell({ type: 'board', range: 'today', id: 1 });
+  const board = await page.waitFor('board');
+  assert.deepEqual(modelsOf(board.local), [['group/ds-flash', 30, ['group/ds-flash']], ['deepseek-v4.1-flash', 100, ['group/ds-flash']]].sort((a, b) => b[1] - a[1]));
+  const rows = host.published[0].body.days[new Date(at).toISOString().slice(0, 10)].claude;
+  assert.deepEqual(rows.map(row => [row.n[0], row.u ?? null]).sort(), [[100, 'deepseek-v4.1-flash'], [30, null]]);
+  host.sameServices = [];
+  page.tell({ type: 'board', range: 'today', id: 2 });
+  assert.deepEqual(modelsOf((await page.waitFor('board', page.got.length)).local), [['group/ds-flash', 130, ['group/ds-flash']]], '没有本机 Magpie 的服务：一个都不套');
+});
+
+test('同型号映射：没装 Magpie 插件、映射为空、读映射失败，结果都和不映射相同；没有用得上的行时不去读', async t => {
+  freeze(t);
+  const at = startOfBucket(now), usage = [viaMagpie(at, 'group/ds-flash'), viaMagpie(at, 'opencode-go/deepseek-v4.1-flash', { input: 30 })];
+  const read = async setup => {
+    const host = fake({ state: mkdir(t), usage });
+    setup(host);
+    activate(host.coda);
+    const page = host.open();
+    page.tell({ type: 'board', range: 'today', id: 1 });
+    const board = await page.waitFor('board');
+    deactivate();
+    return { board, host };
+  };
+  const plain = (await read(() => {})).board.local;
+  assert.deepEqual(modelsOf(plain), [['group/ds-flash', 100, ['group/ds-flash']], ['opencode-go/deepseek-v4.1-flash', 30, ['opencode-go/deepseek-v4.1-flash']]]);
+  for (const names of [{}, new Error('timeout'), { 'nothing/here': 'x' }]) {
+    const { board, host } = await read(h => { h.sameNames = names; });
+    assert.deepEqual(board.local, plain);
+    assert.deepEqual(board.errors, []);
+    assert.equal(host.sameReads, 1);
+  }
+  const host = fake({ state: mkdir(t), usage: [bucket(at), tagged(at, AUTHOR, { served: 'real' })] });
+  host.sameNames = NAMES;
+  activate(host.coda);
+  const page = host.open();
+  page.tell({ type: 'board', range: 'today', id: 1 });
+  await page.waitFor('board');
+  assert.equal(host.sameReads, 0);
+  assert.ok(!host.touched.has(SAME), '没有带服务又没有 served 的行，不去找 Magpie 插件');
+});
+
+test('同型号映射：发布的记录各行带归并名 u，asked 与接口种类照旧；没有归并的行不带；读回来的聚合与本机一致', async t => {
+  freeze(t);
+  const at = startOfBucket(now), state = mkdir(t);
+  const host = fake({ state, settings: { 'token-board.share': true }, usage: [viaMagpie(at, 'group/ds-flash'), viaMagpie(at, 'opencode-go/deepseek-v4.1-flash', { input: 30 }), viaMagpie(at, 'group/ds-flash', { served: 'real', input: 7 }), viaMagpie(at, 'plain', { input: 1 })] });
+  host.sameNames = NAMES;
+  activate(host.coda);
+  await openAndSync(host);
+  const [day, today] = host.published;
+  for (const rows of [day.body.days[new Date(at).toISOString().slice(0, 10)].claude, today.body.slots[Math.floor(at / 1_800_000) * 1_800_000].claude]) {
+    assert.deepEqual(rows.map(row => [row.a, row.s ?? null, row.u ?? null]).sort(), [['group/ds-flash', null, 'deepseek-v4.1-flash'], ['group/ds-flash', 'real', null], ['opencode-go/deepseek-v4.1-flash', null, 'deepseek-v4.1-flash'], ['plain', null, null]]);
+  }
+  assert.ok(!JSON.stringify(host.published).includes('coda://'));
+  // 另一台读到这份记录：不装 Magpie 插件也直接用 u，并入同一个型号行，展开仍是原请求项。
+  const reader = fake({ state: mkdir(t), records: [{ author: AUTHOR, kind: dayKind, id: day.id, version: 1, local: false, body: day.body }, { author: AUTHOR, kind: todayKind, id: today.id, version: 1, local: false, body: today.body }] });
+  reader.author = AUTHOR;
+  activate(reader.coda);
+  const page = reader.open();
+  page.tell({ type: 'board', range: 'today', id: 1 });
+  const board = await page.waitFor('board');
+  const theirs = board.sources.find(source => !source.local);
+  assert.deepEqual(modelsOf(theirs), [['deepseek-v4.1-flash', 130, ['group/ds-flash', 'opencode-go/deepseek-v4.1-flash']], ['real', 7, ['group/ds-flash']], ['plain', 1, ['plain']]]);
+  assert.equal(reader.sameReads, 0);
+});
+
+test('同型号映射：好友记录里的行用好友自己的归并名，不拿本机映射去套：同一个 asked 在好友那没有 u 就保持原名', async t => {
+  freeze(t);
+  const at = startOfBucket(now), day = new Date(at).toISOString().slice(0, 10), month = monthOf(at);
+  const line = (extra, input) => ({ a: 'group/ds-flash', i: 'openai-responses', ...extra, n: [input, 0, 0, 0, 1, 1] });
+  const record = (source, rows) => ({ author: FRIEND, kind: dayKind, id: `${source}/${month}`, version: 1, local: false, body: { v: 3, days: { [day]: { codex: rows } } } });
+  const host = fake({ state: mkdir(t), usage: [viaMagpie(at, 'group/ds-flash')], records: [record('friend-a', [line({ u: 'their-ds' }, 10), line({}, 5)]), record('friend-b', [line({}, 3)])] });
+  host.sameNames = NAMES;
+  activate(host.coda);
+  const page = host.open();
+  page.tell({ type: 'board', range: 'today', id: 1 });
+  const board = await page.waitFor('board');
+  assert.deepEqual(modelsOf(board.local), [['deepseek-v4.1-flash', 100, ['group/ds-flash']]]);
+  const friend = board.sources.filter(source => source.author === FRIEND);
+  assert.deepEqual(friend.map(source => modelsOf(source)).flat().sort(), [['group/ds-flash', 3, ['group/ds-flash']], ['group/ds-flash', 5, ['group/ds-flash']], ['their-ds', 10, ['group/ds-flash']]].sort());
+});
+
 test('网关的 friends 带 truncated 也不影响榜单：榜单不再读它', async t => {
   const state = mkdir(t), at = startOfBucket(now);
   const host = fake({ state, usage: [bucket(at)] });
@@ -860,6 +1030,7 @@ test('网关的 friends 带 truncated 也不影响榜单：榜单不再读它', 
 });
 
 test('翻页保护：cursor 重复不死循环，页数封顶，标记 truncated；只记一条提示，不拖垮榜单', async t => {
+  freeze(t);
   const state = mkdir(t), at = startOfBucket(now), day = new Date(at).toISOString().slice(0, 10);
   const host = fake({ state, usage: [bucket(at)], records: [{ author: FRIEND, kind: usageKind, id: `${day}/dev1`, version: 1, local: false, body: { blocks: {} } }] });
   activate(host.coda);
@@ -1126,7 +1297,7 @@ test('零直接访问 coda/accord@1：整套发布、榜单、撤回流程只碰
   for (const file of ['main.mjs', 'lib/usage.mjs', 'view/app.mjs', 'package.json']) assert.ok(!readFileSync(new URL(file, dir), 'utf8').includes('coda/accord@1'), file);
   const manifest = JSON.parse(readFileSync(new URL('package.json', dir), 'utf8'));
   assert.deepEqual(manifest.uses, { 'coda/usage@1': ['read'], 'coda/machine@1': ['read'] });
-  assert.deepEqual(manifest.optionalUses, { [SOCIAL]: ['read', 'publish'] });
+  assert.deepEqual(manifest.optionalUses, { [SOCIAL]: ['read', 'publish'], [SAME]: ['read'] });
   assert.equal(manifest.extensionDependencies, undefined);
 });
 
@@ -1141,7 +1312,7 @@ test('统一汇总：旧块 / legacy 的撤回返回 queued、needs_cert 时整�
   // 本机上一轮记着一个整月块；这一轮月块拆成半月，整月块是要撤的旧块。
   writeFileSync(join(state, 'published.json'), JSON.stringify({ [`${AUTHOR}:${dayKind}:machine-1/2026-11`]: true }));
   const big = [];
-  for (let d = 1; d <= 20; d++) for (let m = 0; m < 60; m++) big.push(bucket(Date.UTC(2026, 10, d, 1), { model: `model-${m}-${'x'.repeat(30)}` }));
+  for (let d = 1; d <= 20; d++) for (let m = 0; m < 50; m++) big.push(bucket(Date.UTC(2026, 10, d, 1), { model: `model-${m}-${'x'.repeat(30)}` }));
   const host = fake({ state, settings: { 'token-board.share': true }, usage: big });
   activate(host.coda);
   const page = host.open();

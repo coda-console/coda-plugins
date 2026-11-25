@@ -48,4 +48,15 @@ Codex Agent：Codex 插件提供的入口运行 codex-acp，报告子 Agent、�
   交令牌（`chatgptAuthTokens`）是 app-server 的实验接口：升级 codex-acp 或 Codex 时复核登录、`account/read` 的身份核对、续期请求与轮次边界。
 
 「模型服务」设置、异步消息与提问见仓库根 README 的「模型服务」「Codex 异步消息与提问」。
+
+回执 `usage` 的模型身份（Coda 的 docs/plugins.md「Coda 的用量记录」）：codex-acp 向 Codex 派发模型请求时，补丁把当时实际派发的型号绑在会话上；这一轮是服务里的模型时，`usage` 顶层带 `service`（由注入地址 `…/resources/<接口种类>/<UUID><路径>` 得到的 `coda://<接口种类>/<UUID>`）与 `asked`（发给服务的裸模型 ID）。地址不是这个形状、Codex 自己的模型、以及没有派发模型请求的 prompt（如切换模型后执行 `/status`）都不带；每个 prompt 开始时清掉上一轮的绑定。`/review`、`/goal` 这类由 codex-acp 另行派发轮次的命令，在注入服务上运行时的轮次目前不带 `service`、`asked`，用量退回按执行配置的模型 ID 记，数不会错也不会丢，只是暂时归不到服务那一行。不报 `served`。
+
+**每轮的用量**（`agent/usage.mjs`）：codex-acp 的回执原本只带 Codex 最近一次模型响应的用量（`last`），一轮调用模型多次时只剩最后一笔，实测少算约 14 倍（长轮可少 200 倍以上）。补丁改为取这一轮内各线程累计量（`total`）的增量，三种回执（正常、命令、取消）都一样：
+- 每个线程各记它上次见到的累计量，增量是这次累计减上次；线程第一次出现时基准是 `total − last`，所以恢复后的第一轮不含线程历史。Codex 在线程恢复时会重放一条当前累计量（属于上一次运行的轮次，本进程没见过它的 `turn/started`），这种通知只更新基准、不计数。
+- 累计量变小（Codex 在上下文用满时重设计数）时按那一笔响应自己的 `last` 算，不出负数。
+- 换算同以前：未缓存输入是 `inputTokens − cachedInputTokens − cacheWriteInputTokens`（缓存读、缓存写都含在 Codex 的输入里），缓存读 `cachedReadTokens`，缓存写 `cachedWriteTokens`（Codex 0.169 起的 `cacheWriteInputTokens`，现在都转发），输出含思考，`thoughtTokens` 是其中的思考部分。上下文占用（`usage_update`）仍取 `last`，没动。
+- 这一轮没有增长的回执（`/status` 这类不调用模型的命令）不带 `usage`，不再重复带出上一轮的计数；`/review`、`/goal` 这类发起模型请求的命令照增量算。
+- 子 Agent（原生子线程）的用量计入派生它的那一轮：子线程的 `thread/tokenUsage/updated` 以子线程 ID 区分、各自记基准，子线程后来新增的轮也算。记账在 codex-acp 订阅器的通知入口，每条原始事件只经过一次，在按客户端能力分流之前：Coda 现在发给 Agent 的能力里没有 `subagents`，子线程事件在 codex-acp 里是当作会话自己的事件交出去的，声明了原生子会话能力的客户端则要先暂存、建好子会话后再处理一遍，两种都不会漏记或记两次。Codex 可能先给子线程投递初始输入、让它的轮开始，之后父线程才发出带子线程 ID 的派生通知，此时适配器还没有这个子线程的处理器、会把它的通知丢掉：补丁在丢掉之前留下子线程的轮开始与用量（每个线程只留首条与最新一条用量，增量够用），父线程派生通知到了、认下这个子线程时再归到这一轮，只记一次；一直没被认领的线程（如 Codex 自己的审核子线程）不计。回执在父轮的子 Agent 等完后才发；父轮回执发出之后子线程才产生的用量（取消、等待超时后仍在跑的）计入下一份回执，不丢、不重。
+- 以错误结束的轮次，其回执不带用量（Coda 对错误回执不采集用量），这一轮已发生的消耗随下一份回执上报，总量对，只是记在下一轮名下。
+- 子 Agent 用的模型与父线程不同时（派生时指定了 `model`，`collabAgentToolCall`／`subAgentActivity` 的 `model`），回执带 `breakdown`：父线程一项，子 Agent 的各一项，各项带自己的四项计数；父线程在服务上时（上一段的 `service`、`asked`）子 Agent 的项带同一个 `service` 与自己的 `asked`（线程只在一个服务上运行），否则是 `model`。派生时没指定模型的子 Agent 用父线程的模型，并入父线程那一项；父线程的型号不明（服务的模型没有绑定到，如 `/review` 轮次）时不带 `breakdown`，只带合计。
 异步提问被宿主当场拒绝（`decline` 带非空 `_meta.coda.reason`）时，交给 Codex 的是这段文字原文；不带 reason 的 `decline` 与 `cancel` 仍是「用户没有回答「<问题>」」。同步提问（`item/tool/requestUserInput`）由 codex-acp 回 `{ answers: {} }`，拿不到 reason。

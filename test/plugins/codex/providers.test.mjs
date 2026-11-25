@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { ServiceModels, chosenServices, servedCodexModels, serviceModels } from '../../../plugins/codex/agent/providers.mjs';
+import { ServiceModels, chosenServices, servedCodexModels, serviceModels, serviceReference } from '../../../plugins/codex/agent/providers.mjs';
 import { resolveFrom } from '../plugin.mjs';
 import { pluginEnv } from '../command.mjs';
 
@@ -92,25 +92,60 @@ test('what Codex says of the service\'s models it does not know is not said in t
   assert.equal(services.quiet({ message: 'Falling back from WebSockets to HTTPS transport.' }), false);
 });
 
+test('the service an injected address belongs to is its resource reference, of a model interface and a UUID; any other shape is none', () => {
+  const id = '6F1A7C52-0d3b-4e8a-9a41-2b7d5c0e9f13';
+  assert.equal(serviceReference(`http://127.0.0.1:3425/resources/openai-responses/${id}/v1`), `coda://openai-responses/${id.toLowerCase()}`);
+  assert.equal(serviceReference(`http://127.0.0.1:3425/resources/openai-responses/${id}`), `coda://openai-responses/${id.toLowerCase()}`);
+  for (const url of [`http://127.0.0.1:3425/resources/openai-responses/${id}x/v1`, `http://127.0.0.1:3425/resources/machines/${id}/v1`, 'http://127.0.0.1:3425/resources/openai-responses/not-a-uuid/v1',
+    `http://127.0.0.1:3425/other/resources/openai-responses/${id}`, 'http://127.0.0.1:3425/v1', 'not a url', '', undefined]) assert.equal(serviceReference(url), null, String(url));
+});
+
+test('a turn is bound to the service its model is of and the model asked at its dispatch, and a prompt that sends no model request has none', async () => {
+  const id = '6f1a7c52-0d3b-4e8a-9a41-2b7d5c0e9f13';
+  const services = new ServiceModels([{ ref: 'a/responses', title: 'A', url: `http://127.0.0.1:3425/resources/openai-responses/${id}/v1` }, { ref: 'b/responses', title: 'B', url: 'http://b/v1' }],
+    async () => Response.json({ data: [{ id: 'group/ds-flash' }] }));
+  await services.list();
+  const usage = { totalTokens: 12, inputTokens: 5, outputTokens: 7 }, state = { currentModelId: 'gpt-5.5' };
+  // A server the route moves the session on, as the one of the move test above.
+  const server = { sessions: new Map([['s', state]]), codexAcpClient: { appServerClient: { threadRead: async () => ({ thread: {} }) } },
+    setProvider: async () => {}, disableProvider: async () => {} };
+  const route = async model => { state.currentModelId = model; assert.equal(await services.route(server, { sessionId: 's', prompt: [] }), false); };
+  const dispatch = async model => { await route(model); services.bind(state, model); };
+  const reply = () => services.usage(state, usage);
+  await dispatch('a/responses/group/ds-flash');
+  assert.deepEqual(reply(), { ...usage, service: `coda://openai-responses/${id}`, asked: 'group/ds-flash' });
+  await dispatch('b/responses/group/ds-flash');
+  assert.equal(reply(), usage, 'no valid reference: neither');
+  await dispatch('gpt-5.5');
+  assert.equal(reply(), usage, 'Codex\'s own: neither');
+  await dispatch('a/responses/group/ds-flash');
+  // The next prompt starts unbound: if it sends no model request (a command), what the turn before was bound to is not its own.
+  await route('a/responses/group/ds-flash');
+  assert.equal(reply(), usage);
+  assert.equal(services.usage(state, null), null);
+});
+
 test('the patch applies to the locked codex-acp, and fails loudly once it changes', () => {
   const served = servedCodexModels(bundle);
   assert.ok(served.startsWith('import { services as codaServices } from '), 'its own executable header gone');
   for (const added of ['return [...models, ...await codaServices.list()];', 'if (await codaServices.route(this, params)) return { stopReason: "cancelled" };',
     'codaServices.cancel(params.sessionId);', 'model: codaServices.wire(modelId.model),',
     'if (codaServices.quiet(notification.params)) return null;', 'options: codaServices.grouped(options),']) assert.equal(served.split(added).length, 2, added);
+  assert.equal(served.split('codaServices.usage(sessionState, this.buildPromptUsage(sessionState.lastTokenUsage))').length, 5, 'every answer of a prompt');
+  assert.equal(served.split('codaServices.bind(sessionState, modelId.model);').length, 2, 'the dispatch of a model request');
   const checked = spawnSync(process.execPath, ['--check', '--input-type=module'], { input: served, encoding: 'utf8' });
   assert.equal(checked.status, 0, checked.stderr);
   assert.throws(() => servedCodexModels(bundle.replace('      model: modelId.model,\n      serviceTier\n', '      model: modelId.model,\n')), /no longer matches/);
 });
 
 // The real entry against the fixture app-server, with the service (listing `fake/alpha`, a key of its own) chosen.
-async function entryOnService(t, env = {}) {
+async function entryOnService(t, env = {}, path = '/v1', clientCapabilities = {}) {
   const root = mkdtempSync(join(tmpdir(), 'coda-codex-service-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const server = createServer((_, response) => { response.setHeader('content-type', 'application/json'); response.end(JSON.stringify({ data: [{ id: 'fake/alpha' }] })); });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => server.close());
-  const url = `http://127.0.0.1:${server.address().port}/v1`;
+  const url = `http://127.0.0.1:${server.address().port}${path}`;
   writeFileSync(join(root, 'key'), 'sk-service');
   // The fixture's first turn in a state directory dies; here it has died already.
   writeFileSync(join(root, 'died'), '');
@@ -135,7 +170,7 @@ async function entryOnService(t, env = {}) {
     throw new Error(`${method} 没有回答`);
   };
   const read = name => existsSync(join(root, name)) ? readFileSync(join(root, name), 'utf8').trim().split('\n').map(line => JSON.parse(line)) : [];
-  await request('initialize', { protocolVersion: 1, clientCapabilities: {} });
+  await request('initialize', { protocolVersion: 1, clientCapabilities });
   const opened = (await request('session/new', { cwd: root, mcpServers: [], systemPrompt: { mode: 'append', content: [{ type: 'text', text: '# Coda' }] } })).result;
   return { url, root, opened, request,
     cancel: () => child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'session/cancel', params: { sessionId: opened.sessionId } })}\n`),
@@ -172,6 +207,58 @@ test('through the real entry: a turn on the service\'s model runs on the session
     [4, 'thread/resume', 'openai', '# Coda', undefined]);
   assert.equal(turns().at(-1).model, 'fake');
 });
+
+test('through the real entry: a turn says the service and model it was sent on, and a `/status` after switching models says none, whichever model is chosen', async t => {
+  const id = '6f1a7c52-0d3b-4e8a-9a41-2b7d5c0e9f13';
+  const { set, prompt } = await entryOnService(t, { FAKE_CODEX_TOKENS: '1' }, `/resources/openai-responses/${id}/v1`);
+  const told = { totalTokens: 30, inputTokens: 15, cachedReadTokens: 5, cachedWriteTokens: 0, outputTokens: 10, thoughtTokens: 2 };
+  const used = async text => (await prompt(text)).result.usage;
+  await set('magpie/responses/fake/alpha');
+  assert.deepEqual(await used('hello'), { ...told, service: `coda://openai-responses/${id}`, asked: 'fake/alpha' });
+  // Codex's own model, then `/status` on the service's model chosen after it: it sent no model request, so it has no usage to say.
+  await set('fake');
+  assert.deepEqual(await used('native'), told);
+  await set('magpie/responses/fake/alpha');
+  assert.equal(await used('/status'), null, 'the model chosen after is not the one the usage was of');
+  // And the other way: the service's turn, then `/status` on Codex's own.
+  assert.deepEqual(await used('again'), { ...told, service: `coda://openai-responses/${id}`, asked: 'fake/alpha' });
+  await set('fake');
+  assert.equal(await used('/status'), null);
+});
+
+test('through the real entry: a turn of several model calls says all of them, and the turn after a move of the session says only what it used since', async t => {
+  const { root, set, prompt } = await entryOnService(t, { FAKE_CODEX_TOKENS: '3' });
+  const used = async text => (await prompt(text)).result.usage;
+  const calls = { totalTokens: 90, inputTokens: 45, cachedReadTokens: 15, cachedWriteTokens: 0, outputTokens: 30, thoughtTokens: 6 };
+  await set('magpie/responses/fake/alpha');
+  assert.deepEqual(await used('hello'), calls, 'an address of no reference says no service');
+  // Between the turns the thread's count grows by what this process was not told of (used elsewhere), and Codex tells the count again before the next turn
+  // (as it does when a thread is resumed): that only moves what the count is taken from, and the turn says its own calls, not the 100000 beside them.
+  const kept = join(root, 'tokens.json'), tokens = JSON.parse(readFileSync(kept, 'utf8'));
+  for (const key of ['totalTokens', 'inputTokens']) tokens.total[key] += 100000;
+  writeFileSync(kept, JSON.stringify(tokens));
+  writeFileSync(join(root, 'snapshot.json'), JSON.stringify(tokens.total));
+  await set('fake');
+  assert.deepEqual(await used('native'), calls);
+  assert.equal(await used('/status'), null);
+});
+
+// What the host sends in `initialize` (Coda's backend/src/domain/agent-protocol.mjs `clientCapabilities`) has no `subagents`: the subagents' events reach codex-acp
+// as the session's own. Native subagent sessions are what a client that declares `subagents` has: their first events are held back until their session is made.
+for (const [name, capabilities] of [['the capabilities the host sends', { elicitation: { form: {}, url: {} }, session: { compaction: {}, configOptions: { boolean: {} } }, _meta: { coda: { waits: {}, remote: {}, unrecognized: {} } } }],
+  ['native subagent sessions', { subagents: {} }]]) {
+  test(`through the real entry, on ${name}: the usage of a subagent is the parent turn's that it came in, once`, async t => {
+    const { prompt } = await entryOnService(t, { FAKE_CODEX_TOKENS: '1' }, '/v1', capabilities);
+    const own = { totalTokens: 30, inputTokens: 15, cachedReadTokens: 5, cachedWriteTokens: 0, outputTokens: 10, thoughtTokens: 2 };
+    assert.deepEqual((await prompt('hello')).result.usage, own);
+    assert.deepEqual((await prompt('run a subagent')).result.usage, { totalTokens: 60, inputTokens: 30, cachedReadTokens: 10, cachedWriteTokens: 0, outputTokens: 20, thoughtTokens: 4 }, 'its own and the subagent\'s');
+    // Two of the subagent's notifications told before its session is made, and handled again once it is: counted once.
+    assert.deepEqual((await prompt('staged children')).result.usage, { totalTokens: 90, inputTokens: 45, cachedReadTokens: 15, cachedWriteTokens: 0, outputTokens: 30, thoughtTokens: 6 }, 'its own and the subagent\'s 60, not more');
+    // The subagent's turn began and counted twice before its parent told of it, and once after: all of it, once.
+    assert.deepEqual((await prompt('early children')).result.usage, { totalTokens: 120, inputTokens: 60, cachedReadTokens: 20, cachedWriteTokens: 0, outputTokens: 40, thoughtTokens: 8 }, 'its own 30 and the subagent\'s 90');
+    assert.deepEqual((await prompt('again')).result.usage, own);
+  });
+}
 
 test('through the real entry: a turn stopped while the session moves to the service ends cancelled, its input not given', async t => {
   // The move is held where it reads the thread, until the stop has come.

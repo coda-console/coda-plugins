@@ -11,6 +11,15 @@ const packages = { 'openai-completions': '@ai-sdk/openai-compatible', 'openai-re
 const log = text => process.stderr.write(`[opencode-agent] ${text}\n`);
 const parse = text => { try { return JSON.parse(text || '{}'); } catch { return {}; } };
 
+// The resource reference (`coda://<接口种类>/<UUID>`) of the model service an address Coda injected is, from its
+// `…/resources/<接口种类>/<UUID><路径>` (Coda's docs/plugins.md「模型服务」); null for an address of another shape.
+export function serviceReference(url) {
+  let path;
+  try { path = new URL(url).pathname; } catch { return null; }
+  const found = /^\/resources\/(openai-completions|openai-responses|anthropic-messages|openai-speech)\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\/|$)/i.exec(path);
+  return found ? `coda://${found[1]}/${found[2].toLowerCase()}` : null;
+}
+
 // The services chosen, in the order chosen. One not on this machine, speaking an API OpenCode is not given, or whose key
 // cannot be read is left out.
 export function chosenServices(env = process.env) {

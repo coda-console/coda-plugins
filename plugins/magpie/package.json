@@ -4,7 +4,7 @@
   "displayName": "Magpie",
   "description": "把本机 Magpie 网关提供为模型服务",
   "icon": { "symbol": "bird.fill", "color": "indigo" },
-  "version": "1.5.1",
+  "version": "1.7.1",
   "engines": {
     "coda": 6
   },
@@ -19,6 +19,14 @@
           "order": 1,
           "default": true,
           "description": "打开时 Magpie 读取 Codex、Claude Code 等 Agent 自己的登录（如 ~/.codex/auth.json 与钥匙串），把它们的订阅作为模型提供；关掉后一个都不读，只用在 Magpie 里以 API Key 添加的服务，它存下的登录副本留着，再打开就回来。同 Magpie 的「设置 › 隐私 › Subscription accounts」，以这里为准。"
+        },
+        "magpie.modelNames": {
+          "title": "指定请求型号的底层型号",
+          "type": "object",
+          "order": 2,
+          "default": {},
+          "additionalProperties": { "type": "string" },
+          "description": "每行写明一个请求型号（如 group/ds-flash）就是哪个底层型号（如 deepseek-v4.1-flash），Token 榜等按它把走本机 Magpie 的请求归并成一行；写明的优先于插件自己的推导，值与行名相同表示不归并，不影响 Magpie 自己的配置与路由。"
         }
       }
     },
@@ -42,13 +50,60 @@
         "url": "http://127.0.0.1:3425"
       }
     ],
+    "protocols": [
+      {
+        "name": "magpie/models@1",
+        "title": "Magpie 同型号映射",
+        "description": "本机 Magpie 的同型号映射：请求的模型 ID（provider/model、group/<id>、auto/<名字>）按用户在设置 `magpie.modelNames` 里写明的（优先），以及用户在 Magpie 里的同型号声明与组成员自动推导出的底层型号名，连同本机 Magpie 插件提供的模型服务的资源引用（映射只对走这些服务的请求有效）。",
+        "spec": {
+          "type": "object",
+          "properties": { "version": { "const": 1 } },
+          "required": ["version"],
+          "additionalProperties": false
+        },
+        "status": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        },
+        "operations": {
+          "names": {
+            "safe": true,
+            "input": { "type": "object", "additionalProperties": false },
+            "result": {
+              "type": "object",
+              "properties": {
+                "names": {
+                  "type": "object",
+                  "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 200 }
+                },
+                "services": {
+                  "type": "array",
+                  "items": { "type": "string", "minLength": 1 }
+                }
+              },
+              "required": ["names", "services"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "permissions": {
+          "read": { "title": "读取本机 Magpie 的同型号映射", "read": true, "operations": ["names"] }
+        }
+      }
+    ],
     "protocolImplementations": [
-      "coda/resource@1"
+      "coda/resource@1",
+      { "kind": "magpie/models@1", "commands": { "names": "scripts/names.mjs" } }
     ],
     "records": [
       {
         "kind": "coda/resource@1",
         "command": "scripts/quotas.mjs"
+      },
+      {
+        "kind": "magpie/models@1",
+        "command": "scripts/models.mjs"
       }
     ],
     "setup": {

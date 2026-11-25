@@ -1,6 +1,8 @@
 // What a prompt used, as `PromptResponse.usage` says it (Coda's per-turn token collection): this turn's increment only, `inputTokens`
 // the uncached input (the cached reads and writes not in it), the cache reads and writes beside it, and `breakdown` by model
-// where the models are known (when it is there, it is the whole of what Coda counts; the top level is its sum).
+// where the models are known (when it is there, it is the whole of what Coda counts; the top level is its sum). A model is told as
+// `served` when the SDK names the one that ran (`canonicalModel`) and else by the SDK's own name as the unlayered `model` label; on a
+// model service (providers.mjs) the usage says its `service` and `asked` instead (Coda's docs/plugins.md「Coda 的用量记录」).
 //
 // The SDK's result carries `modelUsage`, per model and cumulative over the query() call: main loop, Task subagents and all. This
 // keeps what the last result said (`base`) and answers each result with the difference, so that a turn says what it used.
@@ -41,34 +43,41 @@ function fromApiUsage(usage) {
 const increase = (now, before) => !before || FIELDS.some(field => now[field] < before[field]) ? now
   : Object.fromEntries(FIELDS.map(field => [field, now[field] - before[field]]));
 
-// What was used, by model name, and what no model is told of.
+// What was used, by model (its `label`: `served` for the model the SDK says ran, else the SDK's own name as `model`), and what no model is told of.
 class Spent {
   models = new Map(); loose = null;
-  addModel(model, counts) { this.models.set(model, this.models.has(model) ? plus(this.models.get(model), counts) : counts); }
+  addModel(label, counts) {
+    const key = JSON.stringify(label), before = this.models.get(key);
+    this.models.set(key, { label, counts: before ? plus(before.counts, counts) : counts });
+  }
   addLoose(counts) { this.loose = this.loose ? plus(this.loose, counts) : counts; }
   merge(other) {
-    for (const [model, counts] of other.models) this.addModel(model, counts);
+    for (const { label, counts } of other.models.values()) this.addModel(label, counts);
     if (other.loose) this.addLoose(other.loose);
   }
-  // `usage` for the response, or nothing where no token was used.
-  report() {
-    const models = [...this.models].filter(([, counts]) => !none(counts));
-    const all = [...models.map(([, counts]) => counts), ...(this.loose && !none(this.loose) ? [this.loose] : [])];
+  // `usage` for the response, or nothing where no token was used. `requested`: the `{ service, asked }` of the model service the
+  // query ran on (`{}` for a service without a reference, null on Claude's own), told at the top level.
+  report(requested) {
+    const models = [...this.models.values()].filter(({ counts }) => !none(counts));
+    const all = [...models.map(({ counts }) => counts), ...(this.loose && !none(this.loose) ? [this.loose] : [])];
     if (!all.length) return {};
     const sum = all.reduce(plus);
     const usage = { totalTokens: total(sum), inputTokens: sum.inputTokens, outputTokens: sum.outputTokens,
       ...(sum.cachedReadTokens === null ? {} : { cachedReadTokens: sum.cachedReadTokens }),
-      ...(sum.cachedWriteTokens === null ? {} : { cachedWriteTokens: sum.cachedWriteTokens }) };
-    // The breakdown is all that Coda counts when it is there: one that leaves out a part is not told.
-    if (!this.loose || none(this.loose)) usage.breakdown = models.map(([model, counts]) => ({ model, ...counts }));
+      ...(sum.cachedWriteTokens === null ? {} : { cachedWriteTokens: sum.cachedWriteTokens }), ...requested };
+    // The breakdown is all that Coda counts when it is there: one that leaves out a part is not told. A service's one model is no
+    // breakdown (the SDK's name for it is only the name asked, not the model that ran); of several, the one asked is told as that.
+    if ((!this.loose || none(this.loose)) && (!requested || models.length > 1))
+      usage.breakdown = models.map(({ label, counts }) => ({ ...(requested && label.model === requested.asked ? requested : label), ...counts }));
     return { usage };
   }
 }
 
 export class PromptUsage {
-  base = new Map(); held = new Spent();
-  // A query begins: a new session's from nothing, a resumed one's with its history (its first result says it).
-  restarted(resumed) { this.base = resumed ? null : new Map(); this.held = new Spent(); }
+  base = new Map(); held = new Spent(); requested = null;
+  // A query begins: a new session's from nothing, a resumed one's with its history (its first result says it). `requested`: the
+  // `{ service, asked }` of the model service it runs on (`{}` for a service whose address gives no reference), null on Claude's own models.
+  restarted(resumed, requested = null) { this.base = resumed ? null : new Map(); this.held = new Spent(); this.requested = requested; }
   // What this result's turn used (never throws: the result is handled whatever this makes of it).
   measure(m) {
     const spent = new Spent();
@@ -82,7 +91,9 @@ export class PromptUsage {
         return spent;
       }
       for (const { key, usage, counts } of entries) {
-        spent.addModel(typeof usage.canonicalModel === 'string' && usage.canonicalModel ? usage.canonicalModel : key, increase(counts, this.base.get(key)));
+        // A service's model is told by the name the SDK has it asked as, which is no model that ran; Claude's own by the canonical one.
+        const canonical = !this.requested && typeof usage.canonicalModel === 'string' && usage.canonicalModel;
+        spent.addModel(canonical ? { served: canonical } : { model: key }, increase(counts, this.base.get(key)));
         this.base.set(key, counts);
       }
     } catch {}
@@ -91,6 +102,6 @@ export class PromptUsage {
   // The turn of a prompt of Coda's used this; told when the prompt is answered.
   hold(spent) { this.held.merge(spent); }
   // The prompt is answered with what it used (`usage` of the response, or nothing), or failed: it reports none.
-  take() { const usage = this.held.report(); this.held = new Spent(); return usage; }
+  take() { const usage = this.held.report(this.requested); this.held = new Spent(); return usage; }
   drop() { this.held = new Spent(); }
 }

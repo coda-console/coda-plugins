@@ -1,0 +1,12 @@
+  t1  group/t1
+  routing   smart
+  stays     auto
+  models    1 pa/alpha  pa · alpha
+            2 pc/gpt-6.1-sol:high:fast  pc · gpt-6.1-sol · high reasoning, whatever the agent asks · fast
+            3 pb/beta:high  pb · beta · high reasoning, whatever the agent asks
+            4 pa/gamma  pa · gamma
+            5 pa/beta  pa · beta · by pattern
+  patterns  pa/*  3 models
+            zz/*  matches nothing now
+  rules     1 tokens ≥ 200000 → pa/gamma
+            2 tokens ≥ 1000000 · time all day Mon–Fri → pa/alpha

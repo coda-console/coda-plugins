@@ -194,3 +194,22 @@ test('同一来源的副本先比当天曲线的版本：旧曲线盖不满窗�
   const sameVersion = { today: [todayRec(B, 'phone', [bucket(DAY + 9 * H, 5)], DAY + 10 * H + 10 * M, 7)] };
   assert.equal(inputOf(mergeBoards([board(X, 'x', sameVersion), board(Y, 'y', fresh)]), B), 30);
 });
+
+test('分层的型号行跨机器合并：同一型号名下的请求项相加，轮数只算一次，好友副本也按型号名并进来', () => {
+  const svc = kind => `coda://${kind}/11111111-2222-3333-4444-555555555555`, zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, turns: 0, reportedTurns: 0 };
+  const row = (start, over) => ({ start, person: '', agent: 'codex', service: svc('openai-responses'), asked: 'gpt-5', served: null, ...zero, ...over });
+  const mac = [row(DAY + 1000, { turns: 2, reportedTurns: 2 }), row(DAY + 1000, { served: 'gpt-5-2025', input: 100 })];
+  const rig = [row(DAY + 2000, { service: svc('anthropic-messages'), asked: 'gpt-5-2025', input: 30, turns: 1, reportedTurns: 1 })];
+  const friend = [row(DAY + 3000, { asked: 'gpt-5-latest', served: 'gpt-5-2025', input: 7 }), row(DAY + 3000, { asked: 'gpt-5-latest', turns: 1, reportedTurns: 1 })];
+  const merged = mergeBoards([
+    member(X, reply({ selfAuthor: A, sourceId: 'x', local: mac, friends: [{ author: B }], records: [dayRec(B, 'phone', friend)] })),
+    member(Y, reply({ selfAuthor: A, sourceId: 'y', local: rig, friends: [{ author: B }], records: [dayRec(B, 'phone', friend)] })),
+  ]);
+  const model = merged.locals[0].models;
+  assert.deepEqual(model.map(m => [m.model, m.totalTokens, m.turns]), [['gpt-5-2025', 130, 3]]);
+  assert.deepEqual(model[0].items.map(item => [item.asked, item.api, item.totalTokens, item.turns]), [['gpt-5', 'openai-responses', 100, 2], ['gpt-5-2025', 'anthropic-messages', 30, 1]]);
+  assert.equal(merged.locals[0].turns, 3);
+  const mine = merged.entries.find(e => e.author === A), theirs = merged.entries.find(e => e.author === B);
+  assert.deepEqual(mine.models.map(m => [m.model, m.items.length]), [['gpt-5-2025', 2]]);
+  assert.deepEqual(theirs.models.map(m => [m.model, m.totalTokens, m.turns, m.items.map(item => [item.asked, item.api])]), [['gpt-5-2025', 7, 1, [['gpt-5-latest', 'openai-responses']]]]);
+});

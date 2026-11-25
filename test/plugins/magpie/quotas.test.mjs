@@ -63,8 +63,8 @@ setInterval(() => { if (existsSync(process.env.TEST_GATE)) budget.abort(new DOME
 
 test('the manifest has the record command and no resource declaration, and the type has no timer', () => {
   const { contributes, engines } = manifest('magpie');
-  assert.deepEqual(contributes.records, [{ kind: 'coda/resource@1', command: 'scripts/quotas.mjs' }]);
-  assert.deepEqual(contributes.protocolImplementations, ['coda/resource@1']);
+  assert.deepEqual(contributes.records.filter(one => one.kind === 'coda/resource@1'), [{ kind: 'coda/resource@1', command: 'scripts/quotas.mjs' }]);
+  assert.ok(contributes.protocolImplementations.includes('coda/resource@1'));
   assert.equal(contributes.resources, undefined);
   assert.equal(engines.coda, 6);
 });

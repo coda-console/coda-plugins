@@ -14,6 +14,15 @@ const log = text => process.stderr.write(`[codex-agent] ${text}\n`);
 const parse = text => { try { return JSON.parse(text || '{}'); } catch { return {}; } };
 const LIST_TIMEOUT = 8000;
 
+// The resource reference (`coda://<接口种类>/<UUID>`) of the model service an address Coda injected is, from its
+// `…/resources/<接口种类>/<UUID><路径>` (Coda's docs/plugins.md「模型服务」); null for an address of another shape.
+export function serviceReference(url) {
+  let path;
+  try { path = new URL(url).pathname; } catch { return null; }
+  const found = /^\/resources\/(openai-completions|openai-responses|anthropic-messages|openai-speech)\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\/|$)/i.exec(path);
+  return found ? `coda://${found[1]}/${found[2].toLowerCase()}` : null;
+}
+
 // The services chosen, in the order chosen: each its address, title and key (read from the file Coda keeps it in). One not
 // on this machine, or speaking another API, is left out.
 export function chosenServices(env = process.env) {
@@ -76,10 +85,21 @@ export class ServiceModels {
   }
   // What a turn names to Codex: the service's own name for one of its models.
   wire(model) { return this.served(model)?.model ?? model; }
+  // The model a turn is sent on, bound to its session at that dispatch: the service its address says (as Coda injected it) and the model
+  // asked of it, as Coda's docs/plugins.md「Coda 的用量记录」 has them; none for a model of Codex's own or an address of another shape.
+  bind(sessionState, model) {
+    const served = this.served(model), service = served && serviceReference(this.services.find(s => s.ref === served.codaService)?.url);
+    sessionState.codaRequested = service ? { service, asked: served.model } : null;
+  }
+  // The `usage` a prompt answers with (usage.mjs), with what its turn was bound to. An answer of a prompt that sent no model request (a
+  // command such as `/status`) has none, and one whose turn was bound to nothing says nothing of any model.
+  usage(sessionState, usage) { return usage && sessionState.codaRequested ? { ...usage, ...sessionState.codaRequested } : usage; }
   // A stop that comes while a turn waits on the move has no turn of codex-acp's to interrupt yet: it is the waiting turn's,
   // which ends cancelled with its input not given (`route` says so).
   cancel(sessionId) { if (this.moving === sessionId) this.stopped = true; }
   async route(server, params) {
+    const state = server.sessions.get(params.sessionId);
+    if (state) state.codaRequested = null;
     this.moving = params.sessionId; this.stopped = false;
     try { await this.move(server, params); } finally { this.moving = null; }
     return this.stopped;
@@ -125,6 +145,9 @@ const patches = [
   // A stop while the session moves is the moving turn's.
   ['  async cancel(params) {\n    const sessionState = this.sessions.get(params.sessionId);',
     '  async cancel(params) {\n    codaServices.cancel(params.sessionId);\n    const sessionState = this.sessions.get(params.sessionId);', 1],
+  // The model a turn is sent on is bound to the session, and the usage a prompt answers with says it.
+  ['      sessionState.lastTokenUsage = null;\n      ensurePendingTurnStart();\n      const sendPromptPromise', '      codaServices.bind(sessionState, modelId.model);\n      sessionState.lastTokenUsage = null;\n      ensurePendingTurnStart();\n      const sendPromptPromise', 1],
+  ['this.buildPromptUsage(sessionState.lastTokenUsage)', 'codaServices.usage(sessionState, this.buildPromptUsage(sessionState.lastTokenUsage))', 4],
   ['      model: modelId.model,\n      serviceTier\n    }, onTurnStarted);', '      model: codaServices.wire(modelId.model),\n      serviceTier\n    }, onTurnStarted);', 1],
   ['      case "warning":\n        return this.createWarningEvent(notification.params);',
     '      case "warning":\n        if (codaServices.quiet(notification.params)) return null;\n        return this.createWarningEvent(notification.params);', 1],
