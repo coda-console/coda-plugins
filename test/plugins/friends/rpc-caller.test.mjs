@@ -468,6 +468,18 @@ test('a failed answer whose message is too long to fit is cut on the holder and 
   assert.equal(h.lastAnswer(ROOT, call.request).cut, true);
 });
 
+test('a request the holder refuses before admitting it (revoked, the proxy not yet gone here) ends at once with the holder\'s reason and no effects, not after 75 seconds as offline', async t => {
+  const world = worldFake(), h = await holderOf(t, world), c = await callerOf(t, world);
+  const grant = await granted(h, c);
+  await h.holder.self['grants.revoke']({ grant });
+  // 调用方这边的代理记录还没跟上撤销：请求照常发出，持有方准入前拒绝，签回失败终态。
+  const call = c.exec({ grant });
+  await settles(call.promise);
+  await rejectsWith(call.promise, 'revoked', 'none', '授权已撤销，命令没有启动');
+  assert.deepEqual(h.answers(ROOT, call.request), ['failed']);
+  assert.equal(h.exec.runs, 0);
+});
+
 test('a running receipt keeps the call waiting past 75 seconds until the final answer; the outgoing table records the call meanwhile', async t => {
   const world = worldFake(), h = await holderOf(t, world), c = await callerOf(t, world);
   const grant = await granted(h, c);
