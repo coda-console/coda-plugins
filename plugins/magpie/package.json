@@ -4,7 +4,7 @@
   "displayName": "Magpie",
   "description": "把本机 Magpie 网关提供为模型服务",
   "icon": { "symbol": "bird.fill", "color": "indigo" },
-  "version": "1.7.0",
+  "version": "1.7.1",
   "engines": {
     "coda": 6
   },
@@ -54,7 +54,7 @@
       {
         "name": "magpie/models@1",
         "title": "Magpie 同型号映射",
-        "description": "本机 Magpie 的同型号映射：请求的模型 ID（provider/model、group/<id>、auto/<名字>）按用户在 Magpie 里的同型号声明与组成员归并到的底层型号名，连同本机 Magpie 插件提供的模型服务的资源引用（映射只对走这些服务的请求有效）。",
+        "description": "本机 Magpie 的同型号映射：请求的模型 ID（provider/model、group/<id>、auto/<名字>）按用户在设置 `magpie.modelNames` 里写明的（优先），以及用户在 Magpie 里的同型号声明与组成员自动推导出的底层型号名，连同本机 Magpie 插件提供的模型服务的资源引用（映射只对走这些服务的请求有效）。",
         "spec": {
           "type": "object",
           "properties": { "version": { "const": 1 } },

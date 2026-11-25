@@ -29,7 +29,7 @@ Pi 等选用模型服务的插件直接选它，不用填地址和 Key。Magpie 
 
 经 Magpie 走的请求，用量里只有请求的模型 ID（如 `group/ds-flash`、`opencode-go/deepseek-v4.1-flash`），拿不到实际型号。
 插件定义协议 `magpie/models@1`，本机一条记录，一个只读的安全查询 `names`（权限组 `read`），返回 `{ names: { "<请求的模型 ID>": "<底层型号名>" }, services: ["coda://<接口>/<UUID>"] }`，
-别的插件（目前是 Token 消耗榜，写在它的 `optionalUses`）按它把同一个底层型号的请求并成一行。规则是确定的，不猜：
+别的插件（目前是 Token 消耗榜，写在它的 `optionalUses`）按它把同一个底层型号的请求并成一行。你在设置 `magpie.modelNames` 里写明的优先；下表是没写明时自动推导的规则，是确定的，不猜：
 
 | 请求的模型 ID | 底层型号名 |
 | --- | --- |

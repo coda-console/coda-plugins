@@ -11,7 +11,9 @@ import { createGateway } from '../../../plugins/friends/lib/gateway.mjs';
 import { activate, deactivate } from '../../../plugins/token-board/main.mjs';
 
 const AUTHOR = `ed25519:${'a'.repeat(64)}`, FRIEND = `ed25519:${'b'.repeat(64)}`;
-const now = Date.now();
+// 时钟与时区都固定：榜单的「今天」按本机日历日算，而记录里的日、时钟键是 UTC，用真实时间或本机时区的话，当地午夜附近（以及东八区早晨）这些用例会随跑的时刻变红。
+process.env.TZ = 'UTC';
+const now = Date.parse('2026-03-18T10:07:30Z');
 const startOfBucket = at => Math.floor(at / 600_000) * 600_000;
 const counts = { input: 10, output: 5, cacheRead: 100, cacheWrite: 1, turns: 2, reportedTurns: 2 };
 const bucket = (start, over = {}) => ({ start, agent: 'claude', model: 'opus', ...counts, ...over });
@@ -822,6 +824,7 @@ test('撤回没完成（排队、证书过期、出错）：保留本机索引�
 // ——— 榜单 ———
 
 test('页面取榜单：本机用量、经网关按作者翻页读记录（沿 cursor）、不发名片查询、截断标记', async t => {
+  freeze(t);
   const state = mkdir(t), at = startOfBucket(now), clock = new Date(at).toISOString().slice(11, 16), day = new Date(at).toISOString().slice(0, 10);
   const block = { blocks: { [clock]: { codex: { gpt: { input: 1000, output: 0, cacheRead: 0, cacheWrite: 0, turns: 4, reportedTurns: 4 } } } } };
   const host = fake({ state, usage: [bucket(at)], records: [
@@ -865,6 +868,7 @@ const OTHER = `ed25519:${'c'.repeat(64)}`;
 const tagged = (at, person, over = {}) => bucket(at, { person, service: 'coda://openai-responses/11111111-2222-3333-4444-555555555555', asked: 'gpt-5', served: null, model: undefined, input: 1000, output: 0, cacheRead: 0, cacheWrite: 0, ...over });
 
 test('本机用量按身份归属：别的 person 的行不计入当前作者，页面概览、榜单与曲线都一样；无身份的行照算', async t => {
+  freeze(t);
   const state = mkdir(t), at = startOfBucket(now);
   const host = fake({ state, usage: [tagged(at, AUTHOR), tagged(at, ''), tagged(at, OTHER, { input: 50_000 }), tagged(at, AUTHOR, { served: 'gpt-5-2025', input: 20 })] });
   activate(host.coda);
@@ -878,6 +882,7 @@ test('本机用量按身份归属：别的 person 的行不计入当前作者，
 });
 
 test('本机用量按身份归属：身份读不到时没有作者可归属，本机统计照常（不按身份切）', async t => {
+  freeze(t);
   const state = mkdir(t), at = startOfBucket(now);
   const host = fake({ state, usage: [tagged(at, AUTHOR), tagged(at, OTHER)] });
   host.gateway = false;
@@ -909,6 +914,7 @@ const viaMagpie = (at, asked, over = {}) => tagged(at, AUTHOR, { asked, input: 1
 const modelsOf = list => list.models.map(m => [m.model, m.totalTokens, m.items.map(item => item.asked)]);
 
 test('同型号映射：命中的本机行并入目标型号行，展开得到原请求项；有 served 的行不套；映射只读一次', async t => {
+  freeze(t);
   const at = startOfBucket(now);
   const host = fake({ state: mkdir(t), usage: [viaMagpie(at, 'group/ds-flash'), viaMagpie(at, 'opencode-go/deepseek-v4.1-flash', { input: 30 }), viaMagpie(at, 'group/ds-flash', { served: 'real', input: 7 }),
     viaMagpie(at, 'unlisted/model', { input: 1 })] });
@@ -940,6 +946,7 @@ test('同型号映射：服务不是本机 Magpie 插件提供的（别台的 Ma
 });
 
 test('同型号映射：没装 Magpie 插件、映射为空、读映射失败，结果都和不映射相同；没有用得上的行时不去读', async t => {
+  freeze(t);
   const at = startOfBucket(now), usage = [viaMagpie(at, 'group/ds-flash'), viaMagpie(at, 'opencode-go/deepseek-v4.1-flash', { input: 30 })];
   const read = async setup => {
     const host = fake({ state: mkdir(t), usage });
@@ -994,6 +1001,7 @@ test('同型号映射：发布的记录各行带归并名 u，asked 与接口种
 });
 
 test('同型号映射：好友记录里的行用好友自己的归并名，不拿本机映射去套：同一个 asked 在好友那没有 u 就保持原名', async t => {
+  freeze(t);
   const at = startOfBucket(now), day = new Date(at).toISOString().slice(0, 10), month = monthOf(at);
   const line = (extra, input) => ({ a: 'group/ds-flash', i: 'openai-responses', ...extra, n: [input, 0, 0, 0, 1, 1] });
   const record = (source, rows) => ({ author: FRIEND, kind: dayKind, id: `${source}/${month}`, version: 1, local: false, body: { v: 3, days: { [day]: { codex: rows } } } });
@@ -1022,6 +1030,7 @@ test('网关的 friends 带 truncated 也不影响榜单：榜单不再读它', 
 });
 
 test('翻页保护：cursor 重复不死循环，页数封顶，标记 truncated；只记一条提示，不拖垮榜单', async t => {
+  freeze(t);
   const state = mkdir(t), at = startOfBucket(now), day = new Date(at).toISOString().slice(0, 10);
   const host = fake({ state, usage: [bucket(at)], records: [{ author: FRIEND, kind: usageKind, id: `${day}/dev1`, version: 1, local: false, body: { blocks: {} } }] });
   activate(host.coda);
