@@ -1,6 +1,8 @@
 // 好友页：各台电脑的 Accord 身份（Hero）、按电脑分节的好友列表与详情、添加好友。
 // 页面不自己选机器：视图里有几台就都读，身份按公钥归组、好友按电脑分节（lib/view-members.mjs）；写操作发往它所在的那一台。
 // Accord 的读写（coda/accord@1）都在这里按交互发起；「共享」（授给好友的、好友授给本机的远程执行、最近的操作）只经模块读写各台本机。
+// 网络节点（friendNodes / removeFriendNode，试用）：分节标题行的入口打开抽屉，列出入了网却没完成互认的残留节点，删除由客户端弹确认框；
+// 移除好友后留在网络里的节点（status.networkRemovals）显示在分节里，用户点「重试」才读、才删，页面不会自己调用。
 // 昵称、头像都由 Accord 公钥推出（nickname.mjs、avatar.mjs），没有可编辑的名片；
 // 节点名等外来数据一律用 textContent / DOM API 渲染，从不拼 HTML 字符串。
 import { accordStatusSummary, resolveAvatar } from '../lib/avatar.mjs';
@@ -21,10 +23,12 @@ const REVOKE_RETRIES = 3;
 const GRANT_CONFIRMS = 3;
 
 // 视图里的每台电脑（成员在页面生命周期内不变）各存一份数据；读不到的（unreachable）也在，只是不发请求。
-const members = listMembers(coda).map(m => ({ ...m, entry: null, author: null, friends: [], loaded: false, accordProblem: null }));
+// 节点的名字、忙碌、错误、已收回按（电脑, 控制服务器节点 ID）记在 m.fn 里，不与好友行的 state.busy / state.notice 混用（那两个按 Accord 的 node 记）。
+const members = listMembers(coda).map(m => ({ ...m, entry: null, author: null, friends: [], loaded: false, accordProblem: null, fn: { names: new Map(), done: new Set(), busy: new Set(), errors: new Map(), noCreds: false } }));
 const live = members.filter(m => !m.unreachable);
 const multi = members.length > 1;
 const state = { busy: new Set(), notice: new Map(), heroNotice: new Map(), detail: null, removing: null, menu: null };
+let netBusy = false, netView = null; // 同一页同一时间只有一个好友节点操作在途；netView 是开着的抽屉里读到的内容
 const via = m => ({ machine: m.id });
 const rowKey = (m, node) => `${m.id}\u0000${node}`;
 function say(target, text, kind = 'hint') { target.className = kind; target.textContent = text; }
@@ -610,6 +614,126 @@ function drawPicker() {
     }) : emptyRow('本机没有可授出的远程执行记录'));
 }
 
+// ---- 网络节点 ----
+const canNet = () => typeof coda.friendNodes === 'function';
+const NO_CREDS = '需在有网络凭据的设备上移除';
+const netIcon = () => svg('svg', { viewBox: '0 0 24 24', width: 18, height: 18, fill: 'none', stroke: 'currentColor', 'stroke-width': 1.8, 'stroke-linecap': 'round', 'aria-hidden': 'true' },
+  svg('circle', { cx: 12, cy: 5, r: 2.4 }), svg('circle', { cx: 5, cy: 18, r: 2.4 }), svg('circle', { cx: 19, cy: 18, r: 2.4 }), svg('path', { d: 'M11 7.2 6 15.8M13 7.2l5 8.6M7.6 18h8.8' }));
+const unreadableText = (data, verb) => `${data.unreadable.map(u => u.name).join('、')} 读不到，暂时不能${verb}`;
+function heldText(ids = []) {
+  const names = ids.map(id => members.find(m => m.id === id)?.name).filter(Boolean);
+  return names.length ? `${names.join('、')} 还认着它，先在${names.length > 1 ? '那几台' : '那台'}上移除好友` : '还有后端认着它，先在那台上移除好友';
+}
+// 一次好友节点操作：同一时间只放一个进来；node 给了就在那一行显示忙碌。task 自己处理失败，结束后统一重画。
+async function exclusive(m, node, task) {
+  if (netBusy) return;
+  netBusy = true;
+  if (node) { m.fn.busy.add(node); m.fn.errors.delete(node); }
+  const running = task();
+  draw();
+  try { await running; } finally { netBusy = false; if (node) m.fn.busy.delete(node); draw(); }
+}
+// 读：不弹确认框；顺带记下每个节点的名字。没有网络凭据（not_found）记在这台上。
+async function readNodes(m) {
+  try {
+    const data = await coda.friendNodes({ machine: m.id });
+    for (const n of data.nodes) m.fn.names.set(n.node, n.name);
+    return { data };
+  } catch (error) { if (error?.code === 'not_found') m.fn.noCreds = true; return { error }; }
+}
+// 删：确认框由客户端弹。成功、或节点已删只是待移除没结清（effects: some）算已收回；取消什么也不留；别的错误写在行上。给回错误。
+async function dropNode(m, node) {
+  const f = m.fn;
+  try { await coda.removeFriendNode({ machine: m.id, node }); f.done.add(node); return null; } catch (error) {
+    if (error?.effects === 'some') f.done.add(node);
+    else if (error?.code === 'not_found') f.noCreds = true;
+    else if (error?.code !== 'canceled') f.errors.set(node, error?.message ?? String(error));
+    return error;
+  }
+}
+
+const net = { dialog: makeDialog({ title: '网络节点', close: '完成', onClose: () => { netView = null; } }) };
+function openNet(m) {
+  netView = { m, phase: 'loading', data: null, error: '' };
+  showDialog(net.dialog);
+  loadNet(netView);
+}
+const loadNet = view => exclusive(view.m, null, async () => {
+  Object.assign(view, { phase: 'loading', error: '' });
+  const { data, error } = await readNodes(view.m);
+  if (netView !== view) return;
+  if (data) Object.assign(view, { phase: 'ready', data });
+  else if (error?.code === 'canceled') closeDialog();
+  else if (error?.code === 'not_found') view.phase = 'notfound';
+  else Object.assign(view, { phase: 'error', error: error?.message ?? String(error) });
+});
+const deleteFromDrawer = (view, node) => exclusive(view.m, node, async () => {
+  const error = await dropNode(view.m, node);
+  if (error?.code === 'not_found' && netView === view) view.phase = 'notfound';
+});
+
+function nodeRow(view, n, kind) {
+  const f = view.m.fn, busy = f.busy.has(n.node), error = f.errors.get(n.node);
+  return h('li', { class: `g-row stripe ${kind}` },
+    h('span', { class: 'g-info' },
+      h('span', { class: 'g-name truncate selectable' }, n.name),
+      h('span', { class: 'g-sub meta' }, h('span', { class: `dot ${n.online ? 'ok-dot' : 'off-dot'}` }),
+        n.online ? '在线' : typeof n.lastSeen === 'number' ? `${formatTime(n.lastSeen)} 离线` : '离线', ' · ', n.state === 'pending' ? '已断交' : '未完成互认'),
+      error ? h('span', { class: 'g-sub error' }, error) : null),
+    n.inviteOpen ? h('span', { class: 'badge pending' }, '邀请待用')
+      : busy ? h('span', { class: 'badge busy' }, '正在删除…')
+      : h('button', { class: 'btn danger small', type: 'button', disabled: netBusy || !view.data.complete, onclick: () => deleteFromDrawer(view, n.node) }, '删除'));
+}
+function nodeGroup(view, title, dot, kind, nodes) {
+  return nodes.length ? h('div', { class: 'group' },
+    h('h4', { class: 'sub-head' }, h('span', { class: `dot ${dot}` }), title, h('span', { class: 'count' }, String(nodes.length))),
+    h('ul', { class: 'glist' }, nodes.map(n => nodeRow(view, n, kind)))) : null;
+}
+function drawNet() {
+  const view = netView, { m, phase, data } = view;
+  net.dialog.heading.textContent = multi ? `网络节点 · ${m.name}` : '网络节点';
+  const reread = h('button', { class: 'btn quiet small', type: 'button', disabled: netBusy, onclick: () => loadNet(view) }, '重新读取');
+  if (phase !== 'ready') {
+    return fill(net.dialog.body, phase === 'loading' ? h('p', { class: 'empty' }, '正在读取…') : phase === 'notfound' ? h('p', { class: 'empty' }, NO_CREDS)
+      : h('div', { class: 'stack' }, h('p', { class: 'error selectable' }, view.error), h('div', { class: 'line' }, reread)));
+  }
+  const nodes = data.nodes.filter(n => n.state !== 'friend' && !m.fn.done.has(n.node));
+  fill(net.dialog.body, h('div', { class: 'stack' },
+    h('div', { class: 'line' }, h('span', { class: 'tag' }, data.network.kind === 'headscale' ? 'Headscale' : 'Tailscale'), h('span', { class: 'secondary selectable' }, data.network.name)),
+    data.complete ? null : h('div', { class: 'note-box' }, unreadableText(data, '删除'), h('span', { class: 'spacer' }), reread),
+    nodeGroup(view, '本空间邀请带入的', 'ok-dot', 'attr', nodes.filter(n => n.attributed)),
+    nodeGroup(view, '归属未确认', 'warn-dot', 'unk', nodes.filter(n => !n.attributed)),
+    nodes.length ? null : h('p', { class: 'empty' }, '没有残留节点')));
+}
+
+// 移除好友后留在网络里的节点：不需要网络凭据就能看到，点「重试」才读、才删。
+function retryRemoval(m, node) {
+  return exclusive(m, node, async () => {
+    const f = m.fn, { data, error } = await readNodes(m);
+    if (error) { if (error.code !== 'canceled' && error.code !== 'not_found') f.errors.set(node, error.message); return; }
+    const found = data.nodes.find(n => n.node === node);
+    if (!data.complete) f.errors.set(node, unreadableText(data, '移除'));
+    else if (!found) f.done.add(node);
+    else if (found.state === 'friend') f.errors.set(node, heldText(found.heldBy));
+    else await dropNode(m, node);
+  });
+}
+function removalRow(m, { node, since }) {
+  const f = m.fn, name = f.names.get(node), error = f.errors.get(node);
+  return h('li', { class: 'g-row' },
+    h('span', { class: 'g-info' },
+      h('span', { class: `g-name truncate selectable${name ? '' : ' mono'}` }, name ?? `节点 ${node}`),
+      h('span', { class: f.noCreds || !error ? 'g-sub' : 'g-sub error' }, f.noCreds ? NO_CREDS : error ?? `${formatTime(since)} 移除`)),
+    f.busy.has(node) ? h('span', { class: 'badge busy' }, '正在移除…')
+      : f.noCreds ? null : h('button', { class: 'btn quiet small', type: 'button', disabled: netBusy, onclick: () => retryRemoval(m, node) }, '重试'));
+}
+function removalBlock(m) {
+  const removals = canNet() ? (m.entry?.status?.networkRemovals ?? []).filter(r => !m.fn.done.has(r.node)) : [];
+  return removals.length ? h('div', { class: 'netblock' },
+    h('h3', { class: 'sub-head' }, h('span', { class: 'dot warn-dot' }), '网络节点待移除', h('span', { class: 'count' }, String(removals.length))),
+    h('ul', { class: 'glist' }, removals.map(r => removalRow(m, r)))) : null;
+}
+
 function friendTile(m, row) {
   return h('li', {}, h('button', { class: 'f-tile', type: 'button', 'aria-label': `${row.title}，${STATUS_TEXT[row.status]}`, onclick: () => openDetail(m, row) },
     avatar(rowAvatar(row), 'sm'),
@@ -625,11 +749,13 @@ function drawSection({ member: m, title, unreachable, rows }) {
   const attention = summary && (summary.cert !== 'active' || summary.friends.pending || summary.friends.conflict);
   const empty = !m.loaded ? '正在读取…' : '还没有好友。点上方「添加好友」，粘贴对方发来的邀请即可。';
   return h('section', {},
-    h('h2', { class: 'sec' }, title ?? '好友', unreachable ? null : h('span', { class: 'count', hidden: !rows.length }, String(rows.length))),
+    h('h2', { class: 'sec' }, title ?? '好友', unreachable ? null : h('span', { class: 'count', hidden: !rows.length }, String(rows.length)),
+      unreachable || !canNet() ? null : [h('span', { class: 'spacer' }), h('button', { class: 'kebab', type: 'button', title: '网络节点', 'aria-label': '网络节点', disabled: netBusy, onclick: () => openNet(m) }, netIcon())]),
     down ? h('p', { class: 'error selectable' }, down) : [
       multi && attention ? statusTiles(m, rows) : null,
       multi ? h('div', { class: 'line' }, h('button', { class: 'pill strong', type: 'button', onclick: () => openInvite(m) }, '添加好友')) : null,
-      rows.length ? h('ul', { class: 'friends' }, rows.map(row => friendTile(m, row))) : multi && m.loaded ? null : h('p', { class: 'empty' }, empty)]);
+      rows.length ? h('ul', { class: 'friends' }, rows.map(row => friendTile(m, row))) : multi && m.loaded ? null : h('p', { class: 'empty' }, empty),
+      removalBlock(m)]);
 }
 
 const page = h('div', { class: 'page' });
@@ -640,10 +766,11 @@ function draw() {
   fill(page, ids.map(id => drawHero(id, sections)), sections.map(drawSection));
   if (state.detail) { if (detailRow()) drawDetail(); else closeDialog(); }
   drawPicker();
+  if (netView) drawNet();
 }
 
 picker.dialog.scrim.hidden = true;
-root.replaceChildren(page, detail.dialog.scrim, invite.dialog.scrim, picker.dialog.scrim);
+root.replaceChildren(page, detail.dialog.scrim, invite.dialog.scrim, picker.dialog.scrim, net.dialog.scrim);
 draw();
 
 coda.header({ text: '好友' }).catch(() => {});
