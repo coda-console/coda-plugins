@@ -871,3 +871,20 @@ test('a ledger query returns every matching row up to a large limit and filters 
   assert.equal((await store.readLedger({ limit: 1000, friend: B })).length, 25);
   assert.deepEqual((await store.readLedger({ request: 'c12' })).map(one => one.request), ['c12']);
 });
+
+test('a refusal admitted is written as its terminal state at once, with no call to run; it is deduplicated and counted as any admission is', async t => {
+  const { store, clock } = await setup(t);
+  const row = { v: 1, at: START, request: 'c1', friend: A, grant: GRANT, target: { kind: TARGET.kind, id: TARGET.id, name: 'box' }, op: 'exec',
+    command: commandInfo('echo 1'), outcome: 'failed', code: 'target_offline', ms: 0 };
+  const refusal = { state: 'failed', ending: { finishedAt: START, error: { code: 'target_offline', message: '授权的目标机器此刻离线，命令没有启动', effects: 'none' } }, row };
+  const one = candidate(clock);
+  const admitted = await store.admit({ ...one, refusal });
+  assert.equal(admitted.ok, true);
+  const entry = await store.get(A, one.request);
+  assert.deepEqual([entry.state, entry.call, entry.outcome, entry.ledger], ['failed', undefined, refusal.ending, row]);
+  assert.equal((await store.markSubmitted(A, one.request)).code, 'terminal', 'never submitted');
+  assert.equal((await store.admit({ ...one, refusal })).code, 'duplicate');
+  // 每分钟的名额照算。
+  for (let i = 1; i < LIMITS.perMinute.author; i++) assert.equal((await store.admit({ ...candidate(clock), refusal })).ok, true);
+  assert.equal((await store.admit({ ...candidate(clock), refusal })).code, 'busy');
+});

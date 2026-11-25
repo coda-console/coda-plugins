@@ -255,10 +255,13 @@ export function createRpcStore(stateDir, { now = Date.now, newId = randomUUID, o
    * `{ ok: true, entry }`，或 `{ ok: false, code }`：`duplicate`（同号同摘要，带原来那一项）、`digest_conflict`（同号不同摘要，原项不动）、
    * `table_full`（实际保存的项已达 4096，清掉可清的之后仍满；不挤掉承担去重或交付的项）、`busy`（带 `limit`、`scope`、`retryAfterMs`）。
    * `canceled: true` 是取消先于请求到达：先留下标记，之后不会再启动。过期 24 小时的旧项顺手清掉；表按行数满了，再清已过期的可清项。
+   * `refusal`（`{ state, ending, row }`，同 finish 的终态与那一行操作记录）是准入前就拒绝、要签回终态的：同样去重、算配额，但写进去的就是终态，
+   * 不带子调用参数，盘上没有可执行的一刻。
    */
-  const admit = ({ caller, request, grant, digest, key, notAfter, call, canceled, version }) => serial(async () => {
-    const at = now(), entry = { caller, request, grant, digest, key, notAfter, admittedAt: at, state: 'admitted', call, ...(canceled ? { canceled: true, canceledAt: at } : {}),
-      ...(version === undefined ? {} : { version }) };
+  const admit = ({ caller, request, grant, digest, key, notAfter, call, canceled, version, refusal }) => serial(async () => {
+    const at = now(), base = { caller, request, grant, digest, key, notAfter, admittedAt: at, ...(version === undefined ? {} : { version }) };
+    const entry = refusal ? { ...base, state: refusal.state, outcome: refusal.ending, ledger: refusal.row }
+      : { ...base, state: 'admitted', call, ...(canceled ? { canceled: true, canceledAt: at } : {}) };
     if (!inflightOk(entry) || !call) throw invalid('在途项的各项不合格');
     const entries = purged(await load('inflight')), slot = inflightKey(caller, request), old = entries[slot];
     if (old) return old.digest === digest ? { ok: false, code: 'duplicate', entry: old } : { ok: false, code: 'digest_conflict', entry: old };

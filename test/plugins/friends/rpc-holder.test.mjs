@@ -2397,3 +2397,45 @@ test('a refusal is answered only within the friend\'s quota and only to the gran
   assert.deepEqual(h.answers(F2, unbound.request), []);
   assert.equal(h.exec.runs, 0);
 });
+
+test('a refusal is written as a terminal entry in the one admitting write: stopped before its answer is signed, the restart signs the refusal and never runs the command, even with the target back', async t => {
+  const box = { stopAfterRefusal: true, h: null };
+  const wrapStore = store => ({ ...store, admit: async input => {
+    const admitted = await store.admit(input);
+    // 拒绝登记之后、签回答之前就停了（同进程退出）。
+    if (input.refusal && box.stopAfterRefusal) { box.stopAfterRefusal = false; box.h.stop(); }
+    return admitted;
+  } });
+  const h = box.h = await holderOf(t, { wrapStore });
+  addMachineB(h);
+  const { grant } = await grantB(h);
+  h.targets.machines.set(B, { offline: true });
+  const body = send(h, { grant });
+  await h.holder.tick();
+  await until(() => h.stopped, '拒绝登记后停下');
+  const entry = await h.store.get(F1, body.request);
+  assert.deepEqual([entry.state, entry.outcome.error.code, entry.call], ['failed', 'target_offline', undefined], 'never an executable entry on disk');
+  assert.deepEqual(h.answers(F1, body.request), []);
+  // B 回来了，重启：只补签那条拒绝，不提交。
+  h.targets.machines.set(B, { offline: false });
+  const again = await holderOf(t, { ...h, wrapStore: undefined });
+  await again.settle();
+  assert.equal(refusedWith(again, body), 'target_offline');
+  assert.equal(h.exec.calls.length, 0);
+  assert.equal((await refusals(again, 'target_offline')).length, 1);
+});
+
+test('a refusal whose admitting write fails leaves nothing on disk and signs nothing; the request is looked at again on the next round', async t => {
+  const disk = { failures: 1 };
+  const h = await holderOf(t, { wrapStore: store => ({ ...store, admit: input => input.refusal && disk.failures-- > 0 ? Promise.reject(new Error('写不进去')) : store.admit(input) }) });
+  addMachineB(h);
+  const { grant } = await grantB(h);
+  h.targets.machines.set(B, { offline: true });
+  const body = send(h, { grant });
+  await h.holder.tick();
+  assert.equal(await h.store.get(F1, body.request), null);
+  assert.deepEqual(h.answers(F1, body.request), []);
+  await h.settle();
+  assert.equal(refusedWith(h, body), 'target_offline');
+  assert.equal(h.exec.calls.length, 0);
+});

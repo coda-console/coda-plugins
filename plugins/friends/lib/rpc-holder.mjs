@@ -404,7 +404,8 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
     return true;
   }
 
-  // 准入前就拒绝、又该让对方知道的（见文件头）：照常准入一项（同号去重、配额照算），随即以拒绝落终态，签回答走在途表的老路（之后照常撤回）。
+  // 准入前就拒绝、又该让对方知道的（见文件头）：在 store 准入的同一次写入里直接登记成拒绝的终态（同号去重、配额照算），
+  // 盘上从来没有可执行的一项；签回答走在途表的老路（之后照常撤回）。
   // 给 true 是已经这样处理了；窗口、输入不合，或配额、表容量不让准入的，给 false，由调用方照旧只记账。先到的取消（没人在等）也不回话。
   async function answerRefusal(record, body, digest, grant, me, problem) {
     const caller = body.caller;
@@ -412,12 +413,11 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
     if (!replayWindow(body.createdAt, body.expiresAt, now()).ok) return false;
     const input = rebuildExecInput(body.input);
     if (!input.ok) return false;
-    const key = inflightKey(caller, body.request);
-    since.set(key, monotonic());
+    const call = { target: grant.target, input: input.input };
+    const refusal = await closing({ caller, request: body.request, grant: grant.id, call }, refused(problem));
     const admitted = await store.admit({ caller, request: body.request, grant: grant.id, digest, key: idempotencyKey(caller, body.request),
-      notAfter: body.expiresAt, call: { target: grant.target, input: input.input }, version: record.version });
-    if (!admitted.ok) { since.delete(key); return false; }
-    await end(admitted.entry, refused(problem));
+      notAfter: body.expiresAt, call, version: record.version, refusal });
+    if (!admitted.ok) return false;
     drive(caller, body.request);
     return true;
   }
@@ -573,17 +573,22 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
 
   // 落终态（先落盘），连同要写进操作记录的那一行一起落：之后中途退出，重启照它补写。已有终态的不改。
   // 耗时用单调时钟，从本进程开始经手它算起（重启后接手的，从接手时算）。
-  async function end(entry, { state, result, error }) {
+  async function end(entry, outcome) {
+    const key = inflightKey(entry.caller, entry.request), { state, ending, row } = await closing(entry, outcome);
+    const done = await store.finish(entry.caller, entry.request, { state, ...ending }, row);
+    since.delete(key);
+    announced.delete(key);
+    return done.entry;
+  }
+  // 终态要落的两样：结局（`ending`：finishedAt 与 result、error）和操作记录的那一行。`entry` 只用到 caller、request、grant 与 call。
+  async function closing(entry, { state, result, error }) {
     const finishedAt = now(), key = inflightKey(entry.caller, entry.request), { target, input } = entry.call;
     let name = target.id;
     try { name = (await targetOf(target))?.spec?.name || target.id; } catch { /* 名字只是展示 */ }
     const row = { v: 1, at: finishedAt, request: entry.request, friend: entry.caller, grant: entry.grant, target: { kind: target.kind, id: target.id, name }, op: 'exec',
       command: commandInfo(input.command), outcome: state, ...(error ? { code: error.code } : {}), ...(result && 'exitCode' in result ? { exitCode: result.exitCode } : {}),
       ms: Math.round(monotonic() - (since.get(key) ?? monotonic())) };
-    const done = await store.finish(entry.caller, entry.request, { state, finishedAt, ...(result === undefined ? {} : { result }), ...(error === undefined ? {} : { error }) }, row);
-    since.delete(key);
-    announced.delete(key);
-    return done.entry;
+    return { state, ending: { finishedAt, ...(result === undefined ? {} : { result }), ...(error === undefined ? {} : { error }) }, row };
   }
 
   // 把随终态落盘的那一行写进操作记录（按调用方 + 请求号幂等），再去掉它。写不进去不吞掉：留在在途项上，下一次扫在途表时补写。
