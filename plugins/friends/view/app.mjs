@@ -24,7 +24,7 @@ const GRANT_CONFIRMS = 3;
 
 // 视图里的每台电脑（成员在页面生命周期内不变）各存一份数据；读不到的（unreachable）也在，只是不发请求。
 // 节点的名字、忙碌、错误、已收回按（电脑, 控制服务器节点 ID）记在 m.fn 里，不与好友行的 state.busy / state.notice 混用（那两个按 Accord 的 node 记）。
-const members = listMembers(coda).map(m => ({ ...m, entry: null, author: null, friends: [], loaded: false, accordProblem: null, fn: { names: new Map(), done: new Set(), busy: new Set(), errors: new Map(), blocks: new Map(), noCreds: false } }));
+const members = listMembers(coda).map(m => ({ ...m, entry: null, author: null, friends: [], loaded: false, accordProblem: null, fn: { names: new Map(), done: new Set(), busy: new Set(), errors: new Map(), readErrors: new Map(), blocks: new Map(), noCreds: false } }));
 const live = members.filter(m => !m.unreachable);
 const multi = members.length > 1;
 const state = { busy: new Set(), notice: new Map(), heroNotice: new Map(), detail: null, removing: null, menu: null };
@@ -632,17 +632,23 @@ const lastSeenMs = v => { const ms = typeof v === 'string' ? Date.parse(v) : v; 
 async function exclusive(m, node, task) {
   if (netBusy) return;
   netBusy = true;
-  if (node) { m.fn.busy.add(node); m.fn.errors.delete(node); m.fn.blocks.delete(node); }
+  if (node) { m.fn.busy.add(node); m.fn.errors.delete(node); m.fn.readErrors.delete(node); m.fn.blocks.delete(node); }
   const running = task();
   draw();
   try { await running; } finally { netBusy = false; if (node) m.fn.busy.delete(node); draw(); }
 }
-// 读：不弹确认框；顺带记下每个节点的名字。没有网络凭据（not_found）记在这台上；读成功就撤掉没凭据、已收回、因读取阻止的旧记录，由调用方按这次的结果重判。
+// 读：不弹确认框；顺带记下每个节点的名字。没有网络凭据（not_found）记在这台上；读成功就撤掉没凭据、已收回和读取失败的旧记录，已有的阻止提示按这次的结果重算，当前这个节点由调用方重判。
 async function readNodes(m) {
   try {
     const data = await coda.friendNodes({ machine: m.id });
     m.fn.noCreds = false;
-    m.fn.blocks.clear();
+    m.fn.readErrors.clear();
+    for (const node of m.fn.blocks.keys()) {
+      const found = data.nodes.find(n => n.node === node);
+      if (!data.complete) m.fn.blocks.set(node, unreadableText(data, '移除'));
+      else if (found?.state === 'friend') m.fn.blocks.set(node, heldText(found.heldBy));
+      else m.fn.blocks.delete(node);
+    }
     for (const n of data.nodes) { m.fn.names.set(n.node, n.name); m.fn.done.delete(n.node); }
     return { data };
   } catch (error) { if (error?.code === 'not_found') m.fn.noCreds = true; return { error }; }
@@ -716,7 +722,7 @@ function drawNet() {
 function retryRemoval(m, node) {
   return exclusive(m, node, async () => {
     const f = m.fn, { data, error } = await readNodes(m);
-    if (error) { if (error.code !== 'canceled' && error.code !== 'not_found') f.errors.set(node, error.message); return; }
+    if (error) { if (error.code !== 'canceled' && error.code !== 'not_found') f.readErrors.set(node, error.message); return; }
     const found = data.nodes.find(n => n.node === node);
     if (!data.complete) f.blocks.set(node, unreadableText(data, '移除'));
     else if (!found) f.done.add(node);
@@ -725,7 +731,7 @@ function retryRemoval(m, node) {
   });
 }
 function removalRow(m, { node, since }) {
-  const f = m.fn, name = f.names.get(node), error = f.errors.get(node) ?? f.blocks.get(node);
+  const f = m.fn, name = f.names.get(node), error = f.errors.get(node) ?? f.readErrors.get(node) ?? f.blocks.get(node);
   return h('li', { class: 'g-row' },
     h('span', { class: 'g-info' },
       h('span', { class: `g-name truncate selectable${name ? '' : ' mono'}` }, name ?? `节点 ${node}`),

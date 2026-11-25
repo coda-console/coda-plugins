@@ -1522,6 +1522,34 @@ test('retry shows the node name after a read that still leaves the node; a held 
   assert.deepEqual(log.nodes.map(c => c[0]), ['friendNodes', 'friendNodes', 'friendNodes', 'friendNodes']);
 });
 
+test('two removals held by B: retrying the second keeps the first one\'s hold notice, and a node with no notice still shows its removal time', async t => {
+  const held = { read: netRead([netNode('41', 'mei-iphone', 'friend', { heldBy: ['b'] }), netNode('44', 'ipad', 'friend', { heldBy: ['b'] }), netNode('50', 'watch', 'friend', { heldBy: ['b'] })]) };
+  const { page } = await openNetPage(t, { machines: [A, B], friendNodes: () => held.read, status: { a: { networkRemovals: [removal('41'), removal('44'), removal('50', SINCE + 1)] } } });
+  const retryRow = async i => { buttonIn(page, gRows(page, netBlock(page))[i], '重试').fire('click'); await flush(); };
+  const subs = () => gRows(page, netBlock(page)).map(row => page.all(n => cls(n).startsWith('g-sub'), row)[0].textContent);
+  await retryRow(0);
+  await retryRow(1);
+  assert.deepEqual(subs(), ['B 还认着它，先在那台上移除好友', 'B 还认着它，先在那台上移除好友', `${fmtTime(SINCE + 1)} 移除`]);
+  // 之后 B 放手了：已有提示的行跟着新结果清掉，没点过的行仍是移除时间。
+  held.read = netRead([netNode('41', 'mei-iphone', 'candidate'), netNode('44', 'ipad', 'friend', { heldBy: ['a'] }), netNode('50', 'watch', 'friend', { heldBy: ['b'] })]);
+  await retryRow(2);
+  assert.deepEqual(subs(), [`${fmtTime(SINCE)} 移除`, 'A 还认着它，先在那台上移除好友', 'B 还认着它，先在那台上移除好友']);
+});
+
+test('a failed read on retry is not kept once a later read succeeds: neither the drawer row nor the pending row shows it, while a failed delete stays', async t => {
+  const reads = [() => { throw netError('service_unavailable', '控制服务器没有应答'); }, () => netRead([netNode('41', 'mei-iphone', 'candidate'), netNode('44', 'ipad', 'candidate')])];
+  const { page } = await openNetPage(t, { friendNodes: () => reads.shift()(), removeFriendNode: ({ node }) => { throw netError('invalid_state', `${node} 删不掉`); }, status: { a: { networkRemovals: [removal('41'), removal('44')] } } });
+  buttonIn(page, gRows(page, netBlock(page))[0], '重试').fire('click');
+  await flush();
+  assert.ok(gRows(page, netBlock(page))[0].textContent.includes('控制服务器没有应答'));
+  const drawer = await openDrawer(page);
+  assert.ok(!gRows(page, netBlock(page))[0].textContent.includes('控制服务器没有应答'), 'the pending row');
+  assert.ok(!drawer.textContent.includes('控制服务器没有应答'), 'the drawer row');
+  buttonIn(page, rowWith(page, drawer, 'ipad'), '删除').fire('click');
+  await flush();
+  assert.ok(gRows(page, netBlock(page))[1].textContent.includes('44 删不掉'), 'a failed delete is not cleared by reads');
+});
+
 test('retry on an incomplete read says who cannot be read and does not delete; a node that is gone from a complete read is treated as removed without a delete', async t => {
   const state = { read: netRead([netNode('41', 'mei-iphone', 'pending')], { complete: false, unreadable: [{ machine: 'r', name: 'rig' }] }) };
   const { page, log } = await openNetPage(t, { friendNodes: () => state.read, removeFriendNode: () => ({ removed: true }), status: { a: { networkRemovals: [removal('41'), removal('50')] } } });
