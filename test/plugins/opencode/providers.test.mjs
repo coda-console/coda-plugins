@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { chosenServices, providerEnvironment, providerId, serviceModels, serviceProvider } from '../../../plugins/opencode/agent/providers.mjs';
+import { chosenServices, providerEnvironment, providerId, serviceModels, serviceProvider, serviceReference } from '../../../plugins/opencode/agent/providers.mjs';
 
 const service = { ref: 'magpie/openai', title: 'Magpie', api: 'openai-completions', url: 'https://example.com/v1' };
 const provided = (extra = {}, others = {}) => ({ CODA_PLUGIN_SETTINGS: JSON.stringify({ 'opencode.modelProviders': [service.ref, ...Object.keys(others)] }),
@@ -208,4 +208,12 @@ test('provider templates still reject invalid objects and cannot recursively int
       assert.match(error.message, /OPENCODE_CONFIG_CONTENT/);
       return true;
     });
+});
+
+test('the service an injected address belongs to is its resource reference, of a model interface and a UUID; any other shape is none', () => {
+  const id = '6F1A7C52-0d3b-4e8a-9a41-2b7d5c0e9f13';
+  assert.equal(serviceReference(`http://127.0.0.1:3425/resources/openai-completions/${id}/v1`), `coda://openai-completions/${id.toLowerCase()}`);
+  assert.equal(serviceReference(`http://127.0.0.1:3425/resources/anthropic-messages/${id}`), `coda://anthropic-messages/${id.toLowerCase()}`);
+  for (const url of [`http://127.0.0.1:3425/resources/openai-completions/${id}x/v1`, `http://127.0.0.1:3425/resources/machines/${id}/v1`, 'http://127.0.0.1:3425/resources/openai-completions/not-a-uuid/v1',
+    `http://127.0.0.1:3425/other/resources/openai-completions/${id}`, 'https://example.com/v1', 'not a url', '', undefined]) assert.equal(serviceReference(url), null, String(url));
 });

@@ -175,6 +175,11 @@ process.stdin.on('data', chunk => {
       terminals = [{ itemId: command.id, processId: command.processId, command: command.command }];
       send({ method: 'item/started', params: { threadId: thread.id, turnId: turn.id, item: command } });
     }
+    // FAKE_CODEX_TOKENS: the turn says what it used, as Codex does before it completes.
+    if (process.env.FAKE_CODEX_TOKENS && !message.params.outputSchema) {
+      const count = { totalTokens: 30, inputTokens: 20, cachedInputTokens: 5, outputTokens: 10, reasoningOutputTokens: 2 };
+      send({ method: 'thread/tokenUsage/updated', params: { threadId: thread.id, turnId: turn.id, tokenUsage: { last: count, total: count, modelContextWindow: 1000 } } });
+    }
     send({ method: 'turn/completed', params: { threadId: thread.id, turn: { ...turn, status: 'completed' } } });
   }
 });

@@ -12,7 +12,9 @@ import { fixtureSdk, queries } from './fixture-sdk.mjs';
 const model = (inputTokens, outputTokens, cacheReadInputTokens = 0, cacheCreationInputTokens = 0, more = {}) =>
   ({ inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens, contextWindow: 1000, ...more });
 const result = (modelUsage, more = {}) => ({ type: 'result', subtype: 'success', is_error: false, stop_reason: 'end_turn', usage: {}, modelUsage, total_cost_usd: 0, ...more });
-const row = (name, inputTokens, outputTokens, cachedReadTokens = 0, cachedWriteTokens = 0) => ({ model: name, inputTokens, outputTokens, cachedReadTokens, cachedWriteTokens });
+const row = (name, inputTokens, outputTokens, cachedReadTokens = 0, cachedWriteTokens = 0, label = 'model') => ({ [label]: name, inputTokens, outputTokens, cachedReadTokens, cachedWriteTokens });
+// The model the SDK says ran (its `canonicalModel`) is the row's `served`; the SDK's own name without one stays the unlayered `model` label.
+const ran = (name, inputTokens, outputTokens, cachedReadTokens = 0, cachedWriteTokens = 0) => row(name, inputTokens, outputTokens, cachedReadTokens, cachedWriteTokens, 'served');
 // What a prompt answered with, by the one result it took.
 const told = (usage, m) => { usage.hold(usage.measure(m)); return usage.take(); };
 
@@ -33,14 +35,14 @@ test('the main model and the subagents it launches are a breakdown by model, sum
     { usage: { totalTokens: 130, inputTokens: 20, outputTokens: 10, cachedReadTokens: 100, cachedWriteTokens: 0, breakdown: [row('main', 20, 10, 100, 0)] } });
   assert.deepEqual(told(usage, result({ main: model(40, 25, 100, 0), sub: model(15, 12, 7, 0, { canonicalModel: 'claude-haiku-sub' }) })),
     { usage: { totalTokens: 10 + 5 + 10 + 7 + 7, inputTokens: 20, outputTokens: 12, cachedReadTokens: 7, cachedWriteTokens: 0,
-      breakdown: [row('main', 10, 5), row('claude-haiku-sub', 10, 7, 7)] } });
+      breakdown: [row('main', 10, 5), ran('claude-haiku-sub', 10, 7, 7)] } });
 });
 
 test('two names of one model are one row of the breakdown', () => {
   const usage = new PromptUsage();
   usage.restarted(false);
   assert.deepEqual(told(usage, result({ alias: model(1, 2, 0, 0, { canonicalModel: 'claude-x' }), 'claude-x[1m]': model(3, 4, 0, 0, { canonicalModel: 'claude-x' }) })).usage.breakdown,
-    [row('claude-x', 4, 6)]);
+    [ran('claude-x', 4, 6)]);
 });
 
 test('a counter that went down (/clear) is a reset: the model\'s turn is what it says now, and it counts on from there', () => {
@@ -126,6 +128,43 @@ test('a restarted query begins again: nothing held from the last, and a resumed 
   assert.deepEqual(told(usage, result({ m: model(10, 10) }, { usage: { input_tokens: 1, output_tokens: 1 } })).usage.totalTokens, 2);
 });
 
+const service = { service: 'coda://anthropic-messages/6f1a7c52-0d3b-4e8a-9a41-2b7d5c0e9f13', asked: 'group/ds-flash' };
+
+test('a turn on a model service tells the service and the model asked at the top level, and no model that ran: one model is no breakdown', () => {
+  const usage = new PromptUsage();
+  usage.restarted(false, service);
+  assert.deepEqual(told(usage, result({ 'group/ds-flash': model(100, 20, 5000, 300, { canonicalModel: 'claude-sonnet-x' }) })),
+    { usage: { totalTokens: 5420, inputTokens: 100, outputTokens: 20, cachedReadTokens: 5000, cachedWriteTokens: 300, ...service } });
+  // A resumed query's first turn has the main loop's usage alone, and carries the service as well.
+  usage.restarted(true, service);
+  assert.deepEqual(told(usage, result({ m: model(9000, 9000) }, { usage: { input_tokens: 3, output_tokens: 4 } })),
+    { usage: { totalTokens: 7, inputTokens: 3, outputTokens: 4, ...service } });
+});
+
+test('a turn on a model service that used several models tells the asked one with the service, the others by the name the SDK has them as', () => {
+  const usage = new PromptUsage();
+  usage.restarted(false, service);
+  const named = { canonicalModel: 'claude-haiku-x' };
+  assert.deepEqual(told(usage, result({ 'group/ds-flash': model(10, 5), 'other-model': model(3, 2, 0, 0, named) })),
+    { usage: { totalTokens: 20, inputTokens: 13, outputTokens: 7, cachedReadTokens: 0, cachedWriteTokens: 0, ...service,
+      breakdown: [{ ...service, inputTokens: 10, outputTokens: 5, cachedReadTokens: 0, cachedWriteTokens: 0 }, row('other-model', 3, 2)] } });
+});
+
+test('a turn on a model service whose address gives no reference tells neither, and still no model that ran', () => {
+  const usage = new PromptUsage();
+  usage.restarted(false, {});
+  assert.deepEqual(told(usage, result({ m: model(4, 5, 0, 0, { canonicalModel: 'claude-sonnet-x' }) })), { usage: { totalTokens: 9, inputTokens: 4, outputTokens: 5, cachedReadTokens: 0, cachedWriteTokens: 0 } });
+  assert.deepEqual(told(usage, result({ m: model(5, 7, 0, 0, { canonicalModel: 'claude-sonnet-x' }), n: model(1, 1) })).usage.breakdown, [row('m', 1, 2), row('n', 1, 1)]);
+});
+
+test('a turn on Claude\'s own models tells no service', () => {
+  const usage = new PromptUsage();
+  usage.restarted(false);
+  const { usage: own } = told(usage, result({ m: model(1, 2) }));
+  assert.deepEqual([own.service, own.asked], [undefined, undefined]);
+  assert.deepEqual(own.breakdown, [row('m', 1, 2)], 'no canonical name: the SDK\'s own name, as the unlayered label');
+});
+
 // The session, with the SDK's results said as the test places them.
 async function session(t, { sdk = fixtureSdk(), ...options } = {}) {
   const cwd = await mkdtemp(join(tmpdir(), 'coda-claude-usage-'));
@@ -154,7 +193,7 @@ test('a prompt\'s response carries the turn\'s usage at the top level, turn by t
   await second.emit(result({ 'fixture-model': model(160, 70, 5000, 900), 'task-model': model(7, 8, 9, 0, { canonicalModel: 'claude-task' }) }, { user_message_uuid: second.id, user_message_uuids: [second.id] }));
   assert.deepEqual(await second.pending, { stopReason: 'end_turn',
     usage: { totalTokens: 60 + 50 + 600 + 7 + 8 + 9, inputTokens: 67, outputTokens: 58, cachedReadTokens: 9, cachedWriteTokens: 600,
-      breakdown: [row('fixture-model', 60, 50, 0, 600), row('claude-task', 7, 8, 9, 0)] } });
+      breakdown: [row('fixture-model', 60, 50, 0, 600), ran('claude-task', 7, 8, 9, 0)] } });
   // Nothing used (as the fixture's own results say): no usage, as before.
   assert.deepEqual(await ask(s, 'hello'), { stopReason: 'end_turn' });
 });

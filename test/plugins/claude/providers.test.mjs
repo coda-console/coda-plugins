@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { chosenServices, listedModels, serviceModels, serviceSettings } from '../../../plugins/claude/agent/providers.mjs';
+import { chosenServices, listedModels, serviceModels, serviceReference, serviceSettings } from '../../../plugins/claude/agent/providers.mjs';
 
 const provided = (services, chosen = Object.keys(services)) => ({ CODA_PLUGIN_SETTINGS: JSON.stringify({ 'claude.modelProviders': chosen }), CODA_MODEL_PROVIDERS: JSON.stringify(services) });
 const magpie = { plugin: 'magpie', title: 'Magpie · Anthropic', api: 'anthropic-messages', url: 'http://127.0.0.1:3425' };
@@ -64,4 +64,12 @@ test('a session on a service\'s model runs Claude Code with the service as its A
     ANTHROPIC_BASE_URL: 'http://127.0.0.1:3425', ANTHROPIC_AUTH_TOKEN: 'none', ANTHROPIC_MODEL: 'deepseek/deepseek-v4-pro', ANTHROPIC_DEFAULT_OPUS_MODEL: 'deepseek/deepseek-v4-pro',
     ANTHROPIC_DEFAULT_SONNET_MODEL: 'deepseek/deepseek-v4-pro', ANTHROPIC_DEFAULT_HAIKU_MODEL: 'deepseek/deepseek-v4-pro', CLAUDE_CODE_SUBAGENT_MODEL: 'deepseek/deepseek-v4-pro' } });
   assert.equal(serviceSettings({ url: 'https://example.com', key: 'sk' }, 'm').env.ANTHROPIC_AUTH_TOKEN, 'sk');
+});
+
+test('the service an injected address belongs to is its resource reference, of a model interface and a UUID; any other shape is none', () => {
+  const id = '6F1A7C52-0d3b-4e8a-9a41-2b7d5c0e9f13';
+  assert.equal(serviceReference(`http://127.0.0.1:3425/resources/anthropic-messages/${id}`), `coda://anthropic-messages/${id.toLowerCase()}`);
+  assert.equal(serviceReference(`http://127.0.0.1:3425/resources/openai-responses/${id}/v1`), `coda://openai-responses/${id.toLowerCase()}`);
+  for (const url of [`http://127.0.0.1:3425/resources/openai-responses/${id}x/v1`, `http://127.0.0.1:3425/resources/machines/${id}/v1`, `http://127.0.0.1:3425/resources/openai-responses/not-a-uuid/v1`,
+    `http://127.0.0.1:3425/other/resources/openai-responses/${id}`, 'http://127.0.0.1:3425/v1', 'not a url', '', undefined]) assert.equal(serviceReference(url), null, String(url));
 });
