@@ -24,7 +24,7 @@ const GRANT_CONFIRMS = 3;
 
 // 视图里的每台电脑（成员在页面生命周期内不变）各存一份数据；读不到的（unreachable）也在，只是不发请求。
 // 节点的名字、忙碌、错误、已收回按（电脑, 控制服务器节点 ID）记在 m.fn 里，不与好友行的 state.busy / state.notice 混用（那两个按 Accord 的 node 记）。
-const members = listMembers(coda).map(m => ({ ...m, entry: null, author: null, friends: [], loaded: false, accordProblem: null, fn: { names: new Map(), done: new Set(), busy: new Set(), errors: new Map(), noCreds: false } }));
+const members = listMembers(coda).map(m => ({ ...m, entry: null, author: null, friends: [], loaded: false, accordProblem: null, fn: { names: new Map(), done: new Set(), busy: new Set(), errors: new Map(), blocks: new Map(), noCreds: false } }));
 const live = members.filter(m => !m.unreachable);
 const multi = members.length > 1;
 const state = { busy: new Set(), notice: new Map(), heroNotice: new Map(), detail: null, removing: null, menu: null };
@@ -622,22 +622,28 @@ const netIcon = () => svg('svg', { viewBox: '0 0 24 24', width: 18, height: 18, 
 const unreadableText = (data, verb) => `${data.unreadable.map(u => u.name).join('、')} 读不到，暂时不能${verb}`;
 function heldText(ids = []) {
   const names = ids.map(id => members.find(m => m.id === id)?.name).filter(Boolean);
-  return names.length ? `${names.join('、')} 还认着它，先在${names.length > 1 ? '那几台' : '那台'}上移除好友` : '还有后端认着它，先在那台上移除好友';
+  if (!names.length) return `还有后端认着它，先在${ids.length > 1 ? '那几台' : '那台'}上移除好友`;
+  if (names.length < ids.length) return `${names[0]} 等 ${ids.length} 台还认着它，先在那几台上移除好友`;
+  return `${names.join('、')} 还认着它，先在${names.length > 1 ? '那几台' : '那台'}上移除好友`;
 }
+// lastSeen：基座给 RFC 3339 字符串，控制服务器也可能给毫秒数；解析不出就当没有。
+const lastSeenMs = v => { const ms = typeof v === 'string' ? Date.parse(v) : v; return typeof ms === 'number' && Number.isFinite(ms) ? ms : null; };
 // 一次好友节点操作：同一时间只放一个进来；node 给了就在那一行显示忙碌。task 自己处理失败，结束后统一重画。
 async function exclusive(m, node, task) {
   if (netBusy) return;
   netBusy = true;
-  if (node) { m.fn.busy.add(node); m.fn.errors.delete(node); }
+  if (node) { m.fn.busy.add(node); m.fn.errors.delete(node); m.fn.blocks.delete(node); }
   const running = task();
   draw();
   try { await running; } finally { netBusy = false; if (node) m.fn.busy.delete(node); draw(); }
 }
-// 读：不弹确认框；顺带记下每个节点的名字。没有网络凭据（not_found）记在这台上。
+// 读：不弹确认框；顺带记下每个节点的名字。没有网络凭据（not_found）记在这台上；读成功就撤掉没凭据、已收回、因读取阻止的旧记录，由调用方按这次的结果重判。
 async function readNodes(m) {
   try {
     const data = await coda.friendNodes({ machine: m.id });
-    for (const n of data.nodes) m.fn.names.set(n.node, n.name);
+    m.fn.noCreds = false;
+    m.fn.blocks.clear();
+    for (const n of data.nodes) { m.fn.names.set(n.node, n.name); m.fn.done.delete(n.node); }
     return { data };
   } catch (error) { if (error?.code === 'not_found') m.fn.noCreds = true; return { error }; }
 }
@@ -678,7 +684,7 @@ function nodeRow(view, n, kind) {
     h('span', { class: 'g-info' },
       h('span', { class: 'g-name truncate selectable' }, n.name),
       h('span', { class: 'g-sub meta' }, h('span', { class: `dot ${n.online ? 'ok-dot' : 'off-dot'}` }),
-        n.online ? '在线' : typeof n.lastSeen === 'number' ? `${formatTime(n.lastSeen)} 离线` : '离线', ' · ', n.state === 'pending' ? '已断交' : '未完成互认'),
+        n.online ? '在线' : lastSeenMs(n.lastSeen) !== null ? `${formatTime(lastSeenMs(n.lastSeen))} 离线` : '离线', ' · ', n.state === 'pending' ? '已断交' : '未完成互认'),
       error ? h('span', { class: 'g-sub error' }, error) : null),
     n.inviteOpen ? h('span', { class: 'badge pending' }, '邀请待用')
       : busy ? h('span', { class: 'badge busy' }, '正在删除…')
@@ -712,14 +718,14 @@ function retryRemoval(m, node) {
     const f = m.fn, { data, error } = await readNodes(m);
     if (error) { if (error.code !== 'canceled' && error.code !== 'not_found') f.errors.set(node, error.message); return; }
     const found = data.nodes.find(n => n.node === node);
-    if (!data.complete) f.errors.set(node, unreadableText(data, '移除'));
+    if (!data.complete) f.blocks.set(node, unreadableText(data, '移除'));
     else if (!found) f.done.add(node);
-    else if (found.state === 'friend') f.errors.set(node, heldText(found.heldBy));
+    else if (found.state === 'friend') f.blocks.set(node, heldText(found.heldBy));
     else await dropNode(m, node);
   });
 }
 function removalRow(m, { node, since }) {
-  const f = m.fn, name = f.names.get(node), error = f.errors.get(node);
+  const f = m.fn, name = f.names.get(node), error = f.errors.get(node) ?? f.blocks.get(node);
   return h('li', { class: 'g-row' },
     h('span', { class: 'g-info' },
       h('span', { class: `g-name truncate selectable${name ? '' : ' mono'}` }, name ?? `节点 ${node}`),

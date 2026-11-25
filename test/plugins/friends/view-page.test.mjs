@@ -1339,11 +1339,11 @@ test('pending removals show under the friend list with the node ID when no name 
 
 test('the drawer reads once for its machine, groups the leftovers, leaves out friends, and shows network, presence and state', async t => {
   const gate = deferred();
-  const lastSeen = Date.UTC(2026, 10, 20, 8, 5);
+  const lastSeen = '2026-11-23T06:02:00Z', numericSeen = Date.UTC(2026, 10, 20, 8, 5);
   const nodes = [
     netNode('41', 'mei-iphone', 'pending', { attributed: true, lastSeen }),
     netNode('42', 'kept-laptop', 'friend', { attributed: true, online: true, heldBy: ['a'] }),
-    netNode('44', 'ipad-7c1e', 'candidate', { attributed: true }),
+    netNode('44', 'ipad-7c1e', 'candidate', { attributed: true, lastSeen: numericSeen }),
     netNode('47', 'rob-laptop', 'candidate', { attributed: true, online: true, inviteOpen: true }),
     netNode('29', 'DESKTOP-4KQ2', 'candidate', { lastSeen: 'bad' }),
     netNode('33', 'localhost', 'candidate', { online: true }),
@@ -1369,12 +1369,12 @@ test('the drawer reads once for its machine, groups the leftovers, leaves out fr
   assert.deepEqual(rows.map(row => cls(row)), ['g-row stripe attr', 'g-row stripe attr', 'g-row stripe attr', 'g-row stripe unk', 'g-row stripe unk']);
   assert.ok(!drawer.textContent.includes('kept-laptop'), 'friends do not go in the drawer');
   const meta = row => page.all(n => cls(n) === 'g-sub meta', row)[0];
-  assert.equal(meta(rows[0]).textContent, `${fmtTime(lastSeen)} 离线 · 已断交`);
+  assert.equal(meta(rows[0]).textContent, `${fmtTime(Date.parse(lastSeen))} 离线 · 已断交`);
   assert.equal(cls(meta(rows[0]).children[0]), 'dot off-dot');
-  assert.equal(meta(rows[1]).textContent, '离线 · 未完成互认');
+  assert.equal(meta(rows[1]).textContent, `${fmtTime(numericSeen)} 离线 · 未完成互认`, 'a millisecond lastSeen works too');
   assert.equal(meta(rows[2]).textContent, '在线 · 未完成互认');
   assert.equal(cls(meta(rows[2]).children[0]), 'dot ok-dot');
-  assert.equal(meta(rows[3]).textContent, '离线 · 未完成互认', 'a lastSeen that is not a number is left out');
+  assert.equal(meta(rows[3]).textContent, '离线 · 未完成互认', 'a lastSeen that cannot be parsed is left out');
   assert.equal(meta(rows[4]).textContent, '在线 · 未完成互认');
   assert.ok(!drawer.textContent.includes('已互认'), 'it says 未完成互认, never 未互认 on its own');
   // 邀请待用：只有徽标，没有删除。
@@ -1505,7 +1505,7 @@ test('retry shows the node name after a read that still leaves the node; a held 
   await flush();
   const row = gRows(page, netBlock(page))[0];
   assert.ok(row.textContent.startsWith('mei-iphone'), 'the name replaces 节点 41');
-  assert.equal(page.all(n => cls(n) === 'g-sub error', row)[0].textContent, 'B 还认着它，先在那台上移除好友');
+  assert.equal(page.all(n => cls(n) === 'g-sub error', row)[0].textContent, 'B 等 2 台还认着它，先在那几台上移除好友', 'only part of them can be named: the count is of all');
   assert.deepEqual(log.nodes.map(c => c[0]), ['friendNodes']);
   state.read = netRead([netNode('41', 'mei-iphone', 'friend', { heldBy: ['a', 'b'] })]);
   buttonIn(page, netBlock(page), '重试').fire('click');
@@ -1515,7 +1515,11 @@ test('retry shows the node name after a read that still leaves the node; a held 
   buttonIn(page, netBlock(page), '重试').fire('click');
   await flush();
   assert.equal(page.all(n => cls(n) === 'g-sub error', netBlock(page))[0].textContent, '还有后端认着它，先在那台上移除好友');
-  assert.deepEqual(log.nodes.map(c => c[0]), ['friendNodes', 'friendNodes', 'friendNodes']);
+  state.read = netRead([netNode('41', 'mei-iphone', 'friend', { heldBy: ['unknown', 'zz'] })]);
+  buttonIn(page, netBlock(page), '重试').fire('click');
+  await flush();
+  assert.equal(page.all(n => cls(n) === 'g-sub error', netBlock(page))[0].textContent, '还有后端认着它，先在那几台上移除好友');
+  assert.deepEqual(log.nodes.map(c => c[0]), ['friendNodes', 'friendNodes', 'friendNodes', 'friendNodes']);
 });
 
 test('retry on an incomplete read says who cannot be read and does not delete; a node that is gone from a complete read is treated as removed without a delete', async t => {
@@ -1561,6 +1565,38 @@ test('retry hitting not_found on the read, or on the delete, marks the machine w
   assert.equal(gRows(first.page, netBlock(first.page))[0].textContent, 'x需在有网络凭据的设备上移除');
 });
 
+test('a successful read clears the machine\'s no-credentials mark, so the retry comes back', async t => {
+  const reads = [() => { throw netError('not_found'); }, () => netRead([netNode('41', 'x', 'candidate')])];
+  const { page } = await openNetPage(t, { friendNodes: () => reads.shift()(), status: { a: { networkRemovals: [removal('41')] } } });
+  buttonIn(page, netBlock(page), '重试').fire('click');
+  await flush();
+  assert.equal(buttonIn(page, netBlock(page), '重试'), undefined);
+  assert.ok(netBlock(page).textContent.includes('需在有网络凭据的设备上移除'));
+  await openDrawer(page);
+  assert.ok(buttonIn(page, netBlock(page), '重试'));
+  assert.ok(!netBlock(page).textContent.includes('需在有网络凭据的设备上移除'));
+});
+
+test('a successful read clears what an earlier read blocked the row for, but not a failed delete', async t => {
+  const reads = [netRead([netNode('41', 'x', 'candidate')], { complete: false, unreadable: [{ machine: 'r', name: 'rig' }] }), netRead([netNode('41', 'x', 'friend', { heldBy: ['a'] })]),
+    netRead([netNode('41', 'x', 'candidate')]), netRead([netNode('41', 'x', 'candidate')]), netRead([netNode('41', 'x', 'candidate')])];
+  const { page, log } = await openNetPage(t, { friendNodes: () => reads.shift(), removeFriendNode: () => { throw netError('invalid_state', 'rig 还认着它'); }, status: { a: { networkRemovals: [removal('41')] } } });
+  const retry = async () => { buttonIn(page, netBlock(page), '重试').fire('click'); await flush(); };
+  const hint = () => page.all(n => cls(n) === 'g-sub error', netBlock(page))[0]?.textContent;
+  await retry();
+  assert.equal(hint(), 'rig 读不到，暂时不能移除');
+  await retry();
+  assert.equal(hint(), 'A 还认着它，先在那台上移除好友');
+  const drawer = await openDrawer(page);
+  assert.equal(hint(), undefined, 'the drawer read is complete and the node is no longer a friend');
+  assert.ok(!isDisabled(buttonIn(page, rowWith(page, drawer, 'x'), '删除')));
+  await retry();
+  assert.equal(hint(), 'rig 还认着它', 'a failed delete stays');
+  await openDrawer(page);
+  assert.equal(hint(), 'rig 还认着它', 'a successful read does not clear a delete error');
+  assert.deepEqual(log.nodes.map(c => c[0]), ['friendNodes', 'friendNodes', 'friendNodes', 'friendNodes', 'removeFriendNode', 'friendNodes']);
+});
+
 test('only one friend-node operation is in flight: while one runs every entry, delete, retry and re-read is disabled and extra clicks send nothing', async t => {
   const gate = deferred();
   const nodes = [netNode('44', 'ipad', 'candidate'), netNode('45', 'phone', 'candidate')];
@@ -1585,7 +1621,7 @@ test('only one friend-node operation is in flight: while one runs every entry, d
   assert.equal(drawer.hidden, true);
   assert.ok(all().every(n => !isDisabled(n)));
   const again = await openDrawer(page, 0);
-  assert.equal(rowWith(page, again, 'ipad'), undefined, 'the finished delete is remembered');
+  assert.ok(rowWith(page, again, 'ipad'), 'a node the read still lists shows again, whatever was recorded as removed');
   assert.ok(rowWith(page, again, 'phone'));
   // 读的时候同样互斥。
   const slow = deferred();
