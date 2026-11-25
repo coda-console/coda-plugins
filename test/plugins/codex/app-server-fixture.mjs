@@ -20,7 +20,7 @@
 // to steers.ndjson, the answers to its requests to answers.ndjson. One that names `compaction` compacts the thread as the locked
 // Codex does (a `contextCompaction` item, started and completed), with the deprecated `thread/compacted` too before it
 // (`legacy-first`), after it (`legacy-last`), or alone (`legacy-only`); `compaction-failed` starts it and ends the turn failed.
-import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, appendFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 
 const died = join(process.env.FAKE_CODEX_STATE, 'died'), rollout = join(process.env.FAKE_CODEX_STATE, 'rollout.jsonl');
@@ -39,6 +39,10 @@ const results = {
   'thread/resume': { ...session, turnsBackwardsCursor: null },
 };
 const command = { type: 'commandExecution', id: 'command-1', command: 'sleep 100', cwd: '/', processId: '4242', status: 'inProgress', commandActions: [], source: 'agent' };
+const count = { totalTokens: 30, inputTokens: 20, cachedInputTokens: 5, cacheWriteInputTokens: 0, outputTokens: 10, reasoningOutputTokens: 2 };
+// FAKE_CODEX_TOKENS: the thread's count is kept across the app-server's restarts, as Codex keeps it in its rollout, and told again when the thread is resumed.
+const kept = join(process.env.FAKE_CODEX_STATE, 'tokens.json');
+const tokenUsage = () => existsSync(kept) ? JSON.parse(readFileSync(kept, 'utf8')) : null;
 let terminals = [], instructions = '', loaded = false;
 let sleeping = null;
 let buffer = '';
@@ -93,8 +97,19 @@ process.stdin.on('data', chunk => {
       const configured = join(process.env.FAKE_CODEX_STATE, 'developer_instructions.txt');
       send({ id: message.id, result: { config: { developer_instructions: existsSync(configured) ? readFileSync(configured, 'utf8') : null }, layers: null, origins: {} } }); continue;
     }
-    if (message.method !== 'turn/start') { send({ id: message.id, result: results[message.method] ?? {} }); continue; }
+    if (message.method !== 'turn/start') {
+      send({ id: message.id, result: results[message.method] ?? {} });
+      const before = tokenUsage();
+      if (message.method === 'thread/resume' && before) send({ method: 'thread/tokenUsage/updated', params: { threadId: thread.id, turnId: before.turnId, tokenUsage: { last: count, total: before.total, modelContextWindow: 1000 } } });
+      continue;
+    }
     const turn = { id: `turn-${Date.now()}`, items: [], status: 'inProgress', error: null };
+    // FAKE_CODEX_TOKENS: the thread's count told again outside any turn of this process (a `snapshot.json` the test left), as Codex does when a thread is resumed.
+    const snapshot = join(process.env.FAKE_CODEX_STATE, 'snapshot.json');
+    if (existsSync(snapshot)) {
+      send({ method: 'thread/tokenUsage/updated', params: { threadId: thread.id, turnId: 'earlier-turn', tokenUsage: { last: count, total: JSON.parse(readFileSync(snapshot, 'utf8')), modelContextWindow: 1000 } } });
+      unlinkSync(snapshot);
+    }
     send({ id: message.id, result: { turn } });
     send({ method: 'turn/started', params: { threadId: thread.id, turn } });
     if (!existsSync(died)) {
@@ -164,6 +179,29 @@ process.stdin.on('data', chunk => {
       send({ method: 'item/started', params: { threadId: thread.id, turnId: turn.id, item: { type: 'subAgentActivity', id: 'activity-1', agentThreadId: child, agentPath: '/root/echo_check', kind: 'started' } } });
       send({ method: 'turn/started', params: { threadId: child, turn: childTurn } });
       send({ method: 'item/agentMessage/delta', params: { threadId: child, turnId: childTurn.id, itemId: 'child-message', delta: '子 Agent 的回答' } });
+      if (process.env.FAKE_CODEX_TOKENS) send({ method: 'thread/tokenUsage/updated', params: { threadId: child, turnId: childTurn.id, tokenUsage: { last: count, total: count, modelContextWindow: 1000 } } });
+      send({ method: 'turn/completed', params: { threadId: child, turn: { ...childTurn, status: 'completed' } } });
+    }
+    // A subagent spawned and told of before its session is made: with native subagent sessions its first notifications are held back and handled again then.
+    if (input.includes('staged children')) {
+      const child = 'staged-child', childTurn = { id: `child-${turn.id}`, items: [], status: 'inProgress', error: null };
+      const twice = { totalTokens: 60, inputTokens: 40, cachedInputTokens: 10, cacheWriteInputTokens: 0, outputTokens: 20, reasoningOutputTokens: 4 };
+      send({ method: 'item/started', params: { threadId: thread.id, turnId: turn.id, item: { type: 'collabAgentToolCall', id: 'spawn-1', tool: 'spawnAgent', status: 'inProgress', senderThreadId: thread.id,
+        receiverThreadIds: [child], prompt: 'echo', model: null, reasoningEffort: null, agentsStates: {} } } });
+      send({ method: 'turn/started', params: { threadId: child, turn: childTurn } });
+      for (const total of [count, twice]) send({ method: 'thread/tokenUsage/updated', params: { threadId: child, turnId: childTurn.id, tokenUsage: { last: count, total, modelContextWindow: 1000 } } });
+      send({ method: 'item/started', params: { threadId: thread.id, turnId: turn.id, item: { type: 'subAgentActivity', id: 'activity-1', agentThreadId: child, agentPath: '/root/staged_check', kind: 'started' } } });
+      send({ method: 'turn/completed', params: { threadId: child, turn: { ...childTurn, status: 'completed' } } });
+    }
+    // A subagent whose turn begins, and tells its count twice, before its parent tells of it (Codex gives the subagent its first input, then the parent says it spawned it); it counts once more after.
+    if (input.includes('early children')) {
+      const child = 'early-child', childTurn = { id: `child-${turn.id}`, items: [], status: 'inProgress', error: null };
+      const told = times => ({ method: 'thread/tokenUsage/updated', params: { threadId: child, turnId: childTurn.id, tokenUsage: { last: count,
+        total: Object.fromEntries(Object.entries(count).map(([key, value]) => [key, value * times])), modelContextWindow: 1000 } } });
+      send({ method: 'turn/started', params: { threadId: child, turn: childTurn } });
+      send(told(1)); send(told(2));
+      send({ method: 'item/started', params: { threadId: thread.id, turnId: turn.id, item: { type: 'subAgentActivity', id: 'activity-1', agentThreadId: child, agentPath: '/root/early_check', kind: 'started' } } });
+      send(told(3));
       send({ method: 'turn/completed', params: { threadId: child, turn: { ...childTurn, status: 'completed' } } });
     }
     // The checker's question about the session instructions, answered from the developer instructions as a model would.
@@ -175,10 +213,14 @@ process.stdin.on('data', chunk => {
       terminals = [{ itemId: command.id, processId: command.processId, command: command.command }];
       send({ method: 'item/started', params: { threadId: thread.id, turnId: turn.id, item: command } });
     }
-    // FAKE_CODEX_TOKENS: the turn says what it used, as Codex does before it completes.
+    // FAKE_CODEX_TOKENS: the turn calls the model that many times, each saying what it used (`total` the thread's so far), as Codex does before it completes.
     if (process.env.FAKE_CODEX_TOKENS && !message.params.outputSchema) {
-      const count = { totalTokens: 30, inputTokens: 20, cachedInputTokens: 5, outputTokens: 10, reasoningOutputTokens: 2 };
-      send({ method: 'thread/tokenUsage/updated', params: { threadId: thread.id, turnId: turn.id, tokenUsage: { last: count, total: count, modelContextWindow: 1000 } } });
+      const total = tokenUsage()?.total ?? {};
+      for (let i = 0; i < Number(process.env.FAKE_CODEX_TOKENS); i++) {
+        for (const key of Object.keys(count)) total[key] = (total[key] ?? 0) + count[key];
+        send({ method: 'thread/tokenUsage/updated', params: { threadId: thread.id, turnId: turn.id, tokenUsage: { last: count, total: { ...total }, modelContextWindow: 1000 } } });
+      }
+      writeFileSync(kept, JSON.stringify({ total, turnId: turn.id }));
     }
     send({ method: 'turn/completed', params: { threadId: thread.id, turn: { ...turn, status: 'completed' } } });
   }

@@ -4,7 +4,7 @@
 // and a steer that finds no turn going is answered `promptRequired` (steering.mjs); Codex's async messages are shown and its
 // async questions asked as cards whose answers it is given within the same turn (questions.mjs); its context compactions told as
 // `compaction_update` (compaction.mjs); what of Codex is not adapted
-// is told to Coda (unrecognized.mjs); the models of the model service chosen in Coda join Codex's own (providers.mjs). the session's own temporary directory is writable in its sandbox (session-tmp.mjs). What Coda wants of Codex beyond ACP is set here: the mode a session starts in, and
+// is told to Coda (unrecognized.mjs); the models of the model service chosen in Coda join Codex's own (providers.mjs), and a prompt is answered with the usage of its whole turn, subagents' too (usage.mjs). the session's own temporary directory is writable in its sandbox (session-tmp.mjs). What Coda wants of Codex beyond ACP is set here: the mode a session starts in, and
 // which Codex program runs, through the account bridge when「多账号」chooses the account (accounts.mjs).
 import { createRequire, registerHooks } from 'node:module';
 import { spawnSync } from 'node:child_process';
@@ -22,6 +22,7 @@ import { codexOptionsAsShown } from './options.mjs';
 import { instructedCodexThreads } from './instructions.mjs';
 import { promptRequiredCodexSteering } from './steering.mjs';
 import { servedCodexModels } from './providers.mjs';
+import { countedCodexUsage } from './usage.mjs';
 import { input, listen, relayedCodexStreams } from './relay.mjs';
 import { CodexWaits } from './waits.mjs';
 import { CodexReviews } from './reviews.mjs';
@@ -91,6 +92,6 @@ registerHooks({ load(url, context, nextLoad) {
   const loaded = nextLoad(url, context);
   if (url !== adapter.href) return loaded;
   return { ...loaded, source: reportedCodexUnrecognized(shownCodexAsyncMessages(reportedCodexCompactions(reportedCodexSleeps(reportedCodexFailures(codexOptionsAsShown(relayedCodexStreams(orderedCodexTitles(followCodexProcessExit(continuedCodexSubagents(
-    promptRequiredCodexSteering(instructedCodexThreads(servedCodexModels(networkedCodexDevelopment(writableCodexSessionTmp(trustedCodaMcpRequests(Buffer.from(loaded.source).toString('utf8'))))))))))))))))) };
+    promptRequiredCodexSteering(instructedCodexThreads(countedCodexUsage(servedCodexModels(networkedCodexDevelopment(writableCodexSessionTmp(trustedCodaMcpRequests(Buffer.from(loaded.source).toString('utf8')))))))))))))))))) };
 } });
 await import(adapter.href);

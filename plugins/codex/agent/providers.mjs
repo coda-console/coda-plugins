@@ -91,8 +91,8 @@ export class ServiceModels {
     const served = this.served(model), service = served && serviceReference(this.services.find(s => s.ref === served.codaService)?.url);
     sessionState.codaRequested = service ? { service, asked: served.model } : null;
   }
-  // The `usage` a prompt answers with, with what its turn was bound to. An answer of a prompt that sent no model request (a command such
-  // as `/status`, whose usage codex-acp repeats from the turn before) has none, and says nothing of any model.
+  // The `usage` a prompt answers with (usage.mjs), with what its turn was bound to. An answer of a prompt that sent no model request (a
+  // command such as `/status`) has none, and one whose turn was bound to nothing says nothing of any model.
   usage(sessionState, usage) { return usage && sessionState.codaRequested ? { ...usage, ...sessionState.codaRequested } : usage; }
   // A stop that comes while a turn waits on the move has no turn of codex-acp's to interrupt yet: it is the waiting turn's,
   // which ends cancelled with its input not given (`route` says so).
