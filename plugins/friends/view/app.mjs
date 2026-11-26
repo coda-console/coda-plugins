@@ -21,6 +21,8 @@ const RECOVER_MS = 3000;
 const REVOKE_RETRIES = 3;
 // 结果不明的授予：连续读到这么多遍有效列表、里面都没有这条授权，就回滚这一行，允许重试（持有方对同一目标的授予幂等）。
 const GRANT_CONFIRMS = 3;
+// 仅限目录的授予、改范围要先到目标机探测（持有方最长等 30 秒）：页面多等一会儿再算没有回应。
+const PROBE_WAIT_MS = 45_000;
 
 // 视图里的每台电脑（成员在页面生命周期内不变）各存一份数据；读不到的（unreachable）也在，只是不发请求。
 // 节点的名字、忙碌、错误、已收回按（电脑, 控制服务器节点 ID）记在 m.fn 里，不与好友行的 state.busy / state.notice 混用（那两个按 Accord 的 node 记）。
@@ -37,24 +39,24 @@ function say(target, text, kind = 'hint') { target.className = kind; target.text
 const pendingReplies = new Map();
 let counter = 0;
 // `late`：等不到回应时也不丢这条回复，晚到了就交给它（授予这类不能重发的写操作用）。
-function ask(m, type, input = {}, late) {
+function ask(m, type, input = {}, late, wait = 10_000) {
   const rid = `n${++counter}`;
   return new Promise((resolve, reject) => {
     const settle = fn => v => { clearTimeout(timer); pendingReplies.delete(rid); fn(v); };
     const timer = setTimeout(() => {
       if (late) pendingReplies.get(rid).late = late; else pendingReplies.delete(rid);
       reject(new Error('模块没有回应'));
-    }, 10_000);
+    }, wait);
     pendingReplies.set(rid, { machine: m.id, resolve: settle(resolve), reject: settle(reject) });
     Promise.resolve().then(() => coda.postMessage({ type, rid, ...input }, via(m))).catch(error => pendingReplies.get(rid)?.reject(Object.assign(new Error(`发送失败：${error?.message ?? error}`), { refused: true })));
   });
 }
 addEventListener('message', event => {
-  const { type, rid, ok, value, error, effects } = event.data ?? {};
+  const { type, rid, ok, value, error, effects, code } = event.data ?? {};
   const wait = type === 'reply' ? pendingReplies.get(rid) : null;
   if (!wait || (event.machine?.id && event.machine.id !== wait.machine)) return;
   // refused：确认什么也没写——模块明确回了错误且 effects 为 none，或消息根本没发出去（postMessage 抛错）；别的错误、超时都是结果不明。
-  const failure = Object.assign(new Error(error), { refused: effects === 'none' });
+  const failure = Object.assign(new Error(error), { refused: effects === 'none', code });
   if (wait.late) { pendingReplies.delete(rid); wait.late(ok ? { value } : { failure }); } else if (ok) wait.resolve(value); else wait.reject(failure);
 });
 
@@ -110,7 +112,7 @@ function closeDialog() {
 // Escape 一次收一层：授予选择框，再是行尾菜单，再是弹层。
 addEventListener('keydown', e => {
   if (e.key !== 'Escape') return;
-  if (picker.ctx) closePicker();
+  if (picker.ctx) cancelPicker();
   else if (state.menu) { state.menu = null; draw(); }
   else if (openDialog) closeDialog();
 });
@@ -397,16 +399,19 @@ const SHARE_STATUS = {
   available: ['可用', 'bound'], target_off: ['目标已关闭', 'pending'], target_missing: ['目标不在了', 'pending'], target_offline: ['目标离线', 'pending'], target_unreachable: ['读不到目标', 'pending'], no_identity: ['读不出本机身份', 'pending'],
   granting: ['授予中', 'busy'], revoking: ['撤销中', 'busy'], machine_changed: ['已停用', 'pending'], grantee_changed: ['已停用', 'pending'],
 };
+const PENDING = ['待确认', 'busy'];
 const PROXY_STATUS = {
   available: ['可用', 'bound'], off: ['TA 那边没开远程执行', 'pending'], channel: ['和 TA 的通道断了', 'pending'],
   author: ['本机身份变了，请 TA 重新授予', 'pending'], sign: ['本机没有可用的签名证书', 'pending'],
 };
 // 授出的范围不让选，由对方的身份决定：个人身份授给他名下的机器，机器身份只授给那一台；基座还没给 certified 时不写。
 const scopeNote = certified => (certified === true ? '授给这个人名下的机器' : certified === false ? '只授给对方那一台机器' : null);
-const shareOf = m => (m.share ??= { grants: null, problem: null, corrupt: null, clock: 0, writes: 0, touched: 0, reread: false, pending: [], revoking: new Map(), theirs: new Map(), ops: new Map(), targets: null, targetsProblem: null, opsOpen: false, timer: null });
+const shareOf = m => (m.share ??= { grants: null, problem: null, corrupt: null, clock: 0, writes: 0, touched: 0, reread: false, pending: [], revoking: new Map(), theirs: new Map(), ops: new Map(), targets: null, targetsProblem: null, opsOpen: false, scopeOpen: new Set(), rescoping: new Map(), timer: null });
 const certifiedOf = (m, row) => m.friends.find(friend => friend.node === row.node)?.certified;
 const mergeGrant = (sh, made) => { const all = sh.grants ?? []; sh.grants = all.some(g => g.grant === made.grant) ? all.map(g => (g.grant === made.grant ? made : g)) : [...all, made]; };
 // 已撤的不显示；撤销中的（名下的调用还在取消）显示。
+// 能改范围的：还在用的授权（已撤销、已失效、目标不在了的不行）。
+const EDITABLE = new Set(['available', 'target_off', 'target_offline', 'target_unreachable']);
 const visibleGrant = g => g.status === 'revoking' || (g.status !== 'revoked' && g.revokedAt === undefined);
 
 function loadShare(m, row) {
@@ -445,6 +450,13 @@ async function readGrants(m, round = false) {
       if (p.state !== 'granting' || !p.unknown || (p.misses = (p.misses ?? 0) + 1) < GRANT_CONFIRMS) continue;
       Object.assign(p, { state: 'denied', reason: '没有确认授予成功，请重试', unknown: false, expired: true });
     }
+    // 结果不明的改范围：列表里是想改成的范围（或授权已不在了）就是核对完了；连续读到上限遍都不是，就写明没确认，回到原范围可再改。
+    for (const [grant, one] of sh.rescoping) {
+      if (!one.unknown) continue;
+      const found = read.grants.find(g => g.grant === grant);
+      if (!found || found.revokedAt !== undefined || JSON.stringify(found.restrict ?? null) === JSON.stringify(one.restrict)) sh.rescoping.delete(grant);
+      else if ((one.misses = (one.misses ?? 0) + 1) >= GRANT_CONFIRMS) sh.rescoping.set(grant, { error: '没有确认范围改成功，仍是原来的范围，可以再改一次' });
+    }
     // 结果不明的撤销：读到已撤或在撤销中就是核对完了，留下的是仍可用的，由恢复循环再发一次。
     for (const [grant, one] of sh.revoking) if (one.unknown && !read.grants.some(g => g.grant === grant && visibleGrant(g) && g.status !== 'revoking')) sh.revoking.delete(grant);
   }
@@ -468,7 +480,7 @@ async function readOps(m, row) {
 // 对应的授权仍可用，才重发；读和重发都结束了才排下一轮（所以同一授权的撤销不会有两个在途重试）。
 function recover(m) {
   const sh = shareOf(m);
-  const need = sh.pending.some(p => p.unknown) || [...sh.revoking.values()].some(r => r.unknown) || (sh.grants ?? []).some(g => g.status === 'revoking');
+  const need = sh.pending.some(p => p.unknown) || [...sh.revoking.values()].some(r => r.unknown) || [...sh.rescoping.values()].some(r => r.unknown) || (sh.grants ?? []).some(g => g.status === 'revoking');
   if (!need || sh.timer) return;
   sh.timer = setTimeout(async () => {
     if (await readGrants(m, true)) {
@@ -526,32 +538,44 @@ async function grantTo(m, row, target) {
 const dots = () => svg('svg', { viewBox: '0 0 24 24', width: 18, height: 18, fill: 'currentColor', 'aria-hidden': 'true' },
   svg('circle', { cx: 5, cy: 12, r: 2 }), svg('circle', { cx: 12, cy: 12, r: 2 }), svg('circle', { cx: 19, cy: 12, r: 2 }));
 const emptyRow = text => h('li', { class: 'empty g-empty' }, text);
+const ACCESS = { rw: '读写', ro: '只读' };
+// 授权的范围：整台机器，或第一条目录加「等 N 个」，点开看全部目录与各自的读写；short 是操作记录里的简短标记（整台机器的不标）。展开与否按 key 记着，重画不丢。
+function scopeView(sh, key, restrict, short) {
+  if (!restrict) return short ? null : h('span', { class: 'g-sub truncate' }, '整台机器');
+  const { dirs } = restrict, [first] = dirs;
+  return h('details', { class: 'scope', open: sh.scopeOpen.has(key), ontoggle: e => { if (e.target.open) sh.scopeOpen.add(key); else sh.scopeOpen.delete(key); } },
+    // 长路径在摘要里截断，读写标记与「等 N 个」留在后面不被截掉。
+    h('summary', { class: 'g-sub' }, short ? `仅限目录 · ${dirs.length} 个` : [h('span', { class: 'sum-main' }, `仅限目录 · ${first.path}`), h('span', { class: 'sum-tail' }, `（${ACCESS[first.access]}）${dirs.length > 1 ? `等 ${dirs.length} 个` : ''}`)]),
+    h('ul', { class: 'dirs' }, dirs.map(dir => h('li', {}, h('span', { class: 'tag' }, ACCESS[dir.access]), h('span', { class: 'mono selectable' }, dir.path)))));
+}
 // 一行：名称与说明、状态、行尾只有一个菜单按钮（没有菜单的行也留着这个槽，列对得齐）。
-function shareRow({ key, name, sub, subKind, badge, busy, menu }) {
+function shareRow({ key, name, sub, subKind, scope, badge, busy, menu }) {
   const open = state.menu === key;
   return h('li', { class: 'g-row', 'aria-busy': busy ? 'true' : null },
-    h('div', { class: 'g-info' }, h('span', { class: 'g-name truncate' }, name), sub ? h('span', { class: `g-sub truncate${subKind === 'error' ? ' error' : ''}` }, sub) : null),
+    h('div', { class: 'g-info' }, h('span', { class: 'g-name truncate' }, name), sub ? h('span', { class: `g-sub truncate${subKind === 'error' ? ' error' : ''}` }, sub) : null, scope),
     h('span', { class: `badge ${badge[1]}` }, badge[0]),
     menu ? h('button', { class: 'kebab', type: 'button', 'aria-label': `更多操作：${name}`, 'aria-haspopup': 'menu', 'aria-expanded': String(open), disabled: busy,
       onclick: e => { e.stopPropagation?.(); state.menu = open ? null : key; draw(); } }, dots()) : h('span', { class: 'kebab-slot', 'aria-hidden': 'true' }),
-    open && menu ? h('div', { class: 'menu', role: 'menu' }, h('button', { type: 'button', role: 'menuitem', class: menu.danger ? 'danger' : '',
-      onclick: e => { e.stopPropagation?.(); menu.run(); } }, menu.label, menu.note ? h('span', { class: 'menu-note' }, menu.note) : null)) : null);
+    open && menu ? h('div', { class: 'menu', role: 'menu' }, menu.map(item => h('button', { type: 'button', role: 'menuitem', class: item.danger ? 'danger' : '',
+      onclick: e => { e.stopPropagation?.(); item.run(); } }, item.label, item.note ? h('span', { class: 'menu-note' }, item.note) : null))) : null);
 }
 function drawShare(m, row) {
   const sh = shareOf(m), scope = scopeNote(certifiedOf(m, row));
   const mine = [
     ...(sh.grants ?? []).filter(g => g.friend === row.author && visibleGrant(g)).map(g => {
-      const local = sh.revoking.get(g.grant), busy = g.status === 'revoking' || (local && !local.error);
-      return shareRow({ key: `g:${g.grant}`, name: g.target.name ?? g.target.id, sub: local?.error ?? scope, subKind: local?.error ? 'error' : null,
-        badge: busy ? SHARE_STATUS.revoking : SHARE_STATUS[g.status] ?? ['已失效', 'pending'], busy,
-        menu: { label: '撤销', note: '同时取消对方正在跑的调用', danger: true, run: () => revokeGrant(m, g) } });
+      const local = sh.revoking.get(g.grant), re = sh.rescoping.get(g.grant), waiting = re?.unknown, failed = local?.error ?? re?.error;
+      const busy = g.status === 'revoking' || (local && !local.error) || waiting;
+      return shareRow({ key: `g:${g.grant}`, name: g.target.name ?? g.target.id, sub: failed ?? (waiting ? '范围改动待确认：下面还是原来的范围' : scope), subKind: failed ? 'error' : null, scope: scopeView(sh, `g:${g.grant}`, g.restrict),
+        badge: waiting ? PENDING : busy ? SHARE_STATUS.revoking : SHARE_STATUS[g.status] ?? ['已失效', 'pending'], busy,
+        menu: [...(EDITABLE.has(g.status) ? [{ label: '修改范围…', run: () => openScope(m, row, g) }] : []),
+          { label: '撤销', note: '同时取消对方正在跑的调用', danger: true, run: () => revokeGrant(m, g) }] });
     }),
-    ...sh.pending.filter(p => p.friend === row.author).map(p => shareRow({ key: `p:${p.target.id}`, name: p.target.name, sub: p.state === 'denied' ? p.reason : scope, subKind: p.state === 'denied' ? 'error' : null,
-      badge: p.state === 'denied' ? ['未授予', 'conflict'] : SHARE_STATUS.granting, busy: p.state === 'granting',
-      menu: { label: '移除', run: () => { sh.pending = sh.pending.filter(one => one !== p); state.menu = null; draw(); } } })),
+    ...sh.pending.filter(p => p.friend === row.author).map(p => shareRow({ key: `p:${p.target.id}`, name: p.target.name, sub: p.state === 'denied' ? p.reason : p.restrict && p.unknown ? '授予待确认：正在核对列表' : scope, subKind: p.state === 'denied' ? 'error' : null, scope: scopeView(sh, `p:${p.target.id}`, p.restrict ?? null),
+      badge: p.state === 'denied' ? ['未授予', 'conflict'] : p.restrict && p.unknown ? PENDING : SHARE_STATUS.granting, busy: p.state === 'granting',
+      menu: [{ label: '移除', run: () => { sh.pending = sh.pending.filter(one => one !== p); state.menu = null; draw(); } }] })),
   ];
   const their = sh.theirs.get(row.author);
-  const theirRows = (their?.rows ?? []).map(proxy => shareRow({ key: `t:${proxy.key}`, name: proxy.name, badge: PROXY_STATUS[proxy.status] ?? ['不可用', 'pending'] }));
+  const theirRows = (their?.rows ?? []).map(proxy => shareRow({ key: `t:${proxy.key}`, name: proxy.name, scope: scopeView(sh, `t:${proxy.key}`, proxy.restrict), badge: PROXY_STATUS[proxy.status] ?? ['不可用', 'pending'] }));
   const ops = sh.ops.get(row.author);
   const canGrant = row.status === 'bound' && Boolean(row.author) && sh.grants !== null && !sh.corrupt;
   fill(detail.share,
@@ -568,7 +592,7 @@ function drawShare(m, row) {
       if (sh.opsOpen && row.author) readOps(m, row);
     } }, h('summary', {}, '最近的操作'),
     h('div', { class: 'ops-list' }, ops?.problem ? h('p', { class: 'error' }, ops.problem) : !ops ? h('p', { class: 'empty' }, row.author ? '正在读取…' : '还没有操作记录')
-      : ops.rows.length ? [...ops.rows.map(opRow), h('p', { class: 'hint' }, '完整记录：coda self ledger.list')] : h('p', { class: 'empty' }, '还没有操作记录'))));
+      : ops.rows.length ? [...ops.rows.map(one => opRow(sh, one)), h('p', { class: 'hint' }, '完整记录：coda self ledger.list')] : h('p', { class: 'empty' }, '还没有操作记录'))));
 }
 // 操作记录的摘要：时间、操作、命令摘要、结局、耗时。
 const duration = ms => (ms < 10_000 ? `${(ms / 1000).toFixed(1)} 秒` : ms < 60_000 ? `${Math.round(ms / 1000)} 秒` : `${Math.round(ms / 60_000)} 分钟`);
@@ -579,19 +603,23 @@ function outcomeOf(row) {
   if (row.exitCode === undefined || row.exitCode === 0) return ['成功', 'bound'];
   return [row.exitCode === null ? '失败' : `失败（退出码 ${row.exitCode}）`, 'conflict'];
 }
-function opRow(row) {
+function opRow(sh, row) {
   const [label, kind] = outcomeOf(row), rejected = row.outcome === 'rejected';
   return h('div', { class: 'op' },
     h('div', { class: 'op-top' }, h('span', { class: 'op-time' }, formatTime(row.at)), h('span', { class: 'tag' }, rejected ? '请求' : '执行'), h('span', { class: 'spacer' }),
       h('span', { class: `badge ${kind}` }, label), h('span', { class: 'dur' }, rejected ? '—' : duration(row.ms))),
-    h('div', { class: 'op-cmd truncate selectable' }, rejected ? `${row.code}${row.count > 1 ? ` × ${row.count}` : ''}` : row.command.summary));
+    h('div', { class: 'op-cmd truncate selectable' }, rejected ? `${row.code}${row.count > 1 ? ` × ${row.count}` : ''}` : row.command.summary),
+    scopeView(sh, `o:${row.request}`, row.restrict, true));
 }
 
-// 授予选择框：叠在好友详情上，只选要授出的记录，不选范围；每行下面的小字是对方身份决定的范围。
-const picker = { dialog: makeDialog({ title: '授予远程执行', close: '取消', cancel: () => closePicker() }), ctx: null, list: h('ul', { class: 'glist' }) };
-picker.dialog.body.append(picker.list);
+// 授予与修改范围用同一张表单，叠在好友详情上：授予先在列表里选机器、选定后出范围；修改范围直接是表单（机器固定）。
+// 表单里的输入框不随页面的整体重画重建（否则打字时会丢焦点）：只有结构变化（切范围、加删行、出错）才重画表单。
+const MAX_DIRS = 50, MAX_PATH_BYTES = 1024;
+const picker = { dialog: makeDialog({ title: '授予远程执行', close: '取消', cancel: () => cancelPicker() }), ctx: null, list: h('ul', { class: 'glist' }) };
 function openPicker(m, row) {
-  picker.ctx = { m, row };
+  picker.ctx = { m, row, stage: 'list' };
+  picker.dialog.heading.textContent = '授予远程执行';
+  fill(picker.dialog.body, picker.list);
   picker.dialog.scrim.hidden = false;
   drawPicker();
   const sh = shareOf(m);
@@ -601,17 +629,153 @@ function closePicker() {
   picker.ctx = null;
   picker.dialog.scrim.hidden = true;
 }
+// 探测在途时不能关：结果要落在这张表单上。
+function cancelPicker() { if (!picker.ctx?.busy) closePicker(); }
 function drawPicker() {
-  if (!picker.ctx) return;
+  if (picker.ctx?.stage !== 'list') return;
   const { m, row } = picker.ctx, sh = shareOf(m), scope = scopeNote(certifiedOf(m, row));
   const taken = new Set([...(sh.grants ?? []).filter(g => g.friend === row.author && visibleGrant(g)).map(g => g.target.id), ...sh.pending.filter(p => p.friend === row.author && p.state !== 'denied').map(p => p.target.id)]);
   fill(picker.list, sh.targetsProblem ? h('li', { class: 'error g-empty' }, sh.targetsProblem) : sh.targets === null ? emptyRow('正在读取…')
     : sh.targets.length ? sh.targets.map(target => {
       const why = sh.corrupt ? '持有方出了故障' : !target.available ? '远程执行没打开' : taken.has(target.id) ? '已授给 TA' : '';
-      return h('li', {}, h('button', { class: 'pick', type: 'button', disabled: Boolean(why), onclick: () => { if (!why) grantTo(m, row, target); } },
+      return h('li', {}, h('button', { class: 'pick', type: 'button', disabled: Boolean(why), onclick: () => { if (!why) chooseTarget(target); } },
         h('span', { class: 'g-info' }, h('span', { class: 'g-name truncate' }, target.name), h('span', { class: 'g-sub truncate' }, `${target.os} · ${target.user}`), scope ? h('span', { class: 'g-sub truncate' }, scope) : null),
         why ? h('span', { class: 'why' }, why) : null));
     }) : emptyRow('没有可授出的远程执行记录'));
+}
+const blankDir = access => ({ path: '', access });
+// 选定机器：范围回到「整台机器」，目录清空（换机器重选时也一样）。
+function chooseTarget(target) {
+  if (!picker.ctx) return;
+  Object.assign(picker.ctx, { stage: 'form', target, mode: 'whole', dirs: [blankDir('rw')], problem: null, busy: false });
+  drawForm();
+}
+function openScope(m, row, g) {
+  state.menu = null;
+  const sh = shareOf(m), target = sh.targets?.find(t => t.id === g.target.id) ?? { id: g.target.id, name: g.target.name ?? g.target.id };
+  const ctx = picker.ctx = { m, row, stage: 'form', grant: g, target, mode: g.restrict ? 'dirs' : 'whole', dirs: g.restrict?.dirs.map(dir => ({ ...dir })) ?? [blankDir('rw')], problem: null, busy: false };
+  picker.dialog.scrim.hidden = false;
+  drawForm();
+  // 目标机的系统（能不能选仅限目录）取自可授出的记录；读到了与已有的不同才重画。
+  ask(m, 'grants.targets').then(targets => {
+    sh.targets = targets;
+    const found = targets.find(t => t.id === g.target.id);
+    if (found && picker.ctx === ctx && !ctx.busy && found.restrictHint !== ctx.target.restrictHint) { ctx.target = found; drawForm(); }
+  }, () => {});
+}
+// 表单上方的校验：不合规就给出缺什么（第一处），确认按钮不可用，不发请求。
+function scopeProblem(dirs) {
+  if (!dirs.length) return '至少要有一个目录';
+  if (dirs.length > MAX_DIRS) return `最多 ${MAX_DIRS} 个目录，现在有 ${dirs.length} 个`;
+  for (const [i, { path }] of dirs.entries()) {
+    if (!path) return `第 ${i + 1} 行还没填路径`;
+    if (!path.startsWith('/')) return `第 ${i + 1} 行：要填目标机上的绝对路径，以 / 开头`;
+    if (new TextEncoder().encode(path).length > MAX_PATH_BYTES) return `第 ${i + 1} 行：路径太长（至多 ${MAX_PATH_BYTES} 字节）`;
+  }
+  if (!dirs.some(dir => dir.access === 'rw')) return '至少要有一个「读写」的目录';
+  return null;
+}
+// 失败按持有方给的稳定错误码说明；后端的原话作补充。目录类的错误尽量指到是哪一行（持有方的原话里带路径，取路径最长的那行）。
+const FAIL_TEXT = {
+  sandbox_unsupported: '这台机器不能用「仅限目录」：目标机要是 macOS，并且有 /usr/bin/sandbox-exec',
+  restrict_unsupported: '这台机器上的「远程执行」版本太旧，不认识「仅限目录」：到那台机器上升到 0.2.0 及以上再试',
+  restrict_dir_not_found: ['目录在目标机上不存在', '有目录在目标机上不存在'],
+  restrict_dir_not_a_directory: ['这个路径在目标机上不是目录', '有路径在目标机上不是目录'],
+  restrict_protected: ['与目标机上受保护的位置重叠：目录不能包含、也不能落在 Coda 的状态目录或 ~/.ssh 里面（整个家目录因为包含 ~/.ssh 也不行）：请选与它们不重叠的目录', '有目录与目标机上受保护的位置重叠：目录不能包含、也不能落在 Coda 的状态目录或 ~/.ssh 里面（整个家目录因为包含 ~/.ssh 也不行）：请选与它们不重叠的目录'],
+  sandbox_failed: '目标机上的沙箱起不来，没有授出',
+  target_offline: '目标机现在离线，没法探测：等它回来再试',
+  target_unreachable: '读不到目标机（可能被移出了空间）：等它回到空间再试',
+  target_missing: '目标机上的远程执行记录不在了：先让那台机器重新打开远程执行',
+  target_changed: '目标已经不是授权时的那台机器的记录了：关掉这张表单重新选',
+  timeout: '目标机 30 秒内没有回应，没有授出：确认它在线、远程执行已打开，再试一次',
+  restrict_too_large: '范围太大，签不出授权记录：减少目录，或缩短路径',
+  already_granted: '已经授给 TA 一条范围不同的授权：到「我授给 TA」里那一行的菜单选「修改范围…」',
+  disabled: '目标机上的远程执行没打开',
+  invalid_input: '范围的格式不对：检查每一行的路径和读写',
+  invalid_state: '这条授权已撤销或已失效，不能再改范围',
+  not_found: '这条授权或目标记录已经不在了：关掉这张表单刷新一下',
+};
+function problemOf(c, e) {
+  if (!e.code) return { text: e.refused ? `没有发出：${e.message}` : '没有收到目标机的回应，不能确定有没有成功：先看「我授给 TA」里有没有这一条，再决定要不要重试' };
+  const text = FAIL_TEXT[e.code], [one, any] = Array.isArray(text) ? text : [text, text];
+  const hit = Array.isArray(text) ? c.dirs.filter(dir => dir.path && e.message.includes(dir.path)).sort((a, b) => b.path.length - a.path.length)[0] : null;
+  return { text: hit ? `第 ${c.dirs.indexOf(hit) + 1} 行（${hit.path}）：${one}` : (any ?? `没有成功（${e.code}）`), detail: e.message, row: hit };
+}
+async function confirmScope() {
+  const c = picker.ctx;
+  if (!c || c.busy || (c.mode === 'dirs' && scopeProblem(c.dirs))) return;
+  if (!c.grant && c.mode === 'whole') return grantTo(c.m, c.row, c.target);
+  const { m, grant, row, target } = c, sh = shareOf(m), restrict = c.mode === 'dirs' ? { dirs: c.dirs.map(({ path, access }) => ({ path, access })) } : null;
+  c.busy = true; c.problem = null;
+  drawForm();
+  // 记着这次写：回应超时了才登记（授予是一行待确认的授权，改范围是授权行上的待确认）。晚到的回应、列表核对都按它收尾。
+  const unknown = grant ? { restrict, unknown: true } : { friend: row.author, target: { id: target.id, name: target.name }, state: 'granting', restrict, unknown: true };
+  const kept = () => (grant ? sh.rescoping.get(grant.grant) === unknown : sh.pending.includes(unknown));
+  const lose = text => { if (grant) sh.rescoping.set(grant.grant, { error: text }); else Object.assign(unknown, { state: 'denied', reason: text, unknown: false }); };
+  const late = reply => {
+    if (!kept()) return;
+    beginWrite(sh);
+    if (reply.value) { mergeGrant(sh, reply.value); if (grant) sh.rescoping.delete(grant.grant); else sh.pending = sh.pending.filter(p => p !== unknown); } else lose(problemOf({ dirs: c.dirs }, reply.failure).text);
+    endWrite(m);
+    readGrants(m);
+    draw();
+  };
+  if (grant) sh.rescoping.delete(grant.grant);
+  beginWrite(sh);
+  let made, failure;
+  try { made = await ask(m, grant ? 'grants.restrict' : 'grants.grant', grant ? { grant: grant.grant, restrict } : { friend: row.author, target: { kind: MACHINE_KIND, id: target.id }, restrict }, late, PROBE_WAIT_MS); } catch (e) { failure = e; }
+  endWrite(m);
+  c.busy = false;
+  if (made) mergeGrant(sh, made);
+  if (failure && !failure.code && !failure.refused) {
+    // 没有回应：不知道有没有写成。表单关掉，那一行显示待确认；晚到的回应与后台读列表谁先有结果听谁的。
+    if (grant) sh.rescoping.set(grant.grant, unknown); else sh.pending = [...sh.pending.filter(p => !(p.friend === unknown.friend && p.target.id === target.id)), unknown];
+    if (picker.ctx === c) closePicker();
+    recover(m);
+  } else if (picker.ctx === c) { if (made) closePicker(); else { c.problem = problemOf(c, failure); drawForm(); } }
+  draw();
+}
+function noticeOf(c) {
+  if (c.busy) return h('p', { class: 'progress' }, c.mode === 'dirs' ? '正在目标机上探测这些目录，最多约 30 秒，请稍候…' : '正在保存…');
+  return c.problem ? h('div', { class: 'warn-box', role: 'alert' }, h('div', {}, c.problem.text), c.problem.detail && c.problem.detail !== c.problem.text ? h('div', { class: 'detail selectable' }, c.problem.detail) : null) : null;
+}
+// 输入时只更新校验说明与确认按钮，不重建输入框。
+function refreshForm() {
+  const c = picker.ctx, bad = c.mode === 'dirs' ? scopeProblem(c.dirs) : null;
+  if (c.form.hint) { c.form.hint.textContent = bad ?? ''; c.form.hint.hidden = !bad; }
+  c.form.confirm.disabled = c.busy || Boolean(bad);
+  c.form.confirm.textContent = c.busy ? (c.mode === 'dirs' ? '正在探测…' : '正在保存…') : c.grant ? '保存范围' : '授予';
+  fill(c.form.notice, noticeOf(c));
+}
+function dirRow(c, dir, i) {
+  const path = h('input', { type: 'text', class: 'mono', placeholder: '目标机上的绝对路径，如 /Users/me/work', autocomplete: 'off', spellcheck: 'false', 'aria-label': `第 ${i + 1} 行的路径`, disabled: c.busy,
+    oninput: e => { dir.path = e.target.value; refreshForm(); } });
+  path.value = dir.path;
+  const access = h('select', { 'aria-label': `第 ${i + 1} 行的权限`, disabled: c.busy, onchange: e => { dir.access = e.target.value; refreshForm(); } },
+    h('option', { value: 'rw' }, ACCESS.rw), h('option', { value: 'ro' }, ACCESS.ro));
+  access.value = dir.access;
+  return h('li', { class: `dir-row${c.problem?.row === dir ? ' bad' : ''}` }, path, access,
+    h('button', { class: 'btn quiet small', type: 'button', 'aria-label': `删除第 ${i + 1} 行`, disabled: c.busy, onclick: () => { c.dirs.splice(c.dirs.indexOf(dir), 1); c.problem = null; drawForm(); } }, '删除'));
+}
+function drawForm() {
+  const c = picker.ctx, { m, row, target } = c, modify = Boolean(c.grant), dirsMode = c.mode === 'dirs', scope = scopeNote(certifiedOf(m, row));
+  const option = (mode, label, note, off) => h('label', { class: `opt${c.mode === mode ? ' on' : ''}${off ? ' off' : ''}` },
+    h('input', { type: 'radio', name: 'scope', checked: c.mode === mode, disabled: off || c.busy, onchange: () => { c.mode = mode; c.problem = null; drawForm(); } }),
+    h('span', { class: 'g-info' }, h('span', { class: 'g-name' }, label), h('span', { class: 'g-sub' }, note)));
+  // 仅限目录只有 macOS 的目标机能用；已经是仅限目录的授权，选项不灰（灰了就没法留在原范围）。
+  const off = target.restrictHint !== true && !dirsMode;
+  c.form = { hint: dirsMode ? h('p', { class: 'hint', role: 'status' }) : null, notice: h('div', { 'aria-live': 'polite' }), confirm: h('button', { class: 'btn', type: 'button', onclick: confirmScope }) };
+  picker.dialog.heading.textContent = modify ? '修改范围' : '授予远程执行';
+  fill(picker.dialog.body, h('div', { class: 'stack scope-form' },
+    h('div', { class: 'target-box' }, h('span', { class: 'g-name truncate' }, target.name), target.os ? h('span', { class: 'g-sub truncate' }, `${target.os} · ${target.user}`) : null, scope ? h('span', { class: 'g-sub truncate' }, scope) : null),
+    h('div', { class: 'opts', role: 'radiogroup', 'aria-label': '范围' },
+      option('whole', '整台机器', '等同于登录这台机器上的这个账号'),
+      option('dirs', '仅限目录', off ? `第一期只支持 macOS 的机器${target.os ? `（这台是 ${target.os}）` : ''}` : 'TA 的命令只能读写下面列出的目录（外加系统运行所需的只读路径和本次专用的临时目录）；家目录里其余文件的内容、~/.ssh、Coda 数据读写不到', off)),
+    dirsMode ? h('div', { class: 'dirs-edit' }, h('ul', { class: 'glist' }, c.dirs.map((dir, i) => dirRow(c, dir, i))),
+      h('button', { class: 'btn quiet small', type: 'button', disabled: c.busy, onclick: () => { c.dirs.push(blankDir('ro')); c.problem = null; drawForm(); } }, '添加目录'), c.form.hint) : null,
+    c.form.notice,
+    h('div', { class: 'actions' }, c.form.confirm, modify ? null : h('button', { class: 'btn quiet', type: 'button', disabled: c.busy, onclick: () => { c.stage = 'list'; fill(picker.dialog.body, picker.list); picker.dialog.heading.textContent = '授予远程执行'; drawPicker(); } }, '换一台机器'))));
+  refreshForm();
 }
 
 // ---- 网络节点 ----
