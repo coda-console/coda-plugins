@@ -4,7 +4,7 @@
   "displayName": "远程执行",
   "description": "让空间里别的机器上的 Agent 在这台机器上执行命令、拉取和推送文件",
   "icon": { "symbol": "terminal", "color": "blue" },
-  "version": "0.1.3",
+  "version": "0.2.0",
   "coda": { "channels": ["stable", "preview"] },
   "categories": ["机器与资源"],
   "type": "module",
@@ -70,14 +70,37 @@
         "resource": { "columns": ["name", "os", "user", "cwd"], "symbol": "terminal" },
         "operations": {
           "exec": {
-            "description": "在目标机上用 /bin/sh -c 执行一条命令，以目标机后端所在的系统用户运行，等它结束后返回退出码、stdout 和 stderr。cwd 不给时在这台机器的默认目录运行；stdin 给了就一次写入后关闭，不给就是空输入。时限 timeout 以秒计，默认 120，最长 600；超时会结束整个进程组并返回 timedOut: true。stdout 与 stderr 各最多保留约 24 KiB（开头和结尾各一半，中间注明省略了多少字节），超出时 truncated 为 true，完整输出留在目标机上（每路至多存 16 MiB，至多保留 24 小时），outputDir 是它的目录，里面有 stdout、stderr 两个文件，用 pull 取回。命令的环境不继承后端，只有 PATH、HOME、USER、LOGNAME、SHELL、LANG、LC_*、TMPDIR、TZ。同时至多 8 个执行，超出的以 too_many_running 拒绝。命令被信号结束时 exitCode 为 null，signal 是信号名。请求和回答各自编码后都不能超过 1 MiB，大的内容用 pull、push 传。需要长时间运行的任务，放到后台再回来查。",
+            "description": "在目标机上用 /bin/sh -c 执行一条命令，以目标机后端所在的系统用户运行，等它结束后返回退出码、stdout 和 stderr。cwd 不给时在这台机器的默认目录运行；stdin 给了就一次写入后关闭，不给就是空输入。时限 timeout 以秒计，默认 120，最长 600；超时会结束整个进程组并返回 timedOut: true。stdout 与 stderr 各最多保留约 24 KiB（开头和结尾各一半，中间注明省略了多少字节），超出时 truncated 为 true，完整输出留在目标机上（每路至多存 16 MiB，至多保留 24 小时），outputDir 是它的目录，里面有 stdout、stderr 两个文件，用 pull 取回。受限执行（带 restrict）的 outputDir 照旧回这个路径，但它在状态目录里，受限的命令自己读不到，要由有权限的一方用 pull 取。命令的环境不继承后端，只有 PATH、HOME、USER、LOGNAME、SHELL、LANG、LC_*、TMPDIR、TZ。同时至多 8 个执行，超出的以 too_many_running 拒绝。命令被信号结束时 exitCode 为 null，signal 是信号名。请求和回答各自编码后都不能超过 1 MiB，大的内容用 pull、push 传。需要长时间运行的任务，放到后台再回来查。restrict 可选，带了就只让命令在 dirs 列出的目录里读写（rw 可读写、ro 只读，path 是目标机上的绝对路径，至多 50 项、至少一项 rw），其余文件（家目录里别的内容、~/.ssh、Coda 状态根）读写不到，子进程同样受限；cwd 不给用第一条 rw 目录，给了须在允许的目录里；TMPDIR 是本次专用的临时目录，结束就删。是否支持看两层：记录的 os 以 Darwin 开头才可能支持（提示）；权威是发一次带 restrict 的 exec 探测，返回 sandbox_unsupported 或旧版目标机按 schema 拒绝这个字段，都表示不支持。不支持、目录不存在或不是目录、目录与受保护位置重叠、cwd 越界、沙箱起不来都以明确的错误码拒绝（effects: none），绝不退回不受限执行。不禁网、不限 CPU 与内存。",
             "input": {
               "type": "object",
               "properties": {
                 "command": { "type": "string", "minLength": 1, "description": "要执行的 shell 命令，交给 /bin/sh -c。" },
                 "cwd": { "type": "string", "description": "命令的工作目录（目标机上的绝对路径）；不给就用机器的默认目录。" },
                 "timeout": { "type": "integer", "minimum": 1, "maximum": 600, "description": "时限，秒；默认 120。" },
-                "stdin": { "type": "string", "description": "写给命令标准输入的文本，一次写完后关闭。" }
+                "stdin": { "type": "string", "description": "写给命令标准输入的文本，一次写完后关闭。" },
+                "restrict": {
+                  "type": "object",
+                  "description": "只让命令在列出的目录里读写（只收紧权限，任何调用方都可以带）；目标机不支持（sandbox_unsupported，或旧版按 schema 拒绝这个字段）就拒绝，绝不退回不受限。不给就和以前一样不受限。cwd 不给时用第一条 rw 目录，给了必须在允许的目录里。",
+                  "properties": {
+                    "dirs": {
+                      "type": "array",
+                      "minItems": 1,
+                      "maxItems": 50,
+                      "description": "允许的目录，至少一项 rw。",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": { "type": "string", "minLength": 1, "description": "目标机上的绝对路径，须是已有的目录，不能含有或落在 ~/.ssh、Coda 状态根里。" },
+                          "access": { "type": "string", "enum": ["rw", "ro"], "description": "rw 可读写，ro 只读。" }
+                        },
+                        "required": ["path", "access"],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": ["dirs"],
+                  "additionalProperties": false
+                }
               },
               "required": ["command"],
               "additionalProperties": false

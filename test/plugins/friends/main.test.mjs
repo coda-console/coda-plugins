@@ -30,7 +30,7 @@ test('activate registers the policy and sharing handlers, the gateway operations
   const h = await host(t);
   t.after(deactivate);
   await activate(h.coda);
-  assert.deepEqual([...h.self.keys()].sort(), ['grants.grant', 'grants.list', 'grants.revoke', 'grants.targets', 'ledger.list', 'policy.get', 'policy.setKind', 'proxies.list']);
+  assert.deepEqual([...h.self.keys()].sort(), ['grants.grant', 'grants.list', 'grants.restrict', 'grants.revoke', 'grants.targets', 'ledger.list', 'policy.get', 'policy.setKind', 'proxies.list']);
   assert.deepEqual(h.operations.sort(), [...['friends', 'outbox', 'publish', 'records', 'retract'].map(name => `friends/social@1/${name}`), 'remote-exec/machine@1/exec']);
   // 调用方的代理记录：exec 转给好友，pull、push 报不支持。
   assert.deepEqual(h.streams, ['remote-exec/machine@1/pull', 'remote-exec/machine@1/push']);
@@ -70,8 +70,14 @@ test('a page reads the sharing state by messages too: grants, ledger, the proxie
   assert.deepEqual(page.got[0].value, { certState: 'no_identity', admitting: true, corrupt: null, grants: [] });
   assert.deepEqual(page.got[1].value, []);
   assert.deepEqual(page.got[2].value, []);
-  assert.deepEqual(page.got[3].value, [{ id: 'rx-1', name: '书房的 Mac mini', os: 'macOS 15.2', user: 'leavan', available: true, local: true },
-    { id: 'rx-2', name: '关着的', os: '', user: '', available: false, local: true }, { id: 'rx-3', name: '别的电脑', os: '', user: '', available: true, local: false }]);
+  assert.deepEqual(page.got[3].value, [{ id: 'rx-1', name: '书房的 Mac mini', os: 'macOS 15.2', user: 'leavan', available: true, local: true, restrictHint: false },
+    { id: 'rx-2', name: '关着的', os: '', user: '', available: false, local: true, restrictHint: false }, { id: 'rx-3', name: '别的电脑', os: '', user: '', available: true, local: false, restrictHint: false }]);
+  // 系统以 Darwin 开头才提示能选「仅限目录」（只是提示，权威是授予时的探测）。
+  rows.push({ id: 'rx-4', local: true, plugin: 'remote-exec', spec: { name: '笔记本', os: 'Darwin 25.1.0', user: 'me' }, status: { available: true } });
+  page.tell({ type: 'grants.targets', rid: 'z' });
+  await settled();
+  assert.deepEqual(page.got.at(-1).value.map(row => [row.id, row.restrictHint]), [['rx-1', false], ['rx-2', false], ['rx-3', false], ['rx-4', true]]);
+  page.got.pop();
   assert.match(page.got[4].error, /没有授权/);
   assert.equal(page.got[4].effects, 'none', 'a refusal says nothing was written');
   // 已下线的备注与别的类型、没带 id 的消息不答。
@@ -87,7 +93,7 @@ test('without a state directory policy and sharing fail plainly, and deactivate 
   await assert.rejects(Promise.resolve().then(() => h.self.get('grants.list')({})), /状态目录/);
   deactivate();
   assert.deepEqual(h.disposed.sort(), ['friends/social@1/friends', 'friends/social@1/outbox', 'friends/social@1/publish', 'friends/social@1/records', 'friends/social@1/retract',
-    'grants.grant', 'grants.list', 'grants.revoke', 'grants.targets', 'ledger.list', 'policy.get', 'policy.setKind', 'proxies.list', 'watch']);
+    'grants.grant', 'grants.list', 'grants.restrict', 'grants.revoke', 'grants.targets', 'ledger.list', 'policy.get', 'policy.setKind', 'proxies.list', 'watch']);
   deactivate();
 });
 

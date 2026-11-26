@@ -20,6 +20,10 @@
 // - 请求拿到结局就撤回，拿不到的过期后撤回，都按发出时的作者署名：签不了或本机作者不是它，就推迟到能签、作者切回来，或过了保留期。
 //   处理函数还没了结（重启后等 resume 收尾）的发出项不动。撤回请求与删掉发出项是两件事：发出项是重启后按原调用号找回、核对回答的索引，
 //   留到恢复期结束才删：本进程的处理函数把结局交回宿主之后；上一代进程留下的，启动后 resume 的 30 秒窗口过了之后。
+// - 授权的范围：授权记录（v2）里的 `restrict` 是仅限目录的范围，记在 `known` 里，`proxies.list` 的每一行带上它（没有是整台机器），只用来展示，
+//   放行与限制都在持有方与目标机。代理记录的 `spec` 形状不变（登记在 remote-exec/machine@1 下，加字段旧节点会丢掉整条记录）：仅限目录的授权，
+//   `spec.cwd` 是授权记录里写的第一条 rw 目录。旧版收不下 v2 的授权记录（见 rpc-format），所以仅限目录的授权旧版好友看不到、已登记的会标成不可用。
+//   代理记录的 exec 不收 `restrict`：范围由授权定，当场拒绝，免得调用方以为自己收紧了、实际没有。
 // - 本机作者变了：旧作者下的代理记录停用，正在等的请求不再处理，要等重新授予。
 // - 签名只经网关的内部入口（signRpc、retractRpc）。
 import { isDeepStrictEqual } from 'node:util';
@@ -110,7 +114,7 @@ export function createCaller(coda, { store, signRpc, retractRpc, onAccord, pages
       known.set(key, { holder, grant, grantee: null, spec: entry.spec, stem: entry.spec.name.slice(0, entry.spec.name.lastIndexOf('#')), tail, offered: false, present: false });
     }
     for (const [key, { friend, body }] of found) {
-      known.set(key, { holder: body.holder, grant: body.grant, grantee: body.grantee, spec: body.spec, ...stemOf(body.spec.name, friend), offered: body.available, present: true });
+      known.set(key, { holder: body.holder, grant: body.grant, grantee: body.grantee, spec: body.spec, restrict: body.restrict, ...stemOf(body.spec.name, friend), offered: body.available, present: true });
     }
     const contests = new Map();
     for (const [key, grant] of known) {
@@ -187,6 +191,7 @@ export function createCaller(coda, { store, signRpc, retractRpc, onAccord, pages
     await ready;
     const me = await identity(), grant = known.get(ctx.record?.key), problem = problemOf(grant, me);
     if (problem) throw fail(...PROBLEMS[problem]);
+    if (input?.restrict !== undefined) throw fail('invalid_input', 'restrict 不能由调用方给：好友的授权已定了范围（整台机器，或授权里列的目录），要收得更紧就在命令里自己做');
     const rebuilt = rebuildExecInput(input);
     if (!rebuilt.ok) throw fail('invalid_input', rebuilt.message);
     const request = requestId(ctx.id), createdAt = now();
@@ -369,13 +374,15 @@ export function createCaller(coda, { store, signRpc, retractRpc, onAccord, pages
 
   // 好友授给本机的代理记录（给好友页读，只读）：给了 `friend`（好友的公钥）就只列这位好友的，按他通道背后的机器钥匙筛。
   // 名字取空间里登记着这一授权的那条代理记录的（去重让给别的机器的，取那台的；哪儿都没登记是 null）。
-  // 状态：available 可用，或 PROBLEMS 里的原因（off、channel、author、sign）。
+  // 状态：available 可用，或 PROBLEMS 里的原因（off、channel、author、sign）。`restrict` 是授权的范围（仅限目录的才有，没有是整台机器），只用来展示；
+  // 重启后授权记录还没重新读到的行（status 是 channel）没有它。
   async function list({ friend } = {}) {
     if (friend !== undefined && !isAuthor(friend)) throw fail('invalid_input', 'friend 须是好友的公钥（ed25519:…）');
     await ready;
     const me = await identity(), holders = new Set(me.friends.filter(one => friend === undefined || one.author === friend).map(one => one.machine));
     return [...known].filter(([, grant]) => friend === undefined || holders.has(grant.holder))
-      .map(([key, grant]) => ({ key, grant: grant.grant, holder: grant.holder, name: grant.title, os: grant.spec.os, user: grant.spec.user, status: problemOf(grant, me) ?? 'available' }));
+      .map(([key, grant]) => ({ key, grant: grant.grant, holder: grant.holder, name: grant.title, os: grant.spec.os, user: grant.spec.user, status: problemOf(grant, me) ?? 'available',
+        ...(grant.restrict ? { restrict: grant.restrict } : {}) }));
   }
 
   // ---- 请求的撤回 ----

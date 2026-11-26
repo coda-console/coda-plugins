@@ -1216,3 +1216,60 @@ test('pull and push on a proxy record are unsupported before the first byte', as
     await rejectsWith((async () => c.streams.get(name)(new Request('http://x/?path=/tmp/a'), { record: { kind: MACHINE, id: 'proxy' } }))(), 'unsupported', 'none', UNSUPPORTED);
   }
 });
+
+// ---- 授权的范围 ----
+
+const DIRS = { dirs: [{ path: '/srv/work', access: 'rw' }, { path: '/srv/data', access: 'ro' }] };
+const DIRS_2 = { dirs: [{ path: '/srv/other', access: 'rw' }] };
+const grantDirs = (h, restrict = DIRS) => h.holder.self['grants.grant']({ friend: ROOT, target: { kind: MACHINE, id: 'rx-1' }, restrict }).then(row => row.grant);
+const registered = (c, grant) => until(() => c.mine().some(row => row.key === proxyKey(HM, grant) && row.status.available), '代理记录登记');
+
+test('a directories grant is a proxy record whose spec keeps its four fields and whose default directory is the first rw one; list carries the scope for display, and follows a change of scope', async t => {
+  const world = worldFake(), h = await holderOf(t, world), c = await callerOf(t, world);
+  const grant = await grantDirs(h);
+  await registered(c, grant);
+  const [row] = c.mine();
+  assert.deepEqual(Object.keys(row.spec).sort(), ['cwd', 'name', 'os', 'user'], 'the spec of a record under remote-exec/machine@1 gains no field');
+  assert.deepEqual(row.spec, { ...SPEC, name: 'box@zzy#1948', cwd: '/srv/work' });
+  assert.deepEqual(row.status, { available: true });
+  assert.deepEqual(row.labels, { 'friends-holder': HM, 'friends-grant': grant, tail: fullTail(HM) });
+  const proxy = { key: proxyKey(HM, grant), grant, holder: HM, name: 'box@zzy#1948', os: 'linux', user: 'u', status: 'available' };
+  assert.deepEqual(await c.caller.list(), [{ ...proxy, restrict: DIRS }]);
+  assert.deepEqual(await c.caller.list({ friend: HM }), [{ ...proxy, restrict: DIRS }]);
+
+  // 持有方改范围：同一授权号、更高版本，调用方这边的展示跟着变，代理记录还是同一条。
+  await h.holder.self['grants.restrict']({ grant, restrict: DIRS_2 });
+  await until(() => c.mine()[0].spec.cwd === '/srv/other', '默认目录跟着改');
+  assert.deepEqual(await c.caller.list(), [{ ...proxy, restrict: DIRS_2 }]);
+  assert.deepEqual(c.mine().map(one => one.key), [proxyKey(HM, grant)]);
+  // 改回整台机器：默认目录是机器自己的，列表里没有范围。
+  await h.holder.self['grants.restrict']({ grant });
+  await until(() => c.mine()[0].spec.cwd === '/home/u', '默认目录回到机器的');
+  assert.deepEqual(await c.caller.list(), [proxy]);
+});
+
+test('calling a proxy sends the friend\'s command alone: the caller refuses a restrict of its own, and under a directories grant the holder runs it with the restrict of the grant', async t => {
+  const world = worldFake(), h = await holderOf(t, world), c = await callerOf(t, world);
+  const grant = await grantDirs(h);
+  await registered(c, grant);
+  await rejectsWith(c.exec({ grant, input: { command: 'ls', restrict: { dirs: [{ path: '/', access: 'rw' }] } } }).promise, 'invalid_input', 'none', '范围');
+  assert.deepEqual(c.requests(), [], 'nothing was signed');
+  const call = c.exec({ grant, input: { command: 'ls /srv/work' } });
+  await settles(call.promise);
+  assert.equal((await call.promise).stdout, 'ran ls /srv/work');
+  assert.deepEqual([...h.exec.jobs.values()].filter(job => job.input.command === 'ls /srv/work').map(job => job.input), [{ command: 'ls /srv/work', restrict: DIRS }]);
+  assert.deepEqual(c.requests().map(request => request.body.input), [{ command: 'ls /srv/work' }], 'the scope never travels in the friend\'s request');
+});
+
+test('a grant record this side cannot verify (how an older version meets a directories grant) leaves an already registered proxy in place but unusable, with a channel status, and nothing is sent', async t => {
+  const world = worldFake(), h = await holderOf(t, world), c = await callerOf(t, world);
+  const grant = await granted(h, c);
+  // 旧版收到仅限目录的授权记录时的处境：记录在目录里、正文非空，却过不了它的校验（v 不是 1、多出一项）。这里用同样过不了校验的正文替代，走的是同一条路。
+  world.inject({ author: HM, kind: GRANT, id: grant, body: { ...grantRecord({ holder: HM, grantee: ROOT, grant, spec: SPEC, available: true, grantedAt: START }).body, v: 3 }, audience: [ROOT] });
+  await c.caller.tick();
+  assert.equal(c.mine().length, 1, 'not deleted: the grant is not retracted');
+  assert.equal((await c.caller.list())[0].status, 'channel');
+  await until(() => !c.mine()[0].status.available, '代理记录标成不可用');
+  await rejectsWith(c.exec({ grant }).promise, 'unavailable', 'none', '授权记录不在了');
+  assert.deepEqual(c.requests(), []);
+});

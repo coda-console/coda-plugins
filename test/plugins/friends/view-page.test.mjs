@@ -30,7 +30,7 @@ function strictCoda(page, { silent, sendFail, watch, call, machines = [A], share
       const answer = { ...SHARE, ...share }[msg.type];
       if (answer && options.machine !== silent) setImmediate(async () => {
         let reply;
-        try { reply = { ok: true, value: await answer(msg, options.machine) }; } catch (e) { reply = { ok: false, error: e.message, effects: e.effects }; }
+        try { reply = { ok: true, value: await answer(msg, options.machine) }; } catch (e) { reply = { ok: false, error: e.message, effects: e.effects, code: e.code }; }
         page.reply({ type: 'reply', rid: msg.rid, ...reply }, { id: options.machine });
       });
     },
@@ -666,8 +666,8 @@ test('the generated invite is shown once: copied through coda.copy, kept in no p
 
 const GRANT_KIND = 'remote-exec/machine@1';
 const grantRow = (grant, over = {}) => ({ grant, friend: FRIEND, target: { kind: GRANT_KIND, id: `rx-${grant}`, name: `机器 ${grant}` }, createdAt: 1, status: 'available', ...over });
-const TARGETS = [{ id: 'rx-1', name: '书房的 Mac mini', os: 'macOS 15.2', user: 'leavan', available: true }, { id: 'rx-2', name: '阳台的树莓派', os: 'Debian 12', user: 'pi', available: false },
-  { id: 'rx-3', name: '车库的 Linux', os: 'Ubuntu 24.04', user: 'coda', available: true }];
+const TARGETS = [{ id: 'rx-1', name: '书房的 Mac mini', os: 'Darwin 24.2.0', user: 'leavan', available: true, restrictHint: true }, { id: 'rx-2', name: '阳台的树莓派', os: 'Debian 12', user: 'pi', available: false, restrictHint: false },
+  { id: 'rx-3', name: '车库的 Linux', os: 'Ubuntu 24.04', user: 'coda', available: true, restrictHint: false }];
 // 打开好友详情（好友在第一台上、已绑定），返回详情与授予选择框。
 async function openShare(t, { certified = true, ...options } = {}) {
   const { page, log } = await open(t, options);
@@ -682,6 +682,9 @@ const badgeOf = (page, row) => page.all(n => cls(n).startsWith('badge'), row)[0]
 const kebabOf = (page, row) => page.all(n => n.tag === 'button' && cls(n) === 'kebab', row)[0];
 const slotsOfRow = row => row.children.map(n => `${n.tag}.${cls(n).split(' ')[0]}`);
 const sentOf = (log, type) => log.sent.filter(s => s.msg.type === type);
+// 选机器后出范围表单；「整台机器」是默认，点「授予」才发（整台机器走原来的先显示授予中）。
+const confirmButton = (page, picker, label = '授予') => page.all(n => n.tag === 'button' && n.textContent === label, picker)[0];
+const grantOn = (page, picker, name) => { chooseTarget(page, picker, name).fire('click'); confirmButton(page, picker).fire('click'); };
 const chooseTarget = (page, picker, name) => page.all(n => n.tag === 'button' && cls(n) === 'pick' && n.textContent.startsWith(name), picker)[0];
 // 超过 1 秒的定时器（模块回应的 10 秒期限、后台恢复的间隔）交给测试手动拨。
 function stubTimers(t) {
@@ -703,7 +706,7 @@ test('the sharing section sits above the re-handshake / remove row and is titled
   for (const part of ['我授给 TA', 'TA 授给我', '还没有授给 TA 的东西', 'TA 还没有授给你东西', '最近的操作']) assert.ok(share.textContent.includes(part), part);
 });
 
-test('the granting dialog only picks records: no scope choice, the line under each row follows the friend\'s identity (person, machine, or unknown: none)', async t => {
+test('the granting dialog starts by only picking a record (the scope comes after the choice): the line under each row follows the friend\'s identity (person, machine, or unknown: none)', async t => {
   for (const [certified, line] of [[true, '授给这个人名下的机器'], [false, '只授给对方那一台机器'], [null, null], ['absent', null]]) {
     const { page, picker } = await openShare(t, { certified, share: { 'grants.targets': () => TARGETS } });
     assert.equal(isVisible(picker), false);
@@ -715,7 +718,7 @@ test('the granting dialog only picks records: no scope choice, the line under ea
     assert.equal(rows.length, 3);
     for (const row of rows) assert.equal(row.textContent.includes('授给这个人名下的机器') || row.textContent.includes('只授给对方那一台机器'), line !== null, `${certified}: ${row.textContent}`);
     if (line) assert.ok(rows.every(row => row.textContent.includes(line)));
-    assert.ok(rows[0].textContent.includes('书房的 Mac mini') && rows[0].textContent.includes('macOS 15.2 · leavan'));
+    assert.ok(rows[0].textContent.includes('书房的 Mac mini') && rows[0].textContent.includes('Darwin 24.2.0 · leavan'));
     assert.ok('disabled' in rows[1].attrs && rows[1].textContent.includes('远程执行没打开'));
     assert.ok(!('disabled' in rows[0].attrs));
     page.dispatch('keydown', { key: 'Escape' });
@@ -730,7 +733,7 @@ test('granting shows the row granting at once; the answer settles it, a refusal 
   const { page, log, detail, picker } = await openShare(t, { share: { 'grants.targets': () => TARGETS, 'grants.grant': () => grant() } });
   page.button('授予…').fire('click');
   await flush();
-  chooseTarget(page, picker, '书房的 Mac mini').fire('click');
+  grantOn(page, picker, '书房的 Mac mini');
   assert.equal(isVisible(picker), false, 'the picker closes with the click');
   let [row] = listRows(page, detail);
   assert.equal(listRows(page, detail).length, 1);
@@ -753,7 +756,7 @@ test('granting shows the row granting at once; the answer settles it, a refusal 
   page.dispatch('keydown', { key: 'Escape' });
   page.button('授予…').fire('click');
   await flush();
-  chooseTarget(page, picker, '车库的 Linux').fire('click');
+  grantOn(page, picker, '车库的 Linux');
   await flush();
   refuse.reject(refusal('这位不是已绑定好友通道的好友'));
   await flush();
@@ -776,7 +779,7 @@ test('revoking changes the row to revoking at once with no confirmation; a refus
   const kebab = kebabOf(page, rows()[0]);
   assert.equal(kebab.attrs['aria-label'], '更多操作：机器 g1');
   kebab.fire('click');
-  const item = () => page.all(n => n.tag === 'button' && n.attrs.role === 'menuitem', rows()[0])[0];
+  const item = () => page.all(n => n.tag === 'button' && n.attrs.role === 'menuitem' && n.textContent.startsWith('撤销'), rows()[0])[0];
   assert.ok(item().textContent.includes('撤销') && item().textContent.includes('同时取消对方正在跑的调用'), 'the menu item explains it');
   item().fire('click');
   // 这一刻（还没有任何回应）就是撤销中；没有确认框。
@@ -810,7 +813,7 @@ test('a grant with no answer stays granting and keeps its target taken: a list t
   const grant = async name => {
     page.button('授予…').fire('click');
     await flush();
-    chooseTarget(page, picker, name).fire('click');
+    grantOn(page, picker, name);
     await flush();
     timers.fire(10_000);
     await flush();
@@ -853,7 +856,7 @@ test('a late refusal ends a granting that had no answer, with the reason on its 
   const choose = async () => {
     page.button('授予…').fire('click');
     await flush();
-    chooseTarget(page, picker, '车库的 Linux').fire('click');
+    grantOn(page, picker, '车库的 Linux');
     await flush();
   };
   await choose();
@@ -882,7 +885,7 @@ test('a grant whose message could not be sent is a plain failure: the row rolls 
   const choose = async () => {
     page.button('授予…').fire('click');
     await flush();
-    chooseTarget(page, picker, '车库的 Linux').fire('click');
+    grantOn(page, picker, '车库的 Linux');
     await flush();
   };
   await choose();
@@ -914,7 +917,7 @@ test('a grant with no answer stays granting through the first lists that do not 
   const choose = async () => {
     page.button('授予…').fire('click');
     await flush();
-    chooseTarget(page, picker, '车库的 Linux').fire('click');
+    grantOn(page, picker, '车库的 Linux');
     await flush();
   };
   await choose();
@@ -957,7 +960,7 @@ test('a grant rolled back as not confirmed that did land afterwards: the next li
   const { page, detail, picker } = await openShare(t, { share: { 'grants.targets': () => TARGETS, 'grants.list': () => ({ grants: listed }), 'grants.grant': () => deferred().promise } });
   page.button('授予…').fire('click');
   await flush();
-  chooseTarget(page, picker, '车库的 Linux').fire('click');
+  grantOn(page, picker, '车库的 Linux');
   await flush();
   timers.fire(10_000);
   await flush();
@@ -982,7 +985,7 @@ test('a revoke whose message could not be sent is a plain failure: the row is us
   const { page, log, detail } = await openShare(t, { sendFail: msg => broken && msg.type === 'grants.revoke', share: { 'grants.list': () => ({ grants: [grantRow('g1')] }), 'grants.revoke': () => ({ ...grantRow('g1'), status: 'revoking', revokedAt: 5 }) } });
   const rows = () => listRows(page, detail);
   kebabOf(page, rows()[0]).fire('click');
-  const item = () => page.all(n => n.tag === 'button' && n.attrs.role === 'menuitem', rows()[0])[0];
+  const item = () => page.all(n => n.tag === 'button' && n.attrs.role === 'menuitem' && n.textContent.startsWith('撤销'), rows()[0])[0];
   item().fire('click');
   await flush();
   assert.equal(badgeOf(page, rows()[0]), '可用');
@@ -1004,7 +1007,7 @@ test('a revoke with no outcome is resent only a few times while the list keeps s
   const rows = () => listRows(page, detail);
   const revoke = async () => {
     kebabOf(page, rows()[0]).fire('click');
-    page.all(n => n.tag === 'button' && n.attrs.role === 'menuitem', rows()[0])[0].fire('click');
+    page.all(n => n.tag === 'button' && n.attrs.role === 'menuitem' && n.textContent.startsWith('撤销'), rows()[0])[0].fire('click');
     await flush();
   };
   await revoke();
@@ -1031,7 +1034,7 @@ test('a revoke whose error does not say nothing was written stays revoking and i
   const { page, log, detail } = await openShare(t, { share: { 'grants.list': () => ({ grants: listed }), 'grants.revoke': () => { revoked++; throw new Error('写盘时出错'); } } });
   const badges = () => listRows(page, detail).map(row => badgeOf(page, row));
   kebabOf(page, listRows(page, detail)[0]).fire('click');
-  page.all(n => n.tag === 'button' && n.attrs.role === 'menuitem', detail)[0].fire('click');
+  page.all(n => n.tag === 'button' && n.attrs.role === 'menuitem' && n.textContent.startsWith('撤销'), detail)[0].fire('click');
   await flush();
   assert.deepEqual(badges(), ['撤销中']);
   assert.ok(!detail.textContent.includes('写盘时出错'), 'not shown as a refusal');
@@ -1066,7 +1069,7 @@ test('a list that was asked before a write and arrives after it does not overwri
   await reopen();
   page.button('授予…').fire('click');
   await flush();
-  chooseTarget(page, picker, '车库的 Linux').fire('click');
+  grantOn(page, picker, '车库的 Linux');
   await flush();
   assert.deepEqual(badges(), ['可用', '可用']);
   const before = reads;
@@ -1079,7 +1082,7 @@ test('a list that was asked before a write and arrives after it does not overwri
   hold = deferred();
   await reopen();
   kebabOf(page, listRows(page, detail)[0]).fire('click');
-  page.all(n => n.tag === 'button' && n.attrs.role === 'menuitem', detail)[0].fire('click');
+  page.all(n => n.tag === 'button' && n.attrs.role === 'menuitem' && n.textContent.startsWith('撤销'), detail)[0].fire('click');
   await flush();
   assert.deepEqual(badges(), ['可用'], 'g1 is gone, g2 stays');
   const latest = reads;
@@ -1096,7 +1099,7 @@ test('a holder fault is shown as a fault: no empty text, no granting, and the li
   const { page, detail, picker } = await openShare(t, { share: { 'grants.targets': () => TARGETS, 'grants.list': () => list(), 'grants.grant': () => new Promise(() => {}) } });
   page.button('授予…').fire('click');
   await flush();
-  chooseTarget(page, picker, '车库的 Linux').fire('click');
+  grantOn(page, picker, '车库的 Linux');
   await flush();
   timers.fire(10_000);
   await flush();
@@ -1137,7 +1140,7 @@ test('rows keep one shape in every state: the info, one badge, and one slot at t
     'proxies.list': () => [{ key: 'k1', grant: 'p1', holder: FRIEND, name: '客厅的 Linux@小周', os: 'linux', user: 'u', status: 'available' }, { key: 'k2', grant: 'p2', holder: FRIEND, name: '工作室的 Mac@小周', os: 'm', user: 'u', status: 'off' }] } });
   page.button('授予…').fire('click');
   await flush();
-  chooseTarget(page, picker, '车库的 Linux').fire('click');
+  grantOn(page, picker, '车库的 Linux');
   const mine = listRows(page, detail).slice(0, 4);
   assert.deepEqual(mine.map(row => badgeOf(page, row)), ['可用', '目标已关闭', '撤销中', '授予中']);
   const shapes = mine.map(row => slotsOfRow(row).join(' '));
@@ -1148,7 +1151,7 @@ test('rows keep one shape in every state: the info, one badge, and one slot at t
   await flush();
   assert.equal(slotsOfRow(listRows(page, detail)[3]).join(' '), 'div.g-info span.badge button.kebab', 'a refused one too');
   const theirs = listRows(page, detail).slice(4);
-  assert.deepEqual(theirs.map(row => [row.children[0].textContent, badgeOf(page, row)]), [['客厅的 Linux@小周', '可用'], ['工作室的 Mac@小周', 'TA 那边没开远程执行']]);
+  assert.deepEqual(theirs.map(row => [page.all(n => cls(n).startsWith('g-name'), row)[0].textContent, badgeOf(page, row)]), [['客厅的 Linux@小周', '可用'], ['工作室的 Mac@小周', 'TA 那边没开远程执行']]);
   assert.ok(theirs.every(row => slotsOfRow(row).join(' ') === 'div.g-info span.badge span.kebab-slot'), 'what I cannot act on keeps the slot, with no button');
 });
 
@@ -1186,7 +1189,7 @@ test('the sharing section follows the machine of the friend row: titled with it,
   assert.ok(!detail.textContent.includes('机器 ga'));
   assert.deepEqual(sentOf(log, 'grants.list').map(s => s.machine), ['b']);
   kebabOf(page, listRows(page, detail)[0]).fire('click');
-  page.all(n => n.tag === 'button' && n.attrs.role === 'menuitem', detail)[0].fire('click');
+  page.all(n => n.tag === 'button' && n.attrs.role === 'menuitem' && n.textContent.startsWith('撤销'), detail)[0].fire('click');
   await flush();
   assert.deepEqual(sentOf(log, 'grants.revoke').map(s => [s.msg.grant, s.machine]), [['gb', 'b']]);
   page.button('完成').fire('click');
@@ -1208,7 +1211,7 @@ test('a list error that arrives after a write is dropped like a stale list: it d
   await flush();
   page.button('授予…').fire('click');
   await flush();
-  chooseTarget(page, picker, '车库的 Linux').fire('click');
+  grantOn(page, picker, '车库的 Linux');
   await flush();
   const before = reads;
   hold.reject(new Error('读超时'));
@@ -1245,7 +1248,7 @@ test('the recovery loop starts the next round only when this one has read and re
   let broken = false;
   const { page, log, detail } = await openShare(t, { share: { 'grants.list': () => { if (broken) throw new Error('读不到'); return { grants: [grantRow('g1')] }; }, 'grants.revoke': () => new Promise(() => {}) } });
   kebabOf(page, listRows(page, detail)[0]).fire('click');
-  page.all(n => n.tag === 'button' && n.attrs.role === 'menuitem', detail)[0].fire('click');
+  page.all(n => n.tag === 'button' && n.attrs.role === 'menuitem' && n.textContent.startsWith('撤销'), detail)[0].fire('click');
   await flush();
   timers.fire(10_000);
   await flush();
@@ -1686,7 +1689,475 @@ test('the granting dialog lists another machine of the space by its name next to
   page.button('授予…').fire('click');
   await flush();
   assert.deepEqual(page.all(n => n.tag === 'button' && cls(n) === 'pick', picker).map(row => row.textContent.split('macOS')[0].split('Ubuntu')[0]), ['书房的 Mac mini', '车库的 Linux']);
-  chooseTarget(page, picker, '车库的 Linux').fire('click');
+  grantOn(page, picker, '车库的 Linux');
   await flush();
   assert.deepEqual(sentOf(log, 'grants.grant').map(s => s.msg.target), [{ kind: GRANT_KIND, id: 'rx-b' }]);
+});
+
+// ---- 授予与修改范围 ----
+
+const isOff = n => n.disabled === true || 'disabled' in n.attrs;
+const radioOf = (page, picker, label) => page.all(n => n.tag === 'input' && n.attrs.type === 'radio', page.all(n => n.tag === 'label' && n.textContent.startsWith(label), picker)[0])[0];
+const pathInputs = (page, picker) => page.all(n => n.tag === 'input' && n.attrs.type === 'text', picker);
+const accessSelects = (page, picker) => page.all(n => n.tag === 'select', picker);
+const hintOf = (page, picker) => page.all(n => n.tag === 'p' && cls(n) === 'hint' && n.attrs.role === 'status', picker)[0];
+const warnOf = (page, picker) => page.all(n => cls(n) === 'warn-box', picker)[0];
+// 选了机器、出了表单（默认「整台机器」）。
+async function openForm(t, share = {}, options = {}) {
+  const ctx = await openShare(t, { share: { 'grants.targets': () => TARGETS, ...share }, ...options });
+  ctx.page.button('授予…').fire('click');
+  await flush();
+  chooseTarget(ctx.page, ctx.picker, '书房的 Mac mini').fire('click');
+  return ctx;
+}
+// 切到「仅限目录」，填成 rows：[[路径, 'rw' | 'ro']]。
+function fillDirs(page, picker, rows) {
+  if (radioOf(page, picker, '仅限目录').checked !== true && !('checked' in radioOf(page, picker, '仅限目录').attrs)) radioOf(page, picker, '仅限目录').fire('change');
+  while (pathInputs(page, picker).length < rows.length) confirmButton(page, picker, '添加目录').fire('click');
+  while (pathInputs(page, picker).length > rows.length) confirmButton(page, picker, '删除').fire('click');
+  rows.forEach(([path, access], i) => {
+    const input = pathInputs(page, picker)[i], select = accessSelects(page, picker)[i];
+    input.value = path; input.fire('input');
+    select.value = access; select.fire('change');
+  });
+}
+const DIRS = { dirs: [{ path: '/Users/me/work', access: 'rw' }, { path: '/Users/me/docs/a very long folder name/that keeps going/and going', access: 'ro' }] };
+const dirRows = DIRS.dirs.map(dir => [dir.path, dir.access]);
+
+test('the scope form: whole machine is selected by default with its note, confirming it grants as before with no restrict, and the machine can be changed', async t => {
+  const { page, log, picker } = await openForm(t);
+  assert.equal(picker.textContent.includes('书房的 Mac mini') && picker.textContent.includes('Darwin 24.2.0 · leavan'), true, 'the machine is named');
+  assert.ok(picker.textContent.includes('整台机器') && picker.textContent.includes('等同于登录这台机器上的这个账号'));
+  assert.ok('checked' in radioOf(page, picker, '整台机器').attrs && !('checked' in radioOf(page, picker, '仅限目录').attrs));
+  assert.deepEqual(pathInputs(page, picker), [], 'no directory list for the whole machine');
+  assert.equal(confirmButton(page, picker, '授予').disabled, false);
+  // 换一台机器：回到列表，再选一台，范围重置。
+  radioOf(page, picker, '仅限目录').fire('change');
+  assert.equal(pathInputs(page, picker).length, 1);
+  confirmButton(page, picker, '换一台机器').fire('click');
+  assert.equal(page.all(n => cls(n) === 'pick', picker).length, 3);
+  chooseTarget(page, picker, '车库的 Linux').fire('click');
+  assert.ok(picker.textContent.includes('车库的 Linux') && 'checked' in radioOf(page, picker, '整台机器').attrs && pathInputs(page, picker).length === 0);
+  confirmButton(page, picker, '换一台机器').fire('click');
+  chooseTarget(page, picker, '书房的 Mac mini').fire('click');
+  assert.ok('checked' in radioOf(page, picker, '整台机器').attrs, 'back on the whole machine after choosing again');
+  confirmButton(page, picker, '授予').fire('click');
+  assert.equal(isVisible(picker), false, 'the whole-machine grant keeps its old behaviour: the picker closes and the row says granting');
+  await flush();
+  const [sent] = sentOf(log, 'grants.grant');
+  assert.deepEqual(sent.msg.target, { kind: GRANT_KIND, id: 'rx-1' });
+  assert.ok(!('restrict' in sent.msg));
+});
+
+test('a restricted grant sends the directories, shows progress until the target answers, takes no second submit or close meanwhile, then closes and the row shows the scope', async t => {
+  const gate = deferred();
+  const { page, log, detail, picker } = await openForm(t, { 'grants.grant': () => gate.promise });
+  fillDirs(page, picker, dirRows);
+  assert.equal(confirmButton(page, picker, '授予').disabled, false);
+  confirmButton(page, picker, '授予').fire('click');
+  assert.ok(confirmButton(page, picker, '正在探测…').disabled, 'the confirm button is the progress and cannot be pressed');
+  assert.ok(picker.textContent.includes('最多约 30 秒'));
+  assert.ok(pathInputs(page, picker).every(isOff) && isOff(radioOf(page, picker, '整台机器')) && isOff(confirmButton(page, picker, '添加目录')) && isOff(confirmButton(page, picker, '换一台机器')));
+  confirmButton(page, picker, '正在探测…').fire('click');
+  page.dispatch('keydown', { key: 'Escape' });
+  page.button('取消').fire('click');
+  await flush();
+  assert.equal(isVisible(picker), true, 'it cannot be closed while the answer is awaited');
+  assert.deepEqual(sentOf(log, 'grants.grant').map(s => [s.msg.friend, s.msg.target, s.msg.restrict, s.machine]), [[FRIEND, { kind: GRANT_KIND, id: 'rx-1' }, DIRS, 'a']], 'sent once, with the rows as typed');
+  assert.deepEqual(listRows(page, detail), [], 'no optimistic row for a restricted grant');
+  gate.resolve(grantRow('g1', { target: { kind: GRANT_KIND, id: 'rx-1', name: '书房的 Mac mini' }, restrict: DIRS }));
+  await flush();
+  assert.equal(isVisible(picker), false);
+  const [row] = listRows(page, detail);
+  assert.equal(badgeOf(page, row), '可用');
+  const summary = page.all(n => n.tag === 'summary', row)[0];
+  assert.equal(summary.textContent, '仅限目录 · /Users/me/work（读写）等 2 个');
+  assert.equal(page.all(n => n.tag === 'details', row)[0].attrs.open, undefined, 'folded');
+  // 点开看全部目录与各自的读写；重画后仍开着。
+  const details = () => page.all(n => n.tag === 'details' && cls(n) === 'scope', listRows(page, detail)[0])[0];
+  details().open = true;
+  details().fire('toggle');
+  feed(log, 'a', { friends: [{ node: 'n1', author: FRIEND, bound: true }] });
+  assert.notEqual(details().attrs.open, undefined);
+  assert.deepEqual(page.all(n => n.tag === 'li', details()).map(n => n.textContent), [`读写${DIRS.dirs[0].path}`, `只读${DIRS.dirs[1].path}`]);
+  assert.equal(page.all(n => n.tag === 'button', row).length, 1, 'the row keeps its one button');
+});
+
+test('a grant for the whole machine shows 整台机器 on its row; the validation holds the confirm button back with what is missing, and sends nothing', async t => {
+  const { page, log, detail, picker } = await openShare(t, { share: { 'grants.targets': () => TARGETS, 'grants.list': () => ({ grants: [grantRow('g1')] }) } });
+  assert.ok(listRows(page, detail)[0].textContent.includes('整台机器'));
+  page.button('授予…').fire('click');
+  await flush();
+  chooseTarget(page, picker, '书房的 Mac mini').fire('click');
+  // 空：一行还没填路径。
+  radioOf(page, picker, '仅限目录').fire('change');
+  assert.ok(confirmButton(page, picker, '授予').disabled);
+  assert.equal(hintOf(page, picker).textContent, '第 1 行还没填路径');
+  // 没有任何行。
+  confirmButton(page, picker, '删除').fire('click');
+  assert.equal(hintOf(page, picker).textContent, '至少要有一个目录');
+  assert.ok(confirmButton(page, picker, '授予').disabled);
+  // 相对路径。
+  confirmButton(page, picker, '添加目录').fire('click');
+  const input = () => pathInputs(page, picker)[0];
+  input().value = 'work/docs'; input().fire('input');
+  assert.equal(hintOf(page, picker).textContent, '第 1 行：要填目标机上的绝对路径，以 / 开头');
+  assert.ok(confirmButton(page, picker, '授予').disabled);
+  // 全是只读：没有读写行。
+  input().value = '/Users/me/work'; input().fire('input');
+  accessSelects(page, picker)[0].value = 'ro'; accessSelects(page, picker)[0].fire('change');
+  assert.equal(hintOf(page, picker).textContent, '至少要有一个「读写」的目录');
+  assert.ok(confirmButton(page, picker, '授予').disabled);
+  // 路径太长。
+  accessSelects(page, picker)[0].value = 'rw'; accessSelects(page, picker)[0].fire('change');
+  input().value = `/${'长'.repeat(400)}`; input().fire('input');
+  assert.ok(hintOf(page, picker).textContent.includes('路径太长'));
+  // 超过 50 行。
+  fillDirs(page, picker, Array.from({ length: 51 }, (_, i) => [`/d/${i}`, 'rw']));
+  assert.equal(hintOf(page, picker).textContent, '最多 50 个目录，现在有 51 个');
+  assert.ok(confirmButton(page, picker, '授予').disabled);
+  confirmButton(page, picker, '授予').fire('click');
+  // 50 行、有读写、都是绝对路径：可以了。
+  confirmButton(page, picker, '删除').fire('click');
+  assert.equal(hintOf(page, picker).hidden, true);
+  assert.equal(confirmButton(page, picker, '授予').disabled, false);
+  await flush();
+  assert.deepEqual(sentOf(log, 'grants.grant'), [], 'nothing was sent for any invalid form');
+  // 输入框不因别处的重画而重建（打字时不丢焦点）。
+  const kept = input();
+  feed(log, 'a', { friends: [{ node: 'n1', author: FRIEND, bound: true }] });
+  assert.equal(input(), kept);
+});
+
+test('restricting is greyed out for a machine that is not a Mac, with the reason; the choice resets when another machine is chosen', async t => {
+  const { page, picker } = await openForm(t);
+  assert.equal(isOff(radioOf(page, picker, '仅限目录')), false, 'a Mac can choose it');
+  radioOf(page, picker, '仅限目录').fire('change');
+  fillDirs(page, picker, [['/Users/me/work', 'rw']]);
+  confirmButton(page, picker, '换一台机器').fire('click');
+  chooseTarget(page, picker, '车库的 Linux').fire('click');
+  assert.ok(isOff(radioOf(page, picker, '仅限目录')));
+  const text = page.all(n => n.tag === 'label' && n.textContent.startsWith('仅限目录'), picker)[0].textContent;
+  assert.ok(text.includes('第一期只支持 macOS 的机器') && text.includes('Ubuntu 24.04'), text);
+  assert.ok('checked' in radioOf(page, picker, '整台机器').attrs && pathInputs(page, picker).length === 0);
+  confirmButton(page, picker, '换一台机器').fire('click');
+  chooseTarget(page, picker, '书房的 Mac mini').fire('click');
+  assert.ok(!('checked' in radioOf(page, picker, '仅限目录').attrs) && pathInputs(page, picker).length === 0, 'what was typed for the first machine is gone');
+});
+
+const coded = (code, message) => Object.assign(new Error(message), { code, effects: 'none' });
+
+test('each probe failure is explained by its code, the form stays open with what was typed, and a directory error points at its row', async t => {
+  const FAILS = [
+    ['sandbox_unsupported', '目标机不支持受限执行', ['不能用「仅限目录」', 'macOS']],
+    ['restrict_unsupported', '目标机上的远程执行版本太旧', ['版本太旧', '0.2.0']],
+    ['restrict_dir_not_found', `${DIRS.dirs[1].path}：不存在`, ['第 2 行', DIRS.dirs[1].path, '不存在'], 1],
+    ['restrict_dir_not_a_directory', '/Users/me/work：不是目录', ['第 1 行', '不是目录'], 0],
+    ['restrict_protected', '/Users/me/work 与受保护的 ~/.ssh 重叠，不能授出', ['第 1 行', '受保护的位置', '~/.ssh'], 0],
+    ['sandbox_failed', '沙箱起不来', ['沙箱起不来']],
+    ['restrict_overlap', '允许目录互相重叠：…', ['不能互相包含或重复', '去掉其中一条']],
+    ['target_offline', '目标机离线', ['离线']],
+    ['target_unreachable', '读不到目标', ['读不到目标机']],
+    ['target_missing', '目标不在了', ['记录不在了']],
+    ['target_changed', '目标变了', ['重新选']],
+    ['timeout', '30 秒没回应', ['30 秒内没有回应']],
+    ['restrict_too_large', '太大', ['范围太大']],
+    ['already_granted', '已经授给这位好友一条（授权号 g9），范围不同', ['修改范围…']],
+    ['disabled', '远程执行没打开', ['远程执行没打开']],
+    ['made_up_code', '后端新加的码', ['没有成功（made_up_code）']],
+  ];
+  for (const [code, message, parts, row] of FAILS) {
+    const { page, log, picker } = await openForm(t, { 'grants.grant': () => { throw coded(code, `没有授出：${message}`); } });
+    fillDirs(page, picker, dirRows);
+    confirmButton(page, picker, '授予').fire('click');
+    await flush();
+    assert.equal(isVisible(picker), true, `${code}: the form stays`);
+    const warn = warnOf(page, picker);
+    for (const part of parts) assert.ok(warn.textContent.includes(part), `${code}: ${part} in ${warn.textContent}`);
+    assert.ok(warn.textContent.includes(`没有授出：${message}`), `${code}: the backend's words are shown as detail`);
+    assert.deepEqual(pathInputs(page, picker).map(n => n.value), DIRS.dirs.map(dir => dir.path), `${code}: what was typed is kept`);
+    assert.deepEqual(accessSelects(page, picker).map(n => n.value), ['rw', 'ro']);
+    assert.deepEqual(page.all(n => cls(n).startsWith('dir-row'), picker).map(n => cls(n).includes('bad')), [0, 1].map(i => i === row), `${code}: the row`);
+    assert.equal(confirmButton(page, picker, '授予').disabled, false, `${code}: it can be sent again`);
+    assert.deepEqual(listRows(page, scrims(page)[0]), [], `${code}: nothing was created`);
+    // 原样再点一次：照样发出（表单没有因为失败卡住）。
+    confirmButton(page, picker, '授予').fire('click');
+    await flush();
+    assert.equal(sentOf(log, 'grants.grant').length, 2, code);
+  }
+});
+
+test('directories that repeat or contain each other are held back on the form, naming the two rows; what only the target machine can see is told by its code, pointing at both rows when they can be told', async t => {
+  const { page, log, detail, picker } = await openShare(t, { share: { 'grants.targets': () => TARGETS, 'grants.list': () => ({ grants: [grantRow('g1')] }) } });
+  page.button('授予…').fire('click');
+  await flush();
+  chooseTarget(page, picker, '书房的 Mac mini').fire('click');
+  radioOf(page, picker, '仅限目录').fire('change');
+  const hint = () => hintOf(page, picker).textContent;
+  for (const [rows, i, j] of [
+    [[['/Users/me/work', 'rw'], ['/Users/me/work/docs', 'ro']], 1, 2],
+    [[['/Users/me/work/docs', 'ro'], ['/Users/me/work', 'rw']], 1, 2],
+    [[['/Users/me/work', 'rw'], ['/Users/me/work', 'ro']], 1, 2],
+    [[['/Users/me/work', 'rw'], ['/Users/me//work/./', 'ro']], 1, 2],
+    [[['/Users/me/notes', 'rw'], ['/Users/me/work', 'rw'], ['/Users/me/work/../notes/x', 'ro']], 1, 3],
+  ]) {
+    fillDirs(page, picker, rows);
+    assert.ok(confirmButton(page, picker, '授予').disabled, JSON.stringify(rows));
+    assert.ok(hint().startsWith(`第 ${i} 行（${rows[i - 1][0]}）与第 ${j} 行（${rows[j - 1][0]}）重叠`) && hint().includes('不能互相包含或重复'), hint());
+  }
+  // 名字只是前缀相同的同级目录不算重叠。
+  fillDirs(page, picker, [['/Users/me/work', 'rw'], ['/Users/me/work2', 'ro'], ['/Users/me/w', 'ro']]);
+  assert.equal(hintOf(page, picker).hidden, true);
+  assert.equal(confirmButton(page, picker, '授予').disabled, false);
+  await flush();
+  assert.deepEqual(sentOf(log, 'grants.grant'), []);
+});
+
+test('the target machine\'s restrict_overlap is explained, with both rows marked when its message names rows whose paths are the ones typed, and none marked when it cannot be told', async t => {
+  const rows = [['/Users/me/work', 'rw'], ['/Users/me/notes', 'ro'], ['/Users/me/link-to-work/a', 'ro']];
+  const tail = '，同一目录不能重复、也不能一条在另一条里面，请去掉其中一条';
+  for (const [text, marked, parts] of [
+    [`没有授出：允许目录互相重叠：第 1 条（/Users/me/work）与第 3 条（/Users/me/link-to-work/a）${tail}`, [true, false, true], ['第 1 行（/Users/me/work）与第 3 行（/Users/me/link-to-work/a）', '不能互相包含或重复']],
+    [`没有授出：允许目录互相重叠：第 2 条（/elsewhere）与第 3 条（/else/where）${tail}`, [false, false, false], ['不能互相包含或重复']],
+  ]) {
+    const { page, picker } = await openForm(t, { 'grants.grant': () => { throw coded('restrict_overlap', text); } });
+    fillDirs(page, picker, rows);
+    confirmButton(page, picker, '授予').fire('click');
+    await flush();
+    const warn = warnOf(page, picker);
+    for (const part of [...parts, text]) assert.ok(warn.textContent.includes(part), `${part} in ${warn.textContent}`);
+    assert.equal(isVisible(picker), true);
+    assert.deepEqual(page.all(n => cls(n).startsWith('dir-row'), picker).map(n => cls(n).includes('bad')), marked);
+    assert.deepEqual(pathInputs(page, picker).map(n => n.value), rows.map(([path]) => path));
+  }
+});
+
+const MAC = { kind: GRANT_KIND, id: 'rx-1', name: '书房的 Mac mini' };
+// 仅限目录的授予，页面等满 45 秒没有回应：表单关掉，那一行是待确认（带着想授的范围）。
+async function restrictedTimeout(t, share) {
+  const timers = stubTimers(t), late = deferred(), listed = { grants: [] };
+  const ctx = await openForm(t, { 'grants.grant': () => late.promise, 'grants.list': () => listed, ...share });
+  fillDirs(ctx.page, ctx.picker, dirRows);
+  confirmButton(ctx.page, ctx.picker, '授予').fire('click');
+  assert.ok(timers.has(45_000), 'the page waits longer than the 10 seconds of a plain call: the probe has up to 30');
+  timers.fire(45_000);
+  await flush();
+  return { ...ctx, timers, late, listed, badges: () => listRows(ctx.page, ctx.detail).map(row => badgeOf(ctx.page, row)) };
+}
+
+test('a restricted grant with no answer in time closes the form and waits on its row as 待确认 with the scope it asked for; no second submit is possible', async t => {
+  const { page, log, detail, picker, badges } = await restrictedTimeout(t);
+  assert.equal(isVisible(picker), false);
+  assert.deepEqual(badges(), ['待确认']);
+  const [row] = listRows(page, detail);
+  assert.ok(row.textContent.includes('书房的 Mac mini') && row.textContent.includes('授予待确认') && row.textContent.includes('仅限目录 · /Users/me/work（读写）等 2 个'));
+  assert.ok('disabled' in kebabOf(page, row).attrs);
+  page.button('授予…').fire('click');
+  await flush();
+  const taken = chooseTarget(page, picker, '书房的 Mac mini');
+  assert.ok('disabled' in taken.attrs && taken.textContent.includes('已授给 TA'), 'the target stays taken');
+  assert.equal(sentOf(log, 'grants.grant').length, 1);
+});
+
+test('a restricted grant\'s late success is taken as its result and the list is read again; a late refusal says why on the row; the list alone settles it too', async t => {
+  // 晚到的成功。
+  let one = await restrictedTimeout(t);
+  const before = sentOf(one.log, 'grants.list').length;
+  one.listed.grants = [grantRow('g1', { target: MAC, restrict: DIRS })];
+  one.late.resolve(one.listed.grants[0]);
+  await flush();
+  assert.deepEqual(one.badges(), ['可用']);
+  assert.ok(listRows(one.page, one.detail)[0].textContent.includes('仅限目录 · /Users/me/work'));
+  assert.ok(sentOf(one.log, 'grants.list').length > before, 'the list is refreshed');
+  // 晚到的明确失败：写在那一行，可以移除。
+  one = await restrictedTimeout(t);
+  one.late.reject(coded('restrict_dir_not_found', `${DIRS.dirs[1].path}：不存在`));
+  await flush();
+  assert.deepEqual(one.badges(), ['未授予']);
+  assert.ok(listRows(one.page, one.detail)[0].textContent.includes('第 2 行') && listRows(one.page, one.detail)[0].textContent.includes('不存在'));
+  // 回应一直不来，列表里已经有了。
+  one = await restrictedTimeout(t);
+  one.listed.grants = [grantRow('g1', { target: MAC, restrict: DIRS })];
+  one.timers.fire(3000);
+  await flush();
+  assert.deepEqual(one.badges(), ['可用']);
+  // 回应一直不来，连续几遍列表都没有：回滚，可以重试。
+  one = await restrictedTimeout(t);
+  for (let i = 0; i < 3; i++) { one.timers.fire(3000); await flush(); }
+  assert.deepEqual(one.badges(), ['未授予']);
+  assert.ok(listRows(one.page, one.detail)[0].textContent.includes('没有确认授予成功'));
+});
+
+test('a send that never left is a plain failure on the form, not a pending row', async t => {
+  const { page, picker, detail } = await openForm(t, {}, { sendFail: msg => msg.type === 'grants.grant' });
+  fillDirs(page, picker, dirRows);
+  confirmButton(page, picker, '授予').fire('click');
+  await flush();
+  assert.ok(warnOf(page, picker).textContent.includes('没有发出：发送失败：桥不可用'));
+  assert.deepEqual(listRows(page, detail), []);
+});
+
+// 改范围，页面等满 45 秒没有回应：授权行待确认，仍显示原范围。
+async function modifyTimeout(t, { to = { dirs: [DIRS.dirs[0], { path: '/Users/me/notes', access: 'ro' }] }, share } = {}) {
+  const timers = stubTimers(t), late = deferred(), state = { grants: [grantRow('g1', { target: MAC, restrict: DIRS })] };
+  const ctx = await openShare(t, { share: { 'grants.targets': () => TARGETS, 'grants.list': () => ({ grants: state.grants }), 'grants.restrict': () => late.promise, ...share } });
+  kebabOf(ctx.page, listRows(ctx.page, ctx.detail)[0]).fire('click');
+  page_item(ctx.page, ctx.detail, '修改范围…').fire('click');
+  await flush();
+  pathInputs(ctx.page, ctx.picker)[1].value = to.dirs[1].path; pathInputs(ctx.page, ctx.picker)[1].fire('input');
+  confirmButton(ctx.page, ctx.picker, '保存范围').fire('click');
+  timers.fire(45_000);
+  await flush();
+  return { ...ctx, timers, late, state, to, badges: () => listRows(ctx.page, ctx.detail).map(row => badgeOf(ctx.page, row)), row: () => listRows(ctx.page, ctx.detail)[0] };
+}
+const page_item = (page, node, label) => page.all(n => n.tag === 'button' && n.attrs.role === 'menuitem' && n.textContent === label, node)[0];
+
+test('a scope change with no answer in time shows its row as 待确认 on the old scope, takes no other action on it, and the late success updates the scope and the list', async t => {
+  const one = await modifyTimeout(t);
+  assert.equal(isVisible(one.picker), false);
+  assert.deepEqual(one.badges(), ['待确认']);
+  assert.ok(one.row().textContent.includes('范围改动待确认') && one.row().textContent.includes('仅限目录 · /Users/me/work（读写）等 2 个'));
+  assert.ok('disabled' in kebabOf(one.page, one.row()).attrs);
+  const before = sentOf(one.log, 'grants.list').length;
+  one.state.grants = [grantRow('g1', { target: MAC, restrict: one.to })];
+  one.late.resolve({ ...one.state.grants[0] });
+  await flush();
+  assert.deepEqual(one.badges(), ['可用']);
+  assert.ok(sentOf(one.log, 'grants.list').length > before);
+  const text = page => page.all(n => n.tag === 'summary', one.row())[0].textContent;
+  assert.equal(text(one.page), '仅限目录 · /Users/me/work（读写）等 2 个');
+  const details = one.page.all(n => n.tag === 'details' && cls(n) === 'scope', one.row())[0];
+  assert.deepEqual(one.page.all(n => n.tag === 'li', details).map(n => n.textContent), ['读写/Users/me/work', '只读/Users/me/notes'], 'the new scope, not the old one');
+});
+
+test('a scope change that gets no answer is settled by a late refusal on its row, by the list showing the new scope, or after three lists that do not: still the old scope, can be changed again', async t => {
+  // 晚到的明确拒绝。
+  let one = await modifyTimeout(t);
+  one.late.reject(coded('restrict_protected', '/Users/me/notes 与受保护的 ~/.ssh 重叠'));
+  await flush();
+  assert.deepEqual(one.badges(), ['可用']);
+  assert.ok(one.row().textContent.includes('受保护的位置'));
+  assert.ok(!('disabled' in kebabOf(one.page, one.row()).attrs));
+  // 列表里已经是想要的范围。
+  one = await modifyTimeout(t);
+  one.state.grants = [grantRow('g1', { target: MAC, restrict: one.to })];
+  one.timers.fire(3000);
+  await flush();
+  assert.deepEqual(one.badges(), ['可用']);
+  assert.ok(!one.row().textContent.includes('待确认'));
+  // 连续几遍都不是：写明没确认，仍是原范围。
+  one = await modifyTimeout(t);
+  for (let i = 0; i < 3; i++) { one.timers.fire(3000); await flush(); }
+  assert.deepEqual(one.badges(), ['可用']);
+  assert.ok(one.row().textContent.includes('没有确认范围改成功'));
+  assert.ok(!('disabled' in kebabOf(one.page, one.row()).attrs));
+  assert.ok(one.row().textContent.includes('仅限目录 · /Users/me/work（读写）等 2 个'));
+});
+
+test('修改范围… is on the menu of a grant that is still in use only; the form is the grant form with the machine fixed and the scope filled in, and it asks grants.restrict', async t => {
+  const gate = deferred();
+  const mac = { kind: GRANT_KIND, id: 'rx-1', name: '书房的 Mac mini' };
+  const list = [grantRow('g1', { target: mac, restrict: DIRS }), grantRow('g2', { status: 'target_off' }), grantRow('g3', { status: 'target_missing' }), grantRow('g4', { status: 'machine_changed' }),
+    grantRow('g5', { status: 'revoking', revokedAt: 1 }), grantRow('g6', { status: 'available', target: { ...mac, id: 'rx-3', name: '车库的 Linux' } })];
+  const { page, log, detail, picker } = await openShare(t, { share: { 'grants.targets': () => TARGETS, 'grants.list': () => ({ grants: list }), 'grants.restrict': () => gate.promise } });
+  const menuOf = i => { kebabOf(page, listRows(page, detail)[i]).fire('click'); return page.all(n => n.tag === 'button' && n.attrs.role === 'menuitem', listRows(page, detail)[i]).map(n => n.textContent); };
+  assert.deepEqual(menuOf(0).map(label => label.slice(0, 5)), ['修改范围…', '撤销同时取']);
+  assert.deepEqual([1, 2, 3, 4, 5].map(i => menuOf(i).map(label => label.slice(0, 2))), [['修改', '撤销'], ['撤销'], ['撤销'], ['撤销'], ['修改', '撤销']], 'ended, stopped and revoking ones have no 修改范围…');
+  kebabOf(page, listRows(page, detail)[0]).fire('click');
+  page.all(n => n.tag === 'button' && n.attrs.role === 'menuitem' && n.textContent === '修改范围…', listRows(page, detail)[0])[0].fire('click');
+  await flush();
+  assert.equal(isVisible(picker), true);
+  assert.equal(picker.children[0].children[1].children[0].textContent, '修改范围');
+  assert.ok(picker.textContent.includes('书房的 Mac mini'));
+  assert.equal(page.all(n => n.tag === 'button' && n.textContent === '换一台机器', picker).length, 0, 'the machine cannot be changed');
+  assert.ok('checked' in radioOf(page, picker, '仅限目录').attrs);
+  assert.deepEqual(pathInputs(page, picker).map(n => n.value), DIRS.dirs.map(dir => dir.path));
+  assert.deepEqual(accessSelects(page, picker).map(n => n.value), ['rw', 'ro']);
+  // 改一行、保存：请求是 grants.restrict，带授权号与新范围。
+  pathInputs(page, picker)[1].value = '/Users/me/notes'; pathInputs(page, picker)[1].fire('input');
+  confirmButton(page, picker, '保存范围').fire('click');
+  assert.ok(confirmButton(page, picker, '正在探测…').disabled);
+  await flush();
+  assert.deepEqual(sentOf(log, 'grants.restrict').map(s => [s.msg.grant, s.msg.restrict, s.machine]), [['g1', { dirs: [DIRS.dirs[0], { path: '/Users/me/notes', access: 'ro' }] }, 'a']]);
+  gate.resolve({ ...list[0], restrict: { dirs: [DIRS.dirs[0], { path: '/Users/me/notes', access: 'ro' }] } });
+  await flush();
+  assert.equal(isVisible(picker), false);
+  assert.equal(page.all(n => n.tag === 'summary', listRows(page, detail)[0])[0].textContent, '仅限目录 · /Users/me/work（读写）等 2 个');
+});
+
+test('modifying to the whole machine sends restrict null, adding a scope to a whole-machine grant works, and a failure is explained in the same form', async t => {
+  const answers = [];
+  const mac = { kind: GRANT_KIND, id: 'rx-1', name: '书房的 Mac mini' }, linux = { kind: GRANT_KIND, id: 'rx-3', name: '车库的 Linux' };
+  const list = [grantRow('g1', { target: mac, restrict: DIRS }), grantRow('g2', { target: linux })];
+  const { page, log, detail, picker } = await openShare(t, { share: { 'grants.targets': () => TARGETS, 'grants.list': () => ({ grants: list }), 'grants.restrict': msg => answers.shift()(msg) } });
+  const edit = i => { kebabOf(page, listRows(page, detail)[i]).fire('click'); page.all(n => n.tag === 'button' && n.textContent === '修改范围…', listRows(page, detail)[i])[0].fire('click'); };
+  // 改回整台机器。
+  answers.push(msg => ({ ...list[0], restrict: undefined }));
+  edit(0);
+  await flush();
+  radioOf(page, picker, '整台机器').fire('change');
+  assert.deepEqual(pathInputs(page, picker), []);
+  confirmButton(page, picker, '保存范围').fire('click');
+  await flush();
+  assert.equal(sentOf(log, 'grants.restrict')[0].msg.restrict, null);
+  assert.equal(isVisible(picker), false);
+  assert.ok(page.all(n => n.tag === 'span', listRows(page, detail)[0]).some(n => n.textContent === '整台机器'));
+  // 整台机器的授权不在 Mac 上：「仅限目录」灰着，原因写明。
+  edit(1);
+  await flush();
+  assert.ok(isOff(radioOf(page, picker, '仅限目录')) && picker.textContent.includes('第一期只支持 macOS 的机器'));
+  page.dispatch('keydown', { key: 'Escape' });
+  // 同样的授权在 Mac 上：加上范围，目标机拒绝，错误留在表单里。
+  list[1] = grantRow('g2', { target: mac });
+  answers.push(() => { throw coded('restrict_dir_not_found', `${DIRS.dirs[0].path}：不存在`); });
+  feed(log, 'a', { friends: [{ node: 'n1', author: FRIEND, bound: true }] });
+  page.dispatch('keydown', { key: 'Escape' });
+  page.button('完成').fire('click');
+  tiles(page)[0].fire('click');
+  await flush();
+  edit(1);
+  await flush();
+  fillDirs(page, picker, dirRows);
+  confirmButton(page, picker, '保存范围').fire('click');
+  await flush();
+  assert.equal(isVisible(picker), true);
+  assert.ok(warnOf(page, picker).textContent.includes('第 1 行') && warnOf(page, picker).textContent.includes('不存在'));
+  assert.deepEqual(pathInputs(page, picker).map(n => n.value), DIRS.dirs.map(dir => dir.path));
+});
+
+test('what they granted me and the recent operations show the scope: whole machine or restricted, with the directories one tap away', async t => {
+  const ROWS = [
+    { v: 1, at: Date.UTC(2026, 10, 24, 6, 32), request: 'r1', friend: FRIEND, grant: 'g1', target: { kind: GRANT_KIND, id: 'rx-1', name: 'box' }, op: 'exec', command: { summary: 'ls', sha256: 'a'.repeat(64) }, outcome: 'completed', exitCode: 0, restrict: DIRS, ms: 400 },
+    { v: 1, at: Date.UTC(2026, 10, 24, 3, 8), request: 'r2', friend: FRIEND, grant: 'g1', target: { kind: GRANT_KIND, id: 'rx-1', name: 'box' }, op: 'exec', command: { summary: 'pwd', sha256: 'b'.repeat(64) }, outcome: 'completed', exitCode: 0, ms: 38_000 }];
+  const { page, detail } = await openShare(t, { share: { 'ledger.list': () => ROWS,
+    'proxies.list': () => [{ key: 'k1', grant: 'p1', holder: FRIEND, name: '客厅的 Linux@小周', os: 'linux', user: 'u', status: 'available' },
+      { key: 'k2', grant: 'p2', holder: FRIEND, name: '工作室的 Mac@小周', os: 'darwin', user: 'u', status: 'available', restrict: DIRS }] } });
+  const theirs = listRows(page, detail).slice(0);
+  assert.equal(theirs.length, 2);
+  assert.ok(theirs[0].textContent.includes('整台机器') && !theirs[0].textContent.includes('仅限目录'));
+  assert.ok(theirs[1].textContent.includes('仅限目录 · /Users/me/work（读写）等 2 个'));
+  const more = page.all(n => n.tag === 'details' && cls(n) === 'scope', theirs[1])[0];
+  assert.deepEqual(page.all(n => n.tag === 'li', more).map(n => n.textContent), [`读写${DIRS.dirs[0].path}`, `只读${DIRS.dirs[1].path}`]);
+  const ops = page.all(n => n.tag === 'details' && cls(n) === 'ops', detail)[0];
+  ops.open = true;
+  ops.fire('toggle');
+  await flush();
+  const lines = page.all(n => cls(n) === 'op', detail);
+  assert.equal(lines.length, 2);
+  assert.ok(lines[0].textContent.includes('仅限目录 · 2 个'), 'the restricted call is marked');
+  assert.deepEqual(page.all(n => n.tag === 'li', page.all(n => n.tag === 'details', lines[0])[0]).map(n => n.textContent), [`读写${DIRS.dirs[0].path}`, `只读${DIRS.dirs[1].path}`]);
+  assert.ok(!lines[1].textContent.includes('仅限目录') && page.all(n => n.tag === 'details', lines[1]).length === 0, 'a whole-machine call has no mark');
+});
+
+test('the wording about what a restricted command can reach is not absolute, and the protected-location advice is to pick directories that do not overlap them', async t => {
+  const { page, picker } = await openForm(t, { 'grants.grant': () => { throw coded('restrict_protected', '/Users/me/work 与受保护的 ~/.ssh 重叠，不能授出'); } });
+  const text = page.all(n => n.tag === 'label' && n.textContent.startsWith('仅限目录'), picker)[0].textContent;
+  assert.ok(text.includes('只能读写下面列出的目录') && text.includes('系统运行所需的只读路径') && text.includes('临时目录'), text);
+  assert.ok(!text.includes('其余文件读写不到') && !text.includes('只看得到'));
+  fillDirs(page, picker, dirRows);
+  confirmButton(page, picker, '授予').fire('click');
+  await flush();
+  const warn = warnOf(page, picker).textContent;
+  assert.ok(warn.includes('不重叠') && warn.includes('包含') && warn.includes('~/.ssh'), warn);
+  assert.ok(!warn.includes('子目录') && !warn.includes('里面具体'), 'no advice to pick a directory inside a protected location');
 });

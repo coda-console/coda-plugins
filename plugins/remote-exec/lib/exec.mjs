@@ -7,6 +7,7 @@ import { terminate } from './kill.mjs';
 import { timeLimit } from './limits.mjs';
 import { openOutputs, sweepOutputs } from './output.mjs';
 import { absolute, begin, fsError } from './operation.mjs';
+import { prepareSandbox, probe } from './sandbox.mjs';
 
 async function checkCwd(coda, cwd) {
   absolute(coda, cwd, 'cwd');
@@ -28,38 +29,44 @@ export const activeOutputs = new Set();
 // 一路输出读到结束，按块交给收集器；写不进去就抛。
 const pump = async (stream, sink) => { for await (const chunk of stream) await sink.write(chunk); };
 
-// 起进程、收输出、到点或被取消就结束整个进程组。成功回结果；取消与到期（外部）抛 `ctx.signal.reason`；失败抛错。
+// 起进程、收输出、到点或被取消就结束整个进程组。带了 `input.restrict` 的走受限执行（见 sandbox.mjs），准备不成就抛错，不会退回不受限。成功回结果；取消与到期（外部）抛 `ctx.signal.reason`；失败抛错。
 // 终止之后只再等 `DRAIN` 毫秒让输出收完；还没收完（脱离进程组的后代拿着管道）就销毁两路输出、不再等，按已收到的输出走原来的结局。
 // 不论哪种结局，进程都已结束；没人要的输出目录已删。
-// `rootOf`：回输出根目录的函数（见 output.mjs 的 `outputRoot`）。
-async function run(coda, input, ctx, cwd, rootOf, max = MAX_RUNNING) {
+// `env`：exec 的环境（`env.outputRoot` 回输出根目录，见 output.mjs 的 `outputRoot`；`env.maxRunning` 并发上限）。
+async function run(env, input, ctx, cwd) {
+  const { coda, maxRunning: max = MAX_RUNNING } = env;
   if (running >= max) {
     throw coda.error('too_many_running', `这台机器上已有 ${running} 个执行在跑（上限 ${max}），稍后再试`, { effects: 'none', retryAfterMs: 5000 });
   }
   running++;
-  try { return await runSlot(coda, input, ctx, cwd, rootOf); } finally { running--; }
+  try { return await runSlot(env, input, ctx, cwd); } finally { running--; }
 }
 
-async function runSlot(coda, input, ctx, cwd, rootOf) {
-  await checkCwd(coda, cwd);
-  const limit = timeLimit(input.timeout, ctx.deadline);
-  let root;
-  try { root = await rootOf(); } catch (error) { throw coda.error('output_unavailable', `执行的输出无处可放，没有执行：${error.message}`, { effects: 'none' }); }
-  const outputs = await openOutputs(ctx.id, root);
-  activeOutputs.add(outputs.dir);
-  let result;
-  try { result = await runWith(coda, input, ctx, cwd, limit, outputs); } finally { activeOutputs.delete(outputs.dir); }
-  // 留下了这次的输出：把它算进总量，当场回收超额与过期的（正在写的跳过）。
-  if (result.outputDir) await sweepOutputs(root, { active: activeOutputs });
-  return result;
+async function runSlot(env, input, ctx, cwd) {
+  const { coda } = env;
+  // 受限：准备不成（不支持、参数不合法、目录不对、cwd 越界……）与空跑不过都在这里抛，之后才有 `sandbox`；它的临时目录不论怎么结束都删。
+  const sandbox = input.restrict === undefined ? null : await prepareSandbox(env, input.restrict, input.cwd);
+  try {
+    if (sandbox) await probe(coda, sandbox, ctx.spawn); else await checkCwd(coda, cwd);
+    const limit = timeLimit(input.timeout, ctx.deadline);
+    let root;
+    try { root = await env.outputRoot(); } catch (error) { throw coda.error('output_unavailable', `执行的输出无处可放，没有执行：${error.message}`, { effects: 'none' }); }
+    const outputs = await openOutputs(ctx.id, root);
+    activeOutputs.add(outputs.dir);
+    let result;
+    try { result = await runWith(input, ctx, sandbox?.cwd ?? cwd, limit, outputs, sandbox); } finally { activeOutputs.delete(outputs.dir); }
+    // 留下了这次的输出：把它算进总量，当场回收超额与过期的（正在写的跳过）。
+    if (result.outputDir) await sweepOutputs(root, { active: activeOutputs });
+    return result;
+  } finally { await sandbox?.cleanup(); }
 }
 
-async function runWith(coda, input, ctx, cwd, limit, outputs) {
+async function runWith(input, ctx, cwd, limit, outputs, sandbox) {
   const started = Date.now();
   let child;
   try {
-    // 不继承后端的环境：`env -i` 清空，只带白名单（见 environ.mjs）；env 会 exec 成 sh，进程组的根不变。
-    const [command, args] = shellArgs(input.command, cleanEnv());
+    // 不继承后端的环境：`env -i` 清空，只带白名单（见 environ.mjs）；env 会 exec 成 sh，进程组的根不变。受限的在 env 与 sh 之间多一层 sandbox-exec（见 sandbox.mjs）。
+    const [command, args] = sandbox ? sandbox.argv(input.command, cleanEnv()) : shellArgs(input.command, cleanEnv());
     child = await ctx.spawn(command, args, { cwd });
   } catch (error) {
     await outputs.discard();
@@ -111,12 +118,15 @@ async function runWith(coda, input, ctx, cwd, limit, outputs) {
   }
 }
 
-// `input`：{ command, cwd?, timeout?, stdin? }
+// `input`：{ command, cwd?, timeout?, stdin?, restrict? }；`restrict` 是 { dirs: [{ path, access: 'rw' | 'ro' }] }，带了就只在这些目录里读写（见 sandbox.mjs）。
 export async function exec(env, input, ctx) {
-  const cwd = input.cwd ?? defaultCwd();
-  const op = begin(env, 'exec', ctx, { command: input.command, cwd, timeout: input.timeout });
-  // 判定点拿到完整的执行输入（含 stdin 与实际生效的 cwd）；记录只记命令全文、目录与传入的时限（没给就不写），不记 stdin。
-  const result = await op.guard({ command: input.command, cwd, timeout: input.timeout, stdin: input.stdin }, () => run(env.coda, input, ctx, cwd, env.outputRoot, env.maxRunning));
+  const restricted = input.restrict !== undefined;
+  // 受限且没给 cwd 时用第一条 rw 目录，不是家目录。
+  const cwd = input.cwd ?? (restricted ? input.restrict?.dirs?.find?.(one => one?.access === 'rw')?.path : defaultCwd());
+  const limits = restricted ? { restrict: input.restrict } : {};
+  const op = begin(env, 'exec', ctx, { command: input.command, cwd, timeout: input.timeout, ...limits });
+  // 判定点拿到完整的执行输入（含 stdin 与实际生效的 cwd）；记录只记命令全文、目录、传入的时限（没给就不写）与受限的目录列表（带了才有），不记 stdin。
+  const result = await op.guard({ command: input.command, cwd, timeout: input.timeout, stdin: input.stdin, ...limits }, () => run(env, input, ctx, cwd));
   await op.record({ result: { exitCode: result.exitCode, signal: result.signal, timedOut: result.timedOut } });
   return result;
 }

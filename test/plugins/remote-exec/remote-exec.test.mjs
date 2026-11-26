@@ -18,6 +18,7 @@ import { AUDIT_FILE, createAuditLog, endLine, startLine } from '../../../plugins
 import { HEAD, TAIL, openOutputs, writeAll } from '../../../plugins/remote-exec/lib/output.mjs';
 import { DEFAULT_TIMEOUT, MAX_TIMEOUT, timeLimit } from '../../../plugins/remote-exec/lib/limits.mjs';
 import { terminate } from '../../../plugins/remote-exec/lib/kill.mjs';
+import { sandboxSupported } from '../../../plugins/remote-exec/lib/sandbox.mjs';
 import { hostSpec, osName, prettyName } from '../../../plugins/remote-exec/lib/host.mjs';
 
 const dir = pluginDir('remote-exec');
@@ -112,6 +113,16 @@ test('with the switch off (the default) no record is registered; turning it on r
   await host.setSettings({ [SETTING]: false });
   await settle();
   assert.deepEqual(await records(host), []);
+});
+
+test('the platform check for restricted executions follows the platform and the presence of sandbox-exec', () => {
+  assert.equal(sandboxSupported({ platform: 'linux', executable: () => {} }), false);
+  assert.equal(sandboxSupported({ platform: 'android', executable: () => {} }), false);
+  assert.equal(sandboxSupported({ platform: 'darwin', executable: () => {} }), true);
+  assert.equal(sandboxSupported({ platform: 'darwin', executable: () => { throw new Error('ENOENT'); } }), false);
+  const checked = [];
+  sandboxSupported({ platform: 'darwin', executable: path => checked.push(path) });
+  assert.deepEqual(checked, ['/usr/bin/sandbox-exec']);
 });
 
 test('with the switch on at startup the record is there, and it is the machine record\'s name that follows a rename', async t => {

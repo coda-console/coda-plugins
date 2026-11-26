@@ -1,6 +1,8 @@
 // 好友签名网关的记录格式：三种签名记录（授权 friends/rpc-grant、调用请求 friends/rpc-call、回答 friends/rpc-answer）的正文构造与校验、
 // 请求号与回答 id 与内核幂等键的派生、请求摘要、重放窗口、exec 输入的重建、按字节算的大小上限与回答截短。纯函数，不碰盘、不碰 Coda。
 // 校验的结果一律是 `{ ok: true, ... }` 或 `{ ok: false, code }`：码是稳定的，持有方与调用方会把它记进操作记录。
+// 授权的范围（整台机器，或仅限目录的 `restrict`）：整台机器的授权正文是 v1，与加范围之前逐字节一样；仅限目录的授权正文是 v2，多一项 `restrict`。
+// v1 校验严格拒绝未知字段与 v2，所以旧版好友看不到仅限目录的授权（见 README「新旧版本互通」）；范围只在网关与目标机强制，好友一侧的只用来展示。
 import { createHash } from 'node:crypto';
 
 export const KIND_GRANT = 'friends/rpc-grant', KIND_CALL = 'friends/rpc-call', KIND_ANSWER = 'friends/rpc-answer';
@@ -30,6 +32,22 @@ const isTime = value => Number.isSafeInteger(value) && value >= 0;
 const isText = value => typeof value === 'string';
 
 export const isAuthor = value => isText(value) && AUTHOR.test(value);
+
+// ---- 授权的范围 ----
+
+// 范围就是 remote-exec 的 `exec` 输入里的 `restrict`：`{ dirs: [{ path, access: 'rw' | 'ro' }] }`，行数上限与 remote-exec 一致（50），至少一行 `rw`。
+// 路径另有字节数上限（macOS 的 PATH_MAX），好让 50 行写进授权记录也不超 Accord 记录的 64 KiB。
+export const MAX_RESTRICT_DIRS = 50, MAX_RESTRICT_PATH_BYTES = 1024;
+const dirOk = one => isPlain(one) && Object.keys(one).length === 2 && isText(one.path) && one.path.startsWith('/') && !one.path.includes('\0')
+  && Buffer.byteLength(one.path) <= MAX_RESTRICT_PATH_BYTES && (one.access === 'rw' || one.access === 'ro');
+export const restrictOk = restrict => isPlain(restrict) && Object.keys(restrict).length === 1 && Array.isArray(restrict.dirs)
+  && restrict.dirs.length >= 1 && restrict.dirs.length <= MAX_RESTRICT_DIRS && restrict.dirs.every(dirOk) && restrict.dirs.some(one => one.access === 'rw');
+/** 合格的范围按固定的键序抄一份（授权行、授权记录与探测都用它，同一范围的写法唯一）；不合格给 null。 */
+export const cleanRestrict = restrict => restrictOk(restrict) ? { dirs: restrict.dirs.map(({ path, access }) => ({ path, access })) } : null;
+/** 不给 `cwd` 时目标机用的目录：第一条 `rw`。 */
+export const firstRw = restrict => restrict.dirs.find(one => one.access === 'rw').path;
+/** 记录的系统以 `Darwin` 开头才可能支持受限执行（只是提示，权威是授予时的探测）。 */
+export const sandboxHint = os => isText(os) && os.startsWith('Darwin');
 
 /**
  * 本机此刻替调用请求（friends/rpc-call）署名的作者（`coda/accord@1` 的 local 记录）：`{ author, person, canSign }`。
@@ -129,9 +147,9 @@ const errorOk = error => isPlain(error) && Object.keys(error).length === 3 && is
 // 每种正文：必有的字段与可有的字段，各配一个类型检查；多出来的字段、缺的必有字段、类型不对都拒。
 const SHAPES = {
   [KIND_GRANT]: {
-    required: { v: v => v === 1, holder: isAuthor, grantee: isAuthor, grant: v => isText(v) && UUID.test(v), protocol: v => v === PROTOCOL,
+    required: { v: v => v === 1 || v === 2, holder: isAuthor, grantee: isAuthor, grant: v => isText(v) && UUID.test(v), protocol: v => v === PROTOCOL,
       ops: v => Array.isArray(v) && v.length === 1 && v[0] === 'exec', spec: specOk, available: v => typeof v === 'boolean', grantedAt: isTime },
-    optional: {},
+    optional: { restrict: restrictOk },
   },
   [KIND_CALL]: {
     required: { v: v => v === 1, caller: isAuthor, holder: isAuthor, grant: v => isText(v) && UUID.test(v), request: v => isText(v) && REQUEST.test(v),
@@ -170,6 +188,8 @@ function shapeProblem(kind, body) {
   }
   for (const [key, check] of Object.entries(optional)) if (Object.hasOwn(body, key) && !check(body[key])) return 'bad_body';
   if (kind === KIND_CALL && Object.hasOwn(body, 'cancel') !== Object.hasOwn(body, 'canceledAt')) return 'bad_body';
+  // 授权：v1 是整台机器、没有 restrict；v2 是仅限目录、必有 restrict。
+  if (kind === KIND_GRANT && (body.v === 2) !== Object.hasOwn(body, 'restrict')) return 'bad_body';
   return null;
 }
 
@@ -226,9 +246,9 @@ function build(kind, body) {
   return { kind, id: rule.id(body), body, audience: [body[rule.receiver]] };
 }
 
-/** 授权：id 是授权号，受众是被授权者。`spec`、`available` 只用于展示。 */
-export const grantRecord = ({ holder, grantee, grant, spec, available, grantedAt }) =>
-  build(KIND_GRANT, { v: 1, holder, grantee, grant, protocol: PROTOCOL, ops: ['exec'], spec, available, grantedAt });
+/** 授权：id 是授权号，受众是被授权者。`spec`、`available`、`restrict` 只用于展示。给了 `restrict` 是 v2 的仅限目录授权，不给是与以前逐字节一样的 v1。 */
+export const grantRecord = ({ holder, grantee, grant, spec, available, grantedAt, restrict }) =>
+  build(KIND_GRANT, { v: restrict ? 2 : 1, holder, grantee, grant, protocol: PROTOCOL, ops: ['exec'], spec, available, grantedAt, ...(restrict ? { restrict } : {}) });
 
 /** 调用请求：id 是请求号（`requestId` 派生），受众是持有方。 */
 export const callRecord = ({ caller, holder, grant, request, input, createdAt, expiresAt }) =>

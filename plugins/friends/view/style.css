@@ -188,6 +188,32 @@ details[open] > summary { margin-bottom: 10px; }
 .pick { width: 100%; display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--card); text-align: left; }
 .pick .why { font-size: .85em; color: var(--orange); }
 
+/* 授予、修改范围的表单；授权行、代理记录、操作记录里的范围（长路径折行、点开看全部） */
+.target-box { display: flex; flex-direction: column; min-width: 0; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--card); }
+.opts { display: flex; flex-direction: column; gap: 8px; }
+.opt { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--card); }
+.opt.on { border-color: var(--accent); }
+.opt.off { opacity: .65; }
+.opt input { flex: none; width: auto; margin-top: 3px; }
+.dirs-edit { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.dirs-edit > .glist { width: 100%; }
+.dir-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.dir-row input { flex: 1 1 100%; }
+.dir-row select { flex: none; padding: 7px 8px; border-radius: var(--coda-radius, 9px); border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+.dir-row.bad input { border-color: var(--red); }
+.warn-box .detail { margin-top: 4px; font-size: .9em; opacity: .85; overflow-wrap: anywhere; }
+.scope > summary { display: flex; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scope > summary::after { content: "\00a0▾"; flex: none; }
+.scope .sum-main { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.scope .sum-tail { flex: none; }
+.scope[open] > summary { display: block; margin-bottom: 4px; white-space: normal; }
+.scope[open] .sum-main { display: inline; overflow: visible; overflow-wrap: anywhere; }
+.scope[open] > summary::after { content: "\00a0▴"; }
+.dirs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: .85em; }
+.dirs li { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
+.dirs .tag { flex: none; }
+.dirs .mono { min-width: 0; overflow-wrap: anywhere; }
+
 /* 网络节点：分节标题行右端的图标按钮、抽屉里的分组与行、待移除块 */
 .sec .kebab { margin: -6px -6px -6px 0; }
 .page > section > .netblock { margin-top: 16px; }
