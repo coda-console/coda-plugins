@@ -7,7 +7,7 @@ import { pointProblem } from '@coda-console/protocol/validate';
 import {
   CLOCK_BACK_MS, FUTURE_SKEW_MS, KIND_ANSWER, KIND_CALL, KIND_GRANT, MAX_ANSWER_BYTES, MAX_CALL_BYTES, MAX_WINDOW_MS, RPC_KINDS, RPC_PREFIX,
   answerId, answerRecord, callRecord, cancelRecord, canonicalJson, clockWentBack, fitAnswer, grantRecord, idempotencyKey, isRpcKind, rebuildExecInput,
-  machineOf, replayWindow, requestDigest, requestId, signerOf, verifyAnswer, verifyCall, verifyGrant,
+  MAX_RESTRICT_DIRS, MAX_RESTRICT_PATH_BYTES, cleanRestrict, firstRw, machineOf, replayWindow, requestDigest, requestId, restrictOk, sandboxHint, signerOf, verifyAnswer, verifyCall, verifyGrant,
 } from '../../../plugins/friends/lib/rpc-format.mjs';
 
 const HOLDER = `ed25519:${'a'.repeat(64)}`, CALLER = `ed25519:${'b'.repeat(64)}`, OTHER = `ed25519:${'c'.repeat(64)}`;
@@ -397,4 +397,67 @@ test('the machine key: the certificate\'s key when a personal identity is bound,
   for (const accord of [local(HOLDER, { certificate: { active: true } }), local(HOLDER, { certificate: { active: true, key: 'x' } }), local('someone', { certificate: null }),
     local(HOLDER, {}), local(HOLDER), null, undefined])
     assert.equal(machineOf(accord), null, JSON.stringify(accord));
+});
+
+// ---- 授权的范围 ----
+
+const DIRS = { dirs: [{ path: '/srv/work', access: 'rw' }, { path: '/srv/data', access: 'ro' }] };
+const scoped = (restrict = DIRS) => grantRecord({ holder: HOLDER, grantee: CALLER, grant: GRANT, spec: { ...SPEC, cwd: firstRw(restrict) }, available: true, grantedAt: 7, restrict });
+const plain = () => grantRecord({ holder: HOLDER, grantee: CALLER, grant: GRANT, spec: SPEC, available: true, grantedAt: 7 });
+
+test('a scope is a list of 1 to 50 directories, each an absolute path of at most 1024 bytes with rw or ro, at least one rw, nothing else', () => {
+  assert.equal([MAX_RESTRICT_DIRS, MAX_RESTRICT_PATH_BYTES].join(), '50,1024');
+  const row = (path = '/a', access = 'rw') => ({ path, access });
+  assert.equal(restrictOk(DIRS), true);
+  assert.equal(restrictOk({ dirs: Array.from({ length: 50 }, (_, i) => row(`/d${i}`)) }), true);
+  assert.equal(restrictOk({ dirs: [row(`/${'a'.repeat(1023)}`)] }), true);
+  assert.equal(restrictOk({ dirs: [row(`/${'汉'.repeat(341)}`)] }), true, '1024 bytes counted in UTF-8');
+  for (const bad of [undefined, null, 'x', [], {}, { dirs: [] }, { dirs: 'x' }, { dirs: [null] }, { dirs: [row('/a', 'ro')] }, { dirs: [row('a')] }, { dirs: [row('')] }, { dirs: [row('/a', 'RW')] },
+    { dirs: [{ path: '/a' }] }, { dirs: [{ access: 'rw' }] }, { dirs: [{ ...row(), extra: 1 }] }, { dirs: [row()], extra: 1 }, { dirs: [row('/a\0')] }, { dirs: [row(`/${'a'.repeat(1024)}`)] },
+    { dirs: [row(`/${'汉'.repeat(342)}`)] }, { dirs: Array.from({ length: 51 }, (_, i) => row(`/d${i}`)) }]) assert.equal(restrictOk(bad), false, JSON.stringify(bad)?.slice(0, 60));
+  assert.deepEqual(cleanRestrict({ dirs: [{ access: 'ro', path: '/b' }, { access: 'rw', path: '/a' }] }), { dirs: [{ path: '/b', access: 'ro' }, { path: '/a', access: 'rw' }] });
+  assert.equal(cleanRestrict({ dirs: [] }), null);
+  assert.equal(firstRw({ dirs: [{ path: '/ro', access: 'ro' }, { path: '/one', access: 'rw' }, { path: '/two', access: 'rw' }] }), '/one');
+  assert.deepEqual(['Darwin 25.1.0', 'Darwin', 'darwin', 'Linux', 'macOS 15', '', undefined].map(sandboxHint), [true, true, false, false, false, false, false]);
+});
+
+test('a whole-machine grant is the v1 record, byte for byte what was signed before scopes existed; a directories grant is v2 with the restrict last', () => {
+  const body = plain().body;
+  assert.equal(JSON.stringify(body), `{"v":1,"holder":"${HOLDER}","grantee":"${CALLER}","grant":"${GRANT}","protocol":"remote-exec/machine@1","ops":["exec"],`
+    + '"spec":{"name":"build-box","os":"linux","user":"dev","cwd":"/home/dev"},"available":true,"grantedAt":7}');
+  const built = scoped();
+  assert.deepEqual(Object.keys(built.body), ['v', 'holder', 'grantee', 'grant', 'protocol', 'ops', 'spec', 'available', 'grantedAt', 'restrict']);
+  assert.equal(built.body.v, 2);
+  assert.deepEqual(verifyGrant(received(built, HOLDER), { self: CALLER, peer: HOLDER }), { ok: true, body: built.body });
+  assert.deepEqual(grantRecord({ holder: HOLDER, grantee: CALLER, grant: GRANT, spec: SPEC, available: true, grantedAt: 7, restrict: undefined }).body, body);
+  assert.throws(() => grantRecord({ holder: HOLDER, grantee: CALLER, grant: GRANT, spec: SPEC, available: true, grantedAt: 7, restrict: { dirs: [] } }), { code: 'invalid_input' });
+});
+
+test('the version and the restrict go together: v1 may not carry one, v2 must, an unknown version is refused, a bad restrict is refused', () => {
+  const check = body => verifyGrant(received({ ...plain(), body }, HOLDER), { self: CALLER, peer: HOLDER });
+  const v1 = plain().body, v2 = scoped().body;
+  assert.equal(check(v1).ok, true);
+  assert.equal(check(v2).ok, true);
+  assert.equal(check({ ...v1, restrict: DIRS }).code, 'bad_body', 'v1 with a restrict');
+  const { restrict, ...bare } = v2;
+  assert.equal(check(bare).code, 'bad_body', 'v2 without one');
+  assert.equal(check({ ...v2, v: 3 }).code, 'bad_version');
+  assert.equal(check({ ...v2, restrict: { dirs: [{ path: '/a', access: 'ro' }] } }).code, 'bad_body');
+  assert.equal(check({ ...v2, restrict: { ...DIRS, extra: 1 } }).code, 'bad_body');
+  assert.equal(check({ ...v2, restrict: null }).code, 'bad_body');
+});
+
+// 加范围之前的授权记录校验（冻结的样本）：正文的字段恰好是这九项，v 恰好是 1，多一项少一项都拒绝。
+const OLD_KEYS = ['v', 'holder', 'grantee', 'grant', 'protocol', 'ops', 'spec', 'available', 'grantedAt'];
+const oldAccepts = body => Object.keys(body).length === OLD_KEYS.length && OLD_KEYS.every(name => Object.hasOwn(body, name)) && body.v === 1;
+
+test('a version without scopes accepts every whole-machine grant and rejects a directories grant, for both reasons its rule has: the version and the extra field', () => {
+  assert.equal(oldAccepts(plain().body), true);
+  const v2 = scoped().body;
+  assert.equal(oldAccepts(v2), false);
+  // 就算旧版只查其中一条也拒：v 不是 1，另有未知字段。
+  assert.equal(v2.v === 1, false);
+  assert.equal(Object.keys(v2).length > OLD_KEYS.length, true);
+  assert.equal(oldAccepts({ ...v2, v: 1 }), false);
+  assert.equal(oldAccepts((({ restrict, ...rest }) => rest)(v2)), false, 'dropping the field is not enough: the version is 2');
 });

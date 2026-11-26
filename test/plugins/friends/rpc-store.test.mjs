@@ -888,3 +888,125 @@ test('a refusal admitted is written as its terminal state at once, with no call 
   for (let i = 1; i < LIMITS.perMinute.author; i++) assert.equal((await store.admit({ ...candidate(clock), refusal })).ok, true);
   assert.equal((await store.admit({ ...candidate(clock), refusal })).code, 'busy');
 });
+
+// ---- 授权的范围 ----
+
+const DIRS = { dirs: [{ path: '/srv/work', access: 'rw' }, { path: '/srv/data', access: 'ro' }] };
+const DIRS_2 = { dirs: [{ path: '/srv/other', access: 'rw' }] };
+const grantsFile = async dir => JSON.parse(await readRaw(dir, 'grants.json'));
+
+test('a grant row may carry a scope; the file is v2 while any row has one and v1 otherwise, and a file whose version and rows disagree is corrupt (a version without scopes stops at v2)', async t => {
+  const { dir, rpc, store } = await setup(t);
+  assert.deepEqual(await store.listGrants(), []);
+  const { entry } = await store.addGrant({ ...GRANTED, restrict: DIRS });
+  assert.deepEqual(entry.restrict, DIRS);
+  assert.equal((await grantsFile(dir)).v, 2);
+  assert.deepEqual((await createRpcStore(dir).getGrant(GRANT)).restrict, DIRS, 'read back after a restart');
+  // 范围不合格的不收。
+  for (const restrict of [{ dirs: [] }, { dirs: [{ path: 'a', access: 'rw' }] }, { dirs: [{ path: '/a', access: 'ro' }] }, {}, 'x'])
+    await assert.rejects(createRpcStore(join(dir, 'other')).addGrant({ ...GRANTED, restrict }), { code: 'invalid_input' }, JSON.stringify(restrict));
+  // v1 的文件里有带范围的行、v2 的文件里一行也没有：都是损坏，不照字面读。
+  const good = await grantsFile(dir);
+  for (const [text, why] of [[{ ...good, v: 1 }, 'v1 带范围'], [{ v: 2, grants: { [GRANT]: (({ restrict, ...rest }) => rest)(good.grants[GRANT]) } }, 'v2 没有范围'], [{ ...good, v: 3 }, 'v3']]) {
+    await writeFile(join(rpc, 'grants.json'), JSON.stringify(text));
+    await assert.rejects(createRpcStore(dir).listGrants(), error => isCorrupt(error), why);
+  }
+  // 范围也在表的每次写入时核对。
+  await writeFile(join(rpc, 'grants.json'), JSON.stringify(good));
+  await assert.rejects(createRpcStore(dir).setRestrict(GRANT, { dirs: [{ path: 'a', access: 'rw' }] }), { code: 'invalid_input' });
+  assert.deepEqual((await grantsFile(dir)), good, 'the file is as it was');
+});
+
+test('setRestrict changes the scope of a live grant on disk before returning: v1 ↔ v2, nothing written when it does not change, refused on a revoked, ended or missing grant', async t => {
+  const { dir, store } = await setup(t);
+  await store.addGrant(GRANTED);
+  assert.equal((await grantsFile(dir)).v, 1);
+  const set = await store.setRestrict(GRANT, DIRS);
+  assert.deepEqual([set.ok, set.entry.restrict], [true, DIRS]);
+  assert.deepEqual([(await grantsFile(dir)).v, (await grantsFile(dir)).grants[GRANT].restrict], [2, DIRS], 'on disk when it returns');
+  const written = await readRaw(dir, 'grants.json');
+  assert.equal((await store.setRestrict(GRANT, { dirs: DIRS.dirs.map(one => ({ ...one })) })).ok, true);
+  assert.equal(await readRaw(dir, 'grants.json'), written, 'the same scope is not written again');
+  await store.setRestrict(GRANT, DIRS_2);
+  assert.deepEqual((await store.getGrant(GRANT)).restrict, DIRS_2);
+  // 回到整台机器：行里没有这一项，文件回到 v1。
+  const whole = await store.setRestrict(GRANT, null);
+  assert.equal('restrict' in whole.entry, false);
+  assert.deepEqual([(await grantsFile(dir)).v, 'restrict' in (await grantsFile(dir)).grants[GRANT]], [1, false]);
+  assert.equal((await store.setRestrict(GRANT, undefined)).ok, true);
+  assert.deepEqual(await store.setRestrict('nope', DIRS), { ok: false, code: 'not_found' });
+  assert.equal((await store.setRestrict(GRANT, DIRS, () => 'target_missing')).code, 'revoked', 'a failure not yet on disk counts');
+  assert.equal((await store.getGrant(GRANT)).restrict, undefined);
+  await store.revokeGrant(GRANT, START + 1);
+  assert.equal((await store.setRestrict(GRANT, DIRS)).code, 'revoked');
+  assert.equal((await store.getGrant(GRANT)).restrict, undefined);
+});
+
+test('markSubmitted records the scope of the grant row read at that moment on the call (null for the whole machine); a scope changed before it is the one used, one changed after it is not', async t => {
+  const { store, clock } = await setup(t);
+  await store.addGrant(GRANTED);
+  const one = candidate(clock), two = candidate(clock), three = candidate(clock), four = candidate(clock);
+  for (const entry of [one, two, three, four]) await store.admit(entry);
+  assert.equal((await store.get(A, one.request)).call.restrict, undefined, 'nothing recorded at admission');
+  // 整台机器：记 null。
+  assert.equal((await store.markSubmitted(A, one.request)).entry.call.restrict, null);
+  await store.setRestrict(GRANT, DIRS);
+  // 准入时是整台机器，提交前改了：用新的。
+  assert.deepEqual((await store.markSubmitted(A, two.request)).entry.call.restrict, DIRS);
+  assert.deepEqual((await store.get(A, two.request)).call, { ...two.call, restrict: DIRS });
+  // 已提交的不跟着变；再提交（重启后）给回原样。
+  await store.setRestrict(GRANT, DIRS_2);
+  assert.deepEqual((await store.get(A, two.request)).call.restrict, DIRS);
+  assert.deepEqual((await store.markSubmitted(A, two.request)).entry.call.restrict, DIRS);
+  assert.equal((await store.get(A, one.request)).call.restrict, null);
+  assert.deepEqual((await store.markSubmitted(A, three.request)).entry.call.restrict, DIRS_2);
+  // 提交与改范围排在一条队里：同时发起，要么提交读到新的，要么它就是在旧范围下提交的，没有第三种。
+  const [submitted] = await Promise.all([store.markSubmitted(A, four.request), store.setRestrict(GRANT, null)]);
+  assert.deepEqual(submitted.entry.call.restrict, DIRS_2);
+  // 终态之后调用的参数去掉，范围随它去掉。
+  await store.finish(A, one.request, finished());
+  assert.equal((await store.get(A, one.request)).call, undefined);
+});
+
+test('a stored call whose scope is not well formed is corruption on read and refused on write', async t => {
+  const { dir, rpc, store, clock } = await setup(t);
+  await store.addGrant(GRANTED);
+  const one = candidate(clock);
+  await store.admit(one);
+  await store.markSubmitted(A, one.request);
+  const good = JSON.parse(await readRaw(dir, 'inflight.json'));
+  for (const bad of [{ dirs: [] }, 'x', { dirs: [{ path: '/a', access: 'ro' }] }, 5]) {
+    const text = structuredClone(good);
+    text.entries[inflightKey(A, one.request)].call.restrict = bad;
+    await writeFile(join(rpc, 'inflight.json'), JSON.stringify(text));
+    await assert.rejects(createRpcStore(dir).listInflight(), error => isCorrupt(error), JSON.stringify(bad));
+  }
+});
+
+test('an operation record row keeps the scope the call ran under when it has one; the whole machine has no such field, and a bad one is refused', async t => {
+  const { dir, store } = await setup(t);
+  const plain = await store.appendLedger(row({ request: 'c1' }));
+  assert.equal('restrict' in plain, false);
+  const scoped = await store.appendLedger(row({ request: 'c2', restrict: DIRS }));
+  assert.deepEqual(scoped.restrict, DIRS);
+  assert.deepEqual((await store.readLedger()).map(one => [one.request, one.restrict]).sort(), [['c1', undefined], ['c2', DIRS]]);
+  assert.equal((await readRaw(dir, 'ledger-2026-11.jsonl')).split('\n')[0].includes('restrict'), false, 'old-shaped rows are written as before');
+  await assert.rejects(store.appendLedger(row({ request: 'c3', restrict: { dirs: [] } })), { code: 'invalid_input' });
+  assert.deepEqual((await store.appendLedgerRow({ ...scoped, request: 'c4' })), { written: true });
+  assert.deepEqual((await store.readLedger({ request: 'c4' }))[0].restrict, DIRS);
+});
+
+test('findLiveGrant uses the same rule as addGrant: same machine key, friend and target, not revoked, not ended by the caller\'s pending failure; nothing written', async t => {
+  const { dir, store } = await setup(t);
+  const match = { holder: { machine: A }, grantee: B, target: TARGET };
+  assert.equal(await store.findLiveGrant(match), null);
+  await store.addGrant(GRANTED);
+  const written = await readRaw(dir, 'grants.json');
+  assert.equal((await store.findLiveGrant(match)).id, GRANT);
+  assert.equal((await store.addGrant(GRANTED)).entry.id, GRANT, 'addGrant finds the same one');
+  for (const other of [{ holder: { machine: C } }, { grantee: C }, { target: { ...TARGET, id: 'rec-2' } }]) assert.equal(await store.findLiveGrant({ ...match, ...other }), null);
+  assert.equal(await store.findLiveGrant(match, () => 'target_missing'), null);
+  assert.equal(await readRaw(dir, 'grants.json'), written);
+  await store.revokeGrant(GRANT, START + 1);
+  assert.equal(await store.findLiveGrant(match), null);
+});

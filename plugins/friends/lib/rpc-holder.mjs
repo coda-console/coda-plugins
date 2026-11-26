@@ -12,6 +12,9 @@
 // - 授权表（rpc-store 的 grants.json）是权威：撤权与失效先落盘、不可逆，之后尚未提交的不再启动，已提交的走「对方发来取消」同一条路径取消；授权记录（friends/rpc-grant）的发与撤
 //   按授权号排成一条队，发不出去等能发了再补，撤回要等原来那把机器钥匙能签时补发。启动后查一次目录，本机机器钥匙签出、授权表里却没有对应有效授权的
 //   （清过状态目录后留下的）也排进这条队撤回；授权表损坏时不查。
+// - 授权的范围（授权行的 `restrict`）：没有是整台机器，有是仅限目录。范围只在这里强制：好友请求里的 `restrict` 与任何未知字段在重建输入时丢掉，
+//   不透传；仅限目录的授权，每次调用都带授权行里的 `restrict`（提交那一刻读最新的授权行记进在途项，改范围对之后的调用立即生效、已提交的不动），
+//   没给 cwd 就让目标机用第一条 `rw` 目录。授「仅限目录」与改成仅限目录之前，先向目标机发一次带这份 `restrict` 的探测，目标机拒绝就不授、不改。
 // - 持有方始终以机器出现：授权记录与回答用本机机器钥匙签（rpc-format 的 machineOf，网关带 `signer: "machine"`），与有没有绑个人身份、
 //   证书是否有效无关；证书过期照常准入、执行、签回答、撤回答。授权记下授予时的机器钥匙，机器钥匙变了授权就此失效；
 //   本机绑定、解绑个人身份或换根都不影响它授出的授权。
@@ -26,8 +29,9 @@
 import { performance } from 'node:perf_hooks';
 import { isDeepStrictEqual } from 'node:util';
 import { certStateOf, statusOf } from './friends.mjs';
-import { KIND_ANSWER, KIND_CALL, KIND_GRANT, PROTOCOL, answerId, answerRecord, clockWentBack, grantRecord, idempotencyKey, isAuthor, rebuildExecInput,
+import { KIND_ANSWER, KIND_CALL, KIND_GRANT, PROTOCOL, answerId, answerRecord, cleanRestrict, clockWentBack, firstRw, grantRecord, idempotencyKey, isAuthor, rebuildExecInput,
   machineNameOk, machineOf, replayWindow, requestDigest, verifyCall } from './rpc-format.mjs';
+import { MAX_BODY_BYTES } from './outbox.mjs';
 import { answerDueAt, commandInfo, inflightKey, isCorrupt } from './rpc-store.mjs';
 export { ANSWER_KEEP_MS } from './rpc-store.mjs';
 
@@ -37,6 +41,8 @@ export const POLL_MS = 15_000;
 // exec 不给 timeout 时 remote-exec 的默认时限（秒）；remote-exec 的操作时限比命令时限多 30 秒（630 对 600），收尾用。
 // 跨机调用的总时限是命令时限加 CALL_GRACE_MS（remote-exec 的 30 秒余量，再留 30 秒给结局送回）：到点由内核放弃，排着没送出的不会再执行。
 const DEFAULT_TIMEOUT_S = 120, CALL_GRACE_MS = 60_000;
+// 授「仅限目录」前探测目标机的时限：够目标机起一次沙箱、跑一条 `true`；目标机没有及时回应就按没通过。
+const PROBE_TIMEOUT_MS = 30_000;
 // 见过的最大时刻至多每分钟落一次盘。
 const CLOCK_STEP_MS = 60_000;
 // 失效落盘失败后重试的退避：从 1 秒起翻倍，至多 1 分钟。
@@ -260,7 +266,11 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
         const check = await targetCheck(row, me);
         if (ENDING[check.problem]) row = await endGrant(id, ENDING[check.problem]);
         // 别台的目标此刻读不到：已发出的授权记录原样留着（只拒不失效），那台回来后照常。
-        else if (check.problem) return true;
+        // 但授权的范围改过、新正文还没签出的，待发布要留着（返回 false，由后面的节拍再来），目标回来后签出新范围。
+        else if (check.problem) {
+          const [mine] = (await coda.query(ACCORD, 'records', { kind: KIND_GRANT, author: me.machine, id, limit: 1 }))?.records ?? [];
+          return isDeepStrictEqual(mine?.body?.restrict ?? null, row.restrict ?? null);
+        }
         target = check.entry;
       }
     }
@@ -272,7 +282,7 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
       return true;
     }
     if (stopped || !isAuthor(me.machine)) return false;
-    const record = grantRecord({ holder: row.holder.machine, grantee: row.grantee, grant: row.id, spec: pickSpec(target.spec), available: target.status?.available === true, grantedAt: row.createdAt });
+    const record = grantRecordOf(row, target);
     const [mine] = (await coda.query(ACCORD, 'records', { kind: KIND_GRANT, author: me.machine, id, limit: 1 }))?.records ?? [];
     // 签之前再读一次：撤了，或这时落进了待落盘的失效，都不发（失效落盘后再来撤）。
     const latest = await store.getGrant(id);
@@ -281,6 +291,19 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
     return true;
   }
   const pickSpec = spec => ({ name: spec?.name, os: spec?.os, user: spec?.user, cwd: spec?.cwd });
+  // 一条授权发给好友的授权记录。仅限目录的授权，记录里的默认目录是第一条 rw 目录（目标机上不给 cwd 时用的也是它）。
+  function grantRecordOf(row, target) {
+    const spec = pickSpec(target.spec);
+    return grantRecord({ holder: row.holder.machine, grantee: row.grantee, grant: row.id, spec: row.restrict ? { ...spec, cwd: firstRw(row.restrict) } : spec,
+      available: target.status?.available === true, grantedAt: row.createdAt, restrict: row.restrict });
+  }
+  // 落盘之前先量实际要签的授权记录：网关签发的字节上限是 MAX_BODY_BYTES，含 JSON 转义；超了落盘也永远签不出去，当场拒绝。
+  // 记录的大小只取决于范围、机器的 spec 与固定长度的各项，所以用占位的授权号量（UUID 长度固定）。
+  function checkFits(machine, grantee, target, restrict) {
+    const row = { id: '00000000-0000-4000-8000-000000000000', holder: { machine }, grantee, createdAt: now(), restrict };
+    if (Buffer.byteLength(JSON.stringify(grantRecordOf(row, target).body)) > MAX_BODY_BYTES)
+      throw fail('restrict_too_large', `仅限目录的范围写进授权记录超过 ${MAX_BODY_BYTES} 字节的上限（路径里的引号、反斜杠、控制字符转义后更长），签不出去：请减少目录或缩短路径`);
+  }
 
   // 跟上一条授权：开始前先取走它的待补标记，没成再标回去；同步进行中新来的标记留着，由随后的节拍再补一次。
   async function settle(id) {
@@ -519,7 +542,8 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
     try {
       // 先登记中止的手柄、再读一次：取消落在这之前的，这里看得到；落在之后的，会经手柄中止。
       if ((await store.get(entry.caller, entry.request))?.canceled) controller.abort();
-      const { target, input } = entry.call;
+      // 范围取自提交那一刻记下的（见 store.markSubmitted），不取好友的请求；重启后接手的也是同一份。
+      const { target, input: given, restrict } = entry.call, input = restrict ? { ...given, restrict } : given;
       const limit = (input.timeout ?? DEFAULT_TIMEOUT_S) * 1000 + CALL_GRACE_MS;
       let outcome = outcomes.get(key);
       if (outcome === undefined && controller.signal.aborted) {
@@ -585,9 +609,11 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
     const finishedAt = now(), key = inflightKey(entry.caller, entry.request), { target, input } = entry.call;
     let name = target.id;
     try { name = (await targetOf(target))?.spec?.name || target.id; } catch { /* 名字只是展示 */ }
+    // 当时的授权范围：提交过的是提交那一刻记下的，没提交过的（拒绝、取消）取授权行此刻的。
+    const restrict = entry.call.restrict !== undefined ? entry.call.restrict : (await store.getGrant(entry.grant))?.restrict;
     const row = { v: 1, at: finishedAt, request: entry.request, friend: entry.caller, grant: entry.grant, target: { kind: target.kind, id: target.id, name }, op: 'exec',
       command: commandInfo(input.command), outcome: state, ...(error ? { code: error.code } : {}), ...(result && 'exitCode' in result ? { exitCode: result.exitCode } : {}),
-      ms: Math.round(monotonic() - (since.get(key) ?? monotonic())) };
+      ...(restrict ? { restrict } : {}), ms: Math.round(monotonic() - (since.get(key) ?? monotonic())) };
     return { state, ending: { finishedAt, ...(result === undefined ? {} : { result }), ...(error === undefined ? {} : { error }) }, row };
   }
 
@@ -706,8 +732,38 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
 
   // ---- 授予、撤销与列出 ----
 
-  async function grant({ friend, target } = {}) {
+  // 授权的范围：不给（或 null）是整台机器；给了须是合格的 `{ dirs: [{ path, access }] }`，按固定键序抄一份。
+  function scopeOf(restrict) {
+    if (restrict === undefined || restrict === null) return null;
+    const scope = cleanRestrict(restrict);
+    if (!scope) throw invalid('restrict 须是 { dirs: [{ path, access }] }：1 到 50 项，path 是绝对路径（至多 1024 字节），access 是 rw 或 ro，至少一项 rw');
+    return scope;
+  }
+
+  // 探测失败的原因（给调用的页面看）：码是稳定的，目标机拒绝的码原样带回，旧版目标机按 schema 拒绝 restrict 这个字段（invalid_input）记为 restrict_unsupported。
+  const PROBE_CAUSES = {
+    sandbox_unsupported: '目标机不支持受限执行（只有 macOS 且有 /usr/bin/sandbox-exec 的机器可以）',
+    restrict_unsupported: '目标机上的远程执行版本太旧，不认识 restrict',
+    restrict_dir_not_found: '目标机上有目录不存在',
+    restrict_dir_not_a_directory: '目标机上有路径不是目录',
+    restrict_protected: '有目录与目标机上受保护的位置（Coda 状态根、~/.ssh）重叠',
+    sandbox_failed: '目标机上的沙箱起不来',
+    target_offline: REASONS.target_offline,
+  };
+  // 授「仅限目录」之前向目标机发一次带这份 restrict 的 exec（`true`，不给 cwd，没有副作用）：目标机认、目录都能用才算数。
+  // 目标机拒绝、版本太旧、连不上、或沙箱起不来，都当场失败：什么也不授。
+  async function probe(target, restrict) {
+    let result;
+    try { result = await coda.call({ kind: target.kind, id: target.id }, 'exec', { command: 'true', restrict }, { timeout: PROBE_TIMEOUT_MS }); } catch (e) {
+      const code = e?.code === 'invalid_input' ? 'restrict_unsupported' : e?.code === 'peer_offline' ? 'target_offline' : String(e?.code ?? 'probe_failed');
+      throw fail(code, `没有授出仅限目录的范围，目标机探测没通过${PROBE_CAUSES[code] ? `（${PROBE_CAUSES[code]}）` : ''}：${message(e)}`);
+    }
+    if (result?.exitCode !== 0) throw fail('sandbox_failed', `没有授出仅限目录的范围，目标机探测没通过（${PROBE_CAUSES.sandbox_failed}）：true 退出码 ${result?.exitCode}，${String(result?.stderr ?? '').trim()}`);
+  }
+
+  async function grant({ friend, target, restrict } = {}) {
     if (stopped) throw fail('interrupted', '好友网关已停止');
+    const scope = scopeOf(restrict);
     if (!isAuthor(friend)) throw invalid('friend 须是好友的公钥（ed25519:…）');
     if (!target || typeof target !== 'object' || target.kind !== PROTOCOL || typeof target.id !== 'string' || !target.id) throw invalid(`target 须是一条 ${PROTOCOL} 记录的 { kind, id }`);
     const entry = await targetOf(target);
@@ -719,15 +775,50 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
     const me = await identity();
     if (!me.bound.has(friend)) throw invalid('这位不是已绑定好友通道的好友');
     if (!isAuthor(me.machine)) throw fail('invalid_state', '读不出本机的机器钥匙，不能授权');
-    // 同一好友、同一目标已有没撤、也不在待落盘失效里的授权时，store 原样给回那一条（页面重试授予拿到的还是它），这里什么也不另做。
+    const at = { owner: entry.owner, provider: entry.plugin, kind: target.kind, id: target.id };
+    // 先看有没有已有的有效授权（同一好友、同一目标）：范围相同原样给回（页面重试授予拿到的还是它），不同报已存在，改范围走 grants.restrict；都不探测，目标离线也一样。
+    const live = await store.findLiveGrant({ holder: { machine: me.machine }, grantee: friend, target: at }, pendingEnd);
+    if (live) {
+      if (!isDeepStrictEqual(live.restrict ?? null, scope)) throw fail('already_granted', `已经授给这位好友一条（授权号 ${live.id}），范围不同：改范围请用 grants.restrict，不要再授一条`);
+      // 状态与 grants.list 一样按目标此刻的实况（离线就是 target_offline），只是不做 exec 探测。
+      return describe(live, me, await targetCheck(live, me, { live: true }).catch(() => ({ entry: null, problem: 'target_unreachable' })));
+    }
+    if (scope) {
+      checkFits(me.machine, friend, entry, scope);
+      if (entry.local !== true && await machineOffline(entry.owner)) throw fail('target_offline', `没有授出仅限目录的范围，目标机探测没通过（${REASONS.target_offline}）`);
+      await probe(target, scope);
+    }
+    // 探测期间别处又授出了同一条：store 的写入里仍原子去重，给回那一条，范围不同照样报已存在。
     const added = await store.addGrant({ holder: { machine: me.machine }, grantee: friend, granteePerson: me.bound.get(friend),
-      target: { owner: entry.owner, provider: entry.plugin, kind: target.kind, id: target.id }, createdAt: now() }, pendingEnd), row = added.entry;
+      target: at, createdAt: now(), ...(scope ? { restrict: scope } : {}) }, pendingEnd), row = added.entry;
+    if (!added.created && !isDeepStrictEqual(row.restrict ?? null, scope)) throw fail('already_granted', `已经授给这位好友一条（授权号 ${row.id}），范围不同：改范围请用 grants.restrict，不要再授一条`);
     // 新授出的：不归此前的失效管，并发出授权记录。
     if (added.created) {
       for (const one of pendingEnds.values()) one.after.add(row.id);
       await settle(row.id);
     }
     return describe(row, me, { entry, problem: null });
+  }
+
+  // 改一条有效授权的范围：整台机器 ↔ 仅限目录，或换目录（`restrict` 不给是整台机器）。改成仅限目录先探测，目标机拒绝就不改。
+  // 落盘之后立即对之后的准入与提交生效，已经提交的调用不动；随后重新签发授权记录（同一授权号、更高版本），好友那边看到新范围。
+  async function restrictGrant({ grant: id, restrict } = {}) {
+    if (stopped) throw fail('interrupted', '好友网关已停止');
+    if (typeof id !== 'string' || !id) throw invalid('grant 须是授权号');
+    const scope = scopeOf(restrict), row = await store.getGrant(id);
+    if (!row) throw fail('not_found', `没有授权 ${id}`);
+    const gone = () => fail('invalid_state', '这条授权已撤销或已失效，不能改范围');
+    if (row.revokedAt !== undefined || pendingEnd(row)) throw gone();
+    const me = await identity(), check = await targetCheck(row, me, { live: true });
+    if (scope) {
+      if (check.problem) throw fail(check.problem, `没有改范围，目标机探测没通过（${REASONS[check.problem]}）`);
+      checkFits(row.holder.machine, row.grantee, check.entry, scope);
+      await probe(row.target, scope);
+    }
+    const set = await store.setRestrict(id, scope, pendingEnd);
+    if (!set.ok) throw set.code === 'not_found' ? fail('not_found', `没有授权 ${id}`) : gone();
+    await settle(id);
+    return describe(set.entry, me, check);
   }
 
   async function revoke({ grant: id } = {}) {
@@ -759,7 +850,7 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
         : ['target_unreachable', 'target_offline'].includes(problem) ? problem : problem ? 'target_missing' : !isAuthor(me.machine) ? 'no_identity'
           : target.status?.available === true ? 'available' : 'target_off');
     return { grant: row.id, friend: row.grantee, target: { kind: row.target.kind, id: row.target.id, name: target?.spec?.name ?? null },
-      createdAt: row.createdAt, ...(row.revokedAt === undefined ? {} : { revokedAt: row.revokedAt }), status };
+      createdAt: row.createdAt, ...(row.restrict ? { restrict: row.restrict } : {}), ...(row.revokedAt === undefined ? {} : { revokedAt: row.revokedAt }), status };
   }
 
   async function list() {
@@ -787,7 +878,7 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
 
   return {
     // `coda self` 的处理函数。
-    self: { 'grants.list': list, 'grants.grant': grant, 'grants.revoke': revoke, 'ledger.list': ledger },
+    self: { 'grants.list': list, 'grants.grant': grant, 'grants.restrict': restrictGrant, 'grants.revoke': revoke, 'ledger.list': ledger },
     tick: () => tick(),
     // 测试与诊断用：此刻还在推进的在途项数。
     busy: () => drives.size,

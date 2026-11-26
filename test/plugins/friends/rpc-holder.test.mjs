@@ -4,15 +4,23 @@
 // 挂起、被中止，并按内核幂等键接上同一个调用、记下收到的键；目标记录（remote-exec/machine@1）由测试直接摆放。
 import { TEST_OWNER, createMockCoda } from '../../helpers/mock-coda.mjs';
 import assert from 'node:assert/strict';
+import { pointProblem } from '@coda-console/protocol/validate';
+import { mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { test } from 'node:test';
 import { activate, deactivate } from '../../../plugins/friends/main.mjs';
 import { createGateway } from '../../../plugins/friends/lib/gateway.mjs';
 import { ANSWER_KEEP_MS, POLL_MS, createHolder } from '../../../plugins/friends/lib/rpc-holder.mjs';
-import { answerId, callRecord, cancelRecord, idempotencyKey, requestId } from '../../../plugins/friends/lib/rpc-format.mjs';
+import { answerId, callRecord, cancelRecord, grantRecord, idempotencyKey, requestId } from '../../../plugins/friends/lib/rpc-format.mjs';
 import { LIMITS, commandInfo, createRpcStore } from '../../../plugins/friends/lib/rpc-store.mjs';
+import { createAuditLog } from '../../../plugins/remote-exec/lib/audit.mjs';
+import { exec as runRemoteExec } from '../../../plugins/remote-exec/lib/exec.mjs';
+import { outputRoot } from '../../../plugins/remote-exec/lib/output.mjs';
+import { sandboxSupported } from '../../../plugins/remote-exec/lib/sandbox.mjs';
+import { coda as execCoda, fakeSpawn } from '../remote-exec/support.mjs';
 
 const friendsManifest = JSON.parse(await readFile(new URL('../../../plugins/friends/package.json', import.meta.url), 'utf8'));
 const remoteExec = JSON.parse(await readFile(new URL('../../../plugins/remote-exec/package.json', import.meta.url), 'utf8'))
@@ -118,7 +126,9 @@ function execFake() {
       fake.routing = null;
       await new Promise((resolve, reject) => { gate.then(resolve); if (options.signal) onAbort(options.signal, () => reject(givenUp(options.signal))); });
     }
-    let job = fake.jobs.get(options.id);
+    // 没给幂等键的调用（探测）每次都是新调用。
+    const jobKey = options.id ?? `anonymous-${fake.calls.length}`;
+    let job = fake.jobs.get(jobKey);
     if (!job) {
       fake.runs++;
       job = { input };
@@ -126,7 +136,7 @@ function execFake() {
         job.resolve = value => { job.settled = true; resolve(value); };
         job.reject = error => { job.settled = true; reject(error); };
       });
-      fake.jobs.set(options.id, job);
+      fake.jobs.set(jobKey, job);
       const planned = fake.plan(input);
       if (planned instanceof Error) job.reject(planned); else if (planned !== 'hang') job.resolve(planned);
     }
@@ -2438,4 +2448,486 @@ test('a refusal whose admitting write fails leaves nothing on disk and signs not
   await h.settle();
   assert.equal(refusedWith(h, body), 'target_offline');
   assert.equal(h.exec.calls.length, 0);
+});
+
+// ---- 授权的范围：整台机器，或仅限目录 ----
+
+const DIRS = { dirs: [{ path: '/srv/work', access: 'rw' }, { path: '/srv/data', access: 'ro' }] };
+const DIRS_2 = { dirs: [{ path: '/srv/other', access: 'rw' }] };
+const grantTo = (h, friend, restrict, target = { kind: MACHINE, id: 'rx-1' }) => h.holder.self['grants.grant']({ friend, target, ...(restrict ? { restrict } : {}) });
+const restrictTo = (h, grant, restrict) => h.holder.self['grants.restrict']({ grant, restrict });
+// 授权记录的正文（按发布的先后）。
+const grantBodies = h => h.published('friends/rpc-grant').map(call => call.body);
+const execInput = (h, caller, request) => h.exec.calls.find(call => call.id === idempotencyKey(caller, request))?.input;
+const probesOf = h => h.exec.calls.filter(call => call.input.command === 'true' && call.id === undefined);
+
+test('granting the whole machine sends no probe and signs the same v1 record as before the scope existed; granting directories probes first, then signs a v2 record whose default directory is the first rw one', async t => {
+  const h = await holderOf(t);
+  const whole = await grantTo(h, F1);
+  assert.deepEqual(h.exec.calls, [], 'the whole machine is not probed');
+  assert.equal('restrict' in whole, false);
+  assert.equal(JSON.parse(await readFile(join(h.dir, 'rpc', 'grants.json'), 'utf8')).v, 1, 'no scoped row: the file keeps its old version');
+  // 与加范围之前逐字节一样（旧版好友照常验得过）。
+  assert.equal(JSON.stringify(grantBodies(h)[0]), `{"v":1,"holder":"${MK}","grantee":"${F1}","grant":"${whole.grant}","protocol":"remote-exec/machine@1","ops":["exec"],`
+    + `"spec":{"name":"box","os":"linux","user":"u","cwd":"/home/u"},"available":true,"grantedAt":${START}}`);
+
+  const scoped = await grantTo(h, F2, DIRS);
+  assert.deepEqual(h.exec.calls.map(call => [call.ref, call.input, call.id]), [[{ kind: MACHINE, id: 'rx-1' }, { command: 'true', restrict: DIRS }, undefined]]);
+  assert.deepEqual(scoped.restrict, DIRS);
+  assert.deepEqual((await h.store.getGrant(scoped.grant)).restrict, DIRS);
+  assert.deepEqual(grantBodies(h).at(-1), { v: 2, holder: MK, grantee: F2, grant: scoped.grant, protocol: MACHINE, ops: ['exec'], spec: { ...SPEC, cwd: '/srv/work' },
+    available: true, grantedAt: START, restrict: DIRS });
+  // 一行带范围，表文件就是 v2：旧版读到按「损坏」停止准入，不会把它当整台机器。
+  assert.equal(JSON.parse(await readFile(join(h.dir, 'rpc', 'grants.json'), 'utf8')).v, 2);
+  const { grants } = await h.holder.self['grants.list']();
+  assert.deepEqual(grants.map(row => [row.grant, row.restrict]), [[whole.grant, undefined], [scoped.grant, DIRS]]);
+});
+
+test('granting directories fails on the spot and creates nothing when the target machine refuses the probe: each reason has its own code and says why', async t => {
+  const cases = [
+    [fail('sandbox_unsupported', '这台机器不支持受限执行'), 'sandbox_unsupported', /不支持受限执行/],
+    [fail('invalid_input', 'input/restrict：不认识的字段'), 'restrict_unsupported', /版本太旧.*不认识的字段/],
+    [fail('restrict_dir_not_found', '/srv/work：不存在'), 'restrict_dir_not_found', /目录不存在.*\/srv\/work/],
+    [fail('restrict_dir_not_a_directory', '/srv/data：不是目录'), 'restrict_dir_not_a_directory', /不是目录.*\/srv\/data/],
+    [fail('restrict_protected', '/srv/work 与受保护的 /state 重叠，不能授出'), 'restrict_protected', /受保护的位置.*\/state/],
+    [fail('sandbox_failed', '沙箱没能启动，没有执行'), 'sandbox_failed', /沙箱起不来/],
+    [fail('peer_offline', '持有方此刻连不上'), 'target_offline', /离线/],
+    [fail('timeout', '调用超过了期限，已放弃', 'unknown'), 'timeout', /调用超过了期限/],
+    [fail('disabled', '远程执行没有打开'), 'disabled', /没有打开/],
+  ];
+  for (const [error, code, text] of cases) {
+    const h = await holderOf(t);
+    h.exec.plan = () => error;
+    await assert.rejects(grantTo(h, F1, DIRS), refusal => { assert.deepEqual([refusal.code, refusal.effects], [code, 'none']); assert.match(refusal.message, text); return true; }, code);
+    assert.deepEqual(await h.store.listGrants(), [], code);
+    assert.deepEqual(h.published('friends/rpc-grant'), [], code);
+  }
+  // 探测命令自己没跑成（沙箱在空跑之后又加载失败的少见情形）。
+  const h = await holderOf(t);
+  h.exec.plan = () => ({ exitCode: 71, signal: null, stdout: '', stderr: 'sandbox_apply: Operation not permitted', timedOut: false, truncated: false, outputDir: null, ms: 1 });
+  await assert.rejects(grantTo(h, F1, DIRS), error => error.code === 'sandbox_failed' && /退出码 71.*sandbox_apply/.test(error.message));
+  assert.deepEqual(await h.store.listGrants(), []);
+  // 别台的目标已记成离线：不发探测，当场拒绝。
+  const away = await holderOf(t);
+  addMachineB(away);
+  away.targets.machines.set(B, { offline: true });
+  await assert.rejects(grantTo(away, F1, DIRS, { kind: MACHINE, id: 'rx-b' }), error => error.code === 'target_offline' && error.effects === 'none');
+  assert.deepEqual([away.exec.calls, await away.store.listGrants()], [[], []]);
+});
+
+test('a scope that is not a well-formed list of directories is refused before any probe: at least one rw, at most 50 rows, absolute paths of at most 1024 bytes, nothing extra; 50 long rows still sign', async t => {
+  const h = await holderOf(t);
+  const row = (path = '/a', access = 'rw') => ({ path, access });
+  const bad = ['x', 5, [], {}, { dirs: [] }, { dirs: 'x' }, { dirs: [row('/a', 'ro')] }, { dirs: [row('a')] }, { dirs: [row('')] }, { dirs: [row('/a', 'rwx')] }, { dirs: [{ path: '/a' }] },
+    { dirs: [{ ...row(), extra: 1 }] }, { dirs: [row()], extra: 1 }, { dirs: [row('/a\0b')] }, { dirs: [row(`/${'a'.repeat(1024)}`)] }, { dirs: Array.from({ length: 51 }, (_, i) => row(`/d${i}`)) }, { dirs: [null] }];
+  for (const restrict of bad) await assert.rejects(grantTo(h, F1, restrict), error => error.code === 'invalid_input', JSON.stringify(restrict).slice(0, 60));
+  assert.deepEqual([h.exec.calls, await h.store.listGrants()], [[], []]);
+  // 键序不同的写法收成同一个样子。
+  const odd = await grantTo(h, F1, { dirs: [{ access: 'rw', path: '/a' }] });
+  assert.deepEqual(Object.keys(odd.restrict.dirs[0]), ['path', 'access']);
+  // 50 行、每行路径 1024 字节：授权记录仍在 Accord 记录的大小上限内。
+  const long = { dirs: Array.from({ length: 50 }, (_, i) => row(`/${String(i).padStart(2, '0')}${'x'.repeat(1021)}`, i ? 'ro' : 'rw')) };
+  const fits = await grantTo(h, F2, long);
+  assert.equal(grantBodies(h).at(-1).grant, fits.grant);
+  assert.ok(Buffer.byteLength(JSON.stringify(grantBodies(h).at(-1))) < 64 * 1024);
+});
+
+test('granting a friend a target that already has a live grant gives back the same one for the same scope and says it exists for another; changing the scope is its own call', async t => {
+  const h = await holderOf(t);
+  const first = await grantTo(h, F1, DIRS);
+  assert.equal((await grantTo(h, F1, { dirs: DIRS.dirs.map(one => ({ ...one })) })).grant, first.grant);
+  const refused = restrict => assert.rejects(grantTo(h, F1, restrict), error => { assert.deepEqual([error.code, error.effects], ['already_granted', 'none']); assert.match(error.message, new RegExp(first.grant)); return true; });
+  await refused(DIRS_2);
+  await refused(undefined);
+  assert.deepEqual((await h.store.listGrants()).map(row => [row.id, row.restrict]), [[first.grant, DIRS]]);
+  const whole = await grantTo(h, F2);
+  await assert.rejects(grantTo(h, F2, DIRS), error => error.code === 'already_granted');
+  assert.equal('restrict' in (await h.store.getGrant(whole.grant)), false);
+  assert.deepEqual(h.published('friends/rpc-grant').map(call => call.id), [first.grant, whole.grant], 'nothing else was signed');
+});
+
+test('changing the scope probes first, changes the row at once and signs the grant record again under the same id (a higher version); a failed probe changes nothing; going back to the whole machine gives the old v1 record', async t => {
+  const h = await holderOf(t);
+  const { grant } = await h.grant(F1);
+  const [v1] = grantBodies(h), versionOf = () => h.accord.records.find(r => r.kind === 'friends/rpc-grant' && r.id === grant).version;
+  assert.equal(versionOf(), 1);
+
+  const changed = await restrictTo(h, grant, DIRS);
+  assert.deepEqual([changed.grant, changed.restrict, changed.status], [grant, DIRS, 'available']);
+  assert.deepEqual(probesOf(h).map(call => call.input.restrict), [DIRS]);
+  assert.deepEqual((await h.store.getGrant(grant)).restrict, DIRS);
+  assert.deepEqual(grantBodies(h).at(-1), { ...v1, v: 2, spec: { ...SPEC, cwd: '/srv/work' }, restrict: DIRS });
+  assert.equal(versionOf(), 2);
+
+  await restrictTo(h, grant, DIRS_2);
+  assert.deepEqual(grantBodies(h).at(-1).restrict, DIRS_2);
+  assert.equal(grantBodies(h).at(-1).spec.cwd, '/srv/other');
+  assert.equal(versionOf(), 3);
+  // 范围没变：不重签。
+  await restrictTo(h, grant, DIRS_2);
+  assert.equal(versionOf(), 3);
+
+  // 探测不过：行与授权记录都不动。
+  h.exec.plan = () => fail('restrict_dir_not_found', '/srv/work：不存在');
+  await assert.rejects(restrictTo(h, grant, DIRS), error => error.code === 'restrict_dir_not_found' && error.effects === 'none');
+  assert.deepEqual([(await h.store.getGrant(grant)).restrict, versionOf()], [DIRS_2, 3]);
+  h.exec.plan = () => fail('peer_offline', '连不上');
+  await assert.rejects(restrictTo(h, grant, DIRS), error => error.code === 'target_offline');
+  assert.deepEqual([(await h.store.getGrant(grant)).restrict, versionOf()], [DIRS_2, 3]);
+
+  // 回到整台机器：不探测，授权记录回到加范围之前的 v1，表文件也回到 v1。
+  const probes = probesOf(h).length;
+  h.exec.plan = () => fail('x', '不该调用');
+  const whole = await restrictTo(h, grant);
+  assert.equal(probesOf(h).length, probes);
+  assert.equal('restrict' in whole, false);
+  assert.equal(JSON.stringify(grantBodies(h).at(-1)), JSON.stringify(v1));
+  assert.equal(versionOf(), 4);
+  assert.equal(JSON.parse(await readFile(join(h.dir, 'rpc', 'grants.json'), 'utf8')).v, 1);
+
+  await assert.rejects(restrictTo(h, 'nope', DIRS), error => error.code === 'not_found');
+  await assert.rejects(restrictTo(h, grant, { dirs: [] }), error => error.code === 'invalid_input');
+  await assert.rejects(h.holder.self['grants.restrict']({ restrict: DIRS }), error => error.code === 'invalid_input');
+  await h.holder.self['grants.revoke']({ grant });
+  await assert.rejects(restrictTo(h, grant, DIRS), error => error.code === 'invalid_state');
+});
+
+test('a grant revoked while its scope is being probed is left as it is: the scope is not written and no v2 record is signed', async t => {
+  const h = await holderOf(t);
+  const { grant } = await h.grant(F1);
+  const release = h.exec.holdRouting();
+  const pending = restrictTo(h, grant, DIRS);
+  await until(() => h.exec.calls.length === 1, '探测在路上');
+  await h.holder.self['grants.revoke']({ grant });
+  release();
+  await assert.rejects(pending, error => error.code === 'invalid_state');
+  assert.equal('restrict' in (await h.store.getGrant(grant)), false);
+  await h.settle();
+  assert.equal(grantBodies(h).some(body => body.v === 2), false, 'no v2 record was signed');
+});
+
+test('every call under a directories grant carries the restrict of the grant row and nothing the friend sent, a whole-machine grant never carries one, and no cwd is filled in', async t => {
+  const h = await holderOf(t);
+  const whole = (await h.grant(F1)).grant, scoped = (await grantTo(h, F2, DIRS)).grant;
+  const forged = { dirs: [{ path: '/', access: 'rw' }] };
+  const bodies = {
+    forgedWhole: send(h, { from: F1, grant: whole, input: { command: 'one', restrict: forged, junk: 1 } }),
+    forgedScoped: send(h, { from: F2, grant: scoped, input: { command: 'two', restrict: forged, junk: 1 } }),
+    dropped: send(h, { from: F2, grant: scoped, input: { command: 'three' } }),
+    withCwd: send(h, { from: F2, grant: scoped, input: { command: 'four', cwd: '/srv/work/sub', timeout: 30 } }),
+    emptied: send(h, { from: F2, grant: scoped, input: { command: 'five', restrict: null } }),
+  };
+  await h.settle();
+  const sent = name => execInput(h, bodies[name].caller, bodies[name].request);
+  assert.deepEqual(sent('forgedWhole'), { command: 'one' }, 'a whole-machine grant: the friend\'s restrict and unknown fields are dropped, nothing added');
+  assert.deepEqual(sent('forgedScoped'), { command: 'two', restrict: DIRS }, 'the row\'s restrict, never the friend\'s');
+  assert.deepEqual(sent('dropped'), { command: 'three', restrict: DIRS }, 'leaving it out does not lift it, and no cwd is filled in');
+  assert.deepEqual(sent('withCwd'), { command: 'four', cwd: '/srv/work/sub', timeout: 30, restrict: DIRS });
+  assert.deepEqual(sent('emptied'), { command: 'five', restrict: DIRS });
+  for (const body of Object.values(bodies)) assert.deepEqual(h.answers(body.caller, body.request), ['running', 'completed']);
+});
+
+test('a directories grant on another machine of the space carries its restrict to that machine too, and the probe goes there', async t => {
+  const h = await holderOf(t);
+  addMachineB(h);
+  const { grant } = await grantTo(h, F1, DIRS, { kind: MACHINE, id: 'rx-b' });
+  assert.deepEqual(h.exec.calls.map(call => [call.ref, call.input]), [[{ kind: MACHINE, id: 'rx-b' }, { command: 'true', restrict: DIRS }]]);
+  assert.deepEqual(grantBodies(h).at(-1).spec, { ...B_SPEC, cwd: '/srv/work' });
+  const body = send(h, { grant, input: { command: 'ls', restrict: { dirs: [{ path: '/', access: 'rw' }] } } });
+  await h.settle();
+  assert.deepEqual(execInput(h, F1, body.request), { command: 'ls', restrict: DIRS });
+  assert.deepEqual(h.exec.calls.at(-1).ref, { kind: MACHINE, id: 'rx-b' });
+  // 改范围：探测也去那台。
+  await restrictTo(h, grant, DIRS_2);
+  assert.deepEqual(h.exec.calls.at(-1), { ...h.exec.calls.at(-1), ref: { kind: MACHINE, id: 'rx-b' }, input: { command: 'true', restrict: DIRS_2 } });
+});
+
+test('what the target machine says about the sandbox goes back to the friend as it is: the code and the effects', async t => {
+  const h = await holderOf(t);
+  const { grant } = await grantTo(h, F1, DIRS);
+  const base = h.exec.plan;
+  h.exec.plan = input => input.cwd ? fail('cwd_not_allowed', `cwd ${input.cwd} 不在允许的目录里`) : input.command === 'late' ? fail('sandbox_failed', '沙箱没能启动，没有执行') : base(input);
+  const outside = send(h, { grant, input: { command: 'ls', cwd: '/etc' } }), late = send(h, { grant, input: { command: 'late' } });
+  await h.settle();
+  for (const [body, code] of [[outside, 'cwd_not_allowed'], [late, 'sandbox_failed']]) {
+    const error = h.lastAnswer(F1, body.request).body.error;
+    assert.deepEqual([h.lastAnswer(F1, body.request).body.state, error.code, error.effects], ['failed', code, 'none']);
+  }
+});
+
+// markSubmitted 之前的空档：`gap.hook` 在那里跑一次（调用已准入、还没提交）。
+function beforeSubmit() {
+  const gap = { hook: null, wrapStore: store => ({ ...store, markSubmitted: async (...args) => {
+    const hook = gap.hook;
+    gap.hook = null;
+    await hook?.();
+    return store.markSubmitted(...args);
+  } }) };
+  return gap;
+}
+
+test('a scope changed while a call is admitted and not yet submitted applies to that call: it runs with the new restrict, never without one; a call already submitted keeps the scope it started under', async t => {
+  const gap = beforeSubmit(), h = await holderOf(t, gap);
+  const { grant } = await h.grant(F1);
+  // 按整台机器准入，提交之前改成仅限目录：执行带的是新范围。
+  gap.hook = () => restrictTo(h, grant, DIRS);
+  const first = send(h, { grant, input: { command: 'first' } });
+  await h.settle();
+  assert.deepEqual(execInput(h, F1, first.request), { command: 'first', restrict: DIRS });
+  assert.deepEqual(h.answers(F1, first.request), ['running', 'completed']);
+
+  // 已提交（在跑）的不动；之后的调用用新范围。
+  const base = h.exec.plan;
+  h.exec.plan = input => input.command === 'long' ? 'hang' : base(input);
+  const long = send(h, { grant, input: { command: 'long' } });
+  await h.settle();
+  assert.deepEqual((await h.store.get(F1, long.request)).call.restrict, DIRS);
+  await restrictTo(h, grant, DIRS_2);
+  assert.deepEqual((await h.store.get(F1, long.request)).call.restrict, DIRS, 'the running call keeps its scope on disk');
+  assert.deepEqual(execInput(h, F1, long.request), { command: 'long', restrict: DIRS });
+  const next = send(h, { grant, input: { command: 'next' } });
+  await h.settle();
+  assert.deepEqual(execInput(h, F1, next.request), { command: 'next', restrict: DIRS_2 });
+
+  // 仅限目录改回整台机器：提交之前改的，这次调用不带限制（新范围就是整台机器）。
+  gap.hook = () => restrictTo(h, grant);
+  const open = send(h, { grant, input: { command: 'open' } });
+  await h.settle();
+  assert.deepEqual(execInput(h, F1, open.request), { command: 'open' });
+  await h.exec.releaseAll(() => h.settle());
+});
+
+test('a call submitted under a scope is called again after a restart with that same scope, whatever the row says now', async t => {
+  const h = await holderOf(t);
+  const { grant } = await grantTo(h, F1, DIRS);
+  h.exec.plan = input => input.command === 'true' ? { exitCode: 0, signal: null, stdout: '', stderr: '', timedOut: false, truncated: false, outputDir: null, ms: 1 } : 'hang';
+  const body = send(h, { grant });
+  await h.settle();
+  assert.deepEqual(execInput(h, F1, body.request).restrict, DIRS);
+  h.stop();
+  await h.store.setRestrict(grant, DIRS_2);
+  const again = await holderOf(t, h);
+  await again.settle();
+  const sent = h.exec.calls.filter(call => call.id === idempotencyKey(F1, body.request));
+  assert.deepEqual(sent.map(call => call.input.restrict), [DIRS, DIRS], 'the kernel is asked again with the key and the scope of the first submission');
+  h.exec.releaseAll(() => again.settle());
+});
+
+test('the operation record keeps the scope each call ran under: none for the whole machine, the directories for a scoped grant, and the scope of that time after a change', async t => {
+  const h = await holderOf(t);
+  const { grant } = await h.grant(F1);
+  const one = send(h, { grant, input: { command: 'one' } });
+  await h.settle();
+  await restrictTo(h, grant, DIRS);
+  const two = send(h, { grant, input: { command: 'two' } });
+  await h.settle();
+  await restrictTo(h, grant, DIRS_2);
+  const three = send(h, { grant, input: { command: 'three' } });
+  await h.settle();
+  const rows = await h.ledger({ outcome: 'completed' });
+  const row = body => rows.find(one => one.request === body.request);
+  assert.equal('restrict' in row(one), false, 'whole-machine rows have the old shape');
+  assert.deepEqual([row(two).restrict, row(three).restrict], [DIRS, DIRS_2]);
+  assert.deepEqual((await h.holder.self['ledger.list']({ friend: F1 })).map(entry => entry.restrict).filter(Boolean).sort((a, b) => a.dirs.length - b.dirs.length), [DIRS_2, DIRS]);
+  // 被拒绝的调用（授权已撤销）记授权行此刻的范围。
+  await h.holder.self['grants.revoke']({ grant });
+  const refused = send(h, { grant, input: { command: 'late' } });
+  await h.settle();
+  assert.deepEqual((await refusals(h, 'revoked')).map(entry => [entry.request, entry.restrict]), [[refused.request, DIRS_2]]);
+});
+
+test('a grant row from before scopes existed (a v1 file, no restrict) is a whole-machine grant: signed as the old v1 record, and its calls carry no restrict', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'friends-holder-old-')), instances = [], id = '3f2b8c1e-4d5a-4e6f-8a7b-9c0d1e2f3a4b';
+  t.after(async () => { for (const one of instances) one.stop(); await new Promise(resolve => setTimeout(resolve, 20)); await rm(dir, { recursive: true, force: true }); });
+  await mkdir(join(dir, 'rpc'));
+  await writeFile(join(dir, 'rpc', 'grants.json'), JSON.stringify({ v: 1, grants: { [id]: { id, holder: { machine: MK }, grantee: F1, granteePerson: true,
+    target: { owner: TEST_OWNER, provider: 'remote-exec', kind: MACHINE, id: 'rx-1' }, ops: ['exec'], createdAt: START } } }));
+  const h = await holderOf(t, { dir, instances });
+  assert.equal(JSON.stringify(grantBodies(h)[0]), `{"v":1,"holder":"${MK}","grantee":"${F1}","grant":"${id}","protocol":"remote-exec/machine@1","ops":["exec"],`
+    + `"spec":{"name":"box","os":"linux","user":"u","cwd":"/home/u"},"available":true,"grantedAt":${START}}`);
+  const body = send(h, { grant: id, input: { command: 'ls', restrict: { dirs: [{ path: '/', access: 'rw' }] } } });
+  await h.settle();
+  assert.deepEqual(execInput(h, F1, body.request), { command: 'ls' });
+  const [row] = (await h.holder.self['grants.list']()).grants;
+  assert.deepEqual([row.grant, row.status, 'restrict' in row], [id, 'available', false]);
+});
+
+// ---- 跨两个插件：好友网关 → 真实的 remote-exec 处理函数（macOS 上真跑 sandbox-exec） ----
+
+// 真实的 remote-exec 的 exec（plugins/remote-exec/lib/exec.mjs）顶替测试里的替身：输入先按协议的 schema 校验（同后端），再照后端的样子起真进程。
+// 受限执行的状态根是 `stateRoot`，它的状态目录是 `state`；好友插件的状态目录也在这个状态根下。
+function realRemoteExec(t, { state, stateRoot }) {
+  const env = { coda: execCoda, enabled: () => true, audit: createAuditLog(state), outputRoot: () => outputRoot(state), state, stateRoot }, spawn = fakeSpawn(t);
+  let probes = 0;
+  const fake = { calls: [], pending: () => 0 };
+  fake.call = async (ref, operation, input, options = {}) => {
+    assert.equal(operation, 'exec');
+    const problem = pointProblem(remoteExec.operations.exec.input, input, 'input');
+    if (problem) throw fail('invalid_input', problem);
+    fake.calls.push({ ref, input: structuredClone(input), id: options.id });
+    return runRemoteExec(env, structuredClone(input), { id: options.id ?? `probe-${++probes}`, caller: { machine: 'gateway', plugin: 'friends' }, record: { kind: MACHINE, id: ref.id, key: 'host' },
+      signal: options.signal ?? new AbortController().signal, deadline: null, spawn });
+  };
+  return fake;
+}
+
+test('friends gateway to the real remote-exec handler: a restricted friend\'s command reads only the allowed directories, whatever restrict it sends, and cannot read the gateway\'s grant table; a whole-machine friend can; a changed scope applies at once', { skip: sandboxSupported() ? false : '需要 macOS 的 /usr/bin/sandbox-exec' }, async t => {
+  const base = realpathSync(await mkdtemp(join(tmpdir(), 'friends-sandbox-')));
+  const stateRoot = join(base, 'coda'), friendsState = join(stateRoot, 'plugins', 'friends'), execState = join(stateRoot, 'plugins', 'remote-exec');
+  const work = join(base, 'work'), shared = join(base, 'shared'), secret = join(base, 'secret'), instances = [];
+  for (const dir of [friendsState, execState, work, shared, secret]) mkdirSync(dir, { recursive: true });
+  const sentinel = `SENTINEL-${process.pid}-${Math.random().toString(36).slice(2)}`;
+  writeFileSync(join(secret, 's.txt'), sentinel);
+  writeFileSync(join(shared, 'r.txt'), 'shared-content');
+  writeFileSync(join(work, 'w.txt'), 'work-content');
+  t.after(async () => { for (const one of instances) one.stop(); await new Promise(resolve => setTimeout(resolve, 50)); await rm(base, { recursive: true, force: true }); });
+  const h = await holderOf(t, { dir: friendsState, instances, exec: realRemoteExec(t, { state: execState, stateRoot }) });
+  const scope = { dirs: [{ path: work, access: 'rw' }, { path: shared, access: 'ro' }] };
+
+  // 授予时的探测是真的：目录不存在、不是目录、落在 Coda 状态根里（含好友插件自己的状态目录），目标机各以自己的码拒绝，什么也不授。
+  const ask = path => grantTo(h, F1, { dirs: [{ path, access: 'rw' }] });
+  await assert.rejects(ask(join(base, 'nope')), error => error.code === 'restrict_dir_not_found' && error.effects === 'none' && error.message.includes('nope'));
+  await assert.rejects(ask(join(secret, 's.txt')), error => error.code === 'restrict_dir_not_a_directory');
+  await assert.rejects(ask(stateRoot), error => error.code === 'restrict_protected');
+  await assert.rejects(ask(friendsState), error => error.code === 'restrict_protected');
+  assert.deepEqual(await h.store.listGrants(), []);
+  const scoped = (await grantTo(h, F1, scope)).grant, whole = (await h.grant(F2)).grant;
+
+  const command = [`cat '${join(secret, 's.txt')}'`, `cat '${join(shared, 'r.txt')}'`, `cat '${join(work, 'w.txt')}'`, `cat '${join(friendsState, 'rpc', 'grants.json')}'`, 'pwd -P',
+    `echo x > '${join(shared, 'new.txt')}'`, `echo y > '${join(work, 'made.txt')}'`].join('; ');
+  const everything = { dirs: [{ path: base, access: 'rw' }] };
+  const run = async (grant, from, input = { command }) => {
+    const body = send(h, { from, grant, input });
+    await h.settle();
+    const answer = h.lastAnswer(from, body.request).body;
+    assert.equal(answer.state, 'completed', JSON.stringify(answer.error));
+    return answer.result;
+  };
+
+  // 仅限目录的好友：请求里写不写 restrict（含放得下一切的）都一样，只读得到允许的目录，不读到网关的授权表，ro 目录写不进去。
+  for (const input of [{ command }, { command, restrict: everything }]) {
+    const result = await run(scoped, F1, input);
+    assert.ok(!result.stdout.includes(sentinel), '目录外的哨兵读不到');
+    assert.ok(!result.stdout.includes('"holder"') && !result.stdout.includes(MK), '读不到网关的授权表');
+    assert.equal(result.stdout, `shared-contentwork-content${work}\n`, 'the two allowed files, then the default directory: the first rw one');
+    assert.equal((result.stderr.match(/Operation not permitted/g) ?? []).length, 3, result.stderr);
+    assert.equal(await readFile(join(work, 'made.txt'), 'utf8'), 'y\n');
+    await assert.rejects(readFile(join(shared, 'new.txt')), { code: 'ENOENT' });
+  }
+  assert.ok(h.exec.calls.filter(call => call.id !== undefined && call.input.restrict).every(call => isDeepStrictEqual(call.input.restrict, scope)), 'only the grant\'s own restrict ever went to the target');
+
+  // 整台机器的好友：同样的命令什么都读得到（对照：上面读不到是限制挡的）；它写的 restrict 被丢掉，没有加进去也没有照办。
+  const open = await run(whole, F2, { command, restrict: scope });
+  assert.ok(open.stdout.includes(sentinel));
+  assert.ok(open.stdout.includes('"holder"'), 'a whole-machine grant is not sandboxed: the grant table is as readable as to any process of this user');
+  assert.deepEqual(h.exec.calls.at(-1).input, { command }, 'no restrict was added or kept');
+
+  // 改范围立即生效：换成 secret（只读）加 shared（读写），下一条命令读得到哨兵、读不到原来的 work，默认目录是新的第一条 rw。
+  await restrictTo(h, scoped, { dirs: [{ path: secret, access: 'ro' }, { path: shared, access: 'rw' }] });
+  const moved = await run(scoped, F1);
+  assert.equal(moved.stdout, `${sentinel}shared-content${shared}\n`);
+  assert.equal(await readFile(join(shared, 'new.txt'), 'utf8'), 'x\n', 'the directory that became rw is writable now');
+});
+
+// ---- 授权记录签得出去、改范围的待发布不丢、重复授予先判已有、页面拿得到错误码 ----
+
+test('a scope whose grant record would exceed the signing limit once JSON-escaped is refused before anything is written, probed or signed, when granting and when changing the scope', async t => {
+  const h = await holderOf(t);
+  const rows = (path, count = 50) => ({ dirs: Array.from({ length: count }, (_, i) => ({ path: `/${i}${path}`.slice(0, 1024), access: i ? 'ro' : 'rw' })) });
+  // 每条路径只有 1024 字节，50 条原文也在上限内，但引号、反斜杠与控制字符转义之后（2 倍、6 倍）签不出去。
+  const heavy = [rows('"'.repeat(1024)), rows('\\'.repeat(1024)), rows('\u0001'.repeat(1024)), rows('\n'.repeat(1024))];
+  for (const restrict of heavy) {
+    assert.ok(Buffer.byteLength(JSON.stringify(restrict)) > 64 * 1024, '转义后超过 64 KiB');
+    await assert.rejects(grantTo(h, F1, restrict), error => error.code === 'restrict_too_large' && error.effects === 'none' && /转义/.test(error.message));
+  }
+  assert.deepEqual([h.exec.calls, await h.store.listGrants(), h.published('friends/rpc-grant')], [[], [], []]);
+  // 改范围一样：行不动、不探测、不重签。
+  const { grant } = await h.grant(F1);
+  const signed = h.published('friends/rpc-grant').length;
+  for (const restrict of heavy) await assert.rejects(restrictTo(h, grant, restrict), error => error.code === 'restrict_too_large');
+  assert.deepEqual([h.exec.calls, 'restrict' in (await h.store.getGrant(grant)), h.published('friends/rpc-grant').length], [[], false, signed]);
+  // 刚好放得下的照常授出：随机机器名、长 spec 也算在里面（量的是实际要签的正文）。
+  const fits = rows('x'.repeat(1024));
+  assert.ok(Buffer.byteLength(JSON.stringify(grantRecord({ holder: MK, grantee: F2, grant: grant, spec: SPEC, available: true, grantedAt: START, restrict: fits }).body)) < 64 * 1024);
+  const ok = await grantTo(h, F2, fits);
+  assert.equal(h.published('friends/rpc-grant').at(-1).id, ok.grant);
+});
+
+test('a scope changed while the other machine\'s record cannot be read keeps the re-signing pending until the new record is signed, and the friend sees the new scope once the machine is back with the same spec', async t => {
+  const h = await holderOf(t);
+  addMachineB(h);
+  const { grant } = await grantTo(h, F1, DIRS, { kind: MACHINE, id: 'rx-b' });
+  assert.equal(grantBodies(h).at(-1).v, 2);
+  // B 被移出空间：读不到它的记录（只拒不失效）。这时改回整台机器（不需要探测）。
+  h.targets.machines.delete(B);
+  h.targets.remove('rx-b', { quiet: true });
+  const whole = await restrictTo(h, grant);
+  assert.deepEqual([whole.status, 'restrict' in whole, 'restrict' in (await h.store.getGrant(grant))], ['target_unreachable', false, false]);
+  for (let i = 0; i < 3; i++) { await h.holder.tick(); await h.settle(); }
+  assert.deepEqual(grantBodies(h).at(-1).restrict, DIRS, 'nothing could be signed meanwhile');
+  // B 带着同样的 spec 回来：待办还在，下一拍签出新范围（同一授权号、更高版本，与加范围之前的正文一样）。
+  addMachineB(h, { quiet: true });
+  await h.settle();
+  assert.equal(JSON.stringify(grantBodies(h).at(-1)), JSON.stringify({ v: 1, holder: MK, grantee: F1, grant, protocol: MACHINE, ops: ['exec'], spec: B_SPEC, available: true, grantedAt: START }));
+  assert.equal(h.accord.records.find(r => r.kind === 'friends/rpc-grant' && r.id === grant).version, 2);
+  // 签出之后不再惦记：再拍几下也不再重发。
+  const count = h.published('friends/rpc-grant').length;
+  await h.settle();
+  assert.equal(h.published('friends/rpc-grant').length, count);
+});
+
+test('granting again checks the live grant first: same scope gives it back and another scope says already_granted with its number, with the target offline or the probe failing, and without probing', async t => {
+  const h = await holderOf(t);
+  addMachineB(h);
+  const first = await grantTo(h, F1, DIRS, { kind: MACHINE, id: 'rx-b' }), plain = await grantTo(h, F2, undefined, { kind: MACHINE, id: 'rx-b' });
+  h.exec.calls.length = 0;
+  const signed = h.published('friends/rpc-grant').length;
+  h.targets.machines.set(B, { offline: true });
+  h.exec.plan = () => fail('sandbox_unsupported', '不该探测');
+  const target = { kind: MACHINE, id: 'rx-b' };
+  // 给回的行与 grants.list 同一个实时状态：目标离线就是 target_offline（不是 available）。
+  const again = await grantTo(h, F1, { dirs: DIRS.dirs.map(one => ({ ...one })) }, target), listed = (await h.holder.self['grants.list']()).grants.find(row => row.grant === first.grant);
+  assert.deepEqual([again.grant, again.status, again], [first.grant, 'target_offline', listed]);
+  assert.deepEqual(await grantTo(h, F2, undefined, target), (await h.holder.self['grants.list']()).grants.find(row => row.grant === plain.grant));
+  h.targets.machines.set(B, { offline: false });
+  assert.equal((await grantTo(h, F1, DIRS, target)).status, 'available');
+  h.targets.machines.set(B, { offline: true });
+  for (const [friend, restrict, held] of [[F1, DIRS_2, first], [F1, undefined, first], [F2, DIRS, plain]]) {
+    await assert.rejects(grantTo(h, friend, restrict, target), error => { assert.deepEqual([error.code, error.effects], ['already_granted', 'none']); assert.ok(error.message.includes(held.grant)); return true; });
+  }
+  assert.deepEqual([h.exec.calls, h.published('friends/rpc-grant').length, (await h.store.listGrants()).length], [[], signed, 2]);
+  // 没有已有授权时，目标离线照旧当场拒绝。
+  const fresh = await holderOf(t);
+  addMachineB(fresh);
+  fresh.targets.machines.set(B, { offline: true });
+  await assert.rejects(grantTo(fresh, F1, DIRS, { kind: MACHINE, id: 'rx-b' }), error => error.code === 'target_offline');
+});
+
+test('through the view messages a failed grants.grant or grants.restrict replies with the stable error code, a success without one, and the reply still says nothing was done', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'friends-view-code-'));
+  const accord = accordFake(), exec = execFake(), targets = targetsFake(), views = new Map();
+  const host = createMockCoda({ plugin: { id: 'friends', state: dir, protocols: friendsManifest.contributes.protocols }, protocols: [remoteExec] });
+  t.after(async () => { deactivate(); host.close(); await rm(dir, { recursive: true, force: true }); });
+  await activate({ ...routed(host, { accord, exec, targets }), views: { register: (id, provider) => { views.set(id, provider); return { dispose() {} }; } } });
+  const replies = [];
+  let tell;
+  views.get('friends').open({ postMessage: message => { replies.push(message); return true; }, onMessage: fn => { tell = fn; }, onClose() {} });
+  const ask = async (type, more) => { const rid = `r${replies.length}`; tell({ type, rid, ...more }); await until(() => replies.some(reply => reply.rid === rid), rid); return replies.find(reply => reply.rid === rid); };
+  const target = { kind: MACHINE, id: 'rx-1' };
+
+  exec.plan = () => fail('restrict_dir_not_found', '/srv/work：不存在');
+  assert.deepEqual(await ask('grants.grant', { friend: F1, target, restrict: DIRS }), { type: 'reply', rid: 'r0', ok: false, error: replies[0].error, effects: 'none', code: 'restrict_dir_not_found' });
+  assert.match(replies[0].error, /目录不存在.*\/srv\/work/);
+  assert.equal((await ask('grants.grant', { friend: F1, target, restrict: { dirs: [] } })).code, 'invalid_input');
+  assert.equal((await ask('grants.grant', { friend: F1, target: { kind: MACHINE, id: 'nope' } })).code, 'not_found');
+  exec.plan = () => ({ exitCode: 0, signal: null, stdout: '', stderr: '', timedOut: false, truncated: false, outputDir: null, ms: 1 });
+  const granted = await ask('grants.grant', { friend: F1, target, restrict: DIRS });
+  assert.deepEqual([granted.ok, 'code' in granted, granted.value.restrict], [true, false, DIRS]);
+  assert.equal((await ask('grants.grant', { friend: F1, target, restrict: DIRS_2 })).code, 'already_granted');
+  exec.plan = () => fail('sandbox_unsupported', '不支持');
+  const refused = await ask('grants.restrict', { grant: granted.value.grant, restrict: DIRS_2 });
+  assert.deepEqual([refused.ok, refused.code, refused.effects], [false, 'sandbox_unsupported', 'none']);
+  assert.equal((await ask('grants.restrict', { grant: 'nope' })).code, 'not_found');
+  const changed = await ask('grants.restrict', { grant: granted.value.grant });
+  assert.deepEqual([changed.ok, 'code' in changed, 'restrict' in changed.value], [true, false, false]);
 });

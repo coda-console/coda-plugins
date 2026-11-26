@@ -1,5 +1,6 @@
 // 好友签名网关的本机状态：插件状态目录下 `rpc/` 里的四样东西。
-//   grants.json    授权表（持有方）：本机授权行是权威，撤权先落盘。
+//   grants.json    授权表（持有方）：本机授权行是权威，撤权先落盘。授权行的 `restrict` 是授权的范围（仅限目录），没有就是整台机器。
+//                  表里有任何一行带 `restrict` 时文件的 `v` 是 2，否则是 1：旧版读到 v2 的表按「损坏」停止准入，不会把仅限目录的授权当整台机器放行。
 //   inflight.json  在途与去重表（持有方）：键是 (调用方作者, 请求号)，状态只进不退，终态先落盘。
 //   outgoing.json  发出表（调用方）：本人查账用；也存着请求正文与核对回答要的各项（发出时的作者、持有方、授权号、摘要），重启后收尾、补发取消、撤回都照它。
 //   ledger-YYYY-MM.jsonl  操作记录（持有方）：每个请求一行，拒绝按「作者、原因、分钟」合并成一行，留 90 天。
@@ -10,7 +11,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { chmod, mkdir, open, readFile, readdir, rename, rm, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { isAuthor, rebuildExecInput, requestDigest } from './rpc-format.mjs';
+import { isAuthor, rebuildExecInput, requestDigest, restrictOk } from './rpc-format.mjs';
 
 const MINUTE = 60_000, DAY = 24 * 60 * MINUTE;
 export const LIMITS = Object.freeze({
@@ -42,13 +43,13 @@ export const isCorrupt = error => error?.code === 'corrupt';
 
 // ---- 条目的形状 ----
 
-// 授权行：`holder.machine` 是授予时本机的机器钥匙（持有方始终以机器出现）；`target.owner` 是目标记录所在的后端：本机的，或同一空间里本机作网关授出的别的机器；`granteePerson` 是被授权的好友当时是不是个人作者
+// 授权行：`restrict`（可省）是授权的范围：`{ dirs }`，没有是整台机器，旧行就是这样；`holder.machine` 是授予时本机的机器钥匙（持有方始终以机器出现）；`target.owner` 是目标记录所在的后端：本机的，或同一空间里本机作网关授出的别的机器；`granteePerson` 是被授权的好友当时是不是个人作者
 // （好友表的 `certified`，宿主还不写时是 null）。
 const isFlag = value => typeof value === 'boolean';
 // 授权号以外的各项：新授权在 store 里查重没命中才生成授权号，先按这些校验。
 const grantFieldsOk = entry => isPlain(entry) && isPlain(entry.holder) && isAuthor(entry.holder.machine)
   && isAuthor(entry.grantee) && (entry.granteePerson === null || isFlag(entry.granteePerson)) && isTarget(entry.target) && Array.isArray(entry.ops) && entry.ops.length === 1 && entry.ops[0] === 'exec'
-  && isTime(entry.createdAt) && optional(entry.revokedAt, isTime) && optional(entry.endedBy, isText) && optional(entry.retractedAt, isTime);
+  && isTime(entry.createdAt) && optional(entry.restrict, restrictOk) && optional(entry.revokedAt, isTime) && optional(entry.endedBy, isText) && optional(entry.retractedAt, isTime);
 const grantOk = entry => grantFieldsOk(entry) && isText(entry.id);
 
 // 在途项按状态校验：非终态要有完整的子调用参数（固定目标、重建后的输入；幂等键与最晚启动时刻每项都有），且不带结局与「已签出」；
@@ -57,7 +58,8 @@ const grantOk = entry => grantFieldsOk(entry) && isText(entry.id);
 const inflightOk = entry => {
   // 存的是重建后的 exec 输入：按 rpc-format 的重建规则能原样重建（结果与存的完全相同）才算。
   const inputOk = input => { const rebuilt = rebuildExecInput(input); return rebuilt.ok && isDeepStrictEqual(rebuilt.input, input); };
-  const callOk = call => isPlain(call) && isTarget(call.target) && inputOk(call.input);
+  // `restrict` 是提交那一刻读到的授权范围（null 是整台机器），执行时才带上；准入时没有它。
+  const callOk = call => isPlain(call) && isTarget(call.target) && inputOk(call.input) && optional(call.restrict, value => value === null || restrictOk(value));
   if (!(isPlain(entry) && isAuthor(entry.caller) && isText(entry.request) && isText(entry.grant) && isText(entry.digest) && isText(entry.key)
     && isTime(entry.notAfter) && isTime(entry.admittedAt) && STATES.includes(entry.state)
     && optional(entry.call, callOk) && optional(entry.canceled, value => value === true) && optional(entry.canceledAt, isTime) && optional(entry.canceledBy, isText)
@@ -77,7 +79,7 @@ const outgoingOk = entry => isPlain(entry) && isText(entry.request) && isText(en
   && isAuthor(entry.author) && isAuthor(entry.holder) && isText(entry.grant) && isText(entry.digest) && isPlain(entry.body) && optional(entry.settled, value => value === true);
 
 const TABLES = {
-  grants: { file: 'grants.json', field: 'grants', ok: grantOk, keyOf: entry => entry.id },
+  grants: { file: 'grants.json', field: 'grants', ok: grantOk, keyOf: entry => entry.id, version: entries => Object.values(entries).some(entry => entry?.restrict !== undefined) ? 2 : 1 },
   inflight: { file: 'inflight.json', field: 'entries', ok: inflightOk, keyOf: entry => inflightKey(entry.caller, entry.request) },
   outgoing: { file: 'outgoing.json', field: 'entries', ok: outgoingOk, keyOf: entry => entry.request },
 };
@@ -100,8 +102,8 @@ async function writeAtomic(dir, name, text) {
 }
 
 // 整张表的毛病：形状不对、有项不合格、键与项对不上；没毛病给 null。读盘与每次写入都过它。
-function tableProblem({ field, ok, keyOf }, parsed) {
-  if (!isPlain(parsed) || parsed.v !== 1 || !isPlain(parsed[field])) return '形状不对';
+function tableProblem({ field, ok, keyOf, version }, parsed) {
+  if (!isPlain(parsed) || !isPlain(parsed[field]) || parsed.v !== (version?.(parsed[field]) ?? 1)) return '形状不对';
   for (const [key, entry] of Object.entries(parsed[field])) if (!ok(entry) || keyOf(entry) !== key) return `项 ${key} 形状不对`;
   return null;
 }
@@ -121,7 +123,7 @@ async function readTable(dir, table) {
 }
 
 function writeTable(dir, table, entries) {
-  const value = { v: 1, [table.field]: entries }, problem = tableProblem(table, value);
+  const value = { v: table.version?.(entries) ?? 1, [table.field]: entries }, problem = tableProblem(table, value);
   if (problem) throw invalid(`${table.file} 要写的内容不合格：${problem}`);
   return writeAtomic(dir, table.file, `${JSON.stringify(value, null, 2)}\n`);
 }
@@ -135,16 +137,16 @@ const SHA256 = /^[0-9a-f]{64}$/;
 /** 命令的摘要：前 80 个字符与整条命令的 sha256；操作记录默认只存这个，不存命令全文。 */
 export const commandInfo = text => ({ summary: [...text].slice(0, SUMMARY_CHARS).join(''), sha256: createHash('sha256').update(text).digest('hex') });
 
-// 一行的形状：字段是固定的一组，多一项少一项都不行（命令全文、cwd、stdin 进不来）。写入前校验新行，读月份文件时校验每一行。
+// 一行的形状：字段是固定的一组，多一项少一项都不行（命令全文、cwd、stdin 进不来）。`restrict` 是这次调用当时的授权范围，仅限目录的才有，没有是整台机器。写入前校验新行，读月份文件时校验每一行。
 const hasKeys = (value, required, optionalKeys = []) => isPlain(value) && required.every(key => Object.hasOwn(value, key))
   && Object.keys(value).every(key => required.includes(key) || optionalKeys.includes(key));
 const rejectionRowOk = row => hasKeys(row, ['v', 'at', 'friend', 'outcome', 'code', 'count']) && row.v === 1 && isTime(row.at) && isAuthor(row.friend)
   && isText(row.code) && Number.isSafeInteger(row.count) && row.count >= 1;
-const completedRowOk = row => hasKeys(row, ['v', 'at', 'request', 'friend', 'grant', 'target', 'op', 'command', 'outcome', 'ms'], ['code', 'exitCode'])
+const completedRowOk = row => hasKeys(row, ['v', 'at', 'request', 'friend', 'grant', 'target', 'op', 'command', 'outcome', 'ms'], ['code', 'exitCode', 'restrict'])
   && row.v === 1 && isTime(row.at) && isText(row.request) && isAuthor(row.friend) && isText(row.grant)
   && hasKeys(row.target, ['kind', 'id', 'name']) && ['kind', 'id', 'name'].every(key => isText(row.target[key])) && row.op === 'exec'
   && hasKeys(row.command, ['summary', 'sha256']) && typeof row.command.summary === 'string' && [...row.command.summary].length <= SUMMARY_CHARS && typeof row.command.sha256 === 'string' && SHA256.test(row.command.sha256)
-  && isText(row.outcome) && optional(row.code, isText) && optional(row.exitCode, value => value === null || Number.isSafeInteger(value))
+  && isText(row.outcome) && optional(row.code, isText) && optional(row.exitCode, value => value === null || Number.isSafeInteger(value)) && optional(row.restrict, restrictOk)
   && Number.isSafeInteger(row.ms) && row.ms >= 0;
 // 合并后的拒绝行（outcome 是 rejected）与正常行各一套形状；两条写入路径与读取共用这一个判断。
 const ledgerRowOk = row => isPlain(row) && (row.outcome === 'rejected' ? rejectionRowOk(row) : completedRowOk(row));
@@ -169,15 +171,19 @@ export function createRpcStore(stateDir, { now = Date.now, newId = randomUUID, o
 
   // ---- 授权 ----
 
-  // 形状不对是调用方的错；`target` 是固定的 { owner, provider, kind, id }。给 `{ created, entry }`。
+  // 形状不对是调用方的错；`target` 是固定的 { owner, provider, kind, id }；`restrict` 是授权的范围，不给是整台机器。给 `{ created, entry }`。
   // 同一把机器钥匙、同一位好友、同一个目标已有没撤的授权：原样给回那一条（`created: false`），不生成授权号、不写盘（重试授予不会多出一条撤不干净的）。
   // 撤了的不算；`ended(grant)` 给原因的（调用方还没落盘的失效，同 markSubmitted）也不算。没命中才生成授权号、落盘（`created: true`）；生成的授权号已存在就拒绝，旧行不动。
-  const addGrant = ({ holder, grantee, granteePerson, target, createdAt }, ended = () => null) => serial(async () => {
-    const fields = { holder, grantee, granteePerson, target, ops: ['exec'], createdAt };
+  // 有效授权的匹配规则（一份）：同一把机器钥匙、同一位好友、同一个目标、没撤、也不在 `ended(grant)` 给了原因的失效里。addGrant 的去重与授予前的查询（findLiveGrant）共用它。
+  const liveOf = (grants, { holder, grantee, target }, ended) => Object.values(grants).find(one => one.revokedAt === undefined && one.holder.machine === holder.machine
+    && one.grantee === grantee && ['owner', 'provider', 'kind', 'id'].every(key => one.target[key] === target[key]) && !ended(one));
+  const findLiveGrant = (match, ended = () => null) => serial(async () => liveOf(await load('grants'), match, ended) ?? null);
+
+  const addGrant = ({ holder, grantee, granteePerson, target, createdAt, restrict }, ended = () => null) => serial(async () => {
+    const fields = { holder, grantee, granteePerson, target, ops: ['exec'], createdAt, ...(restrict ? { restrict } : {}) };
     if (!grantFieldsOk(fields)) throw invalid('授权的各项不合格');
     const grants = await load('grants');
-    const live = Object.values(grants).find(one => one.revokedAt === undefined && one.holder.machine === holder.machine && one.grantee === grantee
-      && ['owner', 'provider', 'kind', 'id'].every(key => one.target[key] === target[key]) && !ended(one));
+    const live = liveOf(grants, { holder, grantee, target }, ended);
     if (live) return { created: false, entry: live };
     const entry = { id: newId(), ...fields };
     if (grants[entry.id]) throw invalid(`授权号 ${entry.id} 已存在`);
@@ -196,6 +202,19 @@ export function createRpcStore(stateDir, { now = Date.now, newId = randomUUID, o
       await save('grants', grants);
     }
     return grants[id];
+  });
+
+  // 改一条有效授权的范围（`restrict` 不给是整台机器），先落盘再返回；之后的准入与提交（markSubmitted）读到的都是新范围，已经提交的调用不动。
+  // 给 `{ ok: true, entry }`；没有这条授权是 `not_found`，已撤、已失效或 `ended(grant)` 给了原因（调用方还没落盘的失效）是 `revoked`。范围没变不写盘。
+  const setRestrict = (id, restrict, ended = () => null) => serial(async () => {
+    const grants = await load('grants'), entry = grants[id];
+    if (!entry) return { ok: false, code: 'not_found' };
+    if (entry.revokedAt !== undefined || ended(entry)) return { ok: false, code: 'revoked', entry };
+    if (isDeepStrictEqual(entry.restrict, restrict ?? undefined)) return { ok: true, entry };
+    const { restrict: old, ...rest } = entry;
+    grants[id] = { ...rest, ...(restrict ? { restrict } : {}) };
+    await save('grants', grants);
+    return { ok: true, entry: grants[id] };
   });
 
   // 让 `match` 选中的、还有效的授权一并失效（同一个串行操作里落盘），`endedBy` 是原因；给回这次失效的那些。
@@ -303,7 +322,9 @@ export function createRpcStore(stateDir, { now = Date.now, newId = randomUUID, o
   /**
    * admitted → submitted，提交给内核之前调用：已标了取消的不让提交（`canceled`）；同一个串行操作里读最新的授权行、按此刻判最晚启动时刻，
    * 授权没了、撤了或失效了给 `revoked`（`reason` 是失效的原因），过了最晚启动时刻给 `expired`；同时执行的配额也在这里判（`busy`）。
-   * 已经是 submitted 的原样给回（重启后再提交用同一个幂等键）；已是终态的给 `terminal`。
+   * 提交的同一个串行操作里把授权此刻的范围记进 `call.restrict`（整台机器是 null），执行带的就是它：改范围与提交排在一条队里，
+   * 要么提交读到新范围，要么这次调用就是在旧范围下提交的（已提交的不动），不会按旧范围准入、却不带限制地执行。
+   * 已经是 submitted 的原样给回（重启后再提交用同一个幂等键，范围也还是提交时那份）；已是终态的给 `terminal`。
    * `ended(grant)` 是调用方另外的失效判定（还没落盘的失效），也在同一个串行操作里、决定提交的那一刻调用，给原因就当失效（`revoked`）。
    */
   const markSubmitted = (caller, request, ended = () => null) => serial(async () => {
@@ -317,7 +338,7 @@ export function createRpcStore(stateDir, { now = Date.now, newId = randomUUID, o
       const reason = ended(grant);
       if (reason) return { ok: false, code: 'revoked', reason, entry };
       if (now() >= entry.notAfter) return { ok: false, code: 'expired', entry };
-      return tallyVerdict('executing', counts(entries, caller).executing) ?? { ...entry, state: 'submitted' };
+      return tallyVerdict('executing', counts(entries, caller).executing) ?? { ...entry, state: 'submitted', call: { ...entry.call, restrict: grant.restrict ?? null } };
     });
   });
 
@@ -480,12 +501,12 @@ export function createRpcStore(stateDir, { now = Date.now, newId = randomUUID, o
 
   /**
    * 记一个请求的结局。`command` 是命令全文，只存前 80 字与 sha256；`cwd`、`stdin` 不收。
-   * 行：`{ v:1, at, request, friend, grant, target:{kind,id,name}, op, command:{summary,sha256}, outcome, code?, exitCode?, ms }`。`at` 已超过 90 天的不落盘。
+   * 行：`{ v:1, at, request, friend, grant, target:{kind,id,name}, op, command:{summary,sha256}, outcome, code?, exitCode?, restrict?, ms }`（`restrict` 是当时的授权范围，仅限目录的才有）。`at` 已超过 90 天的不落盘。
    */
-  const appendLedger = ({ at = now(), request, friend, grant, target, op = 'exec', command, outcome, code, exitCode, ms }) => serial(async () => {
+  const appendLedger = ({ at = now(), request, friend, grant, target, op = 'exec', command, outcome, code, exitCode, restrict, ms }) => serial(async () => {
     if (typeof command !== 'string') throw invalid('command 须是命令全文，记录里只存摘要');
     const row = { v: 1, at, request, friend, grant, target: { kind: target?.kind, id: target?.id, name: target?.name }, op, command: commandInfo(command), outcome,
-      ...(code === undefined ? {} : { code }), ...(exitCode === undefined ? {} : { exitCode }), ms };
+      ...(code === undefined ? {} : { code }), ...(exitCode === undefined ? {} : { exitCode }), ...(restrict ? { restrict } : {}), ms };
     if (!ledgerRowOk(row) || outcome === 'rejected') throw invalid('操作记录的各项不合格');
     if (pastKeep(at)) return row;
     await ledgerPrepare();
@@ -548,7 +569,7 @@ export function createRpcStore(stateDir, { now = Date.now, newId = randomUUID, o
   return {
     listGrants: () => serial(async () => Object.values(await load('grants'))),
     getGrant: id => serial(async () => (await load('grants'))[id] ?? null),
-    addGrant, revokeGrant, endGrants, markGrantRetracted,
+    addGrant, findLiveGrant, revokeGrant, setRestrict, endGrants, markGrantRetracted,
     admit, get, cancel, markSubmitted, finish, markLogged, markSigned, markRetracted, purge, quota, readClock, writeClock,
     listInflight: () => serial(async () => Object.values(await load('inflight'))),
     listOutgoing: () => serial(async () => Object.values(await load('outgoing'))),
