@@ -663,6 +663,14 @@ function openScope(m, row, g) {
     if (found && picker.ctx === ctx && !ctx.busy && found.restrictHint !== ctx.target.restrictHint) { ctx.target = found; drawForm(); }
   }, () => {});
 }
+// 允许目录互相重叠的字面部分，与目标机同一套规则：规范掉 `.`、`..`、多余斜杠与结尾斜杠，相同或一条在另一条里面就算。经链接、大小写的真实路径层面以目标机为准。
+const OVERLAP = '允许目录之间不能互相包含或重复，请去掉其中一条';
+const normalPath = path => {
+  const parts = [];
+  for (const part of path.split('/')) { if (part === '..') parts.pop(); else if (part && part !== '.') parts.push(part); }
+  return `/${parts.join('/')}`;
+};
+const within = (path, parent) => path === parent || path.startsWith(parent === '/' ? '/' : `${parent}/`);
 // 表单上方的校验：不合规就给出缺什么（第一处），确认按钮不可用，不发请求。
 function scopeProblem(dirs) {
   if (!dirs.length) return '至少要有一个目录';
@@ -671,6 +679,11 @@ function scopeProblem(dirs) {
     if (!path) return `第 ${i + 1} 行还没填路径`;
     if (!path.startsWith('/')) return `第 ${i + 1} 行：要填目标机上的绝对路径，以 / 开头`;
     if (new TextEncoder().encode(path).length > MAX_PATH_BYTES) return `第 ${i + 1} 行：路径太长（至多 ${MAX_PATH_BYTES} 字节）`;
+  }
+  const flat = dirs.map(dir => normalPath(dir.path));
+  for (const [i, one] of flat.entries()) {
+    const j = flat.findIndex((other, at) => at > i && (within(one, other) || within(other, one)));
+    if (j >= 0) return `第 ${i + 1} 行（${dirs[i].path}）与第 ${j + 1} 行（${dirs[j].path}）重叠：${OVERLAP}`;
   }
   if (!dirs.some(dir => dir.access === 'rw')) return '至少要有一个「读写」的目录';
   return null;
@@ -688,6 +701,7 @@ const FAIL_TEXT = {
   target_missing: '目标机上的远程执行记录不在了：先让那台机器重新打开远程执行',
   target_changed: '目标已经不是授权时的那台机器的记录了：关掉这张表单重新选',
   timeout: '目标机 30 秒内没有回应，没有授出：确认它在线、远程执行已打开，再试一次',
+  restrict_overlap: OVERLAP,
   restrict_too_large: '范围太大，签不出授权记录：减少目录，或缩短路径',
   already_granted: '已经授给 TA 一条范围不同的授权：到「我授给 TA」里那一行的菜单选「修改范围…」',
   disabled: '目标机上的远程执行没打开',
@@ -697,9 +711,15 @@ const FAIL_TEXT = {
 };
 function problemOf(c, e) {
   if (!e.code) return { text: e.refused ? `没有发出：${e.message}` : '没有收到目标机的回应，不能确定有没有成功：先看「我授给 TA」里有没有这一条，再决定要不要重试' };
+  if (e.code === 'restrict_overlap') {
+    // 目标机的消息里是「第 N 条（原写法）与第 M 条（原写法）」，序号就是表单的行号；两条的原写法都对得上才指到行，对不上就只给说明。
+    const [, a, p, b, q] = /第 (\d+) 条（(.*)）与第 (\d+) 条（(.*?)），同一目录/s.exec(e.message) ?? [];
+    const rows = a && c.dirs[a - 1]?.path === p && c.dirs[b - 1]?.path === q ? [c.dirs[a - 1], c.dirs[b - 1]] : [];
+    return { text: rows.length ? `第 ${a} 行（${p}）与第 ${b} 行（${q}）：${OVERLAP}` : OVERLAP, detail: e.message, rows };
+  }
   const text = FAIL_TEXT[e.code], [one, any] = Array.isArray(text) ? text : [text, text];
   const hit = Array.isArray(text) ? c.dirs.filter(dir => dir.path && e.message.includes(dir.path)).sort((a, b) => b.path.length - a.path.length)[0] : null;
-  return { text: hit ? `第 ${c.dirs.indexOf(hit) + 1} 行（${hit.path}）：${one}` : (any ?? `没有成功（${e.code}）`), detail: e.message, row: hit };
+  return { text: hit ? `第 ${c.dirs.indexOf(hit) + 1} 行（${hit.path}）：${one}` : (any ?? `没有成功（${e.code}）`), detail: e.message, rows: hit ? [hit] : [] };
 }
 async function confirmScope() {
   const c = picker.ctx;
@@ -754,7 +774,7 @@ function dirRow(c, dir, i) {
   const access = h('select', { 'aria-label': `第 ${i + 1} 行的权限`, disabled: c.busy, onchange: e => { dir.access = e.target.value; refreshForm(); } },
     h('option', { value: 'rw' }, ACCESS.rw), h('option', { value: 'ro' }, ACCESS.ro));
   access.value = dir.access;
-  return h('li', { class: `dir-row${c.problem?.row === dir ? ' bad' : ''}` }, path, access,
+  return h('li', { class: `dir-row${c.problem?.rows?.includes(dir) ? ' bad' : ''}` }, path, access,
     h('button', { class: 'btn quiet small', type: 'button', 'aria-label': `删除第 ${i + 1} 行`, disabled: c.busy, onclick: () => { c.dirs.splice(c.dirs.indexOf(dir), 1); c.problem = null; drawForm(); } }, '删除'));
 }
 function drawForm() {

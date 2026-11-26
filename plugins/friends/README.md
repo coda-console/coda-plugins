@@ -47,6 +47,7 @@
 | 这台机器不能用「仅限目录」 | `sandbox_unsupported`：目标机不是 macOS，或没有 `/usr/bin/sandbox-exec`。这台只能授整台机器 |
 | 这台机器上的「远程执行」版本太旧 | `restrict_unsupported`：到那台机器上把 `remote-exec` 升到 0.2.0 及以上 |
 | 第 N 行……不存在／不是目录 | `restrict_dir_not_found`、`restrict_dir_not_a_directory`：那一行的路径在目标机上没有、或不是目录，改路径 |
+| 第 N 行与第 M 行……重叠 | `restrict_overlap`：允许目录之间不能互相包含或重复，请去掉其中一条（表单提交前就地检查字面部分，经符号链接、大小写的以目标机为准） |
 | 第 N 行……受保护的位置 | `restrict_protected`：目录不能包含、也不能落在 Coda 的状态目录或 `~/.ssh` 里面（整个家目录因为包含 `~/.ssh` 也不行），请选与它们不重叠的目录 |
 | 目标机上的沙箱起不来 | `sandbox_failed`：目标机上沙箱没跑通，原话在提示下面 |
 | 目标机现在离线／读不到目标机／记录不在了／已经不是…… | `target_offline`、`target_unreachable`、`target_missing`、`target_changed`：目标机的状态不对，等它回来、让它重新打开远程执行，或关掉表单重选 |
@@ -88,6 +89,7 @@ coda self grants.restrict '{"grant":"<授权号>","restrict":{"dirs":[…]}}'   
   | `restrict_unsupported` | 目标机上的远程执行版本太旧（0.2.0 之前），按 schema 拒绝了 `restrict` 字段 |
   | `restrict_dir_not_found`、`restrict_dir_not_a_directory` | 某个目录在目标机上不存在、不是目录（消息里有路径） |
   | `restrict_protected` | 某个目录包含或落在目标机受保护的位置里（Coda 状态根、`~/.ssh`） |
+  | `restrict_overlap` | 允许目录互相重叠（相同、一条在另一条里面，字面或真实路径上）；目标机为了不让受限命令经可写目录里的链接改道、也不让「只读」子目录实际可写而拒绝，消息里有冲突的两条 |
   | `sandbox_failed` | 沙箱起不来，或探测命令没跑成 |
   | `target_offline` | 目标机离线（已记成离线的不发探测；探测时连不上也是它） |
   | `timeout` 及目标机的其他码 | 30 秒内目标机没有回应，或它的远程执行没打开（`disabled`）等，原样带回 |

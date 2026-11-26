@@ -163,3 +163,34 @@ test('a command that writes outside through an allowed directory\'s symlink is s
   assert.ok(!result.stdout.includes(l.sentinel));
   assert.match(result.stderr, /Operation not permitted/);
 });
+
+test('a command that makes a subdirectory of its temp directory untraversable (chmod 000) and exits 0 still returns its own exit code and output, and the temp directory is gone afterwards', { skip }, async t => {
+  const l = layout(t);
+  const result = await l.run('mkdir "$TMPDIR/a" && mkdir "$TMPDIR/a/b" && echo x > "$TMPDIR/a/b/f" && chmod 000 "$TMPDIR/a/b" "$TMPDIR/a" && echo finished; exit 0');
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.stdout, 'finished\n');
+  assert.equal(result.stderr, '');
+  assert.deepEqual(readdirSync(join(l.host.state, TMP_DIR)), []);
+  assert.deepEqual(l.host.lines().map(line => line.result), [{ exitCode: 0, signal: null, timedOut: false }]);
+  // 也有非零退出码的同样情形。
+  assert.equal((await l.run('mkdir "$TMPDIR/c" && chmod 000 "$TMPDIR/c"; exit 9')).exitCode, 9);
+  assert.deepEqual(readdirSync(join(l.host.state, TMP_DIR)), []);
+});
+
+test('when the cleanup still fails the outcome is the same, the cause is on stderr, and the leftover is renamed so no later call can use it', { skip }, async t => {
+  const l = layout(t), logged = [], original = console.error;
+  console.error = (...args) => { logged.push(args.join(' ')); };
+  t.after(() => { console.error = original; });
+  l.host.env.remove = async () => { throw new Error('delete failed on purpose'); };
+  const result = await l.run('echo kept; exit 4');
+  assert.deepEqual([result.exitCode, result.stdout], [4, 'kept\n']);
+  assert.deepEqual(l.host.lines().map(line => line.result.exitCode), [4]);
+  assert.equal(logged.filter(line => /delete failed on purpose/.test(line)).length, 1);
+  const [left] = readdirSync(join(l.host.state, TMP_DIR));
+  assert.match(left, /^dead-c-/);
+  // 之后的调用用自己新建的目录，不碰残留。
+  delete l.host.env.remove;
+  const next = await l.run('echo "$TMPDIR"');
+  assert.ok(!next.stdout.includes(left));
+  assert.deepEqual(readdirSync(join(l.host.state, TMP_DIR)), [left]);
+});

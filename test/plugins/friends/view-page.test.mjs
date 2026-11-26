@@ -1855,6 +1855,7 @@ test('each probe failure is explained by its code, the form stays open with what
     ['restrict_dir_not_a_directory', '/Users/me/work：不是目录', ['第 1 行', '不是目录'], 0],
     ['restrict_protected', '/Users/me/work 与受保护的 ~/.ssh 重叠，不能授出', ['第 1 行', '受保护的位置', '~/.ssh'], 0],
     ['sandbox_failed', '沙箱起不来', ['沙箱起不来']],
+    ['restrict_overlap', '允许目录互相重叠：…', ['不能互相包含或重复', '去掉其中一条']],
     ['target_offline', '目标机离线', ['离线']],
     ['target_unreachable', '读不到目标', ['读不到目标机']],
     ['target_missing', '目标不在了', ['记录不在了']],
@@ -1883,6 +1884,51 @@ test('each probe failure is explained by its code, the form stays open with what
     confirmButton(page, picker, '授予').fire('click');
     await flush();
     assert.equal(sentOf(log, 'grants.grant').length, 2, code);
+  }
+});
+
+test('directories that repeat or contain each other are held back on the form, naming the two rows; what only the target machine can see is told by its code, pointing at both rows when they can be told', async t => {
+  const { page, log, detail, picker } = await openShare(t, { share: { 'grants.targets': () => TARGETS, 'grants.list': () => ({ grants: [grantRow('g1')] }) } });
+  page.button('授予…').fire('click');
+  await flush();
+  chooseTarget(page, picker, '书房的 Mac mini').fire('click');
+  radioOf(page, picker, '仅限目录').fire('change');
+  const hint = () => hintOf(page, picker).textContent;
+  for (const [rows, i, j] of [
+    [[['/Users/me/work', 'rw'], ['/Users/me/work/docs', 'ro']], 1, 2],
+    [[['/Users/me/work/docs', 'ro'], ['/Users/me/work', 'rw']], 1, 2],
+    [[['/Users/me/work', 'rw'], ['/Users/me/work', 'ro']], 1, 2],
+    [[['/Users/me/work', 'rw'], ['/Users/me//work/./', 'ro']], 1, 2],
+    [[['/Users/me/notes', 'rw'], ['/Users/me/work', 'rw'], ['/Users/me/work/../notes/x', 'ro']], 1, 3],
+  ]) {
+    fillDirs(page, picker, rows);
+    assert.ok(confirmButton(page, picker, '授予').disabled, JSON.stringify(rows));
+    assert.ok(hint().startsWith(`第 ${i} 行（${rows[i - 1][0]}）与第 ${j} 行（${rows[j - 1][0]}）重叠`) && hint().includes('不能互相包含或重复'), hint());
+  }
+  // 名字只是前缀相同的同级目录不算重叠。
+  fillDirs(page, picker, [['/Users/me/work', 'rw'], ['/Users/me/work2', 'ro'], ['/Users/me/w', 'ro']]);
+  assert.equal(hintOf(page, picker).hidden, true);
+  assert.equal(confirmButton(page, picker, '授予').disabled, false);
+  await flush();
+  assert.deepEqual(sentOf(log, 'grants.grant'), []);
+});
+
+test('the target machine\'s restrict_overlap is explained, with both rows marked when its message names rows whose paths are the ones typed, and none marked when it cannot be told', async t => {
+  const rows = [['/Users/me/work', 'rw'], ['/Users/me/notes', 'ro'], ['/Users/me/link-to-work/a', 'ro']];
+  const tail = '，同一目录不能重复、也不能一条在另一条里面，请去掉其中一条';
+  for (const [text, marked, parts] of [
+    [`没有授出：允许目录互相重叠：第 1 条（/Users/me/work）与第 3 条（/Users/me/link-to-work/a）${tail}`, [true, false, true], ['第 1 行（/Users/me/work）与第 3 行（/Users/me/link-to-work/a）', '不能互相包含或重复']],
+    [`没有授出：允许目录互相重叠：第 2 条（/elsewhere）与第 3 条（/else/where）${tail}`, [false, false, false], ['不能互相包含或重复']],
+  ]) {
+    const { page, picker } = await openForm(t, { 'grants.grant': () => { throw coded('restrict_overlap', text); } });
+    fillDirs(page, picker, rows);
+    confirmButton(page, picker, '授予').fire('click');
+    await flush();
+    const warn = warnOf(page, picker);
+    for (const part of [...parts, text]) assert.ok(warn.textContent.includes(part), `${part} in ${warn.textContent}`);
+    assert.equal(isVisible(picker), true);
+    assert.deepEqual(page.all(n => cls(n).startsWith('dir-row'), picker).map(n => cls(n).includes('bad')), marked);
+    assert.deepEqual(pathInputs(page, picker).map(n => n.value), rows.map(([path]) => path));
   }
 });
 

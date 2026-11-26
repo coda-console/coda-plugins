@@ -2,17 +2,17 @@
 // 真的跑 sandbox-exec 的在 sandbox.integration.test.mjs。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
 import { pointProblem } from '@coda-console/protocol/validate';
 import { cleanEnv, shellArgs } from '../../../plugins/remote-exec/lib/environ.mjs';
 import { exec } from '../../../plugins/remote-exec/lib/exec.mjs';
-import { MAX_DIRS, SANDBOX_EXEC, TMP_DIR, profileText } from '../../../plugins/remote-exec/lib/sandbox.mjs';
+import { MAX_DIRS, SANDBOX_EXEC, TMP_DIR, profileText, sweepTmp } from '../../../plugins/remote-exec/lib/sandbox.mjs';
 import { activate, deactivate } from '../../../plugins/remote-exec/main.mjs';
 import { createMockCoda } from '../../helpers/mock-coda.mjs';
-import { caller, fakeSpawn, scratch, setup } from './support.mjs';
+import { caller, fakeSpawn, scratch, setup, waitFor } from './support.mjs';
 
 const manifest = JSON.parse(readFileSync(new URL('../../../plugins/remote-exec/package.json', import.meta.url), 'utf8'));
 const operation = manifest.contributes.protocols[0].operations.exec;
@@ -94,9 +94,10 @@ test('a restrict that is not well formed is refused with invalid_input before an
     assert.equal(line.error, 'invalid_input');
     assert.deepEqual(line.params.restrict, restrict);
   }
-  // 上限本身可以（50 行）。
-  const edge = rig(t);
-  await edge.run({ command: 'true', restrict: { dirs: Array.from({ length: MAX_DIRS }, () => rw) } });
+  // 上限本身可以（50 行，互不重叠）。
+  const edge = rig(t), many = Array.from({ length: MAX_DIRS }, (_, i) => join(d.base, `many-${i}`));
+  for (const dir of many) mkdirSync(dir);
+  await edge.run({ command: 'true', restrict: { dirs: many.map(path => ({ path, access: 'rw' })) } });
   assert.equal(edge.calls.length, 2);
 });
 
@@ -343,4 +344,143 @@ test('activation removes the temp directories a crash left behind, before the ha
   await activate(host.coda, { sandbox: () => true });
   t.after(() => { deactivate(); host.close(); });
   assert.equal(existsSync(join(state, TMP_DIR)), false);
+});
+
+test('allowed directories that overlap are refused with restrict_overlap, naming both lines as given: same or nested by their literal spelling, and the same or nested by real path', async t => {
+  const d = layout(t), sub = join(d.rw, 'sub'), link = join(d.base, 'link-to-sub'), same = join(d.base, 'link-to-rw');
+  mkdirSync(sub);
+  symlinkSync(sub, link);
+  symlinkSync(d.rw, same);
+  symlinkSync(d.out, join(d.rw, 'swap'));   // 可写目录里的链接：字面上在 rw 里面，真实路径在外面
+  const rw = { path: d.rw, access: 'rw' };
+  const cases = [
+    ['literally nested', [rw, { path: sub, access: 'ro' }]],
+    ['literally nested through a link inside the rw directory', [rw, { path: join(d.rw, 'swap'), access: 'ro' }]],
+    ['nested the other way round', [{ path: sub, access: 'ro' }, rw]],
+    ['literally equal', [rw, { path: d.rw, access: 'ro' }]],
+    ['equal after . and slashes', [rw, { path: `${d.rw}//./`, access: 'ro' }]],
+    ['real path nested (a link to a subdirectory)', [rw, { path: link, access: 'ro' }]],
+    ['real path equal (a link to the same directory), other access', [rw, { path: same, access: 'ro' }]],
+    ['real path equal, both rw', [rw, { path: same, access: 'rw' }]],
+    ['a non-adjacent pair', [rw, { path: d.out, access: 'ro' }, { path: sub, access: 'ro' }]],
+  ];
+  for (const [what, dirs] of cases) {
+    const it = rig(t);
+    const restrict = { dirs };
+    await assert.rejects(it.run({ command: 'true', restrict }), error => error.code === 'restrict_overlap' && error.effects === 'none'
+      && dirs.some((one, i) => error.message.includes(`第 ${i + 1} 条（${one.path}）`)), what);
+    assert.deepEqual(it.calls, [], what);
+    assert.equal(it.tmpLeft().length, 0, what);
+    const lines = it.host.raw();
+    assert.deepEqual(lines.map(line => line.phase), ['start', 'end'], what);
+    assert.equal(lines[1].error, 'restrict_overlap', what);
+    assert.deepEqual(lines[0].params.restrict, restrict, what);
+  }
+  // 消息里是冲突的那两条（原写法与序号）。
+  const one = rig(t);
+  await assert.rejects(one.run({ command: 'true', restrict: { dirs: [rw, { path: d.out, access: 'ro' }, { path: `${sub}/`, access: 'ro' }] } }),
+    error => error.message.includes(`第 1 条（${d.rw}）`) && error.message.includes(`第 3 条（${sub}/）`) && !error.message.includes(d.out));
+  // 不重叠的多个目录（含名字是另一条前缀的同级目录）照常通过。
+  mkdirSync(`${d.rw}2`);
+  const fine = rig(t);
+  await fine.run({ command: 'true', restrict: { dirs: [rw, { path: `${d.rw}2`, access: 'rw' }, { path: d.ro, access: 'ro' }, { path: d.out, access: 'ro' }] } });
+  assert.equal(fine.calls.length, 2);
+});
+
+test('on a case-insensitive volume the same directory spelled in another case is a duplicate, and so is a nested one through a differently spelled ancestor', async t => {
+  const probe = realpathSync(scratch(t));
+  if (!existsSync(skewed(probe)) || !existsSync(probe.toLowerCase())) return t.skip('卷分大小写');
+  const d = layout(t), sub = join(d.rw, 'sub');
+  mkdirSync(sub);
+  for (const dirs of [
+    [{ path: d.rw, access: 'rw' }, { path: skewed(d.rw), access: 'ro' }],
+    [{ path: skewed(d.rw), access: 'rw' }, { path: sub, access: 'ro' }],
+    [{ path: d.rw, access: 'rw' }, { path: skewed(sub), access: 'ro' }],
+  ]) {
+    const it = rig(t);
+    await assert.rejects(it.run({ command: 'true', restrict: { dirs } }), { code: 'restrict_overlap', effects: 'none' });
+    assert.deepEqual(it.calls, []);
+  }
+});
+
+test('a temp directory the command made impossible to delete (a subdirectory with mode 000) is still removed, and the call keeps its own result', async t => {
+  const d = layout(t), tmps = [];
+  const it = rig(t, { decide: call => {
+    if (isProbe(call)) return fakeChild();
+    const tmp = assignments(call).TMPDIR;
+    tmps.push(tmp);
+    mkdirSync(join(tmp, 'a', 'b'), { recursive: true });
+    writeFileSync(join(tmp, 'a', 'b', 'f'), 'x');
+    symlinkSync(d.out, join(tmp, 'a', 'out-link'));
+    writeFileSync(join(d.out, 'keep'), 'x');
+    chmodSync(join(tmp, 'a', 'b'), 0o000);
+    chmodSync(join(tmp, 'a'), 0o000);
+    return fakeChild({ code: 7, stdout: 'done' });
+  } });
+  const result = await it.run({ command: 'x', restrict: both(d) });
+  assert.equal(result.exitCode, 7);
+  assert.equal(result.stdout, 'done');
+  assert.equal(existsSync(tmps[0]), false);
+  assert.equal(it.tmpLeft().length, 0);
+  assert.deepEqual(it.host.lines().map(line => line.result?.exitCode), [7]);
+  assert.equal(readdirSync(d.out).includes('keep'), true);
+  assert.equal(statSync(d.out).mode & 0o777, 0o755 & statSync(d.out).mode, '符号链接指到的目录没被改动');
+});
+
+test('a cleanup that fails changes no outcome: success, the command\'s own failure, a timeout, a cancel and a refusal after the temp directory was made all keep their result; the cause goes to stderr and the leftover is renamed away', async t => {
+  const d = layout(t), restrict = both(d), logged = [];
+  const original = console.error;
+  console.error = (...args) => { logged.push(args.join(' ')); };
+  t.after(() => { console.error = original; });
+  const failing = () => Promise.reject(new Error('EACCES: cannot delete'));
+  const make = options => { const it = rig(t, options); it.host.env.remove = failing; return it; };
+  // 成功与命令自己的失败
+  const ok = make({ decide: call => isProbe(call) ? fakeChild() : fakeChild({ code: 3, stdout: 'out' }) });
+  const result = await ok.run({ command: 'x', restrict });
+  assert.deepEqual([result.exitCode, result.stdout], [3, 'out']);
+  assert.equal(ok.host.lines()[0].result.exitCode, 3);
+  assert.equal(ok.host.lines()[0].error, undefined);
+  // 超时
+  const sleeper = fakeSpawn(t, { ready: true });
+  const slow = make({ decide: call => isProbe(call) ? fakeChild() : sleeper('/bin/sh', ['-c', 'echo up; sleep 30'], call.options) });
+  assert.equal((await slow.run({ command: 'x', restrict, timeout: 1 })).timedOut, true);
+  assert.equal(slow.host.lines()[0].result.timedOut, true);
+  // 取消
+  const controller = new AbortController(), away = new DOMException('away', 'AbortError');
+  const gone = make({ decide: call => isProbe(call) ? fakeChild() : sleeper('/bin/sh', ['-c', 'echo up; sleep 30'], call.options) });
+  const done = gone.run({ command: 'x', restrict }, { signal: controller.signal });
+  await waitFor(() => gone.calls.length >= 2, '真命令起来了');
+  controller.abort(away);
+  await assert.rejects(done, error => error === away);
+  assert.equal(gone.host.lines()[0].error, 'cancelled');
+  // 空跑不过（sandbox_failed）：照原样被拒绝
+  const broken = make({ decide: () => fakeChild({ code: 65, stderr: 'bad profile' }) });   // 空跑就不过
+  await assert.rejects(broken.run({ command: 'x', restrict }), { code: 'sandbox_failed', effects: 'none' });
+  assert.equal(broken.host.lines()[0].error, 'sandbox_failed');
+  // 每次都留了一份改名的残留，原因写在标准错误里。
+  for (const it of [ok, slow, gone, broken]) assert.deepEqual(it.tmpLeft().map(name => name.startsWith('dead-c-')), [true]);
+  assert.equal(logged.filter(line => /没删掉/.test(line) && /EACCES/.test(line)).length, 4);
+});
+
+test('what a failed cleanup leaves is reclaimed by the periodic sweep, and only the renamed leftovers: a directory of a call still running is not touched', async t => {
+  const state = scratch(t), root = join(state, TMP_DIR);
+  mkdirSync(join(root, 'dead-c-old', 'a'), { recursive: true });
+  chmodSync(join(root, 'dead-c-old', 'a'), 0o000);
+  mkdirSync(join(root, 'c-running'), { recursive: true });
+  await sweepTmp(state);
+  assert.deepEqual(readdirSync(root), ['c-running']);
+  await sweepTmp(join(state, 'nowhere'));
+});
+
+test('the sweep that cannot delete a leftover says so on stderr and keeps going', async t => {
+  const state = scratch(t), root = join(state, TMP_DIR), logged = [], original = console.error;
+  console.error = (...args) => { logged.push(args.join(' ')); };
+  t.after(() => { console.error = original; });
+  mkdirSync(join(root, 'dead-c-a'), { recursive: true });
+  mkdirSync(join(root, 'dead-c-b'), { recursive: true });
+  const tried = [];
+  await sweepTmp(state, async path => { tried.push(path); throw new Error('stuck'); });
+  assert.equal(tried.length, 4);   // 每个先删、恢复权限后再删一次
+  assert.equal(logged.length, 2);
+  assert.match(logged[0], /stuck/);
 });

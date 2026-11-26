@@ -747,6 +747,7 @@ export function createHolder(coda, { store, signRpc, retractRpc, onAccord, pages
     restrict_dir_not_found: '目标机上有目录不存在',
     restrict_dir_not_a_directory: '目标机上有路径不是目录',
     restrict_protected: '有目录与目标机上受保护的位置（Coda 状态根、~/.ssh）重叠',
+    restrict_overlap: '有允许目录互相重叠（重复，或一条在另一条里面）',
     sandbox_failed: '目标机上的沙箱起不来',
     target_offline: REASONS.target_offline,
   };

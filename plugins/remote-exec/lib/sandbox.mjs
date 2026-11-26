@@ -11,9 +11,9 @@
 // 建不起来就拒绝，绝不退回不受限执行：本模块只有「回计划」或「抛错」两种结局，调用方（exec.mjs）拿到计划才起进程，
 // 没有计划时不受限的分支是另一条路，带了 `restrict` 的调用走不到它。
 import { accessSync, constants } from 'node:fs';
-import { mkdir, mkdtemp, realpath, rm, stat } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readdir, realpath, rename, rm, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { basename, dirname, isAbsolute, join } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { cleanEnv } from './environ.mjs';
 import { terminate } from './kill.mjs';
 import { fsError } from './operation.mjs';
@@ -22,6 +22,9 @@ export const SANDBOX_EXEC = '/usr/bin/sandbox-exec';
 export const MAX_DIRS = 50;
 // 每次受限调用的临时目录都建在插件状态目录的这个子目录下：状态根整个是受保护的，别的受限调用够不着。
 export const TMP_DIR = 'sandbox-tmp';
+// 清不掉的临时目录改成这个前缀的名字留着：永远不会再被用，由定期回收（`sweepTmp`）再删。
+const DEAD = 'dead-';
+const report = what => error => console.error(`远程执行：${what}：${error?.message ?? error}`);
 
 // 这台能不能做受限执行：macOS 且 sandbox-exec 可执行。`platform`、`executable` 供测试替换。
 export function sandboxSupported({ platform = process.platform, executable = path => accessSync(path, constants.X_OK) } = {}) {
@@ -71,6 +74,28 @@ async function canonical(path) {
   }
 }
 
+// 字面路径从根到自己每一层（含自己）的真实路径：一条允许路径的字面写法若经过另一条允许目录（包括经链接、换了大小写的拼写到达它），那一层的真实路径就是那条目录的真实路径。
+async function walked(path) {
+  const layers = [];
+  for (let at = resolve(path); ; at = dirname(at)) {
+    layers.push(await canonical(at));
+    if (at === dirname(at)) return layers;
+  }
+}
+
+// 两条允许目录是否重叠：字面上同一条或一条在另一条里面（`resolve` 规范掉 `.`、多余斜杠、结尾斜杠；经链接、不同大小写到达的由每层的真实路径认出），
+// 或真实路径相同、一条在另一条里面。字面嵌套挡住「经可写目录里的链接改道」，真实路径嵌套挡住「只读实际可写」与重复。
+async function overlapping(dirs) {
+  const layers = await Promise.all(dirs.map(one => walked(one.given)));
+  for (const [i, one] of dirs.entries()) {
+    for (const [j, other] of dirs.entries()) {
+      if (j <= i) continue;
+      if (layers[j].includes(one.path) || layers[i].includes(other.path) || inside(one.path, other.path) || inside(other.path, one.path)) return [i, j];
+    }
+  }
+  return null;
+}
+
 // 不许授出的位置（真实路径）：Coda 的状态根（含本插件和别的插件的状态目录）、家目录的 .ssh。
 const protectedPaths = stateRoot => Promise.all([stateRoot, join(homedir(), '.ssh')].filter(Boolean).map(canonical));
 
@@ -97,7 +122,7 @@ export function sandboxArgs(dirs, tmp) {
 //   env：exec 的环境（coda、state 插件状态目录、stateRoot 状态根，`sandboxSupported` 供测试替换）
 //   cwd：调用给的 cwd，没给回第一条 rw 目录
 // 码：invalid_input（参数不合法）、sandbox_unsupported、restrict_dir_not_found、restrict_dir_not_a_directory、restrict_protected、
-//   cwd_not_allowed，cwd 自己的 not_found、not_a_directory；临时目录建不出是 sandbox_failed。
+//   restrict_overlap（允许目录互相重叠）、cwd_not_allowed，cwd 自己的 not_found、not_a_directory；临时目录建不出是 sandbox_failed。
 export async function prepareSandbox(env, restrict, cwd) {
   const { coda } = env;
   checkRestrict(coda, restrict);
@@ -111,6 +136,11 @@ export async function prepareSandbox(env, restrict, cwd) {
     const hit = guarded.find(one => inside(path, one) || inside(one, path));
     if (hit) throw coda.error('restrict_protected', `${given}${given === path ? '' : `（真实路径 ${path}）`} 与受保护的 ${hit} 重叠，不能授出`, none);
   }
+  const clash = await overlapping(dirs);
+  if (clash) {
+    const [a, b] = clash.map(i => `第 ${i + 1} 条（${dirs[i].given}）`);
+    throw coda.error('restrict_overlap', `允许目录互相重叠：${a}与${b}，同一目录不能重复、也不能一条在另一条里面，请去掉其中一条`, none);
+  }
   if (cwd !== undefined && !isAbsolute(cwd)) throw coda.error('invalid_input', `cwd 必须是绝对路径：${cwd}`, none);
   const real = cwd === undefined ? dirs.find(one => one.access === 'rw').path
     : await directory(coda, cwd, { missing: 'not_found', notDirectory: 'not_a_directory' });
@@ -123,12 +153,40 @@ export async function prepareSandbox(env, restrict, cwd) {
     tmp = await mkdtemp(join(root, 'c-'));
   } catch (error) { throw coda.error('sandbox_failed', `建不出这次调用的临时目录：${error.message}`, none); }
   const args = sandboxArgs(dirs, tmp);
+  const gone = env.remove ?? (path => rm(path, { recursive: true, force: true }));
   return {
     cwd: real, tmp,
     // 交给 `ctx.spawn` 的命令与参数；TMPDIR 换成本次的临时目录。
     argv: (command, clean) => ['/usr/bin/env', ['-i', ...Object.entries({ ...clean, TMPDIR: tmp }).map(([key, value]) => `${key}=${value}`), SANDBOX_EXEC, ...args, '/bin/sh', '-c', command]],
-    cleanup: () => rm(tmp, { recursive: true, force: true }),
+    // 清不掉也不抛：调用的结局（退出码、输出、记录的结果）不能被清理的失败改写。清不掉的改名留给定期回收，原因写标准错误。
+    cleanup: async () => {
+      try { await removeTree(tmp, gone); } catch (error) {
+        report(`这次调用的临时目录 ${tmp} 没删掉，留给定期回收`)(error);
+        await rename(tmp, join(dirname(tmp), `${DEAD}${basename(tmp)}`)).catch(report(`临时目录 ${tmp} 改名失败`));
+      }
+    },
   };
+}
+
+// 递归把目录改回可遍历、可写（命令能把自己临时目录里的子目录改成 000，删不掉）。不跟随符号链接：只对自己判定为目录的项动手，
+// 类型取自 lstat／目录项本身（不是链接指向的），符号链接不改也不进。
+async function relax(path, top = true) {
+  if (top && !(await lstat(path)).isDirectory()) return;
+  await chmod(path, 0o700);
+  for (const entry of await readdir(path, { withFileTypes: true })) if (entry.isDirectory()) await relax(join(path, entry.name), false);
+}
+
+// 删一棵目录树：先直接删，删不掉（权限被改过）就恢复权限再删一次。
+export async function removeTree(path, remove = target => rm(target, { recursive: true, force: true })) {
+  try { await remove(path); } catch { await relax(path); await remove(path); }
+}
+
+// 回收清不掉而改了名的临时目录（`dead-` 开头）；它们不在用，也不会再被用。`remove` 供测试替换。
+export async function sweepTmp(state, remove) {
+  const root = join(state, TMP_DIR);
+  let names;
+  try { names = await readdir(root); } catch (error) { if (error.code === 'ENOENT') return; throw error; }
+  for (const name of names) if (name.startsWith(DEAD)) await removeTree(join(root, name), remove).catch(report(`回收临时目录 ${name} 失败`));
 }
 
 export const PROBE_MS = 10_000;

@@ -2490,6 +2490,7 @@ test('granting directories fails on the spot and creates nothing when the target
     [fail('restrict_dir_not_found', '/srv/work：不存在'), 'restrict_dir_not_found', /目录不存在.*\/srv\/work/],
     [fail('restrict_dir_not_a_directory', '/srv/data：不是目录'), 'restrict_dir_not_a_directory', /不是目录.*\/srv\/data/],
     [fail('restrict_protected', '/srv/work 与受保护的 /state 重叠，不能授出'), 'restrict_protected', /受保护的位置.*\/state/],
+    [fail('restrict_overlap', '允许目录互相重叠：第 1 条（/srv/work）与第 2 条（/srv/work/sub），同一目录不能重复'), 'restrict_overlap', /互相重叠.*第 2 条（\/srv\/work\/sub）/],
     [fail('sandbox_failed', '沙箱没能启动，没有执行'), 'sandbox_failed', /沙箱起不来/],
     [fail('peer_offline', '持有方此刻连不上'), 'target_offline', /离线/],
     [fail('timeout', '调用超过了期限，已放弃', 'unknown'), 'timeout', /调用超过了期限/],
@@ -2573,6 +2574,10 @@ test('changing the scope probes first, changes the row at once and signs the gra
   assert.deepEqual([(await h.store.getGrant(grant)).restrict, versionOf()], [DIRS_2, 3]);
   h.exec.plan = () => fail('peer_offline', '连不上');
   await assert.rejects(restrictTo(h, grant, DIRS), error => error.code === 'target_offline');
+  assert.deepEqual([(await h.store.getGrant(grant)).restrict, versionOf()], [DIRS_2, 3]);
+  // 目标机说允许目录互相重叠：码原样带回，行与授权记录都不动。
+  h.exec.plan = () => fail('restrict_overlap', '允许目录互相重叠：第 1 条（/srv/work）与第 2 条（/srv/work/sub），同一目录不能重复');
+  await assert.rejects(restrictTo(h, grant, DIRS), error => error.code === 'restrict_overlap' && error.effects === 'none' && /互相重叠/.test(error.message));
   assert.deepEqual([(await h.store.getGrant(grant)).restrict, versionOf()], [DIRS_2, 3]);
 
   // 回到整台机器：不探测，授权记录回到加范围之前的 v1，表文件也回到 v1。
