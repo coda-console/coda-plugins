@@ -1,0 +1,50 @@
+{
+  "name": "@coda-console/friend-chat",
+  "id": "friend-chat",
+  "displayName": "好友对话",
+  "description": "与已绑定个人身份的好友收发签名对话消息",
+  "icon": { "symbol": "bubble.left.and.bubble.right.fill", "color": "blue" },
+  "version": "0.1.0",
+  "categories": [
+    "Skills 与工具"
+  ],
+  "type": "module",
+  "engines": {
+    "node": ">=24",
+    "coda": 17
+  },
+  "main": "main.mjs",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "uses": {
+    "coda/accord@1": [
+      "read",
+      "publish"
+    ]
+  },
+  "contributes": {
+    "protocolImplementations": [
+      "coda/session@1"
+    ],
+    "reservedAccordKinds": [
+      "friend-chat/event"
+    ]
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coda-console/coda-plugins.git",
+    "directory": "plugins/friend-chat"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "main.mjs",
+    "lib"
+  ],
+  "dependencies": {
+    "@coda-console/protocol": "6.27.0"
+  }
+}
