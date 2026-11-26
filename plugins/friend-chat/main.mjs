@@ -1,7 +1,13 @@
-// 占位：会话 Provider 的 read、post、draft 在下一块接入，此前都回「尚未实现」。
-const SESSION = 'coda/session@1';
-const unimplemented = () => { throw Object.assign(new Error('好友对话尚未实现'), { code: 'unavailable', effects: 'none' }); };
+// 好友对话：与已绑定个人身份的好友收发 coda/accord@1 签名的消息，实现 coda/session@1（见 lib/service.mjs）。
+import { startService } from './lib/service.mjs';
 
-export function activate(coda) {
-  for (const name of ['read', 'post', 'draft']) coda.handle(SESSION, name, unimplemented);
+let service = null;
+
+export async function activate(coda) {
+  service = await startService(coda);
+}
+
+export async function deactivate() {
+  await service?.stop();
+  service = null;
 }

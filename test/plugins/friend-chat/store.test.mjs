@@ -197,3 +197,35 @@ test('远端畸形记录不会污染 store：入库的消息始终通过 coda/se
   assert.deepEqual([page.messages[1].parts, page.messages[2].parts], [undefined, undefined]);
   assert.deepEqual(page.messages[3].about, { message: `${B}/ok`, change: 'recall' });
 });
+
+test('read 一页按 UTF-8 JSON 字节预算裁剪：20 条约 28 KB 长文本，默认 / before / after 页都在 768 KiB 内，翻页不丢不重', async () => {
+  const BUDGET = 768 * 1024, bytes = page => Buffer.byteLength(JSON.stringify(page));
+  const store = createStore(await fresh(), A);
+  for (let i = 1; i <= 20; i++) {
+    const text = `${i}:${'长'.repeat(9300)}`;
+    await store.ingest(event(`m${i}`, { text, parts: [{ type: 'text', text }] }));
+  }
+  const seq = page => page.messages.map(m => Number(m.cursor));
+  const latest = await store.readMessages(conv);
+  assert.ok(bytes(latest) <= BUDGET && latest.messages.length < 20 && latest.more);
+  assert.equal(latest.cursor, '20');
+  // before 一页页往前，接得上，直到最早。
+  const backward = [seq(latest)];
+  for (let page = latest; page.more;) {
+    page = await store.readMessages(conv, { before: page.messages[0].cursor });
+    assert.ok(bytes(page) <= BUDGET && page.messages.length > 0);
+    assert.equal(page.cursor, page.messages.at(-1).cursor);
+    backward.unshift(seq(page));
+  }
+  assert.deepEqual(backward.flat(), Array.from({ length: 20 }, (_, i) => i + 1));
+  // after 从第 1 条起一页页往后，cursor 是这页最后一条。
+  const forward = [];
+  for (let cursor = '1', more = true; more;) {
+    const page = await store.readMessages(conv, { after: cursor });
+    assert.ok(bytes(page) <= BUDGET && page.messages.length > 0);
+    assert.equal(page.cursor, page.messages.at(-1).cursor);
+    forward.push(...seq(page));
+    ({ cursor, more } = page);
+  }
+  assert.deepEqual(forward, Array.from({ length: 19 }, (_, i) => i + 2));
+});
