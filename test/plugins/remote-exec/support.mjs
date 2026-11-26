@@ -60,7 +60,7 @@ export function operations(raw) {
 // 处理函数的环境与记录：`lines()` 是合成后的每次操作（见 `operations`），`raw()` 是原始行。
 export function setup(t, { enabled = true } = {}) {
   const state = scratch(t), gate = { enabled };
-  const env = { coda, enabled: () => gate.enabled, audit: createAuditLog(state), outputRoot: () => outputRoot(state) };
+  const env = { coda, enabled: () => gate.enabled, audit: createAuditLog(state), outputRoot: () => outputRoot(state), state, stateRoot: state };
   const raw = () => rawLines(join(state, AUDIT_FILE));
   return { env, state, lines: () => operations(raw()), raw, set: value => { gate.enabled = value; } };
 }
