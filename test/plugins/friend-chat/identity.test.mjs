@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { inflateSync } from 'node:zlib';
 import { test } from 'node:test';
-import { identityTitle as friendsTitle } from '../../../plugins/friends/lib/nickname.mjs';
+import { createHash } from 'node:crypto';
+import { identityTitle as friendsTitle, nicknameOf, tailOf } from '../../../plugins/friends/lib/nickname.mjs';
 import { identiconPattern } from '../../../plugins/friends/lib/avatar.mjs';
 import { dmConversationId, identityTitle, isAuthor, isConversationId, renderIdenticonPng, resolveAccordPeers } from '../../../plugins/friend-chat/lib/identity.mjs';
 
@@ -66,6 +67,19 @@ test('几何纹 PNG：格子点亮与好友页的 5×5 网格一致，size 可�
   for (let r = 0; r < 5; r++) for (let c = 0; c < 5; c++) assert.equal(pixel(5 + c * 5 + 2, 5 + r * 5 + 2) !== background, grid[r][c]);
   for (const size of [6, 1025, 9.5, '96']) assert.throws(() => renderIdenticonPng(A, { size }), RangeError);
   assert.throws(() => renderIdenticonPng('bad'), TypeError);
+});
+
+// 好友页的几何纹只给格子（颜色随 currentColor），所以对照格子；昵称与尾号对照好友插件的 nicknameOf、tailOf。
+test('与好友插件的身份派生逐项一致：昵称、尾号、5×5 几何纹', () => {
+  const samples = [A, B, `ed25519:${'0'.repeat(64)}`, `ed25519:${'f'.repeat(64)}`,
+    ...Array.from({ length: 32 }, (_, i) => `ed25519:${createHash('sha256').update(`sample ${i}`).digest('hex')}`)];
+  for (const author of samples) {
+    const key = Buffer.from(author.slice(8), 'hex'), name = nicknameOf(key);
+    assert.equal(identityTitle(author), name ? `${name} #${tailOf(key).slice(-4)}` : author.slice(8, 16), author);
+    const raw = inflateSync(decodePng(renderIdenticonPng(author, { size: 35 }))[1].data), stride = 1 + 35 * 3;
+    const lit = (x, y) => raw.subarray(y * stride + 1 + x * 3, y * stride + 4 + x * 3).toString('hex') !== raw.subarray(1, 4).toString('hex');
+    assert.deepEqual(Array.from({ length: 5 }, (_, r) => Array.from({ length: 5 }, (_, c) => lit(5 + c * 5 + 2, 5 + r * 5 + 2))), identiconPattern(author), author);
+  }
 });
 
 test('单聊会话 ID：对称、确定性、与成员有关', () => {

@@ -119,8 +119,8 @@ test('没有历史的会话：解除好友、证书自然到期（定时器重�
   await alice.accord.change({ friends: [friend(B)] });
   await alice.service.settled();
   assert.deepEqual(Object.keys(await alice.sessions()), [`${A}:${B}`]);
-  assert.deepEqual([...clock.timers.values()].map(timer => timer.ms), [ACTIVE.until - START]);
-  await clock.advance(ACTIVE.until - START);
+  assert.deepEqual([...clock.timers.values()].map(timer => timer.ms), [ACTIVE.until - START + 1]);
+  await clock.advance(ACTIVE.until - START + 1);
   await alice.service.settled();
   assert.deepEqual(await alice.sessions(), {});
   assert.equal(clock.timers.size, 0);
@@ -129,23 +129,23 @@ test('没有历史的会话：解除好友、证书自然到期（定时器重�
 test('首次 replace 挂起期间跨过证书 until：立即补跑一轮，撤下空会话，不留 active', async t => {
   const clock = manualClock(), net = network();
   const alice = await side(t, net, { root: A, friends: [friend(B)], clock, certificate: { active: true, until: START + 1000 }, start: false });
-  alice.onWrite = () => { alice.onWrite = null; clock.pass(1000); };
+  alice.onWrite = () => { alice.onWrite = null; clock.pass(1001); };
   await alice.start();
   assert.deepEqual(alice.writes.map(([what]) => what), ['replace', 'delete']);
   assert.deepEqual(await alice.sessions(), {});
   assert.equal(clock.timers.size, 0);
 });
 
-test('写完之后读时钟恰好到达 until：要么立即补跑，要么排上定时器，不留无定时器的 active 会话', async t => {
-  // 写完后接下来几次读时钟给出的时刻：差 1 毫秒再到点（两次读之间跨过），或第一次读就正好到点。
-  for (const script of [[START + 999, START + 1000], [START + 1000]]) {
+test('写完之后读时钟恰好越过 until：要么立即补跑，要么排上定时器，不留无定时器的 active 会话', async t => {
+  // until 当刻仍有效。写完后接下来几次读时钟给出的时刻：先在 until 再越过（两次读之间跨过），或第一次读就越过。
+  for (const script of [[START + 1000, START + 1001], [START + 1001]]) {
     const clock = manualClock(), net = network();
     const alice = await side(t, net, { root: A, friends: [friend(B)], clock, certificate: { active: true, until: START + 1000 }, start: false });
     alice.onWrite = () => { alice.onWrite = null; clock.script.push(...script); };
     await alice.start();
     const sessions = await alice.sessions();
     assert.ok(Object.keys(sessions).length === 0 || clock.timers.size === 1, `${script}：既没补跑也没排定时器`);
-    await clock.advance(1000 - (clock.now() - START));
+    await clock.advance(1001 - (clock.now() - START));
     await alice.service.settled();
     assert.deepEqual(await alice.sessions(), {}, String(script));
     assert.equal(clock.timers.size, 0);
@@ -157,7 +157,7 @@ test('put 挂起期间跨过新证书的 until：有历史的会话转为 unreac
   const { net, alice } = await pair(t, { a: { clock } });
   await alice.post(B, { text: '在吗' });
   await net.settled();
-  alice.onWrite = () => { alice.onWrite = null; clock.pass(1000); };
+  alice.onWrite = () => { alice.onWrite = null; clock.pass(1001); };
   await alice.accord.change({ certificate: { active: true, until: START + 1000 }, friends: [friend(B), friend(C)] });
   await alice.service.settled();
   const status = (await alice.session(B)).status;
@@ -206,7 +206,7 @@ test('有历史的会话：解除好友、证书到期、解绑个人身份后�
   await alice.accord.change({ friends: [friend(B)], certificate: { active: true, until: START + 1000 } });
   await alice.service.settled();
   assert.equal((await alice.session(B)).status.state, 'active');
-  await clock.advance(1000);
+  await clock.advance(1001);
   await alice.service.settled();
   await blocked('本机签名证书已过期，打开客户端后自动续期');
   await alice.accord.change({ certificate: { active: false } });
@@ -354,6 +354,228 @@ test('证书有效期很长时，定时器按 setTimeout 上限钳制，到点�
   assert.deepEqual([...clock.timers.values()].map(timer => timer.ms), [2 ** 31 - 1]);
   await clock.advance(2 ** 31 - 1);
   await alice.service.settled();
-  assert.deepEqual([...clock.timers.values()].map(timer => timer.ms), [501]);
+  assert.deepEqual([...clock.timers.values()].map(timer => timer.ms), [502]);
   assert.equal((await alice.session(B)).status.state, 'active');
+});
+
+test('其他插件调 read、post、draft 一律 forbidden；本机客户端（无 caller.plugin）照常', async t => {
+  const { net, alice } = await pair(t);
+  const record = { kind: SESSION, id: 'rec', key: `${A}:${B}` };
+  const ctx = caller => ({ id: `call-${Math.random()}`, record, caller, signal: new AbortController().signal, call: alice.accord.call });
+  const native = { machine: MACHINE };
+  const sent = await alice.handlers.get('post')({ text: '客户端发的' }, ctx(native));
+  assert.equal(sent.message.cursor, '1');
+  assert.deepEqual(texts(await alice.handlers.get('read')({}, ctx(native))), ['客户端发的']);
+  assert.deepEqual(await alice.handlers.get('draft')({}, ctx(native)), {});
+  const other = { machine: MACHINE, plugin: 'other-plugin' };
+  for (const operation of ['read', 'post', 'draft']) {
+    await rejects(Promise.resolve().then(() => alice.handlers.get(operation)({ text: '偷发' }, ctx(other))), 'forbidden');
+  }
+  await net.settled();
+  assert.equal(alice.accord.calls.length, 1, '被拒的 post 没有发布');
+  assert.equal((await alice.session(B)).status.head, '1');
+});
+
+test('post：replyTo 与非空 mentions 明确 unsupported，不发布', async t => {
+  const { alice } = await pair(t);
+  await rejects(alice.post(B, { text: 'x', replyTo: `${B}/m1` }), 'unsupported');
+  await rejects(alice.post(B, { text: 'x', mentions: [B] }), 'unsupported');
+  assert.equal(alice.accord.calls.length, 0);
+  assert.equal((await alice.post(B, { text: '空提及照发', mentions: [] })).message.cursor, '1');
+});
+
+test('离线连发跨页补同步：新消息按发送先后正序拿 localSeq，已有游标不变，head 指向最新一条', async t => {
+  const { net, alice } = await pair(t, { a: { pageSize: 2 } });
+  for (let i = 1; i <= 2; i++) await alice.post(B, { text: `在线 ${i}` });
+  await net.settled();
+  const before = (await alice.read(B)).messages;
+  // 对端离线时连发三条，回来后一起到达（宿主按 version 降序给，跨两页）。
+  for (let i = 1; i <= 3; i++) net.ledger.push(signed(B, A, `offline-${i}`, `离线 ${i}`, 10 + i));
+  await net.notify();
+  await net.settled();
+  const page = await alice.read(B);
+  assert.deepEqual(texts(page), ['在线 1', '在线 2', '离线 1', '离线 2', '离线 3']);
+  assert.deepEqual(page.messages.slice(0, 2), before);
+  assert.equal((await alice.session(B)).status.head, '5');
+  assert.equal(page.messages.at(-1).cursor, '5');
+  assert.deepEqual(alice.accord.queries.slice(-3).map(query => query.cursor), [undefined, '2', '4']);
+});
+
+test('入站要求本机能签且对端此刻可对话：失格或证书失效期间晚到的记录不入库，恢复后再收', async t => {
+  const clock = manualClock();
+  const { net, alice } = await pair(t, { a: { clock, friends: [friend(B), friend(C)] } });
+  await alice.post(B, { text: '在吗' });
+  await net.settled();
+  const history = async () => [(await alice.session(B)).status.head, texts(await alice.read(B))];
+  const expected = ['1', ['在吗']];
+
+  await alice.accord.change({ friends: [friend(B, { conflict: true }), friend(C, { conflict: true })] });
+  await net.deliver(signed(B, A, 'late-1', '冲突期间到的', 20));
+  await net.deliver(signed(A, B, 'late-2', '本人另一台设备在冲突期间发的', 21));
+  await net.deliver(signed(C, A, 'late-3', '没历史的对端发的', 22));
+  await net.settled();
+  assert.deepEqual(await history(), expected);
+  assert.equal((await alice.sessions())[`${A}:${C}`], undefined);
+
+  await alice.accord.change({ friends: [] });
+  await net.settled();
+  assert.deepEqual(await history(), expected);
+  assert.deepEqual(Object.keys(await alice.sessions()), [`${A}:${B}`]);
+
+  await alice.accord.change({ friends: [friend(B), friend(C)], certificate: { active: false } });
+  await net.deliver(signed(B, A, 'late-4', '证书失效期间到的', 23));
+  await net.settled();
+  assert.deepEqual(await history(), expected);
+  assert.equal((await alice.sessions())[`${A}:${C}`], undefined);
+
+  // 双方恢复准入、证书有效后补收。
+  await alice.accord.change({ certificate: ACTIVE });
+  await net.settled();
+  assert.deepEqual(texts(await alice.read(B)), ['在吗', '冲突期间到的', '本人另一台设备在冲突期间发的', '证书失效期间到的']);
+  assert.equal((await alice.session(C)).status.head, '1');
+});
+
+test('首次同步失败：activate 抛出原错误，撤下处理函数、服务、watch 与定时器', async t => {
+  const clock = manualClock(), net = network();
+  const alice = await side(t, net, { root: A, friends: [friend(B)], clock, start: false });
+  const broken = new Error('宿主写记录失败');
+  alice.onWrite = () => { throw broken; };
+  await assert.rejects(alice.start(), error => error === broken);
+  assert.equal(alice.accord.listeners.size, 0);
+  assert.equal(clock.timers.size, 0);
+  await assert.rejects(alice.host.serve('avatar', new Request(`http://service/ed25519/${B.slice(8)}.png`)), error => error.code === 'not_found');
+  await assert.rejects(alice.host.call({ kind: SESSION, id: 'x' }, 'read', {}), error => error.code === 'not_found');
+});
+
+test('运行期同步暂时失败：退避重试（5s 起翻倍），恢复后补齐投影并清掉重试定时器', async t => {
+  const clock = manualClock();
+  const { alice } = await pair(t, { a: { clock } });
+  const retries = () => [...clock.timers.values()].map(timer => timer.ms).filter(ms => ms <= 60_000);
+  let failures = 2;
+  alice.onWrite = () => { if (failures-- > 0) throw new Error('暂时写不进'); };
+  await alice.accord.change({ friends: [friend(B), friend(C)] });
+  await alice.service.settled();
+  assert.deepEqual(retries(), [5000]);
+  assert.equal((await alice.sessions())[`${A}:${C}`], undefined);
+  await clock.advance(5000);
+  await alice.service.settled();
+  assert.deepEqual(retries(), [10_000]);
+  await clock.advance(10_000);
+  await alice.service.settled();
+  assert.deepEqual(retries(), []);
+  assert.equal((await alice.session(C)).status.state, 'active');
+  // 停止时清掉排着的重试。
+  failures = 1;
+  await alice.accord.change({ friends: [friend(B), friend(C), friend(D)] });
+  await alice.service.settled();
+  assert.deepEqual(retries(), [5000]);
+  await alice.stop();
+  assert.equal(clock.timers.size, 0);
+});
+
+test('未到 from 的证书：到 from 时重读，空会话开放、历史会话从 unreachable 回到 active，再排 until', async t => {
+  const clock = manualClock();
+  const { net, alice } = await pair(t, { a: { clock } });
+  await alice.post(B, { text: '在吗' });
+  await net.settled();
+  const future = { from: START + 1000, until: START + 5000 };
+  await alice.accord.change({ certificate: { active: false, ...future }, friends: [friend(B), friend(C)] });
+  await alice.service.settled();
+  assert.equal((await alice.session(B)).status.state, 'unreachable');
+  assert.equal((await alice.sessions())[`${A}:${C}`], undefined);
+  assert.deepEqual([...clock.timers.values()].map(timer => timer.ms), [1000]);
+  // 宿主到 from 才报 active，且不推送变更。
+  alice.accord.certificate = { active: true, ...future };
+  await clock.advance(1000);
+  await alice.service.settled();
+  const sessions = await alice.sessions();
+  assert.deepEqual([sessions[`${A}:${B}`].status.state, sessions[`${A}:${B}`].status.head], ['active', '1']);
+  assert.deepEqual([sessions[`${A}:${C}`].status.state, sessions[`${A}:${C}`].status.head], ['active', undefined]);
+  assert.deepEqual([...clock.timers.values()].map(timer => timer.ms), [4001]);
+});
+
+test('写投影期间跨过未来证书的 from：写完立即重读 Accord，开放会话并改排 until', async t => {
+  const clock = manualClock();
+  const { net, alice } = await pair(t, { a: { clock } });
+  await alice.post(B, { text: '在吗' });
+  await net.settled();
+  const future = { from: START + 1000, until: START + 5000 };
+  // 写入挂起期间走到 from，宿主此后报 active（不推送变更）。
+  alice.onWrite = () => { alice.onWrite = null; clock.pass(1000); alice.accord.certificate = { active: true, ...future }; };
+  await alice.accord.change({ certificate: { active: false, ...future }, friends: [friend(B), friend(C)] });
+  await alice.service.settled();
+  const sessions = await alice.sessions();
+  assert.deepEqual([sessions[`${A}:${B}`].status.state, sessions[`${A}:${C}`]?.status.state], ['active', 'active']);
+  assert.deepEqual([...clock.timers.values()].map(timer => timer.ms), [4001]);
+});
+
+test('到 from 时重读 Accord 暂时失败：走退避重试，重读成功后开放会话', async t => {
+  const clock = manualClock();
+  const { net, alice } = await pair(t, { a: { clock } });
+  await alice.post(B, { text: '在吗' });
+  await net.settled();
+  const future = { from: START + 1000, until: START + 60_000 };
+  await alice.accord.change({ certificate: { active: false, ...future } });
+  await alice.service.settled();
+  alice.accord.certificate = { active: true, ...future };
+  const get = alice.coda.get;
+  let failures = 1;
+  alice.coda.get = ref => ref.kind === 'coda/accord@1' && failures-- > 0 ? Promise.reject(new Error('暂时读不到')) : get(ref);
+  await clock.advance(1000);
+  await alice.service.settled();
+  assert.equal((await alice.session(B)).status.state, 'unreachable');
+  // 按缓存快照投影后照排 until 重读，另有 5 秒的重读重试。
+  assert.deepEqual([...clock.timers.values()].map(timer => timer.ms), [START + 60_000 - clock.now() + 1, 5000]);
+  await clock.advance(5000);
+  await alice.service.settled();
+  assert.equal((await alice.session(B)).status.state, 'active');
+  assert.deepEqual([...clock.timers.values()].map(timer => timer.ms), [START + 60_000 - clock.now() + 1]);
+});
+
+test('已有历史时同步新消息：已入库的不重排、不重复，新的接在后面', async t => {
+  const { net, alice } = await pair(t);
+  await alice.post(B, { text: '新 1' });
+  await net.deliver(signed(B, A, 'old', '离线旧消息', 5));
+  await net.settled();
+  const before = (await alice.read(B)).messages;
+  assert.deepEqual(texts({ messages: before }), ['新 1', '离线旧消息']);
+  await net.deliver(signed(B, A, 'next', '又一条', 7));
+  await net.notify();
+  await net.settled();
+  const page = await alice.read(B);
+  assert.deepEqual(page.messages.slice(0, 2), before);
+  assert.deepEqual(texts(page), ['新 1', '离线旧消息', '又一条']);
+  assert.equal((await alice.session(B)).status.head, '3');
+});
+
+test('越过 until 时重读 Accord 暂时失败：当轮仍按缓存快照撤下空会话、有历史的降为 unreachable，并排上重读重试', async t => {
+  const clock = manualClock();
+  const { net, alice } = await pair(t, { a: { clock, friends: [friend(B), friend(C)], certificate: { active: true, until: START + 1000 } } });
+  await alice.post(B, { text: '在吗' });
+  await net.settled();
+  const get = alice.coda.get;
+  let failures = 1;
+  alice.coda.get = ref => ref.kind === 'coda/accord@1' && failures-- > 0 ? Promise.reject(new Error('暂时读不到')) : get(ref);
+  await clock.advance(1001);
+  await alice.service.settled();
+  const status = (await alice.session(B)).status;
+  assert.deepEqual([status.state, status.reason, status.head], ['unreachable', '本机签名证书已过期，打开客户端后自动续期', '1']);
+  assert.equal((await alice.sessions())[`${A}:${C}`], undefined);
+  assert.deepEqual([...clock.timers.values()].map(timer => timer.ms), [5000]);
+  await clock.advance(5000);
+  await alice.service.settled();
+  assert.equal(failures, -1, '重试时重读了 Accord');
+  assert.equal(clock.timers.size, 0);
+  assert.equal((await alice.session(B)).status.state, 'unreachable');
+});
+
+test('账本里混入 body.id 不是字符串的畸形记录：忽略它，同轮正常消息照常入库', async t => {
+  const { net, alice } = await pair(t);
+  const conv = dmConversationId(B, A);
+  net.ledger.push({ kind: EVENT, author: B, id: `${conv}/bad`, version: 8, body: { conv, id: { toString: 1 } }, audience: [A] });
+  net.ledger.push(signed(B, A, 'good', '正常消息', 7));
+  await net.notify();
+  await net.settled();
+  assert.equal((await alice.session(B)).status.head, '1');
+  assert.deepEqual(texts(await alice.read(B)), ['正常消息']);
 });

@@ -1,5 +1,5 @@
 // 好友对话的测试宿主：每一端是一台装了 friend-chat 的机器（../../helpers/mock-coda.mjs 的内存 coda，记录按 coda/session@1 校验），
-// 几端共用一本 Accord 账本：记录按到达顺序排、version 是签名者自己的时间，按页吐；发布记进账本并像 Coda 一样告诉各端的 watch。
+// 几端共用一本 Accord 账本：记录照真实宿主按 version 降序（再按 author、id）排、version 是签名者自己的时间，按页吐；发布记进账本并像 Coda 一样告诉各端的 watch。
 // 时钟可控：`now` 与证书到期定时器都由测试推进，不睡眠。
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -60,7 +60,9 @@ function accordOf(net, { root, certificate = ACTIVE, friends = [], pageSize = 20
     async query(ref, operation, input) {
       assert.deepEqual([ref, operation], [{ kind: ACCORD, id: 'local' }, 'records']);
       accord.queries.push(structuredClone(input));
-      const rows = net.ledger.filter(record => record.kind === input.kind && visible(record));
+      // 与真实宿主同序：version 降序，再按 author、id 升序。
+      const rows = net.ledger.filter(record => record.kind === input.kind && visible(record))
+        .sort((a, b) => b.version - a.version || (a.author < b.author ? -1 : a.author > b.author ? 1 : 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
       const from = Number(input.cursor ?? 0), page = rows.slice(from, from + accord.pageSize), more = from + accord.pageSize < rows.length;
       return { records: structuredClone(page), truncated: more, ...(more ? { nextCursor: String(from + accord.pageSize) } : {}) };
     },

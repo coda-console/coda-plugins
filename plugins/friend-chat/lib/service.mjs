@@ -15,6 +15,7 @@ const MAX_DELAY = 2 ** 31 - 1;
 const SWITCHED = '本机已换成另一个个人身份，这段对话只能查看';
 const EXPIRED = '本机签名证书已过期，打开客户端后自动续期';
 const NOT_FRIEND = '对方已不是你的好友';
+const RETRY_FIRST = 5000, RETRY_MAX = 60000;
 
 const hexOf = author => author.slice('ed25519:'.length);
 // 单聊运行时只认这两人之间的 dm 会话；grp: 等别的会话不入库、不投影。
@@ -25,7 +26,7 @@ function parseKey(key) {
   return match && match[1] !== match[2] ? { root: match[1], peer: match[2] } : null;
 }
 
-// 由调用 ID 派生的事件 ID（UUID 形状）：同一次调用重试或恢复得到同一个，发布幂等。
+// 由调用 ID 派生的事件 ID（UUID 形状）：同一个调用 ID 重来得到同一个，发布幂等。
 function eventIdOf(callId) {
   const b = createHash('sha256').update(`friend-chat/post\n${callId}`).digest().subarray(0, 16);
   b[6] = (b[6] & 0x0f) | 0x50; b[8] = (b[8] & 0x3f) | 0x80;
@@ -37,7 +38,7 @@ function eventIdOf(callId) {
 export async function startService(coda, { now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
   const stateDir = coda.plugin.state;
   const stores = new Map(), avatars = new Map();
-  let accord = null, published = null, timer = null, stopped = false;
+  let accord = null, published = null, timer = null, retry = null, attempts = 0, failure = null, stopped = false, activated = false, refreshAccord = false;
   let queue = Promise.resolve(), loop = null, dirty = false;
 
   const storeOf = root => { if (!stores.has(root)) stores.set(root, createStore(stateDir, root)); return stores.get(root); };
@@ -45,10 +46,14 @@ export async function startService(coda, { now = Date.now, setTimer = setTimeout
   const exclusive = run => { const result = queue.then(run); queue = result.catch(() => {}); return result; };
   const avatarOf = author => coda.pointer(AVATAR, `ed25519/${hexOf(author)}.png`, { mime: 'image/png' });
 
-  // 此刻的准入：`{ peers, canSign, active, until }`，canSign 另看证书的 until 是否已过。
+  // 证书在 current 时刻是否落在有效窗口 from <= current <= until 内（与宿主一致；缺的一端不限）。
+  const within = (certificate, current) => !(Number.isFinite(certificate?.from) && current < certificate.from)
+    && !(Number.isFinite(certificate?.until) && current > certificate.until);
+  // 此刻的准入：`{ peers, certificate, inWindow, canSign }`；inWindow 是采样此刻证书是否在有效窗口内，canSign 另要它。
   function standing(entry) {
-    const peers = resolveAccordPeers(entry), certificate = entry?.status?.certificate, until = certificate?.until;
-    return { peers, until, active: certificate?.active === true, canSign: peers.canSign && !(Number.isFinite(until) && until <= now()) };
+    const peers = resolveAccordPeers(entry), certificate = entry?.status?.certificate ?? null;
+    const inWindow = certificate !== null && within(certificate, now());
+    return { peers, certificate, inWindow, canSign: peers.canSign && inWindow };
   }
   // 这段对话此刻不能发的原因；能发为 null。
   function blocker({ peers, canSign }, root, peer) {
@@ -59,12 +64,12 @@ export async function startService(coda, { now = Date.now, setTimer = setTimeout
     return friend?.eligible ? null : friend?.unreachableReason ?? NOT_FRIEND;
   }
 
-  // 读 Accord 里全部 friend-chat/event（version 是签名者的时间，补同步的旧消息会排在后面，所以每次翻完所有页），新的入库。
+  // 读 Accord 里全部 friend-chat/event（version 是签名者的时间，补同步的旧消息会排在后面，所以每次翻完所有页），
+  // 只收此刻可对话的好友的、还没入库的；翻完后按发送先后正序入库，新的依次拿递增的 localSeq。
   async function ingest(peers) {
     const selfRoot = peers.selfRoot, store = storeOf(selfRoot);
     const byConv = new Map();
     for (const friend of peers.friends) if (friend.eligible) byConv.set(dmConversationId(selfRoot, friend.author), friend.author);
-    for (const { conv, peer } of await store.conversations()) if (isDm(selfRoot, peer, conv)) byConv.set(conv, peer);
     const batches = new Map(), cursors = new Set();
     let cursor;
     do {
@@ -72,17 +77,19 @@ export async function startService(coda, { now = Date.now, setTimer = setTimeout
       for (const record of read?.records ?? []) {
         // 作者是自己就按 conv 反查对端，否则 conv 必须正是与作者的单聊。
         const peer = byConv.get(record?.body?.conv);
-        if (!peer || (record.author !== selfRoot && record.author !== peer)) continue;
+        if (!peer || (record.author !== selfRoot && record.author !== peer) || (typeof record.body.id === 'string' && await store.hasEvent(record.body.conv, record.author, record.body.id))) continue;
         const event = parseEventRecord(record, { selfRoot, peerAuthor: peer });
         if (event.status !== 'ok') continue;
         if (!batches.has(peer)) batches.set(peer, []);
-        batches.get(peer).push(event);
+        batches.get(peer).push({ event, version: record.version });
       }
       cursor = read?.nextCursor;
       if (cursors.has(cursor)) break;
       cursors.add(cursor);
     } while (cursor);
-    for (const [peer, events] of batches) await store.ingestAll(events, peer);
+    const order = (a, b) => (a.event.sentAt - b.event.sentAt) || (a.version - b.version)
+      || (a.event.author < b.event.author ? -1 : a.event.author > b.event.author ? 1 : 0) || (a.event.id < b.event.id ? -1 : a.event.id > b.event.id ? 1 : 0);
+    for (const [peer, rows] of batches) await store.ingestAll(rows.sort(order).map(row => row.event), peer);
   }
 
   // 这一刻应有的 coda/session@1 记录：key → { spec, status }。
@@ -130,52 +137,80 @@ export async function startService(coda, { now = Date.now, setTimer = setTimeout
     arm(state);
   }
 
-  // 证书自然到期 Accord 不推送变更：没到 until 就到点重读一次；按可签算的这轮写完时已过 until，立即再算一轮。
-  // 只读一次时钟，两者互补。
+  // 证书生效、到期 Accord 都不推送变更：只读一次时钟，此刻是否在有效窗口与这轮采样时不一致（写投影期间跨过了
+  // from 或 until）就重读 Accord 再算一轮；还没到 from 就在 from 重读，在有效窗口内就在越过 until 的那一刻重读。
+  function refresh() { refreshAccord = true; request(); }
   function arm(state) {
     if (timer !== null) clearTimer(timer);
     timer = null;
-    if (stopped || !state.active || !Number.isFinite(state.until)) return;
-    const current = now();
-    if (state.until > current) {
-      timer = setTimer(async () => {
-        timer = null;
-        try { accord = await coda.get(ACCORD); } catch (e) { console.error('[friend-chat] 重读 Accord 失败：', e?.message ?? e); }
-        request();
-      }, Math.min(state.until - current, MAX_DELAY));
-    } else if (state.canSign) request();
+    const { certificate } = state;
+    if (stopped || !certificate) return;
+    const current = now(), inWindow = within(certificate, current);
+    if (inWindow !== state.inWindow) { refresh(); return; }
+    const delay = Number.isFinite(certificate.from) && current < certificate.from ? certificate.from - current
+      : inWindow && Number.isFinite(certificate.until) ? certificate.until - current + 1 : null;
+    if (delay !== null) timer = setTimer(() => { timer = null; refresh(); }, Math.min(delay, MAX_DELAY));
   }
 
+  // 要重读就先重读 Accord；重读失败时先拿缓存的快照按此刻的时钟收紧投影，再留着标志抛出走退避重试。
+  // 本机能签名时才收新记录，不能签或对端失格期间只投影已有历史。
   async function syncOnce() {
+    if (refreshAccord) {
+      try { accord = await coda.get(ACCORD); } catch (e) { if (accord !== null) await project(); throw e; }
+      refreshAccord = false;
+    }
     const state = standing(accord);
-    if (state.peers.selfRoot) await ingest(state.peers);
+    if (state.peers.selfRoot !== null && state.canSign) await ingest(state.peers);
     await project();
   }
 
-  // 要一轮同步：正在同步时只记下 dirty，跑完再跑一轮。
+  // 激活后的同步失败：退避重试（5 秒起翻倍、封顶 60 秒），成功或停止时清掉。
+  function retryLater() {
+    if (retry !== null) clearTimer(retry);
+    const delay = Math.min(RETRY_FIRST * 2 ** attempts++, RETRY_MAX);
+    retry = setTimer(() => { retry = null; request(); }, delay);
+  }
+
+  // 要一轮同步：正在同步时只记下 dirty，跑完再跑一轮。最后一轮的失败记在 failure。
   function request() {
     dirty = true;
     loop ??= (async () => {
       while (dirty && !stopped) {
         dirty = false;
-        try { await exclusive(syncOnce); } catch (e) { if (!stopped) console.error('[friend-chat] 同步失败：', e?.message ?? e); }
+        try {
+          await exclusive(syncOnce);
+          failure = null; attempts = 0;
+          if (retry !== null) clearTimer(retry);
+          retry = null;
+        } catch (e) {
+          failure = e;
+          if (!stopped && activated) { console.error('[friend-chat] 同步失败：', e?.message ?? e); retryLater(); }
+        }
       }
       loop = null;
     })();
     return loop;
   }
 
-  async function read(input, { record }) {
-    const parsed = parseKey(record?.key);
+  // 其他插件不能读写好友私聊；本机客户端经宿主来的调用没有 caller.plugin。
+  function guard(ctx) {
+    if (ctx?.caller?.plugin && ctx.caller.plugin !== 'friend-chat') throw coda.error('forbidden', '好友私聊不允许其他插件读写', { effects: 'none' });
+  }
+
+  async function read(input, ctx) {
+    guard(ctx);
+    const parsed = parseKey(ctx.record?.key);
     if (!parsed) throw coda.error('not_found', '会话不存在', { effects: 'none' });
     return storeOf(parsed.root).readMessages(dmConversationId(parsed.root, parsed.peer), input);
   }
 
   async function post(input, ctx) {
+    guard(ctx);
     const parsed = parseKey(ctx.record?.key);
     if (!parsed) throw coda.error('not_found', '会话不存在', { effects: 'none' });
     if (ctx.signal.aborted) throw ctx.signal.reason;
     if ((input.parts ?? []).some(part => part.type !== 'text')) throw coda.error('unsupported', '当前好友对话原型仅支持发送纯文本消息', { effects: 'none' });
+    if (input.replyTo !== undefined || (Array.isArray(input.mentions) && input.mentions.length > 0)) throw coda.error('unsupported', '当前好友对话原型暂不支持回复引用与提及', { effects: 'none' });
     if (typeof input.text !== 'string' || !input.text || !input.text.isWellFormed()) throw coda.error('invalid_input', '消息文本须为非空的合法 UTF-8 字符串', { effects: 'none' });
     const { root, peer } = parsed;
     const reason = blocker(standing(await coda.get(ACCORD)), root, peer);
@@ -220,23 +255,30 @@ export async function startService(coda, { now = Date.now, setTimer = setTimeout
   const handles = [
     coda.handle(SESSION, 'read', read),
     coda.handle(SESSION, 'post', post),
-    coda.handle(SESSION, 'draft', () => ({})),
+    coda.handle(SESSION, 'draft', (input, ctx) => { guard(ctx); return {}; }),
   ];
-  const served = await coda.serve(AVATAR, avatar);
-  const watcher = await coda.watch(ACCORD.kind, change => { accord = change.type === 'DELETED' ? null : change.entry; request(); }, { id: ACCORD.id });
-  await (loop ?? request());
+  let served = null, watcher = null;
+  async function stop() {
+    stopped = true;
+    for (const one of [timer, retry]) if (one !== null) clearTimer(one);
+    timer = retry = null;
+    watcher?.dispose();
+    for (const handle of handles) handle.dispose();
+    await served?.dispose();
+    await loop;
+  }
+  // 首次同步失败：撤下已登记的一切，把错误交给宿主，不假装激活。
+  try {
+    served = await coda.serve(AVATAR, avatar);
+    watcher = await coda.watch(ACCORD.kind, change => { accord = change.type === 'DELETED' ? null : change.entry; request(); }, { id: ACCORD.id });
+    await (loop ?? request());
+    if (failure) throw failure;
+  } catch (e) { await stop(); throw e; }
+  activated = true;
 
   return {
     /** 当前这轮（及尾随的）同步跑完。 */
     settled: () => loop ?? Promise.resolve(),
-    async stop() {
-      stopped = true;
-      if (timer !== null) clearTimer(timer);
-      timer = null;
-      watcher.dispose();
-      for (const handle of handles) handle.dispose();
-      await served.dispose();
-      await loop;
-    },
+    stop,
   };
 }

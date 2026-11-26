@@ -129,6 +129,9 @@ export function createStore(stateDir, selfRoot) {
       return found;
     }),
 
+    /** `author` 的事件 `eventId` 是否已在会话 `conv` 里入库；`eventId` 不是字符串为 false。 */
+    hasEvent: (conv, author, eventId) => serial(async () => typeof eventId === 'string' && (await load(conv)).seen.has(`${author}\n${eventId}`)),
+
     /** 会话最新的游标（最大 localSeq 的十进制串），还没有消息为 null。 */
     head: conv => serial(async () => {
       const { messages } = await load(conv);
@@ -147,7 +150,7 @@ export function createStore(stateDir, selfRoot) {
       // 超出字节预算时：after 页裁掉较新的，最新页与 before 页裁掉较旧的，都置 more。
       if (afterSeq !== undefined) {
         const views = messages.slice(afterSeq, afterSeq + limit).map(view), page = views.slice(0, fitting(views, false));
-        return { messages: page, cursor: page.length ? page.at(-1).cursor : after, more: page.length < views.length || afterSeq + limit < count };
+        return { messages: page, cursor: page.length ? page.at(-1).cursor : null, more: page.length < views.length || afterSeq + limit < count };
       }
       const end = beforeSeq === undefined ? count : Math.min(beforeSeq - 1, count), start = Math.max(0, end - limit);
       const views = messages.slice(start, end).map(view), page = views.slice(views.length - fitting(views, true));

@@ -42,6 +42,16 @@ test('对外 Message.id 带作者命名空间：不同作者的同名 eventId �
   assert.deepEqual((await store.readMessages(conv)).messages.map(m => m.id), [`${B}/m1`, `${A}/m1`]);
 });
 
+test('hasEvent：按会话、作者与 eventId 查是否已入库，重开后仍在', async () => {
+  const state = await fresh(), store = createStore(state, A);
+  await store.ingest(event('m1'));
+  assert.equal(await store.hasEvent(conv, B, 'm1'), true);
+  assert.equal(await store.hasEvent(conv, A, 'm1'), false);
+  assert.equal(await store.hasEvent(conv, B, 'm2'), false);
+  assert.equal(await store.hasEvent(dmConversationId(A, C), B, 'm1'), false);
+  assert.equal(await createStore(state, A).hasEvent(conv, B, 'm1'), true);
+});
+
 test('去重按作者加 eventId：不同作者的同名 eventId 是两条消息', async () => {
   const store = createStore(await fresh(), A);
   assert.equal((await store.ingest(event('m1'))).inserted, true);
@@ -80,16 +90,16 @@ test('读：默认取最新 limit 条（升序），more 表示更早还有', as
   assert.deepEqual(empty, { messages: [], cursor: null, more: false });
 });
 
-test('读：after 取之后最早的 limit 条，无新消息时原样返回游标', async () => {
+test('读：after 取之后最早的 limit 条，无新消息时游标为 null', async () => {
   const store = await filled(5);
   let page = await store.readMessages(conv, { after: '1', limit: 2 });
   assert.deepEqual([ids(page), page.cursor, page.more], [['m2', 'm3'], '3', true]);
   page = await store.readMessages(conv, { after: '3', limit: 2 });
   assert.deepEqual([ids(page), page.cursor, page.more], [['m4', 'm5'], '5', false]);
   page = await store.readMessages(conv, { after: '5' });
-  assert.deepEqual(page, { messages: [], cursor: '5', more: false });
+  assert.deepEqual(page, { messages: [], cursor: null, more: false });
   page = await store.readMessages(conv, { after: '99' });
-  assert.deepEqual(page, { messages: [], cursor: '99', more: false });
+  assert.deepEqual(page, { messages: [], cursor: null, more: false });
 });
 
 test('读：before 取之前最新的 limit 条并按升序返回', async () => {
@@ -228,4 +238,9 @@ test('read 一页按 UTF-8 JSON 字节预算裁剪：20 条约 28 KB 长文本�
     ({ cursor, more } = page);
   }
   assert.deepEqual(forward, Array.from({ length: 19 }, (_, i) => i + 2));
+});
+
+test('hasEvent：eventId 不是字符串时给 false，不抛', async () => {
+  const store = await filled(1);
+  assert.equal(await store.hasEvent(conv, B, { toString: 1 }), false);
 });
