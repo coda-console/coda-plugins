@@ -1,5 +1,5 @@
 // Compact labels belong to the adapter. Keep native IDs, full names, groups and all unrelated metadata intact.
-const modes = { 'read-only': '审批', agent: '自动审批', 'agent-full-access': '完全访问' };
+const modes = { manual: '人工审批', 'read-only': '按需审批', agent: '自动审批', 'agent-full-access': '完全访问' };
 const label = (value, category, id = value.value ?? value.id) => {
   const shortName = category === 'mode' ? (Object.hasOwn(modes, id) ? modes[id] : undefined)
     : category === 'model' && /^GPT[- ]\d/i.test(value.name ?? '') ? value.name.replace(/^GPT[- ]/i, '') : undefined;

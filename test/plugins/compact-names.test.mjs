@@ -23,7 +23,7 @@ test('Claude names keep versions and context variants, while full labels and exe
 });
 
 for (const [name, present, mode, short, modelName, modelShort] of [
-  ['Codex', codexDisplayNames, 'read-only', '审批', 'GPT-6.1 Sol', '6.1 Sol'],
+  ['Codex', codexDisplayNames, 'read-only', '按需审批', 'GPT-6.1 Sol', '6.1 Sol'],
   ['Kimi', kimiDisplayNames, 'default', '审批', 'K3.1 Pro Highspeed 2x Usage Cost', 'K3.1 Pro 高速·2×用量'],
 ]) test(`${name} publishes compact names on opening, setting changes and live updates, without replacing metadata or IDs`, () => {
   const option = { category: 'mode', options: [{ value: mode, name: 'Full label', _meta: { future: 1, coda: { default: true } } }] };

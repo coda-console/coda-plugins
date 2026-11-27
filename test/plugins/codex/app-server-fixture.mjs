@@ -20,6 +20,7 @@
 // to steers.ndjson, the answers to its requests to answers.ndjson. One that names `compaction` compacts the thread as the locked
 // Codex does (a `contextCompaction` item, started and completed), with the deprecated `thread/compacted` too before it
 // (`legacy-first`), after it (`legacy-last`), or alone (`legacy-only`); `compaction-failed` starts it and ends the turn failed.
+// One that names `command-approval` asks to approve a command (`item/commandExecution/requestApproval`) and completes once it is answered.
 import { existsSync, readFileSync, writeFileSync, appendFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -44,13 +45,16 @@ const count = { totalTokens: 30, inputTokens: 20, cachedInputTokens: 5, cacheWri
 const kept = join(process.env.FAKE_CODEX_STATE, 'tokens.json');
 const tokenUsage = () => existsSync(kept) ? JSON.parse(readFileSync(kept, 'utf8')) : null;
 let terminals = [], instructions = '', loaded = false;
-let sleeping = null;
+let sleeping = null, approving = null;
 let buffer = '';
 process.stdin.on('data', chunk => {
   buffer += chunk;
   for (let end; (end = buffer.indexOf('\n')) >= 0;) {
     const message = JSON.parse(buffer.slice(0, end)); buffer = buffer.slice(end + 1);
     if (message.id !== undefined && !message.method) appendFileSync(join(process.env.FAKE_CODEX_STATE, 'answers.ndjson'), JSON.stringify(message) + '\n');
+    if (approving && message.id === 'approval-1' && !message.method) {
+      send({ method: 'turn/completed', params: { threadId: thread.id, turn: { ...approving, status: 'completed' } } }); approving = null;
+    }
     if (message.id === undefined || !message.method) continue;
     if (message.method === 'turn/steer') appendFileSync(join(process.env.FAKE_CODEX_STATE, 'steers.ndjson'), JSON.stringify(message.params) + '\n');
     if (sleeping && ['turn/steer', 'turn/interrupt'].includes(message.method)) {
@@ -136,6 +140,12 @@ process.stdin.on('data', chunk => {
       const text = questions ? questions.map(q => [q.title, ...(q.options ?? []).map(o => `- ${o}`)].join('\n')).join('\n\n') : '先说一声：开始发布了';
       send({ method: 'item/completed', params: { threadId: thread.id, turnId: turn.id, item: { type: 'agentMessage', id: `${tool}-${turn.id}`, text,
         phase: 'final_answer', memoryCitation: null, delivery: 'async', questions } } });
+    }
+    if (input.includes('command-approval') && !message.params.outputSchema) {
+      approving = turn;
+      send({ id: 'approval-1', method: 'item/commandExecution/requestApproval', params: { threadId: thread.id, turnId: turn.id, itemId: 'approved-command',
+        command: 'npm test', cwd: '/', commandActions: [], availableDecisions: ['accept', 'decline'] } });
+      continue;
     }
     if (input.includes('unrecognized') && !message.params.outputSchema) {
       const said = (method, item) => send({ method, params: { threadId: thread.id, turnId: turn.id, item } });

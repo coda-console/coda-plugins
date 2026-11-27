@@ -4,7 +4,7 @@
   "displayName": "好友对话",
   "description": "与已绑定个人身份的好友收发签名对话消息",
   "icon": { "symbol": "bubble.left.and.bubble.right.fill", "color": "blue" },
-  "version": "0.1.0",
+  "version": "0.1.1",
   "categories": [
     "Skills 与工具"
   ],
@@ -45,6 +45,6 @@
     "lib"
   ],
   "dependencies": {
-    "@coda-console/protocol": "6.27.0"
+    "@coda-console/protocol": "6.28.0"
   }
 }

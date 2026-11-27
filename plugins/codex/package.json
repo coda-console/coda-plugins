@@ -3,9 +3,9 @@
   "id": "codex",
   "displayName": "Codex",
   "description": "用 OpenAI Codex 跑会话",
-  "version": "2.3.1",
+  "version": "2.4.0",
   "engines": {
-    "coda": 20
+    "coda": 21
   },
   "categories": [
     "Agent"
@@ -32,10 +32,13 @@
         "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/agent/entry.mjs\"",
         "modes": {
           "title": "审批模式",
-          "unset": "Agent 默认",
+          "unset": "默认（完全放开）",
           "note": "未选择时为完全访问。",
+          "manual": "manual",
           "auto": "agent",
-          "full": "agent-full-access"
+          "full": "agent-full-access",
+          "safe": [],
+          "default": "full"
         },
         "skillsDir": ".agents/skills",
         "configFiles": [
