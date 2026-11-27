@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import { inflateSync } from 'node:zlib';
 import { test } from 'node:test';
 import { createHash } from 'node:crypto';
-import { identityTitle as friendsTitle, nicknameOf, tailOf } from '../../../plugins/friends/lib/nickname.mjs';
-import { identiconPattern } from '../../../plugins/friends/lib/avatar.mjs';
-import { dmConversationId, identityTitle, isAuthor, isConversationId, renderIdenticonPng, resolveAccordPeers } from '../../../plugins/friend-chat/lib/identity.mjs';
+import { identiconPattern, isAuthor } from '@coda-console/protocol/accord';
+import { dmConversationId, isConversationId, renderIdenticonPng, resolveAccordPeers } from '../../../plugins/friend-chat/lib/identity.mjs';
+import { NO_NAME, SAKURA, XS_A, XS_B, ZYV, titleOf } from '../../helpers/accord-keys.mjs';
 
 const key = n => `ed25519:${n.toString(16).padStart(2, '0').repeat(32)}`;
 const [A, B, C, D] = [key(0x11), key(0x22), key(0x33), key(0x44)];
@@ -15,14 +15,6 @@ test('公钥格式与会话 ID 格式', () => {
   assert.ok(isConversationId(`dm:${'a'.repeat(32)}`));
   assert.ok(isConversationId('grp:team_1-a'));
   for (const bad of [`dm:${'a'.repeat(31)}`, `dm:${'A'.repeat(32)}`, 'grp:', 'grp:-x', `grp:${'a'.repeat(65)}`, 'x:1', undefined]) assert.equal(isConversationId(bad), false);
-});
-
-test('展示名与好友插件逐字一致', () => {
-  const samples = [A, `ed25519:${'0'.repeat(64)}`, `ed25519:${'f'.repeat(64)}`, `ed25519:${'01'}${'ff'.repeat(31)}`, `ed25519:66c8aec217cac5fa9829e4e314c2dfe6f3b3710cbf2c4b4df462c333565b4e27`];
-  for (const author of samples) assert.equal(identityTitle(author, '兜底'), friendsTitle(author, '兜底'));
-  assert.equal(identityTitle(`ed25519:${'0'.repeat(64)}`), 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa #0000');
-  assert.equal(identityTitle('nope', '兜底'), '兜底');
-  assert.equal(identityTitle(undefined), '');
 });
 
 function decodePng(png) {
@@ -69,13 +61,11 @@ test('几何纹 PNG：格子点亮与好友页的 5×5 网格一致，size 可�
   assert.throws(() => renderIdenticonPng('bad'), TypeError);
 });
 
-// 好友页的几何纹只给格子（颜色随 currentColor），所以对照格子；昵称与尾号对照好友插件的 nicknameOf、tailOf。
-test('与好友插件的身份派生逐项一致：昵称、尾号、5×5 几何纹', () => {
+// 好友页的几何纹只给格子（颜色随 currentColor），所以对照协议包 identiconPattern 的格子。
+test('头像 PNG 与协议包的 5×5 几何纹逐格一致', () => {
   const samples = [A, B, `ed25519:${'0'.repeat(64)}`, `ed25519:${'f'.repeat(64)}`,
     ...Array.from({ length: 32 }, (_, i) => `ed25519:${createHash('sha256').update(`sample ${i}`).digest('hex')}`)];
   for (const author of samples) {
-    const key = Buffer.from(author.slice(8), 'hex'), name = nicknameOf(key);
-    assert.equal(identityTitle(author), name ? `${name} #${tailOf(key).slice(-4)}` : author.slice(8, 16), author);
     const raw = inflateSync(decodePng(renderIdenticonPng(author, { size: 35 }))[1].data), stride = 1 + 35 * 3;
     const lit = (x, y) => raw.subarray(y * stride + 1 + x * 3, y * stride + 4 + x * 3).toString('hex') !== raw.subarray(1, 4).toString('hex');
     assert.deepEqual(Array.from({ length: 5 }, (_, r) => Array.from({ length: 5 }, (_, c) => lit(5 + c * 5 + 2, 5 + r * 5 + 2))), identiconPattern(author), author);
@@ -122,9 +112,18 @@ test('准入：好友按公钥聚合多通道', () => {
   const by = Object.fromEntries(out.friends.map(f => [f.author, f]));
   assert.equal(out.friends.length, 5);
   assert.equal(by[A], undefined);
-  assert.deepEqual(by[B], { author: B, title: friendsTitle(B), eligible: true });
+  assert.deepEqual(by[B], { author: B, title: titleOf(B), eligible: true });
   assert.deepEqual([by[C].eligible, by[C].unreachableReason], [false, '对方还没有绑定个人身份']);
   assert.deepEqual([by[D].eligible, by[D].unreachableReason], [false, '双方还没有完成互认']);
   assert.deepEqual([by[`ed25519:${'5'.repeat(64)}`].eligible, by[`ed25519:${'5'.repeat(64)}`].unreachableReason], [false, '该好友的通道与已有记录冲突，请在「好友」页处理']);
   assert.equal(by[`ed25519:${'6'.repeat(64)}`].unreachableReason, '双方还没有完成互认');
+});
+
+test('准入：好友展示名 `昵称 #尾号`，无昵称给 8 位短码，同昵称同末 4 位尾号时本机身份与好友一起向左加位', () => {
+  const channel = author => ({ author, bound: true, conflict: false, certified: true });
+  const titles = (root, authors) => Object.fromEntries(resolveAccordPeers(accord({ status: { certificate: { root, active: true }, friends: authors.map(channel) } })).friends.map(f => [f.author, f.title]));
+  assert.deepEqual(titles(A, [SAKURA, ZYV, NO_NAME]), { [SAKURA]: 'sakura #8283', [ZYV]: 'zyv #4103', [NO_NAME]: 'ffffffff' });
+  assert.deepEqual(titles(A, [XS_A]), { [XS_A]: 'xs #4084' });
+  assert.deepEqual(titles(A, [XS_A, XS_B]), { [XS_A]: 'xs #04084', [XS_B]: 'xs #14084' });
+  assert.deepEqual(titles(XS_A, [XS_B]), { [XS_B]: 'xs #14084' }, '本机身份也在里面比');
 });

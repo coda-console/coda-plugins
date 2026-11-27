@@ -3,9 +3,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { LOCAL_FAILED, STALE_PLUGIN, mergeBoards } from '../../../plugins/token-board/lib/merge.mjs';
+import { DIGITS, NO_NAME, SAKURA, XS_A, XS_B, ZYV } from '../../helpers/accord-keys.mjs';
 import { A, B, C, DAY, X, Y, bucket, dayRec, reply, todayRec } from './boards.mjs';
 
 const member = (machine, board) => ({ machine, board });
+const displayIds = merged => Object.fromEntries(merged.entries.map(e => [e.author, e.displayId]));
 const inputOf = (merged, author) => merged.entries.find(e => e.author === author)?.input;
 
 test('同一作者的两台各有本机数据，又互相读到对方已发布的副本：合计不重复，各取自己的本机数据', () => {
@@ -23,21 +25,26 @@ test('同一作者的两台各有本机数据，又互相读到对方已发布�
   assert.equal(merged.incomplete, false);
 });
 
-test('用 Accord 公钥映射 ID：同一个公钥多台只算一次，重名公钥加末四位', () => {
-  const sakura = 'ed25519:24005142202c7fffffffffffffffffffffffffffffffffffffffffffffff01ab';
-  const sameId = sakura.slice(0, -4) + '3d2a';
-  const digits = 'ed25519:9d56c050a142850a142850a142850a142850a142850a142850a142850a142710';
-  const noId = `ed25519:${'f'.repeat(64)}`;
-  const first = member(X, reply({ selfAuthor: sakura, sourceId: 'x', friends: [{ author: digits }, { author: noId }] }));
-  const second = member(Y, reply({ selfAuthor: sakura, sourceId: 'y' }));
-  const displayIds = merged => Object.fromEntries(merged.entries.map(e => [e.author, e.displayId]));
-  assert.deepEqual(displayIds(mergeBoards([first, second])), {
-    [sakura]: 'sakura', [digits]: '07', [noId]: 'ffffffff…',
-  });
-  const third = member({ id: 'z', name: 'NAS' }, reply({ selfAuthor: sameId, sourceId: 'z', friends: [{ author: sakura }] }));
-  assert.deepEqual(displayIds(mergeBoards([first, second, third])), {
-    [sakura]: 'sakura(01ab)', [sameId]: 'sakura(3d2a)', [digits]: '07', [noId]: 'ffffffff…',
-  });
+test('榜单展示名：昵称 #4 位尾号，无昵称的公钥给 8 位短码，同一个公钥多台只算一次', () => {
+  const first = member(X, reply({ selfAuthor: SAKURA, sourceId: 'x', friends: [{ author: DIGITS }, { author: NO_NAME }] }));
+  const second = member(Y, reply({ selfAuthor: SAKURA, sourceId: 'y' }));
+  assert.deepEqual(displayIds(mergeBoards([first, second])), { [SAKURA]: 'sakura #8283', [DIGITS]: '07 #3120', [NO_NAME]: 'ffffffff' });
+  assert.deepEqual(displayIds(mergeBoards([second])), { [SAKURA]: 'sakura #8283' });
+});
+
+test('榜单展示名：同昵称、尾号末 4 位不同的各显示 4 位', () => {
+  const sameName = SAKURA.slice(0, -4) + '3d2a';
+  const merged = mergeBoards([member(X, reply({ selfAuthor: SAKURA, sourceId: 'x', friends: [{ author: sameName }] }))]);
+  assert.deepEqual(displayIds(merged), { [SAKURA]: 'sakura #8283', [sameName]: 'sakura #3514' });
+});
+
+test('榜单展示名：同昵称且末 4 位尾号相同时向左加位到能区分，加位范围包括只出现在另一台机器上的作者', () => {
+  const first = member(X, reply({ selfAuthor: XS_A, sourceId: 'x', friends: [{ author: SAKURA }] }));
+  assert.deepEqual(displayIds(mergeBoards([first])), { [XS_A]: 'xs #4084', [SAKURA]: 'sakura #8283' });
+  const second = member(Y, reply({ selfAuthor: XS_B, sourceId: 'y' }));
+  assert.deepEqual(displayIds(mergeBoards([first, second])), { [XS_A]: 'xs #04084', [XS_B]: 'xs #14084', [SAKURA]: 'sakura #8283' });
+  const third = member({ id: 'z', name: 'NAS' }, reply({ selfAuthor: ZYV, sourceId: 'z', friends: [{ author: XS_B }] }));
+  assert.deepEqual(displayIds(mergeBoards([first, third])), { [XS_A]: 'xs #04084', [XS_B]: 'xs #14084', [SAKURA]: 'sakura #8283', [ZYV]: 'zyv #4103' });
 });
 
 test('同一条好友记录被两台读到：只算一次，两份版本不同时用最新的', () => {

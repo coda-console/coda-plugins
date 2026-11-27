@@ -1,6 +1,7 @@
 // 抽象社交网关：实现 friends/social@1。业务无关——只认 kind、id、body；签名写入与记录查询全部透传 coda/accord@1，
 // 自己不建第二份目录库，只在 outbox.json 里留还没发出去的 body（同步成功即释放）。所有会写盘、会外发的动作排成一条队，
 // 发布、撤回、证书变化引起的冲洗互不交叉。
+import { identityTitles, shortAuthor } from '@coda-console/protocol/accord';
 import { mergeFriendRows, statusOf } from './friends.mjs';
 import { MAX_BODY_BYTES, canSkip, canonicalHash, certStateOf, checkId, checkKind, checkPublish, entryKey, holdState, keyOf, retractKey, invalid, isPending, markRejected, markSynced,
   nextSeq, queuePublish, queueRetract, readOutbox, withState, writeOutbox } from './outbox.mjs';
@@ -165,7 +166,7 @@ export function createGateway(coda, dir) {
   async function friends({ includePending = false } = {}) {
     const { accord, author, certState } = await accordState();
     const list = Array.isArray(accord?.status?.friends) ? accord.status.friends : [];
-    return { selfAuthor: author, certState, friends: mergeFriendRows(list).filter(row => includePending || row.status === 'bound') };
+    return { selfAuthor: author, certState, friends: mergeFriendRows(list, { titles: identityTitles([author, ...list.map(friend => friend.author)]), shortAuthor }).filter(row => includePending || row.status === 'bound') };
   }
 
   function records({ kind, author, id, limit, cursor, includeAudience }) {

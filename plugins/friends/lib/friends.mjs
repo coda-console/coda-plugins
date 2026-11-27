@@ -1,8 +1,5 @@
 // 好友页的纯逻辑：解析邀请、证书状态、把好友表合成列表行。不碰 Coda，也不碰磁盘。
-// 页面也加载它，所以只用浏览器和 Node 都有的 API。
-import { identityTitle, shortAuthor } from './nickname.mjs';
-
-export { shortAuthor };
+// 页面也加载它，所以只用浏览器和 Node 都有的 API；公钥的展示名与短码由调用方传入（Node 用 @coda-console/protocol/accord，页面用 coda-view://lib/v1/accord.js）。
 
 // 邀请各字段的上限，与 coda/accord@1 的 accept 输入一致。
 const LIMITS = { control: 500, authKey: 500, linkId: 64, scope: 520, hostname: 100, peerNode: 100, bindingToken: 200 };
@@ -122,11 +119,12 @@ const RANK = { conflict: 0, pending: 1, bound: 2 };
 export const statusOf = friend => friend.conflict ? 'conflict' : friend.bound ? 'bound' : 'pending';
 
 /**
- * 好友表（`status.friends`）合成的行：标题是公钥派生的昵称（见 nickname.mjs），没有公钥的待互认项用节点名；
+ * 好友表（`status.friends`）合成的行：标题是公钥派生的 `昵称 #尾号`（`identityTitles`：同昵称且尾号相撞时向左加位，无昵称的公钥是短码），
+ * 没有公钥的待互认项用节点名。撞号要和本人、别的电脑上的好友一起比，所以 `titles`（author → 标题，`identityTitles` 的结果）由调用方算好给出。
  * 按状态（冲突、待互认、已互认）再按更新时间新的在前排序，同样的输入排出同样的顺序。
  */
-export function mergeFriendRows(friends = []) {
+export function mergeFriendRows(friends = [], { titles, shortAuthor }) {
   const rows = friends.map(friend => ({ node: friend.node, author: friend.author ?? null, short: shortAuthor(friend.author), status: statusOf(friend),
-    peerNode: friend.peerNode ?? null, scope: friend.scope, updatedAt: friend.updatedAt ?? 0, title: identityTitle(friend.author, friend.node) }));
+    peerNode: friend.peerNode ?? null, scope: friend.scope, updatedAt: friend.updatedAt ?? 0, title: titles.get(friend.author) ?? friend.node }));
   return rows.sort((a, b) => RANK[a.status] - RANK[b.status] || b.updatedAt - a.updatedAt || (a.node < b.node ? -1 : a.node > b.node ? 1 : 0));
 }

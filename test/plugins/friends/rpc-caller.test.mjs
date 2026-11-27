@@ -16,7 +16,7 @@ import { ACK_MS, LOST, RESUME_MS, UNSUPPORTED, createCaller, proxyKey } from '..
 import { createHolder } from '../../../plugins/friends/lib/rpc-holder.mjs';
 import { answerId, answerRecord, grantRecord, requestDigest, requestId } from '../../../plugins/friends/lib/rpc-format.mjs';
 import { createRpcStore } from '../../../plugins/friends/lib/rpc-store.mjs';
-import { tailOf } from '../../../plugins/friends/lib/nickname.mjs';
+import { tailOf } from '@coda-console/protocol/accord';
 
 const friendsManifest = JSON.parse(await readFile(new URL('../../../plugins/friends/package.json', import.meta.url), 'utf8'));
 const remoteExec = JSON.parse(await readFile(new URL('../../../plugins/remote-exec/package.json', import.meta.url), 'utf8'))
@@ -30,7 +30,7 @@ const HM = key('c'), HR = key('d'), ROOT = key('a'), MC = key('b'), MC2 = key('e
 // XS_NEXT 比它大 1（604085），XS_FAR 大 10000（614084，末 4 位相同）；ZYV 的昵称是 zyv（末 4 位 4103）；NONAME 解不出昵称（末 4 位 5311）。
 const XS = 'ed25519:2e4b9cc2428beb7bff6a56c14d7304e472a23e890e91ef0a6b0b0380e89f9734', XS_NEXT = `${XS.slice(0, -1)}5`, XS_FAR = `${XS.slice(0, -4)}be44`;
 const ZYV = 'ed25519:66c8aec217cac5fa9829e4e314c2dfe6f3b3710cbf2c4b4df462c333565b4e27', NONAME = `ed25519:01${'f'.repeat(62)}`, HM2 = key('3');
-const fullTail = author => tailOf(Buffer.from(author.slice('ed25519:'.length), 'hex'));
+const fullTail = tailOf;
 const ACTIVE = { active: true, until: 1_900_000_000 }, EXPIRED = { active: false };
 const START = Date.UTC(2026, 10, 24, 12, 0, 0), MINUTE = 60_000;
 const SPEC = { name: 'box', os: 'linux', user: 'u', cwd: '/home/u' };

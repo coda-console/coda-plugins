@@ -3,12 +3,11 @@
 // Accord 的读写（coda/accord@1）都在这里按交互发起；「共享」（授给好友的、好友授给本机的远程执行、最近的操作）只经模块读写各台本机。
 // 网络节点（friendNodes / removeFriendNode，试用）：分节标题行的入口打开抽屉，列出入了网却没完成互认的残留节点，删除由客户端弹确认框；
 // 移除好友后留在网络里的节点（status.networkRemovals）显示在分节里，用户点「重试」才读、才删，页面不会自己调用。
-// 昵称、头像都由 Accord 公钥推出（nickname.mjs、avatar.mjs），没有可编辑的名片；
+// 昵称、头像都由 Accord 公钥推出（WebView 标准库 coda-view://lib/v1/accord.js、avatar.mjs），没有可编辑的名片；
 // 节点名等外来数据一律用 textContent / DOM API 渲染，从不拼 HTML 字符串。
 import { accordStatusSummary, resolveAvatar } from '../lib/avatar.mjs';
 import { checked, parseInvite } from '../lib/friends.mjs';
-import { identityTitle } from '../lib/nickname.mjs';
-import { friendSections, identities, listMembers } from '../lib/view-members.mjs';
+import { friendSections, identities, listMembers, memberTitles } from '../lib/view-members.mjs';
 import { fill, h, identiconSvg, svg } from './dom.mjs';
 
 const ACCORD = 'coda/accord@1', LOCAL = { kind: ACCORD, id: 'local' };
@@ -141,12 +140,12 @@ function statusTiles(m, rows) {
       conflict || pending ? null : total ? '全部已互认' : '还没有好友')),
     tile('身份', cert.text, h('span', { class: 'tile-s' }, sub), cert.dot));
 }
-function drawHero(id, sections) {
+function drawHero(id, sections, titles) {
   const { author, signer } = id, ready = Boolean(signer);
   const summary = accordStatusSummary(signer?.entry, []);
   const notice = state.heroNotice.get(author ?? '');
   const settled = members.every(m => m.loaded || m.unreachable || m.accordProblem);
-  const name = author ? identityTitle(author) : !settled ? '读取中…' : ready ? '未建身份' : '读不到身份';
+  const name = author ? titles.get(author) : !settled ? '读取中…' : ready ? '未建身份' : '读不到身份';
   const single = !multi && sections[0];
   return h('section', { class: 'hero' },
     h('div', { class: 'banner' }, h('div', { class: 'banner-acts' },
@@ -317,7 +316,7 @@ async function submitInvite() {
 
 // ---- 好友详情：重新互认、移除都发给这一行所在的电脑 ----
 // 不同电脑上的 node 可能相同，忙碌与提示按（电脑, node）记。
-const sectionRows = m => friendSections([m])[0].rows;
+let drawn = []; // 最近一次 draw 的分节，详情按它找当前行
 
 async function handshake(m, row) {
   const key = rowKey(m, row.node);
@@ -350,7 +349,7 @@ const detail = {
   notice: h('div'),
 };
 detail.dialog.body.append(h('div', { class: 'stack' }, detail.card, detail.info, detail.share, detail.actions, detail.notice));
-const detailRow = () => state.detail && sectionRows(state.detail.member).find(row => row.node === state.detail.node);
+const detailRow = () => state.detail && drawn.find(section => section.member === state.detail.member).rows.find(row => row.node === state.detail.node);
 function openDetail(m, row) {
   state.detail = { member: m, node: row.node, key: rowKey(m, row.node) }; state.removing = null; state.menu = null;
   shareOf(m).opsOpen = false;
@@ -956,10 +955,11 @@ function drawSection({ member: m, title, unreachable, rows }) {
 
 const page = h('div', { class: 'page' });
 function draw() {
-  const sections = friendSections(members);
+  const titles = memberTitles(members), sections = friendSections(members, titles);
+  drawn = sections;
   const ids = identities(live);
   if (!ids.length) ids.push({ author: null, signer: null, members: [] });
-  fill(page, ids.map(id => drawHero(id, sections)), sections.map(drawSection));
+  fill(page, ids.map(id => drawHero(id, sections, titles)), sections.map(drawSection));
   if (state.detail) { if (detailRow()) drawDetail(); else closeDialog(); }
   drawPicker();
   if (netView) drawNet();

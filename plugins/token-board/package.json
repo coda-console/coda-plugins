@@ -4,7 +4,7 @@
   "displayName": "Token 消耗榜",
   "description": "看本机的 Token 用量，并和好友比一比（默认向好友分享，可关闭）",
   "icon": { "symbol": "chart.bar.fill", "color": "orange" },
-  "version": "0.6.0",
+  "version": "0.7.0",
   "categories": [
     "Skills 与工具"
   ],

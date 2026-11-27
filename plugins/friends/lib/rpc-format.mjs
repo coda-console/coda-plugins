@@ -4,6 +4,7 @@
 // 授权的范围（整台机器，或仅限目录的 `restrict`）：整台机器的授权正文是 v1，与加范围之前逐字节一样；仅限目录的授权正文是 v2，多一项 `restrict`。
 // v1 校验严格拒绝未知字段与 v2，所以旧版好友看不到仅限目录的授权（见 README「新旧版本互通」）；范围只在网关与目标机强制，好友一侧的只用来展示。
 import { createHash } from 'node:crypto';
+import { isAuthor } from '@coda-console/protocol/accord';
 
 export const KIND_GRANT = 'friends/rpc-grant', KIND_CALL = 'friends/rpc-call', KIND_ANSWER = 'friends/rpc-answer';
 export const RPC_PREFIX = 'friends/rpc-';
@@ -20,7 +21,6 @@ export const MAX_WINDOW_MS = 11 * MINUTE, FUTURE_SKEW_MS = 2 * MINUTE, CLOCK_BAC
 // 最大的那条请求也一定发得出取消版本。
 export const MAX_CALL_BYTES = 56 * 1024, MAX_ANSWER_BYTES = 60 * 1024;
 
-const AUTHOR = /^ed25519:[0-9a-f]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const REQUEST = /^c[0-9a-f]{32}$/, ANSWER = /^a[0-9a-f]{32}$/, DIGEST = /^[0-9a-f]{64}$/;
 const STATES = ['running', 'completed', 'failed', 'canceled'];
@@ -31,7 +31,7 @@ const isPlain = value => value !== null && typeof value === 'object' && !Array.i
 const isTime = value => Number.isSafeInteger(value) && value >= 0;
 const isText = value => typeof value === 'string';
 
-export const isAuthor = value => isText(value) && AUTHOR.test(value);
+export { isAuthor };
 
 // ---- 授权的范围 ----
 

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   BUCKET_MS, DAY_MS, aggregateLeaderboard, aggregateTodayCurve, buildArchiveBodies, buildDailyUsageBodies, buildTodayBody, fetchUsageBuckets, filterBucketsByPerson,
-  Tally, isWithdrawn, markSame, modelName, needsSame, ownBuckets, ownedBySource, rangeWindow, readArchiveRecord, readTodayRecord, serviceKind, settleTurns, shortAuthor, summarizeBuckets, withdrawnBody,
+  Tally, isWithdrawn, markSame, modelName, needsSame, ownBuckets, ownedBySource, rangeWindow, readArchiveRecord, readTodayRecord, serviceKind, settleTurns, summarizeBuckets, withdrawnBody,
 } from '../../../plugins/token-board/lib/usage.mjs';
 
 const bucket = (start, over = {}) => ({ start, agent: 'claude', model: 'opus', input: 10, output: 5, cacheRead: 100, cacheWrite: 1, turns: 2, reportedTurns: 2, ...over });
@@ -105,11 +105,6 @@ test('一天太大时合并成按小时，再不行合并成整天一块，且�
   const body = buildDailyUsageBodies(buckets)['2026-11-01'];
   assert.ok(Buffer.byteLength(JSON.stringify(body)) < 64 * 1024);
   assert.ok(Object.keys(body.blocks).length <= 24);
-});
-
-test('密钥短码取 ed25519: 后 8 位', () => {
-  assert.equal(shortAuthor(`ed25519:${'0123456789abcdef'.repeat(4)}`), '01234567');
-  assert.equal(shortAuthor(null), '未知');
 });
 
 const usageRecord = (author, id, blocks, version = 1) => ({ author, kind: 'coda/token-usage', id, version, body: { blocks }, local: false });

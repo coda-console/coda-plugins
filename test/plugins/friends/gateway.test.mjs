@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import { activate, deactivate } from '../../../plugins/friends/main.mjs';
 import { createGateway } from '../../../plugins/friends/lib/gateway.mjs';
 import { canonicalHash, entryKey, markSynced, queuePublish, queueRetract, retractKey } from '../../../plugins/friends/lib/outbox.mjs';
-import { identityTitle } from '../../../plugins/friends/lib/nickname.mjs';
+import { XS_A as XS, XS_B as XS_FAR, ZYV, titleOf as identityTitle } from '../../helpers/accord-keys.mjs';
 import { definitionProblem } from '@coda-console/protocol/protocol';
 
 const manifest = JSON.parse(await readFile(new URL('../../../plugins/friends/package.json', import.meta.url), 'utf8'));
@@ -103,6 +103,15 @@ test('activating writes this machine\'s gateway record, and its status follows t
   await g.accord.change({ author: null, certificate: null, friends: [] });
   await until(async () => (await g.status()).certState === 'no_identity', '没有身份写进网关记录');
   assert.deepEqual(await g.status(), { author: null, certState: 'no_identity', friendCount: 0, pendingCount: 0, pausedKinds: [] });
+});
+
+test('friends titles lengthen when two friends, or a friend and this machine\'s own identity, share a nickname and their last 4 digits', async t => {
+  const g = await gateway(t, { friends: [{ node: 'n1', author: XS, bound: true, updatedAt: 2 }, { node: 'n2', author: XS_FAR, bound: true, updatedAt: 1 }, { node: 'n3', author: ZYV, bound: true, updatedAt: 0 }] });
+  assert.deepEqual((await g.call('friends')).friends.map(row => [row.node, row.title]), [['n1', 'xs #04084'], ['n2', 'xs #14084'], ['n3', 'zyv #4103']]);
+  await g.accord.change({ friends: [{ node: 'n2', author: XS_FAR, bound: true }] });
+  assert.deepEqual((await g.call('friends')).friends.map(row => row.title), ['xs #4084']);
+  await g.accord.change({ author: XS });
+  assert.deepEqual((await g.call('friends')).friends.map(row => row.title), ['xs #14084']);
 });
 
 test('friends comes from the friend table alone, titled by each key, and shows pending friends only when asked', async t => {
@@ -733,7 +742,7 @@ test('a stale friends/card is never sent when the certificate recovers, and does
 test('the protocol definition is valid and has only the friends, records, publish, retract and outbox operations, with no streams', () => {
   const [definition] = manifest.contributes.protocols;
   assert.equal(definitionProblem(definition, { namespace: 'friends', where: definition.name }), null);
-  assert.equal(manifest.version, '0.10.1');
+  assert.equal(manifest.version, '0.11.0');
   assert.deepEqual(Object.keys(definition.operations), ['friends', 'records', 'publish', 'retract', 'outbox']);
   assert.equal(definition.streams, undefined);
   assert.deepEqual(definition.permissions.read, { title: definition.permissions.read.title, read: true, operations: ['friends', 'records'] });

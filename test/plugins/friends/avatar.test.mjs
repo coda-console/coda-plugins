@@ -1,29 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { accordStatusSummary, identiconPattern, initialChar, resolveAvatar } from '../../../plugins/friends/lib/avatar.mjs';
+import { identiconPattern } from '@coda-console/protocol/accord';
+import { accordStatusSummary, initialChar, resolveAvatar } from '../../../plugins/friends/lib/avatar.mjs';
 
 const KEY_A = `ed25519:${'a1b2c3d4'.padEnd(64, '0')}`, KEY_B = `ed25519:${'ffeeddcc'.padEnd(64, '1')}`;
-
-test('identiconPattern is a deterministic, mirrored 5x5 grid that is never empty or full', () => {
-  const grid = identiconPattern(KEY_A);
-  assert.deepEqual(identiconPattern(KEY_A), grid);
-  assert.equal(grid.length, 5);
-  for (const row of grid) {
-    assert.equal(row.length, 5);
-    row.forEach((cell, c) => { assert.equal(typeof cell, 'boolean'); assert.equal(cell, row[4 - c]); });
-  }
-  const keys = Array.from({ length: 200 }, (_, i) => `ed25519:${i.toString(16).padStart(64, 'f')}`).concat(['x', '友', 'ed25519:short']);
-  for (const key of keys) {
-    const active = identiconPattern(key).flat().filter(Boolean).length;
-    assert.ok(active > 0 && active < 25, key);
-  }
-});
-
-test('identiconPattern tells different keys apart', () => {
-  assert.notDeepEqual(identiconPattern(KEY_A), identiconPattern(KEY_B));
-  const seen = new Set(Array.from({ length: 100 }, (_, i) => JSON.stringify(identiconPattern(`ed25519:${i.toString(16).padStart(64, '0')}`))));
-  assert.ok(seen.size > 50);
-});
 
 test('initialChar takes the first character', () => {
   assert.equal(initialChar('小明'), '小');

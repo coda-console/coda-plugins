@@ -1,6 +1,7 @@
 // 不可变事件信封：发出时构造 Accord 记录，入站时校验并前向兼容地解析成会话消息。
 import { parseBlobPath } from '@coda-console/protocol/blob';
-import { dmConversationId, isAuthor, isConversationId } from './identity.mjs';
+import { isAuthor } from '@coda-console/protocol/accord';
+import { dmConversationId, isConversationId } from './identity.mjs';
 
 export const EVENT_KIND = 'friend-chat/event';
 const MAX_RECORD_ID_CHARS = 200, MAX_RECORD_ID_BYTES = 256, MAX_BODY_BYTES = 60000, MAX_DATE = 8.64e15, MAX_ID = 2048;
