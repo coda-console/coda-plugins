@@ -39,3 +39,10 @@ for (const [name, present, mode, short, modelName, modelShort] of [
   const unknown = { category: 'mode', options: [{ value: 'future', name: 'Future' }] };
   assert.deepEqual(present({ result: { configOptions: [unknown] } }).result.configOptions[0], unknown);
 });
+
+test('Kimi names the looser auto mode "全部放行" and yolo "自动审批", keeping the ACP IDs', () => {
+  const modes = ['default', 'plan', 'yolo', 'auto'].map(id => ({ id, name: id }));
+  const result = kimiDisplayNames({ result: { modes: { availableModes: modes } } });
+  assert.deepEqual(result.result.modes.availableModes.map(m => [m.id, m._meta.coda.shortName]),
+    [['default', '审批'], ['plan', '规划'], ['yolo', '自动审批'], ['auto', '全部放行']]);
+});

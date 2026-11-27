@@ -3,7 +3,10 @@
   "id": "opencode",
   "displayName": "OpenCode",
   "description": "用 OpenCode 跑会话",
-  "version": "2.6.0",
+  "version": "2.7.0",
+  "engines": {
+    "coda": 21
+  },
   "categories": ["Agent"],
   "contributes": {
     "agents": [
@@ -18,7 +21,12 @@
         "modes": {
           "title": "工作模式",
           "unset": "Agent 默认",
-          "note": "工具权限沿用运行机的 OpenCode 配置。"
+          "note": "工具权限沿用运行机的 OpenCode 配置。",
+          "manual": null,
+          "auto": null,
+          "full": null,
+          "safe": ["plan"],
+          "default": "auto"
         },
         "skillsDir": ".agents/skills",
         "configFiles": [

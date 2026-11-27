@@ -69,7 +69,7 @@ Coda 插件页的「商店」列出 Coda 自带的插件，以及 npm 上 `@coda
 
 模型与模式的 `_meta.coda.shortName` 供 Coda 的工具栏使用，完整名称仍供选择面板与辅助功能读取，执行始终使用原 ID。
 Claude 的短名取 SDK 的显示名（不再附上完整 ID），保留模型版本与上下文变体；Codex 的模型短名去掉重复的 GPT 前缀，审批模式提供中文短名（含新增的 `manual`「人工审批」，`read-only` 改称「按需审批」以免与它混淆）。
-Kimi 的模式提供中文短名，高速模型缩短 Highspeed 文案但保留 2×用量；Grok 声明自己的审批模式名称。
+Kimi 的模式提供中文短名（`yolo`「自动审批」、`auto`「全部放行」，与清单的 `auto: "yolo"`、`full: "auto"` 一致），高速模型缩短 Highspeed 文案但保留 2×用量；Grok 声明自己的审批模式名称。
 OpenCode 已按来源分组去掉模型的 provider 前缀，沿用现有名称；build／plan 是它的 Agent 模式，不改称审批。
 
 ### 会话指令与设置动作
@@ -441,7 +441,7 @@ Dependabot（`.github/dependabot.yml`）每周为它们各开一个 PR，连同 
 | `displayName` | 显示名，一行，不超过 40 字 |
 | `icon` | `light`：插件目录里的 PDF，不超过 32 KiB；可选 `dark`；`template: true` 表示单色、随文字着色。画布按 256 px 出（iOS 按 96 pt 光栅化、只缩不放） |
 | `command` | 启动命令，一行，`sh -c` 运行，以 `exec` 开头，进程就是 Agent 本身 |
-| `modes` | 可省：`title`、`unset`、`note` 是模式选择的标题与说明；`manual`、`auto`、`full` 是这个 Agent 的「人工审批」「自动审批」「全部放行」各是哪个 ACP 模式（`null` 表示没有这一档；`engines.coda` ≥ 21 须写齐），`safe` 是只读、规划等安全模式的 ID 列表，`default` 是 ACP 没报当前模式时相当于哪一档 |
+| `modes` | 可省：`title`、`unset`、`note` 是模式选择的标题与说明；`manual`、`auto`、`full` 是这个 Agent 的「人工审批」「自动审批」「全部放行」各是哪个 ACP 模式（`null` 表示没有这一档），`safe` 是只读、规划等安全模式的 ID 列表，`default` 是 ACP 没报当前模式时相当于哪一档，取值 `"safe"`、`"manual"`、`"auto"`、`"full"` 或 `null`。`engines.coda` ≥ 21 必须声明 `modes`，且 `manual`、`auto`、`full` 三键都要显式写出（可为 `null`）；非空的档位 ID 之间、以及它们与 `safe` 之间不得重复 |
 | `skillsDir`、`configFiles`、`setupHint` | 可省：Agent 在工作副本里找 skills 的目录；它读模型列表的配置文件（变了 Coda 重读）；用不了时给用户的一句话 |
 
 Agent 进程的环境是会话的环境再加插件进程的那组变量（资源的记录命令与 act 命令、放在会话 `PATH` 上的命令也一样；继承来的同名变量先去掉，一个插件的进程拿不到别的插件的）：
