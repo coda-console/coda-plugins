@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { identiconPattern } from '../../../plugins/friends/lib/avatar.mjs';
-import { identityTitle } from '../../../plugins/friends/lib/nickname.mjs';
+import { identiconPattern } from '@coda-console/protocol/accord';
+import { XS_A, XS_B, titleOf as identityTitle } from '../../helpers/accord-keys.mjs';
 import { deferred, flush, openPage } from '../view-dom.mjs';
 
 const A = { id: 'a', name: 'A' }, B = { id: 'b', name: 'B' }, C = { id: 'c', name: 'C' };
@@ -457,6 +457,19 @@ test('two machines of one identity show one hero; machines of two identities sho
   feed(log, 'b', {}, ME2);
   await flush();
   assert.deepEqual(heroes(page).map(hero => [AUTHOR, ME2].find(author => hero.textContent.includes(identityTitle(author)))), [AUTHOR, ME2]);
+});
+
+test('same nickname and last 4 digits across the page: the self of one machine and a friend of another get one more digit each, in the heroes and the rows', async t => {
+  const { page, log } = await open(t, { machines: [A, B] });
+  feed(log, 'a', {}, XS_A);
+  feed(log, 'b', { friends: [{ node: 'n1', author: XS_B, bound: true }] }, ME2);
+  await flush();
+  assert.ok(heroes(page)[0].textContent.includes('xs #04084'));
+  assert.ok(page.text().includes('xs #14084'));
+  assert.ok(!page.text().includes('xs #4084'));
+  log.watches.find(w => w.machine === 'b').cb({ type: 'MODIFIED', entry: { spec: { author: ME2 }, status: { friends: [] } } });
+  await flush();
+  assert.ok(heroes(page)[0].textContent.includes('xs #4084'), 'alone it needs no extra digit');
 });
 
 test('the friends are split by machine, titled with the machine name; the same friend on two machines shows once per section', async t => {

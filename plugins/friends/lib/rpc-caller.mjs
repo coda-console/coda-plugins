@@ -6,7 +6,7 @@
 //   （`machine`；不看是否已绑定：持有方个人证书过期时这一行是未绑定、机器钥匙仍在，授出的照常可用），受众与正文的 grantee 恰好是本机此刻的作者，正文的 holder 就是作者（verifyGrant）。
 // - 代理记录：`friend:<持有方机器钥匙前 16 位>:<授权号>`，spec 取授权记录的、名字改成 `<机器名>@<公钥昵称>#<尾号>`（coda#3040），
 //   labels 记持有方机器钥匙、授权号与完整尾号（`tail`）。公钥是好友表这一行存下的作者（证书过期时仍是这把），没有时用机器钥匙；
-//   解不出昵称的用公钥前 8 位十六进制。尾号默认最后 4 位，本机去重后留下的同一主干的代理记录最后几位相同时写到能区分的最短位数。
+//   解不出昵称的用公钥前 8 位十六进制。尾号默认最后 4 位，本机去重后留下的同一主干的代理记录最后几位相同时写到能区分的最短位数（disambiguateTails）。
 //   机器名含控制字符、换行、双向控制符或首尾有空白的授权不登记（verifyGrant 拒收）。
 //   同一授权在空间里只留一条：候选是与持有方有这样一条通道的机器，机器 ID 最小的那台留下，其余删掉自己这条（没有通道的不留）；
 //   可用性在留下的那台上单独算，不参与选主。授权撤回（目录里这一号已不在，或只剩撤回后的空正文）就删掉；
@@ -27,8 +27,8 @@
 // - 本机作者变了：旧作者下的代理记录停用，正在等的请求不再处理，要等重新授予。
 // - 签名只经网关的内部入口（signRpc、retractRpc）。
 import { isDeepStrictEqual } from 'node:util';
-import { nicknameOf, shortAuthor, tailOf } from './nickname.mjs';
-import { KIND_ANSWER, KIND_CALL, KIND_GRANT, MAX_WINDOW_MS, PROTOCOL, answerId, callRecord, cancelRecord, isAuthor, rebuildExecInput, requestId,
+import { disambiguateTails, isAuthor, nicknameOf, shortAuthor, tailOf } from '@coda-console/protocol/accord';
+import { KIND_ANSWER, KIND_CALL, KIND_GRANT, MAX_WINDOW_MS, PROTOCOL, answerId, callRecord, cancelRecord, rebuildExecInput, requestId,
   signerOf, verifyAnswer, verifyGrant } from './rpc-format.mjs';
 import { KEEP_AFTER_EXPIRY_MS } from './rpc-store.mjs';
 
@@ -132,16 +132,8 @@ export function createCaller(coda, { store, signRpc, retractRpc, onAccord, pages
     }
     // 尾号默认写最后 4 位；本机去重后留下的同一主干、尾号不同的代理记录最后几位也相同时，写到能区分的最短位数。
     const kept = [...known].filter(([key]) => contests.get(key).keep).map(([, grant]) => grant);
-    for (const grant of kept) {
-      let digits = 4;
-      for (const other of kept) {
-        if (other.stem !== grant.stem || other.tail === grant.tail) continue;
-        let same = 0;
-        while (other.tail[77 - same] === grant.tail[77 - same]) same++;
-        digits = Math.max(digits, same + 1);
-      }
-      grant.spec = { ...grant.spec, name: `${grant.stem}#${grant.tail.slice(-digits)}` };
-    }
+    const tails = disambiguateTails(kept, { minDigits: 4 });
+    kept.forEach((grant, i) => { grant.spec = { ...grant.spec, name: `${grant.stem}#${tails[i]}` }; });
     for (const [key, grant] of known) {
       if (stopped) return;
       await register(key, grant, me, mine.get(key), contests.get(key));
@@ -150,8 +142,8 @@ export function createCaller(coda, { store, signRpc, retractRpc, onAccord, pages
 
   // 代理记录名的主干 `<机器名>@<公钥昵称>` 与完整尾号：公钥是好友表这一行存下的作者，没有时用机器钥匙。
   function stemOf(machineName, friend) {
-    const author = isAuthor(friend.author) ? friend.author : friend.machine, key = Buffer.from(author.slice('ed25519:'.length), 'hex');
-    return { stem: `${machineName}@${nicknameOf(key) || shortAuthor(author)}`, tail: tailOf(key) };
+    const author = isAuthor(friend.author) ? friend.author : friend.machine;
+    return { stem: `${machineName}@${nicknameOf(author) || shortAuthor(author)}`, tail: tailOf(author) };
   }
 
   async function retracted({ holder, grant }) {

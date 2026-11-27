@@ -60,7 +60,8 @@ Coda 插件页的「商店」列出 Coda 自带的插件，以及 npm 上 `@coda
 | `kimi` | 无 | Kimi CLI 2.1.1 及以上（缺失或更旧时设置动作装入口核对过的 2.1.1，更新的不动；资源页上可从 Coda 安装、登录） |
 | `grok` | 无 | Grok CLI 1.0.52 及以上（`sessions delete` 核对于 1.0.77，更旧的 CLI 没有它时删除会话回错误；设置动作安装或升级；资源页上可从 Coda 安装、登录） |
 | `opencode` | `jsonc-parser` 3.3.1 | 已登录的 OpenCode CLI 2.1.4 及以上（设置动作安装或升级，OpenCode 1 升到 2） |
-| `friend-chat` | `@coda-console/protocol` 6.27.0（只用它的 `blob` 路径校验，入站附件指针须合乎 `coda/session@1`） | — |
+| `friends` | `@coda-console/protocol` 6.29.0（Node 侧只用它的零依赖 `accord` 子路径：展示名、尾号撞号加位、代理记录名；页面用 Coda 客户端提供的 `coda-view://lib/v1/accord.js`） | — |
+| `friend-chat` | `@coda-console/protocol` 6.29.0（`blob` 路径校验，入站附件指针须合乎 `coda/session@1`；`accord` 子路径的展示名、撞号加位与几何纹格子） | — |
 
 带依赖的插件各有自己的 `package-lock.json`（`node_modules` 不提交）；Coda 在插件的版本目录里 `npm ci` 装它们，
 这几个插件不是本仓库根的 npm workspaces（根包是私有的测试根，装它不该带上 Codex、Claude 的平台二进制）。

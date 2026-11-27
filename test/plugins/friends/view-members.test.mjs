@@ -1,8 +1,8 @@
 // 好友页按成员读数据的纯逻辑：成员列表、按身份归组、按电脑分节。
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { identityTitle } from '../../../plugins/friends/lib/nickname.mjs';
-import { friendSections, identities, listMembers } from '../../../plugins/friends/lib/view-members.mjs';
+import { friendSections, identities, listMembers, memberTitles } from '../../../plugins/friends/lib/view-members.mjs';
+import { XS_A, XS_B, titleOf } from '../../helpers/accord-keys.mjs';
 
 const KEY = n => `ed25519:${String(n).repeat(64)}`;
 const ME = KEY(1), OTHER_ME = KEY(2), PAL = KEY(3);
@@ -59,7 +59,16 @@ test('each machine gets its own section, in view order, with its own friends; th
   assert.deepEqual(sections[1].rows.map(r => r.node).sort(), ['n1', 'n2']);
   assert.deepEqual(sections[2].rows, []);
   assert.equal(sections[0].member, a);
-  assert.equal(sections[0].rows[0].title, identityTitle(PAL, 'n1'), 'titled from the key');
+  assert.equal(sections[0].rows[0].title, titleOf(PAL, 'n1'), 'titled from the key');
+});
+
+test('titles are worked out once for every identity on the page: a friend of one machine collides with the self or a friend of another', () => {
+  const a = member('a', { author: XS_A, friends: [{ node: 'n1', author: PAL, bound: true }] }), b = member('b', { author: ME, friends: [{ node: 'n2', author: XS_B, bound: true }] });
+  assert.deepEqual(friendSections([a, b]).map(s => s.rows.map(r => r.title)), [[titleOf(PAL)], ['xs #14084']]);
+  assert.deepEqual([...memberTitles([a, b])].map(([author, title]) => [author, title]).filter(([, title]) => title.startsWith('xs')), [[XS_A, 'xs #04084'], [XS_B, 'xs #14084']]);
+  assert.deepEqual(friendSections([b]).map(s => s.rows.map(r => r.title)), [['xs #4084']], 'alone it needs no extra digits');
+  const c = member('c', { author: ME, friends: [{ node: 'n3', author: XS_A, bound: true }, { node: 'n4', author: XS_B, bound: true }] });
+  assert.deepEqual(friendSections([c, a])[0].rows.map(r => r.title).sort(), ['xs #04084', 'xs #14084']);
 });
 
 test('with a single member there is no section title', () => {

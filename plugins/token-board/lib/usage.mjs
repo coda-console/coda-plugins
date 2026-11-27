@@ -279,11 +279,6 @@ export function cleanText(value, max) {
   const chars = Array.from(text);
   return chars.length ? chars.slice(0, max).join('').trim() || null : null;
 }
-/** `ed25519:` 后的前 8 位，用于无法映射出 Accord ID 的作者。 */
-export function shortAuthor(author) {
-  const hex = String(author ?? '').replace(/^ed25519:/, '');
-  return hex.slice(0, 8) || '未知';
-}
 
 // ——— 外来用量记录 ———
 

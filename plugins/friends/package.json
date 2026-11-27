@@ -4,7 +4,7 @@
   "displayName": "好友",
   "description": "管理 Accord 身份与熟人好友通道，并提供业务无关的好友网关",
   "icon": { "symbol": "person.2.fill", "color": "blue" },
-  "version": "0.10.1",
+  "version": "0.11.0",
   "categories": [
     "Skills 与工具"
   ],
@@ -234,5 +234,8 @@
     "main.mjs",
     "lib",
     "view"
-  ]
+  ],
+  "dependencies": {
+    "@coda-console/protocol": "6.29.0"
+  }
 }

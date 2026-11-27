@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { activate, deactivate } from '../../../plugins/friend-chat/main.mjs';
 import { buildMessageEvent } from '../../../plugins/friend-chat/lib/envelope.mjs';
-import { dmConversationId, identityTitle, renderIdenticonPng } from '../../../plugins/friend-chat/lib/identity.mjs';
+import { dmConversationId, renderIdenticonPng } from '../../../plugins/friend-chat/lib/identity.mjs';
+import { XS_A, XS_B, titleOf as identityTitle } from '../../helpers/accord-keys.mjs';
 import { TEST_OWNER } from '../../helpers/mock-coda.mjs';
 import { ACTIVE, author, EVENT, friend, manualClock, MACHINE, network, SESSION, side, START } from './host.mjs';
 
@@ -24,6 +25,26 @@ async function pair(t, { a = {}, b = {} } = {}) {
   const bob = await side(t, net, { root: B, friends: [friend(A)], ...b });
   return { net, alice, bob };
 }
+
+test('会话标题与参与者名：同昵称同末 4 位尾号时，本机身份、当前好友与历史对端一起向左加位', async t => {
+  const net = network();
+  const alice = await side(t, net, { root: XS_A, friends: [friend(B)] });
+  assert.equal((await alice.session(B)).spec.title, identityTitle(B));
+  await alice.accord.change({ friends: [friend(B), friend(XS_B)] });
+  await net.settled();
+  const session = await alice.session(XS_B);
+  assert.deepEqual([session.spec.title, session.status.participants.map(p => p.name)], ['xs #14084', ['xs #04084', 'xs #14084']]);
+  assert.equal((await alice.session(B)).spec.title, identityTitle(B), '别的好友的名字不受影响');
+  // 对方发过消息、之后不再是好友：历史会话仍参与撞号比较。
+  const bob = await side(t, net, { root: XS_B, friends: [friend(XS_A)] });
+  await alice.post(XS_B, { text: '你好' }, { id: 'call-1' });
+  await net.settled();
+  await alice.accord.change({ friends: [friend(B)] });
+  await net.settled();
+  const kept = await alice.session(XS_B);
+  assert.deepEqual([kept.spec.title, kept.status.participants.map(p => p.name), kept.status.state], ['xs #14084', ['xs #04084', 'xs #14084'], 'unreachable']);
+  assert.equal(bob.root, XS_B);
+});
 
 test('双端互认：建会话、发消息（audience 与 expectAuthor）、head 推进、read 默认 / after / before 分页', async t => {
   const { net, alice, bob } = await pair(t);

@@ -1,7 +1,12 @@
 // 好友页按「视图里的每台电脑」读数据的纯逻辑：成员列表、按身份归组、按电脑分节。不碰 Coda 的 Node API；页面和单测都加载它。
 // 页面不自己选机器：App 的全局视图里有哪几台，页面就读哪几台。
 
+import { identityTitles, shortAuthor } from 'coda-view://lib/v1/accord.js';
 import { certStateOf, mergeFriendRows } from './friends.mjs';
+
+/** 页面上全部成员的本人 author 与全部好友的 author 一起算的展示名（author → 标题）：跨电脑的同昵称同尾号撞号时向左加位。 */
+const authorsOf = members => members.flatMap(m => [m.author, ...m.friends.map(friend => friend.author)]);
+export const memberTitles = members => identityTitles(authorsOf(members));
 
 /** 视图里的成员（去重、保持 coda.machines 的顺序）；`unreachable` 是读不到的原因，可达的为 null。 */
 export function listMembers(coda) {
@@ -25,14 +30,14 @@ export function identities(members) {
 }
 
 /**
- * 好友按电脑分节：每个成员一节，顺序同视图；节里是这台自己的好友通道（行的内容见 mergeFriendRows），不同电脑上的同一个好友各出现一次。
+ * 好友按电脑分节：每个成员一节，顺序同视图；节里是这台自己的好友通道（行的内容见 mergeFriendRows，标题用 `titles`，默认按页面上所有身份一起算一次），不同电脑上的同一个好友各出现一次。
  * 只有一个成员时 `title` 为 null（不出节标题）；读不到的成员（宿主标了 `unreachable`，或 Accord 读失败 `accordProblem`）`unreachable` 写明原因，没有行。
  */
-export function friendSections(members) {
+export function friendSections(members, titles = memberTitles(members)) {
   return members.map(member => ({
     member,
     title: members.length > 1 ? member.name : null,
     unreachable: member.unreachable || member.accordProblem || null,
-    rows: member.unreachable || member.accordProblem ? [] : mergeFriendRows(member.friends),
+    rows: member.unreachable || member.accordProblem ? [] : mergeFriendRows(member.friends, { titles, shortAuthor }),
   }));
 }

@@ -13,11 +13,11 @@
     "node": ">=24"
   },
   "scripts": {
-    "test": "node --test 'test/**/*.test.mjs'"
+    "test": "node --import ./test/coda-view-loader.mjs --test 'test/**/*.test.mjs'"
   },
   "devDependencies": {
     "@agentclientprotocol/sdk": "2.6.0",
-    "@coda-console/protocol": "6.28.0",
+    "@coda-console/protocol": "6.29.0",
     "feelin": "8.2.0",
     "typescript": "6.0.3"
   }

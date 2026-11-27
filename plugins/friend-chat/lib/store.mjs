@@ -5,7 +5,8 @@ import { createHash } from 'node:crypto';
 import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { invalidInput } from './envelope.mjs';
-import { isAuthor, isConversationId } from './identity.mjs';
+import { isAuthor } from '@coda-console/protocol/accord';
+import { isConversationId } from './identity.mjs';
 
 const CURSOR = /^[1-9]\d{0,15}$/;
 // read 一页的 UTF-8 JSON 至多这么多字节（宿主信封上限 1 MiB），留 256 字节给页外壳。

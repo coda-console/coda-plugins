@@ -2,7 +2,8 @@
 // 实现 read、post，并以 avatar 流服务供应几何纹头像。
 import { createHash } from 'node:crypto';
 import { buildMessageEvent, EVENT_KIND, parseEventRecord } from './envelope.mjs';
-import { dmConversationId, identityTitle, isAuthor, renderIdenticonPng, resolveAccordPeers } from './identity.mjs';
+import { identityTitles, isAuthor } from '@coda-console/protocol/accord';
+import { dmConversationId, renderIdenticonPng, resolveAccordPeers } from './identity.mjs';
 import { createStore, storedRoots } from './store.mjs';
 
 export const SESSION = 'coda/session@1';
@@ -97,19 +98,25 @@ export async function startService(coda, { now = Date.now, setTimer = setTimeout
     const { selfRoot } = state.peers, entries = new Map();
     const roots = new Set(await storedRoots(stateDir));
     if (selfRoot) roots.add(selfRoot);
+    const headsOf = new Map();
     for (const root of roots) {
       const heads = new Map();
       for (const { conv, peer, head } of await storeOf(root).conversations()) if (isDm(root, peer, conv)) heads.set(peer, head);
       if (root === selfRoot) for (const friend of state.peers.friends) if (friend.eligible && !heads.has(friend.author)) heads.set(friend.author, null);
+      headsOf.set(root, heads);
+    }
+    // 展示名按本机身份、当前好友与历史会话的全部对端一起算：同昵称且尾号相撞时向左加位。
+    const titles = identityTitles([...roots, ...state.peers.friends.map(friend => friend.author), ...[...headsOf.values()].flatMap(heads => [...heads.keys()])]);
+    for (const [root, heads] of headsOf) {
       for (const [peer, head] of heads) {
         const reason = blocker(state, root, peer);
         if (reason !== null && head === null) continue;
         entries.set(keyOf(root, peer), {
-          spec: { title: identityTitle(peer), container: { id: root, title: '好友对话' } },
+          spec: { title: titles.get(peer), container: { id: root, title: '好友对话' } },
           status: {
             participants: [
-              { id: root, name: identityTitle(root), kind: 'person', self: true, avatar: avatarOf(root) },
-              { id: peer, name: identityTitle(peer), kind: 'person', avatar: avatarOf(peer) },
+              { id: root, name: titles.get(root), kind: 'person', self: true, avatar: avatarOf(root) },
+              { id: peer, name: titles.get(peer), kind: 'person', avatar: avatarOf(peer) },
             ],
             notify: true,
             ...(head === null ? {} : { head }),

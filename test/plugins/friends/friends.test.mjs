@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { certStateOf, checked, mergeFriendRows, parseInvite, shortAuthor } from '../../../plugins/friends/lib/friends.mjs';
-import { identityTitle } from '../../../plugins/friends/lib/nickname.mjs';
+import { identityTitles, shortAuthor } from '@coda-console/protocol/accord';
+import { certStateOf, checked, mergeFriendRows as mergeRows, parseInvite } from '../../../plugins/friends/lib/friends.mjs';
+import { NO_NAME, XS_A, XS_B, titleOf } from '../../helpers/accord-keys.mjs';
 
+const mergeFriendRows = (friends, extraAuthors = []) => mergeRows(friends, { titles: identityTitles([...extraAuthors, ...friends.map(friend => friend.author)]), shortAuthor });
 const KEY_A = `ed25519:${'a1b2c3d4'.padEnd(64, '0')}`, KEY_B = `ed25519:${'ffeeddcc'.padEnd(64, '1')}`;
 
 const TOKEN = '"bindingToken":"b","peerNode":"p"';
@@ -51,12 +53,6 @@ test('parseInvite explains what is wrong, in Chinese', () => {
   assert.throws(() => parseInvite('{"control":"c","authKey":"k","bindingToken":"  "}'), /邀请缺少 bindingToken（一次性口令），请让对方重新生成邀请/);
 });
 
-test('shortAuthor shows 8 characters after ed25519:', () => {
-  assert.equal(shortAuthor(KEY_A), 'a1b2c3d4');
-  assert.equal(shortAuthor('nope'), '');
-  assert.equal(shortAuthor(null), '');
-});
-
 test('parseInvite and checked take an optional peerPort under its aliases and a scope up to 520 characters', () => {
   assert.equal(parseInvite(JSON.stringify({ control: 'c', authKey: 'k', bindingToken: 'b', peerNode: 'p', peerPort: 41641 })).peerPort, 41641);
   assert.equal(parseInvite(JSON.stringify({ control: 'c', authKey: 'k', bindingToken: 'b', peerNode: 'p', peer_port: '8443' })).peerPort, 8443);
@@ -81,7 +77,7 @@ test('mergeFriendRows builds rows only from the friend table, titles them from t
   const rows = mergeFriendRows(friends);
   assert.deepEqual(rows.map(r => r.node), ['n-conflict', 'n-pending', 'n-bound2', 'n-bound']);
   const bound = rows.find(r => r.node === 'n-bound');
-  assert.deepEqual(bound, { node: 'n-bound', author: KEY_A, short: 'a1b2c3d4', status: 'bound', peerNode: 'p1', scope: 's', updatedAt: 10, title: identityTitle(KEY_A, 'n-bound') });
+  assert.deepEqual(bound, { node: 'n-bound', author: KEY_A, short: 'a1b2c3d4', status: 'bound', peerNode: 'p1', scope: 's', updatedAt: 10, title: titleOf(KEY_A, 'n-bound') });
   assert.match(bound.title, /^[a-z0-9]{2,36} #\d{4}$/);
   assert.equal(rows[0].status, 'conflict');
   assert.equal(rows[1].title, 'n-pending', 'a pending friend with no key shows its node name');
@@ -89,9 +85,17 @@ test('mergeFriendRows builds rows only from the friend table, titles them from t
 });
 
 test('mergeFriendRows falls back to the key short code when no nickname can be derived, and is empty without friends', () => {
-  const rows = mergeFriendRows([{ node: 'n1', author: `ed25519:${'f'.repeat(64)}`, bound: true }]);
+  const rows = mergeFriendRows([{ node: 'n1', author: NO_NAME, bound: true }]);
   assert.equal(rows[0].title, 'ffffffff');
-  assert.deepEqual(mergeFriendRows(), []);
+  assert.deepEqual(mergeFriendRows([]), []);
+});
+
+test('mergeFriendRows lengthens the tail of friends whose nickname and last 4 digits collide, also against extra authors', () => {
+  const friends = [{ node: 'n1', author: XS_A, bound: true }, { node: 'n2', author: XS_B, bound: true }];
+  assert.deepEqual(mergeFriendRows(friends).map(r => [r.node, r.title]), [['n1', 'xs #04084'], ['n2', 'xs #14084']]);
+  assert.deepEqual(mergeFriendRows(friends.slice(0, 1)).map(r => r.title), ['xs #4084']);
+  assert.deepEqual(mergeFriendRows(friends.slice(0, 1), [XS_B]).map(r => r.title), ['xs #04084'], 'the other author is the self or a friend elsewhere');
+  assert.deepEqual(mergeFriendRows([...friends, { node: 'n3', bound: false }]).map(r => [r.node, r.title]), [['n3', 'n3'], ['n1', 'xs #04084'], ['n2', 'xs #14084']]);
 });
 
 test('certStateOf reads the certificate when the host writes one, else the author', () => {
