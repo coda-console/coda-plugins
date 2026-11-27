@@ -2,6 +2,8 @@
 
 Claude SDK Agent：Coda 基于 Claude Agent SDK 写的 ACP 入口，一个进程一个 SDK 会话；资源页的「Claude」显示会话报告的额度，可从 Coda 登录。
 
+**审批模式**：清单最低 `engines.coda: 21`，按 API Level 21 的四级模式登记：人工审批档 `default`、自动审批档 `auto`、完全放开档 `bypassPermissions`，安全模式 `plan`、`dontAsk`；未选档时默认等效 `manual`。其余模式（如 `acceptEdits`）未登记，按 `auto` 归档。
+
 ## MCP 配置不进命令行
 
 Coda 交来的 MCP 服务（含 `coda` 服务 `env` 里的令牌 `CODA_TOKEN`）若交给 SDK 的 `mcpServers`，会被写成 `--mcp-config '<JSON>'` 放进 Claude 进程的命令行参数，同一台机器上别的用户看得见。

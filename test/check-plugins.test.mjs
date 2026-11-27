@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { contributionProblem, SCHEMAS } from '@coda-console/protocol/validate';
 import { pluginProblems } from '../scripts/check-plugins.mjs';
 import { pluginDir } from './plugins/plugin.mjs';
 
@@ -36,17 +37,13 @@ test('.coda/workflows being a regular file fails', async t => {
   assert.match(problems[0], /\.coda\/workflows/);
 });
 
-test('every Agent plugin declares the API Level 21 modes with mutually exclusive tiers', async () => {
+test('every Agent plugin declares the API Level 21 modes the protocol accepts', async () => {
   const ids = ['antigravity', 'claude', 'codex', 'cursor', 'grok', 'kimi', 'opencode'];
   for (const id of ids) {
     const dir = pluginDir(id);
     assert.deepEqual(await pluginProblems(dir, id), []);
     const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
     assert.equal(manifest.engines.coda >= 21, true, id);
-    const modes = manifest.contributes.agents[0].modes, { manual, auto, full, safe, default: fallback } = modes;
-    for (const key of ['manual', 'auto', 'full']) assert.ok(key in modes && (modes[key] === null || typeof modes[key] === 'string'), `${id}.${key}`);
-    const tiers = [manual, auto, full].filter(Boolean);
-    assert.equal(new Set([...tiers, ...safe]).size, tiers.length + safe.length, `${id} tiers overlap`);
-    assert.ok(fallback === null || ['manual', 'auto', 'full'].includes(fallback), id);
+    assert.equal(contributionProblem(SCHEMAS['agents.json'], manifest, 'agents', dir), null, id);
   }
 });
