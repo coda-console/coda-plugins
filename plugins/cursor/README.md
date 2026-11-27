@@ -60,7 +60,7 @@ Cursor 不可用或打折的 Coda 功能：
 | --- | --- |
 | 等待项登记 `_coda/wait` | 不登记。Cursor 的后台 shell 与子 Agent 都在同一个 prompt 里等，Coda 看到的是一轮还没结束，静止判断不会错；但没有后台任务卡片与委派清单，会话底部不列它在等什么 |
 | 推理强度 | 没有：Cursor 只在客户端声明它私有的 `_meta.parameterizedModelPicker` 时才给思考档位，Coda 不为某个 Agent 加私有字段 |
-| 委派子会话、流程步骤的「自动审批」 | 清单没有 `modes.auto`：Cursor 的子会话与流程步骤遇到审批会停下等人。要无人值守，在运行机的 Cursor 配置里放行（`approvalMode`、权限 allow 表） |
+| 委派子会话、流程步骤的「人工审批」「自动审批」「全部放行」 | 清单的 `manual`、`auto`、`full` 都是 `null`（`engines.coda` 21 要求写齐），`safe` 是 `["plan", "ask"]`，`default` 是 `auto`。`manual`、`auto`、`full` 父会话省略 `mode` 委派给 Cursor 时，找不到不高于父等级的非 `safe` 档位，Coda 在启动前直接拒绝，与运行机的 Cursor 权限配置无关；`safe` 父会话省略 `mode` 时自动选中首个安全模式 `plan`。显式指定 `plan`、`ask` 属 `safe` 档；显式指定 `agent` 按未登记模式归 `auto` 档，需 `auto` 或 `full` 父会话 |
 | 附件目录免审批 | Cursor 不支持 `additionalDirectories`，读工作副本外的附件要审批 |
 | 用量、上下文占用 | Cursor 不报 |
 | 未登录 | 第一次没登录时 Coda 照 ACP 的 -32000 提示「Cursor 未登录」，但资源页没有 Cursor 面板可以「添加」：按上面在运行机终端登录。登录过期后 Cursor 不报错，只回一句「Please sign in」，Coda 认不出 |

@@ -68,7 +68,7 @@ agy 起的子 Agent 也同样只读它自己的文件，报成 `kind: subagent` 
 | 设置 | 来源 |
 | --- | --- |
 | 模型、思考档位 | Antigravity 给的配置项 `model`、`thought_level`：Gemini 4 系列，账号里有的 Claude、GPT-OSS 也在其中。在 Coda 里切换不写回 `~/.gemini/antigravity-cli/settings.json` |
-| 工作模式 | `default`、`accept-edits`、`auto`、`plan`，加上插件虚拟的 `full`「全部放行」（「工作模式」，没选时用 Antigravity 自己的默认）；清单的 `modes.auto` 指向 `auto`、`modes.full` 指向 `full`，供委派子会话与流程步骤的「自动审批」「全部放行」使用 |
+| 工作模式 | `default`、`accept-edits`、`auto`、`plan`，加上插件虚拟的 `full`「全部放行」（「工作模式」，没选时用 Antigravity 自己的默认）；清单的 `modes.manual` 指向 `default`、`modes.auto` 指向 `auto`、`modes.full` 指向 `full`、`modes.safe` 是 `["plan"]`、`modes.default` 为 `null`（Agent 报什么算什么），供委派子会话与流程步骤的「人工审批」「自动审批」「全部放行」使用 |
 | 审批 | `default` 与 `accept-edits` 下跑命令发 `session/request_permission`，选项是 `allow`（allow_once）与 `deny`（reject_once），Mac 与 iPhone 出审批卡片；`auto` 对安全命令不再询问；`full` 下一律不出卡片 |
 | 恢复 | Antigravity 声明 `loadSession`，后端或托管重启后用 `session/load` 接着聊 |
 | skills | 读工作副本的 `.agents/skills`（清单的 `skillsDir`） |

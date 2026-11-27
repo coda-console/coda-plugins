@@ -3,9 +3,9 @@
   "id": "kimi",
   "displayName": "Kimi Code",
   "description": "用 Kimi Code 跑会话",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "engines": {
-    "coda": 6
+    "coda": 21
   },
   "categories": [
     "Agent"
@@ -23,8 +23,11 @@
         "modes": {
           "title": "审批模式",
           "unset": "人工审批",
-          "auto": "auto",
-          "full": "yolo"
+          "manual": "default",
+          "auto": "yolo",
+          "full": "auto",
+          "safe": ["plan"],
+          "default": "manual"
         },
         "skillsDir": ".agents/skills",
         "configFiles": [

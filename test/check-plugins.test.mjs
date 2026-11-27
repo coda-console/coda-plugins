@@ -1,10 +1,12 @@
 // 静态校验入口：缺 contributes 的清单、成了普通文件的 .coda/workflows 判失败，合法的最小插件通过。
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { contributionProblem, SCHEMAS } from '@coda-console/protocol/validate';
 import { pluginProblems } from '../scripts/check-plugins.mjs';
+import { pluginDir } from './plugins/plugin.mjs';
 
 const manifest = { name: '@coda-console/demo', id: 'demo', displayName: 'Demo', description: 'demo', version: '0.1.0', contributes: { protocolImplementations: ['coda/group@1'] } };
 
@@ -33,4 +35,15 @@ test('.coda/workflows being a regular file fails', async t => {
   const problems = await pluginProblems(dir, 'demo');
   assert.equal(problems.length, 1);
   assert.match(problems[0], /\.coda\/workflows/);
+});
+
+test('every Agent plugin declares the API Level 21 modes the protocol accepts', async () => {
+  const ids = ['antigravity', 'claude', 'codex', 'cursor', 'grok', 'kimi', 'opencode'];
+  for (const id of ids) {
+    const dir = pluginDir(id);
+    assert.deepEqual(await pluginProblems(dir, id), []);
+    const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
+    assert.equal(manifest.engines.coda >= 21, true, id);
+    assert.equal(contributionProblem(SCHEMAS['agents.json'], manifest, 'agents', dir), null, id);
+  }
 });

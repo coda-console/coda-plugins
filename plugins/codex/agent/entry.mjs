@@ -18,6 +18,7 @@ import { orderedCodexTitles } from './titles.mjs';
 import { continuedCodexSubagents } from './subagents.mjs';
 import { describeExit, followCodexProcessExit, listenExit } from './process-exit.mjs';
 import { networkedCodexDevelopment } from './network.mjs';
+import { manualCodexApproval } from './manual-mode.mjs';
 import { codexOptionsAsShown } from './options.mjs';
 import { instructedCodexThreads } from './instructions.mjs';
 import { promptRequiredCodexSteering } from './steering.mjs';
@@ -92,6 +93,6 @@ registerHooks({ load(url, context, nextLoad) {
   const loaded = nextLoad(url, context);
   if (url !== adapter.href) return loaded;
   return { ...loaded, source: reportedCodexUnrecognized(shownCodexAsyncMessages(reportedCodexCompactions(reportedCodexSleeps(reportedCodexFailures(codexOptionsAsShown(relayedCodexStreams(orderedCodexTitles(followCodexProcessExit(continuedCodexSubagents(
-    promptRequiredCodexSteering(instructedCodexThreads(countedCodexUsage(servedCodexModels(networkedCodexDevelopment(writableCodexSessionTmp(trustedCodaMcpRequests(Buffer.from(loaded.source).toString('utf8')))))))))))))))))) };
+    promptRequiredCodexSteering(instructedCodexThreads(countedCodexUsage(servedCodexModels(networkedCodexDevelopment(manualCodexApproval(writableCodexSessionTmp(trustedCodaMcpRequests(Buffer.from(loaded.source).toString('utf8'))))))))))))))))))) };
 } });
 await import(adapter.href);

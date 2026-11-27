@@ -23,7 +23,7 @@ test('Claude names keep versions and context variants, while full labels and exe
 });
 
 for (const [name, present, mode, short, modelName, modelShort] of [
-  ['Codex', codexDisplayNames, 'read-only', '审批', 'GPT-6.1 Sol', '6.1 Sol'],
+  ['Codex', codexDisplayNames, 'read-only', '按需审批', 'GPT-6.1 Sol', '6.1 Sol'],
   ['Kimi', kimiDisplayNames, 'default', '审批', 'K3.1 Pro Highspeed 2x Usage Cost', 'K3.1 Pro 高速·2×用量'],
 ]) test(`${name} publishes compact names on opening, setting changes and live updates, without replacing metadata or IDs`, () => {
   const option = { category: 'mode', options: [{ value: mode, name: 'Full label', _meta: { future: 1, coda: { default: true } } }] };
@@ -38,4 +38,11 @@ for (const [name, present, mode, short, modelName, modelShort] of [
   assert.equal(legacy.result.modes.availableModes[0]._meta.coda.shortName, short);
   const unknown = { category: 'mode', options: [{ value: 'future', name: 'Future' }] };
   assert.deepEqual(present({ result: { configOptions: [unknown] } }).result.configOptions[0], unknown);
+});
+
+test('Kimi names the looser auto mode "全部放行" and yolo "自动审批", keeping the ACP IDs', () => {
+  const modes = ['default', 'plan', 'yolo', 'auto'].map(id => ({ id, name: id }));
+  const result = kimiDisplayNames({ result: { modes: { availableModes: modes } } });
+  assert.deepEqual(result.result.modes.availableModes.map(m => [m.id, m._meta.coda.shortName]),
+    [['default', '审批'], ['plan', '规划'], ['yolo', '自动审批'], ['auto', '全部放行']]);
 });

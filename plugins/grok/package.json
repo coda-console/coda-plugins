@@ -3,9 +3,9 @@
   "id": "grok",
   "displayName": "Grok",
   "description": "用 Grok CLI 跑会话",
-  "version": "1.9.1",
+  "version": "1.10.0",
   "engines": {
-    "coda": 6
+    "coda": 21
   },
   "categories": [
     "Agent"
@@ -23,9 +23,12 @@
         "modes": {
           "title": "审批模式",
           "unset": "按运行机配置",
+          "note": "切换对后续消息生效；新会话未选择时沿用运行机的 Grok 配置。",
+          "manual": null,
           "auto": "auto",
           "full": "always-approve",
-          "note": "切换对后续消息生效；新会话未选择时沿用运行机的 Grok 配置。"
+          "safe": [],
+          "default": null
         },
         "skillsDir": ".agents/skills",
         "configFiles": [

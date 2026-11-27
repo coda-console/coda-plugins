@@ -8,6 +8,8 @@ Codex Agent：Codex 插件提供的入口运行 codex-acp，报告子 Agent、�
 
 **会话临时目录可写**：Coda 给会话一个临时目录时（环境变量 `CODA_SESSION_TMP`，绝对路径，`<状态根>/session-tmp/<会话ID>`），它加进 Codex workspace-write 沙箱的可写根，和 Coda 经 ACP 交来的附加目录同样处理（每一轮的沙箱策略与会话配置的 `sandbox_workspace_write.writable_roots`），从别的机器拉下来的文件可以原地改再推回去。只加这个会话自己的目录，不加 `session-tmp/`（别的会话的目录在它下面）；完全放开模式本来就能写，只读的沙箱策略不加；没有这个变量（旧的后端）或不是绝对路径时和以前一样。Codex 的 `TMPDIR` 不改。
 
+**审批模式**：除 codex-acp 自带的 `read-only`（短名「按需审批」）、`agent`（「自动审批」）、`agent-full-access`（「完全访问」）外，入口给它的唯一一张模式表加了第四个 `manual`（「人工审批」）：`approvalPolicy: untrusted`、审批人是用户、workspace-write 沙箱且不开网络（`agent/manual-mode.mjs`，锚点对不上就启动失败）。Codex 要运行不在它可信命令里的命令时，经 ACP 的 `session/request_permission` 交给 Coda 由人答复；会话临时目录同样在它的可写根里。`read-only` 保留给已有会话，它是 `on-request`（由模型自己决定问不问）且允许写工作区，所以不归入 `safe`。清单的 `modes` 因此是 `manual: "manual"`、`auto: "agent"`、`full: "agent-full-access"`、`safe: []`、`default: "full"`，与未指定模式时的启动默认（完全访问）一致。
+
 ## 资源页：Codex 的登录与额度
 
 资源页上的资源类型「Codex」：这台机器上 Codex 自己的登录（本机登录）和它的额度。打开「多账号」时它输出为空，「Codex」里是多账号管理的账号（类型 `accounts`，见下）。
