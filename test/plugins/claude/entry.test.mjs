@@ -21,7 +21,7 @@ import { SessionTitle } from '../../../plugins/claude/agent/titles.mjs';
 import { ToolCallCache } from '../../../plugins/claude/agent/tools.mjs';
 import { accountHash } from '../../../plugins/claude/agent/limits.mjs';
 import { KNOWN_TOOLS } from '../../../plugins/claude/agent/registry.mjs';
-import { agentValueProblem } from '@coda-console/protocol/agent';
+import { agentMessageProblem, agentValueProblem } from '@coda-console/protocol/agent';
 import { fixtureSdk, queries } from './fixture-sdk.mjs';
 import { substituted } from '../substitute.mjs';
 
@@ -880,7 +880,8 @@ const signedInAs = email => {
     return q;
   } };
 };
-const quotas = c => c.out.filter(m => m.method === '_coda/quota').map(m => m.params);
+// What the plugin tells, valid in the protocol's schema.
+const quotas = c => c.out.filter(m => m.method === '_coda/quota').map(m => { assert.equal(agentMessageProblem(m.method, m.params), null); return m.params; });
 const oneWindow = { status: 'allowed', rateLimitType: 'seven_day_sonnet', utilization: 0.4, resetsAt: 4102444800 };
 
 test('the plan windows a session reports are told to Coda as `_coda/quota` of the account it runs as, every window of an event at once', async t => {
