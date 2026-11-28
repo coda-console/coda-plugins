@@ -274,7 +274,10 @@
         }
       }
     ],
-    "protocolImplementations": ["memory/engine@1"]
+    "protocolImplementations": ["memory/engine@1"],
+    "setup": {
+      "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/setup.mjs\""
+    }
   },
   "engines": { "node": ">=24", "coda": 15 },
   "license": "MIT",
@@ -284,5 +287,5 @@
     "directory": "plugins/memory"
   },
   "publishConfig": { "access": "public" },
-  "files": ["main.mjs", "lib"]
+  "files": ["main.mjs", "lib", "scripts"]
 }
