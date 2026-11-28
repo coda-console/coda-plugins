@@ -25,6 +25,9 @@ async function readState(file) {
   }
 }
 
+// 读取同步状态（没建过返回 null）；写入只在项目锁内，读到的总是完整的一份。
+export const readSyncState = (stateDir, projectId) => readState(stateFile(stateDir, projectId));
+
 // 同目录临时文件加 rename，读的人看不到写了一半的状态。
 async function writeState(file, state) {
   await mkdir(dirname(file), { recursive: true });
@@ -55,7 +58,7 @@ async function defaultBranchName(repoDir) {
 
 // 只更新远端跟踪分支：refspec 写死成 refs/remotes/origin/<分支>，--refmap= 让配置里的 remote.origin.fetch
 // （可能把远端分支映射到本地 refs/heads/*）一概不参与，工作区和本地分支不会被动。失败（没有 origin、网络不通）返回原因，不抛。
-async function fetchOrigin(repoDir) {
+export async function fetchOrigin(repoDir) {
   try {
     const branch = await defaultBranchName(repoDir);
     await gitOut(repoDir, ['fetch', '--quiet', '--no-tags', '--no-recurse-submodules', '--refmap=', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`]);
@@ -144,25 +147,31 @@ async function runSync({ projectId, repoDir, stateDir, memoryDir, engine, fetchR
   return { ...result, action: diff.mode === 'incremental' ? 'incremental' : 'rebuild', commit, indexed: [...items.values()].filter(item => item.mnemonId).length };
 }
 
-export function syncProject({ projectId, repoDir, stateDir, memoryDir = '.memory', engine, fetchRemote = false, forceRebuild = false, now = new Date() }) {
-  const dir = normalizeMemoryDir(memoryDir);
-  return withProjectLock(stateDir, projectId, () => runSync({ projectId, repoDir, stateDir, memoryDir: dir, engine, fetchRemote, forceRebuild, now }));
+// 已在项目锁内（withProjectLock 不可重入）时用 Locked 版本；不带 Locked 的自己持锁。
+const normalized = ({ memoryDir = '.memory', fetchRemote = false, forceRebuild = false, now = new Date(), ...rest }) => ({ ...rest, memoryDir: normalizeMemoryDir(memoryDir), fetchRemote, forceRebuild, now });
+
+export const syncProjectLocked = options => runSync(normalized(options));
+
+export function syncProject(options) {
+  const checked = normalized(options);
+  return withProjectLock(checked.stateDir, checked.projectId, () => runSync(checked));
 }
 
 // 读取前的惰性同步（判断和同步在同一把项目锁里，不会拿着别人正在重建的旧状态做判断）：
 // 没建过索引立即同步；节流期内本地默认分支没动、索引也在就直接返回；动了或索引没了只同步不拉远端；过了节流期带远端拉取同步。
-export async function ensureSynced({ lazySyncSeconds = 60, ...options }) {
-  const { projectId, repoDir, stateDir, engine, forceRebuild = false, now = new Date() } = options;
-  const memoryDir = normalizeMemoryDir(options.memoryDir ?? '.memory');
-  return withProjectLock(stateDir, projectId, async () => {
-    const sync = fetchRemote => runSync({ projectId, repoDir, stateDir, memoryDir, engine, fetchRemote, forceRebuild, now });
-    const state = await readState(stateFile(stateDir, projectId));
-    if (!state?.indexedCommit) return sync(true);
-    if (!forceRebuild && now - new Date(state.lastCheckedAt) < lazySyncSeconds * 1000) {
-      const commit = await defaultCommit(repoDir);
-      if (commit === state.indexedCommit && state.memoryDir === memoryDir && await engine.storeExists()) return { action: 'throttled', commit };
-      return sync(false);
-    }
-    return sync(true);
-  });
+export async function ensureSyncedLocked({ lazySyncSeconds = 60, ...options }) {
+  const { projectId, repoDir, stateDir, memoryDir, engine, forceRebuild, now } = normalized(options);
+  const sync = fetchRemote => runSync({ projectId, repoDir, stateDir, memoryDir, engine, fetchRemote, forceRebuild, now });
+  const state = await readState(stateFile(stateDir, projectId));
+  if (!state?.indexedCommit) return sync(true);
+  if (!forceRebuild && now - new Date(state.lastCheckedAt) < lazySyncSeconds * 1000) {
+    const commit = await defaultCommit(repoDir);
+    if (commit === state.indexedCommit && state.memoryDir === memoryDir && await engine.storeExists()) return { action: 'throttled', commit };
+    return sync(false);
+  }
+  return sync(true);
+}
+
+export function ensureSynced(options) {
+  return withProjectLock(options.stateDir, options.projectId, () => ensureSyncedLocked(options));
 }

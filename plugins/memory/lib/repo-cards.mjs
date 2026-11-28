@@ -1,7 +1,7 @@
 // 仓库里的卡片：工作树里的读写（<worktree>/<memoryDir>/items/<id>.md），以及只读的 git 读取（不 checkout、不动工作区）。
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { copyFile, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, unlink, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, posix, relative, sep } from 'node:path';
 import { promisify } from 'node:util';
@@ -27,7 +27,7 @@ export function normalizeMemoryDir(memoryDir) {
   return dir;
 }
 const itemsPath = memoryDir => posix.join(normalizeMemoryDir(memoryDir), ITEMS_DIR);
-const cardRelPath = (memoryDir, id) => posix.join(itemsPath(memoryDir), `${assertId(id)}${CARD_EXT}`);
+export const cardRelPath = (memoryDir, id) => posix.join(itemsPath(memoryDir), `${assertId(id)}${CARD_EXT}`);
 const isCardPath = (memoryDir, path) => posix.dirname(path) === itemsPath(memoryDir) && path.endsWith(CARD_EXT);
 const idOfPath = path => basename(path, CARD_EXT);
 
@@ -284,7 +284,8 @@ export async function loadDraftOverlay(repoDir, baseCommit, memoryDir) {
   const scratch = await mkdtemp(join(tmpdir(), 'memory-index-'));
   try {
     const index = (await git(repoDir, ['rev-parse', '--path-format=absolute', '--git-path', 'index'])).trim();
-    await copyFile(index, join(scratch, 'index')).catch(error => { if (error.code !== 'ENOENT') throw error; });
+    // 保留索引文件的修改时间：git 靠它识别「和索引同一秒内改过、大小没变」的文件，新时间会让这类改动被当成没改。
+    await cp(index, join(scratch, 'index'), { preserveTimestamps: true }).catch(error => { if (error.code !== 'ENOENT') throw error; });
     const out = await git(repoDir, ['diff', '--name-status', '-z', '--no-renames', baseCommit, '--', dir], { GIT_INDEX_FILE: join(scratch, 'index') });
     for (const { status, path } of parseNameStatus(out)) {
       if (!isCardPath(memoryDir, path)) continue;

@@ -114,7 +114,7 @@
         "resource": { "columns": ["name", "status", "projects"], "symbol": "brain" },
         "operations": {
           "recall": {
-            "description": "按问题召回相关记忆卡片，按相关度排序返回。intent 说明问题的取向：why 找原因与结论，when 找时间线，entity 围绕某个实体，general 泛检索，auto 自动判断（默认）。默认不含已被取代的卡片和草稿，includeSuperseded、includeDrafts 可放开。只读。",
+            "description": "按问题召回相关记忆卡片，按相关度排序返回。intent 说明问题的取向：why 找原因与结论，when 找时间线，entity 围绕某个实体，general 泛检索，auto 自动判断（默认）。默认不含已被取代的卡片，含当前工作树里尚未合并的草稿；includeSuperseded 可放开已取代的，includeDrafts 传 false 可排除草稿。只读。",
             "input": {
               "type": "object",
               "properties": {
@@ -122,7 +122,7 @@
                 "intent": { "type": "string", "enum": ["auto", "why", "when", "entity", "general"], "description": "问题的取向，默认 auto。" },
                 "limit": { "type": "integer", "minimum": 1, "maximum": 50, "description": "最多返回几张卡片。" },
                 "includeSuperseded": { "type": "boolean", "description": "是否包含已被取代的卡片，默认否。" },
-                "includeDrafts": { "type": "boolean", "description": "是否包含尚未合入主分支的草稿卡片，默认否。" }
+                "includeDrafts": { "type": "boolean", "description": "是否包含当前工作树相对主分支尚未合并的草稿卡片，默认是；传 false 可排除。" }
               },
               "required": ["query"],
               "additionalProperties": false
@@ -133,8 +133,10 @@
                 "items": {
                   "type": "array",
                   "description": "召回的卡片，按相关度从高到低。",
-                  "items": { "type": "object", "description": "一张卡片：id、kind、status、正文、来源、实体、标签、重要度与相关度得分。" }
-                }
+                  "items": { "type": "object", "description": "一张卡片：id、kind、status、content（正文）、refs、entities、tags、importance，加上 score、matchedVia、superseded、draft（是否未合并的草稿）与 contradictions（对立卡片，含出处）。" }
+                },
+                "indexedCommit": { "type": ["string", "null"], "description": "索引对应的主分支提交；还没有索引时为 null。" },
+                "draftCount": { "type": "integer", "description": "当前工作树里未合并的草稿卡片数。" }
               },
               "required": ["items"],
               "additionalProperties": true
@@ -153,7 +155,7 @@
                 "tag": { "type": "string", "description": "按标签过滤。" },
                 "ref": { "type": "string", "description": "按来源引用过滤。" },
                 "limit": { "type": "integer", "minimum": 1, "maximum": 50, "description": "最多返回几张卡片。" },
-                "includeDrafts": { "type": "boolean", "description": "是否包含尚未合入主分支的草稿卡片，默认否。" }
+                "includeDrafts": { "type": "boolean", "description": "是否包含当前工作树相对主分支尚未合并的草稿卡片，默认是；传 false 可排除。" }
               },
               "additionalProperties": false
             },
@@ -163,8 +165,9 @@
                 "items": {
                   "type": "array",
                   "description": "命中的卡片。",
-                  "items": { "type": "object", "description": "一张卡片的摘要。" }
-                }
+                  "items": { "type": "object", "description": "一张卡片：字段同召回；给了 query 时带 score。" }
+                },
+                "indexedCommit": { "type": ["string", "null"], "description": "索引对应的主分支提交；还没有索引时为 null。" }
               },
               "required": ["items"],
               "additionalProperties": true
@@ -177,7 +180,7 @@
               "type": "object",
               "properties": {
                 "id": { "type": "string", "minLength": 1, "description": "卡片 id。" },
-                "includeDrafts": { "type": "boolean", "description": "是否也在尚未合入主分支的草稿里找，默认否。" }
+                "includeDrafts": { "type": "boolean", "description": "是否也在当前工作树相对主分支尚未合并的草稿里找，默认是；传 false 可排除。" }
               },
               "required": ["id"],
               "additionalProperties": false
@@ -185,7 +188,10 @@
             "result": {
               "type": "object",
               "properties": {
-                "card": { "type": "object", "description": "卡片的全部字段与正文。" }
+                "card": { "type": "object", "description": "卡片的全部字段与正文（content），含 draft 与 contradictions。" },
+                "draft": { "type": "boolean", "description": "是否是尚未合入主分支的草稿。" },
+                "neighbors": { "type": "object", "description": "相邻卡片的摘要（id、status、refs）：supersedes、supersededBy、contradicts、related。" },
+                "indexedCommit": { "type": ["string", "null"], "description": "索引对应的主分支提交；还没有索引时为 null。" }
               },
               "required": ["card"],
               "additionalProperties": true
@@ -216,7 +222,9 @@
               "properties": {
                 "id": { "type": "string", "description": "写入的卡片 id。" },
                 "created": { "type": "boolean", "description": "是新建的卡片（true）还是合并进已有卡片（false）。" },
-                "path": { "type": "string", "description": "卡片在仓库里的相对路径。" }
+                "path": { "type": "string", "description": "卡片在仓库里的相对路径。" },
+                "status": { "type": "string", "description": "卡片的当前状态。" },
+                "card": { "type": "object", "description": "写入后的卡片。" }
               },
               "required": ["id", "created", "path"],
               "additionalProperties": true
@@ -258,7 +266,9 @@
             "result": {
               "type": "object",
               "properties": {
-                "id": { "type": "string", "description": "被归档的卡片 id。" }
+                "id": { "type": "string", "description": "被归档的卡片 id。" },
+                "path": { "type": "string", "description": "卡片在仓库里的相对路径。" },
+                "status": { "type": "string", "description": "归档后的状态，固定为 archived。" }
               },
               "required": ["id"],
               "additionalProperties": true
@@ -287,5 +297,5 @@
     "directory": "plugins/memory"
   },
   "publishConfig": { "access": "public" },
-  "files": ["main.mjs", "lib", "scripts"]
+  "files": ["main.mjs", "lib", "scripts", ".coda"]
 }

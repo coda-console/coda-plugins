@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 研究记忆的定时同步（设置 memory.autoSync、memory.syncSchedule）：每个项目按计划把主分支的卡片增量同步进本机检索索引。
+     没有记忆卡片、也没建过索引的项目只写一行跳过的说明，不建库。 -->
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="memory-sync-definitions" targetNamespace="https://coda.pub/plugins/memory">
+  <process id="memory-sync" name="同步研究记忆索引" isExecutable="true" coda:title="同步研究记忆索引" coda:autoRun="=vars.memory.autoSync">
+    <startEvent id="due" name="到点">
+      <timerEventDefinition>
+        <timeCycle xsi:type="tFormalExpression">=vars.memory.syncSchedule</timeCycle>
+      </timerEventDefinition>
+    </startEvent>
+    <sequenceFlow id="to-projects" sourceRef="due" targetRef="projects" />
+    <serviceTask id="projects" name="获取本机项目" coda:action="list-projects" />
+    <sequenceFlow id="to-sync" sourceRef="projects" targetRef="sync" />
+    <scriptTask id="sync" name="同步研究记忆" coda:checkout="false" coda:timeout="10" coda:status="{{sync.line}}" scriptFormat="bash">
+      <extensionElements>
+        <coda:env name="MEMORY_PROJECT_ID" value="=projects.here" />
+        <coda:env name="MEMORY_PROJECTS_JSON" value="=projects.projects" />
+        <coda:env name="MEMORY_DIR" value="=vars.memory.memoryDir" />
+        <coda:env name="MEMORY_MNEMON_PATH" value="=vars.memory.mnemonPath" />
+        <coda:env name="MEMORY_EMBEDDING_PROVIDER" value="=vars.memory.embeddingProvider" />
+        <coda:env name="MEMORY_EMBEDDING_BASE_URL" value="=vars.memory.embeddingBaseUrl" />
+        <coda:env name="MEMORY_EMBEDDING_MODEL" value="=vars.memory.embeddingModel" />
+        <coda:env name="MEMORY_EMBEDDING_API_KEY_ENV" value="=vars.memory.embeddingApiKeyEnv" />
+        <coda:output name="line" />
+      </extensionElements>
+      <script>node "$CODA_PLUGIN_PATH/scripts/sync-project.mjs"</script>
+    </scriptTask>
+    <sequenceFlow id="to-end" sourceRef="sync" targetRef="end" />
+    <endEvent id="end" />
+  </process>
+</definitions>
