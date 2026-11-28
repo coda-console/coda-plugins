@@ -21,70 +21,77 @@
     "configuration": {
       "title": "研究记忆",
       "properties": {
+        "memory.enabled": {
+          "title": "启用研究记忆",
+          "type": "boolean",
+          "order": 0,
+          "default": false,
+          "description": "默认关闭，防止安装后影响代码仓；在需要沉淀知识的研究仓开启，或配合插件 Tag（如 research）只对研究仓生效。可按目录覆盖：控制该目录会话是否带上记忆开场说明。"
+        },
         "memory.memoryDir": {
           "title": "记忆目录",
           "type": "string",
-          "order": 0,
+          "order": 1,
           "default": ".memory",
-          "description": "研究仓内存放记忆卡片的相对目录，卡片在其下的 items/<id>.md。"
+          "description": "研究仓内存放记忆卡片的相对目录，卡片在其下的 items/<id>.md。以本机插件设置层为准，目录覆盖对它不生效。"
         },
         "memory.autoSync": {
           "title": "自动同步索引",
           "type": "boolean",
-          "order": 1,
-          "default": true,
-          "description": "开启后按计划和读取时的惰性检查，把主分支的卡片增量同步进检索索引。"
+          "order": 2,
+          "default": false,
+          "description": "目录层（可按目录覆盖）：控制该目录的定时同步，需要在研究记忆已启用的目录开启；会话读取记忆前的惰性同步不看目录覆盖，随本机插件层的这一项生效。开启后把主分支的卡片按计划、读取前增量同步进检索索引；关闭时已有索引不再被拉取，缺索引或记忆目录、向量配置变了才本地重建一次。"
         },
         "memory.syncSchedule": {
           "title": "同步计划",
           "type": "string",
-          "order": 2,
+          "order": 3,
           "default": "R/PT10M",
-          "description": "自动同步的重复间隔，ISO 8601 重复写法，默认每 10 分钟。"
+          "description": "自动同步的重复间隔，ISO 8601 重复写法，默认每 10 分钟。可按目录覆盖：控制该目录的定时同步。"
         },
         "memory.lazySyncSeconds": {
           "title": "惰性同步间隔（秒）",
           "type": "integer",
-          "order": 3,
+          "order": 4,
           "default": 60,
           "minimum": 0,
-          "description": "读取记忆时，距上次同步超过这个秒数就先同步一次；0 表示每次读取都同步。"
+          "description": "读取记忆时，距上次同步超过这个秒数就先同步一次；0 表示每次读取都同步。以本机插件设置层为准，目录覆盖对它不生效。"
         },
         "memory.mnemonPath": {
           "title": "mnemon 路径",
           "type": "string",
-          "order": 4,
+          "order": 5,
           "default": "",
-          "description": "mnemon 可执行文件的路径；留空则在 PATH 上查找。"
+          "description": "mnemon 可执行文件的路径；留空则在 PATH 上查找。以本机插件设置层为准，目录覆盖对它不生效。"
         },
         "memory.embeddingProvider": {
           "title": "向量服务",
           "type": "string",
-          "order": 5,
+          "order": 6,
           "enum": ["none", "ollama", "openai-compatible"],
           "default": "none",
-          "description": "生成检索向量的服务；none 表示不用向量，只做文本检索。"
+          "description": "生成检索向量的服务；none 表示不用向量，只做文本检索。以本机插件设置层为准，目录覆盖对它不生效。"
         },
         "memory.embeddingBaseUrl": {
           "title": "向量服务地址",
           "type": "string",
-          "order": 6,
+          "order": 7,
           "default": "",
-          "description": "向量服务的基础地址，如 http://127.0.0.1:11434；向量服务为 none 时忽略。"
+          "description": "向量服务的基础地址，如 http://127.0.0.1:11434；向量服务为 none 时忽略。以本机插件设置层为准，目录覆盖对它不生效。"
         },
         "memory.embeddingModel": {
           "title": "向量模型",
           "type": "string",
-          "order": 7,
+          "order": 8,
           "default": "",
-          "description": "向量服务使用的模型名；向量服务为 none 时忽略。"
+          "description": "向量服务使用的模型名；向量服务为 none 时忽略。以本机插件设置层为准，目录覆盖对它不生效。"
         },
         "memory.embeddingApiKeyEnv": {
           "title": "向量服务密钥的环境变量名",
           "type": "string",
-          "order": 8,
+          "order": 9,
           "default": "",
-          "description": "只填存放 API 密钥的环境变量名，不要在这里写密钥本身。"
+          "description": "只填存放 API 密钥的环境变量名，不要在这里写密钥本身。以本机插件设置层为准，目录覆盖对它不生效。"
         }
       }
     },

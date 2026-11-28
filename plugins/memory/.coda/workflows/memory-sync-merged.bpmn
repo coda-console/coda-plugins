@@ -5,7 +5,7 @@
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="memory-sync-merged-definitions" targetNamespace="https://coda.pub/plugins/memory">
   <process id="memory-sync-merged" name="合并后同步研究记忆索引" isExecutable="true" coda:title="合并后同步研究记忆索引">
     <extensionElements>
-      <coda:join hook="merged" name="同步研究记忆索引" detail="合并到主分支后增量更新本机研究记忆索引" default="true" order="50" />
+      <coda:join hook="merged" name="同步研究记忆索引" detail="合并到主分支后增量更新本机研究记忆索引" default="false" order="50" />
     </extensionElements>
     <startEvent id="start" />
     <sequenceFlow id="to-projects" sourceRef="start" targetRef="projects" />

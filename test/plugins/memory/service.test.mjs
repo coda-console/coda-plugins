@@ -26,7 +26,7 @@ const setup = (t, settings = {}) => {
   git(repoDir, 'add', '-A');
   git(repoDir, 'commit', '-q', '-m', 'init');
   const engine = new MnemonEngine({ bin: fakeBin(root), dataDir: join(projectDir(stateDir, PROJECT), 'mnemon'), env: process.env });
-  const ctx = { projectId: PROJECT, repoDir, stateDir, settings: readSettings(settings), engine };
+  const ctx = { projectId: PROJECT, repoDir, stateDir, settings: readSettings({ 'memory.autoSync': true, ...settings }), engine };
   const merge = () => { git(repoDir, 'add', '-A'); git(repoDir, 'commit', '-q', '-m', 'merge'); return git(repoDir, 'rev-parse', 'HEAD'); };
   return { ctx, repoDir, merge };
 };
@@ -193,6 +193,64 @@ test('autoSync 关闭：只在没建过索引时同步一次；离线（没有 o
   assert.equal(later.indexedCommit, first);
   // 新合并的卡片尚未进索引，但相对索引提交它仍是草稿，所以还是看得到。
   assert.deepEqual(later.items.map(item => [item.id, item.draft]).sort(), [[a.id, false], [b.id, true]].sort());
+});
+
+test('autoSync 关闭后切换 memoryDir：不返回旧目录的卡片，自动本地重建新目录的索引', async t => {
+  const { ctx, repoDir, merge } = setup(t, { 'memory.autoSync': false });
+  const a = await remember(ctx, '盐度甲');
+  merge();
+  assert.deepEqual(ids(await service.recall(ctx, { query: '盐度' })), [a.id]);
+
+  const moved = { ...ctx, settings: readSettings({ 'memory.autoSync': false, 'memory.memoryDir': 'notes' }) };
+  const b = await remember(moved, '盐度乙');
+  assert.equal(b.path, `notes/items/${b.id}.md`);
+  const head = merge();
+  for (const stage of ['含草稿', '不含草稿']) {
+    const recalled = await service.recall(moved, { query: '盐度', includeDrafts: stage === '含草稿' });
+    assert.deepEqual(ids(recalled), [b.id], stage);
+    assert.equal(recalled.indexedCommit, head, stage);
+    assert.deepEqual(ids(await service.search(moved, { includeDrafts: stage === '含草稿' })), [b.id], stage);
+  }
+  const state = JSON.parse(readFileSync(join(projectDir(ctx.stateDir, PROJECT), 'sync-state.json'), 'utf8'));
+  assert.equal(state.memoryDir, 'notes');
+  assert.deepEqual(Object.keys(state.items), [b.id]);
+  assert.ok(repoDir);
+});
+
+test('autoSync 关闭后切换向量配置：索引配置不一致时本地重建', async t => {
+  const { ctx, merge } = setup(t, { 'memory.autoSync': false });
+  await remember(ctx, '盐度甲');
+  merge();
+  await service.recall(ctx, { query: '盐度' });
+  const calls = () => readFileSync(join(projectDir(ctx.stateDir, PROJECT), 'mnemon', 'calls.jsonl'), 'utf8').split('\n').filter(line => line.includes('"command":"import"')).length;
+  const before = calls();
+  await service.recall(ctx, { query: '盐度' });
+  assert.equal(calls(), before);
+  const embedding = { 'memory.embeddingProvider': 'ollama', 'memory.embeddingBaseUrl': 'http://127.0.0.1:11434', 'memory.embeddingModel': 'm' };
+  const switched = { ...ctx, settings: readSettings({ 'memory.autoSync': false, ...embedding }), engine: new MnemonEngine({ bin: ctx.engine.bin, dataDir: ctx.engine.dataDir, env: process.env, embedding: readSettings(embedding) }) };
+  await service.recall(switched, { query: '盐度' });
+  assert.equal(calls(), before + 1);
+});
+
+test('recall 先过滤再截断：前几条命中被草稿覆盖或被取代时，动态扩大候选仍返回有效卡', async t => {
+  const { ctx, repoDir, merge } = setup(t);
+  const a = await remember(ctx, '盐度甲');
+  const b = await remember(ctx, '盐度乙');
+  const c = await remember(ctx, '盐度丙');
+  merge();
+  await remember(ctx, '氯度新结论', { supersedes: [b.id] });
+  merge();
+  // a 在工作树里被改写成不含关键词的草稿：引擎照样把它排在前面，但它不再有效。
+  const file = join(repoDir, a.path);
+  writeFileSync(file, readFileSync(file, 'utf8').replace('盐度甲', '氯度甲'));
+
+  await service.search(ctx, { query: '盐度' });
+  const calls = () => readFileSync(join(projectDir(ctx.stateDir, PROJECT), 'mnemon', 'calls.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line)).filter(call => call.command === 'recall');
+  const before = calls().length;
+  const recalled = await service.recall(ctx, { query: '盐度', limit: 1 });
+  assert.deepEqual(ids(recalled), [c.id]);
+  assert.deepEqual(calls().slice(before).map(call => call.args[call.args.indexOf('--limit') + 1]), ['2', '4']);
+  assert.deepEqual(ids(await service.recall(ctx, { query: '盐度', limit: 1, includeSuperseded: true })), [b.id]);
 });
 
 test('草稿改写了主分支的卡片：只按草稿内容匹配，不再按主分支旧内容命中', async t => {

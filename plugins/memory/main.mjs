@@ -2,7 +2,7 @@
 // 主分支合并（pull_request.closed）后立即同步这个项目的索引。
 import { hostname } from 'node:os';
 import * as service from './lib/service.mjs';
-import { createEngine, readSettings } from './lib/settings.mjs';
+import { createEngine, readSettings, writeMachineSettings } from './lib/settings.mjs';
 import { resolveMnemonBin } from './lib/mnemon.mjs';
 import { syncProject } from './lib/sync.mjs';
 
@@ -15,15 +15,15 @@ const RETRY_FIRST = 5_000, RETRY_MAX = 300_000;
 const report = what => error => console.error(`研究记忆：${what}：${error?.message ?? error}`);
 let disposables = [];
 
-// `schedule`、`cancel` 只为测试里不真等：重试的计时器可以换掉。
-export async function activate(coda, { schedule = setTimeout, cancel = clearTimeout } = {}) {
+// `schedule`、`cancel` 只为测试里不真等：重试的计时器可以换掉；`env` 同理，测试里用它隔离 PATH。
+export async function activate(coda, { schedule = setTimeout, cancel = clearTimeout, env = process.env } = {}) {
   const stateDir = coda.plugin.state, knownProjects = new Map();
   let settings = readSettings(), machineId = null, machineName = null;
   let started = false, stopped = false, pending = false, inFlight = false, timer = null, delay = RETRY_FIRST, notified = false;
   disposables.push({ dispose() { stopped = true; cancel(timer); timer = null; } });
 
   const mnemonReady = () => {
-    try { resolveMnemonBin({ mnemonPath: settings.mnemonPath, stateDir }); return true; } catch { return false; }
+    try { resolveMnemonBin({ mnemonPath: settings.mnemonPath, stateDir, env }); return true; } catch { return false; }
   };
   // 只有一个待发布状态：发布时读的是当时最新的设置、机器名和项目数；失败按退避重试。
   const flush = async () => {
@@ -48,16 +48,22 @@ export async function activate(coda, { schedule = setTimeout, cancel = clearTime
       }
     } finally { inFlight = false; }
   };
+  // 机器层设置串行落盘：先写成功才换内存里的设置，写失败就沿用上一份并记日志，内存与落盘始终是同一版本。
+  let saving = Promise.resolve();
+  const save = next => (saving = saving.then(async () => {
+    if (stopped) return false;
+    try { await writeMachineSettings(stateDir, next); return true; } catch (error) { report('保存机器层设置失败，沿用上一份设置')(error); return false; }
+  }));
   const publishLater = () => { pending = true; if (started && !timer) flush(); };
 
+  // 调用方的机器号和本机号都必须已知且相等；任何一个缺失都拒绝，且发生在查工作区、读写文件之前。
   const requireLocal = async ctx => {
     const caller = ctx?.caller?.machine;
-    if (!caller) return;
-    let id = machineId;
-    if (!id) {
+    let id = caller ? machineId : null;
+    if (caller && !id) {
       try { id = (await coda.list(MACHINE, { scope: 'local' })).find(entry => entry?.local)?.id; } catch {}
     }
-    if (id !== caller) throw coda.error('forbidden', '记忆引擎只允许本机的会话调用', { effects: 'none' });
+    if (!caller || id !== caller) throw coda.error('forbidden', '记忆引擎只允许本机的会话调用', { effects: 'none' });
   };
   const workspaceOf = async ctx => {
     const parent = ctx?.caller?.parent;
@@ -75,7 +81,7 @@ export async function activate(coda, { schedule = setTimeout, cancel = clearTime
       if (added) publishLater();
     }
     try {
-      return await service[operation]({ projectId, repoDir: path, stateDir, settings, ...(READS.has(operation) && { engine: createEngine({ stateDir, projectId, settings }) }) }, input);
+      return await service[operation]({ projectId, repoDir: path, stateDir, settings, ...(READS.has(operation) && { engine: createEngine({ stateDir, projectId, settings, env }) }) }, input);
     } catch (error) {
       throw /^[a-z_]+$/.test(error?.code ?? '') && !error.effects ? coda.error(error.code, error.message) : error;
     }
@@ -89,14 +95,19 @@ export async function activate(coda, { schedule = setTimeout, cancel = clearTime
       if (event?.data?.pull_request?.merged !== true || !path) return;
       (async () => syncProject({
         projectId: event.project, repoDir: path, stateDir, memoryDir: settings.memoryDir,
-        engine: createEngine({ stateDir, projectId: event.project, settings }), fetchRemote: true,
+        engine: createEngine({ stateDir, projectId: event.project, settings, env }), fetchRemote: true,
       }))().catch(report('合并后同步失败'));
     }));
   } catch {}
 
-  disposables.push(coda.settings.onChange(next => { notified = true; settings = readSettings(next); publishLater(); }));
+  disposables.push(coda.settings.onChange(next => {
+    notified = true;
+    const parsed = readSettings(next);
+    save(parsed).then(saved => { if (saved) { settings = parsed; publishLater(); } });
+  }));
   const snapshot = await coda.settings.get();
-  if (!notified) settings = readSettings(snapshot);
+  // 启动时还没有上一份有效设置，直接用快照；落盘失败只记日志。
+  if (!notified) { settings = readSettings(snapshot); await save(settings); } else await saving;
   try {
     disposables.push(await coda.watch(MACHINE, ({ type, entry }) => {
       machineId = type === 'DELETED' ? null : entry?.id ?? null;

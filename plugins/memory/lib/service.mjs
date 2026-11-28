@@ -1,7 +1,7 @@
 // 六个记忆工具的业务层。ctx 是 { projectId, repoDir, stateDir, settings, engine, now }：
 // 写操作改当前工作树里的卡片；读操作先同步主分支索引，再在项目锁里把索引叠上工作树里未合并的草稿卡片。
 import { withProjectLock } from './queue.mjs';
-import { archiveCard, cardRelPath, linkCards, listWorktreeCards, loadDraftOverlay, rememberCard } from './repo-cards.mjs';
+import { archiveCard, cardRelPath, linkCards, listWorktreeCards, loadDraftOverlay, normalizeMemoryDir, rememberCard } from './repo-cards.mjs';
 import { ensureSyncedLocked, readSyncState, syncProjectLocked } from './sync.mjs';
 
 const notFound = id => Object.assign(new Error(`卡片不存在：${id}`), { code: 'not_found' });
@@ -29,12 +29,15 @@ export const archive = (ctx, input) => writing(ctx, async (dir, options) => {
 
 // ---- 读 ----
 
-// 在项目锁内同步：关了自动同步时只在没建过索引或索引丢了才做一次本地同步；离线（拉不到远端）不算失败，同步本身不会因此抛错。
+// 在项目锁内同步：关了自动同步时只在没建过索引、索引丢了，或记忆目录、向量配置与索引建成时不一致才做一次本地同步；离线（拉不到远端）不算失败，同步本身不会因此抛错。
 async function syncBeforeRead(ctx) {
   const { projectId, repoDir, stateDir, settings = {}, engine } = ctx;
   const options = { projectId, repoDir, stateDir, memoryDir: memoryDirOf(ctx), engine, now: nowOf(ctx) };
   if (settings.autoSync !== false) return ensureSyncedLocked({ ...options, lazySyncSeconds: settings.lazySyncSeconds });
-  if (!(await readSyncState(stateDir, projectId))?.indexedCommit || !await engine.storeExists()) return syncProjectLocked(options);
+  const dir = normalizeMemoryDir(options.memoryDir), state = await readSyncState(stateDir, projectId);
+  if (!state?.indexedCommit || state.memoryDir !== dir || state.indexConfigKey !== engine.indexConfigKey(dir) || !await engine.storeExists()) {
+    return syncProjectLocked({ ...options, fetchRemote: false });
+  }
   return undefined;
 }
 
@@ -105,10 +108,20 @@ function keywordScore(card, query) {
 
 export const recall = (ctx, { query, intent = 'auto', limit = 10, includeSuperseded = false, includeDrafts = true }) => read(ctx, includeDrafts, async view => {
   const hits = new Map();
+  const visible = (id, hit) => {
+    const { status } = view.cards.get(id).card;
+    return status !== 'archived' && (includeSuperseded || !(hit.superseded || status === 'superseded'));
+  };
   if (view.hasIndex) {
-    for (const hit of await ctx.engine.recall({ query, intent, limit: Math.min(50, limit * 2) })) {
-      const id = view.mnemonToId.get(hit.mnemonId);
-      if (view.cards.get(id)?.indexed && !hits.has(id)) hits.set(id, { score: hit.score, matchedVia: hit.matchedVia, superseded: hit.superseded });
+    // 草稿覆盖、已取代的过滤在引擎之后做：有效结果不足而引擎返回数顶到请求上限时，窗口翻倍再查，直到凑满、到达索引总数或引擎耗尽。
+    for (let window = Math.min(50, limit * 2); ; window = Math.min(window * 2, view.mnemonToId.size)) {
+      hits.clear();
+      const results = await ctx.engine.recall({ query, intent, limit: window });
+      for (const hit of results) {
+        const id = view.mnemonToId.get(hit.mnemonId);
+        if (view.cards.get(id)?.indexed && !hits.has(id)) hits.set(id, { score: hit.score, matchedVia: hit.matchedVia, superseded: hit.superseded });
+      }
+      if ([...hits].filter(([id, hit]) => visible(id, hit)).length >= limit || results.length < window || window >= view.mnemonToId.size) break;
     }
   }
   for (const [id, { card }] of view.local) {
@@ -117,8 +130,7 @@ export const recall = (ctx, { query, intent = 'auto', limit = 10, includeSuperse
   }
   const items = [];
   for (const [id, hit] of hits) {
-    const { status } = view.cards.get(id).card, superseded = hit.superseded || status === 'superseded';
-    if (status !== 'archived' && (includeSuperseded || !superseded)) items.push(present(view, id, { score: hit.score, matchedVia: hit.matchedVia, superseded }));
+    if (visible(id, hit)) items.push(present(view, id, { score: hit.score, matchedVia: hit.matchedVia, superseded: hit.superseded || view.cards.get(id).card.status === 'superseded' }));
   }
   items.sort((a, b) => b.score - a.score);
   return { items: items.slice(0, limit), indexedCommit: view.indexedCommit, draftCount: view.draftCount };

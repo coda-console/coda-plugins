@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- 研究记忆的定时同步（设置 memory.autoSync、memory.syncSchedule）：每个项目按计划把主分支的卡片增量同步进本机检索索引。
+     autoRun 只收一项插件设置（不支持 and），所以没开 memory.autoSync（默认关）的项目不登记定时任务；
+     登记了但没启用研究记忆（memory.enabled）的项目，脚本一行跳过，不碰仓库。
      没有记忆卡片、也没建过索引的项目只写一行跳过的说明，不建库。 -->
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="memory-sync-definitions" targetNamespace="https://coda.pub/plugins/memory">
@@ -14,6 +16,8 @@
     <sequenceFlow id="to-sync" sourceRef="projects" targetRef="sync" />
     <scriptTask id="sync" name="同步研究记忆" coda:checkout="false" coda:timeout="10" coda:status="{{sync.line}}" scriptFormat="bash">
       <extensionElements>
+        <coda:env name="MEMORY_REQUIRE_ENABLED" value="true" />
+        <coda:env name="MEMORY_ENABLED" value="=vars.memory.enabled" />
         <coda:env name="MEMORY_PROJECT_ID" value="=projects.here" />
         <coda:env name="MEMORY_PROJECTS_JSON" value="=projects.projects" />
         <coda:env name="MEMORY_DIR" value="=vars.memory.memoryDir" />

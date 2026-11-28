@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +12,7 @@ import { runSyncScript } from '../../../plugins/memory/scripts/sync-project.mjs'
 import { fakeBin } from './helpers.mjs';
 
 const SCRIPT = fileURLToPath(new URL('../../../plugins/memory/scripts/sync-project.mjs', import.meta.url));
+const INSTRUCTIONS = fileURLToPath(new URL('../../../plugins/memory/scripts/instructions.mjs', import.meta.url));
 const git = (dir, ...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function waitFor(check, what) {
@@ -89,9 +90,9 @@ function fakeHost(t, { settings = {}, workspaces = {}, onForbidden = false, mach
 const caller = { machine: 'm-1', parent: { kind: 'coda/thread@1', id: 't-1' } };
 const ready = (repoDir, extra = {}) => ({ path: repoDir, project: { id: 'proj-1', name: 'demo' }, state: 'ready', ...extra });
 
-async function start(t, options = {}) {
+async function start(t, options = {}, activateOptions) {
   const host = fakeHost(t, options);
-  await activate(host.coda);
+  await activate(host.coda, activateOptions);
   t.after(() => deactivate());
   return host;
 }
@@ -107,7 +108,7 @@ test('本机恰好发布 1 条引擎记录，用机器名与 mnemon 就绪状态
 });
 
 test('找不到 mnemon 时记录标成未就绪；设置变化后重新发布', async t => {
-  const host = await start(t, { settings: { 'memory.mnemonPath': join(tmp(t), 'none') } });
+  const host = await start(t, { settings: { 'memory.mnemonPath': join(tmp(t), 'none') } }, { env: { PATH: '' } });
   assert.equal(host.last()[0].status.ready, false);
   assert.equal(host.last()[0].spec.status, '缺少 mnemon');
   host.settingsListeners[0]({ 'memory.mnemonPath': fakeBin(tmp(t)) });
@@ -124,6 +125,25 @@ test('跨机调用被 forbidden 拒绝；本机号未知时向 coda.list 取', a
 
   const unwatched = await start(t, { machines: [], workspaces: { 't-1': ready(repoDir) } });
   await assert.rejects(unwatched.call('recall', { query: '盐度' }, caller), { code: 'forbidden' });
+});
+
+test('调用方的机器号缺失（undefined、null、空串、没有 caller）：6 个操作都 forbidden，不查工作区、不写文件', async t => {
+  const repoDir = initRepo(join(tmp(t), 'repo'));
+  const host = fakeHost(t, { workspaces: { 't-1': ready(repoDir) } });
+  let queries = 0;
+  const query = host.coda.query;
+  host.coda.query = (...args) => { queries++; return query(...args); };
+  await activate(host.coda);
+  t.after(() => deactivate());
+  const inputs = { recall: { query: '盐度' }, search: {}, get: { id: 'x' }, remember: { content: '盐度', refs: ['r'] }, link: { from: 'a', to: 'b', relation: 'related' }, archive: { id: 'x' } };
+  for (const caller_ of [{ parent: caller.parent }, { ...caller, machine: undefined }, { ...caller, machine: null }, { ...caller, machine: '' }, undefined]) {
+    for (const [operation, input] of Object.entries(inputs)) {
+      await assert.rejects(host.call(operation, input, caller_), { code: 'forbidden', message: /本机/ }, `${operation} ${JSON.stringify(caller_)}`);
+    }
+  }
+  assert.equal(queries, 0);
+  assert.equal(existsSync(join(repoDir, '.memory')), false);
+  assert.deepEqual(readdirSync(host.stateDir), ['machine-settings.json']);
 });
 
 test('会话工作区未就绪或调用方不是会话时报错', async t => {
@@ -159,19 +179,16 @@ test('工具路由：按会话工作区解析研究仓，登记项目并重新�
 
 test('没有 mnemon 时 remember、link、archive 照常写工作树卡片，读取才报 mnemon_missing', async t => {
   const repoDir = initRepo(join(tmp(t), 'repo'));
-  const host = await start(t, { settings: { 'memory.mnemonPath': join(tmp(t), 'none') }, workspaces: { 't-1': ready(repoDir) } });
-  const path = process.env.PATH;
-  process.env.PATH = '';
-  try {
-    const a = await host.call('remember', { content: '盐度甲', refs: ['r'] }, caller);
-    const b = await host.call('remember', { content: '盐度乙', refs: ['r'] }, caller);
-    assert.ok(existsSync(join(repoDir, a.path)));
-    assert.equal((await host.call('link', { from: a.id, to: b.id, relation: 'related' }, caller)).changed.length, 2);
-    assert.equal((await host.call('archive', { id: b.id }, caller)).status, 'archived');
-    for (const [operation, input] of [['recall', { query: '盐度' }], ['search', {}], ['get', { id: a.id }]]) {
-      await assert.rejects(host.call(operation, input, caller), { code: 'mnemon_missing' });
-    }
-  } finally { process.env.PATH = path; }
+  const host = await start(t, { settings: { 'memory.mnemonPath': join(tmp(t), 'none') }, workspaces: { 't-1': ready(repoDir) } }, { env: { PATH: '' } });
+  // 注入空 PATH：宿主 PATH 上装了 mnemon 也不影响这个用例。
+  const a = await host.call('remember', { content: '盐度甲', refs: ['r'] }, caller);
+  const b = await host.call('remember', { content: '盐度乙', refs: ['r'] }, caller);
+  assert.ok(existsSync(join(repoDir, a.path)));
+  assert.equal((await host.call('link', { from: a.id, to: b.id, relation: 'related' }, caller)).changed.length, 2);
+  assert.equal((await host.call('archive', { id: b.id }, caller)).status, 'archived');
+  for (const [operation, input] of [['recall', { query: '盐度' }], ['search', {}], ['get', { id: a.id }]]) {
+    await assert.rejects(host.call(operation, input, caller), { code: 'mnemon_missing' });
+  }
 });
 
 test('合并的 pull_request.closed 触发已登记项目的异步同步，其余事件忽略', async t => {
@@ -199,7 +216,9 @@ test('合并后同步失败只记日志，不抛给宿主', async t => {
   const repoDir = initRepo(join(tmp(t), 'repo'));
   const host = await start(t, { workspaces: { 't-1': ready(repoDir) } });
   await host.call('recall', { query: '盐度' }, caller);
+  const published = host.records.length;
   host.settingsListeners[0]({ 'memory.mnemonPath': '', 'memory.memoryDir': '/绝对路径' });
+  await waitFor(() => host.records.length > published, '设置生效');
   const logs = [], original = console.error;
   console.error = (...args) => logs.push(args.join(' '));
   try {
@@ -244,6 +263,100 @@ test('发布失败按退避加倍重试，deactivate 取消等待中的重试', 
   assert.equal(logs.filter(line => line.includes('登记记录失败')).length, 2);
 });
 
+// ---- 机器层设置 machine-settings.json ----
+
+test('机器层设置原子写入状态目录，不含密钥，设置变化后更新', async t => {
+  const host = await start(t, { settings: { 'memory.memoryDir': 'machine-mem', 'memory.embeddingProvider': 'openai-compatible', 'memory.embeddingApiKeyEnv': 'MY_KEY', 'memory.autoSync': false, 'memory.enabled': true } });
+  const file = join(host.stateDir, 'machine-settings.json');
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), {
+    memoryDir: 'machine-mem', autoSync: false, lazySyncSeconds: 60, mnemonPath: host.current['memory.mnemonPath'],
+    embeddingProvider: 'openai-compatible', embeddingBaseUrl: '', embeddingModel: '', embeddingApiKeyEnv: 'MY_KEY',
+  });
+  host.settingsListeners[0]({ ...host.current, 'memory.memoryDir': 'changed' });
+  await waitFor(() => JSON.parse(readFileSync(file, 'utf8')).memoryDir === 'changed', '设置变化后更新');
+  assert.deepEqual(readdirSync(host.stateDir), ['machine-settings.json']);
+});
+
+test('机器层设置落盘失败：沿用上一份内存设置并记日志，不重新发布；恢复后再次设置生效', async t => {
+  const repoDir = initRepo(join(tmp(t), 'repo'));
+  const host = await start(t, { settings: { 'memory.memoryDir': 'old-mem' }, workspaces: { 't-1': ready(repoDir) } });
+  const file = join(host.stateDir, 'machine-settings.json');
+  const before = readFileSync(file, 'utf8'), published = host.records.length;
+  // 目标位置换成目录：rename 覆盖不了，写入必然失败。
+  rmSync(file);
+  mkdirSync(file);
+  const logs = [], original = console.error;
+  console.error = (...args) => logs.push(args.join(' '));
+  try {
+    host.settingsListeners[0]({ ...host.current, 'memory.memoryDir': 'new-mem' });
+    await waitFor(() => logs.some(line => line.includes('保存机器层设置失败')), '落盘失败的日志');
+  } finally { console.error = original; }
+  await sleep(50);
+  assert.equal(host.records.length, published);
+  assert.deepEqual(readdirSync(host.stateDir), ['machine-settings.json']);
+  assert.equal((await host.call('remember', { content: '盐度', refs: ['r'] }, caller)).path.startsWith('old-mem/items/'), true);
+
+  rmSync(file, { recursive: true });
+  host.settingsListeners[0]({ ...host.current, 'memory.memoryDir': 'new-mem' });
+  await waitFor(() => existsSync(file) && JSON.parse(readFileSync(file, 'utf8')).memoryDir === 'new-mem', '恢复后落盘');
+  await waitFor(async () => (await host.call('remember', { content: '盐度二', refs: ['r'] }, caller)).path.startsWith('new-mem/items/'), '内存设置随落盘更新');
+  assert.notEqual(before, readFileSync(file, 'utf8'));
+});
+
+test('项目目录覆盖了 memory.memoryDir：会话工具、同步脚本、开场说明都用机器层的目录，目录级的 enabled、autoSync 照常生效', async t => {
+  const repoDir = initRepo(join(tmp(t), 'repo'));
+  const host = await start(t, { settings: { 'memory.memoryDir': 'machine-mem' }, workspaces: { 't-1': ready(repoDir) } });
+  const saved = await host.call('remember', { content: '盐度实验结论', refs: ['exp'] }, caller);
+  assert.equal(saved.path, `machine-mem/items/${saved.id}.md`);
+  assert.ok(existsSync(join(repoDir, saved.path)));
+  const commit = commitAll(repoDir);
+
+  const directory = { 'memory.enabled': true, 'memory.autoSync': false, 'memory.memoryDir': 'dir-mem' };
+  const env = {
+    MEMORY_PROJECT_ID: 'proj-1', MEMORY_PROJECTS_JSON: JSON.stringify([{ id: 'proj-1', name: 'demo', path: repoDir }]),
+    CODA_PLUGIN_STATE: host.stateDir, CODA_PLUGIN_SETTINGS: JSON.stringify(directory),
+    MEMORY_MNEMON_PATH: host.current['memory.mnemonPath'], MEMORY_DIR: 'dir-mem',
+  };
+  const done = await runSyncScript(env, { argv: ['--no-fetch'] });
+  assert.equal(done.result.action, 'rebuild');
+  assert.equal(syncState(host.stateDir, 'proj-1').memoryDir, 'machine-mem');
+  assert.equal(syncState(host.stateDir, 'proj-1').indexedCommit, commit);
+  assert.deepEqual(Object.keys(syncState(host.stateDir, 'proj-1').items), [saved.id]);
+  // 会话工具读到的是同一份索引，不会再因目录不一致重建。
+  assert.deepEqual((await host.call('recall', { query: '盐度' }, caller)).items.map(item => item.id), [saved.id]);
+  assert.equal((await runSyncScript(env, { argv: ['--no-fetch'] })).result.action, 'noop');
+
+  const instructions = settings => spawnSync(process.execPath, [INSTRUCTIONS], {
+    encoding: 'utf8', env: { ...process.env, CODA_PLUGIN_STATE: host.stateDir, CODA_PLUGIN_SETTINGS: JSON.stringify(settings) },
+  });
+  const on = instructions(directory);
+  assert.equal(on.status, 0);
+  assert.match(on.stdout, /machine-mem\/items\//);
+  assert.doesNotMatch(on.stdout, /dir-mem/);
+  // 目录层 autoSync 管定时同步；读前惰性同步跟本机插件层（这里也是关）。
+  assert.match(on.stdout, /定时同步（目录设置 memory\.autoSync）已关闭，读取前的惰性同步（本机插件设置 memory\.autoSync）已关闭/);
+  assert.match(instructions({ ...directory, 'memory.autoSync': true }).stdout, /定时同步（[^）]*）已开启，读取前的惰性同步（[^）]*）已关闭/);
+  const off = instructions({ ...directory, 'memory.enabled': false });
+  assert.equal(off.status, 0);
+  assert.equal(off.stdout, '');
+});
+
+test('机器层设置文件损坏或不是对象：同步脚本与开场说明回退到各自拿到的设置', async t => {
+  const repoDir = initRepo(join(tmp(t), 'repo'));
+  mkdirSync(join(repoDir, 'notes', 'items'), { recursive: true });
+  writeFileSync(join(repoDir, 'notes', 'items', 'N1.md'), serializeCard(card('N1')));
+  commitAll(repoDir);
+  for (const text of ['{坏的', 'null', '[1]', '"x"']) {
+    const { env, stateDir } = syncEnv(t, { projectPath: repoDir, extra: { MEMORY_DIR: 'notes' } });
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(join(stateDir, 'machine-settings.json'), text);
+    assert.equal((await runSyncScript(env, { argv: ['--no-fetch'] })).result.action, 'rebuild', text);
+    assert.equal(syncState(stateDir, 'proj-1').memoryDir, 'notes', text);
+    const child = spawnSync(process.execPath, [INSTRUCTIONS], { encoding: 'utf8', env: { ...process.env, CODA_PLUGIN_STATE: stateDir, CODA_PLUGIN_SETTINGS: '{"memory.enabled":true,"memory.memoryDir":"fallback"}' } });
+    assert.match(child.stdout, /fallback\/items\//, text);
+  }
+});
+
 // ---- sync-project.mjs ----
 
 const clone = (origin, dir) => { execFileSync('git', ['clone', '-q', origin, dir]); return dir; };
@@ -273,6 +386,20 @@ test('sync-project：没有这个项目、不是 Git 仓库、没有记忆卡片
   assert.match((await runSyncScript(noMemory.env, { makeEngine: noBin })).line, /没有研究记忆卡片/);
   assert.equal(existsSync(join(stateDir, 'projects', 'proj-1', 'sync-state.json')), false);
   assert.equal(existsSync(join(noMemory.stateDir, 'projects', 'proj-1', 'sync-state.json')), false);
+});
+
+test('sync-project：定时流程要求启用研究记忆，没启用的项目一行跳过且不建库；合并后同步不受影响', async t => {
+  const repoDir = initRepo(join(tmp(t), 'repo'));
+  putCard(repoDir, card('A1'));
+  commitAll(repoDir);
+  const { env, stateDir } = syncEnv(t, { projectPath: repoDir });
+  for (const enabled of [undefined, '', 'false']) {
+    const skipped = await runSyncScript({ ...env, MEMORY_REQUIRE_ENABLED: 'true', ...(enabled !== undefined && { MEMORY_ENABLED: enabled }) }, { argv: ['--no-fetch'] });
+    assert.match(skipped.line, /没有启用研究记忆/);
+  }
+  assert.equal(existsSync(join(stateDir, 'projects', 'proj-1', 'sync-state.json')), false);
+  assert.equal((await runSyncScript({ ...env, MEMORY_REQUIRE_ENABLED: 'true', MEMORY_ENABLED: 'true' }, { argv: ['--no-fetch'] })).result.action, 'rebuild');
+  assert.equal((await runSyncScript(env, { argv: ['--no-fetch'] })).result.action, 'noop');
 });
 
 test('sync-project：有记忆卡片的项目同步到默认分支，--no-fetch 不拉远端；只有工作树里的卡片也同步', async t => {
