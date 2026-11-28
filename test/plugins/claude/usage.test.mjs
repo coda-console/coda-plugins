@@ -16,7 +16,7 @@ const row = (name, inputTokens, outputTokens, cachedReadTokens = 0, cachedWriteT
 // The model the SDK says ran (its `canonicalModel`) is the row's `served`; the SDK's own name without one stays the unlayered `model` label.
 const ran = (name, inputTokens, outputTokens, cachedReadTokens = 0, cachedWriteTokens = 0) => row(name, inputTokens, outputTokens, cachedReadTokens, cachedWriteTokens, 'served');
 // What a prompt answered with, by the one result it took.
-const told = (usage, m) => { usage.hold(usage.measure(m)); return usage.take(); };
+const told = (usage, m, asked, confirmed) => { usage.hold(usage.measure(m, asked, confirmed)); return usage.take(); };
 
 test('a new session counts from nothing: each turn is the difference to the last result, cache reads and writes beside the uncached input', () => {
   const usage = new PromptUsage();
@@ -165,6 +165,84 @@ test('a turn on Claude\'s own models tells no service', () => {
   assert.deepEqual(own.breakdown, [row('m', 1, 2)], 'no canonical name: the SDK\'s own name, as the unlayered label');
 });
 
+const own = (name, asked, ...counts) => ({ asked, ...ran(name, ...counts) });
+
+test('on Claude\'s own models the model asked for is told with the one that ran: a single model, whatever name it is asked as', () => {
+  const usage = new PromptUsage();
+  usage.restarted(false);
+  // An alias is told as asked only where the main thread said which model ran; the others are named by key or canonical name.
+  for (const [asked, key, confirmed] of [['claude-opus-x', 'claude-opus-x', []], ['opus', 'claude-opus-x', ['claude-opus-x']], ['claude-opus-x[1m]', 'claude-opus-x[1m]', []], ['opus', 'opus', []]]) {
+    const { usage: said } = told(usage, result({ [key]: model(1, 2, 0, 0, { canonicalModel: 'claude-opus-x' }) }, { n: 1 }), asked, confirmed);
+    assert.deepEqual(said.breakdown, [own('claude-opus-x', asked, 1, 2)], asked);
+    usage.restarted(false);
+  }
+});
+
+test('a lone active model that is not the one asked for is never taken for the main model: only a subagent grew, so it is told as served alone', () => {
+  const usage = new PromptUsage();
+  usage.restarted(false);
+  const totals = (haiku) => result({ 'claude-opus-5-5': model(100, 100, 0, 0, { canonicalModel: 'claude-opus-5-5' }), 'claude-haiku-5-5': model(haiku, haiku, 0, 0, { canonicalModel: 'claude-haiku-5-5' }) });
+  told(usage, totals(10), 'claude-opus-5-5');
+  const { usage: said } = told(usage, totals(30), 'claude-opus-5-5', ['claude-opus-5-5']);
+  assert.deepEqual(said.breakdown, [ran('claude-haiku-5-5', 20, 20)]);
+  usage.restarted(false);
+  told(usage, totals(10), 'opus', ['claude-opus-5-5']);
+  assert.deepEqual(told(usage, totals(30), 'opus', ['claude-opus-5-5']).usage.breakdown, [ran('claude-haiku-5-5', 20, 20)]);
+});
+
+test('an alias asked is told as asked on the model the main thread said ran, with or without a subagent\'s model beside it', () => {
+  const usage = new PromptUsage();
+  usage.restarted(false);
+  const sonnet = n => model(n, n, 0, 0, { canonicalModel: 'claude-sonnet-5-5' }), haiku = n => model(n, n, 0, 0, { canonicalModel: 'claude-haiku-5-5' });
+  assert.deepEqual(told(usage, result({ 'claude-sonnet-5-5': sonnet(5) }), 'sonnet', ['claude-sonnet-5-5']).usage.breakdown, [own('claude-sonnet-5-5', 'sonnet', 5, 5)]);
+  assert.deepEqual(told(usage, result({ 'claude-sonnet-5-5': sonnet(8), 'claude-haiku-5-5': haiku(40) }), 'sonnet', ['claude-sonnet-5-5']).usage.breakdown,
+    [own('claude-sonnet-5-5', 'sonnet', 3, 3), ran('claude-haiku-5-5', 40, 40)]);
+  // The main thread said nothing: a subagent alone in the turn is not the main model.
+  assert.deepEqual(told(usage, result({ 'claude-sonnet-5-5': sonnet(8), 'claude-haiku-5-5': haiku(50) }), 'sonnet').usage.breakdown, [ran('claude-haiku-5-5', 10, 10)]);
+});
+
+test('with a subagent\'s model in the turn only the main model\'s row is told as asked, even where the subagent used more', () => {
+  const usage = new PromptUsage();
+  usage.restarted(false);
+  const both = (main, sub) => result({ 'claude-opus-x': model(...main, 0, 0, { canonicalModel: 'claude-opus-x' }), 'claude-haiku-x': model(...sub, 0, 0, { canonicalModel: 'claude-haiku-x' }) });
+  assert.deepEqual(told(usage, both([10, 10], [500, 500]), 'claude-opus-x').usage.breakdown, [own('claude-opus-x', 'claude-opus-x', 10, 10), ran('claude-haiku-x', 500, 500)]);
+  // The main model asked for as its `[1m]` variant, and by the name it was keyed under.
+  assert.deepEqual(told(usage, result({ 'claude-opus-x[1m]': model(30, 10, 0, 0, { canonicalModel: 'claude-opus-x' }), 'claude-haiku-x': model(501, 501, 0, 0, { canonicalModel: 'claude-haiku-x' }) }), 'claude-opus-x[1m]').usage.breakdown,
+    [own('claude-opus-x', 'claude-opus-x[1m]', 30, 10), ran('claude-haiku-x', 1, 1)]);
+  // An alias asked cannot be told from a subagent's model among several: none is told as asked.
+  usage.restarted(false);
+  assert.deepEqual(told(usage, both([1, 1], [2, 2]), 'opus').usage.breakdown, [ran('claude-opus-x', 1, 1), ran('claude-haiku-x', 2, 2)]);
+});
+
+test('two names of the main model are one asked row, and a model told by `model` never carries asked', () => {
+  const usage = new PromptUsage();
+  usage.restarted(false);
+  assert.deepEqual(told(usage, result({ alias: model(1, 2, 0, 0, { canonicalModel: 'claude-x' }), 'claude-x[1m]': model(3, 4, 0, 0, { canonicalModel: 'claude-x' }) }), 'claude-x[1m]').usage.breakdown,
+    [own('claude-x', 'claude-x[1m]', 4, 6)]);
+  usage.restarted(false);
+  const { usage: said } = told(usage, result({ m: model(1, 2), n: model(3, 4, 0, 0, { canonicalModel: 'claude-x' }) }), 'm');
+  assert.deepEqual(said.breakdown, [row('m', 1, 2), ran('claude-x', 3, 4)]);
+  assert.ok(said.breakdown.every(item => !('model' in item && ('asked' in item || 'served' in item))));
+});
+
+test('a model chosen between turns is the asked of the turns after, and several results of one prompt keep their own', () => {
+  const usage = new PromptUsage();
+  usage.restarted(false);
+  usage.hold(usage.measure(result({ 'claude-opus-x': model(10, 0, 0, 0, { canonicalModel: 'claude-opus-x' }) }), 'opus', ['claude-opus-x']));
+  // The results hold the query's totals: the model of the turn before is still in it, and says nothing new.
+  usage.hold(usage.measure(result({ 'claude-opus-x': model(10, 0, 0, 0, { canonicalModel: 'claude-opus-x' }), 'claude-sonnet-x': model(5, 0, 0, 0, { canonicalModel: 'claude-sonnet-x' }) }), 'sonnet', ['claude-sonnet-x']));
+  assert.deepEqual(usage.take().usage.breakdown, [own('claude-opus-x', 'opus', 10, 0), own('claude-sonnet-x', 'sonnet', 5, 0)]);
+});
+
+test('a model service\'s turn and a loaded first turn tell no asked of Claude\'s own', () => {
+  const usage = new PromptUsage();
+  usage.restarted(false, service);
+  assert.deepEqual(told(usage, result({ a: model(1, 1, 0, 0, { canonicalModel: 'c' }), b: model(1, 1, 0, 0, { canonicalModel: 'd' }) }), 'a').usage.breakdown,
+    [row('a', 1, 1), row('b', 1, 1)]);
+  usage.restarted(true);
+  assert.deepEqual(told(usage, result({ a: model(9, 9) }, { usage: { input_tokens: 1 } }), 'a').usage.breakdown, undefined);
+});
+
 // The session, with the SDK's results said as the test places them.
 async function session(t, { sdk = fixtureSdk(), ...options } = {}) {
   const cwd = await mkdtemp(join(tmpdir(), 'coda-claude-usage-'));
@@ -245,4 +323,42 @@ test('a turn Claude began on its own moves the base and is told as no prompt\'s;
   const next = await manual(s);
   await next.emit(result({ 'fixture-model': model(5110, 5120, 5000, 5000) }, { user_message_uuid: next.id, user_message_uuids: [next.id] }));
   assert.deepEqual((await next.pending).usage.breakdown, [row('fixture-model', 10, 20)]);
+});
+
+test('on Claude\'s own models each turn tells the model chosen for it as asked, one chosen between turns included, and not a subagent\'s', async t => {
+  const { s, cwd } = await session(t);
+  await s.open({ cwd, mcpServers: [] });
+  const turn = async (modelUsage) => {
+    const next = await manual(s);
+    await next.emit(result(modelUsage, { user_message_uuid: next.id, user_message_uuids: [next.id] }));
+    return (await next.pending).usage.breakdown;
+  };
+  assert.deepEqual(await turn({ 'fixture-model': model(10, 1, 0, 0, { canonicalModel: 'fixture-model-v1' }), sub: model(5, 5, 0, 0, { canonicalModel: 'claude-sub' }) }),
+    [own('fixture-model-v1', 'fixture-model-v1', 10, 1), ran('claude-sub', 5, 5)]);
+  await s.configure('model', 'other-model');
+  // The query's totals still hold the first turn's models, which used nothing in this one.
+  assert.deepEqual(await turn({ 'fixture-model': model(10, 1, 0, 0, { canonicalModel: 'fixture-model-v1' }), sub: model(5, 5, 0, 0, { canonicalModel: 'claude-sub' }),
+    'other-model': model(7, 2, 0, 0, { canonicalModel: 'claude-other' }) }), [own('claude-other', 'other-model', 7, 2)]);
+});
+
+test('only the main thread\'s models confirm the main row, and none of one turn is left for the next', async t => {
+  const { s, cwd } = await session(t);
+  await s.open({ cwd, mcpServers: [] });
+  const sonnet = n => model(n, n, 0, 0, { canonicalModel: 'claude-sonnet-5-5' }), haiku = n => model(n, n, 0, 0, { canonicalModel: 'claude-haiku-5-5' });
+  const said = (turn, model, parent) => turn.query.emit({ type: 'assistant', parent_tool_use_id: parent, message: { id: `m-${model}-${parent}`, model, content: [{ type: 'text', text: '好' }] } });
+  const end = (turn, modelUsage) => turn.emit(result(modelUsage, { user_message_uuid: turn.id, user_message_uuids: [turn.id] }));
+  // The main thread ran on Sonnet, asked for as the session's model: it is told as asked with a Haiku subagent beside it.
+  const first = await manual(s);
+  said(first, 'claude-sonnet-5-5', null); said(first, 'claude-haiku-5-5', 'tool-sub');
+  await end(first, { 'claude-sonnet-5-5': sonnet(10), 'claude-haiku-5-5': haiku(40) });
+  assert.deepEqual((await first.pending).usage.breakdown, [own('claude-sonnet-5-5', 'fixture-model-v1', 10, 10), ran('claude-haiku-5-5', 40, 40)]);
+  // The next turn's main thread said nothing of Sonnet: only a subagent grew, Sonnet's, and it is told as served alone.
+  const second = await manual(s);
+  said(second, 'claude-haiku-5-5', 'tool-sub');
+  await end(second, { 'claude-sonnet-5-5': sonnet(30), 'claude-haiku-5-5': haiku(40) });
+  assert.deepEqual((await second.pending).usage.breakdown, [ran('claude-sonnet-5-5', 20, 20)]);
+  // A subagent's Haiku alone in the turn, beside a main model whose counts did not move.
+  const third = await manual(s);
+  await end(third, { 'claude-sonnet-5-5': sonnet(30), 'claude-haiku-5-5': haiku(45) });
+  assert.deepEqual((await third.pending).usage.breakdown, [ran('claude-haiku-5-5', 5, 5)]);
 });

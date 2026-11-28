@@ -10,7 +10,7 @@
 // 已知边界：好友撤回记录后，还没同步到的那台会让旧数多显示一会儿，不处理。
 
 import { identityTitles } from 'coda-view://lib/v1/accord.js';
-import { aggregateLeaderboard, DAY_ARCHIVE_KIND, isWithdrawn, sourceOf, TODAY_CURVE_KIND, USAGE_RECORD_KIND } from './usage.mjs';
+import { aggregateLeaderboard, DAY_ARCHIVE_KIND, FIELDS, isWithdrawn, sourceOf, Tally, TODAY_CURVE_KIND, USAGE_RECORD_KIND } from './usage.mjs';
 
 const ALL = 'all';   // 「我」的合计不分作者：聚合时把各台本机用量当同一个作者
 const keyOf = (...parts) => JSON.stringify(parts);
@@ -31,6 +31,7 @@ function aggregate(records, authors, from, to) {
  * entries：目录里本协议的记录条目 `{ owner, location, local, version, id, spec }`；`[from, to)` 是时间窗。
  * 返回：
  * - `mine`：各台本机用量的合计与分模型（Tally 的结果），`machines` 是有本机用量记录的机器名（条目的 `location`）；
+ *   每个型号另带 `machines`：按机器拆开的用量 `{ machine, ...计数, totalTokens }`，每台机器自己的记录单独走一遍聚合（日归档与曲线不双计），只列有用量或回合的机器；
  * - `board`：好友榜 `{ friends, entries, unshared }`：`friends` 是好友（不含自己）的人数；`entries` 是分享了的人（含「我」），已按总 Token 排名，
  *   每项带 `author`、`displayId`（`昵称 #4位尾号`，同昵称且尾号相撞时向左加位）、`self`、`rank`、合计与分模型；`unshared` 是没分享的好友个数；
  * - `states`：各台的状态记录 `{ id, owner, machine, ...spec }`，页面拿它画分享开关与页脚。
@@ -44,9 +45,31 @@ export function summarize(entries, { from, to }) {
     else if (record === 'mirror') mirrors.push(entry.spec);
   }
 
-  const total = aggregate(usage.map(({ spec }) => asRecord(spec, ALL, 0)), [ALL], from, to).entries[0];
-  const { author, self, shared, rank, ...totals } = total;
-  const mine = { machines: [...new Set(usage.map(entry => entry.location))], ...totals };
+  // 「我」按机器各算一遍（各自的窗口去重与回合归因），再把各台的型号行并成总计：设备明细与型号总计出自同一份结果，Token 与回合完全守恒。
+  // 按稳定的设备标识（owner、没有就取来源 ID，再没有取展示名）分组，展示名只是标签，不当分组键；重名的设备在展示名后加设备标识的尾部区分，
+  // 标签避开所有不重名设备的原名和已生成的标签：尾号相撞就向左加位，加到整个标识仍相撞再加编号。
+  const byDevice = Map.groupBy(usage, entry => entry.owner || entry.spec.sourceId || entry.location), tally = new Tally(), perModel = new Map();
+  const devices = [...byDevice].map(([device, group]) => ({ id: String(device), group, name: group[0].location }));
+  const nameCount = Map.groupBy(devices, device => device.name);
+  const taken = new Set(devices.filter(device => nameCount.get(device.name).length === 1).map(device => device.name));
+  const machines = devices.map(({ id, group, name }) => {
+    if (!name || nameCount.get(name).length === 1) return { machine: name, group };
+    const candidates = [...Array.from({ length: Math.max(id.length - 3, 1) }, (_, i) => `${name} · ${id.slice(-(4 + i))}`), ...Array.from({ length: devices.length }, (_, i) => `${name} · ${id} #${i + 2}`)];
+    const machine = candidates.find(label => !taken.has(label));
+    taken.add(machine);
+    return { machine, group };
+  });
+  for (const { machine, group } of machines) {
+    for (const model of aggregate(group.map(({ spec }) => asRecord(spec, ALL, 0)), [ALL], from, to).entries[0].models) {
+      tally.addModel(model);
+      if (!machine || !(model.totalTokens > 0 || model.turns > 0)) continue;
+      if (!perModel.has(model.model)) perModel.set(model.model, []);
+      perModel.get(model.model).push({ machine, ...Object.fromEntries(FIELDS.map(field => [field, model[field]])), totalTokens: model.totalTokens });
+    }
+  }
+  const totals = tally.result();
+  const byUse = (a, b) => b.totalTokens - a.totalTokens || b.turns - a.turns || (a.machine < b.machine ? -1 : a.machine > b.machine ? 1 : 0);
+  const mine = { machines: machines.map(({ machine }) => machine), ...totals, models: totals.models.map(model => ({ ...model, machines: (perModel.get(model.model) ?? []).sort(byUse) })) };
 
   const selves = new Set(states.map(({ spec }) => spec.author).filter(Boolean));
   const authors = [...new Set([...selves, ...states.flatMap(({ spec }) => spec.friends)])];
