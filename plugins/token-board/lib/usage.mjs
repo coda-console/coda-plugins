@@ -507,7 +507,7 @@ export function aggregateLeaderboard({ selfAuthor, selfSourceId, excludedSourceI
   const tallies = new Map([...known].map(author => [author, new Tally()]));
   const shared = new Set();
   const localTally = new Tally();
-  if (selfAuthor && localBuckets) for (const row of localRows(filterBucketsByPerson(localBuckets, person), from, to)) { tallies.get(selfAuthor).add(row); localTally.add(row); }
+  if (selfAuthor && localBuckets) for (const row of localRows(filterBucketsByPerson(localBuckets, person), from, to)) localTally.add(row);
 
   const sources = new Map();
   const source = (author, sourceId) => {
@@ -537,12 +537,20 @@ export function aggregateLeaderboard({ selfAuthor, selfSourceId, excludedSourceI
     if (target) target.legacy.push(...read.rows);
   }
   // 每个 (作者, 来源) 的合计也交出去：多台机器各自读到同一批记录，页面按它去重后再按作者汇总。
-  const breakdown = selfAuthor && localBuckets ? [{ author: selfAuthor, sourceId: selfSourceId, local: true, ...localTally.result() }] : [];
+  // 回合在每个来源（设备）内部先结算，再并入作者合计：同一作者的多台设备不混在一起结算回合。
+  const breakdown = [];
+  if (selfAuthor && localBuckets) {
+    const result = localTally.result();
+    for (const model of result.models) tallies.get(selfAuthor).addModel(model);
+    breakdown.push({ author: selfAuthor, sourceId: selfSourceId, local: true, ...result });
+  }
   for (const target of sources.values()) {
     shared.add(target.author);
     const tally = new Tally();
-    for (const row of target.current ? remoteRows(target, from, to) : target.legacy) { tallies.get(target.author).add(row); tally.add(row); }
-    breakdown.push({ author: target.author, sourceId: target.sourceId, local: false, ...(target.todayVersion === null ? {} : { todayVersion: target.todayVersion }), ...tally.result() });
+    for (const row of target.current ? remoteRows(target, from, to) : target.legacy) tally.add(row);
+    const result = tally.result();
+    for (const model of result.models) tallies.get(target.author).addModel(model);
+    breakdown.push({ author: target.author, sourceId: target.sourceId, local: false, ...(target.todayVersion === null ? {} : { todayVersion: target.todayVersion }), ...result });
   }
 
   const entries = [...tallies].map(([author, tally]) => ({ author, self: author === selfAuthor, shared: author === selfAuthor || shared.has(author), ...tally.result() })).sort(compareEntries);

@@ -181,3 +181,34 @@ test('「我」一台只有纯回合请求行、另一台有实际型号 Token �
   const empty = summarize([], WINDOW).mine;
   assert.deepEqual([empty.machines, empty.models, empty.totalTokens, empty.turns], [[], [], 0, 0]);
 });
+
+test('同一作者两台设备同一请求名跑到不同实际型号：「我」与好友榜里同一作者的各型号回合一致', () => {
+  const mac = [layer({ served: 'gpt-5-a', input: 100 }), layer({ turns: 2, reportedTurns: 2 })], rig = [layer({ served: 'gpt-5-b', input: 40 }), layer({ turns: 3, reportedTurns: 3 })];
+  const { mine, board } = summarize([stateOf(X, { author: A }), ...usageOf(X, { author: A, sourceId: 'x', buckets: mac }), ...usageOf(Y, { author: A, sourceId: 'y', buckets: rig })], WINDOW);
+  const turnsOf = models => models.map(model => [model.model, model.totalTokens, model.turns]);
+  assert.deepEqual(turnsOf(mine.models), [['gpt-5-a', 100, 2], ['gpt-5-b', 40, 3]]);
+  assert.deepEqual(turnsOf(board.entries.find(entry => entry.author === A).models), turnsOf(mine.models));
+});
+
+test('两台同名设备（owner、sourceId 不同）不合并：设备拆分保留两项、标签可区分、回合不互相串扰', () => {
+  const same = { id: 'y-1234', name: 'Mac' }, first = { id: 'x-abcd', name: 'Mac' };
+  const { mine } = summarize([...usageOf(first, { author: A, sourceId: 'x', buckets: [layer({ served: 'gpt-5', input: 100 }), layer({ turns: 2, reportedTurns: 2 })] }),
+    ...usageOf(same, { author: A, sourceId: 'y', buckets: [layer({ served: 'gpt-5', input: 40 }), layer({ turns: 3, reportedTurns: 3 })] }),
+    ...usageOf({ id: 'z', name: 'rig' }, { author: A, sourceId: 'z', buckets: [layer({ served: 'gpt-5', input: 1 })] })], WINDOW);
+  assert.deepEqual(mine.machines, ['Mac · abcd', 'Mac · 1234', 'rig'], '只有重名的加后缀');
+  assert.deepEqual(mine.models.map(model => [model.model, model.turns, model.machines.map(m => [m.machine, m.totalTokens, m.turns])]),
+    [['gpt-5', 5, [['Mac · abcd', 100, 2], ['Mac · 1234', 40, 3], ['rig', 1, 0]]]]);
+  assertConserved(mine);
+});
+
+test('同名设备的区分标签相撞：尾号相同向左加位，生成的标签撞上另一台的原名也避开，每台设备的用量都在', () => {
+  const dev = (id, name, input) => usageOf({ id, name }, { author: A, sourceId: id, buckets: [layer({ served: 'gpt-5', input })] });
+  const tail = summarize([...dev('aaaa1234', 'Mac', 1), ...dev('bbbb1234', 'Mac', 10), ...dev('c', 'rig', 100)], WINDOW).mine;
+  assert.deepEqual(tail.machines, ['Mac · 1234', 'Mac · b1234', 'rig']);
+  assert.deepEqual(tail.models[0].machines.map(m => [m.machine, m.totalTokens]), [['rig', 100], ['Mac · b1234', 10], ['Mac · 1234', 1]]);
+  const name = summarize([...dev('x-abcd', 'Mac', 1), ...dev('y-1234', 'Mac', 10), ...dev('z', 'Mac · abcd', 100)], WINDOW).mine;
+  assert.equal(new Set(name.machines).size, 3);
+  assert.deepEqual(name.machines, ['Mac · -abcd', 'Mac · 1234', 'Mac · abcd'], '生成的标签不与原名「Mac · abcd」相同');
+  assert.equal(name.totalTokens, 111);
+  assertConserved(name);
+});

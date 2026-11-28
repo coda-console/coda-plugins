@@ -265,3 +265,9 @@ test('关了分享、撤回没完成：页脚不说「好友看不到」，写�
   ({ page } = await open(t, [off(null)]));
   assert.deepEqual(texts(page, 'foot'), ['没有分享，好友看不到你的用量']);
 });
+
+test('展开：总数大于 0 而该型号只有回合（0 Token）时占比写 0%', async t => {
+  const { page } = await open(t, [stateOf(X, { author: A }), ...usageOf(X, { author: A, sourceId: 'x', buckets: [row({ agent: 'claude', asked: 'big', served: 'big', input: 100 }), row({ agent: 'claude', asked: 'idle', turns: 2, reportedTurns: 2 })] })]);
+  headOf(page, 'idle').fire('click');
+  assert.deepEqual(facts(page), ['2 回合 · 占 0%']);
+});

@@ -113,13 +113,13 @@ const legend = c => h('div', { class: 'legend' }, PARTS.map(([key, label]) => h(
 const hasItems = m => m.items.length > 1 || m.items.some(item => (item.asked ?? m.model) !== m.model || (item.api && item.api !== m.model));
 // 型号名、asked、Agent、机器名是身份或外来文字，原样存取；清洗只在显示时做。
 const shown = text => cleanText(text, 200) ?? '?';
-const percent = value => (value < 0.1 ? '<0.1%' : `${value.toFixed(1)}%`);
+const percent = value => (value === 0 ? '0%' : value < 0.1 ? '<0.1%' : `${value.toFixed(1)}%`);
 const usedBy = c => `${tokens(c.totalTokens)} · ${count(c.turns)} 回合`;
 const section = (title, rows) => h('div', { class: 'sect' }, h('div', { class: 'sect-title' }, title), h('ul', { class: 'items' }, rows.map(([name, note, c]) => h('li', { class: 'bar-line' },
   h('span', { class: 'truncate' }, name), note ? h('span', { class: 'secondary truncate' }, note) : null, h('span', { class: 'spacer' }), h('span', { class: 'num secondary' }, usedBy(c))))));
 function modelDetail(m, total) {
   const cacheBase = m.input + m.cacheRead + m.cacheWrite;
-  const facts = [`${count(m.turns)} 回合`, total > 0 && m.totalTokens > 0 ? `占 ${percent((m.totalTokens / total) * 100)}` : null, m.cacheRead > 0 && cacheBase > 0 ? `缓存命中 ${percent((m.cacheRead / cacheBase) * 100)}` : null].filter(Boolean);
+  const facts = [`${count(m.turns)} 回合`, total > 0 ? `占 ${percent((m.totalTokens / total) * 100)}` : null, m.cacheRead > 0 && cacheBase > 0 ? `缓存命中 ${percent((m.cacheRead / cacheBase) * 100)}` : null].filter(Boolean);
   const agents = (m.agents ?? []).filter(a => a.agent != null && a.agent !== '_');
   const direct = m.items.some(item => item.api);
   return h('div', { class: 'mdetail' },

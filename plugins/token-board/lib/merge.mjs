@@ -46,8 +46,20 @@ export function summarize(entries, { from, to }) {
   }
 
   // 「我」按机器各算一遍（各自的窗口去重与回合归因），再把各台的型号行并成总计：设备明细与型号总计出自同一份结果，Token 与回合完全守恒。
-  const byMachine = Map.groupBy(usage, entry => entry.location), tally = new Tally(), perModel = new Map();
-  for (const [machine, group] of byMachine) {
+  // 按稳定的设备标识（owner、没有就取来源 ID，再没有取展示名）分组，展示名只是标签，不当分组键；重名的设备在展示名后加设备标识的尾部区分，
+  // 标签避开所有不重名设备的原名和已生成的标签：尾号相撞就向左加位，加到整个标识仍相撞再加编号。
+  const byDevice = Map.groupBy(usage, entry => entry.owner || entry.spec.sourceId || entry.location), tally = new Tally(), perModel = new Map();
+  const devices = [...byDevice].map(([device, group]) => ({ id: String(device), group, name: group[0].location }));
+  const nameCount = Map.groupBy(devices, device => device.name);
+  const taken = new Set(devices.filter(device => nameCount.get(device.name).length === 1).map(device => device.name));
+  const machines = devices.map(({ id, group, name }) => {
+    if (!name || nameCount.get(name).length === 1) return { machine: name, group };
+    const candidates = [...Array.from({ length: Math.max(id.length - 3, 1) }, (_, i) => `${name} · ${id.slice(-(4 + i))}`), ...Array.from({ length: devices.length }, (_, i) => `${name} · ${id} #${i + 2}`)];
+    const machine = candidates.find(label => !taken.has(label));
+    taken.add(machine);
+    return { machine, group };
+  });
+  for (const { machine, group } of machines) {
     for (const model of aggregate(group.map(({ spec }) => asRecord(spec, ALL, 0)), [ALL], from, to).entries[0].models) {
       tally.addModel(model);
       if (!machine || !(model.totalTokens > 0 || model.turns > 0)) continue;
@@ -57,7 +69,7 @@ export function summarize(entries, { from, to }) {
   }
   const totals = tally.result();
   const byUse = (a, b) => b.totalTokens - a.totalTokens || b.turns - a.turns || (a.machine < b.machine ? -1 : a.machine > b.machine ? 1 : 0);
-  const mine = { machines: [...byMachine.keys()], ...totals, models: totals.models.map(model => ({ ...model, machines: (perModel.get(model.model) ?? []).sort(byUse) })) };
+  const mine = { machines: machines.map(({ machine }) => machine), ...totals, models: totals.models.map(model => ({ ...model, machines: (perModel.get(model.model) ?? []).sort(byUse) })) };
 
   const selves = new Set(states.map(({ spec }) => spec.author).filter(Boolean));
   const authors = [...new Set([...selves, ...states.flatMap(({ spec }) => spec.friends)])];
