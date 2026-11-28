@@ -1,20 +1,46 @@
 // 好友页按成员读数据的纯逻辑：成员列表、按身份归组、按电脑分节。
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { friendSections, identities, listMembers, memberTitles } from '../../../plugins/friends/lib/view-members.mjs';
+import { applyEntry, applyOffline, friendSections, identities, listMembers, memberOf, memberTitles } from '../../../plugins/friends/lib/view-members.mjs';
 import { XS_A, XS_B, titleOf } from '../../helpers/accord-keys.mjs';
 
 const KEY = n => `ed25519:${String(n).repeat(64)}`;
 const ME = KEY(1), OTHER_ME = KEY(2), PAL = KEY(3);
-const member = (id, over = {}) => ({ id, name: id.toUpperCase(), unreachable: null, entry: { spec: { author: ME }, status: { certificate: { active: true } } }, author: ME,
+const member = (id, over = {}) => ({ id, name: id.toUpperCase(), offline: false, entry: { spec: { author: ME }, status: { certificate: { active: true } } }, author: ME,
   friends: [], loaded: true, ...over });
 
-test('listMembers keeps the view order, drops duplicates and ids that are not strings, and words the unreachable reason', () => {
-  const coda = { machines: [{ id: 'a', name: 'Mac' }, { id: 'a', name: 'dup' }, { name: 'no id' }, { id: 'b' }, { id: 'c', name: 'nas', unreachable: '离线 3 小时' }, { id: 'd', unreachable: true }] };
-  assert.deepEqual(listMembers(coda), [
-    { id: 'a', name: 'Mac', unreachable: null }, { id: 'b', name: 'b', unreachable: null },
-    { id: 'c', name: 'nas', unreachable: '离线 3 小时' }, { id: 'd', name: 'd', unreachable: '暂时连不上' }]);
-  assert.deepEqual(listMembers({ machine: { id: 'solo', name: 'Solo' } }), [{ id: 'solo', name: 'Solo', unreachable: null }]);
+test('listMembers keeps the view order and drops duplicates and ids that are not strings; nobody is offline until the machine records say so', () => {
+  const coda = { machines: [{ id: 'a', name: 'Mac' }, { id: 'a', name: 'dup' }, { name: 'no id' }, { id: 'b' }, { id: 'c', name: 'nas' }] };
+  assert.deepEqual(listMembers(coda), [{ id: 'a', name: 'Mac', offline: false }, { id: 'b', name: 'b', offline: false }, { id: 'c', name: 'nas', offline: false }]);
+  assert.deepEqual(listMembers({ machine: { id: 'solo', name: 'Solo' } }), [{ id: 'solo', name: 'Solo', offline: false }]);
+});
+
+test('a directory entry belongs to the member whose id is its owner, whatever the case; an owner outside the view or missing matches nobody', () => {
+  const members = listMembers({ machines: [{ id: 'AbC-1', name: 'Mac' }, { id: 'd2', name: 'nas' }] });
+  assert.equal(memberOf(members, 'abc-1'), members[0]);
+  assert.equal(memberOf(members, 'D2'), members[1]);
+  assert.equal(memberOf(members, 'zzz'), undefined);
+  assert.equal(memberOf(members, undefined), undefined);
+});
+
+test('applyEntry reads the identity and friends of a record into its member, and a deleted record empties it again', () => {
+  const [m] = listMembers({ machines: [{ id: 'a' }] });
+  const entry = { owner: 'a', spec: { author: ME }, status: { friends: [{ node: 'n1', author: PAL, bound: true }], certificate: { active: true } } };
+  applyEntry(m, entry);
+  assert.deepEqual([m.loaded, m.author, m.friends.length, m.entry], [true, ME, 1, entry]);
+  applyEntry(m, { owner: 'a', spec: {}, status: {} });
+  assert.deepEqual([m.loaded, m.author, m.friends], [true, null, []], 'a record with no identity and no friends is still a record');
+  applyEntry(m, null);
+  assert.deepEqual([m.loaded, m.author, m.friends, m.entry], [false, null, [], null]);
+});
+
+test('applyOffline marks the members whose machine record says offline, says whether anything changed, and treats a machine with no record as online', () => {
+  const members = listMembers({ machines: [{ id: 'a' }, { id: 'B' }, { id: 'c' }] });
+  assert.equal(applyOffline(members, [{ id: 'a', status: { offline: false } }, { id: 'b', status: { offline: true } }]), true);
+  assert.deepEqual(members.map(m => m.offline), [false, true, false]);
+  assert.equal(applyOffline(members, [{ id: 'b', status: { offline: true } }]), false, 'nothing changed');
+  assert.equal(applyOffline(members, []), true);
+  assert.deepEqual(members.map(m => m.offline), [false, false, false]);
 });
 
 test('machines of one identity make one group, in view order, whichever machine read first', () => {
@@ -35,9 +61,9 @@ test('machines that are unread, or have no identity, do not join the others', ()
   assert.deepEqual(identities([member('a', { loaded: false }), none]).map(i => [i.author, i.members.map(m => m.id)]), [[null, ['n']]]);
 });
 
-test('a machine whose Accord could not be read is shown as such, with no rows', () => {
-  const sections = friendSections([member('a', { loaded: false, accordProblem: '读不到本机的好友信息：boom' }), member('b')]);
-  assert.deepEqual(sections.map(s => [s.unreachable, s.rows.length]), [['读不到本机的好友信息：boom', 0], [null, 0]]);
+test('a member without a record gets no section and takes no part in the grouping or the titles', () => {
+  const sections = friendSections([member('a', { loaded: false, entry: null, author: null }), member('b')]);
+  assert.deepEqual(sections.map(s => [s.member.id, s.title]), [['b', 'B']], 'the title still follows the number of members in the view');
 });
 
 test('the signer is the first machine of the identity whose certificate can sign, else the first', () => {
@@ -75,10 +101,10 @@ test('with a single member there is no section title', () => {
   assert.deepEqual(friendSections([member('a')]).map(s => s.title), [null]);
 });
 
-test('an unreachable member keeps its section with the reason and no rows, and the others are unaffected', () => {
-  const down = member('b', { unreachable: '离线 3 小时', loaded: false, friends: [{ node: 'x', author: PAL, bound: true }] });
+test('an offline member keeps its section with the friends it last wrote and is flagged; the others are not', () => {
+  const down = member('b', { offline: true, friends: [{ node: 'x', author: PAL, bound: true }] });
   const sections = friendSections([member('a', { friends: [{ node: 'n1', author: PAL, bound: true }] }), down]);
-  assert.deepEqual(sections.map(s => [s.title, s.unreachable, s.rows.length]), [['A', null, 1], ['B', '离线 3 小时', 0]]);
+  assert.deepEqual(sections.map(s => [s.title, s.offline, s.rows.length]), [['A', false, 1], ['B', true, 1]]);
 });
 
 test('channels of one author on a machine make one row there; the same friend on another machine is still its own row in its own section', () => {

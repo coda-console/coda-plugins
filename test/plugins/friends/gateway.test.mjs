@@ -105,6 +105,21 @@ test('activating writes this machine\'s gateway record, and its status follows t
   assert.deepEqual(await g.status(), { author: null, certState: 'no_identity', friendCount: 0, pendingCount: 0, pausedKinds: [] });
 });
 
+test('activating also writes this machine\'s friends/machine@1 record for the directory page, only what the page reads, and rewrites it only when that changes', async t => {
+  const g = await gateway(t, { certificate: { ...ACTIVE, sig: 'SIG' }, friends: [{ node: 'n1', author: F1, bound: true, authKey: 'tskey-secret', updatedAt: 3 }] });
+  const read = async () => await g.host.coda.list('friends/machine@1', { scope: 'local' });
+  await until(async () => (await read()).length === 1, '启动时写出目录记录');
+  const [record] = await read();
+  assert.deepEqual(record.spec, { author: A });
+  assert.deepEqual(record.status, { friends: [{ node: 'n1', author: F1, bound: true, updatedAt: 3 }], certificate: { key: MK, active: true, until: 1_900_000_000 }, networkRemovals: [] });
+  assert.ok(!JSON.stringify(record).includes('SIG') && !JSON.stringify(record).includes('tskey-secret'));
+  await g.accord.change({ friends: [{ node: 'n1', author: F1, bound: true, authKey: 'tskey-secret', updatedAt: 3 }, { node: 'n2', author: F2, bound: false }] });
+  await until(async () => (await read())[0].status.friends.length === 2, '好友变了跟着改');
+  await g.accord.change({ author: null, certificate: null, friends: [] });
+  await until(async () => (await read())[0].spec.author === null, '没有身份也写一条');
+  assert.deepEqual((await read())[0].status, { friends: [], certificate: null, networkRemovals: [] });
+});
+
 test('friends titles lengthen when two friends, or a friend and this machine\'s own identity, share a nickname and their last 4 digits', async t => {
   const g = await gateway(t, { friends: [{ node: 'n1', author: XS, bound: true, updatedAt: 2 }, { node: 'n2', author: XS_FAR, bound: true, updatedAt: 1 }, { node: 'n3', author: ZYV, bound: true, updatedAt: 0 }] });
   assert.deepEqual((await g.call('friends')).friends.map(row => [row.node, row.title]), [['n1', 'xs #04084'], ['n2', 'xs #14084'], ['n3', 'zyv #4103']]);
@@ -742,7 +757,7 @@ test('a stale friends/card is never sent when the certificate recovers, and does
 test('the protocol definition is valid and has only the friends, records, publish, retract and outbox operations, with no streams', () => {
   const [definition] = manifest.contributes.protocols;
   assert.equal(definitionProblem(definition, { namespace: 'friends', where: definition.name }), null);
-  assert.equal(manifest.version, '0.12.0');
+  assert.equal(manifest.version, '0.13.0');
   assert.deepEqual(Object.keys(definition.operations), ['friends', 'records', 'publish', 'retract', 'outbox']);
   assert.equal(definition.streams, undefined);
   assert.deepEqual(definition.permissions.read, { title: definition.permissions.read.title, read: true, operations: ['friends', 'records'] });
