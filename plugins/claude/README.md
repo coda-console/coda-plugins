@@ -115,14 +115,14 @@ ACP 2.6.0 只使用默认 stable v1。逐项经过真实连接的解析测试：
 - **额度从哪来**：只来自这台机器上 Claude SDK 会话自己的报告，不看本机 Claude CLI 的登录（不读 `~/.claude` 的凭据与钥匙串，也不临时启动 CLI 问 `/usage`）。
   Coda 的 Claude 会话常用 setup token，它没有 profile 权限，问不到 `/usage`，也不一定与本机 CLI 是同一个账号；
   而会话里的 CLI 在套餐窗口的已用比例或重置时间变动时发 `rate_limit_event`，入口从中读出窗口，
-  合并写进插件状态目录的 `limits.json`（每个写入方用自己的临时文件，原子替换），不经过会话、不进会话历史。
+  经 `_coda/quota`（`{ sessionId, resourceType: 'limits', accountId, windows: [{ id, label, usedFraction, resetsAt }] }`）报给 Coda，
+  Coda 写进会同步的目录记录，资源页实时显示，不再经插件状态目录里的文件，也不进会话历史。
   `unifiedWindows`（新版 CLI 的内部字段，升级 SDK 时要复核）每次带全部窗口，旧版只带顶层的 `rateLimitType`、`utilization`、`resetsAt`（当前受限的那个）；
-  两处都有时取前者。已用比例是 0 到 1 的小数，超过 1 按剩余 0；重置时间是 Unix 秒。每个窗口只留最近一次，多个会话报告同一窗口时以后到的为准。
-- **显示**：没有会话报告过（没跑过 Claude 会话，或是 API key、Bedrock、Vertex 的会话，没有这些窗口）时输出为空，「Claude」出现在「添加资源」里。
-  报告过就一个资源（不写名字：文件里只有账号的哈希），每个窗口一个读数（5 小时、7 天、Opus · 7 天、Sonnet · 7 天、Fable · 7 天，按这个顺序），条画剩余，时刻是重置时间。
-  过了重置时间的窗口不再显示（重置后用了多少这里看不到，既不当作用满也不当作清空）；全部过期时那一行写「额度记录已过期，会话再运行后更新」。记录命令 `scripts/resource.mjs` 每次运行都读文件。
-- **身份**：会话启动时 SDK 报出账号邮箱的，资源带身份 `claude:<邮箱的哈希>`（Coda 的资源页据此合并同一账号；文件里只存哈希）。
-  它跟着最近启动的会话换账号：换了账号旧窗口作废，别的账号的旧会话再报来的额度不写入；拿不到邮箱的会话（如 setup token、API key）不带身份。
+  两处都有时取前者。`id` 是上游的窗口键（`five_hour`、`seven_day`、`seven_day_opus`、`seven_day_sonnet`、`seven_day_overage_included`），不认识的键、已用比例不是非负数或重置时间不是 Unix 秒的窗口丢掉，一个不剩就不发；
+  `usedFraction` 是 0 到 1 的小数（超过 1 按 1），`resetsAt` 是 UTC 的 ISO 时间。只带这条事件里有的窗口，每条可归属的事件都发，去重交给 Coda。
+- **什么时候不发**：会话不知道自己是哪个账号（API key、Bedrock、Vertex，或登录没说）、这次查询走的是所选模型服务的模型（额度不属于这个 Claude 账号），或会话身份还没建立。
+- **身份**：会话启动时 SDK 报出账号邮箱的，`accountId` 是邮箱规范化（去空白、转小写）后 SHA-256 的前 32 位十六进制，明文邮箱不出入口进程。
+- **显示**：记录命令 `scripts/resource.mjs` 只输出登录入口（类型「Claude」，不带资源），额度资源由 Coda 按上面的通知写进目录；没有会话报告过时「Claude」出现在「添加资源」里。
 - **登录**：记录里的 `signIn` 对应操作 `sign-in`，由 `scripts/sign-in.mjs` 实现，它启动插件依赖的 Claude SDK 自带的 `claude auth login --claudeai`（与会话用的是同一个，不用 `PATH` 上另一份 Claude），
   运行机不打开浏览器（`BROWSER=/usr/bin/true`），也不导入环境里的 refresh token，而是发起新的网页登录。
   只把 CLI 输出里官方的授权链接（`claude.ai/oauth/authorize` 或 `claude.com/cai/oauth/authorize`，带 `state` 与 `code_challenge`）用 `coda progress` 报给 Coda，其余输出不传出（可能带着授权码）；报完才算登录结束，报失败登录就失败；20 秒内没有链接、或 CLI 在拿到授权码之前就退出（也不再去问授权码），原因取 CLI 说的最后一行（授权码交给 CLI 之后它的输出不传出）。

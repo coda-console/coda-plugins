@@ -22,7 +22,7 @@ export const MESSAGES = {
   'result/error_max_turns': failed,
   'result/error_max_budget_usd': failed,
   'result/error_max_structured_output_retries': failed,
-  rate_limit_event: shown('额度窗口写进资源「Claude」读的 limits.json，额度耗尽时随执行失败报'),
+  rate_limit_event: shown('额度经 _coda/quota 报给 Coda，额度耗尽时随执行失败报'),
   'system/init': shown('每轮开始：设置项、可用命令与标题，并对照已知的原生工具'),
   'system/commands_changed': shown('可用命令'),
   'system/status': shown('审批模式的变化与压缩的进度'),
