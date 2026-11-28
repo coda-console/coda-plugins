@@ -126,13 +126,14 @@ async function saveAll(worktreeDir, memoryDir, cards) {
 export async function rememberCard(worktreeDir, memoryDir, input, { now = new Date() } = {}) {
   if (input.appendToId !== undefined) {
     if (input.content !== undefined) throw new Error('appendToId 只合并来源、实体和标签，不改正文，不能同时给 content');
+    const refs = stringList(input.refs, 'refs', { required: true });
     const target = await readCardFromWorktree(worktreeDir, memoryDir, input.appendToId);
     if (!target) throw new Error(`要补充的卡片不存在：${input.appendToId}`);
     if (target.status === 'archived') throw new Error(`要补充的卡片已归档：${input.appendToId}`);
     // 即使来源已都在，也刷新 updated_at 并落盘。
     const next = {
       ...target,
-      refs: stringList([...target.refs, ...stringList(input.refs, 'refs')], 'refs'),
+      refs: stringList([...target.refs, ...refs], 'refs'),
       entities: stringList([...target.entities, ...stringList(input.entities, 'entities')], 'entities'),
       tags: stringList([...target.tags, ...stringList(input.tags, 'tags')], 'tags'),
       updated_at: iso(now),
@@ -161,19 +162,25 @@ export async function rememberCard(worktreeDir, memoryDir, input, { now = new Da
   if ([...card.supersedes, ...card.contradicts, ...card.related].includes(card.id)) throw new Error('卡片不能关联自己');
   if (card.contradicts.length && card.status === 'active') card.status = 'contested';
 
+  // 写任何文件之前，关系的目标都要在工作树里：缺一张就整个不写，不留悬空的 contested。
+  const targets = new Map();
+  for (const id of new Set([...card.supersedes, ...card.contradicts, ...card.related])) {
+    const target = await readCardFromWorktree(worktreeDir, memoryDir, id);
+    if (!target) throw Object.assign(new Error(`关系指向的卡片不存在：${id}`), { code: 'not_found' });
+    targets.set(id, target);
+  }
   // 同一张目标卡片可能被几种关系改到，在内存里累积后一起写。
   const updates = new Map();
-  const edit = async (id, mutate) => {
-    const target = updates.get(id) ?? await readCardFromWorktree(worktreeDir, memoryDir, id);
-    const next = target && changed(target, now, mutate);
+  const edit = (id, mutate) => {
+    const next = changed(updates.get(id) ?? targets.get(id), now, mutate);
     if (next) updates.set(id, next);
   };
-  for (const id of card.supersedes) await edit(id, c => { if (c.status === 'active' || c.status === 'contested') c.status = 'superseded'; });
-  for (const id of card.contradicts) await edit(id, c => {
+  for (const id of card.supersedes) edit(id, c => { if (c.status === 'active' || c.status === 'contested') c.status = 'superseded'; });
+  for (const id of card.contradicts) edit(id, c => {
     c.contradicts = union(c.contradicts, [card.id]);
     if (c.status === 'active') c.status = 'contested';
   });
-  for (const id of card.related) await edit(id, c => { c.related = union(c.related, [card.id]); });
+  for (const id of card.related) edit(id, c => { c.related = union(c.related, [card.id]); });
   const path = await writeCardToWorktree(worktreeDir, memoryDir, card);
   await saveAll(worktreeDir, memoryDir, [...updates.values()]);
   return { card, created: true, path, changed: [...updates.keys()] };
@@ -227,17 +234,19 @@ export async function archiveCard(worktreeDir, memoryDir, { id, reason }, { now 
 
 // ---- 只读的 git 读取 ----
 
+// 只认明确的默认分支：origin/HEAD、origin/main、origin/master、本地 main、master；都没有（含没有任何提交）返回 null。
+// 当前检出的 HEAD 可能是功能分支，不能当默认分支。
 export async function resolveDefaultBranch(repoDir) {
   // 退出码 1 只表示「没有这个引用」；别的失败（git 起不来、不是仓库）照常抛出。
   const candidates = [];
   const head = (await gitExit(repoDir, ['symbolic-ref', '-q', 'refs/remotes/origin/HEAD'])).stdout?.trim();
   if (head) candidates.push(head);
-  candidates.push('refs/remotes/origin/main', 'refs/remotes/origin/master', 'refs/heads/main', 'refs/heads/master', 'HEAD');
+  candidates.push('refs/remotes/origin/main', 'refs/remotes/origin/master', 'refs/heads/main', 'refs/heads/master');
   for (const ref of candidates) {
     const commit = (await gitExit(repoDir, ['rev-parse', '--verify', '-q', `${ref}^{commit}`])).stdout?.trim();
     if (commit) return { ref, commit };
   }
-  throw new Error('找不到默认分支：仓库里没有提交');
+  return null;
 }
 
 export async function listCardPathsAtCommit(repoDir, commit, memoryDir) {
@@ -276,36 +285,46 @@ export async function diffCardsBetweenCommits(repoDir, oldCommit, newCommit, mem
   return result;
 }
 
-// 当前工作树相对 baseCommit 新增、修改或删除的卡片（含未跟踪的新文件）。
+// 当前分支相对 baseCommit 新增、修改或删除的卡片（含工作树里未提交、未跟踪的）。
+// 只看本分支（自分叉点 merge-base 起）和工作树实际改动过的路径：落后的分支上，baseCommit 新增、修改、删除的卡片不是本分支的草稿。
 export async function loadDraftOverlay(repoDir, baseCommit, memoryDir) {
   const dir = itemsPath(memoryDir);
-  const changedPaths = [], deleted = [];
-  // git diff 对着工作树比较时会顺手刷新并写回索引；在索引的副本上跑，真正的 .git/index 一个字节不动。
-  const scratch = await mkdtemp(join(tmpdir(), 'memory-index-'));
-  try {
-    const index = (await git(repoDir, ['rev-parse', '--path-format=absolute', '--git-path', 'index'])).trim();
-    // 保留索引文件的修改时间：git 靠它识别「和索引同一秒内改过、大小没变」的文件，新时间会让这类改动被当成没改。
-    await cp(index, join(scratch, 'index'), { preserveTimestamps: true }).catch(error => { if (error.code !== 'ENOENT') throw error; });
-    const out = await git(repoDir, ['diff', '--name-status', '-z', '--no-renames', baseCommit, '--', dir], { GIT_INDEX_FILE: join(scratch, 'index') });
-    for (const { status, path } of parseNameStatus(out)) {
-      if (!isCardPath(memoryDir, path)) continue;
-      (status === 'D' ? deleted : changedPaths).push(path);
+  await git(repoDir, ['rev-parse', '--verify', `${baseCommit}^{commit}`]);
+  // 还没有提交的分支（git checkout --orphan）没有 HEAD，也没有共同祖先；有 HEAD 时退出码 1 同样是没有共同祖先：都只统计工作树里的改动。
+  const hasHead = !!(await gitExit(repoDir, ['rev-parse', '--verify', '-q', 'HEAD^{commit}'])).stdout?.trim();
+  const mergeBase = hasHead ? (await gitExit(repoDir, ['merge-base', 'HEAD', baseCommit])).stdout?.trim() : '';
+  const names = out => out.split('\0').filter(path => path && isCardPath(memoryDir, path));
+  const changedPaths = new Set();
+  if (mergeBase) for (const path of names(await git(repoDir, ['diff', '--name-only', '-z', '--no-renames', mergeBase, 'HEAD', '--', dir]))) changedPaths.add(path);
+  if (hasHead) {
+    // git diff 对着工作树比较时会顺手刷新并写回索引；在索引的副本上跑，真正的 .git/index 一个字节不动。
+    const scratch = await mkdtemp(join(tmpdir(), 'memory-index-'));
+    try {
+      const index = (await git(repoDir, ['rev-parse', '--path-format=absolute', '--git-path', 'index'])).trim();
+      // 保留索引文件的修改时间：git 靠它识别「和索引同一秒内改过、大小没变」的文件，新时间会让这类改动被当成没改。
+      await cp(index, join(scratch, 'index'), { preserveTimestamps: true }).catch(error => { if (error.code !== 'ENOENT') throw error; });
+      for (const path of names(await git(repoDir, ['diff', '--name-only', '-z', '--no-renames', 'HEAD', '--', dir], { GIT_INDEX_FILE: join(scratch, 'index') }))) changedPaths.add(path);
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
     }
-  } finally {
-    await rm(scratch, { recursive: true, force: true });
+  } else {
+    // 没有 HEAD 可比：索引里已暂存的卡片都算本分支改动过的（和 baseCommit 一致的下面会被略过）。
+    for (const path of names(await git(repoDir, ['ls-files', '--cached', '-z', '--', dir]))) changedPaths.add(path);
   }
   // 未跟踪的新卡用只读的 ls-files 列出，不用会刷新索引的 status。
-  for (const path of (await git(repoDir, ['ls-files', '--others', '--exclude-standard', '-z', '--', dir])).split('\0')) {
-    if (path && isCardPath(memoryDir, path)) changedPaths.push(path);
-  }
-  const drafts = new Map(), deletedIds = new Set(deleted.map(idOfPath));
+  for (const path of names(await git(repoDir, ['ls-files', '--others', '--exclude-standard', '-z', '--', dir]))) changedPaths.add(path);
+
+  const inBase = new Set(await listCardPathsAtCommit(repoDir, baseCommit, memoryDir));
+  const drafts = new Map(), deletedIds = new Set();
   await assertInsideRepo(repoDir, memoryDir);
-  for (const path of new Set(changedPaths)) {
+  for (const path of changedPaths) {
     const text = await readCardFile(join(repoDir, path), path);
-    if (text === null) continue;
-    const card = parseNamed(text, path);
-    drafts.set(card.id, card);
-    deletedIds.delete(card.id);
+    if (text === null) {
+      if (inBase.has(path)) deletedIds.add(idOfPath(path));
+    } else if (!inBase.has(path) || text !== await git(repoDir, ['show', `${baseCommit}:${path}`])) {
+      const card = parseNamed(text, path);
+      drafts.set(card.id, card);
+    }
   }
   return { drafts, deletedIds };
 }

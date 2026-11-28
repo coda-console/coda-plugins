@@ -57,6 +57,8 @@ test('appendToId 合并来源、实体和标签而不新建卡片', async t => {
   assert.equal(merged.body, first.body);
   assert.equal((await listWorktreeCards(dir, MEM)).length, 1);
   await assert.rejects(rememberCard(dir, MEM, { appendToId: 'NOPE', refs: ['x'] }), /不存在/);
+  for (const refs of [undefined, [], [' ']]) await assert.rejects(rememberCard(dir, MEM, { appendToId: first.id, refs }), /refs/);
+  assert.deepEqual((await readCardFromWorktree(dir, MEM, first.id)).refs, merged.refs);
   await assert.rejects(rememberCard(dir, MEM, { appendToId: first.id, content: '改正文' }), /不改正文/);
   await archiveCard(dir, MEM, { id: first.id });
   await assert.rejects(rememberCard(dir, MEM, { appendToId: first.id, refs: ['x'] }), /已归档/);
@@ -68,12 +70,23 @@ test('supersedes 把旧卡片置为 superseded，archived 的不动', async t =>
   const { card: contested } = await remember(dir, { status: 'contested' });
   const { card: gone } = await remember(dir);
   await archiveCard(dir, MEM, { id: gone.id });
-  const { card: fresh } = await remember(dir, { supersedes: [old.id, contested.id, gone.id, 'NOT_IN_WORKTREE'] });
-  assert.deepEqual(fresh.supersedes, [old.id, contested.id, gone.id, 'NOT_IN_WORKTREE']);
+  const { card: fresh } = await remember(dir, { supersedes: [old.id, contested.id, gone.id] });
+  assert.deepEqual(fresh.supersedes, [old.id, contested.id, gone.id]);
   assert.equal(await status(dir, old.id), 'superseded');
   assert.equal(await status(dir, contested.id), 'superseded');
   assert.equal(await status(dir, gone.id), 'archived');
   assert.equal(await status(dir, fresh.id), 'active');
+});
+
+test('remember 的关系指向不存在的卡片时整体失败，不新建卡片也不改动已有卡片', async t => {
+  const dir = repo(t);
+  const { card: a } = await remember(dir);
+  const before = readFileSync(join(dir, MEM, 'items', `${a.id}.md`), 'utf8');
+  for (const field of ['supersedes', 'contradicts', 'related']) {
+    await assert.rejects(remember(dir, { [field]: [a.id, 'MISSING'] }), { code: 'not_found', message: /MISSING/ });
+  }
+  assert.deepEqual((await listWorktreeCards(dir, MEM)).map(c => c.id), [a.id]);
+  assert.equal(readFileSync(join(dir, MEM, 'items', `${a.id}.md`), 'utf8'), before);
 });
 
 test('contradicts 互相记录且双方变 contested，related 双向记录', async t => {
@@ -147,11 +160,11 @@ test('git 只读：切分支后仍能读主分支卡片，工作区不被弄脏'
   await assert.rejects(readCardAtCommit(dir, main, `${MEM}/items/NOPE.md`));
 });
 
-test('resolveDefaultBranch 优先 origin/HEAD，回退到 origin/main、本地分支和 HEAD', async t => {
+test('resolveDefaultBranch 优先 origin/HEAD，回退到 origin/main、本地 main、master；不把检出的 HEAD 当默认分支', async t => {
   const dir = repo(t);
   const first = commit(dir);
   git(dir, 'branch', '-m', 'trunk');
-  assert.deepEqual(await resolveDefaultBranch(dir), { ref: 'HEAD', commit: first });
+  assert.equal(await resolveDefaultBranch(dir), null);
   git(dir, 'branch', 'master');
   assert.equal((await resolveDefaultBranch(dir)).ref, 'refs/heads/master');
   writeFileSync(join(dir, 'x'), 'x');
@@ -161,8 +174,7 @@ test('resolveDefaultBranch 优先 origin/HEAD，回退到 origin/main、本地�
   git(dir, 'update-ref', 'refs/remotes/origin/dev', second);
   git(dir, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/dev');
   assert.deepEqual(await resolveDefaultBranch(dir), { ref: 'refs/remotes/origin/dev', commit: second });
-  const empty = repo(t);
-  await assert.rejects(resolveDefaultBranch(empty), /找不到默认分支/);
+  assert.equal(await resolveDefaultBranch(repo(t)), null);
   // 不是仓库：git 的失败不能被当成「没有这个分支」吞掉。
   const plain = mkdtempSync(join(tmpdir(), 'memory-plain-'));
   t.after(() => rmSync(plain, { recursive: true, force: true }));
@@ -231,12 +243,72 @@ test('loadDraftOverlay：未跟踪新卡、修改卡与删除卡', async t => {
   assert.ok(!again.deletedIds.has('EDIT'));
 });
 
+test('loadDraftOverlay：落后的分支不受主分支后来的新增、修改、删除影响，只叠加本分支自己的改动', async t => {
+  const dir = repo(t);
+  put(dir, card('B'));
+  put(dir, card('C'));
+  put(dir, card('E'));
+  commit(dir);
+  git(dir, 'checkout', '-q', '-b', 'feature');
+  git(dir, 'checkout', '-q', 'main');
+  put(dir, card('A'));
+  put(dir, card('B', { body: '主分支改了 B' }));
+  rmSync(join(dir, MEM, 'items', 'C.md'));
+  const main = commit(dir, 'main 前进');
+  git(dir, 'checkout', '-q', 'feature');
+  assert.deepEqual(await loadDraftOverlay(dir, main, MEM), { drafts: new Map(), deletedIds: new Set() });
+
+  // feature 自己新增 D、修改 E（一个提交、一个未提交）：只叠加 D 和 E。
+  put(dir, card('D'));
+  commit(dir, 'feature 新增 D');
+  put(dir, card('E', { body: '分支改的 E' }));
+  const { drafts, deletedIds } = await loadDraftOverlay(dir, main, MEM);
+  assert.deepEqual([[...drafts.keys()].sort(), [...deletedIds]], [['D', 'E'], []]);
+  assert.equal(drafts.get('E').body, '分支改的 E');
+
+  // feature 自己删除主分支上仍有的 B：是删除；分支上的改动恰好与主分支一致则不算草稿。
+  rmSync(join(dir, MEM, 'items', 'B.md'));
+  put(dir, card('E'));
+  const after = await loadDraftOverlay(dir, main, MEM);
+  assert.deepEqual([[...after.drafts.keys()], [...after.deletedIds]], [['D'], ['B']]);
+});
+
+test('loadDraftOverlay：还没有提交的分支（orphan）也能叠加草稿，不因 HEAD 不存在而失败', async t => {
+  const dir = repo(t);
+  put(dir, card('KEEP'));
+  put(dir, card('EDIT'));
+  const base = commit(dir);
+  git(dir, 'checkout', '-q', '--orphan', 'fresh');
+  // 暂存区里还留着 main 的卡片：和 base 一致的不算草稿；改过的、新增的（含未跟踪的）才算。
+  assert.deepEqual(await loadDraftOverlay(dir, base, MEM), { drafts: new Map(), deletedIds: new Set() });
+  put(dir, card('EDIT', { body: '孤儿分支改的' }));
+  put(dir, card('FRESH'));
+  const { drafts, deletedIds } = await loadDraftOverlay(dir, base, MEM);
+  assert.deepEqual([[...drafts.keys()].sort(), [...deletedIds]], [['EDIT', 'FRESH'], []]);
+  // 删掉工作树里的卡片：仍在暂存区里，算删除。
+  rmSync(join(dir, MEM, 'items', 'KEEP.md'));
+  assert.deepEqual([...(await loadDraftOverlay(dir, base, MEM)).deletedIds], ['KEEP']);
+});
+
 test('writeCardToWorktree 写前校验，非法卡片不落盘', async t => {
   const dir = repo(t);
   await assert.rejects(writeCardToWorktree(dir, MEM, card('BAD', { body: 'x'.repeat(8001) })), /8000/);
   await assert.rejects(writeCardToWorktree(dir, MEM, card('../BAD')), /卡片 id/);
   assert.deepEqual(await listWorktreeCards(dir, MEM), []);
   assert.equal(readFileSync(join(dir, 'README.md'), 'utf8'), 'x\n');
+});
+
+test('标签与实体的数量和单项字节数超过 mnemon 上限时拒绝，新建和 appendToId 都一样', async t => {
+  const dir = repo(t);
+  const names = (count, prefix = 't') => Array.from({ length: count }, (_, i) => `${prefix}${i}`);
+  await assert.rejects(remember(dir, { tags: names(21) }), /tags 最多 20/);
+  await assert.rejects(remember(dir, { tags: ['x'.repeat(101)] }), /tags 的每一项不能超过 100 字节/);
+  await assert.rejects(remember(dir, { tags: ['汉'.repeat(34)] }), /100 字节/);
+  await assert.rejects(remember(dir, { entities: names(51, 'e') }), /entities 最多 50/);
+  await assert.rejects(remember(dir, { entities: ['x'.repeat(201)] }), /entities 的每一项不能超过 200 字节/);
+  const { card: ok } = await remember(dir, { tags: [...names(19), 'x'.repeat(100)], entities: [...names(49, 'e'), '汉'.repeat(66)] });
+  await assert.rejects(rememberCard(dir, MEM, { appendToId: ok.id, refs: ['r'], tags: ['one-more'] }), /tags 最多 20/);
+  assert.deepEqual((await listWorktreeCards(dir, MEM)).map(c => c.id), [ok.id]);
 });
 
 test('撤销不存在的关系不改变状态', async t => {

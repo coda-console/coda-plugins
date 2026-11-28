@@ -1,5 +1,5 @@
 // 插件的安装步骤（contributes.setup）：确保这台机器上有锁定版本的 mnemon（v0.2.15）。
-// 设置里填了可执行的 mnemonPath、或状态目录里已有这个版本，就什么都不做；否则下载官方发布包，
+// 设置里填了可执行的 mnemonPath、或运行时会优先用到的 mnemon（状态目录优先于 PATH）已是这个版本，就什么都不做；否则下载官方发布包，
 // 核对写死的 SHA-256 后解出 mnemon，原子装到 <CODA_PLUGIN_STATE>/bin/mnemon。不通过校验的包立即删掉，非零退出。
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -10,6 +10,7 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { resolveMnemonBin } from '../lib/mnemon.mjs';
 
 const run = promisify(execFile);
 
@@ -34,6 +35,9 @@ export async function verifySha256(file, expected) {
   return hash.digest('hex') === expected.toLowerCase();
 }
 
+// 版本号要整段匹配：0.2.150、0.2.15.1、0.2.15-rc.1 都不是 0.2.15。
+const isLocked = text => new RegExp(`(?<![\\d.])${VERSION.replaceAll('.', '\\.')}(?!\\d|\\.\\d|-[0-9A-Za-z])`).test(text);
+
 const executable = path => { try { accessSync(path, constants.X_OK); return statSync(path).isFile(); } catch { return false; } };
 
 async function download(url, file) {
@@ -49,12 +53,15 @@ async function versionOf(bin) {
 }
 
 // 依赖（asset、download、extract、versionOf）可注入，离线测试用。返回 { action, path }。
-export async function installMnemon({ stateDir, settings = {}, platform, arch, deps = {} }) {
+export async function installMnemon({ stateDir, settings = {}, platform, arch, env = process.env, deps = {} }) {
   const { download: get = download, extract: unpack = extract, versionOf: version = versionOf } = deps;
   const configured = settings['memory.mnemonPath'];
   if (configured && executable(configured)) return { action: 'configured', path: configured };
   const target = join(stateDir, 'bin', 'mnemon');
-  if (executable(target) && (await version(target)).includes(VERSION)) return { action: 'present', path: target };
+  // 运行时用的是 resolveMnemonBin 的第一个命中（状态目录优先于 PATH）：它是锁定版本才跳过；是别的版本就装到状态目录，运行时才会优先用它。
+  let preferred;
+  try { preferred = resolveMnemonBin({ stateDir, env }); } catch {}
+  if (preferred && isLocked(await version(preferred))) return { action: 'present', path: preferred };
 
   const asset = deps.asset ?? assetForPlatform(platform, arch);
   await mkdir(stateDir, { recursive: true });
@@ -67,7 +74,7 @@ export async function installMnemon({ stateDir, settings = {}, platform, arch, d
     await unpack(archive, work);
     const bin = join(work, 'mnemon');
     await chmod(bin, 0o755);
-    if (!(await version(bin)).includes(VERSION)) throw new Error(`解出的 mnemon 不是 ${VERSION}`);
+    if (!isLocked(await version(bin))) throw new Error(`解出的 mnemon 不是 ${VERSION}`);
     await mkdir(join(stateDir, 'bin'), { recursive: true });
     await rename(bin, target);
     return { action: 'installed', path: target };

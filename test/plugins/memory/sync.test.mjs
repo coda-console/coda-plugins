@@ -9,7 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { serializeCard } from '../../../plugins/memory/lib/card.mjs';
 import { MnemonEngine, buildMnemonEnv } from '../../../plugins/memory/lib/mnemon.mjs';
 import { projectDir, safeProjectId, withProjectLock } from '../../../plugins/memory/lib/queue.mjs';
-import { ensureSynced, syncProject } from '../../../plugins/memory/lib/sync.mjs';
+import { ensureSynced, fetchRemote, syncProject } from '../../../plugins/memory/lib/sync.mjs';
 import { fakeBin } from './helpers.mjs';
 
 const CHILD = fileURLToPath(new URL('./lock-child.mjs', import.meta.url));
@@ -198,7 +198,11 @@ test('增量：新增、修改、归档、删除，并补齐出边、入边，�
   assert.deepEqual(await s.sync(), { action: 'incremental', commit: head, indexed: 6 });
   const calls = s.calls().slice(calls0);
   assert.deepEqual(calls.filter(c => c.command === 'forget').map(s.positional), [['m1']]);
-  assert.deepEqual(calls.filter(c => c.command === 'remember').map(c => s.positional(c)[0]), ['卡片 D', '卡片 F', '卡片 G', '改过的 A']);
+  // 新增和修改的卡片走保留 created_at 的导入，不用 remember。
+  assert.deepEqual(calls.filter(c => c.command === 'remember'), []);
+  const imported = readFileSync(join(s.dataDir, 'imports.jsonl'), 'utf8').trim().split('\n').slice(1).map(line => JSON.parse(line).draft.insights[0]);
+  assert.deepEqual(imported.map(item => item.content), ['卡片 D', '卡片 F', '卡片 G', '改过的 A']);
+  assert.deepEqual(imported.map(item => item.created_at), Array(4).fill('2026-01-01T00:00:00.000Z'));
   const ids = Object.fromEntries(Object.entries(s.state().items).map(([id, item]) => [id, item.mnemonId]));
   assert.deepEqual(ids, { A: 'm7', B: 'm2', D: 'm4', E: 'm3', F: 'm5', G: 'm6' });
   const links = calls.filter(c => c.command === 'link').map(c => s.positional(c).join('>') + ':' + c.args[c.args.indexOf('--type') + 1]).sort();
@@ -292,8 +296,8 @@ test('同步中途失败后不留已索引提交，下一次全量重建', async
   await s.sync();
   put(s.repoDir, card('D'));
   const head = commit(s.repoDir);
-  const broken = new MnemonEngine({ bin: fakeBin(s.root), dataDir: s.dataDir, env: { ...process.env, FAKE_MNEMON_FAIL: 'remember' } });
-  await assert.rejects(s.sync({ engine: broken }), /mnemon remember 失败/);
+  const broken = new MnemonEngine({ bin: fakeBin(s.root), dataDir: s.dataDir, env: { ...process.env, FAKE_MNEMON_FAIL: 'import' } });
+  await assert.rejects(s.sync({ engine: broken }), /mnemon import 失败/);
   assert.equal(s.state().indexedCommit, null);
   assert.deepEqual(await s.sync(), { action: 'rebuild', commit: head, indexed: 2 });
 });
@@ -345,7 +349,7 @@ test('动索引之前先落盘未完成标记，中断后下一次（含 ensureS
   put(s.repoDir, card('B'));
   const head = commit(s.repoDir);
   let seen;
-  const dying = wrap(s.engine, { remember: async () => { seen = s.state().indexedCommit; throw new Error('中断'); } });
+  const dying = wrap(s.engine, { importCards: async () => { seen = s.state().indexedCommit; throw new Error('中断'); } });
   await assert.rejects(s.sync({ engine: dying }), /中断/);
   assert.equal(seen, null);
   assert.equal(s.state().indexedCommit, null);
@@ -363,7 +367,7 @@ test('ensureSynced 的判断与同步在同一把锁里：等正在进行的同�
   const head = commit(s.repoDir);
   let entered, release;
   const started = new Promise(resolve => { entered = resolve; }), gate = new Promise(resolve => { release = resolve; });
-  const slow = wrap(s.engine, { remember: async c => { entered(); await gate; return s.engine.remember(c); } });
+  const slow = wrap(s.engine, { importCards: async cards => { entered(); await gate; return s.engine.importCards(cards); } });
   const running = s.sync({ engine: slow });
   await started;
   const ensured = ensureSynced({ projectId: PROJECT, repoDir: s.repoDir, stateDir: s.stateDir, engine: s.engine });
@@ -439,7 +443,7 @@ test('同一对端点上矛盾与相关并存：增量 link 只补一条，元�
   put(s.repoDir, card('B', { contradicts: ['A'], related: ['A'] }));
   commit(s.repoDir);
   assert.equal((await s.sync()).action, 'incremental');
-  assert.deepEqual(s.db().edges.map(e => [e.from, e.to, e.type, e.meta]), [['m2', 'm1', 'semantic', { relations: ['contradicts', 'related'] }]]);
+  assert.deepEqual(s.db().edges.map(e => [e.from, e.to, e.type, e.meta]), [['m2', 'm1', 'semantic', { relation: 'contradicts,related' }]]);
 });
 
 test('空仓库分支清空索引前先落盘未完成标记', async t => {
@@ -484,6 +488,201 @@ test('缺少 origin/HEAD 时先问远端的默认分支：本地 main、远端 m
   assert.equal(git(s.repoDir, 'branch', '--list', '-r', 'origin/main'), '');
 });
 
+// 远端有 origin 的研究仓：remote 是裸仓，other 是推送用的另一份克隆。
+const withRemote = (s, remoteBranch) => {
+  const remote = initRepo(join(s.root, 'remote.git'), true, remoteBranch), other = initRepo(join(s.root, 'other'), false, remoteBranch);
+  git(other, 'remote', 'add', 'origin', remote);
+  git(s.repoDir, 'remote', 'add', 'origin', remote);
+  return { remote, other, push: () => git(other, 'push', '-q', 'origin', remoteBranch) };
+};
+
+test('远端默认分支是 trunk 且没有 origin/HEAD、本地检出 feature 时，索引的是 origin/trunk 而不是 feature', async t => {
+  const s = setup(t), { other, push } = withRemote(s, 'trunk');
+  put(other, card('T1'));
+  const trunk = commit(other);
+  push();
+  git(s.repoDir, 'checkout', '-q', '-b', 'feature');
+  put(s.repoDir, card('F1'));
+  commit(s.repoDir);
+
+  const result = await s.sync({ fetchRemote: true });
+  assert.deepEqual([result.action, result.commit, result.fetchError], ['rebuild', trunk, undefined]);
+  assert.deepEqual(Object.keys(s.state().items), ['T1']);
+  // 之后不拉远端的读取路径也认 trunk，不会来回重建。
+  const ensure = () => ensureSynced({ projectId: PROJECT, repoDir: s.repoDir, stateDir: s.stateDir, engine: s.engine });
+  assert.deepEqual(await ensure(), { action: 'throttled', commit: trunk });
+});
+
+test('没拉过远端、也没有明确的默认分支时，不把检出的功能分支当默认分支索引', async t => {
+  const s = setup(t);
+  git(s.repoDir, 'checkout', '-q', '-b', 'feature');
+  put(s.repoDir, card('F1'));
+  commit(s.repoDir);
+  git(s.repoDir, 'branch', '-m', 'feature', 'dev');
+  assert.deepEqual(await s.sync(), { action: 'empty' });
+  assert.equal(s.state().indexedCommit, null);
+});
+
+test('远端切换默认分支导致本地 origin/HEAD 陈旧时，同步到新的默认分支', async t => {
+  const s = setup(t), { remote, other, push } = withRemote(s, 'main');
+  put(other, card('M1'));
+  const main = commit(other);
+  push();
+  git(s.repoDir, 'fetch', '-q', 'origin');
+  git(s.repoDir, 'remote', 'set-head', 'origin', 'main');
+  assert.equal((await s.sync({ fetchRemote: true })).commit, main);
+
+  git(other, 'checkout', '-q', '-b', 'trunk');
+  put(other, card('T1'));
+  const trunk = commit(other);
+  git(other, 'push', '-q', 'origin', 'trunk');
+  git(remote, 'symbolic-ref', 'HEAD', 'refs/heads/trunk');
+  assert.equal(git(s.repoDir, 'symbolic-ref', 'refs/remotes/origin/HEAD'), 'refs/remotes/origin/main');
+
+  const result = await s.sync({ fetchRemote: true });
+  assert.deepEqual([result.action, result.commit], ['incremental', trunk]);
+  assert.deepEqual(Object.keys(s.state().items), ['M1', 'T1']);
+  assert.equal(git(s.repoDir, 'symbolic-ref', 'refs/remotes/origin/HEAD'), 'refs/remotes/origin/trunk');
+  assert.equal((await s.sync()).action, 'noop');
+});
+
+test('向量配置或记忆目录变化会让指纹变化：noop 与节流短路都改为全量重建', async t => {
+  const s = setup(t);
+  put(s.repoDir, card('A'));
+  const head = commit(s.repoDir);
+  const engineWith = embedding => new MnemonEngine({ bin: fakeBin(s.root), dataDir: s.dataDir, env: process.env, embedding });
+  const none = engineWith({ embeddingProvider: 'none', embeddingBaseUrl: 'ignored' });
+  assert.equal((await s.sync({ engine: none })).action, 'rebuild');
+  assert.equal(s.state().indexConfigKey, none.indexConfigKey(MEM));
+  // none 时地址、模型不参与指纹。
+  assert.equal((await s.sync({ engine: engineWith({}) })).action, 'noop');
+
+  const ollama = engineWith({ embeddingProvider: 'ollama', embeddingBaseUrl: 'http://127.0.0.1:11434', embeddingModel: 'a' });
+  assert.deepEqual(await s.sync({ engine: ollama }), { action: 'rebuild', commit: head, indexed: 1 });
+  assert.equal((await s.sync({ engine: ollama })).action, 'noop');
+  const ensure = engine => ensureSynced({ projectId: PROJECT, repoDir: s.repoDir, stateDir: s.stateDir, engine });
+  assert.deepEqual(await ensure(ollama), { action: 'throttled', commit: head });
+  for (const next of [{ embeddingModel: 'b' }, { embeddingBaseUrl: 'http://127.0.0.1:11435' }, { embeddingProvider: 'openai-compatible' }]) {
+    const changed = engineWith({ embeddingProvider: 'ollama', embeddingBaseUrl: 'http://127.0.0.1:11434', embeddingModel: 'a', ...next });
+    assert.deepEqual(await ensure(changed), { action: 'rebuild', commit: head, indexed: 1 }, JSON.stringify(next));
+    assert.deepEqual(await ensure(changed), { action: 'throttled', commit: head });
+    await s.sync({ engine: ollama });
+  }
+});
+
+test('同步状态文件结构无效（缺字段、类型错）时视作失效并全量重建，不抛 TypeError', async t => {
+  const s = setup(t);
+  put(s.repoDir, card('A'));
+  const head = commit(s.repoDir);
+  await s.sync();
+  const file = join(projectDir(s.stateDir, PROJECT), 'sync-state.json');
+  const good = JSON.parse(readFileSync(file, 'utf8'));
+  const broken = [
+    { ...good, items: null },
+    { ...good, items: [] },
+    { ...good, items: { A: { mnemonId: 'm1', path: 'p' } } },
+    { ...good, items: { A: { ...good.items.A, card: { ...good.items.A.card, contradicts: 'B' } } } },
+    { ...good, indexedCommit: 5 },
+    // 单个字段缺失（缺 tags、缺 created_at）或键与卡片 id 不一致，也是残缺状态。
+    { ...good, items: { A: { ...good.items.A, card: Object.fromEntries(Object.entries(good.items.A.card).filter(([key]) => key !== 'tags')) } } },
+    { ...good, items: { A: { ...good.items.A, card: Object.fromEntries(Object.entries(good.items.A.card).filter(([key]) => key !== 'created_at')) } } },
+    { ...good, items: { B: good.items.A } },
+    { ...good, items: { A: { ...good.items.A, card: { ...good.items.A.card, importance: 9 } } } },
+    { ...good, version: 2 },
+    [],
+    null,
+  ];
+  for (const state of broken) {
+    writeFileSync(file, JSON.stringify(state));
+    assert.deepEqual(await s.sync(), { action: 'rebuild', commit: head, indexed: 1 }, JSON.stringify(state)?.slice(0, 60));
+  }
+  writeFileSync(file, '{"version":1,"items":');
+  const ensured = await ensureSynced({ projectId: PROJECT, repoDir: s.repoDir, stateDir: s.stateDir, engine: s.engine });
+  assert.deepEqual([ensured.action, ensured.commit], ['rebuild', head]);
+});
+
+test('远端没有 HEAD 指向、本地也没有认可的默认分支时，不猜 main：返回未确认并记下原因', async t => {
+  const s = setup(t), remote = initRepo(join(s.root, 'remote.git'), true);
+  git(s.repoDir, 'checkout', '-q', '-b', 'feature');
+  put(s.repoDir, card('F1'));
+  commit(s.repoDir);
+  git(s.repoDir, 'remote', 'add', 'origin', remote);
+  const fetched = await fetchRemote(s.repoDir);
+  assert.deepEqual([fetched.commit, fetched.ref, typeof fetched.error], [undefined, undefined, 'string']);
+  assert.equal(git(s.repoDir, 'branch', '--list', '-r'), '');
+  assert.deepEqual([(await s.sync({ fetchRemote: true })).action, s.state().indexedCommit], ['empty', null]);
+});
+
+test('skipIfNoCards：拉远端、判断有没有卡片、同步在同一把项目锁里，没有卡片且没建过索引时什么都不建', async t => {
+  const s = setup(t), { other, push } = withRemote(s, 'main');
+  put(other, card('R0'));
+  commit(other);
+  push();
+  git(s.repoDir, 'fetch', '-q', 'origin');
+  git(s.repoDir, 'remote', 'set-head', 'origin', 'main');
+  // 本地 main 没有卡片，远端有：锁内拉到远端后才判断，所以不会被跳过。
+  git(s.repoDir, 'update-ref', '-d', 'refs/heads/main');
+  git(s.repoDir, 'checkout', '-q', '--orphan', 'work');
+  const synced = await s.sync({ fetchRemote: true, skipIfNoCards: true });
+  assert.deepEqual([synced.action, synced.indexed], ['rebuild', 1]);
+
+  const empty = setup(t);
+  assert.deepEqual(await empty.sync({ skipIfNoCards: true }), { action: 'skipped' });
+  assert.equal(existsSync(join(projectDir(empty.stateDir, PROJECT), 'sync-state.json')), false);
+  assert.equal(existsSync(join(projectDir(empty.stateDir, PROJECT), 'mnemon')), false);
+});
+
+test('skipIfNoCards：engine 是工厂函数，空项目不调用它（缺 mnemon 也能跳过），有卡片时才调用', async t => {
+  const s = setup(t);
+  const missing = () => { throw Object.assign(new Error('找不到 mnemon'), { code: 'mnemon_missing' }); };
+  assert.deepEqual(await s.sync({ engine: missing, skipIfNoCards: true }), { action: 'skipped' });
+  put(s.repoDir, card('A'));
+  commit(s.repoDir);
+  await assert.rejects(s.sync({ engine: missing, skipIfNoCards: true }), { code: 'mnemon_missing' });
+  assert.equal((await s.sync({ engine: () => s.engine, skipIfNoCards: true })).action, 'rebuild');
+});
+
+test('skipIfNoCards：状态文件在但损坏、卡片已删光时仍进入重建清理旧库，不跳过', async t => {
+  const s = setup(t);
+  put(s.repoDir, card('A'));
+  commit(s.repoDir);
+  await s.sync();
+  assert.equal(existsSync(join(s.dataDir, 'data', 'default', 'mnemon.db')), true);
+  drop(s.repoDir, 'A');
+  const head = commit(s.repoDir);
+  writeFileSync(join(projectDir(s.stateDir, PROJECT), 'sync-state.json'), '{"version":1,');
+  assert.deepEqual(await s.sync({ skipIfNoCards: true }), { action: 'rebuild', commit: head, indexed: 0 });
+  assert.equal(existsSync(join(s.dataDir, 'data', 'default', 'mnemon.db')), false);
+  assert.deepEqual([s.state().indexedCommit, s.state().items], [head, {}]);
+  // 状态文件没了、库目录还在（上次没清干净）：同样不算从未建库。
+  rmSync(join(projectDir(s.stateDir, PROJECT), 'sync-state.json'));
+  assert.equal((await s.sync({ skipIfNoCards: true })).action, 'rebuild');
+});
+
+test('锁内拉远端：等前一个同步结束后才拉取，索引不会回退到旧提交', async t => {
+  const s = setup(t), { other, push } = withRemote(s, 'main');
+  put(other, card('R0'));
+  commit(other);
+  push();
+  await s.sync({ fetchRemote: true });
+  put(other, card('R1'));
+  commit(other);
+  push();
+  let entered, release;
+  const started = new Promise(resolve => { entered = resolve; }), gate = new Promise(resolve => { release = resolve; });
+  put(other, card('R2'));
+  const newest = commit(other);
+  const slow = wrap(s.engine, { resetStore: async () => { entered(); await gate; return s.engine.resetStore(); } });
+  const first = s.sync({ engine: slow, forceRebuild: true });
+  await started;
+  const second = s.sync({ fetchRemote: true, skipIfNoCards: true });
+  push();
+  release();
+  await first;
+  assert.deepEqual([(await second).commit, s.state().indexedCommit], [newest, newest]);
+  assert.deepEqual(Object.keys(s.state().items), ['R0', 'R1', 'R2']);
+});
+
 // ---- 真 mnemon ----
 
 test('真 mnemon：同步后能召回，增量修改后召回新内容', async t => {
@@ -511,4 +710,22 @@ test('真 mnemon：同步后能召回，增量修改后召回新内容', async t
   assert.equal((await engine.search({ query: '抖动' })).length, 2);
   assert.equal((await engine.search({ query: 'LRU' })).length, 0);
   assert.equal((await engine.recall({ query: 'TTL 抖动' }))[0].mnemonId === next.A.mnemonId || (await engine.recall({ query: 'TTL 抖动' }))[0].mnemonId === next.D.mnemonId, true);
+});
+
+test('真 mnemon：同一对卡片同时矛盾与相关的增量同步能补边', async t => {
+  const bin = process.env.MNEMON_TEST_BIN || spawnSync('which', ['mnemon'], { encoding: 'utf8' }).stdout.trim();
+  if (!bin) return t.skip('没有 mnemon 可执行文件（设置 MNEMON_TEST_BIN 或放进 PATH）');
+  const s = setup(t);
+  const engine = new MnemonEngine({ bin, dataDir: s.dataDir, env: buildMnemonEnv({}) });
+  put(s.repoDir, card('A', { body: '盐度对藻类生长的影响实验' }));
+  commit(s.repoDir);
+  assert.equal((await s.sync({ engine })).action, 'rebuild');
+  put(s.repoDir, card('B', { body: '盐度对藻类生长没有影响', contradicts: ['A'], related: ['A'], status: 'contested' }));
+  commit(s.repoDir);
+  assert.deepEqual([(await s.sync({ engine })).action, s.state().items.B.card.contradicts], ['incremental', ['A']]);
+  // 超过 mnemon 上限的标签在规范层就被拒绝，到不了 mnemon。
+  assert.throws(() => serializeCard(card('C', { tags: Array.from({ length: 21 }, (_, i) => `t${i}`) })), /tags 最多 20/);
+  const { items } = s.state();
+  assert.equal((await engine.search({ query: '盐度' })).length, 2);
+  assert.ok(items.A.mnemonId && items.B.mnemonId);
 });

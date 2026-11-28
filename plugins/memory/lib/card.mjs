@@ -1,7 +1,7 @@
 // 规范卡片：YAML frontmatter + Markdown 正文。
 // frontmatter 每行是 `键: JSON 值`（JSON 的标量和数组同时是合法的 YAML 流式写法），不引第三方 YAML 库，往返完全一致。
 import { randomBytes } from 'node:crypto';
-import { DEFAULT_IMPORTANCE, ID_PATTERN, KINDS, MAX_BODY_BYTES, STATUSES } from './definitions.mjs';
+import { DEFAULT_IMPORTANCE, ID_PATTERN, KINDS, MAX_BODY_BYTES, MAX_ENTITIES, MAX_ENTITY_BYTES, MAX_TAGS, MAX_TAG_BYTES, STATUSES } from './definitions.mjs';
 
 const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 const ISO_UTC = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?Z$/;
@@ -46,6 +46,13 @@ export function stringList(value, name, { required = false, id = false } = {}) {
   return out;
 }
 
+// 数量和每项的 UTF-8 字节数都不能超过 mnemon 的上限。
+const assertLimits = (items, name, maxItems, maxBytes) => {
+  if (items.length > maxItems) throw new Error(`${name} 最多 ${maxItems} 个，现有 ${items.length} 个`);
+  const long = items.find(item => Buffer.byteLength(item, 'utf8') > maxBytes);
+  if (long !== undefined) throw new Error(`${name} 的每一项不能超过 ${maxBytes} 字节：${JSON.stringify(long)}`);
+};
+
 const oneOf = (value, allowed, name) => {
   if (!allowed.includes(value)) throw new Error(`${name} 必须是 ${allowed.join('、')} 之一：${JSON.stringify(value)}`);
   return value;
@@ -79,6 +86,8 @@ export function normalizeCard(input) {
     refs: stringList(input.refs, 'refs', { required: true }),
   };
   for (const field of LIST_FIELDS) card[field] = stringList(input[field], field, { id: ['supersedes', 'contradicts', 'related'].includes(field) });
+  assertLimits(card.tags, 'tags', MAX_TAGS, MAX_TAG_BYTES);
+  assertLimits(card.entities, 'entities', MAX_ENTITIES, MAX_ENTITY_BYTES);
   card.created_at = timestamp(input.created_at, 'created_at');
   card.updated_at = timestamp(input.updated_at, 'updated_at');
   if (input.archived_reason !== undefined) {

@@ -17,7 +17,9 @@ const fail = message => { console.error(`Error: ${message}`); process.exit(1); }
 const dir = join(flags['data-dir'], 'data', flags.store);
 mkdirSync(dir, { recursive: true });
 const dbFile = join(dir, 'mnemon.db');
-const db = existsSync(dbFile) ? JSON.parse(readFileSync(dbFile, 'utf8')) : { next: 1, insights: {}, edges: [] };
+// 真 mnemon 打开损坏的 SQLite 文件时的报错。
+const load = () => { try { return JSON.parse(readFileSync(dbFile, 'utf8')); } catch { return fail('file is not a database'); } };
+const db = existsSync(dbFile) ? load() : { next: 1, insights: {}, edges: [] };
 const save = () => writeFileSync(dbFile, JSON.stringify(db));
 const out = value => console.log(JSON.stringify(value, null, 2));
 const CATEGORIES = ['preference', 'decision', 'fact', 'insight', 'context', 'general'];
@@ -30,7 +32,7 @@ const add = fields => {
 const active = () => Object.values(db.insights).filter(insight => !insight.deleted);
 
 appendFileSync(join(flags['data-dir'], 'calls.jsonl'), `${JSON.stringify({ command, args: rest, env: Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith('MNEMON_'))) })}\n`);
-if (process.env.FAKE_MNEMON_FAIL === command) fail(`${command} 被要求失败`);
+if (process.env.FAKE_MNEMON_FAIL === command) fail(process.env.FAKE_MNEMON_FAIL_MESSAGE ?? `${command} 被要求失败`);
 
 if (command === 'remember') {
   if (!CATEGORIES.includes(flags.cat)) fail(`invalid category ${flags.cat}`);
@@ -45,7 +47,13 @@ if (command === 'remember') {
   if (!db.insights[from]) fail(`source insight ${from} not found`);
   if (!db.insights[to]) fail(`target insight ${to} not found`);
   if (!EDGE_TYPES.includes(flags.type)) fail(`invalid edge type ${flags.type}`);
-  db.edges.push({ from, to, type: flags.type, meta: flags.meta ? JSON.parse(flags.meta) : {} });
+  // 真 mnemon 的 --meta 在 Go 侧解析为 map[string]string，数组、数字等非字符串值会报错。
+  let meta = {};
+  if (flags.meta) {
+    try { meta = JSON.parse(flags.meta); } catch { fail(`invalid --meta ${flags.meta}`); }
+    if (!meta || typeof meta !== 'object' || Array.isArray(meta) || Object.values(meta).some(value => typeof value !== 'string')) fail('invalid --meta: values must be strings');
+  }
+  db.edges.push({ from, to, type: flags.type, meta });
   save();
   out({ status: 'linked' });
 } else if (command === 'forget') {

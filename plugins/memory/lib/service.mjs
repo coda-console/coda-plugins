@@ -63,10 +63,18 @@ async function buildView(ctx, includeDrafts) {
 }
 
 // 同步和读取在同一把项目锁里：读到的状态一定是刚同步完的，不会撞上别人半途失败留下的未完成状态。
+// 数据库损坏（可重建的错误）时在同一把锁里作废已索引的提交、全量重建一次再重试；重试仍失败就抛出。
 function read(ctx, includeDrafts, fn) {
   return withProjectLock(ctx.stateDir, ctx.projectId, async () => {
-    await syncBeforeRead(ctx);
-    return fn(await buildView(ctx, includeDrafts));
+    try {
+      await syncBeforeRead(ctx);
+      return await fn(await buildView(ctx, includeDrafts));
+    } catch (error) {
+      if (error?.code !== 'index_corrupt') throw error;
+      const { projectId, repoDir, stateDir, engine } = ctx;
+      await syncProjectLocked({ projectId, repoDir, stateDir, memoryDir: memoryDirOf(ctx), engine, now: nowOf(ctx), forceRebuild: true });
+      return fn(await buildView(ctx, includeDrafts));
+    }
   });
 }
 

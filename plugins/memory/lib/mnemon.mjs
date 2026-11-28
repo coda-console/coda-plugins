@@ -23,6 +23,10 @@ export function resolveMnemonBin({ mnemonPath, stateDir, env = process.env } = {
   throw Object.assign(new Error('找不到 mnemon：请在插件设置里填写 mnemon 路径，或重新运行插件的安装步骤（会把 mnemon v0.2.15 装到插件状态目录），或把 mnemon 放进 PATH'), { code: 'mnemon_missing' });
 }
 
+// mnemon 报出的、删掉索引重建就能恢复的数据库损坏；权限错误不是损坏。
+const CORRUPT = /file is not a database|database disk image is malformed|no such table|corrupt/i;
+const NOT_CORRUPT = /EACCES|EPERM|permission denied|operation not permitted/i;
+
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const NO_EMBED_ENDPOINT = 'http://127.0.0.1:1';
 
@@ -67,7 +71,8 @@ export function mnemonEdge(relations) {
     if (list.length > 1) throw new Error('supersedes 不能与别的关系合并');
     return { type: 'supersedes' };
   }
-  return { type: 'semantic', meta: list.length === 1 ? { relation: list[0] } : { relations: list } };
+  // mnemon 的 link --meta 在 Go 侧按 map[string]string 解析，值只能是字符串；多个关系用逗号连成一个，与全量导入的 reason 一致。
+  return { type: 'semantic', meta: { relation: list.join(',') } };
 }
 
 // 关系列表 [{ from, to, relation }]（from、to 是卡片 id）归并成边：supersedes 按方向各一条；矛盾、相关按无序的一对端点
@@ -88,9 +93,16 @@ const STORE_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
 
 export class MnemonEngine {
   // dataDir 是这个项目自己的 mnemon 数据目录；store 落在 <dataDir>/data/<storeName>。env 用 buildMnemonEnv 构造。
-  constructor({ bin, dataDir, storeName = 'default', env = process.env }) {
+  // embedding 是设置里的向量服务（embeddingProvider、embeddingBaseUrl、embeddingModel），只用来算索引配置指纹。
+  constructor({ bin, dataDir, storeName = 'default', env = process.env, embedding = {} }) {
     if (!STORE_NAME.test(storeName)) throw new Error(`storeName 不合法：${JSON.stringify(storeName)}`);
-    Object.assign(this, { bin, dataDir, storeName, env });
+    Object.assign(this, { bin, dataDir, storeName, env, embedding });
+  }
+
+  // 索引配置指纹（不含密钥）：记忆目录或向量配置变了，已建的索引就不能再用。
+  indexConfigKey(memoryDir) {
+    const { embeddingProvider = 'none', embeddingBaseUrl = '', embeddingModel = '' } = this.embedding;
+    return JSON.stringify(embeddingProvider === 'none' ? [memoryDir, 'none'] : [memoryDir, embeddingProvider, embeddingBaseUrl, embeddingModel]);
   }
 
   get storeDir() { return join(this.dataDir, 'data', this.storeName); }
@@ -101,14 +113,16 @@ export class MnemonEngine {
     try {
       ({ stdout } = await run(this.bin, args, { env: this.env, maxBuffer: 64 * 1024 * 1024 }));
     } catch (error) {
-      throw new Error(`mnemon ${command} 失败：${String(error.stderr ?? '').trim() || error.message}`);
+      const stderr = String(error.stderr ?? '').trim();
+      const corrupt = CORRUPT.test(stderr) && !NOT_CORRUPT.test(stderr) && error.code !== 'EACCES' && error.code !== 'EPERM';
+      throw Object.assign(new Error(`mnemon ${command} 失败：${stderr || error.message}`), corrupt && { code: 'index_corrupt' });
     }
     try { return JSON.parse(stdout); } catch { throw new Error(`mnemon ${command} 的输出不是 JSON：${stdout.slice(0, 200)}`); }
   }
 
-  // 以数据库文件为准：目录在、文件没有（被删、上次没写成）不算有索引；探测本身出错（如没有权限）照常抛。
+  // 以数据库文件为准：目录在、文件没有或是 0 字节（被删、上次没写成）不算有索引；探测本身出错（如没有权限）照常抛。
   async storeExists() {
-    try { return (await stat(join(this.storeDir, 'mnemon.db'))).isFile(); } catch (error) {
+    try { const info = await stat(join(this.storeDir, 'mnemon.db')); return info.isFile() && info.size > 0; } catch (error) {
       if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return false;
       throw error;
     }

@@ -227,7 +227,7 @@ test('读取与同步在同一把锁里：夹在中间失败的重建不会让�
   await service.recall(ctx, { query: '盐度' });
   await remember(ctx, '盐度乙');
   const head = merge();
-  const failing = { storeExists: () => ctx.engine.storeExists(), resetStore: async () => { throw new Error('boom'); } };
+  const failing = { indexConfigKey: dir => ctx.engine.indexConfigKey(dir), storeExists: () => ctx.engine.storeExists(), resetStore: async () => { throw new Error('boom'); } };
 
   const read = service.recall(ctx, { query: '盐度' });
   const broken = assert.rejects(syncProject({ ...ctx, memoryDir: '.memory', engine: failing, forceRebuild: true }), /boom/);
@@ -236,4 +236,58 @@ test('读取与同步在同一把锁里：夹在中间失败的重建不会让�
   assert.equal(result.indexedCommit, head);
   assert.equal(result.items.length, 2);
   assert.ok(repoDir);
+});
+
+test('mnemon.db 损坏：读取在同一把锁里全量重建并重试，结果照常返回', async t => {
+  const { ctx, repoDir, merge } = setup(t);
+  const a = await remember(ctx, '盐度实验的结论甲');
+  const commit = merge();
+  assert.deepEqual(ids(await service.recall(ctx, { query: '盐度' })), [a.id]);
+  const dbFile = join(projectDir(ctx.stateDir, PROJECT), 'mnemon', 'data', 'default', 'mnemon.db');
+  const state = () => JSON.parse(readFileSync(join(projectDir(ctx.stateDir, PROJECT), 'sync-state.json'), 'utf8'));
+  const calls = () => readFileSync(join(projectDir(ctx.stateDir, PROJECT), 'mnemon', 'calls.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line).command);
+
+  // 截断：mnemon 报 file is not a database。
+  writeFileSync(dbFile, readFileSync(dbFile, 'utf8').slice(0, 10));
+  const before = calls().length;
+  const hit = await service.recall(ctx, { query: '盐度' });
+  assert.deepEqual([ids(hit), hit.indexedCommit], [[a.id], commit]);
+  assert.deepEqual(calls().slice(before).filter(command => command === 'import'), ['import']);
+  assert.deepEqual(ids(await service.search(ctx, { query: '盐度' })), [a.id]);
+  assert.equal(state().indexedCommit, commit);
+
+  // 重试仍失败就抛出，只重建这一次。
+  const engineFailing = message => new MnemonEngine({ bin: fakeBin(repoDir), dataDir: join(projectDir(ctx.stateDir, PROJECT), 'mnemon'), env: { ...process.env, FAKE_MNEMON_FAIL: 'recall', FAKE_MNEMON_FAIL_MESSAGE: message } });
+  const imports = () => calls().filter(command => command === 'import').length;
+  const beforeImports = imports();
+  await assert.rejects(service.recall({ ...ctx, engine: engineFailing('database disk image is malformed') }, { query: '盐度' }), { code: 'index_corrupt' });
+  assert.equal(imports(), beforeImports + 1);
+});
+
+test('只有可重建的数据库损坏才触发重建：权限类错误和别的失败原样上抛', async t => {
+  const { ctx, merge } = setup(t);
+  await remember(ctx, '盐度实验的结论甲');
+  merge();
+  await service.recall(ctx, { query: '盐度' });
+  const dir = join(projectDir(ctx.stateDir, PROJECT), 'mnemon');
+  const imports = () => readFileSync(join(dir, 'calls.jsonl'), 'utf8').split('\n').filter(line => line.includes('"command":"import"')).length;
+  const before = imports();
+  for (const message of ['unable to open database file: permission denied', 'EACCES: corrupt cache dir', 'out of memory']) {
+    const engine = new MnemonEngine({ bin: fakeBin(ctx.repoDir), dataDir: dir, env: { ...process.env, FAKE_MNEMON_FAIL: 'recall', FAKE_MNEMON_FAIL_MESSAGE: message } });
+    await assert.rejects(service.recall({ ...ctx, engine }, { query: '盐度' }), error => error.code === undefined && error.message.includes(message), message);
+  }
+  assert.equal(imports(), before);
+});
+
+test('sync-state.json 损坏或结构无效：读取时重建，不抛', async t => {
+  const { ctx, merge } = setup(t);
+  const a = await remember(ctx, '盐度实验的结论甲');
+  const commit = merge();
+  await service.recall(ctx, { query: '盐度' });
+  const file = join(projectDir(ctx.stateDir, PROJECT), 'sync-state.json');
+  for (const text of ['{"version":1,"items":', JSON.stringify({ version: 1, memoryDir: '.memory', indexedCommit: commit, items: { X: {} } })]) {
+    writeFileSync(file, text);
+    const hit = await service.recall(ctx, { query: '盐度' });
+    assert.deepEqual([ids(hit), hit.indexedCommit], [[a.id], commit]);
+  }
 });

@@ -268,8 +268,11 @@ test('sync-project：没有这个项目、不是 Git 仓库、没有记忆卡片
   assert.match((await runSyncScript({ ...env, MEMORY_PROJECTS_JSON: '[]' })).line, /没有这个项目/);
   const noMemory = syncEnv(t, { projectPath: repoDir });
   assert.match((await runSyncScript(noMemory.env)).line, /没有研究记忆卡片/);
-  assert.equal(existsSync(join(stateDir, 'projects')), false);
-  assert.equal(existsSync(join(noMemory.stateDir, 'projects')), false);
+  // 空项目不需要 mnemon：缺 mnemon 时引擎工厂根本不会被调用。
+  const noBin = () => { throw Object.assign(new Error('找不到 mnemon'), { code: 'mnemon_missing' }); };
+  assert.match((await runSyncScript(noMemory.env, { makeEngine: noBin })).line, /没有研究记忆卡片/);
+  assert.equal(existsSync(join(stateDir, 'projects', 'proj-1', 'sync-state.json')), false);
+  assert.equal(existsSync(join(noMemory.stateDir, 'projects', 'proj-1', 'sync-state.json')), false);
 });
 
 test('sync-project：有记忆卡片的项目同步到默认分支，--no-fetch 不拉远端；只有工作树里的卡片也同步', async t => {
@@ -322,7 +325,7 @@ test('sync-project：别的机器首次推上来记忆卡片，本机先拉远�
   git(b, 'remote', 'set-head', 'origin', '-a');
   const { env, stateDir } = syncEnv(t, { projectPath: b });
   assert.match((await runSyncScript(env)).line, /没有研究记忆卡片/);
-  assert.equal(existsSync(join(stateDir, 'projects')), false);
+  assert.equal(existsSync(join(stateDir, 'projects', 'proj-1', 'sync-state.json')), false);
 
   putCard(a, card('A1'));
   const commit = commitAll(a);

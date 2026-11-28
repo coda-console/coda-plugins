@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { fakeBin } from './helpers.mjs';
 import { MnemonEngine, buildMnemonEnv, mergeRelations, mnemonCategory, mnemonEdge, resolveMnemonBin } from '../../../plugins/memory/lib/mnemon.mjs';
 import { VERSION, assetForPlatform, installMnemon, verifySha256 } from '../../../plugins/memory/scripts/setup.mjs';
@@ -56,7 +56,7 @@ test('卡片种类与关系映射到 mnemon 的有效枚举', () => {
 });
 
 test('同一对端点上矛盾与相关并存时合并成一条 semantic 边的元数据', async t => {
-  assert.deepEqual(mnemonEdge(['related', 'contradicts']), { type: 'semantic', meta: { relations: ['contradicts', 'related'] } });
+  assert.deepEqual(mnemonEdge(['related', 'contradicts']), { type: 'semantic', meta: { relation: 'contradicts,related' } });
   assert.deepEqual(mnemonEdge(['related']), { type: 'semantic', meta: { relation: 'related' } });
   assert.throws(() => mnemonEdge(['supersedes', 'related']), /supersedes/);
   // A、B 互相矛盾，B 还说与 A 相关：无向的一对端点只出一条；supersedes 按方向，不与它们合并。
@@ -67,11 +67,11 @@ test('同一对端点上矛盾与相关并存时合并成一条 semantic 边的�
   const { engine, dataDir } = engineIn(t);
   const [a, b] = [await engine.remember(cards[0]), await engine.remember(cards[1])];
   await engine.link(a, b, ['contradicts', 'related']);
-  assert.deepEqual(calls(dataDir)[2].args.slice(4, 8), ['--type', 'semantic', '--meta', '{"relations":["contradicts","related"]}']);
+  assert.deepEqual(calls(dataDir)[2].args.slice(4, 8), ['--type', 'semantic', '--meta', '{"relation":"contradicts,related"}']);
   // linkCards 用同一条归并规则；任一端不在映射里的关系不补。
   await engine.linkCards([...list, { from: 'A', to: 'Z', relation: 'related' }], new Map([['A', a], ['B', b]]));
   assert.deepEqual(calls(dataDir).slice(3).map(call => [call.command, ...call.args.slice(4, 8)]), [
-    ['link', '--type', 'supersedes', '--', a], ['link', '--type', 'semantic', '--meta', '{"relations":["contradicts","related"]}'],
+    ['link', '--type', 'supersedes', '--', a], ['link', '--type', 'semantic', '--meta', '{"relation":"contradicts,related"}'],
   ]);
 
   await engine.importCards(cards);
@@ -187,6 +187,10 @@ test('storeExists 以 mnemon.db 为准，只有目录不算', async t => {
   assert.equal(await engine.storeExists(), true);
   rmSync(join(dataDir, 'data', 'default', 'mnemon.db'));
   assert.equal(await engine.storeExists(), false);
+  // 0 字节的数据库文件（上次没写成）也算没有。
+  writeFileSync(join(dataDir, 'data', 'default', 'mnemon.db'), '');
+  assert.equal(await engine.storeExists(), false);
+  rmSync(join(dataDir, 'data', 'default', 'mnemon.db'));
   // 同名的目录不是数据库；上一级是文件（ENOTDIR）也是没有。
   mkdirSync(join(dataDir, 'data', 'default', 'mnemon.db'));
   assert.equal(await engine.storeExists(), false);
@@ -252,11 +256,13 @@ const archive = (t, content = '#!/bin/sh\necho mnemon version 0.2.15\n') => {
   return { file: join(dir, 'pkg.tgz'), asset: { name: 'pkg.tgz', sha256, url: 'https://example.invalid/pkg.tgz' } };
 };
 const copyFrom = source => async (url, to) => { writeFileSync(to, readFileSync(source)); };
+// 宿主 PATH 上可能装着 mnemon：安装测试一律用空 PATH，不受它影响。
+const NO_PATH = { PATH: '' };
 const versionOfFile = async bin => readFileSync(bin, 'utf8').includes('0.2.15') ? `mnemon version ${VERSION}` : '';
 
 test('installMnemon 校验通过后原子装到状态目录的 bin 并可执行', async t => {
   const stateDir = join(tmp(t), 'state'), { file, asset } = archive(t);
-  const result = await installMnemon({ stateDir, deps: { asset, download: copyFrom(file), versionOf: versionOfFile } });
+  const result = await installMnemon({ stateDir, env: NO_PATH, deps: { asset, download: copyFrom(file), versionOf: versionOfFile } });
   assert.deepEqual(result, { action: 'installed', path: join(stateDir, 'bin', 'mnemon') });
   assert.equal(execFileSync(result.path, { encoding: 'utf8' }).trim(), 'mnemon version 0.2.15');
   assert.deepEqual(readdirSync(stateDir), ['bin']);
@@ -266,7 +272,7 @@ test('installMnemon 拒绝被篡改的包，不留文件', async t => {
   const stateDir = join(tmp(t), 'state'), { file, asset } = archive(t);
   const tampered = join(tmp(t), 'bad.tgz');
   writeFileSync(tampered, `${readFileSync(file, 'latin1')}x`, 'latin1');
-  await assert.rejects(installMnemon({ stateDir, deps: { asset, download: copyFrom(tampered), versionOf: versionOfFile } }), /SHA-256/);
+  await assert.rejects(installMnemon({ stateDir, env: NO_PATH, deps: { asset, download: copyFrom(tampered), versionOf: versionOfFile } }), /SHA-256/);
   assert.deepEqual(readdirSync(stateDir), []);
 });
 
@@ -274,11 +280,51 @@ test('installMnemon 在设置的路径可执行或已装对版本时跳过下载
   const stateDir = join(tmp(t), 'state'), { file, asset } = archive(t);
   const download = async () => { throw new Error('不该下载'); };
   const configured = fakeBin(tmp(t));
-  assert.deepEqual(await installMnemon({ stateDir, settings: { 'memory.mnemonPath': configured }, deps: { download } }), { action: 'configured', path: configured });
+  assert.deepEqual(await installMnemon({ stateDir, env: NO_PATH, settings: { 'memory.mnemonPath': configured }, deps: { download } }), { action: 'configured', path: configured });
 
-  await installMnemon({ stateDir, deps: { asset, download: copyFrom(file), versionOf: versionOfFile } });
-  assert.equal((await installMnemon({ stateDir, deps: { download, versionOf: versionOfFile } })).action, 'present');
+  await installMnemon({ stateDir, env: NO_PATH, deps: { asset, download: copyFrom(file), versionOf: versionOfFile } });
+  assert.equal((await installMnemon({ stateDir, env: NO_PATH, deps: { download, versionOf: versionOfFile } })).action, 'present');
   // 版本不对的旧文件会被换掉。
   writeFileSync(join(stateDir, 'bin', 'mnemon'), '#!/bin/sh\necho 0.2.14\n');
-  assert.equal((await installMnemon({ stateDir, deps: { asset, download: copyFrom(file), versionOf: versionOfFile } })).action, 'installed');
+  assert.equal((await installMnemon({ stateDir, env: NO_PATH, deps: { asset, download: copyFrom(file), versionOf: versionOfFile } })).action, 'installed');
+});
+
+const script = (t, version) => {
+  const dir = tmp(t);
+  writeFileSync(join(dir, 'mnemon'), `#!/bin/sh\necho mnemon version ${version}\n`);
+  chmodSync(join(dir, 'mnemon'), 0o755);
+  return dir;
+};
+
+test('installMnemon：运行时会优先用到的 mnemon 是锁定版本才离线跳过下载，否则装到状态目录', async t => {
+  const stateDir = join(tmp(t), 'state'), download = async () => { throw new Error('不该下载'); };
+  const old = script(t, '0.2.14'), right = script(t, '0.2.15');
+  assert.deepEqual(await installMnemon({ stateDir, env: { PATH: [right, old].join(delimiter) }, deps: { download } }), { action: 'present', path: join(right, 'mnemon') });
+  assert.equal(existsSync(stateDir), false);
+  // PATH 里排在前面的是旧版：运行时会先启动它，所以不能因为后面有新版就跳过。
+  const missing = { asset: { name: 'x', url: 'u', sha256: '0' }, download };
+  await assert.rejects(installMnemon({ stateDir, env: { PATH: [old, right].join(delimiter) }, deps: missing }), /不该下载/);
+  // 状态目录里是旧版、PATH 有新版：状态目录优先，同样要换掉它。
+  mkdirSync(join(stateDir, 'bin'), { recursive: true });
+  writeFileSync(join(stateDir, 'bin', 'mnemon'), '#!/bin/sh\necho mnemon version 0.2.14\n');
+  chmodSync(join(stateDir, 'bin', 'mnemon'), 0o755);
+  await assert.rejects(installMnemon({ stateDir, env: { PATH: right }, deps: missing }), /不该下载/);
+});
+
+test('installMnemon 的版本检查整段匹配：0.2.150、0.2.15.1 不算锁定版本', async t => {
+  const stateDir = join(tmp(t), 'state'), download = async () => { throw new Error('不该下载'); };
+  for (const version of ['0.2.150', '0.2.15.1', '10.2.15', '0.2.15-rc.1', '0.2.15-beta']) {
+    await assert.rejects(installMnemon({ stateDir, env: { PATH: script(t, version) }, deps: { asset: { name: 'x', url: 'u', sha256: '0' }, download } }), /不该下载/, version);
+  }
+  const ok = script(t, 'v0.2.15');
+  assert.equal((await installMnemon({ stateDir, env: { PATH: ok }, deps: { download } })).action, 'present');
+});
+
+test('假 mnemon 的 link --meta 拒绝非字符串值，与真 mnemon 的 map[string]string 一致', async t => {
+  const { engine, dataDir } = engineIn(t);
+  const [a, b] = [await engine.remember(card('A')), await engine.remember(card('B'))];
+  await engine.link(a, b, ['contradicts', 'related']);
+  assert.deepEqual(JSON.parse(readFileSync(join(dataDir, 'data', 'default', 'mnemon.db'), 'utf8')).edges[0].meta, { relation: 'contradicts,related' });
+  const bin = fakeBin(dataDir);
+  assert.throws(() => execFileSync(bin, ['link', '--data-dir', dataDir, '--store', 'default', '--type', 'semantic', '--meta', '{"relations":["a","b"]}', '--', a, b], { stdio: 'pipe' }), /values must be strings/);
 });

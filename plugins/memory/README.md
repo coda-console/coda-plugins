@@ -37,7 +37,7 @@ updated_at: "2026-11-28T08:00:00Z"
 ```
 
 frontmatter 每行是 `键: JSON 值`。`kind` 为 `fact`、`conclusion`、`hypothesis`、`observation`；
-`status` 为 `active`、`contested`、`superseded`、`archived`；`importance` 为 1–5；`refs` 至少一项；正文不超过 8,000 字节。
+`status` 为 `active`、`contested`、`superseded`、`archived`；`importance` 为 1–5；`refs` 至少一项（`appendToId` 补充来源时同样必填）；正文不超过 8,000 字节；`tags` 最多 20 个、每个不超过 100 字节，`entities` 最多 50 个、每个不超过 200 字节（均按 UTF-8，与 mnemon v0.2.15 一致）。
 
 ## 同步：三层增量
 

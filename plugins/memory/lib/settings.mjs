@@ -27,5 +27,6 @@ export function createEngine({ stateDir, projectId, settings }) {
     bin: resolveMnemonBin({ mnemonPath: settings.mnemonPath, stateDir }),
     dataDir: join(projectDir(stateDir, projectId), 'mnemon'),
     env: buildMnemonEnv(settings),
+    embedding: settings,
   });
 }
