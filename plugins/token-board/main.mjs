@@ -1,31 +1,37 @@
 // Token 消耗榜的模块（Coda 的 docs/plugins.md「插件宿主」）。随后端启动（onStartupFinished）：
-// - 读本机用量（coda/usage@1 的 buckets，只读、不推送，所以按需拉取）；统计、多机聚合和当天曲线只靠本机用量与已读到的记录，不依赖签名发布；
+// - 读本机用量（coda/usage@1 的 buckets，只读、不推送，所以按需拉取）；本机用量与当天曲线只靠本机用量，不依赖签名发布；
 // - 好友能力只经可选的 friends/social@1 网关：分享开着时，每 10 分钟把月块日归档（`coda/token-day`）和 48 小时曲线（`coda/token-today`）交给网关发布，
 //   规范哈希去重、证书过期与暂停的排队、恢复后自动补发都由网关负责；没装或停用好友插件时，本机统计与曲线照常，分享状态报 no_gateway；
 // - 同型号映射只来自可选的 magpie/models@1（本机 Magpie 插件）：取数时读一次，只套本机自己的行；发布的记录各行带上归并名（`u`），别台读到后直接用，不拿本机映射去套别人的行；
-//   没装 Magpie 插件或读不到时没有映射，榜单与现在一样；
+//   没装 Magpie 插件或读不到时没有映射；
 // - 来源 ID 优先用 coda/machine@1 里本机的稳定 ID，读不到就沿用上次的，不会因为一时读不到换成新的随机 UUID；
 // - 关掉分享或手动撤回，就按本机 sourceId 筛出自己的记录，逐条（带 id）经网关撤回，好友不再看得到；绝不按 kind 批量撤回，免得误撤同作者其他设备的记录；
-// - 页面（view `board`）通过消息读状态、切开关、立即同步、取榜单。
-// `activate` 里不读任何记录：初始化的读取放在延迟的定时器和页面消息里，并且全都 try/catch。
-import { randomUUID } from 'node:crypto';
+// - 页面（view `board`）是目录聚合视图，只读目录里本模块写的记录（协议 token-board/usage@1）：本机用量（月块日归档与 48 小时曲线）、这台的状态、
+//   镜像来的好友与自己别的设备的签名记录；模块不回页面消息，只在 `set-share` 操作里开关分享。每种记录都是一份全集，用 `coda.replace` 整份交出。
+// `activate` 里不读任何记录：初始化的读取放在延迟的定时器里，并且全都 try/catch。
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  DAY_ARCHIVE_KIND, DAY_MS, RANGES, SLOT_MS, TODAY_CURVE_KIND, USAGE_RECORD_KIND, aggregateLeaderboard, aggregateTodayCurve, buildArchiveBodies, buildTodayBody,
-  fetchUsageBuckets, isWithdrawn, markSame, needsSame, ownBuckets, ownedBySource, rangeWindow, summarizeBuckets,
+  DAY_ARCHIVE_KIND, DAY_MS, TODAY_CURVE_KIND, USAGE_RECORD_KIND, buildArchiveBodies, buildTodayBody,
+  fetchUsageBuckets, isWithdrawn, markSame, needsSame, ownBuckets, ownedBySource,
 } from './lib/usage.mjs';
 
+const KIND = 'token-board/usage@1';
 const USAGE = { kind: 'coda/usage@1', id: 'local' };
 const SOCIAL = 'friends/social@1';
 const SAME = 'magpie/models@1';
 const MACHINE = 'coda/machine@1';
 export const SYNC_INTERVAL_MS = 10 * 60_000;
 export const FIRST_SYNC_DELAY_MS = 5_000;
+export const CURVE_INTERVAL_MS = 60_000;
+export const MIRROR_DEBOUNCE_MS = 800;
+const CURVE_HOURS = 48;
+// 目录里一条记录不超过 64 KiB（含持有方、ID 等外壳）；replace 一条超限整份都写不进去，所以镜像来的记录按 spec 的序列化大小留足余量。
+const MAX_RECORD_BYTES = 62 * 1024;
 const SAME_TIMEOUT_MS = 10_000;   // Magpie 插件自己 8 秒读不完就交空映射
 const ARCHIVE_DAYS = 32;   // 归档从 32 天前所在的月初起，盖住「近 30 天」
 const MAX_PAGES = 50;
-const MESSAGE_LIMIT = 128 * 1024;   // 宿主转给页面的消息上限（plugin-host 的 MESSAGE_LIMIT，按 JSON.stringify 的长度量）
 const SOURCE_ID = /^[^\s/]{1,100}$/;
 const SHARED_KINDS = [DAY_ARCHIVE_KIND, TODAY_CURVE_KIND, USAGE_RECORD_KIND];
 const message = e => String(e?.message ?? e).slice(0, 200);
@@ -34,7 +40,6 @@ const NO_GATEWAY = new Set(['not_found', 'forbidden', 'service_unavailable']);
 // 同一轮同步里各条发布的状态，按这个顺序取最要紧的一个当整体状态。
 const STATE_ORDER = ['error', 'no_identity', 'needs_cert', 'paused', 'queued', 'synced'];
 const worst = states => STATE_ORDER.find(one => states.includes(one));
-const RETRACT_NOTES = { needs_cert: '代签证书已过期，撤回已排队，续签后将自动完成', queued: '撤回已排队，稍后将自动完成', no_identity: '这台机器还没有好友身份，撤回暂未完成' };
 // 本机已发记录的索引键带上作者：只用来知道要撤回哪些 ID，换了作者不会拿旧作者的 ID 去撤新作者的记录。
 const publishedKey = (author, kind, id) => `${author}:${kind}:${id}`;
 // 没有作者前缀的旧键：0.1.0 落盘的是 coda/token-usage 的记录 ID（`<UTC 日期>/<sourceId>`），也认 `<kind>:<id>`。
@@ -80,24 +85,28 @@ class Board {
   constructor(coda) {
     this.coda = coda;
     this.dir = coda.plugin?.state ?? null;
-    this.views = new Set();
     this.disposables = [];
     this.timers = new Set();
     this.queue = Promise.resolve();
+    this.writes = Promise.resolve();   // 写目录记录排成一个序列
     this.stopped = false;
-    this.settings = { share: null, range: '7d' };
+    this.ready = false;                // 第一轮同步做完之前不写记录：写出去的是全集，不能拿半份换掉上次的
+    this.settings = { share: null };
     this.prefs = this.dir ? readJson(join(this.dir, 'prefs.json'), {}) : {};
     this.published = new Map(Object.entries(this.dir ? readJson(join(this.dir, 'published.json'), {}) : {}).filter(([key]) => key.includes(`:${DAY_ARCHIVE_KIND}:`) || key.includes(`:${TODAY_CURVE_KIND}:`) || oldKey(key)));
     this.source = this.loadSource();
     this.retired = new Set();
     this.gatewayAvailable = null; // 好友网关在不在：还没找过是 null
+    this.gatewayUnready = false;  // 没找到网关是因为好友插件还没就绪（service_unavailable），不是没装：读不到，不当作它没有
+    this.withdrawal = null;       // 关了分享后撤回没做完：{ state: 'error' | 'queued' | 'needs_cert' | 'no_identity' | 'paused', error }；做完是 null
     this.currentAuthor = null;   // 最近一次读到的本机好友作者
-    this.pushedState = null;     // 上次推给页面的 syncState
     this.lastSync = null;        // { state: 'synced' | 'needs_cert' | 'paused' | 'queued' | 'error', author }：哪个作者上次同步成了什么
     this.lastSyncAt = null;
     this.lastError = null;
-    this.notice = null;
-    this.retractNote = null;     // 撤回排了队没做完时给页面的提示
+    this.local = new Map();      // 本机用量记录的全集：月块日归档与 48 小时曲线，按 `<kind>\0<id>`
+    this.friends = [];           // 好友网关给的好友作者
+    this.mirror = new Map();     // 镜像来的签名记录的全集：`<作者>\0<kind>` → 这一批的 spec
+    this.debounce = null;
   }
 
   // 本机的来源 ID：记录 ID 里带它，同一作者的多台设备靠它分开。`source.json` 是 `{ source: 'machine' | 'random', sourceId, legacy }`，
@@ -130,33 +139,41 @@ class Board {
 
   start() {
     const { coda } = this;
-    this.disposables.push(coda.views.register('board', { open: view => this.open(view) }));
+    this.disposables.push(coda.views.register('board', { open: () => {} }));
+    this.disposables.push(coda.handle(KIND, 'set-share', async ({ on }) => {
+      this.setShare(on);
+      await this.reconcile();
+      return { share: this.share };
+    }));
     try {
       this.disposables.push(coda.settings.onChange(settings => {
         const before = this.share;
         this.applySettings(settings);
-        if (this.share !== before) this.reconcile(this.share ? '已开启分享' : '已关闭分享，已撤回发布的记录').catch(() => {}); else this.tell(this.notice);
+        if (this.share !== before) this.reconcile().catch(() => {});
       }));
     } catch (e) { console.error('Token 消耗榜听不到设置变化：', message(e)); }
-    // 设置在首跳里读，不阻塞 activate；首跳之后每 10 分钟一次。
+    // 设置在首跳里读，不阻塞 activate；首跳之后每 10 分钟同步一次、每分钟重算曲线。
     const first = setTimeout(() => { this.timers.delete(first); this.begin().catch(() => {}); }, FIRST_SYNC_DELAY_MS);
     first.unref?.();
     this.timers.add(first);
   }
   async begin() {
     await this.readSettings();
+    await this.loadRecords();
     if (this.stopped) return;
-    const every = setInterval(() => { this.tick().catch(() => {}); }, SYNC_INTERVAL_MS);
-    every.unref?.();
-    this.timers.add(every);
+    for (const [work, every] of [[() => this.tick(), SYNC_INTERVAL_MS], [() => this.curveTick(), CURVE_INTERVAL_MS]]) {
+      const timer = setInterval(() => { work().catch(() => {}); }, every);
+      timer.unref?.();
+      this.timers.add(timer);
+    }
     await this.tick();
+    if (!this.stopped) await this.watchFriends();
   }
   stop() {
     this.stopped = true;
     for (const timer of this.timers) { clearTimeout(timer); clearInterval(timer); }
     this.timers.clear();
     for (const disposable of this.disposables.splice(0)) { try { disposable.dispose(); } catch {} }
-    this.views.clear();
   }
 
   // ——— 设置与开关 ———
@@ -165,14 +182,13 @@ class Board {
     try { this.applySettings(await this.coda.settings.get()); } catch (e) { console.error('Token 消耗榜读不到设置：', message(e)); }
   }
   applySettings(settings) {
-    const value = key => settings?.[`token-board.${key}`] ?? settings?.[key];
-    const share = (value('share') ?? true) === true, range = RANGES.includes(value('range')) ? value('range') : '7d';
+    const share = ((settings?.['token-board.share'] ?? settings?.share) ?? true) === true;
     // 首次读取保留页面存下的选择。之后设置里的开关变化才覆盖页面选择。
     if (this.settings.share !== null && share !== this.settings.share && this.prefs.share !== undefined) { delete this.prefs.share; this.save('prefs.json', this.prefs); }
-    this.settings = { share, range };
+    this.settings = { share };
   }
   get share() { return typeof this.prefs.share === 'boolean' ? this.prefs.share : this.settings.share === true; }
-  // board() 和 status() 共用的同步状态：没开分享 disabled；没有好友网关 no_gateway；没有身份 no_identity；上次同步的是当前作者才沿用它的结果，否则 pending
+  // 同步状态：没开分享 disabled；没有好友网关 no_gateway；没有身份 no_identity；上次同步的是当前作者才沿用它的结果，否则 pending
   // （还没发布过、刚切了作者、刚从没身份恢复、关了再开后还没发布完）。
   syncStateFor(author) {
     if (!this.share) return 'disabled';
@@ -183,117 +199,106 @@ class Board {
   setShare(on) {
     this.lastSync = null;
     this.prefs.share = on === true;
+    if (on === true) this.withdrawal = null;
     this.save('prefs.json', this.prefs);
   }
 
-  // ——— 页面 ———
+  // ——— 目录里的记录 ———
 
-  open(view) {
-    this.views.add(view);
-    view.onMessage(request => { this.handle(view, request).catch(e => view.postMessage({ type: 'error', request: request?.type, id: request?.id, message: message(e) })); });
-    view.onClose(() => this.views.delete(view));
-  }
-  status() {
-    this.pushedState = this.syncStateFor(this.currentAuthor);
-    return { type: 'status', share: this.share, fromSettings: this.prefs.share === undefined, range: this.settings.range, lastSyncAt: this.lastSyncAt, lastError: this.lastError,
-      published: this.published.size, notice: this.notice, syncState: this.syncStateFor(this.currentAuthor) };
-  }
-  tell(text) {
-    this.notice = text;
-    for (const view of this.views) view.postMessage(this.status());
-  }
-  async handle(view, request) {
-    switch (request?.type) {
-      case 'hello':
-        await this.readSettings();
-        await this.gateway().catch(() => null);
-        view.postMessage(this.status());
-        return;
-      case 'board': {
-        const range = RANGES.includes(request.range) ? request.range : this.settings.range;
-        const result = await this.board(range, request.id, request);
-        // 宿主丢弃超过上限的消息，页面既收不到回包也收不到错误：量过，放不下就回一个送得到的失败。
-        if (JSON.stringify({ message: result }).length > MESSAGE_LIMIT) throw new Error(`榜单明细超过宿主 ${MESSAGE_LIMIT / 1024} KiB 的消息上限，没能送达`);
-        view.postMessage(result);
-        return;
-      }
-      case 'set-share':
-        this.setShare(request.on === true);
-        this.notice = null;
-        await this.reconcile(request.on === true ? '已开启分享' : '已关闭分享，已撤回发布的记录');
-        return;
-      case 'sync':
-        if (!this.share) { this.tell('分享还没开启，没有可同步的内容'); return; }
-        await this.sync();
-        this.tell(this.outcome('已同步'));
-        return;
-      case 'withdraw':
-        this.setShare(false);
-        await this.withdraw();
-        this.tell(this.lastError ? null : this.retractNote ?? '已撤回发布的记录，分享保持关闭');
-        return;
-      default:
-    }
-  }
-
-  // ——— 榜单 ———
-
-  // 统计只靠本机用量和已读到的记录：好友网关、好友、各种记录读不到都只记一条提示，本机统计与曲线照常返回。
-  // 窗口优先用页面发来的 from、to（几台电脑共用同一段时间）；没带或不成窗口才按本机的当地时间由 range 算。
-  async board(range, id, asked) {
-    const now = Date.now();
-    const { from, to } = Number.isFinite(asked?.from) && Number.isFinite(asked?.to) && asked.from < asked.to ? asked : rangeWindow(range, now);
-    await this.refreshSource();
-    const result = { type: 'board', id, range, from, to, share: this.share, accord: false, selfAuthor: null, errors: [], truncated: { usage: false, friends: false },
-      friendCount: 0, local: null, people: [], sources: [], retired: [], curve: [], syncState: this.share ? 'no_gateway' : 'disabled' };
-    let fetchedBuckets = null;   // null：本机用量没读到，不能当成「没有用量」
+  // 重启后先把自己已有的记录读回内存全集：之后哪一部分这一次读失败，就留着它的上一份，不拿空集合把目录里的覆盖掉。
+  async loadRecords() {
     try {
-      const fetched = await fetchUsageBuckets(input => this.coda.query(USAGE, 'buckets', input), { from, to });
-      fetchedBuckets = markSame(fetched.buckets, ...await this.sameNames(fetched.buckets));
-      result.truncated.usage = fetched.truncated;
-    } catch (e) { result.errors.push(`读不到本机用量：${message(e)}`); }
-
-    let gateway = null, friends = [], selfAuthor = null;
-    try { gateway = await this.gateway(); } catch (e) { result.errors.push(`读不到好友：${message(e)}`); }
-    const records = { [USAGE_RECORD_KIND]: [], [DAY_ARCHIVE_KIND]: [], [TODAY_CURVE_KIND]: [] };
-    if (gateway) {
-      result.accord = true;
+      for (const { spec } of await this.coda.list(KIND, { scope: 'local' })) {
+        if (spec.record === 'usage') this.local.set(`${spec.kind}\0${spec.id}`, spec);
+        else if (spec.record === 'mirror') this.mirror.set(`${spec.author}\0${spec.kind}`, [...this.mirror.get(`${spec.author}\0${spec.kind}`) ?? [], spec]);
+        else if (spec.record === 'state') this.friends = spec.friends;
+      }
+    } catch (e) { console.error('Token 消耗榜读不到已有的记录：', message(e)); }
+  }
+  // 三种记录各是一份全集，合起来整份交给 `coda.replace`：内容没变的记录宿主不重写。
+  // 这台的状态；本机用量（月块日归档与曲线，只含当前作者与无身份的行）；镜像来的签名记录（好友与自己别的设备）。
+  items() {
+    const state = { record: 'state', share: this.share, syncState: this.syncStateFor(this.currentAuthor), lastSyncAt: this.lastSyncAt,
+      error: this.share ? this.lastError : null, withdrawal: this.share ? null : this.withdrawal, author: this.currentAuthor, friends: this.friends };
+    return [{ key: 'state', spec: state },
+      ...[...this.local.values()].map(spec => ({ key: `usage/${spec.kind}/${spec.id}`, spec })),
+      ...[...this.mirror.values()].flat().map(spec => ({ key: `mirror/${createHash('sha256').update(JSON.stringify([spec.author, spec.kind, spec.id])).digest('hex')}`, spec }))];
+  }
+  project() {
+    if (!this.ready || this.stopped) return Promise.resolve();
+    const next = this.writes.then(() => this.coda.replace(KIND, this.items()));
+    this.writes = next.catch(e => console.error('Token 消耗榜写不进记录：', message(e)));
+    return this.writes;
+  }
+  // 本机桶里算作当前作者的：有好友网关就按它的身份（没有身份只含无身份的行）；没装好友插件时没有作者可归属，不按身份切。
+  async ownRows(gateway, from, to) {
+    const fetched = (await fetchUsageBuckets(input => this.coda.query(USAGE, 'buckets', input), { from, to })).buckets;
+    const buckets = markSame(fetched, ...await this.sameNames(fetched));
+    return gateway ? ownBuckets(buckets, gateway.status.author ?? null) : buckets;
+  }
+  usageSpec(kind, id, body, author) { return { record: 'usage', kind, id, author, sourceId: this.sourceId, legacy: this.source.legacy, body }; }
+  // 本机曲线约每分钟重算一次，只查最近 48 小时的桶。
+  curveTick() {
+    return this.serial(async () => {
+      if (this.stopped) return;
       try {
-        const read = await this.coda.query(gateway.ref, 'friends', { includePending: false });
-        selfAuthor = read.selfAuthor ?? null;
-        friends = Array.isArray(read.friends) ? read.friends : [];
-      } catch (e) { result.errors.push(`读不到好友：${message(e)}`); }
-      result.selfAuthor = selfAuthor;
-      this.observe(selfAuthor);
-      result.friendCount = friends.length;
-      const authors = [...new Set([selfAuthor, ...friends.map(friend => friend?.author)].filter(author => typeof author === 'string' && author))];
-      for (const author of authors) {
-        let failed = false;
-        for (const kind of SHARED_KINDS) {
-          try {
-            const read = await this.fetchAllRecords(gateway.ref, { kind, author });
-            records[kind].push(...read.records);
-            if (read.truncated) result.truncated.friends = true;
-          } catch (e) { failed = true; }
-        }
-        if (failed) result.errors.push('读不到一位好友的用量');
+        await this.refreshSource();
+        const gateway = await this.gateway(), now = Date.now();
+        const buckets = await this.ownRows(gateway, now - CURVE_HOURS * 3_600_000, now + 1);
+        this.local.set(`${TODAY_CURVE_KIND}\0${this.sourceId}`, this.usageSpec(TODAY_CURVE_KIND, this.sourceId, buildTodayBody(buckets, { now }), gateway?.status.author ?? null));
+      } catch (e) { console.error('Token 消耗榜算不出曲线：', message(e)); }
+      await this.project();
+    });
+  }
+
+  // 好友在两种时候重算：同步时，和好友网关有变化时（去抖）。
+  async watchFriends() {
+    let primed = false;
+    try {
+      this.disposables.push(await this.coda.watch(SOCIAL, () => { if (primed) this.later(); }, { scope: 'local' }));
+    } catch {}   // 没装或没启用好友插件：没有可订阅的，同步时再看
+    primed = true;
+  }
+  later() {
+    clearTimeout(this.debounce);
+    this.timers.delete(this.debounce);
+    this.debounce = setTimeout(() => { this.timers.delete(this.debounce); this.mirrorTick().catch(() => {}); }, MIRROR_DEBOUNCE_MS);
+    this.debounce.unref?.();
+    this.timers.add(this.debounce);
+  }
+  mirrorTick() {
+    return this.serial(async () => {
+      if (this.stopped) return;
+      try { await this.refreshMirror(await this.gateway()); } catch (e) { console.error('Token 消耗榜读不到好友的记录：', message(e)); }
+      await this.project();
+    });
+  }
+  // 好友网关里的好友（includePending: false）、好友与自己别的设备发布的三种记录，镜像成目录里的记录。本机自己发布的不镜像（本机用量记录就是它们的正本）。
+  // 某个作者的某一种读失败，留着上一份，不让它从目录里消失；没有好友网关就清空。
+  async refreshMirror(gateway) {
+    if (!gateway) {
+      if (!this.gatewayUnready) { this.friends = []; this.mirror.clear(); }
+      return;
+    }
+    const self = gateway.status.author ?? null, mine = [this.sourceId, ...this.source.legacy];
+    try {
+      const read = await this.coda.query(gateway.ref, 'friends', { includePending: false });
+      this.friends = [...new Set((Array.isArray(read.friends) ? read.friends : []).map(friend => friend?.author).filter(author => typeof author === 'string' && author))];
+    } catch {}
+    const authors = [...new Set([self, ...this.friends].filter(Boolean))];
+    for (const key of [...this.mirror.keys()]) if (!authors.includes(key.split('\0')[0])) this.mirror.delete(key);
+    for (const author of authors) {
+      for (const kind of SHARED_KINDS) {
+        let read;
+        try { read = await this.fetchAllRecords(gateway.ref, { kind, author }); } catch { continue; }
+        const specs = read.records
+          .filter(record => typeof record?.id === 'string' && record.id.length <= 256 && Number.isFinite(record.version) && record.body && typeof record.body === 'object' && !Array.isArray(record.body)
+            && !(author === self && mine.some(sourceId => ownedBySource(kind, record.id, sourceId))))
+          .map(record => ({ record: 'mirror', author, kind, id: record.id, version: record.version, body: record.body }))
+          .filter(spec => Buffer.byteLength(JSON.stringify(spec)) <= MAX_RECORD_BYTES);
+        this.mirror.set(`${author}\0${kind}`, specs);
       }
     }
-    // 本机桶按 person（这台后端的根身份）归属：只有当前身份与无身份的行算当前作者的。身份读不到时没有作者可归属，本机统计照常，不按身份切。
-    const identity = selfAuthor ?? gateway?.status.author ?? null;
-    const localBuckets = fetchedBuckets && (identity ? ownBuckets(fetchedBuckets, identity) : fetchedBuckets);
-    result.local = localBuckets && summarizeBuckets(localBuckets, { from, to });
-    const shared = { selfAuthor, selfSourceId: this.sourceId, excludedSourceIds: this.source.legacy, localBuckets, friends };
-    const board = aggregateLeaderboard({ ...shared, legacyUsageRecords: records[USAGE_RECORD_KIND], dayRecords: records[DAY_ARCHIVE_KIND], todayRecords: records[TODAY_CURVE_KIND], from, to });
-    // 页面用 sources 算合计，用 people 的作者地址映射显示 ID，并读取分享状态。
-    result.people = board.entries.map(({ author, self, shared }) => ({ author, self, shared }));
-    result.sources = board.sources;
-    result.retired = this.source.legacy;   // 这台已弃用的旧来源 ID：别的机器读到它们的旧副本时统一不算
-    result.curve = aggregateTodayCurve({ ...shared, localBuckets: localBuckets ?? [], todayRecords: records[TODAY_CURVE_KIND], range: rangeWindow('today', now), slotMs: SLOT_MS }).curve;
-    result.syncState = this.syncStateFor(selfAuthor);
-    // 榜单读到的状态和页面上次拿到的不一样（比如好友网关没了），把最新状态推给页面，免得旧的状态盖住它。
-    if (result.syncState !== this.pushedState) this.tell(this.notice);
-    return result;
   }
 
   // 本机 Magpie 插件的同型号映射，`[names, services]`：`names` 是 `{ [asked]: 名字 }`，`services` 是本机 Magpie 插件提供的模型服务的引用（只有走这些服务的行才套映射）。
@@ -309,7 +314,8 @@ class Board {
   // 好友网关（friends/social@1）：本机记录里取第一条；没装、没权限、服务没就绪，或没有记录，都是 null（没有网关），不抛错。
   async gateway() {
     let entry;
-    try { entry = (await this.coda.list(SOCIAL, { scope: 'local' }))?.[0]; } catch (e) { if (!NO_GATEWAY.has(e?.code)) throw e; }
+    this.gatewayUnready = false;
+    try { entry = (await this.coda.list(SOCIAL, { scope: 'local' }))?.[0]; } catch (e) { if (!NO_GATEWAY.has(e?.code)) throw e; this.gatewayUnready = e.code === 'service_unavailable'; }
     this.gatewayAvailable = Boolean(entry);
     const status = entry?.status ?? {};
     this.observe(entry ? status.author ?? null : null);
@@ -340,48 +346,38 @@ class Board {
   async tick() {
     if (this.stopped) return;
     await this.readSettings();
-    if (!this.share) return;
-    const before = [this.syncStateFor(this.currentAuthor), this.lastError];
+    // 关着分享、索引里还有发布过的记录：上次没撤完，再撤一次（排了队的等续签之后能确认）。
+    if (!this.share && this.published.size) await this.withdraw();
     await this.sync();
-    // 定时同步让状态变了（进入或离开 needs_cert 等），已经打开的页面也跟着更新。
-    if (before[0] !== this.syncStateFor(this.currentAuthor) || before[1] !== this.lastError) this.tell(this.notice);
   }
-  // 开关变了：开就同步一次，关就撤回。
-  async reconcile(text) {
+  // 开关变了：开就同步一次，关就撤回；做完把状态写进目录。
+  async reconcile() {
     if (this.stopped) return;
     this.lastSync = null;
     if (this.share) await this.sync(); else await this.withdraw();
-    this.tell(this.outcome(text));
-  }
-  // 操作做完后给页面的提示：失败不另写（页面显示失败原因）；没身份说一声；证书过期、暂停、没有好友网关由页面单独提示；撤回排了队就说明白。
-  outcome(text) {
-    const state = this.syncStateFor(this.currentAuthor);
-    if (this.lastError || ['needs_cert', 'paused', 'no_gateway'].includes(state)) return null;
-    if (state === 'queued') return '已提交好友网关排队，稍后自动同步';
-    if (state === 'pending') return '身份已切换，本轮同步尚未确认';
-    if (this.retractNote) return this.retractNote;
-    return state === 'no_identity' ? '这台机器还没有好友身份，暂时无法向好友发布' : text;
+    await this.project();
   }
 
-  // 发布交给好友网关：规范哈希去重、证书过期与暂停时的排队、恢复后自动补发都在网关里；没有网关就安静返回，不碰上次同步的结果。
+  // 每轮同步：重算本机的月块日归档与曲线、镜像好友的记录，把全集写进目录；分享开着时再把归档与曲线交给好友网关发布：
+  // 规范哈希去重、证书过期与暂停时的排队、恢复后自动补发都在网关里；没有网关就不发布，不碰上次同步的结果。
   sync() {
     return this.serial(async () => {
-      if (this.stopped || !this.share) return;
-      this.lastError = null;
-      this.retractNote = null;
+      if (this.stopped) return;
+      if (this.share) this.lastError = null;
       let author = null;
       try {
         await this.refreshSource();
         const gateway = await this.gateway();
-        if (!gateway) return;
-        author = gateway.status.author ?? null;
-        const { certState, pausedKinds = [] } = gateway.status;
+        author = gateway?.status.author ?? null;
         const now = Date.now(), d = new Date(now - ARCHIVE_DAYS * DAY_MS);
         const from = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1), sourceId = this.sourceId;
-        // 发布的只有这个作者名下的用量：person 是它或无身份的行；别的身份的行不进以它签名的记录。
-        const fetched = (await fetchUsageBuckets(input => this.coda.query(USAGE, 'buckets', input), { from, to: now + 1 })).buckets;
-        const buckets = ownBuckets(markSame(fetched, ...await this.sameNames(fetched)), author);
+        // 本机用量记录与发布的都只有这个作者名下的用量：person 是它或无身份的行；别的身份的行不进以它签名的记录。
+        const buckets = await this.ownRows(gateway, from, now + 1);
         const jobs = [...Object.entries(buildArchiveBodies(buckets)).map(([part, body]) => [DAY_ARCHIVE_KIND, `${sourceId}/${part}`, body]), [TODAY_CURVE_KIND, sourceId, buildTodayBody(buckets, { now })]];
+        this.local = new Map(jobs.map(([kind, id, body]) => [`${kind}\0${id}`, this.usageSpec(kind, id, body, author)]));
+        await this.refreshMirror(gateway);
+        if (!this.share || !gateway) return;
+        const { certState, pausedKinds = [] } = gateway.status;
         const sent = [];
         let switched = false;
         for (const [kind, id, body] of jobs) {
@@ -423,6 +419,9 @@ class Board {
       } catch (e) {
         this.lastError = message(e);
         if (author) this.lastSync = { state: 'error', author };
+      } finally {
+        this.ready = true;
+        await this.project();
       }
     });
   }
@@ -468,7 +467,7 @@ class Board {
         const result = await this.retractOne(gateway.ref, kind, id);
         if (result.state === 'retracted' || (!author && result.state === 'no_identity')) { confirmed.push(...keysOf.get(id) ?? []); continue; }
         if (result.state === 'error') fail(`撤回 ${id} 失败：${result.error ?? '未知错误'}`);
-        else { complete = false; states.push(result.state); this.retractNote = RETRACT_NOTES[result.state] ?? null; }
+        else { complete = false; states.push(result.state); }
       }
     }
     if (complete) for (const key of confirmed) this.published.delete(key);
@@ -491,15 +490,23 @@ class Board {
   withdraw() {
     return this.serial(async () => {
       this.lastError = null;
-      this.retractNote = null;
       try {
         // 读网关抛错要当失败（保留已发布索引等重试）；没有网关没法撤，也保留索引。有网关就一定逐条撤：没有身份时网关里可能还排着本机的待发项，要取消掉。
         const gateway = await this.gateway();
-        if (!gateway) { this.lastError = '未安装或未启用好友插件，无法撤回好友可见记录'; return; }
+        if (!gateway) {
+          this.lastError = '未安装或未启用好友插件，无法撤回好友可见记录';
+          this.withdrawal = this.published.size ? { state: 'error', error: this.lastError } : null;   // 没发布过什么，就没有要撤的
+          return;
+        }
         // 本机的和 legacy 的都撤。没查全或没撤回成的，不当作已撤回。
-        if ((await this.retire(gateway, gateway.status.author ?? null, [this.sourceId, ...this.source.legacy])).complete) this.published.clear();
+        const done = await this.retire(gateway, gateway.status.author ?? null, [this.sourceId, ...this.source.legacy]);
+        if (done.complete) this.published.clear();
+        this.withdrawal = done.complete ? null : { state: done.state, error: done.state === 'error' ? this.lastError : null };
         this.save('published.json', Object.fromEntries(this.published));
-      } catch (e) { this.lastError = message(e); }
+      } catch (e) {
+        this.lastError = message(e);
+        this.withdrawal = { state: 'error', error: this.lastError };
+      }
     });
   }
 }

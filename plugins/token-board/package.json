@@ -4,12 +4,12 @@
   "displayName": "Token 消耗榜",
   "description": "看本机的 Token 用量，并和好友比一比（默认向好友分享，可关闭）",
   "icon": { "symbol": "chart.bar.fill", "color": "orange" },
-  "version": "0.7.0",
+  "version": "0.8.0",
   "categories": [
     "Skills 与工具"
   ],
   "engines": {
-    "coda": 13
+    "coda": 22
   },
   "type": "module",
   "main": "main.mjs",
@@ -18,7 +18,8 @@
   ],
   "uses": {
     "coda/usage@1": ["read"],
-    "coda/machine@1": ["read"]
+    "coda/machine@1": ["read"],
+    "token-board/usage@1": ["read", "share"]
   },
   "optionalUses": {
     "friends/social@1": ["read", "publish"],
@@ -34,18 +35,129 @@
           "order": 0,
           "default": true,
           "description": "开启后每 10 分钟向好友发布按月归档的每日汇总和最近 48 小时的 30 分钟曲线：只有按 Agent 和模型的 Token 数与回合数，不含会话、目录、正文和费用。关闭后会撤回已发布的记录。"
-        },
-        "token-board.range": {
-          "title": "默认时间范围",
-          "type": "string",
-          "order": 1,
-          "enum": ["today", "7d", "30d"],
-          "enumItemLabels": ["今天", "近 7 天", "近 30 天"],
-          "default": "7d",
-          "description": "打开页面时先看哪一段时间的用量。"
         }
       }
     },
+    "protocols": [
+      {
+        "name": "token-board/usage@1",
+        "title": "Token 用量与分享状态",
+        "description": "各台机器的本机用量（月块日归档与 48 小时曲线）、分享状态，以及从好友网关镜像来的好友与自己别的设备的签名记录；Token 消耗榜页面读它们，不逐台发消息。",
+        "spec": {
+          "type": "object",
+          "required": ["record"],
+          "additionalProperties": false,
+          "properties": {
+            "record": { "enum": ["usage", "state", "mirror"] },
+            "kind": { "enum": ["coda/token-day", "coda/token-today", "coda/token-usage"] },
+            "id": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "author": { "type": ["string", "null"], "pattern": "^ed25519:[0-9a-f]{64}$" },
+            "sourceId": { "type": "string", "pattern": "^[^\\s/]{1,100}$" },
+            "legacy": {
+              "type": "array",
+              "items": { "type": "string", "pattern": "^[^\\s/]{1,100}$" }
+            },
+            "body": { "type": "object" },
+            "version": { "type": "number" },
+            "share": { "type": "boolean" },
+            "syncState": {
+              "enum": [
+                "disabled",
+                "no_gateway",
+                "no_identity",
+                "pending",
+                "synced",
+                "needs_cert",
+                "paused",
+                "queued",
+                "error"
+              ]
+            },
+            "lastSyncAt": { "type": ["integer", "null"], "minimum": 0 },
+            "error": { "type": ["string", "null"] },
+            "withdrawal": {
+              "type": ["object", "null"],
+              "required": ["state", "error"],
+              "properties": {
+                "state": { "enum": ["error", "queued", "needs_cert", "no_identity", "paused"] },
+                "error": { "type": ["string", "null"] }
+              },
+              "additionalProperties": false
+            },
+            "friends": {
+              "type": "array",
+              "items": { "type": "string", "pattern": "^ed25519:[0-9a-f]{64}$" }
+            }
+          },
+          "oneOf": [
+            {
+              "title": "本机用量",
+              "description": "这台机器的本机用量：月块日归档的一块（coda/token-day）或 48 小时曲线（coda/token-today），记录体与发给好友的一样（v3）；author 是写它时的好友身份（没有身份为 null），sourceId 是这台的来源 ID，legacy 是换成机器 ID 之前用过的随机 UUID（已弃用的旧来源）。",
+              "required": ["record", "kind", "id", "author", "sourceId", "legacy", "body"],
+              "properties": {
+                "record": { "const": "usage" },
+                "kind": { "enum": ["coda/token-day", "coda/token-today"] },
+                "body": {
+                  "required": ["v"],
+                  "properties": {
+                    "v": { "const": 3 }
+                  }
+                }
+              },
+              "propertyNames": { "enum": ["record", "kind", "id", "author", "sourceId", "legacy", "body"] }
+            },
+            {
+              "title": "这台的状态",
+              "description": "这台机器的分享状态：分享开没开、同步状态、上次同步成功的时刻（毫秒，没有为 null）、要人处理的同步错误（没有为 null）、关了分享后还没撤回完的情况（撤回完是 null）、本机的好友身份，以及好友网关里的好友身份。",
+              "required": ["record", "share", "syncState", "lastSyncAt", "error", "withdrawal", "author", "friends"],
+              "properties": {
+                "record": { "const": "state" }
+              },
+              "propertyNames": { "enum": ["record", "share", "syncState", "lastSyncAt", "error", "withdrawal", "author", "friends"] }
+            },
+            {
+              "title": "镜像的签名记录",
+              "description": "好友与自己别的设备经好友网关发布的签名记录（coda/token-day、coda/token-today、旧版 coda/token-usage）的镜像：author 是签名人，version 是网关给的版本，body 是原样的记录体。",
+              "required": ["record", "author", "kind", "id", "version", "body"],
+              "properties": {
+                "record": { "const": "mirror" },
+                "author": { "type": "string", "pattern": "^ed25519:[0-9a-f]{64}$" }
+              },
+              "propertyNames": { "enum": ["record", "author", "kind", "id", "version", "body"] }
+            }
+          ]
+        },
+        "status": { "type": "object", "additionalProperties": false },
+        "operations": {
+          "set-share": {
+            "description": "开启或关闭这台机器向好友分享用量：开启就同步一次，关闭就撤回已发布的记录。",
+            "input": {
+              "type": "object",
+              "required": ["on"],
+              "properties": {
+                "on": { "type": "boolean" }
+              },
+              "additionalProperties": false
+            },
+            "result": {
+              "type": "object",
+              "required": ["share"],
+              "properties": {
+                "share": { "type": "boolean" }
+              },
+              "additionalProperties": false
+            },
+            "idempotent": true
+          }
+        },
+        "permissions": {
+          "read": { "title": "读各台机器的 Token 用量、分享状态与镜像的好友记录", "read": true },
+          "share": { "title": "开启或关闭这台机器向好友分享用量", "operations": ["set-share"] }
+        }
+      }
+    ],
+    "protocolImplementations": ["token-board/usage@1"],
+    "directoryViews": ["board"],
     "views": [
       {
         "id": "board",

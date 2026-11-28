@@ -1,14 +1,27 @@
-// Token 消耗榜的模块，用假 coda 和假好友网关（friends/social@1）跑：activate 不读记录也不抛错；开启分享经网关发布月块日归档与 48 小时曲线（去重在网关）；
+// Token 消耗榜的模块，用假 coda 和假好友网关（friends/social@1）跑：activate 不读任何记录也不抛错；每轮同步把本机用量、这台的状态、镜像来的好友记录整份写进目录
+// （coda.replace，写出去的 spec 都按清单里的协议校验）；开启分享经网关发布月块日归档与 48 小时曲线（去重在网关）；
 // 关闭分享按本机 sourceId 筛出自己的记录、逐条带 id 撤回，绝不按 kind 批量撤回、不动别的设备；没有好友插件时本机统计照常、状态 no_gateway；
 // 网关状态（needs_cert、paused、no_identity、queued）如实透传；来源 ID 优先取机器 ID、读不到不抖动、换了以后不双计；全程不直接访问 coda/accord@1；deactivate 清理干净。
+// 模块自己的定时器（首跳、每 10 分钟同步、每分钟曲线、好友变动的去抖）被截下来，由测试直接触发。
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mock, test } from 'node:test';
-import { buildArchiveBodies, buildTodayBody } from '../../../plugins/token-board/lib/usage.mjs';
+import { pointProblem } from '@coda-console/protocol/validate';
+import { buildArchiveBodies, buildTodayBody, readTodayRecord } from '../../../plugins/token-board/lib/usage.mjs';
+import { summarize } from '../../../plugins/token-board/lib/merge.mjs';
 import { createGateway } from '../../../plugins/friends/lib/gateway.mjs';
-import { activate, deactivate } from '../../../plugins/token-board/main.mjs';
+import { CURVE_INTERVAL_MS, FIRST_SYNC_DELAY_MS, MIRROR_DEBOUNCE_MS, SYNC_INTERVAL_MS, activate, deactivate } from '../../../plugins/token-board/main.mjs';
+
+const PROTOCOL = JSON.parse(readFileSync(new URL('../../../plugins/token-board/package.json', import.meta.url), 'utf8')).contributes.protocols[0];
+const USAGE_PROTOCOL = PROTOCOL.name;
+// 模块自己的定时器：截下来，测试直接触发；别的定时器照旧。
+const held = {};
+const hold = (ms, fn) => { held[ms] = fn; return { unref() {}, ref() {} }; };
+const realSetTimeout = globalThis.setTimeout, realSetInterval = globalThis.setInterval;
+globalThis.setTimeout = (fn, ms, ...rest) => (ms === FIRST_SYNC_DELAY_MS || ms === MIRROR_DEBOUNCE_MS ? hold(ms, fn) : realSetTimeout(fn, ms, ...rest));
+globalThis.setInterval = (fn, ms, ...rest) => (ms === SYNC_INTERVAL_MS || ms === CURVE_INTERVAL_MS ? hold(ms, fn) : realSetInterval(fn, ms, ...rest));
 
 const AUTHOR = `ed25519:${'a'.repeat(64)}`, FRIEND = `ed25519:${'b'.repeat(64)}`;
 // 时钟与时区都固定：榜单的「今天」按本机日历日算，而记录里的日、时钟键是 UTC，用真实时间或本机时区的话，当地午夜附近（以及东八区早晨）这些用例会随跑的时刻变红。
@@ -29,12 +42,17 @@ const SOCIAL = 'friends/social@1', SAME = 'magpie/models@1';
 const gone = code => Object.assign(new Error(`没有好友网关：${code}`), { code });
 const retracts = host => host.retractCalls.map(call => [call.kind, call.id]);
 
-function fake({ settings = {}, usage = [], records = [], friends, state } = {}) {
-  const calls = [], published = [], attempts = [], retractCalls = [], queued = [], touched = new Set(), views = new Map(), listeners = [], own = new Map();
-  let current = { 'token-board.range': '7d', ...settings }, version = 0;
+function fake({ settings = {}, usage = [], records = [], friends, state, previous = [] } = {}) {
+  const calls = [], published = [], attempts = [], retractCalls = [], queued = [], touched = new Set(), views = new Map(), listeners = [], own = new Map(), handlers = new Map();
+  let current = { ...settings }, version = 0, booted = false;
+  for (const key of Object.keys(held)) delete held[key];
   const host = {
     calls, published, attempts, retractCalls, queued, touched, views, records,
     usage,
+    written: structuredClone(previous),   // 目录里本插件的记录：上次 coda.replace 交出的全集 [{ key, spec }]（重启后留在目录里）
+    replaces: 0,               // replace 调了几次
+    replaceError: null,        // 非空就让 replace 抛它
+    watches: [],               // 模块对好友网关的订阅回调
     friends: friends ?? [{ node: 'n1', author: FRIEND, status: 'bound' }],
     sameNames: undefined,      // 本机 Magpie 插件给的映射 { [asked]: 名字 }；undefined 是没装 Magpie 插件，Error 是 names 查询失败
     sameServices: ['coda://openai-responses/11111111-2222-3333-4444-555555555555'],   // 本机 Magpie 插件提供的服务（用量行里 tagged 用的那个）
@@ -61,8 +79,33 @@ function fake({ settings = {}, usage = [], records = [], friends, state } = {}) 
       views: { register: (id, provider) => { views.set(id, provider); return { dispose() { views.delete(id); } }; } },
       settings: { get: async () => structuredClone(current), onChange: fn => { listeners.push(fn); return { dispose() { listeners.splice(listeners.indexOf(fn), 1); } }; } },
       get: async ref => { touched.add(ref.kind); throw new Error(`token-board 不该直接 get ${ref.kind}`); },
-      watch: async ref => { touched.add(ref); throw new Error(`token-board 模块不该 watch ${ref}`); },
+      watch: async (kind, fn, filter) => {
+        touched.add(kind);
+        assert.equal(kind, SOCIAL, '模块只订阅好友网关');
+        assert.deepEqual(filter, { scope: 'local' });
+        host.watches.push(fn);
+        fn({ type: 'ADDED', id: 'local', entry: {} });   // 现有的先给完，之后才是变化
+        return { dispose() { host.watches.splice(host.watches.indexOf(fn), 1); } };
+      },
+      handle: (kind, operation, fn) => { assert.equal(kind, USAGE_PROTOCOL); handlers.set(operation, fn); return { dispose() { handlers.delete(operation); } }; },
+      // 全有或全无：每条 spec 合协议、整条（含外壳）不超过 64 KiB、key 不重复，才写。
+      replace: async (kind, items) => {
+        assert.equal(kind, USAGE_PROTOCOL);
+        if (host.replaceError) throw host.replaceError;
+        assert.equal(new Set(items.map(item => item.key)).size, items.length, 'replace 的 key 重复');
+        for (const { key, spec } of items) {
+          assert.equal(pointProblem(PROTOCOL.spec, spec, 'spec'), null, key);
+          assert.ok(Buffer.byteLength(JSON.stringify({ key, spec })) < 64 * 1024 - 1024, `${key} 超限`);
+        }
+        host.written = structuredClone(items);
+        host.replaces += 1;
+        return items;
+      },
       list: async (kind, filter) => {
+        if (kind === USAGE_PROTOCOL) {
+          assert.deepEqual(filter, { scope: 'local' });
+          return host.written.map(({ key, spec }) => ({ key, spec: structuredClone(spec), local: true }));
+        }
         touched.add(kind);
         assert.deepEqual(filter, { scope: 'local' });
         if (kind === SAME) {
@@ -144,29 +187,43 @@ function fake({ settings = {}, usage = [], records = [], friends, state } = {}) 
         return { state: 'retracted', count: mine || seeded >= 0 ? 1 : 0 };
       },
     },
+    // 首跳、每 10 分钟同步、每分钟曲线：触发模块自己的定时器，等它做完。
+    async boot() { booted = true; held[FIRST_SYNC_DELAY_MS]?.(); await host.settle(); },
+    async sync() { held[SYNC_INTERVAL_MS]?.(); await host.settle(); },
+    async curve() { held[CURVE_INTERVAL_MS]?.(); await host.settle(); },
+    async friendsChanged() { for (const fn of [...host.watches]) fn({ type: 'MODIFIED', id: 'local', entry: {} }); },
+    async debounced() { held[MIRROR_DEBOUNCE_MS]?.(); await host.settle(); },
+    // 页面（资源页里的）对这台状态记录调 set-share。
+    async setShare(on) { const result = await handlers.get('set-share')({ on }, { record: { kind: USAGE_PROTOCOL, id: 'state' } }); await host.settle(); return result; },
+    state: () => host.written.find(item => item.key === 'state')?.spec,
+    usageRecords: () => host.written.filter(item => item.spec.record === 'usage').map(item => item.spec),
+    mirrored: () => host.written.filter(item => item.spec.record === 'mirror').map(item => item.spec),
+    // 把写出去的记录当成目录里的条目交给页面的合并函数。
+    summary: (from, to) => summarize(host.written.map(({ key, spec }) => ({ owner: 'me', location: 'Mac', local: true, id: key, version: '1', spec })), { from, to }),
+    // 旧页面消息的替身：只留这几个，让下面的发布、撤回用例照旧读状态、触发同步。
     open() {
-      const page = { got: [], tell: null };
-      views.get('board').open({ postMessage: m => { page.got.push(m); return true; }, onMessage: fn => { page.tell = fn; return { dispose() {} }; }, onClose() {} });
-      page.last = type => page.got.findLast(m => m.type === type);
-      page.waitFor = async (type, after = 0) => {
-        for (let i = 0; i < 200; i++) { const m = page.got.slice(after).findLast(x => x.type === type); if (m) return m; await new Promise(r => setTimeout(r, 5)); }
-        throw new Error(`没等到 ${type}`);
+      const page = { got: [] };
+      page.tell = async message => {
+        if (message?.type === 'hello' && !booted) await host.boot();
+        else if (message?.type === 'sync') await host.sync();
+        else if (message?.type === 'set-share') await host.setShare(message.on === true);
+        else if (message?.type === 'withdraw') await host.setShare(false);
       };
+      page.last = type => (type === 'status' ? host.status() : undefined);
+      page.waitFor = async () => { for (let i = 0; i < 200 && !host.state(); i++) await new Promise(r => setTimeout(r, 5)); return host.status(); };
       return page;
     },
+    status() { const state = host.state(); return state && { share: state.share, syncState: state.syncState, lastSyncAt: state.lastSyncAt, lastError: state.error }; },
     async change(next) { current = { ...current, ...next }; for (const fn of [...listeners]) await fn(structuredClone(current)); },
     settle: () => new Promise(r => setTimeout(r, 40)),
   };
   return host;
 }
 const indexOf = state => JSON.parse(readFileSync(join(state, 'published.json'), 'utf8'));
-// 打开页面、hello 一次，再同步一次。
+// 首跳：读设置、同步一次。
 async function openAndSync(host) {
   const page = host.open();
-  page.tell({ type: 'hello' });
-  await page.waitFor('status');
-  page.tell({ type: 'sync' });
-  await host.settle();
+  await host.boot();
   return page;
 }
 
@@ -237,14 +294,10 @@ test('分享没开：同步不发布；开启后发布，关闭后只撤回本�
   ];
   const host = fake({ state, settings: { 'token-board.share': false }, usage: [bucket(at)], records: others });
   activate(host.coda);
-  const page = host.open();
-  page.tell({ type: 'hello' });
-  await page.waitFor('status');
-  page.tell({ type: 'sync' });
-  await host.settle();
+  const page = await openAndSync(host);
   assert.equal(host.published.length, 0);
-  assert.match(page.last('status').notice, /还没开启/);
   assert.equal(page.last('status').syncState, 'disabled');
+  assert.equal(host.usageRecords().length, 2, '没分享也照常写本机用量记录');
 
   page.tell({ type: 'set-share', on: true });
   await host.settle();
@@ -262,10 +315,9 @@ test('分享没开：同步不发布；开启后发布，关闭后只撤回本�
   page.tell({ type: 'withdraw' });
   await host.settle();
   assert.equal(host.retractCalls.length, 2);
-  assert.match(page.last('status').notice, /已撤回/);
 });
 
-test('设置里把分享打开 / 关掉，模块跟着发布 / 撤回；只改范围不动记录', async t => {
+test('设置里把分享打开 / 关掉，模块跟着发布 / 撤回；别的设置变了不动记录', async t => {
   freeze(t);
   const state = mkdir(t);
   const host = fake({ state, settings: { 'token-board.share': false }, usage: [bucket(startOfBucket(now))] });
@@ -280,11 +332,11 @@ test('设置里把分享打开 / 关掉，模块跟着发布 / 撤回；只改�
   await host.change({ 'token-board.share': false });
   await host.settle();
   assert.equal(host.retractCalls.length, 2);
-  await host.change({ 'token-board.range': '30d' });
+  await host.change({ 'token-board.other': 1 });
   await host.settle();
   assert.equal(host.published.length, 2);
   assert.equal(host.retractCalls.length, 2);
-  assert.equal(page.last('status').range, '30d');
+  assert.equal(host.state().share, false);
 });
 
 test('页面上临时切的分享开关，被设置里的改动盖过', async t => {
@@ -297,27 +349,23 @@ test('页面上临时切的分享开关，被设置里的改动盖过', async t 
   page.tell({ type: 'set-share', on: true });
   await host.settle();
   assert.equal(page.last('status').share, true);
-  assert.equal(page.last('status').fromSettings, false);
-  await host.change({ 'token-board.share': true, 'token-board.range': '30d' });
+  assert.equal(JSON.parse(readFileSync(join(state, 'prefs.json'), 'utf8')).share, true);
+  await host.change({ 'token-board.share': true });
   await host.settle();
   assert.equal(page.last('status').share, true);
-  assert.equal(page.last('status').fromSettings, true);
+  assert.equal(existsSync(join(state, 'prefs.json')) && 'share' in JSON.parse(readFileSync(join(state, 'prefs.json'), 'utf8')), false, '设置里改了，以设置为准，页面存的选择作废');
 });
 
-test('默认开启后，重启仍尊重页面保存的关闭选择；只改范围不恢复分享', async t => {
-  const state = mkdir(t), { drain } = timed(t);
+test('默认开启后，重启仍尊重页面保存的关闭选择；别的设置变了不恢复分享', async t => {
+  const state = mkdir(t);
   writeFileSync(join(state, 'prefs.json'), JSON.stringify({ share: false }));
   const host = fake({ state });
   activate(host.coda);
-  const page = host.open();
-  page.tell({ type: 'hello' });
-  await drain();
-  assert.equal(page.last('status').share, false);
-  assert.equal(page.last('status').fromSettings, false);
-  await host.change({ 'token-board.range': '30d' });
-  mock.timers.tick(5_000);
-  await drain();
-  assert.equal(page.last('status').share, false);
+  await host.boot();
+  assert.equal(host.state().share, false);
+  await host.change({ 'token-board.other': 1 });
+  await host.sync();
+  assert.equal(host.state().share, false);
   assert.equal(host.attempts.length, 0);
 });
 
@@ -334,53 +382,37 @@ for (const [name, setup] of [
     const state = mkdir(t), host = fake({ state, settings: { 'token-board.share': true }, usage: [bucket(startOfBucket(now))] });
     setup(host);
     activate(host.coda);
-    const page = host.open();
-    page.tell({ type: 'hello' });
-    await page.waitFor('status');
-    page.tell({ type: 'sync' });
-    await host.settle();
-    assert.equal(page.last('status').syncState, 'no_gateway');
-    assert.equal(page.last('status').lastError, null);
-    assert.equal(page.last('status').lastSyncAt, null, '不覆盖上次同步时间');
+    await host.boot();
+    await host.sync();
+    assert.equal(host.state().syncState, 'no_gateway');
+    assert.equal(host.state().error, null);
+    assert.equal(host.state().lastSyncAt, null, '不覆盖上次同步时间');
     assert.equal(host.attempts.length, 0);
-    page.tell({ type: 'board', range: 'today', id: 1 });
-    const board = await page.waitFor('board');
-    assert.equal(board.accord, false);
-    assert.equal(board.selfAuthor, null);
-    assert.equal(board.friendCount, 0);
-    assert.deepEqual(board.people, []);
-    assert.deepEqual(board.sources, []);
-    assert.equal(board.syncState, 'no_gateway');
-    assert.equal(board.local.totalTokens, 116);
-    assert.equal(board.curve.reduce((n, slot) => n + slot.totalTokens, 0), 116);
-    assert.deepEqual(board.errors, []);
+    assert.equal(host.state().author, null);
+    assert.deepEqual(host.state().friends, []);
+    assert.deepEqual(host.mirrored(), []);
+    const { mine, board } = host.summary(startOfBucket(now) - 86_400_000, now + 1);
+    assert.equal(mine.totalTokens, 116);
+    assert.deepEqual(board.entries, []);
+    assert.deepEqual(host.usageRecords().map(spec => [spec.kind, spec.author]), [[dayKind, null], [todayKind, null]], '没有身份：本机用量照写，作者为 null');
     assert.deepEqual(host.calls.filter(([kind]) => kind === SOCIAL), []);
     // 关着分享：disabled。
     await host.change({ 'token-board.share': false });
     await host.settle();
-    const seen = page.got.length;
-    page.tell({ type: 'board', range: 'today', id: 2 });
-    const off = await page.waitFor('board', seen);
-    assert.equal(off.syncState, 'disabled');
-    assert.deepEqual(off.errors, []);
+    assert.equal(host.state().syncState, 'disabled');
+    assert.equal(host.state().error, null, '关着分享不报同步错');
   });
 }
 
-test('榜单按页面发来的 from、to 查本机用量：落在窗口内、但在这台当地午夜之前的用量也算', async t => {
+test('本机用量记录盖住最近 32 天：页面按自己的窗口取，当地午夜之前的用量落在「今天」之外、近 7 天之内', async t => {
   freeze(t);
-  const midnight = startOfBucket(new Date(new Date(now).getFullYear(), new Date(now).getMonth(), new Date(now).getDate()).getTime());
-  const early = bucket(midnight - 3_600_000), asked = { from: midnight - 7_200_000, to: now + 1 };
-  const state = mkdir(t), host = fake({ state, usage: [early] });
+  const midnight = new Date(new Date(now).getFullYear(), new Date(now).getMonth(), new Date(now).getDate()).getTime();
+  const state = mkdir(t), host = fake({ state, usage: [bucket(startOfBucket(midnight - 3_600_000))] });
   activate(host.coda);
-  const page = host.open();
-  page.tell({ type: 'board', range: 'today', ...asked, id: 1 });
-  const board = await page.waitFor('board');
-  assert.deepEqual([board.from, board.to], [asked.from, asked.to]);
-  assert.equal(board.local.totalTokens, 116, '自己的「今天」从当地午夜起算，会漏掉这条');
-  const seen = page.got.length;
-  page.tell({ type: 'board', range: 'today', id: 2 });
-  const own = await page.waitFor('board', seen);
-  assert.equal(own.local.totalTokens, 0, '没带窗口时仍按自己的当地时间算今天');
+  await host.boot();
+  assert.equal(host.summary(midnight, now + 1).mine.totalTokens, 0, '「今天」从看页面这台的当地午夜起算，不含这条');
+  assert.equal(host.summary(midnight - 7_200_000, now + 1).mine.totalTokens, 116);
+  assert.equal(host.summary(midnight - 6 * 86_400_000, now + 1).mine.totalTokens, 116);
 });
 
 test('没有好友插件：手动撤回不假装成功，保留本机已知发布 ID 索引，提示清晰；装回来之后能撤', async t => {
@@ -394,14 +426,11 @@ test('没有好友插件：手动撤回不假装成功，保留本机已知发�
   page.tell({ type: 'withdraw' });
   await host.settle();
   assert.equal(host.retractCalls.length, 0);
-  assert.equal(page.last('status').lastError, '未安装或未启用好友插件，无法撤回好友可见记录');
-  assert.equal(page.last('status').notice, null);
   assert.deepEqual(Object.keys(indexOf(state)), keys);
   host.gateway = true;
   page.tell({ type: 'withdraw' });
   await host.settle();
   assert.equal(host.retractCalls.length, 2);
-  assert.equal(page.last('status').lastError, null);
   assert.deepEqual(indexOf(state), {});
 });
 
@@ -417,14 +446,11 @@ test('读网关抛了不是「没有网关」的错：不清索引、不撤回�
   await host.settle();
   assert.equal(host.retractCalls.length, 0, '没有发出撤回');
   assert.deepEqual(Object.keys(indexOf(state)), keys);
-  assert.match(page.last('status').lastError, /网关读不出/);
-  assert.equal(page.last('status').notice, null, '不报撤回成功');
   assert.equal(page.last('status').share, false);
   host.listError = null;
   page.tell({ type: 'withdraw' });
   await host.settle();
   assert.equal(host.retractCalls.length, 2);
-  assert.equal(page.last('status').lastError, null);
   assert.deepEqual(indexOf(state), {});
 });
 
@@ -441,17 +467,11 @@ test('没有身份：发布得到 no_identity，同步不报错；榜单没有�
   await host.settle();
   assert.equal(page.last('status').lastError, null);
   assert.equal(page.last('status').syncState, 'no_identity');
-  assert.match(page.last('status').notice, /好友身份/);
   assert.equal(host.published.length, 0);
   assert.equal(host.queued.length, 2, '交给网关排队');
-  page.tell({ type: 'board', range: 'today', id: 1 });
-  const board = await page.waitFor('board');
-  assert.equal(board.accord, true);
-  assert.equal(board.selfAuthor, null);
-  assert.equal(board.syncState, 'no_identity');
-  assert.equal(board.local.totalTokens, 116);
-  assert.equal(board.curve.reduce((n, slot) => n + slot.totalTokens, 0), 116);
-  assert.deepEqual(board.errors, []);
+  assert.equal(host.state().author, null);
+  assert.equal(host.summary(startOfBucket(now) - 86_400_000, now + 1).mine.totalTokens, 116);
+  assert.deepEqual(host.usageRecords().map(spec => spec.author), [null, null], '没有身份：只含无身份的行，作者为 null');
   writeFileSync(join(state, 'published.json'), JSON.stringify({ [`${AUTHOR}:${dayKind}:x/2026-11`]: true }));
   const sourceId = sourceIdOf(state);
   page.tell({ type: 'withdraw' });
@@ -459,7 +479,6 @@ test('没有身份：发布得到 no_identity，同步不报错；榜单没有�
   assert.deepEqual(retracts(host).map(([, id]) => id).sort(), [`${sourceId}/${monthOf(now)}`, sourceId].sort(), '按网关待发队列里本机的项逐条撤，带 id');
   assert.equal(host.queued.length, 0, '待发项取消了，恢复身份后不会泄露');
   assert.deepEqual(indexOf(state), {});
-  assert.equal(page.last('status').lastError, null);
 });
 
 test('证书过期：统计与曲线照常，网关排队，同步状态 needs_cert、不记同步时间；续签后下一次同步报 synced', async t => {
@@ -477,13 +496,9 @@ test('证书过期：统计与曲线照常，网关排队，同步状态 needs_c
   assert.equal(page.last('status').syncState, 'needs_cert');
   assert.equal(page.last('status').lastError, null);
   assert.equal(page.last('status').lastSyncAt, null);
-  page.tell({ type: 'board', range: '30d', id: 2 });
-  const board = await page.waitFor('board');
-  assert.equal(board.syncState, 'needs_cert');
-  assert.equal(board.local.totalTokens, 232);
-  assert.equal(board.curve.reduce((n, slot) => n + slot.totalTokens, 0), 116);
-  assert.equal(board.selfAuthor, AUTHOR);
-  assert.deepEqual(board.errors, []);
+  assert.equal(host.summary(at - 30 * 86_400_000, at + 1).mine.totalTokens, 232, '统计照常');
+  assert.equal(host.summary(at - 86_400_000, at + 1).mine.totalTokens, 116);
+  assert.equal(host.state().author, AUTHOR);
 
   host.certState = 'active';
   page.tell({ type: 'sync' });
@@ -491,26 +506,21 @@ test('证书过期：统计与曲线照常，网关排队，同步状态 needs_c
   assert.deepEqual(host.published.map(p => [p.kind, p.id.slice(-7)]), [[dayKind, '2026-10'], [dayKind, '2026-11'], [todayKind, sourceIdOf(state).slice(-7)]]);
   assert.equal(page.last('status').syncState, 'synced');
   assert.ok(page.last('status').lastSyncAt > 0);
-  page.tell({ type: 'board', range: 'today', id: 3 });
-  assert.equal((await page.waitFor('board', page.got.length - 1)).syncState, 'synced');
 });
 
 test('网关状态透传：error > no_identity > needs_cert > paused > queued > synced；paused 来自网关的 pausedKinds', async t => {
   freeze(t);
   const state = mkdir(t), host = fake({ state, settings: { 'token-board.share': true }, usage: [bucket(startOfBucket(now))] });
   activate(host.coda);
-  const page = host.open();
-  page.tell({ type: 'hello' });
-  await page.waitFor('status');
-  const sync = async () => { page.tell({ type: 'sync' }); await host.settle(); return page.last('status'); };
-  const board = async () => { const n = page.got.length; page.tell({ type: 'board', range: 'today', id: n + 1 }); return (await page.waitFor('board', n)).syncState; };
+  let first = true;
+  const sync = async () => { if (first) { first = false; await host.boot(); } else await host.sync(); return host.status(); };
   // 暂停了日归档：曲线照发，整体是 paused，不报错，页面照样有榜。
   host.pausedKinds = [dayKind];
   let status = await sync();
   assert.equal(status.syncState, 'paused');
   assert.equal(status.lastError, null);
   assert.deepEqual(kindsOf(host.published), [todayKind]);
-  assert.equal(await board(), 'paused');
+  assert.equal(host.usageRecords().length, 2, '状态不影响本机用量记录');
   host.pausedKinds = [];
   // queued：网关接收但没发出。
   host.publishStates = { [dayKind]: 'queued' };
@@ -529,7 +539,6 @@ test('网关状态透传：error > no_identity > needs_cert > paused > queued > 
   status = await sync();
   assert.equal(status.syncState, 'error');
   assert.match(status.lastError, /发布 .* 失败：网关拒绝了这条/);
-  assert.equal(await board(), 'error');
   // publish 抛错也是 error，不拖垮同步。
   host.publishStates = {};
   host.publishError = new Error('网关挂了');
@@ -560,8 +569,8 @@ test('来源 ID：优先取 coda/machine@1 的本机 ID，读不到时沿用旧�
   activate(host.coda);
   const first = sourceIdOf(state);
   assert.equal(sourceFile(state).source, 'random');
-  const page = host.open();
-  const board = async () => { const after = page.got.length; page.tell({ type: 'board', range: 'today', id: after + 1 }); await page.waitFor('board', after); };
+  let started = false;
+  const board = async () => { if (started) await host.sync(); else { started = true; await host.boot(); } };
   await board();
   await board();
   assert.deepEqual(sourceFile(state), { source: 'random', sourceId: first, legacy: [] }, '临时失败不重新生成');
@@ -600,29 +609,20 @@ test('从随机 UUID 换成机器 ID：同一台机器的旧记录不被当成�
   const host = fake({ state, settings: { 'token-board.share': true }, usage: [mine], records });
   host.machine = 'machine-1';
   activate(host.coda);
-  const page = host.open();
-  page.tell({ type: 'hello' });
-  await page.waitFor('status');
-  page.tell({ type: 'board', range: 'today', id: 1 });
-  const board = await page.waitFor('board');
+  const page = await openAndSync(host);
   assert.deepEqual(sourceFile(state), { source: 'machine', sourceId: 'machine-1', legacy: [old] });
-  const owned = author => board.sources.filter(source => source.author === author).reduce((n, source) => n + source.totalTokens, 0);
-  assert.equal(owned(board.selfAuthor), 116 + 1000, '本机一次 + 兄弟机器，不含旧 UUID 的三种旧记录');
-  assert.deepEqual(board.sources.map(source => [source.sourceId, source.local]).sort(), [['machine-1', true], ['tablet', false]], '回包带每个来源的合计，旧 UUID 不在里面');
-  assert.equal(board.sources.find(source => source.local).totalTokens, 116);
-  assert.equal(board.curve.reduce((n, slot) => n + slot.totalTokens, 0), 116 + 1000);
-  assert.equal(host.published.length, 0, '没同步就不发');
-
-  page.tell({ type: 'sync' });
-  await host.settle();
+  assert.deepEqual(host.mirrored().map(spec => [spec.kind, spec.id]).sort(), [[dayKind, `tablet/${monthOf(at)}`], [todayKind, 'tablet']].sort(), '镜像里没有本机的，也没有旧 UUID 的三种旧记录，只有兄弟机器的');
+  const me = host.summary(startOfBucket(now) - 86_400_000, now + 1).board.entries.find(entry => entry.self);
+  assert.equal(me.totalTokens, 116 + 1000, '本机一次 + 兄弟机器，不含旧 UUID 的三种旧记录');
+  assert.deepEqual(host.usageRecords().map(spec => spec.sourceId), ['machine-1', 'machine-1']);
+  assert.deepEqual(host.usageRecords()[0].legacy, [old], '本机用量记录带着弃用的旧来源 ID');
   assert.deepEqual(host.published.map(p => p.id), [`machine-1/${monthOf(at)}`, 'machine-1']);
   assert.deepEqual(retracts(host).sort(), [[dayKind, `${old}/${monthOf(at)}`], [todayKind, old], [usageKind, records[0].id]].sort());
   assert.ok(!retracts(host).some(([, id]) => id.includes('tablet')));
   assert.equal(page.last('status').syncState, 'synced');
   // 撤回过的不再撤。
   const count = host.retractCalls.length;
-  page.tell({ type: 'sync' });
-  await host.settle();
+  await host.sync();
   assert.equal(host.retractCalls.length, count);
   assert.equal(host.published.length, 2);
 });
@@ -657,11 +657,7 @@ test('旧 UUID 撤回：本机记着发过但远端没查到的也撤；查询�
   host.machine = 'machine-1';
   host.truncate = true;
   activate(host.coda);
-  const page = host.open();
-  page.tell({ type: 'hello' });
-  await page.waitFor('status');
-  page.tell({ type: 'sync' });
-  await host.settle();
+  const page = await openAndSync(host);
   assert.deepEqual(retracts(host).sort(), [[dayKind, `${old}/${month}`], [todayKind, old]].sort(), '远端一条都没查到，也按本机记录撤回');
   assert.match(page.last('status').lastError, /没能查全/);
   assert.equal(page.last('status').syncState, 'error');
@@ -685,8 +681,8 @@ test('旧 UUID 撤回：本机记着发过但远端没查到的也撤；查询�
   host.truncate = true;
   page.tell({ type: 'withdraw' });
   await host.settle();
-  assert.match(page.last('status').lastError, /没能查全/);
-  assert.equal(page.last('status').notice, null, '没查全不报「已撤回」');
+  assert.equal(page.last('status').share, false);
+  assert.ok(Object.keys(indexOf(state)).length > 0, '没查全：索引留着，不当作已撤回');
 });
 
 test('升级自 0.1.0：published.json 里没有作者前缀的旧键，也能在远端查询被截断时按本机记着的 ID 撤回', async t => {
@@ -700,11 +696,7 @@ test('升级自 0.1.0：published.json 里没有作者前缀的旧键，也能�
   host.machine = 'machine-1';
   host.truncate = true;
   activate(host.coda);
-  const page = host.open();
-  page.tell({ type: 'hello' });
-  await page.waitFor('status');
-  page.tell({ type: 'sync' });
-  await host.settle();
+  const page = await openAndSync(host);
   assert.deepEqual(retracts(host), [[usageKind, `${day}/${old}`]]);
   const left = Object.keys(indexOf(state));
   assert.ok(left.includes(`${day}/${old}`), '查询被截断，整轮没完成：索引原样留着');
@@ -727,7 +719,6 @@ test('升级自 0.1.0：published.json 里没有作者前缀的旧键，也能�
   await second.waitFor('status');
   second.tell({ type: 'withdraw' });
   await again.settle();
-  assert.match(second.last('status').lastError, /失败/);
   assert.ok(Object.keys(indexOf(state)).includes(`${day}/${old}`));
 });
 
@@ -748,7 +739,6 @@ test('兼容 0.2.0 的 published.json（键带作者、值是内容 hash）：�
   page.tell({ type: 'withdraw' });
   await host.settle();
   assert.deepEqual(retracts(host).sort(), [[dayKind, `${id}/2026-11`], [todayKind, id]].sort());
-  assert.equal(page.last('status').notice, null, '没查全：不报已撤回');
   assert.equal(host.retractCalls.every(call => Object.keys(call).sort().join() === 'id,kind'), true);
 });
 
@@ -800,56 +790,96 @@ test('撤回没完成（排队、证书过期、出错）：保留本机索引�
   page.tell({ type: 'withdraw' });
   await host.settle();
   assert.deepEqual(Object.keys(indexOf(state)), keys);
-  assert.match(page.last('status').notice, /证书已过期.*排队/);
-  assert.equal(page.last('status').lastError, null);
   host.retractState = 'queued';
   page.tell({ type: 'withdraw' });
   await host.settle();
   assert.deepEqual(Object.keys(indexOf(state)), keys);
-  assert.match(page.last('status').notice, /已排队/);
   host.retractState = 'error';
   page.tell({ type: 'withdraw' });
   await host.settle();
   assert.deepEqual(Object.keys(indexOf(state)), keys);
-  assert.match(page.last('status').lastError, /撤回 .* 失败：网关拒绝了撤回/);
-  assert.equal(page.last('status').notice, null);
   host.retractState = null;
   page.tell({ type: 'withdraw' });
   await host.settle();
   assert.deepEqual(indexOf(state), {});
-  assert.equal(page.last('status').lastError, null);
-  assert.match(page.last('status').notice, /已撤回/);
 });
 
 // ——— 榜单 ———
 
-test('页面取榜单：本机用量、经网关按作者翻页读记录（沿 cursor）、不发名片查询、截断标记', async t => {
+// 本机桶按 person（这台后端的根身份）归属：当前身份与无身份（空字符串）的行算当前作者的，别的身份的行不算，也不进以它签名的记录。
+const OTHER = `ed25519:${'c'.repeat(64)}`;
+const tagged = (at, person, over = {}) => bucket(at, { person, service: 'coda://openai-responses/11111111-2222-3333-4444-555555555555', asked: 'gpt-5', served: null, model: undefined, input: 1000, output: 0, cacheRead: 0, cacheWrite: 0, ...over });
+
+const win = () => [startOfBucket(now) - 86_400_000, now + 1];
+const slotsTotal = spec => readTodayRecord({ id: spec.id, body: spec.body }).slots.reduce((n, slot) => n + slot.rows.reduce((m, row) => m + row.input + row.output + row.cacheRead + row.cacheWrite, 0), 0);
+
+test('目录里的记录：状态、本机用量（月块日归档与 48 小时曲线）、镜像，合起来是一份全集，每条都合协议', async t => {
+  freeze(t);
+  const state = mkdir(t), at = startOfBucket(now);
+  const host = fake({ state, usage: [bucket(at), bucket(Date.UTC(2026, 1, 3, 4))], records: [{ author: FRIEND, kind: todayKind, id: 'phone', version: 4, local: false, body: buildTodayBody([bucket(at)], { now }) }] });
+  activate(host.coda);
+  assert.equal(host.replaces, 0, '启动时不写，等首跳读完设置和好友');
+  await host.boot();
+  const sourceId = sourceIdOf(state);
+  assert.equal(host.replaces >= 1, true);
+  assert.deepEqual(host.written.map(item => item.key).filter(key => !key.startsWith('mirror/')).sort(), ['state', `usage/${dayKind}/${sourceId}/2026-02`, `usage/${dayKind}/${sourceId}/2026-03`, `usage/${todayKind}/${sourceId}`].sort());
+  assert.deepEqual(host.state(), { record: 'state', share: true, syncState: 'synced', lastSyncAt: now, error: null, withdrawal: null, author: AUTHOR, friends: [FRIEND] });
+  const [archive] = host.usageRecords().filter(spec => spec.id === `${sourceId}/${monthOf(at)}`);
+  assert.deepEqual(archive, { record: 'usage', kind: dayKind, id: `${sourceId}/${monthOf(at)}`, author: AUTHOR, sourceId, legacy: [], body: buildArchiveBodies([bucket(at)])[monthOf(at)] });
+  assert.deepEqual(host.usageRecords().find(spec => spec.kind === todayKind).body, buildTodayBody([bucket(at)], { now }));
+  assert.deepEqual(host.mirrored(), [{ record: 'mirror', author: FRIEND, kind: todayKind, id: 'phone', version: 4, body: buildTodayBody([bucket(at)], { now }) }]);
+  // 记录是投影：重启后（新的模块实例）同样的状态给出同样的全集。
+  const before = host.written;
+  deactivate();
+  const again = fake({ state, usage: [bucket(at), bucket(Date.UTC(2026, 1, 3, 4))], records: host.records });
+  activate(again.coda);
+  await again.boot();
+  assert.deepEqual(again.written.map(item => item.key).sort(), before.map(item => item.key).sort());
+});
+
+test('只写当前作者与无身份的行：别的 person 的行不进本机用量记录，状态里的作者就是网关的', async t => {
+  freeze(t);
+  const state = mkdir(t), at = startOfBucket(now);
+  const host = fake({ state, usage: [tagged(at, AUTHOR), tagged(at, ''), tagged(at, OTHER, { input: 50_000 }), tagged(at, AUTHOR, { served: 'gpt-5-2025', input: 20 })] });
+  activate(host.coda);
+  await host.boot();
+  const { mine } = host.summary(...win());
+  assert.equal(mine.input, 2020, '自己的、无身份的算，别人的 50000 不算');
+  assert.deepEqual(mine.models.map(m => [m.model, m.input]), [['gpt-5', 2000], ['gpt-5-2025', 20]]);
+  assert.equal(slotsTotal(host.usageRecords().find(spec => spec.kind === todayKind)), 2020, '曲线也一样');
+});
+
+test('读不到身份（没装好友插件）：没有作者可归属，本机用量不按身份切，作者为 null', async t => {
+  freeze(t);
+  const state = mkdir(t), at = startOfBucket(now);
+  const host = fake({ state, usage: [tagged(at, AUTHOR), tagged(at, OTHER)] });
+  host.gateway = false;
+  activate(host.coda);
+  await host.boot();
+  assert.equal(host.summary(...win()).mine.input, 2000);
+  assert.deepEqual(host.usageRecords().map(spec => spec.author), [null, null]);
+});
+
+test('镜像：好友与自己别的设备的记录经网关按作者、按种类翻页读（沿 cursor），不发名片查询；本机自己的不镜像', async t => {
   freeze(t);
   const state = mkdir(t), at = startOfBucket(now), clock = new Date(at).toISOString().slice(11, 16), day = new Date(at).toISOString().slice(0, 10);
   const block = { blocks: { [clock]: { codex: { gpt: { input: 1000, output: 0, cacheRead: 0, cacheWrite: 0, turns: 4, reportedTurns: 4 } } } } };
   const host = fake({ state, usage: [bucket(at)], records: [
     ...['dev1', 'dev2', 'dev3'].map((dev, i) => ({ author: FRIEND, kind: usageKind, id: `${day}/${dev}`, version: i + 1, local: false, body: block })),
+    { author: AUTHOR, kind: dayKind, id: `tablet/${monthOf(at)}`, version: 1, local: false, body: buildArchiveBodies([bucket(at)])[monthOf(at)] },
   ] });
   host.friends = [{ node: 'n1', author: FRIEND, status: 'bound', note: '  备注 小明  ', profileName: '名片里的小明', title: '备注 小明' }];
   host.pageSize = 1;
   activate(host.coda);
-  const page = host.open();
-  page.tell({ type: 'board', range: 'today', id: 7 });
-  const board = await page.waitFor('board');
-  assert.equal(board.id, 7);
-  assert.equal(board.accord, true);
-  assert.equal(board.selfAuthor, AUTHOR);
-  assert.equal(board.friendCount, 1);
-  assert.deepEqual(board.people, [
-    { author: FRIEND, self: false, shared: true },
-    { author: AUTHOR, self: true, shared: true },
-  ]);
-  assert.equal(board.sources.filter(source => source.author === FRIEND).reduce((n, source) => n + source.totalTokens, 0), 3000, '三页都读到了');
-  assert.equal(board.sources.find(source => source.local).totalTokens, 116);
-  assert.ok(!('entries' in board), '不再另发一份按作者聚合的统计');
-  assert.deepEqual(board.truncated, { usage: false, friends: false });
-  assert.equal(board.syncState, 'disabled');
-  assert.equal(board.curve.at(-1).totalTokens + board.curve.at(-2).totalTokens, 116);
+  await host.boot();
+  const sourceId = sourceIdOf(state);
+  assert.deepEqual(host.mirrored().map(spec => [spec.author === FRIEND ? 'friend' : 'me', spec.kind, spec.id, spec.version]).sort(),
+    [['friend', usageKind, `${day}/dev1`, 1], ['friend', usageKind, `${day}/dev2`, 2], ['friend', usageKind, `${day}/dev3`, 3], ['me', dayKind, `tablet/${monthOf(at)}`, 1]].sort());
+  assert.ok(host.mirrored().every(spec => spec.record === 'mirror' && !spec.id.includes(sourceId)));
+  const { mine, board } = host.summary(...win());
+  assert.equal(mine.totalTokens, 116, '我：只有本机的用量记录');
+  assert.equal(board.entries.find(entry => !entry.self).totalTokens, 3000, '三页都读到了');
+  assert.equal(board.entries.find(entry => entry.self).totalTokens, 116 + 116, '本机 + 另一台');
   const usageQuery = host.calls.find(([kind]) => kind === 'coda/usage@1');
   assert.equal(usageQuery[1], 'buckets');
   assert.ok(usageQuery[2].limit <= 500);
@@ -863,33 +893,96 @@ test('页面取榜单：本机用量、经网关按作者翻页读记录（沿 c
   assert.ok(social.some(([, , input]) => input.kind === dayKind && input.author === AUTHOR), '自己的也读');
 });
 
-// 本机桶按 person（这台后端的根身份）归属：当前身份与无身份（空字符串）的行算当前作者的，别的身份的行不算，也不进以它签名的记录。
-const OTHER = `ed25519:${'c'.repeat(64)}`;
-const tagged = (at, person, over = {}) => bucket(at, { person, service: 'coda://openai-responses/11111111-2222-3333-4444-555555555555', asked: 'gpt-5', served: null, model: undefined, input: 1000, output: 0, cacheRead: 0, cacheWrite: 0, ...over });
-
-test('本机用量按身份归属：别的 person 的行不计入当前作者，页面概览、榜单与曲线都一样；无身份的行照算', async t => {
+test('镜像：好友网关有变化时（去抖后）重算；订阅时先给的现有记录不触发；没有网关就清空', async t => {
   freeze(t);
   const state = mkdir(t), at = startOfBucket(now);
-  const host = fake({ state, usage: [tagged(at, AUTHOR), tagged(at, ''), tagged(at, OTHER, { input: 50_000 }), tagged(at, AUTHOR, { served: 'gpt-5-2025', input: 20 })] });
+  const host = fake({ state, usage: [bucket(at)], records: [{ author: FRIEND, kind: todayKind, id: 'phone', version: 1, local: false, body: buildTodayBody([bucket(at)], { now }) }] });
   activate(host.coda);
-  const page = host.open();
-  page.tell({ type: 'board', range: 'today', id: 1 });
-  const board = await page.waitFor('board');
-  assert.equal(board.local.input, 2020, '页面概览：自己的、无身份的算，别人的 50000 不算');
-  assert.equal(board.sources.find(source => source.local).input, 2020);
-  assert.equal(board.curve.reduce((n, slot) => n + slot.input, 0), 2020);
-  assert.deepEqual(board.local.models.map(m => [m.model, m.input]), [['gpt-5', 2000], ['gpt-5-2025', 20]]);
+  await host.boot();
+  assert.equal(host.watches.length, 1, '订阅了好友网关');
+  assert.equal(held[MIRROR_DEBOUNCE_MS], undefined, '订阅时先给的 ADDED 不触发重算');
+  assert.equal(host.mirrored().length, 1);
+  host.records.push({ author: FRIEND, kind: todayKind, id: 'laptop', version: 1, local: false, body: buildTodayBody([bucket(at)], { now }) });
+  host.friends.push({ node: 'n2', author: OTHER, status: 'bound' });
+  await host.friendsChanged();
+  await host.friendsChanged();
+  assert.equal(host.mirrored().length, 1, '去抖：还没到时候');
+  await host.debounced();
+  assert.deepEqual(host.mirrored().map(spec => spec.id).sort(), ['laptop', 'phone']);
+  assert.deepEqual(host.state().friends, [FRIEND, OTHER]);
+  host.gateway = false;
+  await host.friendsChanged();
+  await host.debounced();
+  assert.deepEqual(host.mirrored(), []);
+  assert.deepEqual(host.state().friends, []);
+  assert.equal(host.state().syncState, 'no_gateway');
 });
 
-test('本机用量按身份归属：身份读不到时没有作者可归属，本机统计照常（不按身份切）', async t => {
+test('镜像：某个作者的某一种读失败，留着上一份；好友读失败，沿用上次的好友', async t => {
   freeze(t);
   const state = mkdir(t), at = startOfBucket(now);
-  const host = fake({ state, usage: [tagged(at, AUTHOR), tagged(at, OTHER)] });
-  host.gateway = false;
+  const host = fake({ state, usage: [bucket(at)], records: [{ author: FRIEND, kind: todayKind, id: 'phone', version: 1, local: false, body: buildTodayBody([bucket(at)], { now }) }] });
   activate(host.coda);
-  const page = host.open();
-  page.tell({ type: 'board', range: 'today', id: 1 });
-  assert.equal((await page.waitFor('board')).local.input, 2000);
+  await host.boot();
+  host.recordsError = new Error('记录读不出');
+  host.friendsError = new Error('好友读不出');
+  await host.sync();
+  assert.equal(host.mirrored().length, 1, '读失败不让镜像从目录里消失');
+  assert.deepEqual(host.state().friends, [FRIEND]);
+  assert.equal(host.usageRecords().length, 2, '本机用量照常');
+  assert.equal(host.state().syncState, 'synced');
+});
+
+test('镜像：每条写进目录后不超过 64 KiB，超限的好友记录跳过，别的照写（replace 是全有或全无）', async t => {
+  freeze(t);
+  const state = mkdir(t), at = startOfBucket(now);
+  const row = (n, i) => ({ a: `model-${i}-${'x'.repeat(100)}`, i: 'openai-responses', n: [n, 0, 0, 0, 1, 1] });
+  const days = count => ({ v: 3, days: { '2026-03-01': { codex: Array.from({ length: count }, (_, i) => row(i + 1, i)) } } });
+  const fits = days(380), huge = days(900);
+  assert.ok(Buffer.byteLength(JSON.stringify(fits)) < 60 * 1024 && Buffer.byteLength(JSON.stringify(fits)) > 40 * 1024, '一条接近记录体预算的好友记录');
+  assert.ok(Buffer.byteLength(JSON.stringify(huge)) > 64 * 1024);
+  const host = fake({ state, usage: [bucket(at)], records: [
+    { author: FRIEND, kind: dayKind, id: 'big/2026-03', version: 1, local: false, body: fits },
+    { author: FRIEND, kind: dayKind, id: 'huge/2026-03', version: 1, local: false, body: huge },
+    { author: FRIEND, kind: todayKind, id: 'phone', version: 1, local: false, body: buildTodayBody([bucket(at)], { now }) },
+  ] });
+  activate(host.coda);
+  await host.boot();
+  assert.deepEqual(host.mirrored().map(spec => spec.id).sort(), ['big/2026-03', 'phone']);
+  assert.equal(host.replaces >= 1, true, '没有因为一条超限而整份写不进去');
+});
+
+test('本机曲线每分钟重算一次，只查最近 48 小时的桶；日归档不动', async t => {
+  freeze(t);
+  const state = mkdir(t), at = startOfBucket(now);
+  const host = fake({ state, usage: [bucket(at)] });
+  activate(host.coda);
+  await host.boot();
+  const archive = host.usageRecords().find(spec => spec.kind === dayKind);
+  host.usage = [bucket(at, { input: 50 })];
+  host.calls.length = 0;
+  await host.curve();
+  const queries = host.calls.filter(([kind]) => kind === 'coda/usage@1');
+  assert.ok(queries.length >= 1 && queries.every(([, , input]) => input.from >= now - 48 * 3_600_000 && input.to <= now + 1), '只查最近 48 小时');
+  assert.equal(slotsTotal(host.usageRecords().find(spec => spec.kind === todayKind)), 156);
+  assert.deepEqual(host.usageRecords().find(spec => spec.kind === dayKind), archive, '日归档要等 10 分钟的同步');
+  await host.sync();
+  assert.equal(host.usageRecords().find(spec => spec.kind === dayKind).body.days[new Date(at).toISOString().slice(0, 10)].claude.reduce((n, row) => n + row.n[0], 0), 50);
+});
+
+test('set-share：开就同步，关就撤回；写进这台的状态；设置里再改以设置为准', async t => {
+  freeze(t);
+  const state = mkdir(t), at = startOfBucket(now);
+  const host = fake({ state, settings: { 'token-board.share': false }, usage: [bucket(at)] });
+  activate(host.coda);
+  await host.boot();
+  assert.deepEqual([host.state().share, host.state().syncState, host.published.length], [false, 'disabled', 0]);
+  assert.deepEqual(await host.setShare(true), { share: true });
+  assert.deepEqual([host.state().share, host.state().syncState, host.published.length], [true, 'synced', 2]);
+  assert.ok(host.state().lastSyncAt > 0);
+  assert.deepEqual(await host.setShare(false), { share: false });
+  assert.deepEqual([host.state().share, host.state().syncState, host.retractCalls.length], [false, 'disabled', 2]);
+  assert.equal(host.usageRecords().length, 2, '关了分享本机用量记录还在');
 });
 
 test('分享：以当前作者签名发布的记录只含它自己与无身份的行，别的 person 的行不进，记录里也没有服务引用', async t => {
@@ -920,11 +1013,8 @@ test('同型号映射：命中的本机行并入目标型号行，展开得到�
     viaMagpie(at, 'unlisted/model', { input: 1 })] });
   host.sameNames = NAMES;
   activate(host.coda);
-  const page = host.open();
-  page.tell({ type: 'board', range: 'today', id: 1 });
-  const board = await page.waitFor('board');
-  assert.deepEqual(modelsOf(board.local), [['deepseek-v4.1-flash', 130, ['group/ds-flash', 'opencode-go/deepseek-v4.1-flash']], ['real', 7, ['group/ds-flash']], ['unlisted/model', 1, ['unlisted/model']]]);
-  assert.deepEqual(modelsOf(board.sources.find(source => source.local)), modelsOf(board.local));
+  await host.boot();
+  assert.deepEqual(modelsOf(host.summary(...win()).mine), [['deepseek-v4.1-flash', 130, ['group/ds-flash', 'opencode-go/deepseek-v4.1-flash']], ['real', 7, ['group/ds-flash']], ['unlisted/model', 1, ['unlisted/model']]]);
   assert.equal(host.sameReads, 1, '一次取数读一次，不是每行一次');
 });
 
@@ -934,15 +1024,13 @@ test('同型号映射：服务不是本机 Magpie 插件提供的（别台的 Ma
   const host = fake({ state: mkdir(t), settings: { 'token-board.share': true }, usage: [viaMagpie(at, 'group/ds-flash'), viaMagpie(at, 'group/ds-flash', { service: foreign, input: 30 })] });
   host.sameNames = NAMES;
   activate(host.coda);
-  const page = await openAndSync(host);
-  page.tell({ type: 'board', range: 'today', id: 1 });
-  const board = await page.waitFor('board');
-  assert.deepEqual(modelsOf(board.local), [['group/ds-flash', 30, ['group/ds-flash']], ['deepseek-v4.1-flash', 100, ['group/ds-flash']]].sort((a, b) => b[1] - a[1]));
+  await openAndSync(host);
+  assert.deepEqual(modelsOf(host.summary(...win()).mine), [['group/ds-flash', 30, ['group/ds-flash']], ['deepseek-v4.1-flash', 100, ['group/ds-flash']]].sort((a, b) => b[1] - a[1]));
   const rows = host.published[0].body.days[new Date(at).toISOString().slice(0, 10)].claude;
   assert.deepEqual(rows.map(row => [row.n[0], row.u ?? null]).sort(), [[100, 'deepseek-v4.1-flash'], [30, null]]);
   host.sameServices = [];
-  page.tell({ type: 'board', range: 'today', id: 2 });
-  assert.deepEqual(modelsOf((await page.waitFor('board', page.got.length)).local), [['group/ds-flash', 130, ['group/ds-flash']]], '没有本机 Magpie 的服务：一个都不套');
+  await host.sync();
+  assert.deepEqual(modelsOf(host.summary(...win()).mine), [['group/ds-flash', 130, ['group/ds-flash']]], '没有本机 Magpie 的服务：一个都不套');
 });
 
 test('同型号映射：没装 Magpie 插件、映射为空、读映射失败，结果都和不映射相同；没有用得上的行时不去读', async t => {
@@ -952,31 +1040,28 @@ test('同型号映射：没装 Magpie 插件、映射为空、读映射失败，
     const host = fake({ state: mkdir(t), usage });
     setup(host);
     activate(host.coda);
-    const page = host.open();
-    page.tell({ type: 'board', range: 'today', id: 1 });
-    const board = await page.waitFor('board');
+    await host.boot();
+    const mine = host.summary(...win()).mine;
     deactivate();
-    return { board, host };
+    return { mine, host };
   };
-  const plain = (await read(() => {})).board.local;
+  const plain = (await read(() => {})).mine;
   assert.deepEqual(modelsOf(plain), [['group/ds-flash', 100, ['group/ds-flash']], ['opencode-go/deepseek-v4.1-flash', 30, ['opencode-go/deepseek-v4.1-flash']]]);
   for (const names of [{}, new Error('timeout'), { 'nothing/here': 'x' }]) {
-    const { board, host } = await read(h => { h.sameNames = names; });
-    assert.deepEqual(board.local, plain);
-    assert.deepEqual(board.errors, []);
+    const { mine, host } = await read(h => { h.sameNames = names; });
+    assert.deepEqual(mine, { ...plain, machines: mine.machines });
     assert.equal(host.sameReads, 1);
+    assert.equal(host.state().error, null);
   }
   const host = fake({ state: mkdir(t), usage: [bucket(at), tagged(at, AUTHOR, { served: 'real' })] });
   host.sameNames = NAMES;
   activate(host.coda);
-  const page = host.open();
-  page.tell({ type: 'board', range: 'today', id: 1 });
-  await page.waitFor('board');
+  await host.boot();
   assert.equal(host.sameReads, 0);
   assert.ok(!host.touched.has(SAME), '没有带服务又没有 served 的行，不去找 Magpie 插件');
 });
 
-test('同型号映射：发布的记录各行带归并名 u，asked 与接口种类照旧；没有归并的行不带；读回来的聚合与本机一致', async t => {
+test('同型号映射：发布的记录各行带归并名 u，asked 与接口种类照旧；没有归并的行不带；别台读到后直接用', async t => {
   freeze(t);
   const at = startOfBucket(now), state = mkdir(t);
   const host = fake({ state, settings: { 'token-board.share': true }, usage: [viaMagpie(at, 'group/ds-flash'), viaMagpie(at, 'opencode-go/deepseek-v4.1-flash', { input: 30 }), viaMagpie(at, 'group/ds-flash', { served: 'real', input: 7 }), viaMagpie(at, 'plain', { input: 1 })] });
@@ -988,14 +1073,13 @@ test('同型号映射：发布的记录各行带归并名 u，asked 与接口种
     assert.deepEqual(rows.map(row => [row.a, row.s ?? null, row.u ?? null]).sort(), [['group/ds-flash', null, 'deepseek-v4.1-flash'], ['group/ds-flash', 'real', null], ['opencode-go/deepseek-v4.1-flash', null, 'deepseek-v4.1-flash'], ['plain', null, null]]);
   }
   assert.ok(!JSON.stringify(host.published).includes('coda://'));
+  assert.deepEqual(host.usageRecords().map(spec => spec.body), [day.body, today.body], '本机用量记录的记录体就是发出去的那份');
   // 另一台读到这份记录：不装 Magpie 插件也直接用 u，并入同一个型号行，展开仍是原请求项。
+  deactivate();
   const reader = fake({ state: mkdir(t), records: [{ author: AUTHOR, kind: dayKind, id: day.id, version: 1, local: false, body: day.body }, { author: AUTHOR, kind: todayKind, id: today.id, version: 1, local: false, body: today.body }] });
-  reader.author = AUTHOR;
   activate(reader.coda);
-  const page = reader.open();
-  page.tell({ type: 'board', range: 'today', id: 1 });
-  const board = await page.waitFor('board');
-  const theirs = board.sources.find(source => !source.local);
+  await reader.boot();
+  const theirs = reader.summary(...win()).board.entries.find(entry => entry.self);
   assert.deepEqual(modelsOf(theirs), [['deepseek-v4.1-flash', 130, ['group/ds-flash', 'opencode-go/deepseek-v4.1-flash']], ['real', 7, ['group/ds-flash']], ['plain', 1, ['plain']]]);
   assert.equal(reader.sameReads, 0);
 });
@@ -1008,76 +1092,10 @@ test('同型号映射：好友记录里的行用好友自己的归并名，不�
   const host = fake({ state: mkdir(t), usage: [viaMagpie(at, 'group/ds-flash')], records: [record('friend-a', [line({ u: 'their-ds' }, 10), line({}, 5)]), record('friend-b', [line({}, 3)])] });
   host.sameNames = NAMES;
   activate(host.coda);
-  const page = host.open();
-  page.tell({ type: 'board', range: 'today', id: 1 });
-  const board = await page.waitFor('board');
-  assert.deepEqual(modelsOf(board.local), [['deepseek-v4.1-flash', 100, ['group/ds-flash']]]);
-  const friend = board.sources.filter(source => source.author === FRIEND);
-  assert.deepEqual(friend.map(source => modelsOf(source)).flat().sort(), [['group/ds-flash', 3, ['group/ds-flash']], ['group/ds-flash', 5, ['group/ds-flash']], ['their-ds', 10, ['group/ds-flash']]].sort());
-});
-
-test('网关的 friends 带 truncated 也不影响榜单：榜单不再读它', async t => {
-  const state = mkdir(t), at = startOfBucket(now);
-  const host = fake({ state, usage: [bucket(at)] });
-  host.friendsTruncated = true;
-  activate(host.coda);
-  const page = host.open();
-  page.tell({ type: 'board', range: 'today', id: 1 });
-  const board = await page.waitFor('board');
-  assert.deepEqual(board.truncated, { usage: false, friends: false });
-  assert.deepEqual(board.errors, []);
-  assert.equal(board.friendCount, 1);
-});
-
-test('翻页保护：cursor 重复不死循环，页数封顶，标记 truncated；只记一条提示，不拖垮榜单', async t => {
-  freeze(t);
-  const state = mkdir(t), at = startOfBucket(now), day = new Date(at).toISOString().slice(0, 10);
-  const host = fake({ state, usage: [bucket(at)], records: [{ author: FRIEND, kind: usageKind, id: `${day}/dev1`, version: 1, local: false, body: { blocks: {} } }] });
-  activate(host.coda);
-  const base = host.coda.query;
-  let loops = 0;
-  host.coda.query = async (ref, operation, input) => {
-    if (ref.kind === SOCIAL && operation === 'records' && input.kind === todayKind && input.author === FRIEND) { loops += 1; return { records: [], truncated: true, nextCursor: 'same' }; }
-    if (ref.kind === SOCIAL && operation === 'records' && input.kind === dayKind && input.author === FRIEND) { loops += 1; return { records: [], truncated: true, nextCursor: `c${loops}` }; }
-    return base(ref, operation, input);
-  };
-  const page = host.open();
-  page.tell({ type: 'board', range: 'today', id: 1 });
-  const board = await page.waitFor('board');
-  assert.equal(board.truncated.friends, true);
-  assert.ok(loops <= 3 + 50, `翻页有上限，实际 ${loops}`);
-  assert.equal(board.local.totalTokens, 116);
-  assert.deepEqual(board.errors, []);
-});
-
-test('读用量失败不拖垮页面；未知范围按设置里的；坏消息被忽略', async t => {
-  const host = fake({ state: mkdir(t) });
-  host.coda.query = async () => { throw new Error('boom'); };
-  activate(host.coda);
-  const page = host.open();
-  page.tell({ type: 'board', range: 'nonsense', id: 1 });
-  const board = await page.waitFor('board');
-  assert.equal(board.range, '7d');
-  assert.ok(board.errors.some(e => e.includes('boom')));
-  assert.equal(board.local, null, '没读到本机用量不能当成没有用量');
-  assert.deepEqual(board.sources, [], '也不交出一份零值的本机来源');
-  for (const bad of [null, 5, 'x', {}, { type: 'unknown' }]) page.tell(bad);
-  await host.settle();
-  assert.equal(page.got.filter(m => m.type === 'error').length, 0);
-});
-
-test('榜单回包超过宿主消息上限：回一个送得到的失败（带请求标识），不发 board', async t => {
-  freeze(t);
-  const at = startOfBucket(now), host = fake({ state: mkdir(t), usage: Array.from({ length: 1500 }, (_, i) => bucket(at, { model: `model-${i}-${'x'.repeat(40)}` })) });
-  activate(host.coda);
-  const page = host.open();
-  page.tell({ type: 'board', range: 'today', id: 9 });
-  const failure = await page.waitFor('error');
-  assert.deepEqual([failure.request, failure.id], ['board', 9]);
-  assert.ok(failure.message.includes('超过宿主'));
-  assert.equal(page.last('board'), undefined);
-  page.tell({ type: 'board', range: 'today', id: 10 });
-  assert.equal((await page.waitFor('error', page.got.length)).id, 10);
+  await host.boot();
+  const { mine, board } = host.summary(...win());
+  assert.deepEqual(modelsOf(mine), [['deepseek-v4.1-flash', 100, ['group/ds-flash']]]);
+  assert.deepEqual(modelsOf(board.entries.find(entry => !entry.self)), [['group/ds-flash', 8, ['group/ds-flash']], ['their-ds', 10, ['group/ds-flash']]].sort((a, b) => b[1] - a[1]));
 });
 
 test('deactivate 后首跳和定时器不再运行', async t => {
@@ -1123,56 +1141,23 @@ test('默认开启分享：首跳 5 秒后发布，之后每 10 分钟查一次�
   assert.ok(start < Date.now());
 });
 
-test('定时同步让状态变了（证书过期、续签），已经打开的页面收到推送，不用等刷新', async t => {
+test('定时同步让状态变了（证书过期、续签），状态记录跟着变，不用等页面来问', async t => {
   const state = mkdir(t), { drain } = timed(t);
   const host = fake({ state, settings: { 'token-board.share': true }, usage: [bucket(Date.UTC(2026, 10, 20, 10, 0))] });
   activate(host.coda);
-  const page = host.open();
   mock.timers.tick(5_000);
   await drain();
-  assert.equal(page.last('status').syncState, 'synced');
+  assert.equal(host.state().syncState, 'synced');
   host.usage = [bucket(Date.UTC(2026, 10, 20, 10, 0), { output: 6 })];
   host.certState = 'needs_cert';
-  const before = page.got.length;
   mock.timers.tick(10 * 60_000);
   await drain();
-  assert.equal(page.got.length - before, 1, '只推了一次状态');
-  assert.equal(page.last('status').syncState, 'needs_cert');
+  assert.equal(host.state().syncState, 'needs_cert');
   host.certState = 'active';
   mock.timers.tick(10 * 60_000);
   await drain();
-  assert.equal(page.last('status').syncState, 'synced');
-  const settled = page.got.length;
-  mock.timers.tick(10 * 60_000);
-  await drain();
-  assert.equal(page.got.length, settled, '状态没变就不推');
-});
-
-test('好友查询失败时统计与曲线照常，只记一条提示；记录读不出时自己的统计还在', async t => {
-  freeze(t);
-  const state = mkdir(t), host = fake({ state, settings: { 'token-board.share': true }, usage: [bucket(startOfBucket(now))] });
-  activate(host.coda);
-  const page = host.open();
-  page.tell({ type: 'hello' });
-  await page.waitFor('status');
-  const ask = async id => { const n = page.got.length; page.tell({ type: 'board', range: 'today', id }); return page.waitFor('board', n); };
-  assert.equal((await ask(1)).syncState, 'pending', '还没发布过：既不是 synced 也不是 no_identity');
-  host.friendsError = new Error('好友读不出');
-  const first = await ask(2);
-  assert.equal(first.local.totalTokens, 116);
-  assert.equal(first.curve.reduce((n, slot) => n + slot.totalTokens, 0), 116);
-  assert.ok(first.errors.some(e => e.includes('好友读不出')));
-  host.friendsError = null;
-  host.recordsError = new Error('记录读不出');
-  const second = await ask(3);
-  assert.equal(second.local.totalTokens, 116);
-  assert.equal(second.curve.reduce((n, slot) => n + slot.totalTokens, 0), 116);
-  assert.ok(second.errors.some(e => e.includes('好友')));
-  assert.equal(second.sources.find(source => source.local).totalTokens, 116);
-  host.recordsError = null;
-  page.tell({ type: 'sync' });
-  await host.settle();
-  assert.equal(page.last('status').syncState, 'synced');
+  assert.equal(host.state().syncState, 'synced');
+  assert.ok(host.state().lastSyncAt > 0);
 });
 
 test('已发布索引的键带作者：24 小时证书换了根作者，新作者的记录会全量重发', async t => {
@@ -1193,49 +1178,37 @@ test('已发布索引的键带作者：24 小时证书换了根作者，新作�
   assert.deepEqual(keys.map(key => key.slice(0, AUTHOR.length)).sort(), [AUTHOR, AUTHOR, other, other]);
 });
 
-test('board() 与 status() 共用同一套 syncState：已同步后网关消失、切换作者、关闭再开启分享，两边始终一致', async t => {
+test('状态记录的 syncState：已同步后网关消失、切换作者、关闭再开启分享，都如实跟着变；换了作者要重新同步一次才算 synced', async t => {
   freeze(t);
   const state = mkdir(t), other = `ed25519:${'c'.repeat(64)}`;
   const host = fake({ state, settings: { 'token-board.share': true }, usage: [bucket(startOfBucket(now))] });
   activate(host.coda);
-  const page = host.open();
-  const both = async () => {
-    const n = page.got.length;
-    page.tell({ type: 'hello' });
-    const status = await page.waitFor('status', n);
-    page.tell({ type: 'board', range: 'today', id: n + 1 });
-    const board = await page.waitFor('board', n);
-    assert.equal(status.syncState, board.syncState);
-    return board.syncState;
-  };
-  assert.equal(await both(), 'pending');
-  page.tell({ type: 'sync' });
-  await host.settle();
-  assert.equal(await both(), 'synced');
+  const seen = () => [host.state().syncState, host.state().author];
+  const reread = async () => { await host.friendsChanged(); await host.debounced(); };
+  await host.boot();
+  assert.deepEqual(seen(), ['synced', AUTHOR]);
   host.gateway = false;
-  assert.equal(await both(), 'no_gateway');
+  await host.sync();
+  assert.deepEqual(seen(), ['no_gateway', null]);
   host.gateway = true;
-  assert.equal(await both(), 'pending', '网关回来，要重新发布一次才算同步');
-  page.tell({ type: 'sync' });
-  await host.settle();
-  assert.equal(await both(), 'synced');
+  await reread();
+  assert.deepEqual(seen(), ['pending', AUTHOR], '网关回来，要重新发布一次才算同步');
+  await host.sync();
+  assert.deepEqual(seen(), ['synced', AUTHOR]);
   host.author = other;
-  assert.equal(await both(), 'pending', '切了作者：不沿用旧作者的 synced');
-  page.tell({ type: 'sync' });
-  await host.settle();
-  assert.equal(await both(), 'synced');
+  await reread();
+  assert.deepEqual(seen(), ['pending', other], '切了作者：不沿用旧作者的 synced');
+  await host.sync();
+  assert.deepEqual(seen(), ['synced', other]);
   // 关掉再开：旧的 synced 作废，开启后这次没发布成功就不是 synced。
-  page.tell({ type: 'set-share', on: false });
-  await host.settle();
-  assert.equal(await both(), 'disabled');
+  await host.setShare(false);
+  assert.equal(host.state().syncState, 'disabled');
   host.certState = 'needs_cert';
-  page.tell({ type: 'set-share', on: true });
-  await host.settle();
-  assert.equal(await both(), 'needs_cert');
+  await host.setShare(true);
+  assert.equal(host.state().syncState, 'needs_cert');
   host.certState = 'active';
-  page.tell({ type: 'sync' });
-  await host.settle();
-  assert.equal(await both(), 'synced');
+  await host.sync();
+  assert.equal(host.state().syncState, 'synced');
 });
 
 test('作者 A → B → A：中间没同步过就不恢复旧的 synced', async t => {
@@ -1243,41 +1216,15 @@ test('作者 A → B → A：中间没同步过就不恢复旧的 synced', async
   const state = mkdir(t), other = `ed25519:${'c'.repeat(64)}`;
   const host = fake({ state, settings: { 'token-board.share': true }, usage: [bucket(startOfBucket(now))] });
   activate(host.coda);
-  const page = host.open();
-  const ask = async () => { const n = page.got.length; page.tell({ type: 'hello' }); const status = await page.waitFor('status', n); page.tell({ type: 'board', range: 'today', id: n + 1 }); return [status.syncState, (await page.waitFor('board', n)).syncState]; };
-  await ask();
-  page.tell({ type: 'sync' });
-  await host.settle();
-  assert.deepEqual(await ask(), ['synced', 'synced']);
+  const reread = async () => { await host.friendsChanged(); await host.debounced(); return host.state().syncState; };
+  await host.boot();
+  assert.equal(host.state().syncState, 'synced');
   host.author = other;
-  assert.deepEqual(await ask(), ['pending', 'pending']);
+  assert.equal(await reread(), 'pending');
   host.author = AUTHOR;
-  assert.deepEqual(await ask(), ['pending', 'pending'], '回到 A 也要重新同步一次');
-  page.tell({ type: 'sync' });
-  await host.settle();
-  assert.deepEqual(await ask(), ['synced', 'synced']);
-});
-
-test('榜单读到状态变了（好友网关没了）会把最新状态推给页面，不用等 hello', async t => {
-  freeze(t);
-  const state = mkdir(t), host = fake({ state, settings: { 'token-board.share': true }, usage: [bucket(startOfBucket(now))] });
-  activate(host.coda);
-  const page = host.open();
-  page.tell({ type: 'hello' });
-  await page.waitFor('status');
-  page.tell({ type: 'sync' });
-  await host.settle();
-  assert.equal(page.last('status').syncState, 'synced');
-  host.gateway = false;
-  const n = page.got.length;
-  page.tell({ type: 'board', range: 'today', id: 1 });
-  const board = await page.waitFor('board', n);
-  assert.equal(board.syncState, 'no_gateway');
-  assert.equal(page.last('status').syncState, 'no_gateway', '页面上的 status 已跟着更新');
-  const pushed = page.got.length;
-  page.tell({ type: 'board', range: 'today', id: 2 });
-  await page.waitFor('board', pushed);
-  assert.deepEqual(page.got.slice(pushed).map(m => m.type), ['board'], '状态没变就不重复推');
+  assert.equal(await reread(), 'pending', '回到 A 也要重新同步一次');
+  await host.sync();
+  assert.equal(host.state().syncState, 'synced');
 });
 
 // ——— 不直接访问 coda/accord@1 ———
@@ -1287,16 +1234,15 @@ test('零直接访问 coda/accord@1：整套发布、榜单、撤回流程只碰
   const state = mkdir(t), host = fake({ state, settings: { 'token-board.share': true }, usage: [bucket(startOfBucket(now))] });
   host.machine = 'machine-1';
   activate(host.coda);
-  const page = await openAndSync(host);
-  page.tell({ type: 'board', range: '7d', id: 1 });
-  await page.waitFor('board');
-  page.tell({ type: 'withdraw' });
-  await host.settle();
+  await openAndSync(host);
+  await host.friendsChanged();
+  await host.debounced();
+  await host.setShare(false);
   assert.deepEqual([...host.touched].sort(), ['coda/machine@1', 'coda/usage@1', SOCIAL]);
   const dir = new URL('../../../plugins/token-board/', import.meta.url);
   for (const file of ['main.mjs', 'lib/usage.mjs', 'view/app.mjs', 'package.json']) assert.ok(!readFileSync(new URL(file, dir), 'utf8').includes('coda/accord@1'), file);
   const manifest = JSON.parse(readFileSync(new URL('package.json', dir), 'utf8'));
-  assert.deepEqual(manifest.uses, { 'coda/usage@1': ['read'], 'coda/machine@1': ['read'] });
+  assert.deepEqual(manifest.uses, { 'coda/usage@1': ['read'], 'coda/machine@1': ['read'], [USAGE_PROTOCOL]: ['read', 'share'] });
   assert.deepEqual(manifest.optionalUses, { [SOCIAL]: ['read', 'publish'], [SAME]: ['read'] });
   assert.equal(manifest.extensionDependencies, undefined);
 });
@@ -1315,16 +1261,13 @@ test('统一汇总：旧块 / legacy 的撤回返回 queued、needs_cert 时整�
   for (let d = 1; d <= 20; d++) for (let m = 0; m < 50; m++) big.push(bucket(Date.UTC(2026, 10, d, 1), { model: `model-${m}-${'x'.repeat(30)}` }));
   const host = fake({ state, settings: { 'token-board.share': true }, usage: big });
   activate(host.coda);
-  const page = host.open();
-  page.tell({ type: 'hello' });
-  await page.waitFor('status');
-  const sync = async () => { mock.timers.tick(60_000); page.tell({ type: 'sync' }); await host.settle(); return page.last('status'); };
+  let first = true;
+  const sync = async () => { mock.timers.tick(60_000); if (first) { first = false; await host.boot(); } else await host.sync(); return host.status(); };
   for (const retractState of ['queued', 'needs_cert']) {
     host.retractState = retractState;
     const status = await sync();
     assert.equal(status.syncState, retractState, '旧块没撤成，不报 synced');
     assert.equal(status.lastSyncAt, null);
-    if (retractState === 'queued') assert.match(status.notice, /好友网关排队/);
     assert.ok(Object.keys(indexOf(state)).some(key => key.endsWith('machine-1/2026-11')), '旧块的键留着');
   }
   host.retractState = null;
@@ -1338,20 +1281,15 @@ test('统一汇总：旧块 / legacy 的撤回返回 queued、needs_cert 时整�
   const second = fake({ state, settings: { 'token-board.share': true }, usage: big, records: [{ author: AUTHOR, kind: todayKind, id: old, version: 1, local: true, body: buildTodayBody(big, { now: at }) }] });
   second.retractState = 'queued';
   activate(second.coda);
-  const again = second.open();
-  again.tell({ type: 'hello' });
-  await again.waitFor('status');
   mock.timers.tick(60_000);
-  again.tell({ type: 'sync' });
-  await second.settle();
-  assert.equal(again.last('status').syncState, 'queued');
-  assert.equal(again.last('status').lastSyncAt, null, '新实例还没同步成功过');
+  await second.boot();
+  assert.equal(second.status().syncState, 'queued');
+  assert.equal(second.status().lastSyncAt, null, '新实例还没同步成功过');
   second.retractState = null;
   mock.timers.tick(60_000);
-  again.tell({ type: 'sync' });
-  await second.settle();
-  assert.equal(again.last('status').syncState, 'synced');
-  assert.ok(again.last('status').lastSyncAt > 0);
+  await second.sync();
+  assert.equal(second.status().syncState, 'synced');
+  assert.ok(second.status().lastSyncAt > 0);
 });
 
 test('统一汇总：发布返回 queued 时 lastSyncAt 不被刷新', async t => {
@@ -1368,7 +1306,6 @@ test('统一汇总：发布返回 queued 时 lastSyncAt 不被刷新', async t =
   await host.settle();
   assert.equal(page.last('status').syncState, 'queued');
   assert.equal(page.last('status').lastSyncAt, first);
-  assert.match(page.last('status').notice, /好友网关排队/);
 });
 
 test('部分撤回：两条目标，一条 retracted、另一条 needs_cert / error，本机索引两条键都保留；全部完成后才清', async t => {
@@ -1411,11 +1348,10 @@ test('作者切换：列表读到 A、发布时网关以 B 签名：记录登记
   assert.ok(!keys.includes(`${AUTHOR}:${dayKind}:machine-1/${month}`) && !keys.includes(`${AUTHOR}:${todayKind}:machine-1`), '没有登记在 A 名下');
   assert.notEqual(page.last('status').syncState, 'synced');
   assert.equal(page.last('status').lastSyncAt, null);
-  assert.equal(page.last('status').notice, '身份已切换，本轮同步尚未确认', '不显示「已同步」');
   host.author = other;
   host.signedAs = null;
-  page.tell({ type: 'hello' });
-  await page.waitFor('status', page.got.length - 1);
+  await host.friendsChanged();
+  await host.debounced();
   assert.equal(page.last('status').syncState, 'pending', '新作者要重新同步一次才算 synced');
 });
 
@@ -1462,4 +1398,151 @@ test('集成（真 gateway.mjs）：无身份开启分享同步 → 手动撤回
   await host.settle();
   assert.equal((await handlers.outbox({})).pendingCount, 0);
   assert.equal(accord.publishes.length, 0, '恢复身份冲洗后，已撤回的用量没有泄露出去');
+});
+
+// ——— 关分享后撤回没完成：写进状态记录，分享关着也留着 ———
+
+test('关分享时撤回没完成：状态记录写明原因（网关不可用、撤回出错、等续签），分享关着也留着；撤完了才清；再开分享也清', async t => {
+  freeze(t);
+  const state = mkdir(t), host = fake({ state, settings: { 'token-board.share': true }, usage: [bucket(startOfBucket(now))] });
+  activate(host.coda);
+  await host.boot();
+  assert.equal(host.state().withdrawal, null);
+  // 网关不可用：撤不了，索引留着。
+  host.gateway = false;
+  await host.setShare(false);
+  assert.deepEqual([host.state().share, host.state().error], [false, null]);
+  assert.deepEqual(host.state().withdrawal, { state: 'error', error: '未安装或未启用好友插件，无法撤回好友可见记录' });
+  await host.sync();
+  assert.equal(host.state().withdrawal.state, 'error', '定时同步再撤一次，还是撤不了，仍写着');
+  // 网关回来，但撤回出错。
+  host.gateway = true;
+  host.retractState = 'error';
+  await host.sync();
+  assert.equal(host.state().withdrawal.state, 'error');
+  assert.match(host.state().withdrawal.error, /撤回 .* 失败：网关拒绝了撤回/);
+  // 代签证书过期：网关把撤回排了队。
+  host.retractState = 'needs_cert';
+  await host.sync();
+  assert.deepEqual(host.state().withdrawal, { state: 'needs_cert', error: null });
+  assert.equal(host.state().syncState, 'disabled');
+  // 续签后下一次同步撤完，清掉。
+  host.retractState = null;
+  await host.sync();
+  assert.equal(host.state().withdrawal, null);
+  assert.deepEqual(indexOf(state), {});
+  // 撤没完成时又打开分享：不再是「没撤完」。
+  host.retractState = 'queued';
+  await host.setShare(true);
+  host.publishStates = {};
+  await host.setShare(false);
+  assert.deepEqual(host.state().withdrawal, { state: 'queued', error: null });
+  host.retractState = null;
+  await host.setShare(true);
+  assert.equal(host.state().withdrawal, null);
+});
+
+test('关分享时没有发布过什么、又没有好友网关：没有要撤的，不写撤回没完成', async t => {
+  freeze(t);
+  const host = fake({ state: mkdir(t), settings: { 'token-board.share': true }, usage: [bucket(startOfBucket(now))] });
+  host.gateway = false;
+  activate(host.coda);
+  await host.boot();
+  await host.setShare(false);
+  assert.equal(host.state().withdrawal, null);
+});
+
+// ——— 读失败不拿空集合覆盖目录里的上一份 ———
+
+// 先跑一轮，得到目录里留着的记录（本机用量、状态、镜像），再停掉当作重启。
+async function previousRun(t, { usage = [bucket(startOfBucket(now))] } = {}) {
+  const state = mkdir(t), records = [{ author: FRIEND, kind: todayKind, id: 'phone', version: 4, local: false, body: buildTodayBody([bucket(startOfBucket(now))], { now }) }];
+  const first = fake({ state, usage, records });
+  activate(first.coda);
+  await first.boot();
+  const previous = first.written;
+  assert.equal(first.mirrored().length, 1);
+  deactivate();
+  return { state, records, previous };
+}
+const failUsage = host => { const base = host.coda.query; host.coda.query = async (ref, ...rest) => { if (ref.kind === 'coda/usage@1' && host.usageFails) throw new Error('boom'); return base(ref, ...rest); }; };
+
+test('重启后首次读用量失败：目录里旧的本机用量记录留着，镜像与好友照常；下一次成功后正常替换', async t => {
+  freeze(t);
+  const { state, records, previous } = await previousRun(t);
+  const host = fake({ state, records, previous, usage: [bucket(startOfBucket(now), { input: 77 })] });
+  host.usageFails = true;
+  failUsage(host);
+  activate(host.coda);
+  await host.boot();
+  assert.deepEqual(host.usageRecords(), previous.map(item => item.spec).filter(spec => spec.record === 'usage'), '没有拿空集合覆盖');
+  assert.equal(host.mirrored().length, 1);
+  assert.equal(host.state().syncState, 'error');
+  host.usageFails = false;
+  await host.sync();
+  assert.notDeepEqual(host.usageRecords(), previous.map(item => item.spec).filter(spec => spec.record === 'usage'));
+  assert.equal(host.summary(...win()).mine.input, 77, '成功的这次换成新的');
+  assert.equal(host.state().syncState, 'synced');
+});
+
+test('重启后曲线这一分钟读用量失败：留着旧曲线，日归档也不动', async t => {
+  freeze(t);
+  const { state, records, previous } = await previousRun(t);
+  const host = fake({ state, records, previous, usage: [bucket(startOfBucket(now), { input: 77 })] });
+  host.usageFails = true;
+  failUsage(host);
+  activate(host.coda);
+  await host.boot();
+  await host.curve();
+  assert.deepEqual(host.usageRecords(), previous.map(item => item.spec).filter(spec => spec.record === 'usage'));
+  host.usageFails = false;
+  await host.curve();
+  assert.equal(slotsTotal(host.usageRecords().find(spec => spec.kind === todayKind)), 183);
+});
+
+test('重启后首次读好友失败（friends 与 records 查询都抛错）：旧镜像和好友列表留着；下一次成功后正常替换', async t => {
+  freeze(t);
+  const { state, records, previous } = await previousRun(t);
+  const host = fake({ state, records, previous, usage: [bucket(startOfBucket(now))] });
+  host.friendsError = new Error('好友读不出');
+  host.recordsError = new Error('记录读不出');
+  activate(host.coda);
+  await host.boot();
+  assert.deepEqual(host.mirrored(), previous.map(item => item.spec).filter(spec => spec.record === 'mirror'));
+  assert.deepEqual(host.state().friends, [FRIEND]);
+  host.friendsError = null;
+  host.recordsError = null;
+  records.length = 0;
+  host.friends = [{ node: 'n2', author: OTHER, status: 'bound' }];
+  await host.sync();
+  assert.deepEqual(host.mirrored(), [], '成功读到的换成新的：好友那边已经没有记录了');
+  assert.deepEqual(host.state().friends, [OTHER]);
+});
+
+test('重启后好友插件还没就绪（service_unavailable）：旧镜像和好友列表留着；只有确认没有好友网关（not_found、forbidden）才清掉', async t => {
+  freeze(t);
+  const { state, records, previous } = await previousRun(t);
+  const host = fake({ state, records, previous, usage: [bucket(startOfBucket(now))] });
+  host.listError = gone('service_unavailable');
+  activate(host.coda);
+  await host.boot();
+  assert.deepEqual(host.mirrored(), previous.map(item => item.spec).filter(spec => spec.record === 'mirror'));
+  assert.deepEqual(host.state().friends, [FRIEND]);
+  assert.equal(host.state().syncState, 'no_gateway');
+  await host.friendsChanged();
+  await host.debounced();
+  assert.equal(host.mirrored().length, 1, '好友变动重算时也一样');
+  host.listError = null;
+  await host.sync();
+  assert.equal(host.mirrored().length, 1);
+  assert.equal(host.state().syncState, 'synced');
+  for (const code of ['not_found', 'forbidden']) {
+    host.listError = gone(code);
+    await host.sync();
+    assert.deepEqual(host.mirrored(), [], code);
+    assert.deepEqual(host.state().friends, [], code);
+    host.listError = null;
+    await host.sync();
+    assert.equal(host.mirrored().length, 1, '回来后重新读到');
+  }
 });

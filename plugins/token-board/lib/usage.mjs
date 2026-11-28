@@ -262,6 +262,8 @@ const WITHDRAWN = {
 };
 export const withdrawnBody = kind => structuredClone(WITHDRAWN[kind]);
 export const isWithdrawn = (kind, body) => JSON.stringify(body) === JSON.stringify(WITHDRAWN[kind]);
+/** 这条记录（kind、id）是哪台机器（sourceId）发布的。 */
+export const sourceOf = (kind, id) => (kind === TODAY_CURVE_KIND ? id : id.split('/')[kind === DAY_ARCHIVE_KIND ? 0 : 1]);
 /** 这条记录（kind、id）是不是 sourceId 这台机器发布的。 */
 export function ownedBySource(kind, id, sourceId) {
   if (typeof id !== 'string') return false;
