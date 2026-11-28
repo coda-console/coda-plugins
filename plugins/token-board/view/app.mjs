@@ -96,7 +96,7 @@ function mine(total) {
     h('div', { class: 'big num' }, tokens(total.totalTokens), h('small', {}, 'Token')),
     h('div', { class: 'sub' }, `${count(total.turns)} 个回合`),
     stack(total),
-    h('div', { class: 'legend' }, PARTS.map(([key, label]) => h('div', {}, h('span', {}, h('i', { class: `c-${key}` }), label), h('b', { class: 'num' }, tokens(total[key]))))),
+    legend(total),
     modelList(total.models, total.totalTokens, 'local', showAll ? Infinity : TOP_MODELS));
   return h('section', {}, h('h2', {}, total.machines.length ? `我 · ${total.machines.join('、')}` : '我'), body);
 }
@@ -106,21 +106,37 @@ function stack(c) {
   return h('div', { class: 'stack' }, PARTS.map(([key]) => { const s = h('span', { class: `c-${key}` }); s.style.width = `${(c[key] / c.totalTokens) * 100}%`; return s; }));
 }
 
-// 型号行：只有一个请求项、它的 asked 就是型号名、又没有服务时不展开；否则点开列出请求项（asked、接口种类、Token、回合）。
+const legend = c => h('div', { class: 'legend' }, PARTS.map(([key, label]) => h('div', {}, h('span', {}, h('i', { class: `c-${key}` }), label), h('b', { class: 'num' }, tokens(c[key])))));
+
+// 型号行都能点开：回合、占比、缓存命中、四项 Token，按 Agent、设备（「我」且不止一台有用量）、请求来源（有区分价值时）拆开。
+// 请求来源：只有一个请求项、它的 asked 就是型号名、又没有服务时不列（和型号名同名，没有信息）。
 const hasItems = m => m.items.length > 1 || m.items.some(item => (item.asked ?? m.model) !== m.model || (item.api && item.api !== m.model));
-// 型号名、asked 是身份，原样存取；清洗只在显示时做。
+// 型号名、asked、Agent、机器名是身份或外来文字，原样存取；清洗只在显示时做。
 const shown = text => cleanText(text, 200) ?? '?';
+const percent = value => (value === 0 ? '0%' : value < 0.1 ? '<0.1%' : `${value.toFixed(1)}%`);
+const usedBy = c => `${tokens(c.totalTokens)} · ${count(c.turns)} 回合`;
+const section = (title, rows) => h('div', { class: 'sect' }, h('div', { class: 'sect-title' }, title), h('ul', { class: 'items' }, rows.map(([name, note, c]) => h('li', { class: 'bar-line' },
+  h('span', { class: 'truncate' }, name), note ? h('span', { class: 'secondary truncate' }, note) : null, h('span', { class: 'spacer' }), h('span', { class: 'num secondary' }, usedBy(c))))));
+function modelDetail(m, total) {
+  const cacheBase = m.input + m.cacheRead + m.cacheWrite;
+  const facts = [`${count(m.turns)} 回合`, total > 0 ? `占 ${percent((m.totalTokens / total) * 100)}` : null, m.cacheRead > 0 && cacheBase > 0 ? `缓存命中 ${percent((m.cacheRead / cacheBase) * 100)}` : null].filter(Boolean);
+  const agents = (m.agents ?? []).filter(a => a.agent != null && a.agent !== '_');
+  const direct = m.items.some(item => item.api);
+  return h('div', { class: 'mdetail' },
+    h('div', { class: 'facts secondary num' }, facts.join(' · ')), stack(m), legend(m),
+    agents.length ? section('Agent', agents.map(a => [shown(a.agent), null, a])) : null,
+    m.machines?.length > 1 ? section('设备', m.machines.map(x => [shown(x.machine), null, x])) : null,
+    hasItems(m) ? section('请求来源', m.items.map(item => { const name = item.asked ?? m.model; return [shown(name), item.api ? (item.api !== name ? item.api : null) : direct ? '直连' : null, item]; })) : null);
+}
 function modelList(models, total, scope, limit) {
   if (!models?.length) return null;
   const rows = models.slice(0, limit).map(m => {
     const fill = h('span', {}), key = `${scope}|${m.model}`, open = expanded.has(key);
     fill.style.width = `${total ? Math.max(1, Math.round((m.totalTokens / total) * 100)) : 0}%`;
-    const head = [h('div', { class: 'bar-line' }, h('span', { class: 'truncate' }, shown(m.model)), h('span', { class: 'spacer' }), h('span', { class: 'num secondary' }, tokens(m.totalTokens))), h('div', { class: 'bar' }, fill)];
     return h('li', {},
-      hasItems(m) ? h('button', { class: 'bar-head', 'aria-expanded': open ? 'true' : 'false', onclick: () => { if (open) expanded.delete(key); else expanded.add(key); render(); } }, head) : head,
-      open && hasItems(m) ? h('ul', { class: 'items' }, m.items.map(item => h('li', { class: 'bar-line' },
-        h('span', { class: 'truncate' }, shown(item.asked ?? m.model)), item.api && item.api !== (item.asked ?? m.model) ? h('span', { class: 'secondary truncate' }, item.api) : null, h('span', { class: 'spacer' }),
-        h('span', { class: 'num secondary' }, `${tokens(item.totalTokens)} · ${count(item.turns)} 回合`)))) : null);
+      h('button', { class: 'bar-head', 'aria-expanded': open ? 'true' : 'false', onclick: () => { if (open) expanded.delete(key); else expanded.add(key); render(); } },
+        h('div', { class: 'bar-line' }, h('span', { class: 'truncate' }, shown(m.model)), h('span', { class: 'spacer' }), h('span', { class: 'num secondary' }, tokens(m.totalTokens)), h('span', { class: 'chev', 'aria-hidden': 'true' })), h('div', { class: 'bar' }, fill)),
+      open ? modelDetail(m, total) : null);
   });
   return h('ul', { class: 'models' }, rows, models.length > limit ? h('button', { class: 'more', onclick: () => { showAll = true; render(); } }, `展开全部 ${models.length} 个型号`) : null);
 }

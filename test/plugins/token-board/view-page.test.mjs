@@ -150,10 +150,14 @@ test('记录变化只重画一次（合到一帧），展开的状态保留；�
   assert.ok(page.text().includes('1.30K'));
 });
 
-test('型号：先显示前 5 个，「展开全部 N 个型号」看全部；型号行可展开看请求项，只有同名请求项且没有服务的不可展开', async t => {
-  const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, turns: 0, reportedTurns: 0 };
-  const row = over => ({ start: DAY + 1000, person: '', agent: 'codex', service: null, asked: 'gpt-5', served: null, ...zero, ...over });
-  const service = 'coda://openai-responses/11111111-2222-3333-4444-555555555555';
+// 展开后的小节：标题 → 各行文字。
+const sections = page => Object.fromEntries(page.all(n => n.attrs?.class === 'sect').map(n => [n.children[0].textContent, n.children[1].children.map(row => row.textContent)]));
+const heads = page => page.all(n => n.tag === 'button' && n.attrs.class === 'bar-head');
+const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, turns: 0, reportedTurns: 0 };
+const row = over => ({ start: DAY + 1000, person: '', agent: 'codex', service: null, asked: 'gpt-5', served: null, ...zero, ...over });
+const service = 'coda://openai-responses/11111111-2222-3333-4444-555555555555';
+
+test('型号：先显示前 5 个，「展开全部 N 个型号」看全部；所有型号行都能展开，展开后列请求来源（直连与服务接口分开标）', async t => {
   const many = Array.from({ length: 7 }, (_, i) => row({ asked: `plain-${i}`, input: 10 + i }));
   const layered = [row({ service, served: 'gpt-5-2025', input: 9000 }), row({ service, turns: 2, reportedTurns: 2 }), row({ asked: 'gpt-5-latest', served: 'gpt-5-2025', input: 1000 })];
   const { page } = await open(t, [stateOf(X, { author: A }), ...usageOf(X, { author: A, sourceId: 'x', buckets: [...layered, ...many] })]);
@@ -162,24 +166,80 @@ test('型号：先显示前 5 个，「展开全部 N 个型号」看全部；�
   page.button('展开全部 8 个型号').fire('click');
   assert.equal(names().length, 8);
   assert.equal(page.button('展开全部 8 个型号'), undefined);
-  const heads = () => page.all(n => n.tag === 'button' && n.attrs.class === 'bar-head');
-  assert.equal(heads().length, 1, '只有 gpt-5-2025 可展开；plain-* 只有一个同名请求项且没有服务');
+  assert.equal(heads(page).length, 8, '每个型号行都是展开按钮');
+  assert.ok(heads(page).every(head => head.attrs['aria-expanded'] === 'false' && head.children[0].children.some(c => c.attrs?.class === 'chev')));
   assert.ok(!page.text().includes('openai-responses'));
-  heads()[0].fire('click');
-  assert.deepEqual(page.all(n => n.attrs.class === 'items')[0].children.map(item => item.textContent), ['gpt-5openai-responses9.00K · 2 回合', 'gpt-5-latest1.00K · 0 回合']);
+  heads(page)[0].fire('click');
+  assert.equal(heads(page)[0].attrs['aria-expanded'], 'true');
+  assert.deepEqual(sections(page)['请求来源'], ['gpt-5openai-responses9.00K · 2 回合', 'gpt-5-latest直连1.00K · 0 回合']);
   assert.ok(!page.text().includes('11111111'));
-  heads()[0].fire('click');
-  assert.equal(page.all(n => n.attrs.class === 'items').length, 0);
+  heads(page)[0].fire('click');
+  assert.equal(page.all(n => n.attrs.class === 'mdetail').length, 0);
 });
 
-test('外来文字只经文本渲染：只带服务的行显示接口种类名，名字里的控制字符在显示时清洗', async t => {
-  const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, turns: 0, reportedTurns: 0 };
-  const local = [{ start: DAY + 1000, person: '', agent: 'codex', service: 'coda://openai-responses/11111111-2222-3333-4444-555555555555', asked: null, served: null, ...zero, input: 900, turns: 1, reportedTurns: 1 },
-    { start: DAY + 1000, person: '', agent: 'codex', service: null, asked: 'gpt‮-5', served: null, ...zero, input: 100 }];
+const facts = (page, node) => page.all(n => n.attrs?.class?.startsWith('facts'), node).map(n => n.textContent);
+const headOf = (page, name, node) => page.all(n => n.attrs?.class === 'bar-head', node).find(head => head.children[0].children[0].textContent === name);
+
+test('展开：回合、占比、缓存命中、四项明细（四色条与四列数值）、按 Agent 拆分；占比小于 0.1% 写 <0.1%，没有缓存读不写命中率', async t => {
+  const opus = { asked: 'opus-5', served: 'opus-5' };
+  const rows = [row({ ...opus, agent: 'claude', input: 100, output: 50, cacheRead: 800, cacheWrite: 50, turns: 3, reportedTurns: 3 }), row({ ...opus, agent: 'sub', input: 40, turns: 1, reportedTurns: 1 }), row({ ...opus, agent: '_', input: 10 }),
+    row({ agent: 'claude', asked: 'tiny', served: 'tiny', input: 1 }), row({ agent: 'claude', asked: 'big', served: 'big', input: 99_000 })];
+  const { page } = await open(t, [stateOf(X, { author: A }), ...usageOf(X, { author: A, sourceId: 'x', buckets: rows })]);
+  headOf(page, 'opus-5').fire('click');
+  assert.deepEqual(facts(page), ['4 回合 · 占 1.0% · 缓存命中 80.0%']);
+  const detail = page.all(n => n.attrs.class === 'mdetail')[0];
+  assert.deepEqual(detail.children[1].children.map(span => span.attrs.class), ['c-input', 'c-output', 'c-cacheRead', 'c-cacheWrite'], '模型自己的四色堆叠条');
+  assert.equal(detail.children[2].attrs.class, 'legend');
+  assert.deepEqual(detail.children[2].children.map(c => c.textContent), ['输入150', '输出50', '缓存读800', '缓存写50']);
+  assert.deepEqual(sections(page)['Agent'], ['claude1.00K · 3 回合', 'sub40 · 1 回合'], '兜底占位符 _ 不列');
+  assert.ok(!('请求来源' in sections(page)) && !('设备' in sections(page)), '单一直连、单机：不列请求来源与设备');
+  headOf(page, 'tiny').fire('click');
+  assert.deepEqual(facts(page), ['4 回合 · 占 1.0% · 缓存命中 80.0%', '0 回合 · 占 <0.1%']);
+});
+
+test('Claude 官方直连：served-only 与请求行（含恢复首轮的少量 Token）合成一项，展开不列重复同名的请求来源', async t => {
+  const rows = [row({ asked: null, served: 'claude-opus-5-5', agent: 'claude', input: 900, cacheRead: 100 }), row({ asked: 'claude-opus-5-5', agent: 'claude', turns: 149, reportedTurns: 149 }), row({ asked: 'claude-opus-5-5', agent: 'claude', input: 3, turns: 1, reportedTurns: 1 })];
+  const { page } = await open(t, [stateOf(X, { author: A }), ...usageOf(X, { author: A, sourceId: 'x', buckets: rows })]);
+  assert.equal(heads(page).length, 1);
+  heads(page)[0].fire('click');
+  assert.deepEqual(facts(page), ['150 回合 · 占 100.0% · 缓存命中 10.0%']);
+  assert.deepEqual(Object.keys(sections(page)), ['Agent']);
+});
+
+test('「我」多台设备共用一个型号才列设备小节，好友榜展开不列设备；好友榜同样有回合、Agent 与四项明细', async t => {
+  const solo = { ...bucket(DAY + 1500, 7), model: 'solo' };
+  const { page } = await open(t, [stateOf(X, { author: A, friends: [B] }), stateOf(Y, { author: A, friends: [B] }),
+    ...usageOf(X, { author: A, sourceId: 'x', buckets: [bucket(DAY + 1000, 1000), solo] }), ...usageOf(Y, { author: A, sourceId: 'y', buckets: [bucket(DAY + 2000, 300)] }), mirrorToday(X, B, 'phone', [bucket(DAY + 3000, 50)])]);
+  const mineList = page.all(n => n.attrs.class === 'models')[0];
+  headOf(page, 'opus', mineList).fire('click');
+  assert.deepEqual(sections(page)['设备'], ['Mac1.00K · 1 回合', 'rig300 · 1 回合']);
+  headOf(page, 'solo', mineList).fire('click');
+  assert.equal(page.all(n => n.attrs.class === 'sect' && n.children[0].textContent === '设备').length, 1, '只有一台有用量的型号不列设备');
+  page.all(n => n.tag === 'button' && n.attrs.class === undefined && n.attrs['aria-expanded'] !== undefined)[1].fire('click');
+  headOf(page, 'opus', page.all(n => n.attrs.class === 'detail')[0]).fire('click');
+  const friend = page.all(n => n.attrs.class === 'detail')[0];
+  const detail = page.all(n => n.attrs.class === 'mdetail', friend)[0];
+  assert.deepEqual(facts(page, friend), ['1 回合 · 占 100.0%']);
+  assert.deepEqual(detail.children[2].children.map(c => c.textContent), ['输入50', '输出0', '缓存读0', '缓存写0']);
+  assert.deepEqual(page.all(n => n.attrs.class === 'sect', friend).map(n => n.children[0].textContent), ['Agent']);
+});
+
+test('多个请求来源：直连与服务接口同列，无服务的项标「直连」，不同别名分开列', async t => {
+  const rows = [row({ asked: null, served: 'claude-opus-5-5', agent: 'claude', input: 900 }), row({ asked: 'claude-opus-5-5', service, served: 'claude-opus-5-5', agent: 'claude', input: 50 }), row({ asked: 'opus', served: 'claude-opus-5-5', agent: 'claude', input: 5, turns: 1, reportedTurns: 1 })];
+  const { page } = await open(t, [stateOf(X, { author: A }), ...usageOf(X, { author: A, sourceId: 'x', buckets: rows })]);
+  heads(page)[0].fire('click');
+  assert.deepEqual(sections(page)['请求来源'], ['claude-opus-5-5直连900 · 0 回合', 'claude-opus-5-5openai-responses50 · 0 回合', 'opus直连5 · 1 回合']);
+});
+
+test('外来文字只经文本渲染：只带服务的行显示接口种类名，名字里的控制字符在显示时清洗；展开后 Agent 与设备名同样清洗', async t => {
+  const local = [{ ...row({ service: 'coda://openai-responses/11111111-2222-3333-4444-555555555555', asked: null, input: 900, turns: 1, reportedTurns: 1 }) }, row({ asked: 'gpt‮-5', input: 100, agent: 'ag‮ent' })];
   const { page } = await open(t, [stateOf(X, { author: A }), ...usageOf(X, { author: A, sourceId: 'x', buckets: local })]);
   const names = page.all(n => n.tag === 'span' && n.attrs.class === 'truncate').map(n => n.textContent);
   assert.ok(names.includes('openai-responses') && names.includes('gpt -5'), names.join('|'));
-  assert.equal(page.all(n => n.attrs.class === 'bar-head').length, 0, '只有一个请求项且名字就是服务名：不展开');
+  assert.equal(heads(page).length, 2, '所有型号行都能点开');
+  heads(page).find(head => head.textContent.startsWith('gpt -5')).fire('click');
+  assert.deepEqual(sections(page)['Agent'], ['ag ent100 · 0 回合']);
+  assert.ok(!sections(page)['请求来源'], '单一直连：不列请求来源');
 });
 
 test('watch 失败：写一行原因，不留空白页', async t => {
@@ -204,4 +264,10 @@ test('关了分享、撤回没完成：页脚不说「好友看不到」，写�
   assert.deepEqual(texts(page, 'foot'), [`rig ${unfinished}未安装或未启用好友插件，无法撤回好友可见记录`]);
   ({ page } = await open(t, [off(null)]));
   assert.deepEqual(texts(page, 'foot'), ['没有分享，好友看不到你的用量']);
+});
+
+test('展开：总数大于 0 而该型号只有回合（0 Token）时占比写 0%', async t => {
+  const { page } = await open(t, [stateOf(X, { author: A }), ...usageOf(X, { author: A, sourceId: 'x', buckets: [row({ agent: 'claude', asked: 'big', served: 'big', input: 100 }), row({ agent: 'claude', asked: 'idle', turns: 2, reportedTurns: 2 })] })]);
+  headOf(page, 'idle').fire('click');
+  assert.deepEqual(facts(page), ['2 回合 · 占 0%']);
 });
