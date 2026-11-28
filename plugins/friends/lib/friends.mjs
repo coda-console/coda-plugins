@@ -118,13 +118,36 @@ export function certStateOf(accord) {
 const RANK = { conflict: 0, pending: 1, bound: 2 };
 export const statusOf = friend => friend.conflict ? 'conflict' : friend.bound ? 'bound' : 'pending';
 
+const compare = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+const channelOf = friend => ({ node: friend.node, mode: typeof friend.mode === 'string' && friend.mode ? friend.mode : null, peerNode: friend.peerNode ?? null, scope: friend.scope,
+  author: friend.author ?? null, machine: typeof friend.machine === 'string' && friend.machine ? friend.machine : null,
+  certified: typeof friend.certified === 'boolean' ? friend.certified : null, status: statusOf(friend), updatedAt: friend.updatedAt ?? 0 });
+const certifiedOf = channels => {
+  const list = channels.some(c => c.status === 'bound') ? channels.filter(c => c.status === 'bound') : channels;
+  return list.some(c => c.certified === true) ? true : list.some(c => c.certified === false) ? false : null;
+};
+
 /**
- * 好友表（`status.friends`）合成的行：标题是公钥派生的 `昵称 #尾号`（`identityTitles`：同昵称且尾号相撞时向左加位，无昵称的公钥是短码），
- * 没有公钥的待互认项用节点名。撞号要和本人、别的电脑上的好友一起比，所以 `titles`（author → 标题，`identityTitles` 的结果）由调用方算好给出。
- * 按状态（冲突、待互认、已互认）再按更新时间新的在前排序，同样的输入排出同样的顺序。
+ * 好友表（`status.friends`）合成的行：同一台电脑上指向同一完整公钥（author）的通道归并成一个好友，通道逐条放在 `channels`（状态、更新时间新的在前）；
+ * 没有公钥的待互认通道不与任何条目归并，各自成行。好友状态：任一通道密钥冲突即冲突（不隐藏冲突），否则任一已互认即已互认，其余待互认；
+ * 顶层 `node`、`peerNode`、`scope` 取代表通道（第一条状态等于好友状态的通道），`updatedAt` 取各通道最大值。
+ * 标题是公钥派生的 `昵称 #尾号`（`identityTitles`：同昵称且尾号相撞时向左加位，无昵称的公钥是短码），没有公钥的待互认项用节点名。
+ * 撞号要和本人、别的电脑上的好友一起比，所以 `titles`（author → 标题，`identityTitles` 的结果）由调用方算好给出。
+ * 好友行按状态（冲突、待互认、已互认）再按更新时间新的在前排序，同样的输入排出同样的顺序。
  */
 export function mergeFriendRows(friends = [], { titles, shortAuthor }) {
-  const rows = friends.map(friend => ({ node: friend.node, author: friend.author ?? null, short: shortAuthor(friend.author), status: statusOf(friend),
-    peerNode: friend.peerNode ?? null, scope: friend.scope, updatedAt: friend.updatedAt ?? 0, title: titles.get(friend.author) ?? friend.node }));
-  return rows.sort((a, b) => RANK[a.status] - RANK[b.status] || b.updatedAt - a.updatedAt || (a.node < b.node ? -1 : a.node > b.node ? 1 : 0));
+  const groups = new Map();
+  for (const friend of friends) {
+    const channel = channelOf(friend), key = channel.author ? `a:${channel.author}` : `n:${channel.node}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(channel);
+  }
+  const rows = [...groups.values()].map(channels => {
+    channels.sort((a, b) => RANK[a.status] - RANK[b.status] || b.updatedAt - a.updatedAt || compare(a.node, b.node));
+    const status = channels.some(c => c.status === 'conflict') ? 'conflict' : channels.some(c => c.status === 'bound') ? 'bound' : 'pending';
+    const primary = channels.find(c => c.status === status) ?? channels[0], { author } = primary;
+    return { node: primary.node, author, short: shortAuthor(author), status, peerNode: primary.peerNode, scope: primary.scope, certified: certifiedOf(channels),
+      updatedAt: Math.max(...channels.map(c => c.updatedAt)), title: titles.get(author) ?? primary.node, channels };
+  });
+  return rows.sort((a, b) => RANK[a.status] - RANK[b.status] || b.updatedAt - a.updatedAt || compare(a.author ?? '', b.author ?? '') || compare(a.node, b.node));
 }

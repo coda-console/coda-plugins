@@ -742,7 +742,7 @@ test('a stale friends/card is never sent when the certificate recovers, and does
 test('the protocol definition is valid and has only the friends, records, publish, retract and outbox operations, with no streams', () => {
   const [definition] = manifest.contributes.protocols;
   assert.equal(definitionProblem(definition, { namespace: 'friends', where: definition.name }), null);
-  assert.equal(manifest.version, '0.11.0');
+  assert.equal(manifest.version, '0.12.0');
   assert.deepEqual(Object.keys(definition.operations), ['friends', 'records', 'publish', 'retract', 'outbox']);
   assert.equal(definition.streams, undefined);
   assert.deepEqual(definition.permissions.read, { title: definition.permissions.read.title, read: true, operations: ['friends', 'records'] });
@@ -980,4 +980,14 @@ test('the internal signer takes the sender from the body by kind and refuses on 
   d.accord.getGate = null;
   assert.deepEqual(d.accord.calls, []);
   assert.equal(d.accord.records.filter(record => record.author === F2).length, 0);
+});
+
+test('friends and friendCount count one friend per author, however many channels point at it, and carry the channels', async t => {
+  const g = await gateway(t, { friends: [{ node: 'link:1', author: F1, bound: true, peerNode: 'p', updatedAt: 1 }, { node: 'node:p', author: F1, bound: true, peerNode: 'p', updatedAt: 2 },
+    { node: 'n2', author: F2, bound: true, updatedAt: 3 }, { node: 'link:3', author: F3, bound: false, updatedAt: 1 }, { node: 'link:4', author: F3, bound: false, updatedAt: 2 }] });
+  const { friends } = await g.call('friends');
+  assert.deepEqual(friends.map(row => [row.node, row.channels.map(c => c.node)]), [['n2', ['n2']], ['node:p', ['node:p', 'link:1']]]);
+  assert.equal((await g.status()).friendCount, 2);
+  const all = (await g.call('friends', { includePending: true })).friends;
+  assert.deepEqual(all.map(row => [row.node, row.status]), [['link:4', 'pending'], ['n2', 'bound'], ['node:p', 'bound']]);
 });

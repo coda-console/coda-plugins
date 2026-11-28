@@ -153,6 +153,138 @@ test('the friend detail shows the derived nickname, identicon, full key and stat
   assert.equal(detail.hidden, true);
 });
 
+const MACHINE_1 = `ed25519:${'77'.repeat(32)}`, MACHINE_2 = `ed25519:${'88'.repeat(32)}`;
+const channelsIn = (page, detail) => page.all(n => n.tag === 'li' && cls(n).includes('conn'), detail);
+
+test('channels of one author are one tile with the connection count; counts, hero strip and section count are per friend; a lone channel keeps the old subtitle', async t => {
+  const { page, log } = await open(t);
+  log.watches[0].cb(accord({ friends: [
+    { node: 'link:1', author: FRIEND, bound: true, peerNode: 'p', updatedAt: 1 }, { node: 'node:p', author: FRIEND, bound: true, peerNode: 'p', updatedAt: 2 },
+    { node: 'n3', author: OTHER, bound: true }, { node: 'q1', bound: false }, { node: 'q2', bound: false }] }));
+  await flush();
+  assert.equal(tiles(page).length, 4, 'two keyless pending channels stay apart and do not join the keyed friends');
+  const merged = tiles(page).find(tile => tile.textContent.includes(identityTitle(FRIEND)));
+  assert.ok(merged.textContent.includes('@12121212 · 2 条连接') && !merged.textContent.includes('待互认）'));
+  assert.ok(merged.attrs['aria-label'].includes('2 条连接'));
+  const lone = tiles(page).find(tile => tile.textContent.includes(identityTitle(OTHER)));
+  assert.ok(lone.textContent.includes('@34343434') && !lone.textContent.includes('条连接'));
+  assert.ok(!lone.attrs['aria-label'].includes('条连接'));
+  assert.equal(tiles(page).filter(tile => tile.textContent.includes('密钥未互认')).length, 2);
+  assert.ok(heroes(page)[0].textContent.includes('2 位已互认') && heroes(page)[0].textContent.includes('2 待互认'));
+  assert.equal(page.all(n => n.tag === 'span' && cls(n) === 'count' && n.textContent === '4').length, 1);
+});
+
+test('merged status: bound with a pending channel stays bound and says how many wait, and still allows granting; a conflict is not hidden; all pending stays pending', async t => {
+  const { page, log } = await open(t);
+  log.watches[0].cb(accord({ friends: [
+    { node: 'a1', author: FRIEND, bound: true, updatedAt: 3 }, { node: 'a2', author: FRIEND, bound: false, updatedAt: 4 },
+    { node: 'b1', author: OTHER, bound: true, updatedAt: 1 }, { node: 'b2', author: OTHER, bound: true, conflict: true, updatedAt: 2 },
+    { node: 'c1', author: THIRD, bound: false }, { node: 'c2', author: THIRD, bound: false }] }));
+  await flush();
+  const [conflict, pending, bound] = tiles(page);
+  assert.ok(conflict.textContent.includes('密钥冲突') && conflict.textContent.includes('2 条连接'));
+  assert.ok(pending.textContent.includes('待互认') && pending.textContent.includes('@56565656 · 2 条连接') && !pending.textContent.includes('（'));
+  assert.ok(bound.textContent.includes('已互认') && bound.textContent.includes('@12121212 · 2 条连接（1 待互认）'));
+  assert.ok(heroes(page)[0].textContent.includes('1 位已互认') && heroes(page)[0].textContent.includes('1 冲突') && heroes(page)[0].textContent.includes('1 待互认'));
+  bound.fire('click');
+  await flush();
+  const detail = scrims(page)[0];
+  assert.equal(buttonIn(page, detail, '授予…').attrs.disabled === undefined, true, 'a bound channel is enough to grant');
+  assert.deepEqual(channelsIn(page, detail).map(li => li.textContent.includes('待互认')), [true, false]);
+  conflict.fire('click');
+  assert.ok(scrims(page)[0].textContent.includes('密钥与之前互认的不一致'));
+});
+
+test('a multi-connection detail shares the key and lists each connection with what tells them apart, and hides the single-connection actions', async t => {
+  const { page, log } = await open(t);
+  log.watches[0].cb(accord({ friends: [
+    { node: 'link:a', author: FRIEND, bound: true, peerNode: 'pm', scope: 's1', machine: MACHINE_1, updatedAt: 2 },
+    { node: 'node:pm', author: FRIEND, bound: true, peerNode: 'pm', scope: 's2', machine: MACHINE_2, updatedAt: 1 }] }));
+  await flush();
+  tiles(page)[0].fire('click');
+  const detail = scrims(page)[0];
+  assert.ok(detail.textContent.includes(FRIEND));
+  assert.equal(page.all(n => n.tag === 'button' && n.textContent === '复制公钥', detail).length, 1);
+  for (const gone of ['移除好友…', '节点']) assert.ok(!detail.textContent.includes(gone), gone);
+  const rows = channelsIn(page, detail);
+  assert.equal(rows.length, 2);
+  assert.ok(rows[0].textContent.startsWith('pm') && rows[0].textContent.includes('link:a') && rows[0].textContent.includes('机器 @77777777') && rows[0].textContent.includes('s1'));
+  assert.ok(rows[1].textContent.includes('node:pm') && rows[1].textContent.includes('机器 @88888888') && rows[1].textContent.includes('s2'));
+  assert.ok(rows.every(li => li.textContent.includes('已互认')));
+  assert.ok(page.all(n => n.tag === 'span' && cls(n) === 'count' && n.textContent === '2', detail).length >= 1);
+  buttonIn(page, detail, '复制公钥').fire('click');
+  await flush();
+  assert.ok(detail.textContent.includes('公钥已复制'));
+});
+
+test('connections that differ in nothing but the channel key show no machine or scope', async t => {
+  const { page, log } = await open(t);
+  log.watches[0].cb(accord({ friends: [{ node: 'link:a', author: FRIEND, bound: true, peerNode: 'pm', scope: 's', updatedAt: 2 }, { node: 'link:b', author: FRIEND, bound: true, peerNode: 'pn', scope: 's', machine: MACHINE_1 }] }));
+  await flush();
+  tiles(page)[0].fire('click');
+  const text = scrims(page)[0].textContent;
+  assert.ok(text.includes('link:a') && text.includes('link:b') && !text.includes('机器 @') && !text.includes('· s'));
+});
+
+test('on a multi-connection detail each connection re-handshakes and removes on its own; removing one keeps the dialog on the rest, removing the last closes it', async t => {
+  const { page, log } = await open(t);
+  const both = [{ node: 'link:a', author: FRIEND, bound: true, peerNode: 'pm', updatedAt: 2 }, { node: 'node:pm', author: FRIEND, bound: false, conflict: false, peerNode: 'pm', updatedAt: 1 }];
+  log.watches[0].cb(accord({ friends: both }));
+  await flush();
+  tiles(page)[0].fire('click');
+  const detail = scrims(page)[0];
+  // 待互认的排在已互认之前：[node:pm, link:a]
+  buttonIn(page, channelsIn(page, detail)[0], '重新互认').fire('click');
+  await flush();
+  assert.deepEqual(log.calls.map(c => [c.op, c.input]), [['handshake', { node: 'node:pm', peerNode: 'pm' }]]);
+  assert.ok(channelsIn(page, detail)[0].textContent.includes('互认完成') && !channelsIn(page, detail)[1].textContent.includes('互认完成'));
+
+  buttonIn(page, channelsIn(page, detail)[1], '移除…').fire('click');
+  assert.ok(channelsIn(page, detail)[1].textContent.includes('移除这条连接后不再经它同步，确定吗？'));
+  assert.ok(!channelsIn(page, detail)[0].textContent.includes('确定吗'));
+  buttonIn(page, detail, '再想想').fire('click');
+  assert.ok(!detail.textContent.includes('确认移除'));
+  buttonIn(page, channelsIn(page, detail)[1], '移除…').fire('click');
+  buttonIn(page, detail, '确认移除').fire('click');
+  await flush();
+  assert.deepEqual(log.calls.filter(c => c.op === 'remove').map(c => c.input), [{ node: 'link:a' }]);
+  assert.equal(detail.hidden, false, 'a connection is left, so the dialog stays');
+  // 推送还没到：被移除的连接还在表里，保持不可操作；另一条不受影响。
+  const [rest, removed] = channelsIn(page, detail);
+  assert.equal(removed.textContent.includes('link:a'), true);
+  for (const label of ['重新互认', '移除…']) {
+    assert.notEqual(buttonIn(page, removed, label).attrs.disabled, undefined, `${label} stays disabled on the removed connection`);
+    assert.equal(buttonIn(page, rest, label).attrs.disabled, undefined, `${label} stays usable on the other connection`);
+  }
+  assert.ok(removed.textContent.includes('正在移除…'));
+  log.watches[0].cb(accord({ friends: [both[1]] }));
+  await flush();
+  assert.equal(detail.hidden, false);
+  assert.ok(detail.textContent.includes(identityTitle(FRIEND)) && channelsIn(page, detail).length === 0, 'one connection left is shown as a single connection again');
+  buttonIn(page, detail, '移除好友…').fire('click');
+  buttonIn(page, detail, '确认移除').fire('click');
+  await flush();
+  assert.deepEqual(log.calls.filter(c => c.op === 'remove').map(c => c.input), [{ node: 'link:a' }, { node: 'node:pm' }]);
+  assert.equal(detail.hidden, true);
+});
+
+test('the open detail follows its friend by key; a keyless pending channel that gets its key mid-way keeps the dialog and reads its shares', async t => {
+  const { page, log } = await open(t);
+  log.watches[0].cb(accord({ friends: [{ node: 'q1', bound: false }] }));
+  await flush();
+  tiles(page)[0].fire('click');
+  const detail = scrims(page)[0];
+  assert.ok(detail.textContent.includes('密钥未互认'));
+  log.watches[0].cb(accord({ friends: [{ node: 'q1', author: FRIEND, bound: true }, { node: 'q2', author: FRIEND, bound: true }] }));
+  await flush();
+  assert.equal(detail.hidden, false);
+  assert.ok(detail.textContent.includes(FRIEND) && channelsIn(page, detail).length === 2);
+  assert.ok(log.sent.some(c => c.msg.type === 'proxies.list'), 'the shares of the key are read');
+  log.watches[0].cb(accord({ friends: [] }));
+  await flush();
+  assert.equal(detail.hidden, true);
+});
+
 // 添加好友弹层的接受表单：粘贴区与分字段的输入框。邀请带一次性口令 bindingToken，口令不进任何输入框。
 const TOKEN_TEXT = 'bt-once-7f3a91c2d0e8';
 const inviteJson = (extra = {}) => JSON.stringify({ control: 'https://control.example', authKey: 'tskey-secret', bindingToken: TOKEN_TEXT, peerNode: 'node-5d2a8f', ...extra });

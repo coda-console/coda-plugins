@@ -5,6 +5,7 @@
 // 移除好友后留在网络里的节点（status.networkRemovals）显示在分节里，用户点「重试」才读、才删，页面不会自己调用。
 // 昵称、头像都由 Accord 公钥推出（WebView 标准库 coda-view://lib/v1/accord.js、avatar.mjs），没有可编辑的名片；
 // 节点名等外来数据一律用 textContent / DOM API 渲染，从不拼 HTML 字符串。
+import { shortAuthor } from 'coda-view://lib/v1/accord.js';
 import { accordStatusSummary, resolveAvatar } from '../lib/avatar.mjs';
 import { checked, parseInvite } from '../lib/friends.mjs';
 import { friendSections, identities, listMembers, memberTitles } from '../lib/view-members.mjs';
@@ -65,6 +66,10 @@ function onChange(m, { type, entry }) {
   m.entry = entry;
   m.author = entry.spec?.author ?? null;
   m.friends = entry.status?.friends ?? [];
+  for (const one of gone) {
+    if (one.m !== m || m.friends.some(f => f.node === one.node)) continue;
+    gone.delete(one); state.busy.delete(one.key); state.notice.delete(one.key);
+  }
   m.loaded = true;
   draw();
 }
@@ -318,25 +323,32 @@ async function submitInvite() {
 // 不同电脑上的 node 可能相同，忙碌与提示按（电脑, node）记。
 let drawn = []; // 最近一次 draw 的分节，详情按它找当前行
 
-async function handshake(m, row) {
-  const key = rowKey(m, row.node);
+async function handshake(m, ch) {
+  const key = rowKey(m, ch.node);
   state.busy.add(key); state.notice.set(key, { kind: 'progress', text: '正在互认…' }); draw();
   let notice;
-  try { await coda.call(LOCAL, 'handshake', { node: row.node, ...(row.peerNode ? { peerNode: row.peerNode } : {}) }, via(m)); notice = { kind: 'ok', text: '互认完成' }; }
+  try { await coda.call(LOCAL, 'handshake', { node: ch.node, ...(ch.peerNode ? { peerNode: ch.peerNode } : {}) }, via(m)); notice = { kind: 'ok', text: '互认完成' }; }
   catch (e) { notice = { kind: 'error', text: `互认失败：${e.message}` }; }
   state.notice.set(key, notice); state.busy.delete(key); draw();
 }
-async function remove(m, row) {
-  const key = rowKey(m, row.node);
+// 移除已成功、却还在等 Accord 推送确认这条通道消失的连接。
+const gone = new Set();
+async function remove(m, ch) {
+  const key = rowKey(m, ch.node);
   state.busy.add(key); state.notice.set(key, { kind: 'progress', text: '正在移除…' }); draw();
   let failure = null;
-  try { await coda.call(LOCAL, 'remove', { node: row.node }, via(m)); }
+  try { await coda.call(LOCAL, 'remove', { node: ch.node }, via(m)); }
   catch (e) { failure = { kind: 'error', text: `移除失败：${e.message}` }; }
-  state.busy.delete(key);
-  if (failure) state.notice.set(key, failure);
+  if (failure) { state.busy.delete(key); state.notice.set(key, failure); }
   else {
-    state.notice.delete(key); state.removing = null;
-    if (state.detail?.key === key) closeDialog();
+    if (state.removing === key) state.removing = null;
+    // 只剩这一条连接就没有好友可看了；多条时留着弹层，等 Accord 推送变化后画出剩下的连接（最后一条没了，重画时弹层自己关）。
+    const open = detailRow();
+    const last = open && state.detail.member === m && open.channels.length === 1 && open.channels[0].node === ch.node;
+    // 推送还没把这条通道拿掉时，它保持不可操作，免得对已移除的通道再发请求；推送到了（onChange）再清理。
+    if (!last && m.friends.some(f => f.node === ch.node)) gone.add({ key, m, node: ch.node });
+    else { state.busy.delete(key); state.notice.delete(key); }
+    if (last) closeDialog();
   }
   draw();
 }
@@ -344,30 +356,60 @@ const detail = {
   dialog: makeDialog({ title: '好友', close: '完成', onClose: () => { state.detail = null; state.removing = null; state.menu = null; closePicker(); } }),
   card: h('div'),
   info: h('dl', { class: 'facts' }),
+  conns: h('section', { class: 'conns' }),
   share: h('section', { class: 'share' }),
   actions: h('div', { class: 'actions split' }),
   notice: h('div'),
 };
-detail.dialog.body.append(h('div', { class: 'stack' }, detail.card, detail.info, detail.share, detail.actions, detail.notice));
-const detailRow = () => state.detail && drawn.find(section => section.member === state.detail.member).rows.find(row => row.node === state.detail.node);
+detail.dialog.body.append(h('div', { class: 'stack' }, detail.card, detail.info, detail.conns, detail.share, detail.actions, detail.notice));
+// 详情按公钥跟着好友走；还没有公钥的待互认通道按节点找，互认成功拿到公钥后改按公钥跟，并读出共享。
+function detailRow() {
+  const d = state.detail;
+  if (!d) return undefined;
+  const rows = drawn.find(section => section.member === d.member).rows;
+  if (d.author) return rows.find(row => row.author === d.author);
+  const found = rows.find(row => row.channels.some(c => c.node === d.node));
+  if (found?.author) { d.author = found.author; loadShare(d.member, found); }
+  return found;
+}
 function openDetail(m, row) {
-  state.detail = { member: m, node: row.node, key: rowKey(m, row.node) }; state.removing = null; state.menu = null;
+  state.detail = { member: m, author: row.author, node: row.node }; state.removing = null; state.menu = null;
   shareOf(m).opsOpen = false;
   drawDetail();
   showDialog(detail.dialog);
   loadShare(m, row);
 }
 function fact(label, ...value) { return [h('dt', {}, label), h('dd', { class: 'selectable' }, ...value)]; }
+const copiedKey = (m, row) => rowKey(m, `copy:${row.author}`);
 async function copyFriendKey(m, row) {
-  const key = rowKey(m, row.node);
+  const key = copiedKey(m, row);
   try { await coda.copy(row.author); state.notice.set(key, { kind: 'ok', text: '公钥已复制' }); }
   catch (e) { state.notice.set(key, { kind: 'error', text: `复制失败：${e.message}` }); }
   draw();
 }
+// 多条连接时，逐条列出：通道键、机器、范围只在条与条之间有差别时才写出来，否则分不清。
+function connRow(m, row, ch) {
+  const key = rowKey(m, ch.node), busy = state.busy.has(key), notice = state.notice.get(key);
+  const machines = new Set(row.channels.map(c => c.machine).filter(Boolean)), scopes = new Set(row.channels.map(c => c.scope));
+  const sub = [ch.peerNode && ch.node !== ch.peerNode ? ch.node : null, machines.size > 1 && ch.machine ? `机器 @${shortAuthor(ch.machine)}` : null, scopes.size > 1 ? ch.scope : null].filter(Boolean);
+  return h('li', { class: 'g-row conn', 'aria-busy': busy ? 'true' : null },
+    h('div', { class: 'g-info' }, h('span', { class: 'g-name mono conn-name' }, ch.peerNode ?? ch.node), sub.length ? h('span', { class: 'g-sub conn-sub' }, sub.join(' · ')) : null),
+    h('span', { class: `badge ${ch.status}` }, STATUS_TEXT[ch.status]),
+    h('div', { class: 'conn-body' },
+      ch.status === 'conflict' ? h('p', { class: 'warn-box' }, '对方的密钥与之前互认的不一致，可能换了设备或身份。确认是本人后可「重新互认」，否则建议移除。') : null,
+      h('div', { class: 'actions' }, ...(state.removing === key
+        ? [h('span', { class: 'secondary' }, '移除这条连接后不再经它同步，确定吗？'), h('span', { class: 'spacer' }),
+          h('button', { class: 'btn danger small', type: 'button', disabled: busy, onclick: () => remove(m, ch) }, '确认移除'),
+          h('button', { class: 'btn quiet small', type: 'button', onclick: () => { state.removing = null; draw(); } }, '再想想')]
+        : [h('button', { class: 'btn quiet small', type: 'button', disabled: busy, onclick: () => handshake(m, ch) }, '重新互认'), h('span', { class: 'spacer' }),
+          h('button', { class: 'btn danger small', type: 'button', disabled: busy, onclick: () => { state.removing = key; draw(); } }, '移除…')])),
+      notice ? h('p', { class: notice.kind }, notice.text) : null));
+}
 function drawDetail() {
-  const row = detailRow(), { member: m, key } = state.detail;
+  const row = detailRow(), { member: m } = state.detail;
   if (!row) return;
-  const busy = state.busy.has(key), notice = state.notice.get(key);
+  const many = row.channels.length > 1, [ch] = row.channels, key = rowKey(m, ch.node);
+  const busy = state.busy.has(key), notice = state.notice.get(key), copied = row.author ? state.notice.get(copiedKey(m, row)) : null;
   detail.dialog.heading.textContent = multi ? `${row.title} · ${m.name}` : row.title;
   detail.card.replaceChildren(h('div', { class: 'mini-card' }, h('div', { class: 'banner small' }),
     h('div', { class: 'mini-body row' }, h('span', { class: 'av-ring lg' }, avatar(rowAvatar(row), 'lg')),
@@ -375,19 +417,23 @@ function drawDetail() {
       h('span', { class: `badge ${row.status}` }, STATUS_TEXT[row.status]))));
   detail.info.replaceChildren(
     ...fact('公钥', row.author ? h('span', { class: 'mono key-full' }, row.author) : h('span', { class: 'secondary' }, '密钥未互认'),
-      row.author ? h('button', { class: 'btn quiet small', type: 'button', onclick: () => copyFriendKey(m, row) }, '复制公钥') : null),
-    ...fact('节点', h('span', { class: 'mono' }, row.peerNode ?? row.node)),
-    ...fact('连接', STATUS_TEXT[row.status]));
-  detail.actions.replaceChildren(...(state.removing === key
+      row.author ? h('button', { class: 'btn quiet small', type: 'button', onclick: () => copyFriendKey(m, row) }, '复制公钥') : null,
+      copied ? h('span', { class: copied.kind }, copied.text) : null),
+    ...(many ? [] : [...fact('节点', h('span', { class: 'mono' }, row.peerNode ?? row.node)), ...fact('连接', STATUS_TEXT[row.status])]));
+  detail.conns.hidden = !many;
+  detail.conns.replaceChildren(...(many ? [h('h4', { class: 'sub-head' }, '连接', h('span', { class: 'count' }, String(row.channels.length))),
+    h('ul', { class: 'glist' }, row.channels.map(c => connRow(m, row, c)))] : []));
+  detail.actions.hidden = many;
+  detail.actions.replaceChildren(...(many ? [] : state.removing === key
     ? [h('span', { class: 'secondary' }, '移除后不再同步这位好友，确定吗？'), h('span', { class: 'spacer' }),
-      h('button', { class: 'btn danger small', type: 'button', disabled: busy, onclick: () => remove(m, row) }, '确认移除'),
+      h('button', { class: 'btn danger small', type: 'button', disabled: busy, onclick: () => remove(m, ch) }, '确认移除'),
       h('button', { class: 'btn quiet small', type: 'button', onclick: () => { state.removing = null; draw(); } }, '再想想')]
-    : [h('button', { class: 'btn quiet small', type: 'button', disabled: busy, onclick: () => handshake(m, row) }, '重新互认'), h('span', { class: 'spacer' }),
+    : [h('button', { class: 'btn quiet small', type: 'button', disabled: busy, onclick: () => handshake(m, ch) }, '重新互认'), h('span', { class: 'spacer' }),
       h('button', { class: 'btn danger small', type: 'button', disabled: busy, onclick: () => { state.removing = key; draw(); } }, '移除好友…')]));
   drawShare(m, row);
-  fill(detail.notice,
+  fill(detail.notice, ...(many ? [] : [
     row.status === 'conflict' ? h('p', { class: 'warn-box' }, '对方的密钥与之前互认的不一致，可能换了设备或身份。确认是本人后可「重新互认」，否则建议移除。') : null,
-    notice ? h('p', { class: notice.kind }, notice.text) : null);
+    notice ? h('p', { class: notice.kind }, notice.text) : null]));
 }
 
 // ---- 共享：授给这位好友的远程执行、好友授给本机的、最近的操作 ----
@@ -406,7 +452,6 @@ const PROXY_STATUS = {
 // 授出的范围不让选，由对方的身份决定：个人身份授给他名下的机器，机器身份只授给那一台；基座还没给 certified 时不写。
 const scopeNote = certified => (certified === true ? '授给这个人名下的机器' : certified === false ? '只授给对方那一台机器' : null);
 const shareOf = m => (m.share ??= { grants: null, problem: null, corrupt: null, clock: 0, writes: 0, touched: 0, reread: false, pending: [], revoking: new Map(), theirs: new Map(), ops: new Map(), targets: null, targetsProblem: null, opsOpen: false, scopeOpen: new Set(), rescoping: new Map(), timer: null });
-const certifiedOf = (m, row) => m.friends.find(friend => friend.node === row.node)?.certified;
 const mergeGrant = (sh, made) => { const all = sh.grants ?? []; sh.grants = all.some(g => g.grant === made.grant) ? all.map(g => (g.grant === made.grant ? made : g)) : [...all, made]; };
 // 已撤的不显示；撤销中的（名下的调用还在取消）显示。
 // 能改范围的：还在用的授权（已撤销、已失效、目标不在了的不行）。
@@ -559,7 +604,7 @@ function shareRow({ key, name, sub, subKind, scope, badge, busy, menu }) {
       onclick: e => { e.stopPropagation?.(); item.run(); } }, item.label, item.note ? h('span', { class: 'menu-note' }, item.note) : null))) : null);
 }
 function drawShare(m, row) {
-  const sh = shareOf(m), scope = scopeNote(certifiedOf(m, row));
+  const sh = shareOf(m), scope = scopeNote(row.certified);
   const mine = [
     ...(sh.grants ?? []).filter(g => g.friend === row.author && visibleGrant(g)).map(g => {
       const local = sh.revoking.get(g.grant), re = sh.rescoping.get(g.grant), waiting = re?.unknown, failed = local?.error ?? re?.error;
@@ -576,7 +621,7 @@ function drawShare(m, row) {
   const their = sh.theirs.get(row.author);
   const theirRows = (their?.rows ?? []).map(proxy => shareRow({ key: `t:${proxy.key}`, name: proxy.name, scope: scopeView(sh, `t:${proxy.key}`, proxy.restrict), badge: PROXY_STATUS[proxy.status] ?? ['不可用', 'pending'] }));
   const ops = sh.ops.get(row.author);
-  const canGrant = row.status === 'bound' && Boolean(row.author) && sh.grants !== null && !sh.corrupt;
+  const canGrant = row.channels.some(c => c.status === 'bound') && Boolean(row.author) && sh.grants !== null && !sh.corrupt;
   fill(detail.share,
     h('h4', {}, `共享 · ${m.name}`),
     h('div', {}, h('div', { class: 'sub-head' }, '我授给 TA', h('span', { class: 'spacer' }),
@@ -632,7 +677,7 @@ function closePicker() {
 function cancelPicker() { if (!picker.ctx?.busy) closePicker(); }
 function drawPicker() {
   if (picker.ctx?.stage !== 'list') return;
-  const { m, row } = picker.ctx, sh = shareOf(m), scope = scopeNote(certifiedOf(m, row));
+  const { m, row } = picker.ctx, sh = shareOf(m), scope = scopeNote(row.certified);
   const taken = new Set([...(sh.grants ?? []).filter(g => g.friend === row.author && visibleGrant(g)).map(g => g.target.id), ...sh.pending.filter(p => p.friend === row.author && p.state !== 'denied').map(p => p.target.id)]);
   fill(picker.list, sh.targetsProblem ? h('li', { class: 'error g-empty' }, sh.targetsProblem) : sh.targets === null ? emptyRow('正在读取…')
     : sh.targets.length ? sh.targets.map(target => {
@@ -777,7 +822,7 @@ function dirRow(c, dir, i) {
     h('button', { class: 'btn quiet small', type: 'button', 'aria-label': `删除第 ${i + 1} 行`, disabled: c.busy, onclick: () => { c.dirs.splice(c.dirs.indexOf(dir), 1); c.problem = null; drawForm(); } }, '删除'));
 }
 function drawForm() {
-  const c = picker.ctx, { m, row, target } = c, modify = Boolean(c.grant), dirsMode = c.mode === 'dirs', scope = scopeNote(certifiedOf(m, row));
+  const c = picker.ctx, { m, row, target } = c, modify = Boolean(c.grant), dirsMode = c.mode === 'dirs', scope = scopeNote(row.certified);
   const option = (mode, label, note, off) => h('label', { class: `opt${c.mode === mode ? ' on' : ''}${off ? ' off' : ''}` },
     h('input', { type: 'radio', name: 'scope', checked: c.mode === mode, disabled: off || c.busy, onchange: () => { c.mode = mode; c.problem = null; drawForm(); } }),
     h('span', { class: 'g-info' }, h('span', { class: 'g-name' }, label), h('span', { class: 'g-sub' }, note)));
@@ -930,9 +975,12 @@ function removalBlock(m) {
 }
 
 function friendTile(m, row) {
-  return h('li', {}, h('button', { class: 'f-tile', type: 'button', 'aria-label': `${row.title}，${STATUS_TEXT[row.status]}`, onclick: () => openDetail(m, row) },
+  const count = row.channels.length, pending = row.channels.filter(c => c.status === 'pending').length;
+  const meta = row.short ? `@${row.short}` : '密钥未互认';
+  return h('li', {}, h('button', { class: 'f-tile', type: 'button', 'aria-label': `${row.title}，${STATUS_TEXT[row.status]}${count > 1 ? `，${count} 条连接` : ''}`, onclick: () => openDetail(m, row) },
     avatar(rowAvatar(row), 'sm'),
-    h('span', { class: 'f-info' }, h('span', { class: 'f-name truncate' }, row.title), h('span', { class: 'f-meta truncate' }, row.short ? `@${row.short}` : '密钥未互认')),
+    h('span', { class: 'f-info' }, h('span', { class: 'f-name truncate' }, row.title),
+      h('span', { class: 'f-meta truncate' }, count > 1 ? `${meta} · ${count} 条连接${row.status === 'bound' && pending ? `（${pending} 待互认）` : ''}` : meta)),
     h('span', { class: `badge ${row.status}` }, STATUS_TEXT[row.status])));
 }
 
