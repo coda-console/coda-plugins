@@ -80,3 +80,9 @@ test('an unreachable member keeps its section with the reason and no rows, and t
   const sections = friendSections([member('a', { friends: [{ node: 'n1', author: PAL, bound: true }] }), down]);
   assert.deepEqual(sections.map(s => [s.title, s.unreachable, s.rows.length]), [['A', null, 1], ['B', '离线 3 小时', 0]]);
 });
+
+test('channels of one author on a machine make one row there; the same friend on another machine is still its own row in its own section', () => {
+  const two = [{ node: 'link:1', author: PAL, bound: true, updatedAt: 1 }, { node: 'node:p', author: PAL, bound: true, updatedAt: 2 }];
+  const sections = friendSections([member('a', { friends: two }), member('b', { friends: [two[0]] })]);
+  assert.deepEqual(sections.map(s => s.rows.map(r => [r.node, r.channels.map(c => c.node)])), [[['node:p', ['node:p', 'link:1']]], [['link:1', ['link:1']]]]);
+});

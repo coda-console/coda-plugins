@@ -2,7 +2,7 @@
 // 自己不建第二份目录库，只在 outbox.json 里留还没发出去的 body（同步成功即释放）。所有会写盘、会外发的动作排成一条队，
 // 发布、撤回、证书变化引起的冲洗互不交叉。
 import { identityTitles, shortAuthor } from '@coda-console/protocol/accord';
-import { mergeFriendRows, statusOf } from './friends.mjs';
+import { mergeFriendRows } from './friends.mjs';
 import { MAX_BODY_BYTES, canSkip, canonicalHash, certStateOf, checkId, checkKind, checkPublish, entryKey, holdState, keyOf, retractKey, invalid, isPending, markRejected, markSynced,
   nextSeq, queuePublish, queueRetract, readOutbox, withState, writeOutbox } from './outbox.mjs';
 import { readPolicy, setKindPaused } from './policy.mjs';
@@ -154,8 +154,9 @@ export function createGateway(coda, dir) {
       const outbox = dir ? await readOutbox(dir) : {}, { pausedKinds } = dir ? await readPolicy(dir) : { pausedKinds: [] };
       const until = accord?.status?.certificate?.until;
       const friends = Array.isArray(accord?.status?.friends) ? accord.status.friends : [];
+      const rows = mergeFriendRows(friends, { titles: new Map(), shortAuthor });
       const status = { author, certState, ...(Number.isSafeInteger(until) && until >= 0 ? { certUntil: until } : {}),
-        friendCount: friends.filter(friend => statusOf(friend) === 'bound').length, pendingCount: Object.values(outbox).filter(isPending).length, pausedKinds };
+        friendCount: rows.filter(row => row.status === 'bound').length, pendingCount: Object.values(outbox).filter(isPending).length, pausedKinds };
       if (!stopped) await coda.put({ kind: SOCIAL, key: 'local' }, { spec: { version: 1 }, status });
     } catch { /* 状态记录下一次动作会再写 */ }
   }

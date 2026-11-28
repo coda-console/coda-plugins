@@ -77,7 +77,8 @@ test('mergeFriendRows builds rows only from the friend table, titles them from t
   const rows = mergeFriendRows(friends);
   assert.deepEqual(rows.map(r => r.node), ['n-conflict', 'n-pending', 'n-bound2', 'n-bound']);
   const bound = rows.find(r => r.node === 'n-bound');
-  assert.deepEqual(bound, { node: 'n-bound', author: KEY_A, short: 'a1b2c3d4', status: 'bound', peerNode: 'p1', scope: 's', updatedAt: 10, title: titleOf(KEY_A, 'n-bound') });
+  assert.deepEqual(bound, { node: 'n-bound', author: KEY_A, short: 'a1b2c3d4', status: 'bound', peerNode: 'p1', scope: 's', certified: null, updatedAt: 10, title: titleOf(KEY_A, 'n-bound'),
+    channels: [{ node: 'n-bound', mode: 'm', peerNode: 'p1', scope: 's', author: KEY_A, machine: null, certified: null, status: 'bound', updatedAt: 10 }] });
   assert.match(bound.title, /^[a-z0-9]{2,36} #\d{4}$/);
   assert.equal(rows[0].status, 'conflict');
   assert.equal(rows[1].title, 'n-pending', 'a pending friend with no key shows its node name');
@@ -96,6 +97,38 @@ test('mergeFriendRows lengthens the tail of friends whose nickname and last 4 di
   assert.deepEqual(mergeFriendRows(friends.slice(0, 1)).map(r => r.title), ['xs #4084']);
   assert.deepEqual(mergeFriendRows(friends.slice(0, 1), [XS_B]).map(r => r.title), ['xs #04084'], 'the other author is the self or a friend elsewhere');
   assert.deepEqual(mergeFriendRows([...friends, { node: 'n3', bound: false }]).map(r => [r.node, r.title]), [['n3', 'n3'], ['n1', 'xs #04084'], ['n2', 'xs #14084']]);
+});
+
+test('mergeFriendRows merges channels of one full author into one friend, with the channels sorted conflict, pending, bound, then newest, then node', () => {
+  const rows = mergeFriendRows([
+    { node: 'node:p1', author: KEY_A, bound: true, peerNode: 'p1', scope: 's', updatedAt: 5, certified: true },
+    { node: 'link:a', author: KEY_A, bound: true, peerNode: 'p1', scope: 's', updatedAt: 9, machine: 'm-key' },
+    { node: 'link:b', author: KEY_A, bound: true, peerNode: 'p2', scope: 's', updatedAt: 9 },
+    { node: 'link:c', author: KEY_A, bound: false, peerNode: 'p3', scope: 's', updatedAt: 1, certified: false },
+    { node: 'other', author: KEY_B, bound: true, updatedAt: 2 },
+  ]);
+  assert.equal(rows.length, 2);
+  const [merged, other] = rows;
+  assert.equal(other.node, 'other');
+  assert.deepEqual([merged.node, merged.status, merged.peerNode, merged.updatedAt, merged.certified], ['link:a', 'bound', 'p1', 9, true]);
+  assert.deepEqual(merged.channels.map(c => c.node), ['link:c', 'link:a', 'link:b', 'node:p1']);
+  assert.deepEqual(merged.channels.map(c => c.status), ['pending', 'bound', 'bound', 'bound']);
+  assert.equal(merged.channels[1].machine, 'm-key');
+  assert.equal(merged.channels[0].certified, false);
+});
+
+test('mergeFriendRows: a conflict is never hidden, bound beats pending, all pending stays pending, and the key decides the representative channel', () => {
+  const conflict = mergeFriendRows([{ node: 'a', author: KEY_A, bound: true, updatedAt: 9 }, { node: 'b', author: KEY_A, bound: true, conflict: true, updatedAt: 1, peerNode: 'pb' }])[0];
+  assert.deepEqual([conflict.status, conflict.node, conflict.peerNode], ['conflict', 'b', 'pb']);
+  const mixed = mergeFriendRows([{ node: 'a', author: KEY_A, bound: false, updatedAt: 9, certified: true }, { node: 'b', author: KEY_A, bound: true, updatedAt: 1, certified: false }])[0];
+  assert.deepEqual([mixed.status, mixed.node, mixed.certified, mixed.updatedAt], ['bound', 'b', false, 9], 'certified follows the bound channels');
+  const pending = mergeFriendRows([{ node: 'a', author: KEY_A, bound: false, updatedAt: 1 }, { node: 'b', author: KEY_A, bound: false, updatedAt: 2 }])[0];
+  assert.deepEqual([pending.status, pending.node, pending.channels.length], ['pending', 'b', 2]);
+});
+
+test('mergeFriendRows never merges channels without an author, with each other or with a keyed friend', () => {
+  const rows = mergeFriendRows([{ node: 'x1', bound: false, updatedAt: 3 }, { node: 'x2', bound: false, updatedAt: 2 }, { node: 'k', author: KEY_A, bound: true, updatedAt: 1 }]);
+  assert.deepEqual(rows.map(r => [r.node, r.channels.length, r.author]), [['x1', 1, null], ['x2', 1, null], ['k', 1, KEY_A]]);
 });
 
 test('certStateOf reads the certificate when the host writes one, else the author', () => {
