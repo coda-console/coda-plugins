@@ -27,6 +27,7 @@ plugins/desktop-pet/     桌面宠物：Coda 娘待在 Mac 桌面上，Agent 在
 plugins/token-board/     Token 消耗榜：看本机的 Token 用量，默认向好友分享用量，可关闭；熟人消耗榜按 Accord 身份合并多台机器的用量（coda/usage@1 与 coda/machine@1 只读，friends/social@1 可选读与发布）
 plugins/testbed/         测试机：长插在 Mac 上的 iPhone、iPad 只经 use-testbed 使用，排到后装 App、交给会话操作、用完切黑屏；依赖宿主资源
 plugins/remote-exec/     远程执行：默认关闭，打开后空间里别的机器上的 Agent 能以这台后端所在用户的身份在这台上执行命令、拉取和推送文件，每次操作记在状态目录里；两侧都要装
+plugins/memory/          研究记忆：研究仓本地优先的记忆沉淀，规范卡片（<memoryDir>/items/<id>.md）随仓库版本管理，按主分支增量建立检索索引
 plugins/composer/        输入框模式与开发流程：监督开发（一个需求一条需求分支，主 Agent 把一块块改动合进需求分支，用户批准一次）与需求交付；Ultra 名单引用 composer.templates
 test/                    测试；test/plugins/ 是各插件的测试（插件目录里只放运行要用的文件）
 ```

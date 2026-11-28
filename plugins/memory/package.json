@@ -1,0 +1,311 @@
+{
+  "name": "@coda-console/memory",
+  "id": "memory",
+  "displayName": "研究记忆",
+  "description": "研究仓本地优先的记忆沉淀：规范卡片随仓库版本管理，按主分支增量建立检索索引",
+  "icon": { "symbol": "brain", "color": "purple" },
+  "version": "0.1.0",
+  "coda": { "channels": ["stable", "preview"] },
+  "categories": ["Skills 与工具"],
+  "type": "module",
+  "main": "main.mjs",
+  "activationEvents": ["onStartupFinished"],
+  "uses": {
+    "coda/thread@1": ["workspace"],
+    "coda/machine@1": ["read"]
+  },
+  "optionalUses": {
+    "github/pull-request@1": ["pull-requests"]
+  },
+  "contributes": {
+    "configuration": {
+      "title": "研究记忆",
+      "properties": {
+        "memory.enabled": {
+          "title": "启用研究记忆",
+          "type": "boolean",
+          "order": 0,
+          "default": false,
+          "description": "默认关闭，防止安装后影响代码仓；在需要沉淀知识的研究仓开启，或配合插件 Tag（如 research）只对研究仓生效。可按目录覆盖：控制该目录会话是否带上记忆开场说明。"
+        },
+        "memory.memoryDir": {
+          "title": "记忆目录",
+          "type": "string",
+          "order": 1,
+          "default": ".memory",
+          "description": "研究仓内存放记忆卡片的相对目录，卡片在其下的 items/<id>.md。以本机插件设置层为准，目录覆盖对它不生效。"
+        },
+        "memory.autoSync": {
+          "title": "自动同步索引",
+          "type": "boolean",
+          "order": 2,
+          "default": false,
+          "description": "目录层（可按目录覆盖）：控制该目录的定时同步，需要在研究记忆已启用的目录开启；会话读取记忆前的惰性同步不看目录覆盖，随本机插件层的这一项生效。开启后把主分支的卡片按计划、读取前增量同步进检索索引；关闭时已有索引不再被拉取，缺索引或记忆目录、向量配置变了才本地重建一次。"
+        },
+        "memory.syncSchedule": {
+          "title": "同步计划",
+          "type": "string",
+          "order": 3,
+          "default": "R/PT10M",
+          "description": "自动同步的重复间隔，ISO 8601 重复写法，默认每 10 分钟。可按目录覆盖：控制该目录的定时同步。"
+        },
+        "memory.lazySyncSeconds": {
+          "title": "惰性同步间隔（秒）",
+          "type": "integer",
+          "order": 4,
+          "default": 60,
+          "minimum": 0,
+          "description": "读取记忆时，距上次同步超过这个秒数就先同步一次；0 表示每次读取都同步。以本机插件设置层为准，目录覆盖对它不生效。"
+        },
+        "memory.mnemonPath": {
+          "title": "mnemon 路径",
+          "type": "string",
+          "order": 5,
+          "default": "",
+          "description": "mnemon 可执行文件的路径；留空则在 PATH 上查找。以本机插件设置层为准，目录覆盖对它不生效。"
+        },
+        "memory.embeddingProvider": {
+          "title": "向量服务",
+          "type": "string",
+          "order": 6,
+          "enum": ["none", "ollama", "openai-compatible"],
+          "default": "none",
+          "description": "生成检索向量的服务；none 表示不用向量，只做文本检索。以本机插件设置层为准，目录覆盖对它不生效。"
+        },
+        "memory.embeddingBaseUrl": {
+          "title": "向量服务地址",
+          "type": "string",
+          "order": 7,
+          "default": "",
+          "description": "向量服务的基础地址，如 http://127.0.0.1:11434；向量服务为 none 时忽略。以本机插件设置层为准，目录覆盖对它不生效。"
+        },
+        "memory.embeddingModel": {
+          "title": "向量模型",
+          "type": "string",
+          "order": 8,
+          "default": "",
+          "description": "向量服务使用的模型名；向量服务为 none 时忽略。以本机插件设置层为准，目录覆盖对它不生效。"
+        },
+        "memory.embeddingApiKeyEnv": {
+          "title": "向量服务密钥的环境变量名",
+          "type": "string",
+          "order": 9,
+          "default": "",
+          "description": "只填存放 API 密钥的环境变量名，不要在这里写密钥本身。以本机插件设置层为准，目录覆盖对它不生效。"
+        }
+      }
+    },
+    "protocols": [
+      {
+        "name": "memory/engine@1",
+        "title": "研究记忆引擎",
+        "description": "一个研究仓的记忆引擎：规范卡片在仓库里，检索索引在本机，会话通过它召回、检索、读取、记录、关联与归档记忆。",
+        "spec": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string", "minLength": 1, "title": "研究仓", "description": "研究仓的名字。" },
+            "status": { "type": "string", "title": "状态", "description": "引擎当前状态的简述。" },
+            "projects": { "type": "integer", "minimum": 0, "title": "项目", "description": "已登记记忆的项目数。" }
+          },
+          "required": ["name", "status", "projects"],
+          "additionalProperties": false
+        },
+        "status": {
+          "type": "object",
+          "properties": {
+            "ready": { "type": "boolean" }
+          },
+          "required": [],
+          "additionalProperties": false
+        },
+        "resource": { "columns": ["name", "status", "projects"], "symbol": "brain" },
+        "operations": {
+          "recall": {
+            "description": "按问题召回相关记忆卡片，按相关度排序返回。intent 说明问题的取向：why 找原因与结论，when 找时间线，entity 围绕某个实体，general 泛检索，auto 自动判断（默认）。默认不含已被取代的卡片，含当前工作树里尚未合并的草稿；includeSuperseded 可放开已取代的，includeDrafts 传 false 可排除草稿。只读。",
+            "input": {
+              "type": "object",
+              "properties": {
+                "query": { "type": "string", "minLength": 1, "description": "要召回的问题或关键词。" },
+                "intent": { "type": "string", "enum": ["auto", "why", "when", "entity", "general"], "description": "问题的取向，默认 auto。" },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 50, "description": "最多返回几张卡片。" },
+                "includeSuperseded": { "type": "boolean", "description": "是否包含已被取代的卡片，默认否。" },
+                "includeDrafts": { "type": "boolean", "description": "是否包含当前工作树相对主分支尚未合并的草稿卡片，默认是；传 false 可排除。" }
+              },
+              "required": ["query"],
+              "additionalProperties": false
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "items": {
+                  "type": "array",
+                  "description": "召回的卡片，按相关度从高到低。",
+                  "items": { "type": "object", "description": "一张卡片：id、kind、status、content（正文）、refs、entities、tags、importance，加上 score、matchedVia、superseded、draft（是否未合并的草稿）与 contradictions（对立卡片，含出处）。" }
+                },
+                "indexedCommit": { "type": ["string", "null"], "description": "索引对应的主分支提交；还没有索引时为 null。" },
+                "draftCount": { "type": "integer", "description": "当前工作树里未合并的草稿卡片数。" }
+              },
+              "required": ["items"],
+              "additionalProperties": true
+            },
+            "safe": true
+          },
+          "search": {
+            "description": "按条件检索记忆卡片：关键词 query，或按 kind、status、entity、tag、ref（来源）过滤，条件之间取交集。只读。",
+            "input": {
+              "type": "object",
+              "properties": {
+                "query": { "type": "string", "description": "关键词；不给则只按过滤条件列出。" },
+                "kind": { "type": "string", "enum": ["fact", "conclusion", "hypothesis", "observation"], "description": "按卡片种类过滤。" },
+                "status": { "type": "string", "enum": ["active", "contested", "superseded", "archived"], "description": "按卡片状态过滤。" },
+                "entity": { "type": "string", "description": "按实体过滤。" },
+                "tag": { "type": "string", "description": "按标签过滤。" },
+                "ref": { "type": "string", "description": "按来源引用过滤。" },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 50, "description": "最多返回几张卡片。" },
+                "includeDrafts": { "type": "boolean", "description": "是否包含当前工作树相对主分支尚未合并的草稿卡片，默认是；传 false 可排除。" }
+              },
+              "additionalProperties": false
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "items": {
+                  "type": "array",
+                  "description": "命中的卡片。",
+                  "items": { "type": "object", "description": "一张卡片：字段同召回；给了 query 时带 score。" }
+                },
+                "indexedCommit": { "type": ["string", "null"], "description": "索引对应的主分支提交；还没有索引时为 null。" }
+              },
+              "required": ["items"],
+              "additionalProperties": true
+            },
+            "safe": true
+          },
+          "get": {
+            "description": "按 id 读取一张记忆卡片的全部字段与正文。只读。",
+            "input": {
+              "type": "object",
+              "properties": {
+                "id": { "type": "string", "minLength": 1, "description": "卡片 id。" },
+                "includeDrafts": { "type": "boolean", "description": "是否也在当前工作树相对主分支尚未合并的草稿里找，默认是；传 false 可排除。" }
+              },
+              "required": ["id"],
+              "additionalProperties": false
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "card": { "type": "object", "description": "卡片的全部字段与正文（content），含 draft 与 contradictions。" },
+                "draft": { "type": "boolean", "description": "是否是尚未合入主分支的草稿。" },
+                "neighbors": { "type": "object", "description": "相邻卡片的摘要（id、status、refs）：supersedes、supersededBy、contradicts、related。" },
+                "indexedCommit": { "type": ["string", "null"], "description": "索引对应的主分支提交；还没有索引时为 null。" }
+              },
+              "required": ["card"],
+              "additionalProperties": true
+            },
+            "safe": true
+          },
+          "remember": {
+            "description": "记录一条记忆：新建一张卡片写进当前工作树的记忆目录，合入主分支后进入检索索引。refs 是来源引用（至少一项，如文件、提交或链接）；正文不超过 8000 字节。标签最多 20 个（每个不超过 100 字节），实体最多 50 个（每个不超过 200 字节）。关系（supersedes、contradicts、related）指向的卡片必须已存在。给 appendToId 时不新建，也不改正文，只把 refs（必填）、entities、tags 合并进已有卡片。supersedes 取代旧卡片，contradicts 标记与旧卡片矛盾，related 标记相关。",
+            "input": {
+              "type": "object",
+              "properties": {
+                "content": { "type": "string", "description": "记忆的正文（Markdown），新建时必填；给了 appendToId 时不能给。" },
+                "kind": { "type": "string", "enum": ["fact", "conclusion", "hypothesis", "observation"], "description": "卡片种类，默认 observation。" },
+                "refs": { "type": "array", "minItems": 1, "items": { "type": "string" }, "description": "来源引用，至少一项；给 appendToId 补充来源时同样必填。" },
+                "entities": { "type": "array", "maxItems": 50, "items": { "type": "string" }, "description": "涉及的实体，最多 50 个，每个不超过 200 字节（UTF-8）。" },
+                "tags": { "type": "array", "maxItems": 20, "items": { "type": "string" }, "description": "标签，最多 20 个，每个不超过 100 字节（UTF-8）。" },
+                "importance": { "type": "integer", "minimum": 1, "maximum": 5, "description": "重要度，默认 3。" },
+                "supersedes": { "type": "array", "items": { "type": "string" }, "description": "被这张卡片取代的卡片 id。" },
+                "contradicts": { "type": "array", "items": { "type": "string" }, "description": "与这张卡片矛盾的卡片 id。" },
+                "related": { "type": "array", "items": { "type": "string" }, "description": "相关的卡片 id。" },
+                "appendToId": { "type": "string", "description": "给已有卡片补充来源，而不是新建。" },
+                "status": { "type": "string", "enum": ["active", "contested"], "description": "新卡片的初始状态，默认 active。" }
+              },
+              "required": ["refs"],
+              "additionalProperties": false
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "id": { "type": "string", "description": "写入的卡片 id。" },
+                "created": { "type": "boolean", "description": "是新建的卡片（true）还是合并进已有卡片（false）。" },
+                "path": { "type": "string", "description": "卡片在仓库里的相对路径。" },
+                "status": { "type": "string", "description": "卡片的当前状态。" },
+                "card": { "type": "object", "description": "写入后的卡片。" }
+              },
+              "required": ["id", "created", "path"],
+              "additionalProperties": true
+            }
+          },
+          "link": {
+            "description": "在两张卡片之间建立或撤销一条关系：supersedes（from 取代 to）、contradicts（互相矛盾）、related（相关），并联动卡片状态。remove 为 true 时撤销这条关系。",
+            "input": {
+              "type": "object",
+              "properties": {
+                "from": { "type": "string", "minLength": 1, "description": "起点卡片 id。" },
+                "to": { "type": "string", "minLength": 1, "description": "终点卡片 id。" },
+                "relation": { "type": "string", "enum": ["supersedes", "contradicts", "related"], "description": "关系种类。" },
+                "remove": { "type": "boolean", "description": "为 true 时撤销这条关系，默认建立。" }
+              },
+              "required": ["from", "to", "relation"],
+              "additionalProperties": false
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "changed": { "type": "array", "items": { "type": "string" }, "description": "被改动的卡片 id。" }
+              },
+              "required": ["changed"],
+              "additionalProperties": true
+            }
+          },
+          "archive": {
+            "description": "归档一张卡片：状态置为 archived 并记下原因，文件保留以便审计，不再参与默认检索。",
+            "input": {
+              "type": "object",
+              "properties": {
+                "id": { "type": "string", "minLength": 1, "description": "要归档的卡片 id。" },
+                "reason": { "type": "string", "description": "归档原因。" }
+              },
+              "required": ["id"],
+              "additionalProperties": false
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "id": { "type": "string", "description": "被归档的卡片 id。" },
+                "path": { "type": "string", "description": "卡片在仓库里的相对路径。" },
+                "status": { "type": "string", "description": "归档后的状态，固定为 archived。" }
+              },
+              "required": ["id"],
+              "additionalProperties": true
+            }
+          }
+        },
+        "permissions": {
+          "use": {
+            "title": "读写当前研究仓的本地记忆卡片与检索索引",
+            "sessions": true,
+            "operations": ["recall", "search", "get", "remember", "link", "archive"]
+          }
+        }
+      }
+    ],
+    "protocolImplementations": ["memory/engine@1"],
+    "setup": {
+      "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/setup.mjs\""
+    },
+    "skills": ["skills/research-memory"],
+    "instructions": { "command": "\"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/instructions.mjs\"" }
+  },
+  "engines": { "node": ">=24", "coda": 15 },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coda-console/coda-plugins.git",
+    "directory": "plugins/memory"
+  },
+  "publishConfig": { "access": "public" },
+  "files": ["main.mjs", "lib", "scripts", "skills", ".coda", "README.md"]
+}
