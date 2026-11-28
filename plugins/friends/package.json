@@ -4,19 +4,22 @@
   "displayName": "好友",
   "description": "管理 Accord 身份与熟人好友通道，并提供业务无关的好友网关",
   "icon": { "symbol": "person.2.fill", "color": "blue" },
-  "version": "0.12.0",
+  "version": "0.13.0",
   "categories": [
     "Skills 与工具"
   ],
   "type": "module",
   "engines": {
-    "coda": 17
+    "coda": 22
   },
   "main": "main.mjs",
   "activationEvents": [
     "onStartupFinished"
   ],
   "uses": {
+    "friends/machine@1": [
+      "read"
+    ],
     "coda/accord@1": [
       "read",
       "publish",
@@ -207,10 +210,57 @@
           "read": { "title": "查看好友列表、读取好友分享的记录", "read": true, "operations": ["friends", "records"] },
           "publish": { "title": "通过好友网关发布、撤回记录、查看待发队列", "operations": ["publish", "retract", "outbox"] }
         }
+      },
+      {
+        "name": "friends/machine@1",
+        "title": "各台机器的好友身份摘要",
+        "description": "每台机器的本机 Accord 身份与好友摘要（作者、好友通道、证书状态、待回收的网络节点）：好友页是目录聚合视图，读它们就能一次看全各台，离线的机器也显示它最后写下的；不含私钥、入网码与证书签名。",
+        "spec": {
+          "type": "object",
+          "properties": { "author": { "type": ["string", "null"] } },
+          "required": ["author"],
+          "additionalProperties": false
+        },
+        "status": {
+          "type": "object",
+          "properties": {
+            "friends": { "type": "array", "items": { "type": "object" } },
+            "certificate": {
+              "type": ["object", "null"],
+              "properties": {
+                "key": { "type": "string" },
+                "root": { "type": "string" },
+                "active": { "type": "boolean" },
+                "from": { "type": "integer", "minimum": 0 },
+                "until": { "type": "integer", "minimum": 0 }
+              },
+              "additionalProperties": false
+            },
+            "networkRemovals": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": { "node": { "type": "string" }, "since": { "type": "integer", "minimum": 0 } },
+                "required": ["node", "since"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": ["friends", "networkRemovals"],
+          "additionalProperties": false
+        },
+        "operations": {},
+        "permissions": {
+          "read": { "title": "读各台机器的好友身份与好友列表摘要", "read": true }
+        }
       }
     ],
     "protocolImplementations": [
-      "friends/social@1"
+      "friends/social@1",
+      "friends/machine@1"
+    ],
+    "directoryViews": [
+      "friends"
     ],
     "optionalProtocolImplementations": [
       "remote-exec/machine@1"

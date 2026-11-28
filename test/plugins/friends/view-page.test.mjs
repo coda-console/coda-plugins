@@ -8,14 +8,16 @@ const A = { id: 'a', name: 'A' }, B = { id: 'b', name: 'B' }, C = { id: 'c', nam
 const AUTHOR = `ed25519:${'ab'.repeat(32)}`, ME2 = `ed25519:${'ef'.repeat(32)}`;
 const FRIEND = `ed25519:${'12'.repeat(32)}`, OTHER = `ed25519:${'34'.repeat(32)}`, THIRD = `ed25519:${'56'.repeat(32)}`;
 const SVG_NS = 'http://www.w3.org/2000/svg';
-const entry = { type: 'MODIFIED', entry: { spec: { author: AUTHOR }, status: { friends: [] } } };
-const accord = status => ({ type: 'MODIFIED', entry: { spec: { author: AUTHOR }, status: { friends: [], ...status } } });
+// 页面读的是目录里的 friends/machine@1：条目的 owner 是写它的那台机器。夹具里带 `unreachable` 的机器是没有这条记录的（没装插件、旧版）。
+const entry = { type: 'MODIFIED', entry: { owner: 'a', spec: { author: AUTHOR }, status: { friends: [] } } };
+const accord = (status, owner = 'a') => ({ type: 'MODIFIED', entry: { owner, spec: { author: AUTHOR }, status: { friends: [], ...status } } });
 
-// 严格多机的 window.coda：不指明 machine 的调用直接拒绝；记下每次发往哪台。页面不查询 Accord 记录；给模块的消息只有「共享」一节的。
+// 严格多机的 window.coda：写操作与给模块的消息不指明 machine 就直接拒绝；记下每次发往哪台。读只有一个不带 machine 的目录 watch（friends/machine@1）与一次 coda/machine@1 的 list（谁离线）；
+// 页面不查询 Accord 记录；给模块的消息只有「共享」一节的。
 // 「共享」一节读写持有方的消息默认都答空；`share` 按消息类型换成自己的答复（返回值就是 value，抛错是明确的拒绝，永不返回是没有回应）。
 const SHARE = { 'grants.list': () => ({ grants: [] }), 'proxies.list': () => [], 'ledger.list': () => [], 'grants.targets': () => [] };
-function strictCoda(page, { silent, sendFail, watch, call, machines = [A], share = {}, inviteFriend, copy, friendNodes, removeFriendNode } = {}) {
-  const log = { sent: [], calls: [], watches: [], copied: [], queries: [], toolbars: [], states: [], invites: [], nodes: [] };
+function strictCoda(page, { silent, sendFail, watch, call, machines = [A], records = machines.filter(m => !m.unreachable).map(m => m.id), offline = [], share = {}, inviteFriend, copy, friendNodes, removeFriendNode } = {}) {
+  const log = { sent: [], calls: [], watches: [], lists: [], copied: [], queries: [], toolbars: [], states: [], invites: [], nodes: [] };
   const coda = {
     machine: A, machines, getState: () => ({}), setState(state) { log.states.push(state); }, on() {},
     copy: async text => { if (copy) await copy(text); log.copied.push(text); },
@@ -34,7 +36,14 @@ function strictCoda(page, { silent, sendFail, watch, call, machines = [A], share
         page.reply({ type: 'reply', rid: msg.rid, ...reply }, { id: options.machine });
       });
     },
-    watch(kind, cb, selector, options) { log.watches.push({ cb, machine: options?.machine }); return watch ? watch(options?.machine) : Promise.resolve({ dispose() {} }); },
+    watch(kind, cb, selector, options) {
+      if (options?.machine) throw new Error('目录聚合视图的 watch 不带 machine');
+      log.watches.push({ kind, cb });
+      // 目录给出的现有记录先逐条交完（ADDED），watch 才返回；`records` 是有记录的机器。
+      for (const owner of records) cb({ type: 'ADDED', entry: { owner, spec: { author: AUTHOR }, status: { friends: [] } } });
+      return watch ? watch(kind) : Promise.resolve({ dispose() {} });
+    },
+    async list(kind) { log.lists.push(kind); return offline.map(id => ({ id, status: { offline: true } })); },
     async query(target, op, params) { log.queries.push({ target, op, params }); return { records: [] }; },
     async call(target, op, input, options) {
       if (!options?.machine) throw new Error('这一页有几台机器，call 须指明 machine');
@@ -62,12 +71,12 @@ const heroes = page => page.all(n => n.tag === 'section' && cls(n).startsWith('h
 const sectionTitles = page => page.all(n => n.tag === 'h2' && cls(n) === 'sec').map(n => n.children[0]);
 const addButtons = page => page.all(n => n.tag === 'button' && n.textContent === '添加好友');
 const callsOf = (log, op) => log.calls.filter(c => c.op === op).map(c => [c.input, c.machine]);
-const feed = (log, machine, status, author = AUTHOR) => log.watches.find(w => w.machine === machine).cb({ type: 'MODIFIED', entry: { spec: { author }, status: { friends: [], ...status } } });
+const feed = (log, machine, status, author = AUTHOR) => log.watches[0].cb({ type: 'MODIFIED', entry: { owner: machine, spec: { author }, status: { friends: [], ...status } } });
 const identiconCells = (page, node) => page.all(n => n.tag === 'rect', page.all(n => n.tag === 'svg', node)[0]).length;
 
 test('the hero shows the key-derived nickname, the identicon and the key code, with no card editing, and the status strip shows the counts and certificate', async t => {
   const { page, log } = await open(t);
-  assert.ok(heroes(page)[0].textContent.includes('读取中…'));
+  assert.ok(heroes(page)[0].textContent.includes(identityTitle(AUTHOR)) && !page.text().includes('读取中…'), 'the directory gives everything at once: no reading placeholder');
   const friends = [{ node: 'n1', author: FRIEND, bound: true }, { node: 'n2', author: OTHER }, { node: 'n3', author: THIRD, conflict: true }];
   log.watches[0].cb(accord({ certificate: { active: true, until: Date.UTC(2030, 0, 2, 3, 4) }, friends }));
   await flush();
@@ -88,7 +97,7 @@ test('the hero shows the key-derived nickname, the identicon and the key code, w
   log.watches[0].cb(accord({ certificate: { active: false } }));
   await flush();
   for (const part of ['需要证书', '代签证书', '0 位已互认', '还没有好友']) assert.ok(heroes(page)[0].textContent.includes(part), part);
-  log.watches[0].cb({ type: 'MODIFIED', entry: { spec: {}, status: { certificate: null, friends: [] } } });
+  log.watches[0].cb({ type: 'MODIFIED', entry: { owner: 'a', spec: { author: null }, status: { certificate: null, friends: [] } } });
   await flush();
   const text = heroes(page)[0].textContent;
   assert.ok(text.includes('未建身份') && text.includes('设置 › 身份') && text.includes('还没有 Accord 身份'));
@@ -572,11 +581,21 @@ test('re-handshake from the friend detail only calls handshake with the node: no
 
 // ---- 视图里有几台：页面都读，身份按公钥归组，好友按电脑分节 ----
 
-test('every reachable machine is read, with its machine named; the page keeps no machine choice and shows no machine bar', async t => {
-  const { page, log } = await open(t, { machines: [A, B, { id: 'c', name: 'C', unreachable: '离线 3 小时' }] });
-  assert.deepEqual(log.watches.map(w => w.machine), ['a', 'b']);
-  assert.deepEqual(page.all(n => n.tag === 'nav'), []);
-  assert.deepEqual(page.all(n => n.tag === 'button' && n.attrs['aria-pressed'] !== undefined), []);
+test('one watch without a machine reads the directory records, drawn once after the first read; machines are matched by owner, and the page keeps no machine choice or machine bar', async t => {
+  const gate = deferred();
+  const holder = {};
+  const { coda, log } = strictCoda({ reply: () => {} }, { machines: [A, B, C], records: ['a', 'b'], watch: () => gate.promise });
+  holder.page = await openPage(t, 'plugins/friends/view/app.mjs', coda);
+  await flush();
+  assert.deepEqual(log.watches.map(w => w.kind), ['friends/machine@1']);
+  assert.deepEqual(log.lists, ['coda/machine@1']);
+  assert.deepEqual(heroes(holder.page), [], 'nothing is drawn while the first read is not done: no loading placeholders');
+  gate.resolve({ dispose() {} });
+  await flush();
+  assert.deepEqual(sectionTitles(holder.page), ['A', 'B'], 'C has no record: no section, no error');
+  assert.ok(!holder.page.text().includes('读取中…') && !holder.page.text().includes('读不到'));
+  assert.deepEqual(holder.page.all(n => n.tag === 'nav'), []);
+  assert.deepEqual(holder.page.all(n => n.tag === 'button' && n.attrs['aria-pressed'] !== undefined), []);
 });
 
 test('two machines of one identity show one hero; machines of two identities show one hero each', async t => {
@@ -599,7 +618,7 @@ test('same nickname and last 4 digits across the page: the self of one machine a
   assert.ok(heroes(page)[0].textContent.includes('xs #04084'));
   assert.ok(page.text().includes('xs #14084'));
   assert.ok(!page.text().includes('xs #4084'));
-  log.watches.find(w => w.machine === 'b').cb({ type: 'MODIFIED', entry: { spec: { author: ME2 }, status: { friends: [] } } });
+  feed(log, 'b', {}, ME2);
   await flush();
   assert.ok(heroes(page)[0].textContent.includes('xs #4084'), 'alone it needs no extra digit');
 });
@@ -621,36 +640,64 @@ test('the friends are split by machine, titled with the machine name; the same f
   assert.ok(b.textContent.includes('1 位已互认') && b.textContent.includes('1 待互认'), 'B has a pending friend, so its own strip shows');
 });
 
-test('a machine that cannot be read says why in its own section, with no add-friend, and the others carry on', async t => {
-  const { page, log } = await open(t, { machines: [A, B, { id: 'c', name: 'C', unreachable: '离线 3 小时' }] });
-  feed(log, 'a', { friends: [{ node: 'n1', author: FRIEND, bound: true }] });
-  feed(log, 'b', {});
-  await flush();
-  assert.deepEqual(sectionTitles(page), ['A', 'B', 'C']);
-  assert.ok(page.text().includes('C 读不到：离线 3 小时'));
-  assert.equal(addButtons(page).length, 2);
-  assert.equal(tiles(page).length, 1);
-});
-
-test('a machine whose Accord cannot be read says only why in its section, and the other shows normally', async t => {
-  const { page, log } = await open(t, { machines: [A, B], watch: machine => (machine === 'a' ? Promise.reject(new Error('boom')) : Promise.resolve({ dispose() {} })) });
+test('an operation on an offline machine still goes to that machine, and the page says why it failed', async t => {
+  const { page, log } = await open(t, { machines: [A, B], offline: ['b'], call: (input, options) => { if (options.machine === 'b') throw Object.assign(new Error('b 离线，连不上'), { code: 'unavailable' }); return {}; } });
   feed(log, 'b', { friends: [{ node: 'n1', author: FRIEND, bound: true }] });
   await flush();
-  const [a, b] = page.all(n => n.tag === 'section' && !cls(n).startsWith('hero'));
-  assert.ok(a.textContent.includes('A：读不到本机的好友信息：boom'));
-  assert.deepEqual(page.all(n => n.tag === 'button', a), [], 'no add-friend, no status strip, no friends on the failed machine');
-  assert.ok(!a.textContent.includes('还没有好友') && !a.textContent.includes('位已互认'));
-  assert.equal(page.all(n => n.tag === 'button' && n.textContent === '添加好友', b).length, 1);
-  assert.equal(tiles(page).length, 1);
-  assert.equal(heroes(page).length, 1, 'the failed machine takes no part in the grouping');
+  tiles(page)[0].fire('click');
+  const detail = scrims(page)[0];
+  buttonIn(page, detail, '重新互认').fire('click');
+  await flush();
+  assert.deepEqual(callsOf(log, 'handshake'), [[{ node: 'n1' }, 'b']]);
+  assert.ok(detail.textContent.includes('互认失败：b 离线，连不上'));
 });
 
-test('when every machine\'s Accord cannot be read, the hero and its key line both say so instead of staying on loading', async t => {
-  const { page } = await open(t, { machines: [A, B], watch: () => Promise.reject(new Error('boom')) });
+test('an offline machine keeps its section with the last identity and friends it wrote, marked offline; the others are unaffected, and the add-friend is still there', async t => {
+  const { page, log } = await open(t, { machines: [A, B, C], offline: ['c'] });
+  feed(log, 'a', { friends: [{ node: 'n1', author: FRIEND, bound: true }] });
+  feed(log, 'c', { friends: [{ node: 'n2', author: OTHER, bound: true }] });
+  await flush();
+  assert.deepEqual(sectionTitles(page), ['A', 'B', 'C']);
+  const [a, b, c] = page.all(n => n.tag === 'section' && !cls(n).startsWith('hero'));
+  assert.ok(c.textContent.includes('离线') && !a.textContent.includes('离线') && !b.textContent.includes('离线'));
+  assert.equal(tiles(page).length, 2);
+  assert.equal(page.all(n => n.tag === 'button' && cls(n).startsWith('f-tile'), c).length, 1, 'its friend is shown');
+  assert.equal(addButtons(page).length, 3);
+});
+
+test('a machine without a record gets no section and no error, and a record that shows up later adds its section', async t => {
+  const { page, log } = await open(t, { machines: [A, B], records: ['b'] });
+  assert.deepEqual(sectionTitles(page), ['B']);
+  assert.equal(heroes(page).length, 1);
+  assert.ok(!page.text().includes('读不到'));
+  feed(log, 'a', { friends: [{ node: 'n1', author: FRIEND, bound: true }] });
+  await flush();
+  assert.deepEqual(sectionTitles(page), ['A', 'B']);
+  assert.equal(tiles(page).length, 1);
+});
+
+test('a record that is deleted takes its section away; a record of a machine outside the view is ignored', async t => {
+  const { page, log } = await open(t, { machines: [A, B] });
+  log.watches[0].cb({ type: 'DELETED', entry: { owner: 'b', spec: { author: AUTHOR }, status: { friends: [] } } });
+  log.watches[0].cb(accord({ friends: [{ node: 'x', author: FRIEND, bound: true }] }, 'zzz'));
+  await flush();
+  assert.deepEqual(sectionTitles(page), ['A']);
+  assert.equal(tiles(page).length, 0);
+});
+
+test('records are matched to machines by owner whatever its case', async t => {
+  const { page, log } = await open(t, { machines: [{ id: 'AbC', name: 'Mac' }], records: [] });
+  log.watches[0].cb(accord({ friends: [{ node: 'n1', author: FRIEND, bound: true }] }, 'abc'));
+  await flush();
+  assert.equal(tiles(page).length, 1);
+});
+
+test('when the directory cannot be read, the hero says so with the reason instead of staying on loading', async t => {
+  const { page } = await open(t, { machines: [A, B], records: [], watch: () => Promise.reject(new Error('boom')) });
   await flush();
   const [hero] = heroes(page);
   assert.equal(heroes(page).length, 1);
-  assert.ok(hero.textContent.includes('读不到身份') && hero.textContent.includes('读不到公钥'));
+  assert.ok(hero.textContent.includes('读不到身份') && hero.textContent.includes('读不到公钥') && hero.textContent.includes('读不到好友信息：boom'));
   assert.ok(!hero.textContent.includes('读取中…'));
 });
 
@@ -1451,13 +1498,13 @@ test('without window.coda.friendNodes there is no network entry and no pending-r
   assert.equal(netBlock(only.page), undefined);
 });
 
-test('with friendNodes each reachable section has an icon entry at the end of its heading row; one machine puts it on the Friends row; nothing is called on open or on receiving removals', async t => {
-  const { page, log } = await openNetPage(t, { machines: [A, B, { id: 'c', name: 'C', unreachable: '离线' }], friendNodes: () => netRead([]), status: { a: { networkRemovals: [removal('41')] } } });
+test('with friendNodes each section, an offline one too, has an icon entry at the end of its heading row; one machine puts it on the Friends row; nothing is called on open or on receiving removals', async t => {
+  const { page, log } = await openNetPage(t, { machines: [A, B, C], offline: ['c'], friendNodes: () => netRead([]), status: { a: { networkRemovals: [removal('41')] } } });
   const entries = netEntries(page);
-  assert.equal(entries.length, 2, 'the unreachable section has none');
+  assert.equal(entries.length, 3);
   for (const entry of entries) assert.deepEqual([entry.attrs.title, cls(entry), entry.children[0].namespaceURI, isDisabled(entry)], ['网络节点', 'kebab', SVG_NS, false]);
   const heads = page.all(n => n.tag === 'h2' && cls(n) === 'sec');
-  assert.deepEqual(heads.map(head => head.children.includes(entries[0]) || head.children.includes(entries[1])), [true, true, false]);
+  assert.deepEqual(heads.map((head, i) => head.children.includes(entries[i])), [true, true, true]);
   assert.ok(cls(heads[0].children.at(-2)).includes('spacer') && heads[0].children.at(-1) === entries[0]);
   assert.deepEqual(log.nodes, [], 'opening the page and receiving removals never calls friendNodes');
 
