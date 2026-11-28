@@ -1,94 +1,75 @@
-// 页面把视图里各台机器的 board 回包按人合并成一份：纯函数，不碰 Coda 的 Node API；页面和单测都加载它（身份展示名取自 WebView 标准库 coda-view://lib/v1/accord.js）。
+// 页面把目录里 token-board/usage@1 的记录合成页面要的两块：纯函数，不碰 Coda 的 Node API；页面和单测都加载它
+// （身份展示名取自 WebView 标准库 coda-view://lib/v1/accord.js）。
 //
-// 两台都可能读到同一位好友的记录、都读到对方发布的副本，按作者直接相加会重复，所以合并靠回包里的 sources：
-// 每个 (作者, 来源) 的合计，和它是不是这台自己的本机数据。同一个 (作者, 来源) 只算一次：有那台来源自己的本机数据就用它；否则依次比：
-// 1. 当天曲线记录（coda/token-today）的版本 todayVersion，高的赢，一份有一份没有就有的赢。曲线一个来源只有一条、每次发布覆盖，版本由发布方签出，
-//    各台读到的可直接比，不受归档分块变化影响；不比合计，因为旧曲线盖不满查询窗口时后端改用整日归档，把窗口外的用量也算进来，旧副本的合计反而更大；
-// 2. todayVersion 相同，或两份都没有曲线记录（只有旧版记录的来源）：比 Token 合计大的，再比回合数。
+// 记录有三种（spec.record）：
+// - usage：一台机器的本机用量（月块日归档的一块，或 48 小时曲线），带作者、sourceId 与弃用的旧来源 ID；
+// - state：这台的分享状态、本机作者与好友网关给的好友作者；
+// - mirror：好友与自己别的设备的签名记录（kind、id、version、body），各台镜像来的可能是同一条的不同版本。
+// 「我」是各台 usage 的合计（不分作者）。好友榜每个（作者, sourceId）只算一次：有那台本机用量记录的用本机的，否则取各台镜像里
+// （作者, kind, id）版本最大的一条；同一作者下 retired 的旧来源一律不要；窗口的拼法、旧版 coda/token-usage 的取舍都在 aggregateLeaderboard 里。
 // 已知边界：好友撤回记录后，还没同步到的那台会让旧数多显示一会儿，不处理。
-// 某台已弃用的旧来源 ID（回包的 retired，不受本机用量读没读到影响）在同一作者下统一不要；再按作者汇总，排序沿用 aggregateLeaderboard。
 
 import { identityTitles } from 'coda-view://lib/v1/accord.js';
-import { Tally, compareEntries } from './usage.mjs';
+import { aggregateLeaderboard, DAY_ARCHIVE_KIND, isWithdrawn, sourceOf, TODAY_CURVE_KIND, USAGE_RECORD_KIND } from './usage.mjs';
 
-export const STALE_PLUGIN = '这台的 Token 消耗榜插件需要更新';
-export const LOCAL_FAILED = '读不到本机用量';
+const ALL = 'all';   // 「我」的合计不分作者：聚合时把各台本机用量当同一个作者
+const keyOf = (...parts) => JSON.stringify(parts);
+// 签名记录的写法；本机用量记录没有版本（同一来源只取本机的，不比版本）。
+const asRecord = (spec, author, version) => ({ author, kind: spec.kind, id: spec.id, version, body: spec.body });
+// 撤回留下的空记录体：好友撤回了就是没分享。
+const withdrawn = spec => !Object.keys(spec.body).length || isWithdrawn(spec.kind, spec.body);
 
-const addModels = (tally, usage) => { for (const model of usage.models ?? []) tally.addModel(model); };
-const fresher = (a, b) => (a === undefined ? false : b === undefined || a > b);
-const better = (source, held) => {
-  if (source.local || held.local) return source.local && !held.local;
-  if (source.todayVersion !== held.todayVersion) return fresher(source.todayVersion, held.todayVersion);
-  return (source.totalTokens - held.totalTokens || source.turns - held.turns) > 0;
-};
+function aggregate(records, authors, from, to) {
+  return aggregateLeaderboard({
+    friends: authors.map(author => ({ author })), from, to,
+    dayRecords: records.filter(record => record.kind === DAY_ARCHIVE_KIND), todayRecords: records.filter(record => record.kind === TODAY_CURVE_KIND),
+    legacyUsageRecords: records.filter(record => record.kind === USAGE_RECORD_KIND),
+  });
+}
 
 /**
- * members：视图里的每台机器 `{ machine: { id, name }, board }`（读到了回包）、`{ machine, problem }`（读不到，problem 是原因）或 `{ machine, pending: true }`（还在等回包）。
- * 没带 `sources` 的回包来自旧版插件，按读不到处理；回包里本机用量没读到（`local` 为 null）的，榜单照用，但记一条 `partial` 的 problem。
+ * entries：目录里本协议的记录条目 `{ owner, location, local, version, id, spec }`；`[from, to)` 是时间窗。
  * 返回：
- * - `entries`：榜单，每个作者一行，带 `displayId`（`昵称 #4位尾号`，同昵称且尾号相撞时向左加位；无昵称的公钥是 8 位十六进制短码）；
- * - `locals`：本机用量，每个身份一块 `{ author, machines, ...合计与分模型, truncated }`；同一身份（selfAuthor）的几台相加，没有身份的每台各算一块；
- * - `problems`：`[{ machine, reason, partial? }]`，`pending`：还在等回包的机器；`incomplete` 为真表示合计还不全；
- * - `readable`：有没有读到回包的机器；`friends`：读到回包的机器里有没有哪台有好友（回包的 `friendCount`，与榜上谁是「我」无关）；`accord`、`noAccord`（读到了但没有 Accord 身份的机器）、`errors`（各台回包里的提示 `{ machine, text }`）、`truncated`。
+ * - `mine`：各台本机用量的合计与分模型（Tally 的结果），`machines` 是有本机用量记录的机器名（条目的 `location`）；
+ * - `board`：好友榜 `{ friends, entries, unshared }`：`friends` 是好友（不含自己）的人数；`entries` 是分享了的人（含「我」），已按总 Token 排名，
+ *   每项带 `author`、`displayId`（`昵称 #4位尾号`，同昵称且尾号相撞时向左加位）、`self`、`rank`、合计与分模型；`unshared` 是没分享的好友个数；
+ * - `states`：各台的状态记录 `{ id, owner, machine, ...spec }`，页面拿它画分享开关与页脚。
  */
-export function mergeBoards(members) {
-  const problems = [], pending = [], boards = [];
-  for (const { machine, board, problem, pending: waiting } of members) {
-    if (problem) problems.push({ machine, reason: problem });
-    else if (waiting) pending.push(machine);
-    else if (!Array.isArray(board?.sources)) problems.push({ machine, reason: STALE_PLUGIN });
-    else {
-      boards.push({ machine, board });
-      if (board.local == null) problems.push({ machine, reason: LOCAL_FAILED, partial: true });
-    }
+export function summarize(entries, { from, to }) {
+  const states = [], usage = [], mirrors = [];
+  for (const entry of entries) {
+    const record = entry.spec?.record;
+    if (record === 'state') states.push(entry);
+    else if (record === 'usage') usage.push(entry);
+    else if (record === 'mirror') mirrors.push(entry.spec);
   }
 
-  const retired = new Set();
-  for (const { board } of boards) for (const id of board.retired ?? []) retired.add(JSON.stringify([board.selfAuthor, id]));
-  const chosen = new Map();
-  for (const { board } of boards) {
-    for (const source of board.sources) {
-      const key = JSON.stringify([source.author, source.sourceId]), held = chosen.get(key);
-      if (!source.local && retired.has(key)) continue;
-      if (!held || better(source, held)) chosen.set(key, source);
-    }
-  }
+  const total = aggregate(usage.map(({ spec }) => asRecord(spec, ALL, 0)), [ALL], from, to).entries[0];
+  const { author, self, shared, rank, ...totals } = total;
+  const mine = { machines: [...new Set(usage.map(entry => entry.location))], ...totals };
 
-  const people = new Map();
-  const person = author => {
-    if (!people.has(author)) people.set(author, { author, self: false, shared: false, tally: new Tally() });
-    return people.get(author);
-  };
-  for (const { board } of boards) {
-    for (const entry of board.people ?? []) {
-      const one = person(entry.author);
-      one.self ||= entry.self === true;
-      one.shared ||= entry.shared === true;
-    }
+  const selves = new Set(states.map(({ spec }) => spec.author).filter(Boolean));
+  const authors = [...new Set([...selves, ...states.flatMap(({ spec }) => spec.friends)])];
+  const local = new Set(usage.filter(({ spec }) => spec.author).map(({ spec }) => keyOf(spec.author, spec.sourceId)));
+  const retired = new Set(usage.filter(({ spec }) => spec.author).flatMap(({ spec }) => spec.legacy.map(id => keyOf(spec.author, id))));
+  const latest = new Map();
+  for (const spec of mirrors) {
+    const key = keyOf(spec.author, spec.kind, spec.id);
+    if (!latest.has(key) || spec.version > latest.get(key).version) latest.set(key, spec);
   }
-  for (const source of chosen.values()) addModels(person(source.author).tally, source);
+  const records = [
+    ...usage.filter(({ spec }) => spec.author).map(({ spec }) => asRecord(spec, spec.author, 0)),
+    ...[...latest.values()].filter(spec => {
+      const source = keyOf(spec.author, sourceOf(spec.kind, spec.id));
+      return !local.has(source) && !retired.has(source) && !withdrawn(spec);
+    }).map(spec => asRecord(spec, spec.author, spec.version)),
+  ];
   // 展示名按这次榜单里的全部作者一起算：同昵称、末 4 位尾号相同的才向左加位。
-  const titles = identityTitles(people.keys());
-  const entries = [...people.values()].map(({ tally, ...one }) => ({ ...one, displayId: titles.get(one.author) ?? '未知', ...tally.result() })).sort(compareEntries);
-  entries.forEach((entry, index) => { entry.rank = index + 1; });
+  const titles = identityTitles(authors);
+  const people = aggregate(records, authors, from, to).entries
+    .map(person => ({ ...person, self: selves.has(person.author), shared: selves.has(person.author) || person.shared, displayId: titles.get(person.author) ?? '未知' }));
+  const ranked = people.filter(person => person.shared).map((person, index) => ({ ...person, rank: index + 1 }));
+  const board = { friends: people.filter(person => !person.self).length, entries: ranked, unshared: people.filter(person => !person.shared).length };
 
-  const groups = new Map();
-  for (const { machine, board } of boards.filter(({ board }) => board.local != null)) {
-    const key = board.selfAuthor ?? `machine:${machine.id}`;
-    if (!groups.has(key)) groups.set(key, { author: board.selfAuthor ?? null, machines: [], tally: new Tally(), truncated: false });
-    const group = groups.get(key);
-    group.machines.push(machine);
-    group.truncated ||= board.truncated?.usage === true;
-    addModels(group.tally, board.local ?? {});
-  }
-  const locals = [...groups.values()].map(({ tally, ...group }) => ({ ...group, ...tally.result() }));
-
-  return {
-    entries, locals, problems, pending, readable: boards.length > 0, incomplete: problems.length > 0 || pending.length > 0,
-    friends: boards.some(({ board }) => board.friendCount > 0),
-    accord: boards.some(({ board }) => board.accord),
-    noAccord: boards.filter(({ board }) => !board.accord).map(({ machine }) => machine),
-    errors: boards.flatMap(({ machine, board }) => (board.errors ?? []).map(text => ({ machine, text }))),
-    truncated: { friends: boards.some(({ board }) => board.truncated?.friends) },
-  };
+  return { mine, board, states: states.map(({ id, owner, location, spec }) => ({ id, owner, machine: location, ...spec })) };
 }
