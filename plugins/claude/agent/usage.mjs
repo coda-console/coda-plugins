@@ -4,7 +4,9 @@
 // `served` when the SDK names the one that ran (`canonicalModel`) and else by the SDK's own name as the unlayered `model` label; on a
 // model service (providers.mjs) the usage says its `service` and `asked` instead (Coda's docs/plugins.md「Coda 的用量记录」). On
 // Claude's own models the row of the model the turn asked for (the session's chosen one) also says `asked`, so that its turns and
-// tokens are one record; a subagent's model is never told as asked, nor is a model told by `model` (that label stands alone).
+// tokens are one record; a subagent's model is never told as asked, nor is a model told by `model` (that label stands alone). That
+// row is the one named as asked (by its key or canonical name) or one the turn's main thread said it ran on (`confirmed`: the
+// models of its init and of its own messages): a lone model that is neither, a subagent's say, is never taken for the main one.
 //
 // The SDK's result carries `modelUsage`, per model and cumulative over the query() call: main loop, Task subagents and all. This
 // keeps what the last result said (`base`) and answers each result with the difference, so that a turn says what it used.
@@ -81,8 +83,8 @@ export class PromptUsage {
   // `{ service, asked }` of the model service it runs on (`{}` for a service whose address gives no reference), null on Claude's own models.
   restarted(resumed, requested = null) { this.base = resumed ? null : new Map(); this.held = new Spent(); this.requested = requested; }
   // What this result's turn used (never throws: the result is handled whatever this makes of it). `asked`: the model the turn ran as
-  // chosen, on Claude's own models.
-  measure(m, asked = null) {
+  // chosen, on Claude's own models; `confirmed`: the models its main thread said it ran on (never a subagent's).
+  measure(m, asked = null, confirmed = []) {
     const spent = new Spent();
     try {
       const entries = Object.entries(m.modelUsage ?? {}).map(([key, usage]) => ({ key, usage, counts: fromModelUsage(usage) })).filter(entry => entry.counts);
@@ -98,12 +100,10 @@ export class PromptUsage {
       const turn = entries.map(entry => ({ ...entry, used: increase(entry.counts, this.base.get(entry.key)) }));
       for (const { key, counts } of turn) this.base.set(key, counts);
       const active = turn.filter(entry => !none(entry.used));
-      // The main model's row is the one asked for, whatever name the SDK gives it; with one model alone in the turn, that one.
+      // The main model's row is the one asked for, or else the one its main thread said ran, whatever name the SDK gives it.
       const bare = name => typeof name === 'string' ? name.replace(/\[[^\]]+\]$/, '') : name;
-      const main = !this.requested && typeof asked === 'string' && asked
-        ? active.find(entry => named(entry) && [entry.key, named(entry)].some(name => bare(name) === bare(asked)))
-          ?? (new Set(active.map(entry => named(entry) || entry.key)).size === 1 ? active.find(named) : undefined)
-        : undefined;
+      const is = names => entry => named(entry) && [entry.key, named(entry)].some(name => names.map(bare).includes(bare(name)));
+      const main = !this.requested && typeof asked === 'string' && asked ? active.find(is([asked])) ?? active.find(is([...confirmed])) : undefined;
       for (const entry of active) {
         const { key, used } = entry, canonical = named(entry);
         // A service's model is told by the name the SDK has it asked as, which is no model that ran; Claude's own by the canonical one.
