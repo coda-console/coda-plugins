@@ -1,6 +1,8 @@
-// 好友页：各台电脑的 Accord 身份（Hero）、按电脑分节的好友列表与详情、添加好友。
-// 页面不自己选机器：视图里有几台就都读，身份按公钥归组、好友按电脑分节（lib/view-members.mjs）；写操作发往它所在的那一台。
-// Accord 的读写（coda/accord@1）都在这里按交互发起；「共享」（授给好友的、好友授给本机的远程执行、最近的操作）只经模块读写各台本机。
+// 好友页：各台电脑的 Accord 身份（Hero）、按电脑分节的好友列表与详情、添加好友。目录聚合视图（清单 directoryViews）。
+// 读：一个不带 machine 的 coda.watch 读目录里各台模块写下的 friends/machine@1（本机 Accord 身份与好友摘要，lib/machine-record.mjs），先读齐一次再画，
+// 按条目的 owner 对到视图里的成员（lib/view-members.mjs）；身份按公钥归组、好友按电脑分节；离线的电脑照样显示它最后写下的，并标出离线（看 coda/machine@1 的 offline）；
+// 没有这条记录的成员不出节。写：添加好友、互认、移除等（coda/accord@1 的 accept、handshake、remove）都带 { machine } 发往它所在的那一台，那台离线时失败并写出原因。
+// 「共享」（授给好友的、好友授给本机的远程执行、最近的操作）经 postMessage(…, { machine }) 问各台的模块。
 // 网络节点（friendNodes / removeFriendNode，试用）：分节标题行的入口打开抽屉，列出入了网却没完成互认的残留节点，删除由客户端弹确认框；
 // 移除好友后留在网络里的节点（status.networkRemovals）显示在分节里，用户点「重试」才读、才删，页面不会自己调用。
 // 昵称、头像都由 Accord 公钥推出（WebView 标准库 coda-view://lib/v1/accord.js、avatar.mjs），没有可编辑的名片；
@@ -8,15 +10,18 @@
 import { shortAuthor } from 'coda-view://lib/v1/accord.js';
 import { accordStatusSummary, resolveAvatar } from '../lib/avatar.mjs';
 import { checked, parseInvite } from '../lib/friends.mjs';
-import { friendSections, identities, listMembers, memberTitles } from '../lib/view-members.mjs';
+import { applyEntry, applyOffline, friendSections, identities, listMembers, memberOf, memberTitles } from '../lib/view-members.mjs';
 import { fill, h, identiconSvg, svg } from './dom.mjs';
 
 const ACCORD = 'coda/accord@1', LOCAL = { kind: ACCORD, id: 'local' };
+const MACHINE_RECORD = 'friends/machine@1', MACHINE = 'coda/machine@1';
 const coda = window.coda;
 const root = document.getElementById('root');
 const STATUS_TEXT = { bound: '已互认', pending: '待互认', conflict: '密钥冲突' };
 const MACHINE_KIND = 'remote-exec/machine@1';
 const RECOVER_MS = 3000;
+const OFFLINE_HINT = '这台电脑离线，显示的是它最后一次写下的身份与好友；添加、互认、移除等操作要等它回来才能做。';
+const OFFLINE_POLL_MS = 30_000;
 // 结果不明的撤销：连续读到这么多遍有效列表、授权仍可用，就不再自动重发。
 const REVOKE_RETRIES = 3;
 // 结果不明的授予：连续读到这么多遍有效列表、里面都没有这条授权，就回滚这一行，允许重试（持有方对同一目标的授予幂等）。
@@ -24,11 +29,11 @@ const GRANT_CONFIRMS = 3;
 // 仅限目录的授予、改范围要先到目标机探测（持有方最长等 30 秒）：页面多等一会儿再算没有回应。
 const PROBE_WAIT_MS = 45_000;
 
-// 视图里的每台电脑（成员在页面生命周期内不变）各存一份数据；读不到的（unreachable）也在，只是不发请求。
+// 视图里的每台电脑（成员在页面生命周期内不变）各存一份数据；没有 friends/machine@1 记录的 `loaded` 为 false，不出节。
 // 节点的名字、忙碌、错误、已收回按（电脑, 控制服务器节点 ID）记在 m.fn 里，不与好友行的 state.busy / state.notice 混用（那两个按 Accord 的 node 记）。
-const members = listMembers(coda).map(m => ({ ...m, entry: null, author: null, friends: [], loaded: false, accordProblem: null, fn: { names: new Map(), done: new Set(), busy: new Set(), errors: new Map(), readErrors: new Map(), blocks: new Map(), noCreds: false } }));
-const live = members.filter(m => !m.unreachable);
+const members = listMembers(coda).map(m => ({ ...m, entry: null, author: null, friends: [], loaded: false, fn: { names: new Map(), done: new Set(), busy: new Set(), errors: new Map(), readErrors: new Map(), blocks: new Map(), noCreds: false } }));
 const multi = members.length > 1;
+let firstRead = false, loadError = null;   // firstRead：第一次读完（成功或失败）才画，之后记录变了才重画
 const state = { busy: new Set(), notice: new Map(), heroNotice: new Map(), detail: null, removing: null, menu: null };
 let netBusy = false, netView = null; // 同一页同一时间只有一个好友节点操作在途；netView 是开着的抽屉里读到的内容
 const via = m => ({ machine: m.id });
@@ -60,23 +65,30 @@ addEventListener('message', event => {
   if (wait.late) { pendingReplies.delete(rid); wait.late(ok ? { value } : { failure }); } else if (ok) wait.resolve(value); else wait.reject(failure);
 });
 
-// ---- 读各台的 Accord ----
-function onChange(m, { type, entry }) {
-  if (type === 'DELETED' || !entry) return;
-  m.entry = entry;
-  m.author = entry.spec?.author ?? null;
-  m.friends = entry.status?.friends ?? [];
+// ---- 读目录里各台的 friends/machine@1 ----
+// 条目没了（DELETED）当这台没有记录。记录里的好友表一变，已成功移除而等推送确认的通道就可以清理了。
+function onChange({ type, entry }) {
+  const m = memberOf(members, entry?.owner);
+  if (!m) return;
+  applyEntry(m, type === 'DELETED' ? null : entry);
   for (const one of gone) {
     if (one.m !== m || m.friends.some(f => f.node === one.node)) continue;
     gone.delete(one); state.busy.delete(one.key); state.notice.delete(one.key);
   }
-  m.loaded = true;
-  draw();
+  if (firstRead) draw();
 }
-async function start(m) {
-  try { await coda.watch(ACCORD, event => onChange(m, event), { id: 'local' }, via(m)); }
-  catch (e) { m.accordProblem = `读不到本机的好友信息：${e.message}`; }
+// 哪几台离线：只有 coda/machine@1 的 offline 说得出，它到点不推送，所以打开时读一次，之后隔一会儿再读；读不到就都当在线。
+async function readOffline() {
+  try { return applyOffline(members, await coda.list(MACHINE)); } catch { return false; }
+}
+async function start() {
+  await Promise.all([
+    Promise.resolve(coda.watch(MACHINE_RECORD, onChange)).catch(e => { loadError = `读不到好友信息：${e.message}`; }),
+    readOffline(),
+  ]);
+  firstRead = true;
   draw();
+  setInterval(async () => { if (await readOffline()) draw(); }, OFFLINE_POLL_MS);
 }
 
 // ---- 头像 ----
@@ -135,7 +147,6 @@ function tile(label, value, sub, dot) {
 }
 // 一台电脑的好友数与证书状态。
 function statusTiles(m, rows) {
-  if (!m.loaded) return h('div', { class: 'bento' }, tile('好友', '读取中…'), tile('身份', '读取中…'));
   const summary = accordStatusSummary(m.entry, rows), { bound, pending, conflict, total } = summary.friends, cert = CERT[summary.cert];
   const sub = summary.cert === 'active' ? (summary.certUntil ? `证书有效至 ${formatTime(summary.certUntil)}` : '可正常发布记录') : cert.sub;
   return h('div', { class: 'bento' },
@@ -149,21 +160,22 @@ function drawHero(id, sections, titles) {
   const { author, signer } = id, ready = Boolean(signer);
   const summary = accordStatusSummary(signer?.entry, []);
   const notice = state.heroNotice.get(author ?? '');
-  const settled = members.every(m => m.loaded || m.unreachable || m.accordProblem);
-  const name = author ? titles.get(author) : !settled ? '读取中…' : ready ? '未建身份' : '读不到身份';
+  const name = author ? titles.get(author) : ready ? '未建身份' : '读不到身份';
   const single = !multi && sections[0];
   return h('section', { class: 'hero' },
     h('div', { class: 'banner' }, h('div', { class: 'banner-acts' },
-      single && !single.unreachable ? h('button', { class: 'pill strong', type: 'button', onclick: () => openInvite(single.member) }, '添加好友') : null)),
+      single ? h('button', { class: 'pill strong', type: 'button', onclick: () => openInvite(single.member) }, '添加好友') : null)),
     h('div', { class: 'hero-body' },
       h('div', { class: 'hero-id' },
         h('span', { class: 'av-ring' }, avatar(resolveAvatar({ author, name }), 'lg')),
         h('div', { class: 'hero-names' }, h('div', { class: 'name-line' }, h('h2', { class: 'hero-name selectable' }, name), h('span', { class: 'tag' }, '我的身份')),
           h('button', { class: 'fp mono', type: 'button', disabled: !author, title: author ? '复制完整公钥' : '', onclick: () => copyKey(author),
-          }, author ? `ed25519:${summary.short}… · 复制` : !ready ? (settled ? '读不到公钥' : '读取中…') : summary.cert === 'no_identity' ? '未建身份' : '未取得公钥'))),
-      !author && ready && settled ? h('p', { class: 'hint' }, '这台电脑还没有 Accord 身份：前往客户端「设置 › 身份」创建后，好友才能认出你。') : null,
+          }, author ? `ed25519:${summary.short}… · 复制` : !ready ? '读不到公钥' : summary.cert === 'no_identity' ? '未建身份' : '未取得公钥'))),
+      !author && ready ? h('p', { class: 'hint' }, '这台电脑还没有 Accord 身份：前往客户端「设置 › 身份」创建后，好友才能认出你。') : null,
+      loadError ? h('p', { class: 'error selectable' }, loadError) : null,
+      single?.offline ? h('p', { class: 'hint' }, OFFLINE_HINT) : null,
       notice ? h('p', { class: notice.kind }, notice.text) : null,
-      single && !single.unreachable ? statusTiles(single.member, single.rows) : null));
+      single ? statusTiles(single.member, single.rows) : null));
 }
 async function copyKey(author) {
   try { await coda.copy(author); state.heroNotice.set(author, { kind: 'ok', text: '公钥已复制' }); } catch (e) { state.heroNotice.set(author, { kind: 'error', text: `复制失败：${e.message}` }); }
@@ -985,27 +997,27 @@ function friendTile(m, row) {
 }
 
 // 每台电脑一节；只有一台时没有节标题，也不重复画身份卡上已有的状态条和「添加好友」。
-function drawSection({ member: m, title, unreachable, rows }) {
-  const down = !unreachable ? null : m.unreachable ? `${m.name} 读不到：${unreachable}` : `${multi ? `${m.name}：` : ''}${unreachable}`;
-  const summary = !unreachable && m.loaded ? accordStatusSummary(m.entry, rows) : null;
+function drawSection({ member: m, title, offline, rows }) {
+  const summary = accordStatusSummary(m.entry, rows);
   // 几台时状态条只在有需要提示的状态（证书有问题、待互认、冲突）时出；只有一台时状态条在身份卡上。
-  const attention = summary && (summary.cert !== 'active' || summary.friends.pending || summary.friends.conflict);
-  const empty = !m.loaded ? '正在读取…' : '还没有好友。点上方「添加好友」，粘贴对方发来的邀请即可。';
+  const attention = summary.cert !== 'active' || summary.friends.pending || summary.friends.conflict;
   return h('section', {},
-    h('h2', { class: 'sec' }, title ?? '好友', unreachable ? null : h('span', { class: 'count', hidden: !rows.length }, String(rows.length)),
-      unreachable || !canNet() ? null : [h('span', { class: 'spacer' }), h('button', { class: 'kebab', type: 'button', title: '网络节点', 'aria-label': '网络节点', disabled: netBusy, onclick: () => openNet(m) }, netIcon())]),
-    down ? h('p', { class: 'error selectable' }, down) : [
-      multi && attention ? statusTiles(m, rows) : null,
-      multi ? h('div', { class: 'line' }, h('button', { class: 'pill strong', type: 'button', onclick: () => openInvite(m) }, '添加好友')) : null,
-      rows.length ? h('ul', { class: 'friends' }, rows.map(row => friendTile(m, row))) : multi && m.loaded ? null : h('p', { class: 'empty' }, empty),
-      removalBlock(m)]);
+    h('h2', { class: 'sec' }, title ?? '好友', h('span', { class: 'count', hidden: !rows.length }, String(rows.length)),
+      offline && multi ? h('span', { class: 'badge pending' }, '离线') : null,
+      canNet() ? [h('span', { class: 'spacer' }), h('button', { class: 'kebab', type: 'button', title: '网络节点', 'aria-label': '网络节点', disabled: netBusy, onclick: () => openNet(m) }, netIcon())] : null),
+    multi && offline ? h('p', { class: 'hint' }, OFFLINE_HINT) : null,
+    multi && attention ? statusTiles(m, rows) : null,
+    multi ? h('div', { class: 'line' }, h('button', { class: 'pill strong', type: 'button', onclick: () => openInvite(m) }, '添加好友')) : null,
+    rows.length ? h('ul', { class: 'friends' }, rows.map(row => friendTile(m, row))) : multi ? null : h('p', { class: 'empty' }, '还没有好友。点上方「添加好友」，粘贴对方发来的邀请即可。'),
+    removalBlock(m));
 }
 
 const page = h('div', { class: 'page' });
 function draw() {
+  if (!firstRead) return;
   const titles = memberTitles(members), sections = friendSections(members, titles);
   drawn = sections;
-  const ids = identities(live);
+  const ids = identities(members);
   if (!ids.length) ids.push({ author: null, signer: null, members: [] });
   fill(page, ids.map(id => drawHero(id, sections, titles)), sections.map(drawSection));
   if (state.detail) { if (detailRow()) drawDetail(); else closeDialog(); }
@@ -1015,7 +1027,6 @@ function draw() {
 
 picker.dialog.scrim.hidden = true;
 root.replaceChildren(page, detail.dialog.scrim, invite.dialog.scrim, picker.dialog.scrim, net.dialog.scrim);
-draw();
 
 coda.header({ text: '好友' }).catch(() => {});
-for (const m of live) start(m);
+start();

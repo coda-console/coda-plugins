@@ -7,7 +7,9 @@
 // - 签名网关的调用方（lib/rpc-caller.mjs）：把好友授给本机的记录登记成代理记录，接住对它的 exec 转给好友签名执行。调用方出错不影响社交网关与持有方。
 //   好友授给本机的代理记录用 `coda self proxies.list` 读；授予时可选的 remote-exec 记录（本机的与同空间别的机器的）用 `coda self grants.targets` 读。
 // 持有方、调用方的这几样（shared）好友页也经视图消息调用。
+// - 好友页是目录聚合视图，读的是目录里的 friends/machine@1：模块跟着网关已有的 Accord 订阅，把本机的身份与好友摘要写成一条记录（lib/machine-record.mjs）。
 import { createGateway } from './lib/gateway.mjs';
+import { createMachineRecord } from './lib/machine-record.mjs';
 import { createCaller } from './lib/rpc-caller.mjs';
 import { sandboxHint } from './lib/rpc-format.mjs';
 import { createHolder } from './lib/rpc-holder.mjs';
@@ -15,7 +17,7 @@ import { createRpcStore } from './lib/rpc-store.mjs';
 
 const HOLDER_ACTIONS = ['grants.list', 'grants.grant', 'grants.restrict', 'grants.revoke', 'ledger.list'];
 const TARGET_KIND = 'remote-exec/machine@1';
-let gateway = null, holder = null, caller = null, callerStart = null, callerDown = null;
+let gateway = null, machineRecord = null, holder = null, caller = null, callerStart = null, callerDown = null;
 const handles = [];
 
 export async function activate(coda) {
@@ -49,6 +51,9 @@ export async function activate(coda) {
   });
   gateway = createGateway(coda, dir);
   for (const [name, fn] of Object.entries(gateway.policy)) handles.push(coda.self.handle(name, input => fn(input ?? {})));
+  // 先挂上再 start：网关订阅 Accord 时给的第一次（ADDED）就是启动时写的那一次。
+  machineRecord = createMachineRecord(coda);
+  handles.push(gateway.onAccord(event => machineRecord.onAccord(event)));
   await gateway.start();
   if (dir) {
     const store = createRpcStore(dir), rpc = { store, signRpc: gateway.signRpc, retractRpc: gateway.retractRpc, onAccord: gateway.onAccord, pages: gateway.pages };
@@ -76,5 +81,7 @@ export function deactivate() {
   holder = null;
   gateway?.stop();
   gateway = null;
+  machineRecord?.stop();
+  machineRecord = null;
   for (const handle of handles.splice(0)) handle?.dispose?.();
 }
