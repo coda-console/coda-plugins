@@ -140,3 +140,44 @@ test('状态记录原样交给页面：带机器名和记录 ID，页面用它�
   const { states } = summarize([state], WINDOW);
   assert.deepEqual(states, [{ id: state.id, owner: 'y', machine: 'rig', record: 'state', share: false, syncState: 'disabled', lastSyncAt: 5, error: '出错', withdrawal: null, author: A, friends: [] }]);
 });
+
+test('「我」每个型号按机器拆分：同一台的日归档与曲线不双计，只列有用量的机器，按 Token、回合、机器名排序', () => {
+  const other = (start, input, model) => ({ ...bucket(start, input), model });
+  const mac = [bucket(DAY + 1000, 100), bucket(DAY + 4000, 20), other(DAY + 2000, 5, 'haiku')], rig = [bucket(DAY + 3000, 30)], nas = [bucket(DAY + 3000, 30)];
+  const summary = summarize([
+    ...usageOf(X, { author: A, sourceId: 'x', buckets: mac }), ...usageOf(Y, { author: A, sourceId: 'y', buckets: rig }), ...usageOf({ id: 'z', name: 'NAS' }, { author: A, sourceId: 'z', buckets: nas }),
+  ], WINDOW);
+  const view = model => summary.mine.models.find(m => m.model === model).machines.map(m => [m.machine, m.input, m.turns, m.totalTokens]);
+  assert.deepEqual(view('opus'), [['Mac', 120, 2, 120], ['NAS', 30, 1, 30], ['rig', 30, 1, 30]]);
+  assert.deepEqual(view('haiku'), [['Mac', 5, 1, 5]]);
+  for (const model of summary.mine.models) for (const field of ['input', 'output', 'cacheRead', 'cacheWrite', 'turns', 'reportedTurns', 'totalTokens']) assert.equal(model.machines.reduce((n, m) => n + m[field], 0), model[field], `${model.model} ${field}`);
+  assert.ok(summary.board.entries.every(entry => entry.models.every(model => !('machines' in model))), '好友榜不带机器名');
+});
+
+// 「我」的型号总计与设备拆分出自同一份按机器各算的结果：两边的 Token 与回合逐项守恒。
+const FIELD_NAMES = ['input', 'output', 'cacheRead', 'cacheWrite', 'turns', 'reportedTurns', 'totalTokens'];
+function assertConserved(mine) {
+  for (const model of mine.models) for (const field of FIELD_NAMES) assert.equal(model.machines.reduce((n, m) => n + m[field], 0), model[field], `${model.model} ${field}`);
+  for (const field of FIELD_NAMES) assert.equal(mine.models.reduce((n, model) => n + model[field], 0), mine[field], field);
+}
+const zeros = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, turns: 0, reportedTurns: 0 };
+const layer = over => ({ start: DAY + 1000, person: '', agent: 'codex', service: null, asked: 'gpt-5', served: null, ...zeros, ...over });
+
+test('「我」两台设备同一请求名跑到不同实际型号：型号总计与设备拆分的回合一致，各台的回合记在各自的型号上', () => {
+  const mac = [layer({ served: 'gpt-5-a', input: 100 }), layer({ turns: 2, reportedTurns: 2 })], rig = [layer({ served: 'gpt-5-b', input: 40 }), layer({ turns: 3, reportedTurns: 3 })];
+  const { mine } = summarize([...usageOf(X, { author: A, sourceId: 'x', buckets: mac }), ...usageOf(Y, { author: A, sourceId: 'y', buckets: rig })], WINDOW);
+  assert.deepEqual(mine.models.map(model => [model.model, model.totalTokens, model.turns, model.machines.map(m => [m.machine, m.totalTokens, m.turns])]),
+    [['gpt-5-a', 100, 2, [['Mac', 100, 2]]], ['gpt-5-b', 40, 3, [['rig', 40, 3]]]]);
+  assert.equal(mine.turns, 5);
+  assertConserved(mine);
+});
+
+test('「我」一台只有纯回合请求行、另一台有实际型号 Token 行：不抛错，结果守恒；空用量也安全', () => {
+  const mac = [layer({ turns: 2, reportedTurns: 2 })], rig = [layer({ served: 'gpt-5-a', input: 40 })];
+  const { mine } = summarize([...usageOf(X, { author: A, sourceId: 'x', buckets: mac }), ...usageOf(Y, { author: A, sourceId: 'y', buckets: rig })], WINDOW);
+  assert.deepEqual(mine.models.map(model => [model.model, model.totalTokens, model.turns, model.machines.map(m => [m.machine, m.totalTokens, m.turns])]),
+    [['gpt-5-a', 40, 0, [['rig', 40, 0]]], ['gpt-5', 0, 2, [['Mac', 0, 2]]]]);
+  assertConserved(mine);
+  const empty = summarize([], WINDOW).mine;
+  assert.deepEqual([empty.machines, empty.models, empty.totalTokens, empty.turns], [[], [], 0, 0]);
+});

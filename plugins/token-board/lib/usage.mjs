@@ -77,7 +77,8 @@ const identityKey = row => JSON.stringify([row.api ?? null, row.asked ?? null, r
 export const ownBuckets = (buckets, identity) => buckets.filter(bucket => !bucket.person || bucket.person === identity);
 /**
  * 轮数记在请求行（`served` 为空）上，Token 可能在带 `served` 的行上。请求行只有轮数没有 Token 时，轮数记到同一请求项
- * （Agent、接口种类、`asked`）下 Token 最多的型号行上（并列取型号名靠前的），请求行随之清空；请求项下没有带 Token 的型号行，轮数就留在请求行。
+ * （Agent、接口种类、`asked`）下 Token 最多的型号行上（并列取型号名靠前的），请求行随之清空；请求项下没有带 Token 的型号行，
+ * 就找同一 Agent、接口种类下只有 `served`、且 `served` 等于这个 `asked` 的行（历史上直连官方的行没有 `asked`），都没有，轮数就留在请求行。
  * 同一轮因此只在一行上算。只在读取端的 Tally 里做一次，范围就是这次聚合的全部行（当次查询窗口）；写签名记录时各行原样保留。返回新的行，空行去掉。
  */
 export function settleTurns(rows) {
@@ -87,8 +88,11 @@ export function settleTurns(rows) {
     const key = JSON.stringify([row.agent ?? null, row.api ?? null, row.asked]);
     groups.set(key, [...(groups.get(key) ?? []), row]);
   }
+  const heaviestOf = list => list.filter(row => total(row) > 0).sort((a, b) => total(b) - total(a) || (a.served < b.served ? -1 : a.served > b.served ? 1 : 0))[0];
   for (const group of groups.values()) {
-    const heaviest = group.filter(row => row.served != null && total(row) > 0).sort((a, b) => total(b) - total(a) || (a.served < b.served ? -1 : 1))[0];
+    const [{ agent, api, asked }] = group;
+    const heaviest = heaviestOf(group.filter(row => row.served != null))
+      ?? heaviestOf(copies.filter(row => row.asked == null && row.served === asked && (row.agent ?? null) === (agent ?? null) && (row.api ?? null) === (api ?? null)));
     if (!heaviest) continue;
     for (const row of group) {
       if (row.served != null || total(row) > 0) continue;
@@ -384,18 +388,19 @@ export function readTodayRecord(record) {
 const total = c => c.input + c.output + c.cacheRead + c.cacheWrite;
 export const compareEntries = (a, b) => b.totalTokens - a.totalTokens || b.turns - a.turns || (a.author < b.author ? -1 : a.author > b.author ? 1 : 0);
 
-// 汇总里一个型号名下的请求项（asked、接口种类）；旧标签行的 asked 取标签本身。
+// 汇总里一个型号名下的请求项（asked、接口种类）；请求名取 asked，没有取旧标签、再取 served，所以历史上只有 served 的行与同名请求行是同一项。
 const itemOf = cell => ({ asked: cell.asked, api: cell.api, ...Object.fromEntries(FIELDS.map(field => [field, cell[field]])), totalTokens: total(cell) });
 const text = value => value ?? '';
 const byCount = (a, b) => total(b) - total(a) || b.turns - a.turns;
+const byName = (a, b) => (text(a) < text(b) ? -1 : text(a) > text(b) ? 1 : 0);
 
 /**
- * 按型号名（modelName）聚合：同名的行合成一行，名下按请求项（asked、接口种类）分开列出；轮数按 settleTurns 记在请求项上，
+ * 按型号名（modelName）聚合：同名的行合成一行，名下按请求项（asked、接口种类）分开列出，按 Agent 分开列出；轮数按 settleTurns 记在请求项上，
  * 型号行的轮数是它名下请求项之和，同一轮只算一次。`add` 收一行（`{ agent, api, asked, served, model, ...计数 }`），
  * `addModel` 收另一份 `result().models` 里的一项，合并多台、多个来源时用。
  */
 export class Tally {
-  constructor() { this.sum = zero(); this.rows = new Map(); this.cells = new Map(); }
+  constructor() { this.sum = zero(); this.rows = new Map(); this.cells = new Map(); this.agents = new Map(); }
   add(row) {
     add(this.sum, row);
     const key = JSON.stringify([row.agent ?? null, identityKey(row)]);
@@ -405,24 +410,37 @@ export class Tally {
   addModel(model) {
     add(this.sum, model);
     for (const item of model.items ?? []) this.put(this.cells, model.model, item.api, item.asked, item);
+    for (const agent of model.agents ?? []) this.putAgent(this.agents, model.model, agent.agent, agent);
   }
   put(cells, name, api, asked, counts) {
     const key = JSON.stringify([name, api, asked]);
     if (!cells.has(key)) cells.set(key, { model: name, api, asked, ...zero() });
     add(cells.get(key), counts);
   }
+  putAgent(agents, name, agent, counts) {
+    const key = JSON.stringify([name, agent]);
+    if (!agents.has(key)) agents.set(key, { model: name, agent, ...zero() });
+    add(agents.get(key), counts);
+  }
   get empty() { return FIELDS.every(field => this.sum[field] === 0); }
   result() {
     const cells = new Map([...this.cells].map(([key, cell]) => [key, { ...cell }]));
-    for (const row of settleTurns([...this.rows.values()])) this.put(cells, modelName(row), row.api, row.asked ?? row.model, row);
+    const agents = new Map([...this.agents].map(([key, cell]) => [key, { ...cell }]));
+    for (const row of settleTurns([...this.rows.values()])) {
+      this.put(cells, modelName(row), row.api, row.asked ?? row.model ?? row.served ?? null, row);
+      this.putAgent(agents, modelName(row), row.agent ?? null, row);
+    }
     const models = new Map();
+    const modelOf = name => { if (!models.has(name)) models.set(name, { model: name, ...zero(), items: [], agents: [] }); return models.get(name); };
     for (const cell of cells.values()) {
-      if (!models.has(cell.model)) models.set(cell.model, { model: cell.model, ...zero(), items: [] });
-      const model = models.get(cell.model);
+      const model = modelOf(cell.model);
       add(model, cell);
       model.items.push(itemOf(cell));
     }
-    const list = [...models.values()].map(model => ({ ...model, totalTokens: total(model), items: model.items.sort((a, b) => byCount(a, b) || (text(a.asked) < text(b.asked) ? -1 : text(a.asked) > text(b.asked) ? 1 : text(a.api) < text(b.api) ? -1 : 1)) }))
+    for (const { model: name, agent, ...counts } of agents.values()) modelOf(name).agents.push({ agent, ...Object.fromEntries(FIELDS.map(field => [field, counts[field]])), totalTokens: total(counts) });
+    const list = [...models.values()].map(model => ({ ...model, totalTokens: total(model),
+      items: model.items.sort((a, b) => byCount(a, b) || byName(a.asked, b.asked) || byName(a.api, b.api)),
+      agents: model.agents.sort((a, b) => byCount(a, b) || byName(a.agent, b.agent)) }))
       .sort((a, b) => byCount(a, b) || (a.model < b.model ? -1 : 1));
     return { ...this.sum, totalTokens: total(this.sum), models: list };
   }

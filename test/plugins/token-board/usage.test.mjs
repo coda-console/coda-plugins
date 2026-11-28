@@ -853,3 +853,72 @@ test('不属于本机 Magpie 的服务的行：asked 命中映射也不归并，
   const rows = buildArchiveBodies(list)['2026-11'].days['2026-11-01'].codex;
   assert.deepEqual(rows.map(row => [row.a, row.u ?? null, row.n[0]]).sort((a, b) => a[2] - b[2]), [['group/ds-flash', null, 5], ['group/ds-flash', 'deepseek-v4.1-flash', 10]]);
 });
+
+// ——— Claude 官方直连：历史上 served 单独成行、asked 单独成行，不能拆成两条同名子项 ———
+const OPUS = 'claude-opus-5-5';
+const direct = (over = {}) => ({ agent: 'claude', api: null, asked: null, served: null, same: null, model: null, ...counts0, ...over });
+const sumOf = list => { const tally = new Tally(); for (const row of list) tally.add(row); return tally.result(); };
+
+test('settleTurns：历史上只有 served 的行接住同名请求行的回合；同 (agent, api, asked) 组内精确匹配始终优先', () => {
+  const settled = settleTurns([direct({ served: OPUS, ...tokensOf(100) }), direct({ asked: OPUS, ...turnsOf(3) })]);
+  assert.deepEqual(settled.map(row => [row.asked, row.served, row.input, row.turns, row.reportedTurns]), [[null, OPUS, 100, 3, 3]]);
+  const exact = settleTurns([direct({ served: OPUS, ...tokensOf(100) }), direct({ asked: OPUS, served: OPUS, ...tokensOf(1) }), direct({ asked: OPUS, ...turnsOf(2) })]);
+  assert.deepEqual(exact.map(row => [row.asked, row.input, row.turns]), [[null, 100, 0], [OPUS, 1, 2]], '组内有带 Token 的型号行：回合记在它上面，不去找 served-only 行');
+});
+
+test('settleTurns：不跨 Agent、不跨接口，served 必须等于请求行的 asked；Opus 的回合不会记给 Haiku', () => {
+  const rows = [
+    direct({ agent: 'main', served: OPUS, ...tokensOf(100) }), direct({ agent: 'sub', served: 'claude-haiku-5-5', ...tokensOf(900) }),
+    direct({ agent: 'main', asked: OPUS, ...turnsOf(2) }), direct({ agent: 'sub', asked: OPUS, ...turnsOf(5) }),
+    direct({ agent: 'main', api: 'anthropic-messages', asked: OPUS, ...turnsOf(7) }),
+  ];
+  const settled = settleTurns(rows);
+  const turnsAt = (agent, served, asked, api = null) => settled.filter(row => row.agent === agent && row.api === api && row.served === served && row.asked === asked).reduce((n, row) => n + row.turns, 0);
+  assert.equal(turnsAt('main', OPUS, null), 2);
+  assert.equal(turnsAt('sub', 'claude-haiku-5-5', null), 0, 'Haiku 行分不到 Opus 的回合');
+  assert.equal(turnsAt('sub', null, OPUS), 5, 'sub 下没有 served 为 Opus 的行：回合留在请求行');
+  assert.equal(turnsAt('main', null, OPUS, 'anthropic-messages'), 7, '另一个接口的行不接');
+  assert.equal(settled.reduce((n, row) => n + row.turns, 0), 14);
+});
+
+test('Tally：served-only 行与同名请求行（含恢复首轮带的少量 loose Token）合成一条子项，Token 与回合守恒', () => {
+  const rows = [direct({ served: OPUS, input: 1000, output: 10, cacheRead: 5000, cacheWrite: 40 }), direct({ asked: OPUS, ...turnsOf(149) }), direct({ asked: OPUS, input: 3, ...turnsOf(1) })];
+  const { models, totalTokens, turns } = sumOf(rows);
+  assert.equal(models.length, 1);
+  assert.deepEqual(models[0].items.map(item => [item.asked, item.api, item.totalTokens, item.turns]), [[OPUS, null, 6053, 150]]);
+  assert.deepEqual([totalTokens, turns, models[0].totalTokens, models[0].turns], [6053, 150, 6053, 150]);
+  assert.deepEqual(models[0].agents.map(a => [a.agent, a.totalTokens, a.turns]), [['claude', 6053, 150]]);
+  const { models: only } = sumOf([direct({ served: OPUS, ...tokensOf(5) }), direct({ asked: OPUS, ...tokensOf(1) })]);
+  assert.deepEqual(only[0].items.map(item => [item.asked, item.totalTokens]), [[OPUS, 6]], '请求行带 Token、没有回合也合并');
+});
+
+test('Tally：不同别名、不同接口仍是独立子项；只带服务的行请求名保持空', () => {
+  const rows = [direct({ served: OPUS, ...tokensOf(10) }), direct({ asked: 'opus', served: OPUS, ...tokensOf(5) }), direct({ api: 'anthropic-messages', asked: OPUS, served: OPUS, ...tokensOf(2) }), direct({ api: 'openai-responses', ...tokensOf(1) })];
+  const { models } = sumOf(rows);
+  assert.deepEqual(models.find(m => m.model === OPUS).items.map(item => [item.asked, item.api, item.totalTokens]), [[OPUS, null, 10], ['opus', null, 5], [OPUS, 'anthropic-messages', 2]]);
+  assert.deepEqual(models.find(m => m.model === 'openai-responses').items.map(item => [item.asked, item.api]), [[null, 'openai-responses']]);
+});
+
+test('Tally：agents 按（型号, Agent）汇总四项与回合，按 Token、回合、Agent 名排序，与型号行守恒', () => {
+  const rows = [
+    direct({ agent: 'b', served: OPUS, input: 10, output: 1, cacheRead: 2, cacheWrite: 3, ...turnsOf(1) }), direct({ agent: 'a', served: OPUS, input: 10, output: 1, cacheRead: 2, cacheWrite: 3, ...turnsOf(1) }),
+    direct({ agent: 'b', served: OPUS, input: 4 }), direct({ agent: 'c', served: OPUS, ...tokensOf(100) }), direct({ agent: 'a', asked: OPUS, ...turnsOf(2) }),
+  ];
+  const [model] = sumOf(rows).models;
+  assert.deepEqual(model.agents, [
+    { agent: 'c', input: 100, output: 0, cacheRead: 0, cacheWrite: 0, turns: 0, reportedTurns: 0, totalTokens: 100 },
+    { agent: 'a', input: 10, output: 1, cacheRead: 2, cacheWrite: 3, turns: 3, reportedTurns: 3, totalTokens: 16 },
+    { agent: 'b', input: 14, output: 1, cacheRead: 2, cacheWrite: 3, turns: 1, reportedTurns: 1, totalTokens: 20 },
+  ].sort((x, y) => y.totalTokens - x.totalTokens || y.turns - x.turns || (x.agent < y.agent ? -1 : 1)));
+  for (const field of ['input', 'output', 'cacheRead', 'cacheWrite', 'turns', 'reportedTurns', 'totalTokens']) assert.equal(model.agents.reduce((n, a) => n + a[field], 0), model[field], field);
+});
+
+test('Tally.addModel：合并另一份结果时 items 与 agents 同口径相加，合并后与一次性汇总相同', () => {
+  const left = [direct({ agent: 'a', served: OPUS, ...tokensOf(10) }), direct({ agent: 'a', asked: OPUS, ...turnsOf(2) })];
+  const right = [direct({ agent: 'b', served: OPUS, ...tokensOf(5) }), direct({ agent: 'b', asked: OPUS, ...turnsOf(1) }), direct({ agent: 'a', served: OPUS, ...tokensOf(1) })];
+  const merged = new Tally();
+  for (const result of [sumOf(left), sumOf(right)]) for (const model of result.models) merged.addModel(model);
+  const once = sumOf([...left, ...right]);
+  assert.deepEqual(merged.result().models, once.models);
+  assert.deepEqual(once.models[0].items.map(item => [item.asked, item.totalTokens, item.turns]), [[OPUS, 16, 3]]);
+});
