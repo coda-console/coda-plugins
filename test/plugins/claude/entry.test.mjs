@@ -19,9 +19,9 @@ import { sdkEnvironment } from '../../../plugins/claude/agent/auth.mjs';
 import { serviceSettings } from '../../../plugins/claude/agent/providers.mjs';
 import { SessionTitle } from '../../../plugins/claude/agent/titles.mjs';
 import { ToolCallCache } from '../../../plugins/claude/agent/tools.mjs';
-import { ClaudeSessionLimits, accountHash } from '../../../plugins/claude/agent/limits.mjs';
+import { accountHash } from '../../../plugins/claude/agent/limits.mjs';
 import { KNOWN_TOOLS } from '../../../plugins/claude/agent/registry.mjs';
-import { agentValueProblem } from '@coda-console/protocol/agent';
+import { agentMessageProblem, agentValueProblem } from '@coda-console/protocol/agent';
 import { fixtureSdk, queries } from './fixture-sdk.mjs';
 import { substituted } from '../substitute.mjs';
 
@@ -871,40 +871,63 @@ test('an MCP server\'s form passes as it is, and its link is a link', async t =>
   assert.deepEqual(c.said().map(JSON.parse), [{ action: 'accept', content: { n: 3 } }, { action: 'accept' }]);
 });
 
-test('the plan windows a session reports go to the limits file in the plugin\'s state, merged with what is there; nothing is said to Coda', async t => {
-  const dir = await mkdtemp(join(tmpdir(), 'coda-claude-limits-')), path = join(dir, 'limits.json');
-  t.after(() => rm(dir, { recursive: true, force: true }));
-  await writeFile(path, JSON.stringify({ version: 1, windows: { seven_day_opus: { utilization: 0.5, resetsAt: 4102444800 } } }));
-  const c = await setup(t, { env: { CODA_PLUGIN_STATE: dir } }); await c.open();
-  const before = c.out.length;
+// The SDK as it starts a session signed in as `email` (none: it does not say).
+const signedInAs = email => {
+  const base = fixtureSdk();
+  return { ...base, query: options => {
+    const q = base.query(options), start = q.initializationResult.bind(q);
+    q.initializationResult = async () => ({ ...(await start()), account: email ? { email } : {} });
+    return q;
+  } };
+};
+// What the plugin tells, valid in the protocol's schema.
+const quotas = c => c.out.filter(m => m.method === '_coda/quota').map(m => { assert.equal(agentMessageProblem(m.method, m.params), null); return m.params; });
+const oneWindow = { status: 'allowed', rateLimitType: 'seven_day_sonnet', utilization: 0.4, resetsAt: 4102444800 };
+
+test('the plan windows a session reports are told to Coda as `_coda/quota` of the account it runs as, every window of an event at once', async t => {
+  const c = await setup(t, { sdk: signedInAs(' A@example.com ') }); await c.open();
   await c.prompt('rate-limit');
-  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')).windows, { seven_day_opus: { utilization: 0.5, resetsAt: 4102444800 },
-    five_hour: { utilization: 0.11, resetsAt: 4102444800 - 86400 }, seven_day: { utilization: 0.91, resetsAt: 4102444800 } });
-  assert.ok(!c.out.slice(before).some(m => JSON.stringify(m).includes('rate_limit')));
-  assert.equal(new ClaudeSessionLimits({ path, now: () => 0 }).quota().length, 3);
+  assert.deepEqual(quotas(c), [{ sessionId: c.sessionId, resourceType: 'limits', accountId: accountHash('a@example.com'), windows: [
+    { id: 'five_hour', label: '5 小时', usedFraction: 0.11, resetsAt: '2099-12-31T00:00:00.000Z' },
+    { id: 'seven_day', label: '7 天', usedFraction: 0.91, resetsAt: '2100-01-01T00:00:00.000Z' }] }]);
+  assert.ok(!JSON.stringify(c.out).includes('example.com'), 'the email itself does not leave');
+  // A CLI that sends only the window that limits now: only that one, told each time it comes.
+  await c.emit({ type: 'rate_limit_event', rate_limit_info: oneWindow }, { type: 'rate_limit_event', rate_limit_info: oneWindow });
+  assert.deepEqual(quotas(c).slice(1).map(q => q.windows), Array(2).fill([{ id: 'seven_day_sonnet', label: 'Sonnet · 7 天', usedFraction: 0.4, resetsAt: '2100-01-01T00:00:00.000Z' }]));
+  assert.equal(c.session.turnLimits, oneWindow, 'the failure classification still has what the event said');
 });
 
-test('a session files what it reports under the account it started as, and an older one of another account files nothing', async t => {
-  const dir = await mkdtemp(join(tmpdir(), 'coda-claude-account-')), path = join(dir, 'limits.json');
-  t.after(() => rm(dir, { recursive: true, force: true }));
-  // The SDK as it starts a session signed in as `email`.
-  const as = email => {
-    const base = fixtureSdk();
-    return { ...base, query: options => {
-      const q = base.query(options), start = q.initializationResult.bind(q);
-      q.initializationResult = async () => ({ ...(await start()), account: email ? { email } : {} });
-      return q;
-    } };
-  };
-  const a = await setup(t, { env: { CODA_PLUGIN_STATE: dir }, sdk: as('A@example.com') }); await a.open();
-  await a.prompt('rate-limit');
-  assert.equal(JSON.parse(await readFile(path, 'utf8')).account, accountHash('a@example.com'));
-  const b = await setup(t, { env: { CODA_PLUGIN_STATE: dir }, sdk: as('b@example.com') }); await b.open();
-  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), { version: 1, windows: {}, account: accountHash('b@example.com') });
-  await a.prompt('rate-limit');
-  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')).windows, {}, 'what A\'s session reports is not B\'s');
-  const unknown = await setup(t, { env: { CODA_PLUGIN_STATE: dir }, sdk: as(null) }); await unknown.open();
-  assert.equal(JSON.parse(await readFile(path, 'utf8')).account, undefined, 'a session that does not say who it is names no one');
+test('a session whose account is not known tells no quota, and the event still serves the failure classification', async t => {
+  const c = await setup(t, { sdk: signedInAs(null) }); await c.open();
+  await c.prompt('rate-limit');
+  assert.deepEqual(quotas(c), []);
+  assert.equal(c.session.window.status, 'allowed_warning');
+});
+
+test('a query on a chosen service\'s model tells no quota: it is not of the Claude account', async t => {
+  const service = await modelService(t);
+  const c = await setup(t, { env: service.env, sdk: signedInAs('a@example.com') }); await c.open();
+  await c.request('session/set_config_option', { sessionId: c.sessionId, configId: 'model', value: 'magpie/anthropic/fake/alpha' });
+  await c.prompt('rate-limit');
+  assert.deepEqual(quotas(c), []);
+  await c.request('session/set_config_option', { sessionId: c.sessionId, configId: 'model', value: 'fixture-model-v1' });
+  await c.prompt('rate-limit');
+  assert.equal(quotas(c).length, 1, 'on Claude\'s own model again, it is told');
+});
+
+test('before the session has its identity nothing is told, and an event with no valid window tells nothing', async t => {
+  const c = await setup(t, { sdk: signedInAs('a@example.com') });
+  c.session.account = accountHash('a@example.com');
+  c.session.quota(oneWindow);
+  await c.open();
+  assert.deepEqual(quotas(c), []);
+  c.session.quota({ rateLimitType: 'overage', utilization: 0.5, resetsAt: 4102444800 });
+  c.session.quota({ rateLimitType: 'seven_day', utilization: -1, resetsAt: 4102444800 });
+  await c.request('initialize', { protocolVersion: 1, clientCapabilities: {} });
+  assert.deepEqual(quotas(c), []);
+  c.session.quota(oneWindow);
+  await c.request('initialize', { protocolVersion: 1, clientCapabilities: {} });
+  assert.equal(quotas(c).length, 1);
 });
 
 test('the entry speaks ACP over standard input and output with the SDK it is given, and ends with its input or a signal', { timeout: 20000 }, async t => {
