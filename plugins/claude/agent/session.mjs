@@ -2,8 +2,8 @@
 // (docs/agent-protocol.md). Coda's prompts go into the query's input; a prompt is answered by the native result that names
 // its input. What Claude says, its tools and their results, its settings, its title and its usage become session updates;
 // what it keeps going beside a turn, waits (waits.mjs); what it asks, permission requests and forms, withdrawn as the SDK
-// withdraws them. A turn Claude begins on its own is told by what it handles. The plan windows it reports go to the file
-// the plugin's「Claude」resource reads (limits.json in CODA_PLUGIN_STATE, limits.mjs), not to Coda's session. Chosen, a session
+// withdraws them. A turn Claude begins on its own is told by what it handles. The plan windows it reports are told to Coda
+// as `_coda/quota` (limits.mjs), not in the session's updates. Chosen, a session
 // that is to go on later is compacted before its cache expires, as the plugin's lifecycle process asks (compaction.mjs).
 // What the SDK sends that is not registered, and native tools not known, are told to Coda (registry.mjs).
 import { randomUUID } from 'node:crypto';
@@ -12,7 +12,7 @@ import { realpath, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { agent, PROTOCOL_VERSION, RequestError } from '@agentclientprotocol/sdk';
-import { ClaudeSessionLimits, accountHash } from './limits.mjs';
+import { accountHash, quotaWindows } from './limits.mjs';
 import { claudeFailure } from './errors.mjs';
 import { sdkEnvironment } from './auth.mjs';
 import { chosenServices, listedModels, serviceReference, serviceSettings } from './providers.mjs';
@@ -203,11 +203,9 @@ export class ClaudeSession {
       const initialization = await this.initialized(), served = await listed;
       if (this.phase !== 'starting') throw failure('Claude 会话在初始化时结束', -32001);
       this.models = [...claudeModels(initialization.models), ...served]; this.commands = initialization.commands ?? [];
-      // Who the session runs as, for the「Claude」resource (limits.mjs): the windows it reports are that account's, and
-      // only while the resource is of that account.
+      // Who the session runs as (limits.mjs): the windows it reports are that account's.
       const email = initialization.account?.email;
       this.account = typeof email === 'string' && email.trim() ? accountHash(email) : null;
-      if (this.env.CODA_PLUGIN_STATE) new ClaudeSessionLimits({ path: join(this.env.CODA_PLUGIN_STATE, 'limits.json') }).startedAs(this.account);
       this.current.model = this.models[0]?.id; this.current.ultracode = await this.ultracode();
       this.phase = 'running';
       return { ...(resume ? {} : { sessionId: this.sessionId }), configOptions: this.options() };
@@ -505,8 +503,15 @@ export class ClaudeSession {
       case 'result': return this.result(m);
       case 'rate_limit_event':
         this.turnLimits = this.window = m.rate_limit_info;
-        if (this.env.CODA_PLUGIN_STATE) new ClaudeSessionLimits({ path: join(this.env.CODA_PLUGIN_STATE, 'limits.json') }).observe(m.rate_limit_info, this.account ?? null);
+        this.quota(m.rate_limit_info);
     }
+  }
+  // The windows an event reports, as the account's quota: not of an unknown account, nor of a query on a chosen service's model
+  // (its limits are the service's), nor before the session has its identity. What has not moved is for Coda to tell.
+  quota(info) {
+    const windows = quotaWindows(info);
+    if (!this.sessionId || !this.account || this.serviceModel || !windows.length) return;
+    this.notify('_coda/quota', { sessionId: this.sessionId, resourceType: 'limits', accountId: this.account, windows });
   }
   system(m) {
     switch (m.subtype) {

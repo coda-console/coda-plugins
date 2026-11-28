@@ -1,60 +1,39 @@
-// From Coda's backend/test/claude-limits.test.mjs at 9ffb9911, as plain node:test. Its case of Coda moving the limits kept
-// before the update into the plugin's state stays in Coda.
-// The claude plugin's limits (agent/limits.mjs): what the SDK's rate_limit_event says of each window, kept across restarts,
-// and the「Claude」resource that shows them (scripts/quota.mjs).
+// The claude plugin's limits (agent/limits.mjs): the windows a rate_limit_event carries, as `_coda/quota` tells them, and the
+// account they are of; and the「Claude」resource record, which carries only the way to sign in (scripts/resource.mjs).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { resourceRecordsProblem } from '@coda-console/protocol/validate';
-import { ClaudeSessionLimits, accountHash } from '../../../plugins/claude/agent/limits.mjs';
-import { resources } from '../../../plugins/claude/scripts/quota.mjs';
+import { accountHash, quotaWindows } from '../../../plugins/claude/agent/limits.mjs';
 
-const NOW = Date.parse('2026-10-08T00:00:00Z');
 const at = iso => Date.parse(iso) / 1000;
-// What the plugin's record command prints of a reading: the record of the type, which the host takes or not.
-const problem = read => resourceRecordsProblem([{ key: 'limits', spec: { type: 'limits', title: 'Claude', ...read } }]);
-async function root(t) { const dir = await mkdtemp(join(tmpdir(), 'coda-limits-')); t.after(() => rm(dir, { recursive: true, force: true })); return dir; }
 const event = { status: 'allowed_warning', rateLimitType: 'seven_day', utilization: 0.91, resetsAt: at('2026-10-12T00:00:00Z'),
   unifiedWindows: { five_hour: { utilization: 0.11, resetsAt: at('2026-10-08T03:00:00Z') }, seven_day: { utilization: 0.91, resetsAt: at('2026-10-12T00:00:00Z') } } };
 
-test('every window an event carries is the quota of the account, as what is left and when it resets', () => {
-  const limits = new ClaudeSessionLimits({ now: () => NOW });
-  assert.equal(limits.known(), false);
-  limits.observe(event);
-  assert.equal(limits.known(), true);
-  assert.deepEqual(limits.quota(), [
-    { id: 'five_hour', label: '5 小时', remainingPercent: 89, resetsAt: '2026-10-08T03:00:00.000Z' },
-    { id: 'seven_day', label: '7 天', remainingPercent: 9, resetsAt: '2026-10-12T00:00:00.000Z' },
+test('every window an event carries is told with its label, the fraction used and its reset as a UTC time', () => {
+  assert.deepEqual(quotaWindows(event), [
+    { id: 'five_hour', label: '5 小时', usedFraction: 0.11, resetsAt: '2026-10-08T03:00:00.000Z' },
+    { id: 'seven_day', label: '7 天', usedFraction: 0.91, resetsAt: '2026-10-12T00:00:00.000Z' },
   ]);
 });
 
-test('a CLI that sends only the window that limits now still says where that one stands; the windows it does not repeat are kept', () => {
-  const limits = new ClaudeSessionLimits({ now: () => NOW });
-  limits.observe(event);
-  limits.observe({ status: 'allowed_warning', rateLimitType: 'seven_day_sonnet', utilization: 0.4, resetsAt: at('2026-10-11T00:00:00Z') });
-  limits.observe({ status: 'allowed', rateLimitType: 'five_hour', utilization: 0.2, resetsAt: at('2026-10-08T03:00:00Z') });
-  assert.deepEqual(limits.quota().map(w => [w.id, w.label, w.remainingPercent]),
-    [['five_hour', '5 小时', 80], ['seven_day', '7 天', 9], ['seven_day_sonnet', 'Sonnet · 7 天', 60]]);
-  // Where both levels name a window, the one that carries every window is the one read.
-  limits.observe({ status: 'allowed', rateLimitType: 'seven_day', utilization: 0.5, resetsAt: at('2026-10-12T00:00:00Z'),
-    unifiedWindows: { seven_day: { utilization: 0.6, resetsAt: at('2026-10-12T00:00:00Z') } } });
-  assert.equal(limits.quota().find(w => w.id === 'seven_day').remainingPercent, 40);
-});
-
-test('the windows come in a fixed order, and one used past its cap has nothing left', () => {
-  const limits = new ClaudeSessionLimits({ now: () => NOW });
+test('a CLI that sends only the window that limits now says only that one; where both levels name a window, the one that carries every window is read', () => {
+  assert.deepEqual(quotaWindows({ status: 'allowed_warning', rateLimitType: 'seven_day_sonnet', utilization: 0.4, resetsAt: at('2026-10-11T00:00:00Z') }),
+    [{ id: 'seven_day_sonnet', label: 'Sonnet · 7 天', usedFraction: 0.4, resetsAt: '2026-10-11T00:00:00.000Z' }]);
   const resetsAt = at('2026-10-12T00:00:00Z');
-  limits.observe({ status: 'rejected', rateLimitType: 'seven_day_overage_included', utilization: 1, resetsAt,
-    unifiedWindows: { seven_day: { utilization: 0.57, resetsAt }, five_hour: { utilization: 1.35, resetsAt: at('2026-10-08T03:00:00Z') } } });
-  limits.observe({ status: 'allowed', rateLimitType: 'seven_day_opus', utilization: 0, resetsAt });
-  assert.deepEqual(limits.quota().map(w => [w.label, w.remainingPercent]),
-    [['5 小时', 0], ['7 天', 43], ['Opus · 7 天', 100], ['Fable · 7 天', 0]]);
+  assert.deepEqual(quotaWindows({ rateLimitType: 'seven_day', utilization: 0.5, resetsAt, unifiedWindows: { seven_day: { utilization: 0.6, resetsAt } } }).map(w => w.usedFraction), [0.6]);
 });
 
-test('what is not a window with a used fraction and an epoch reset is not taken', () => {
-  const limits = new ClaudeSessionLimits({ now: () => NOW });
+test('a window used past its cap is told as used in full; the labels are the plugin\'s', () => {
+  const resetsAt = at('2026-10-12T00:00:00Z');
+  const windows = quotaWindows({ status: 'rejected', rateLimitType: 'seven_day_overage_included', utilization: 1, resetsAt,
+    unifiedWindows: { five_hour: { utilization: 1.35, resetsAt }, seven_day_opus: { utilization: 0, resetsAt } } });
+  assert.deepEqual(windows.map(w => [w.id, w.label, w.usedFraction]),
+    [['five_hour', '5 小时', 1], ['seven_day_opus', 'Opus · 7 天', 0], ['seven_day_overage_included', 'Fable · 7 天', 1]]);
+});
+
+test('what is not a known window with a used fraction and an epoch reset is not told', () => {
   const resetsAt = at('2026-10-12T00:00:00Z');
   for (const info of [undefined, null, 'seven_day', [], {}, { status: 'allowed' }, { rateLimitType: 'overage', utilization: 0.5, resetsAt },
     { rateLimitType: 'seven_day', utilization: '0.5', resetsAt }, { rateLimitType: 'seven_day', utilization: -0.1, resetsAt },
@@ -63,90 +42,22 @@ test('what is not a window with a used fraction and an epoch reset is not taken'
     { rateLimitType: 'seven_day', utilization: 0.5, resetsAt: 1.5 }, { rateLimitType: 'seven_day', utilization: 0.5, resetsAt: '1791784800' },
     { unifiedWindows: 'five_hour' }, { unifiedWindows: [{ utilization: 0.5, resetsAt }] }, { unifiedWindows: { five_hour: null, seven_day: 'x', weekly: { utilization: 0.5, resetsAt } } },
     { unifiedWindows: JSON.parse('{"__proto__": {"utilization": 0.5, "resetsAt": 1791784800}}') }]) {
-    limits.observe(info);
-    assert.equal(limits.known(), false, JSON.stringify(info));
+    assert.deepEqual(quotaWindows(info), [], JSON.stringify(info));
   }
-  assert.deepEqual(limits.quota(), []);
+  // The valid ones among invalid are kept.
+  assert.deepEqual(quotaWindows({ unifiedWindows: { five_hour: { utilization: 0.2, resetsAt }, seven_day: null, weekly: { utilization: 0.5, resetsAt } } }).map(w => w.id), ['five_hour']);
 });
 
-test('a window past its reset is no longer known, and all of them past it is said so', () => {
-  let now = NOW;
-  const limits = new ClaudeSessionLimits({ now: () => now });
-  limits.observe(event);
-  now = Date.parse('2026-10-08T03:00:00Z');
-  assert.deepEqual(limits.quota().map(w => w.id), ['seven_day'], 'the reset moment itself is past');
-  now = Date.parse('2026-10-12T00:00:01Z');
-  assert.deepEqual(limits.quota(), [], 'all past: known, but none to show');
-  assert.equal(limits.known(), true);
-  limits.observe({ rateLimitType: 'five_hour', utilization: 0.02, resetsAt: at('2026-10-12T05:00:00Z') });
-  assert.deepEqual(limits.quota().map(w => [w.id, w.remainingPercent]), [['five_hour', 98]]);
+test('the account is a hash of its normalized email, 32 hex digits, and not the email', () => {
+  assert.match(accountHash(' Me@Example.com '), /^[0-9a-f]{32}$/);
+  assert.equal(accountHash(' Me@Example.com '), accountHash('me@example.com'));
+  assert.notEqual(accountHash('me@example.com'), accountHash('other@example.com'));
 });
 
-test('the windows are kept across a restart, written only as one moves, and a file that cannot be read starts empty', async t => {
-  const dir = await root(t), path = join(dir, 'claude-session-limits.json');
-  const limits = new ClaudeSessionLimits({ path, now: () => NOW });
-  limits.observe(event);
-  assert.equal((await stat(path)).mode & 0o777, 0o600);
-  assert.deepEqual(new ClaudeSessionLimits({ path, now: () => NOW }).quota(), limits.quota());
-  // The same percentage and reset again is nothing new; a percentage or a reset that moved is.
-  await rm(path);
-  limits.observe({ ...event, unifiedWindows: { five_hour: { utilization: 0.114, resetsAt: at('2026-10-08T03:00:00Z') }, seven_day: event.unifiedWindows.seven_day } });
-  await assert.rejects(stat(path), { code: 'ENOENT' });
-  limits.observe({ ...event, unifiedWindows: { ...event.unifiedWindows, five_hour: { utilization: 0.12, resetsAt: at('2026-10-08T03:00:00Z') } } });
-  assert.equal(JSON.parse(await readFile(path, 'utf8')).windows.five_hour.utilization, 0.12);
-  limits.observe({ ...event, unifiedWindows: { ...event.unifiedWindows, five_hour: { utilization: 0.01, resetsAt: at('2026-10-08T08:00:00Z') } } });
-  assert.equal(JSON.parse(await readFile(path, 'utf8')).windows.five_hour.resetsAt, at('2026-10-08T08:00:00Z'));
-  for (const content of ['not json', '{}', '{"windows":null}', '[]', '{"windows":{"five_hour":null,"seven_day":{"utilization":"x","resetsAt":1},"weekly":{"utilization":0.5,"resetsAt":1791784800}}}']) {
-    await writeFile(path, content);
-    assert.equal(new ClaudeSessionLimits({ path, now: () => NOW }).known(), false, content);
-  }
-  // Without a place to keep them, or with none that can be written, what is observed is still shown.
-  for (const unwritable of [null, join(dir, 'missing', 'limits.json')]) {
-    const kept = new ClaudeSessionLimits({ path: unwritable, now: () => NOW }); kept.observe(event);
-    assert.equal(kept.quota().length, 2);
-  }
-});
-
-test('the「Claude」resource shows what the sessions reported, says when it all has passed, and nothing before anything was', async t => {
-  const dir = await root(t), path = join(dir, 'limits.json');
-  let now = NOW;
-  const limits = () => new ClaudeSessionLimits({ path, now: () => now });
-  assert.deepEqual(resources(limits()), { resources: [] }, 'nothing reported: offered under「添加资源」 instead');
-  limits().observe(event);
-  const read = resources(limits());
-  assert.deepEqual(read.resources, [{ values: [
-    { label: '5 小时', value: '剩余 89%', fraction: 0.89, time: '2026-10-08T03:00:00.000Z' },
-    { label: '7 天', value: '剩余 9%', fraction: 0.09, time: '2026-10-12T00:00:00.000Z' },
-  ], buttons: [] }]);
-  assert.equal(problem(read), null, 'a reading the host takes');
-  now = Date.parse('2026-10-13T00:00:00Z');
-  assert.deepEqual(resources(limits()).resources, [{ name: 'Claude', values: [], buttons: [], error: '额度记录已过期，会话再运行后更新' }]);
-  assert.equal(problem(resources(limits())), null);
-});
-
-test('the account the latest session starts as is the resource\'s identity, as a hash; what another account reports is not its', async t => {
-  const dir = await root(t), path = join(dir, 'limits.json');
-  const limits = () => new ClaudeSessionLimits({ path, now: () => NOW });
-  const a = accountHash(' Me@Example.com '), b = accountHash('other@example.com');
-  limits().observe(event);
-  assert.equal(resources(limits()).resources[0].identity, undefined, 'no session said who it is: the resource is this machine\'s alone');
-  limits().startedAs(a);
-  assert.equal(limits().known(), false, 'what was reported before is not known to be this account\'s');
-  limits().observe(event, a);
-  const read = resources(limits());
-  assert.equal(read.resources[0].identity, `claude:${accountHash('me@example.com')}`);
-  assert.ok(!(await readFile(path, 'utf8')).includes('example.com'), 'the email itself is not kept');
-  assert.equal(problem(read), null, 'a reading the host takes');
-  // Another account's session starts while one of the first is still running: what the older one reports is not B's.
-  limits().startedAs(b);
-  limits().observe(event, a);
-  assert.equal(limits().known(), false);
-  limits().observe({ rateLimitType: 'five_hour', utilization: 0.2, resetsAt: at('2026-10-08T03:00:00Z') }, b);
-  assert.deepEqual(resources(limits()).resources[0].values.map(v => v.value), ['剩余 80%']);
-  assert.equal(resources(limits()).resources[0].identity, `claude:${b}`);
-  // A session that cannot say who it is names no one, and its windows are not filed under the account before.
-  limits().startedAs(null);
-  limits().observe(event);
-  assert.equal(resources(limits()).resources[0].identity, undefined);
-  assert.equal(limits().quota().length, 2);
+test('the「Claude」record carries only the way to sign in, which the host takes', () => {
+  const record = JSON.parse(execFileSync(process.execPath, [fileURLToPath(new URL('../../../plugins/claude/scripts/resource.mjs', import.meta.url))], { encoding: 'utf8' }));
+  assert.equal(record.length, 1);
+  assert.deepEqual([record[0].key, record[0].spec.type, record[0].spec.title, record[0].spec.resources], ['limits', 'limits', 'Claude', []]);
+  assert.equal(record[0].spec.signIn.input, 'authorizationCode');
+  assert.equal(resourceRecordsProblem(record), null);
 });
