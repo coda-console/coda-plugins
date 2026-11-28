@@ -10,6 +10,7 @@
   "host 插件": ["plugins/host/"],
   "kimi 插件": ["plugins/kimi/"],
   "magpie 插件": ["plugins/magpie/"],
+  "memory 插件": ["plugins/memory/"],
   "network-log 插件": ["plugins/network-log/"],
   "opencode 插件": ["plugins/opencode/"],
   "review 插件": ["plugins/review/"],
