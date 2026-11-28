@@ -2,7 +2,9 @@
 // the uncached input (the cached reads and writes not in it), the cache reads and writes beside it, and `breakdown` by model
 // where the models are known (when it is there, it is the whole of what Coda counts; the top level is its sum). A model is told as
 // `served` when the SDK names the one that ran (`canonicalModel`) and else by the SDK's own name as the unlayered `model` label; on a
-// model service (providers.mjs) the usage says its `service` and `asked` instead (Coda's docs/plugins.md「Coda 的用量记录」).
+// model service (providers.mjs) the usage says its `service` and `asked` instead (Coda's docs/plugins.md「Coda 的用量记录」). On
+// Claude's own models the row of the model the turn asked for (the session's chosen one) also says `asked`, so that its turns and
+// tokens are one record; a subagent's model is never told as asked, nor is a model told by `model` (that label stands alone).
 //
 // The SDK's result carries `modelUsage`, per model and cumulative over the query() call: main loop, Task subagents and all. This
 // keeps what the last result said (`base`) and answers each result with the difference, so that a turn says what it used.
@@ -78,8 +80,9 @@ export class PromptUsage {
   // A query begins: a new session's from nothing, a resumed one's with its history (its first result says it). `requested`: the
   // `{ service, asked }` of the model service it runs on (`{}` for a service whose address gives no reference), null on Claude's own models.
   restarted(resumed, requested = null) { this.base = resumed ? null : new Map(); this.held = new Spent(); this.requested = requested; }
-  // What this result's turn used (never throws: the result is handled whatever this makes of it).
-  measure(m) {
+  // What this result's turn used (never throws: the result is handled whatever this makes of it). `asked`: the model the turn ran as
+  // chosen, on Claude's own models.
+  measure(m, asked = null) {
     const spent = new Spent();
     try {
       const entries = Object.entries(m.modelUsage ?? {}).map(([key, usage]) => ({ key, usage, counts: fromModelUsage(usage) })).filter(entry => entry.counts);
@@ -90,11 +93,22 @@ export class PromptUsage {
         if (counts) spent.addLoose(counts);
         return spent;
       }
-      for (const { key, usage, counts } of entries) {
+      const named = entry => !this.requested && typeof entry.usage.canonicalModel === 'string' && entry.usage.canonicalModel;
+      // What each model used this turn (the results hold the whole query's totals, those of models idle now included).
+      const turn = entries.map(entry => ({ ...entry, used: increase(entry.counts, this.base.get(entry.key)) }));
+      for (const { key, counts } of turn) this.base.set(key, counts);
+      const active = turn.filter(entry => !none(entry.used));
+      // The main model's row is the one asked for, whatever name the SDK gives it; with one model alone in the turn, that one.
+      const bare = name => typeof name === 'string' ? name.replace(/\[[^\]]+\]$/, '') : name;
+      const main = !this.requested && typeof asked === 'string' && asked
+        ? active.find(entry => named(entry) && [entry.key, named(entry)].some(name => bare(name) === bare(asked)))
+          ?? (new Set(active.map(entry => named(entry) || entry.key)).size === 1 ? active.find(named) : undefined)
+        : undefined;
+      for (const entry of active) {
+        const { key, used } = entry, canonical = named(entry);
         // A service's model is told by the name the SDK has it asked as, which is no model that ran; Claude's own by the canonical one.
-        const canonical = !this.requested && typeof usage.canonicalModel === 'string' && usage.canonicalModel;
-        spent.addModel(canonical ? { served: canonical } : { model: key }, increase(counts, this.base.get(key)));
-        this.base.set(key, counts);
+        const label = !canonical ? { model: key } : main && canonical === named(main) ? { asked, served: canonical } : { served: canonical };
+        spent.addModel(label, used);
       }
     } catch {}
     return spent;

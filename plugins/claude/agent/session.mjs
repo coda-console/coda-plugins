@@ -94,6 +94,8 @@ export class ClaudeSession {
     // The messages sent into the prompt's turn not yet taken (steer), the prompt whose own turn ended before they were, how
     // the prompt ends once it is ending before they are taken (dropRest), and whether a native turn is going.
     this.steering = new Set(); this.held = null; this.ending = null; this.turning = false;
+    // The model chosen that the turn going runs as (system init): what its usage says it asked for on Claude's own models.
+    this.turnAsked = null;
     // The model services chosen in Coda (providers.mjs), and the service's model the query runs on: null on Claude's own.
     this.services = chosenServices(env); this.serviceModel = null;
     this.models = []; this.commands = []; this.terminal = null; this.current = { mode: 'default', model: undefined, effort: null, ultracode: null };
@@ -515,6 +517,8 @@ export class ClaudeSession {
         // Its effort is the one applied, the model's own included: what was chosen stays what it was. A query on the
         // service's model reports it by that service's name for it.
         this.current = { ...this.current, model: this.serviceModel ?? reportedModel(this.models, this.current.model, m.model), mode: m.permissionMode ?? this.current.mode };
+        // The model this turn runs as chosen: a model chosen while it goes is the next turn's.
+        this.turnAsked = this.current.model;
         if (!this.title) {
           const sessionId = this.sessionId;
           this.title = new SessionTitle({ sdk: this.sdk, query: this.query, cwd: this.cwd, sessionId, alive: () => ['starting', 'running'].includes(this.phase),
@@ -671,7 +675,7 @@ export class ClaudeSession {
   }
   result(m) {
     // What this turn used; the base moves with every result, whose turn it is told as (below) or not.
-    const spent = this.usage.measure(m);
+    const spent = this.usage.measure(m, this.turnAsked ?? this.current.model);
     const windows = Object.values(m.modelUsage ?? {});
     const ids = takenIn(m);
     // The compaction Coda asked for (compact) is the turn that names its input. Any other is the session's own, whose cache runs
